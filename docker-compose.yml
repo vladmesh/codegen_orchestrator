@@ -1,0 +1,98 @@
+services:
+  # === Application Services ===
+  
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    expose:
+      - "8000"
+
+  langgraph:
+    build:
+      context: .
+      dockerfile: services/langgraph/Dockerfile
+    env_file:
+      - .env
+    environment:
+      API_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - api
+      - redis
+    networks:
+      - internal
+
+  telegram_bot:
+    build:
+      context: .
+      dockerfile: services/telegram_bot/Dockerfile
+    env_file:
+      - .env
+    environment:
+      API_URL: http://api:8000
+      LANGGRAPH_URL: http://langgraph:8080
+    depends_on:
+      - api
+      - langgraph
+    networks:
+      - internal
+
+  # === Infrastructure ===
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-orchestrator}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - internal
+
+  # === Tooling ===
+
+  tooling:
+    build:
+      context: .
+      dockerfile: tooling/Dockerfile
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:delegated
+    env_file:
+      - .env
+
+networks:
+  internal:
+
+volumes:
+  db_data:
