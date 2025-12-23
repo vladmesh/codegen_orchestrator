@@ -25,5 +25,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(health.router)
-app.include_router(resources.router, prefix="/api")
+app.include_router(routers.health.router)
+app.include_router(routers.resources.router)
+app.include_router(routers.users.router)
+app.include_router(routers.projects.router)
+app.include_router(routers.servers.router, prefix="/api")
