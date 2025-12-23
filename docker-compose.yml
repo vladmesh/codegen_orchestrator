@@ -21,8 +21,8 @@ services:
       - ./services/api/src:/app/src:delegated
       - ./services/api/alembic.ini:/app/alembic.ini:ro
       - ./services/api/migrations:/app/migrations:delegated
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
 
   langgraph:
     build:

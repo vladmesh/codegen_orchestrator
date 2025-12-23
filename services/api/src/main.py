@@ -6,7 +6,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 
 from .database import engine
-from .routers import health, resources
+from . import routers
 
 
 @asynccontextmanager
