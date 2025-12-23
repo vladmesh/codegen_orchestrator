@@ -251,6 +251,226 @@ async def handle_message(update, context):
     await update.message.reply_text(result["messages"][-1].content)
 ```
 
+## Внешние Coding Agents
+
+Для задач разработки используем production-ready инструменты вместо написания своих агентов.
+
+### Claude Code (Anthropic)
+
+CLI-инструмент для agentic coding. Понимает весь codebase, редактирует файлы, запускает команды.
+
+```bash
+# Установка
+npm install -g @anthropic-ai/claude-code
+
+# Использование
+claude -p "Implement user registration endpoint"
+
+# Pipe
+cat error.log | claude -p "Fix this error"
+```
+
+**Контекст:** Использует `CLAUDE.md` файлы (аналог нашего `AGENTS.md`).
+
+**Цена:** Pro/Max подписка (~$20-100/мес), дешевле чем API.
+
+### Factory.ai Droid
+
+Автономный coding agent с уровнями автономности.
+
+```bash
+# Интерактивный режим
+droid
+
+# Single-shot (для автоматизации)
+droid exec "Implement feature X" --autonomy high
+
+# Из файла
+droid exec --prompt-file task.md
+```
+
+**Autonomy levels:** low (много подтверждений), medium, high (полная автономия).
+
+### Маппинг на узлы графа
+
+| Узел | Инструмент | Почему |
+|------|------------|--------|
+| **Архитектор** | Claude Code | Понимает codebase, генерит структуру |
+| **Разработчик** | Droid (high autonomy) | Автономная реализация фич |
+| **Тестировщик** | Claude Code / Droid | Пишут и запускают тесты |
+| **DevOps** | Custom (Ansible wrapper) | Специфичная задача |
+| **Завхоз** | LangGraph native | Доступ к секретам |
+
+### Интеграция в LangGraph
+
+```python
+import subprocess
+
+async def developer_node(state: dict) -> dict:
+    """Developer node using external coding agent."""
+    task = state["current_task"]
+    project_path = state["project_path"]
+    
+    # Записываем контекст для агента
+    Path(f"{project_path}/TASK.md").write_text(task["description"])
+    
+    # Вызываем Claude Code
+    result = subprocess.run(
+        ["claude", "-p", "Read TASK.md and implement. Run tests."],
+        cwd=project_path,
+        capture_output=True,
+        text=True
+    )
+    
+    return {
+        "messages": [AIMessage(content=result.stdout)],
+        "current_agent": "developer"
+    }
+```
+
+## Параллельные Workers
+
+Для независимых задач запускаем отдельные контейнеры с coding agents.
+
+### Архитектура
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 LangGraph Orchestrator              │
+│  tasks = [{scope: "frontend"}, {scope: "backend"}] │
+└─────────────────────────────────────────────────────┘
+                         │
+         ┌───────────────┴───────────────┐
+         ▼                               ▼
+┌──────────────────┐            ┌──────────────────┐
+│  Worker (task_1) │            │  Worker (task_2) │
+│  - git clone     │            │  - git clone     │
+│  - claude/droid  │            │  - claude/droid  │
+│  - docker compose│            │  - docker compose│
+│  - gh pr create  │            │  - gh pr create  │
+└──────────────────┘            └──────────────────┘
+         │                               │
+         └───────────────┬───────────────┘
+                         ▼
+               ┌──────────────────┐
+               │   Reviewer Agent  │
+               │   gh pr review    │
+               │   gh pr merge     │
+               └──────────────────┘
+```
+
+### Docker-in-Docker с Sysbox
+
+Для запуска `docker compose` внутри контейнера используем [Sysbox](https://github.com/nestybox/sysbox) — безопасный Docker-in-Docker без privileged mode.
+
+**Установка на хост:**
+```bash
+wget https://downloads.nestybox.com/sysbox/releases/v0.6.4/sysbox-ce_0.6.4-0.linux_amd64.deb
+sudo dpkg -i sysbox-ce_0.6.4-0.linux_amd64.deb
+```
+
+**Запуск worker контейнера:**
+```bash
+docker run --runtime=sysbox-runc -it --rm \
+    -e GITHUB_TOKEN=... \
+    -e ANTHROPIC_API_KEY=... \
+    coding-worker:latest
+```
+
+**Внутри контейнера доступно:**
+- Полноценный Docker daemon
+- `git clone`, `git push`
+- `docker compose up -d`
+- `gh pr create`
+
+### Worker Dockerfile
+
+```dockerfile
+FROM nestybox/ubuntu-jammy-systemd-docker
+
+RUN apt-get update && apt-get install -y git curl python3 python3-pip
+
+# GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | dd of=/usr/share/keyrings/githubcli.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
+    > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y gh
+
+# Claude Code
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g @anthropic-ai/claude-code
+
+WORKDIR /workspace
+```
+
+### Запуск параллельных workers
+
+```python
+async def parallel_developer_node(state: dict) -> dict:
+    """Run multiple coding tasks in parallel."""
+    tasks = state["pending_tasks"]
+    
+    # Запускаем всех воркеров параллельно
+    results = await asyncio.gather(*[
+        spawn_sysbox_worker(task)
+        for task in tasks
+    ])
+    
+    return {
+        "pending_prs": [parse_pr_url(r) for r in results],
+        "pending_tasks": []
+    }
+
+async def spawn_sysbox_worker(task: dict) -> str:
+    """Spawn Sysbox container for a task."""
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "run", "--rm",
+        "--runtime=sysbox-runc",
+        "-e", f"TASK={task['description']}",
+        "-e", f"REPO={task['repo']}",
+        "coding-worker:latest",
+        "/scripts/execute_task.sh",
+        stdout=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    return stdout.decode()
+```
+
+### Reviewer Agent
+
+```python
+async def reviewer_node(state: dict) -> dict:
+    """Review and merge PRs."""
+    for pr_url in state["pending_prs"]:
+        diff = subprocess.run(
+            ["gh", "pr", "diff", pr_url],
+            capture_output=True, text=True
+        ).stdout
+        
+        review = await review_with_llm(diff)
+        
+        if review["approved"]:
+            subprocess.run(["gh", "pr", "merge", pr_url, "--squash"])
+        else:
+            subprocess.run([
+                "gh", "pr", "comment", pr_url,
+                "--body", review["feedback"]
+            ])
+    
+    return {"messages": [...]}
+```
+
+### Ограничения параллельных workers
+
+| Аспект | Ограничение |
+|--------|-------------|
+| RAM | ~2-4GB на worker (Docker daemon + контейнеры) |
+| Startup | Docker daemon стартует 5-10 сек |
+| Disk | Образы качаются в каждый worker (кэшировать через volumes) |
+| GitHub API | Rate limits — добавить throttling |
+
 ## Мониторинг и отладка
 
 ### LangSmith
@@ -276,11 +496,14 @@ export LANGCHAIN_API_KEY=...
 
 1. ~~**Ресурсница**: отдельный сервис или часть оркестратора?~~ → **Узел LangGraph** с изоляцией секретов
 2. ~~**Хранение секретов**~~ → **SOPS + YAML** (MVP), позже PostgreSQL
+3. ~~**Coding agents**: писать свои или использовать готовые?~~ → **Claude Code / Factory Droid**
+4. ~~**Docker-in-Docker для тестов**~~ → **Sysbox** (безопасный nested Docker)
 
 ### В работе
 
-3. **Формат спеков**: как передавать ТЗ между агентами?
-4. **Error handling**: что делать когда агент застрял?
-5. **Human escalation**: когда просить помощи у человека?
-6. **Cost tracking**: как отслеживать расходы на LLM?
-
+5. **Формат спеков**: как передавать ТЗ между агентами?
+6. **Error handling**: что делать когда агент застрял?
+7. **Human escalation**: когда просить помощи у человека?
+8. **Cost tracking**: как отслеживать расходы на LLM?
+9. **Merge conflicts**: как разрешать при параллельных PR?
+10. **Worker image caching**: как ускорить startup?

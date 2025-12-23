@@ -9,6 +9,7 @@
 | [README.md](README.md) | Обзор проекта, философия, архитектура |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Техническая архитектура, state schema, граф |
 | [docs/NODES.md](docs/NODES.md) | Описание агентов-узлов LangGraph |
+| [docs/backlog.md](docs/backlog.md) | Бэклог задач и roadmap |
 
 ## 🛠 Технический стек
 
