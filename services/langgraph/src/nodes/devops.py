@@ -10,11 +10,44 @@ import subprocess
 import tempfile
 from typing import Any
 
+import httpx
 from langchain_core.messages import AIMessage
 
 from ..clients.github import GitHubAppClient
 
 logger = logging.getLogger(__name__)
+
+
+async def create_service_deployment_record(
+    project_id: str,
+    service_name: str,
+    server_handle: str,
+    port: int,
+    deployment_info: dict,
+) -> bool:
+    """Create a service deployment record via API."""
+    api_url = os.getenv("API_URL", "http://api:8000")
+    payload = {
+        "project_id": project_id,
+        "service_name": service_name,
+        "server_handle": server_handle,
+        "port": port,
+        "status": "running",
+        "deployment_info": deployment_info,
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(f"{api_url}/api/service-deployments/", json=payload)
+            if resp.status_code == 201:
+                logger.info(f"Created service deployment record for {service_name}")
+                return True
+            else:
+                logger.error(f"Failed to create service deployment record: {resp.text}")
+                return False
+    except Exception as e:
+        logger.error(f"Error creating service deployment record: {e}")
+        return False
 
 
 async def run(state: dict) -> dict:
@@ -122,6 +155,20 @@ async def run(state: dict) -> dict:
         
         if process.returncode == 0:
             deployed_url = f"http://{target_server_ip}:{target_port}"
+            
+            # Record deployment for future recovery
+            await create_service_deployment_record(
+                project_id=project_spec.get("id"),
+                service_name=project_name,
+                server_handle=target_resource.get("server_handle"),
+                port=target_port,
+                deployment_info={
+                    "repo_full_name": repo_full_name,
+                    "branch": "main", # Assumption for now
+                    "deployed_at": "now" # API handles actual timestamp
+                }
+            )
+            
             message = f"""✅ Deployment successful!
             
 Project: {project_name}

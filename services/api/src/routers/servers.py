@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # from cryptography.fernet import Fernet
 # ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 from ..database import get_async_session
-from ..models import PortAllocation, Server
-from ..schemas import PortAllocationCreate, PortAllocationRead, ServerCreate, ServerRead
+from ..models import PortAllocation, Server, ServiceDeployment
+from ..schemas import PortAllocationCreate, PortAllocationRead, ServerCreate, ServerRead, ServiceDeploymentRead
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
@@ -219,3 +219,21 @@ async def provision_server(
         "server_handle": handle,
         "status": server.status,
     }
+
+@router.get("/{handle}/services", response_model=list[ServiceDeploymentRead])
+async def get_server_services(
+    handle: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> list[ServiceDeployment]:
+    """Get all services deployed on a specific server."""
+    # Verify server exists
+    if not await db.get(Server, handle):
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    query = select(ServiceDeployment).where(
+        ServiceDeployment.server_handle == handle,
+        ServiceDeployment.status == "running"  # Only active deployments
+    ).order_by(ServiceDeployment.deployed_at.desc())
+    
+    result = await db.execute(query)
+    return result.scalars().all()

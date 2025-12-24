@@ -8,6 +8,7 @@ from .port_allocation import PortAllocation
 from .project import Project
 from .resource import Resource
 from .server import Server, ServerStatus
+from .service_deployment import ServiceDeployment
 from .telegram_bot import TelegramBot
 from .user import User
 
@@ -25,4 +26,5 @@ __all__ = [
     "Incident",
     "IncidentStatus",
     "IncidentType",
+    "ServiceDeployment",
 ]

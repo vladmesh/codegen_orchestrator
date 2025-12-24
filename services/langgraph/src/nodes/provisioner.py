@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 from typing import Any
 
+import httpx
 from langchain_core.messages import AIMessage
 
 from shared.notifications import notify_admins
@@ -28,6 +29,27 @@ PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", "300"))
 PASSWORD_RESET_POLL_INTERVAL = int(os.getenv("PASSWORD_RESET_POLL_INTERVAL", "5"))
 
 ORCHESTRATOR_SSH_PUBLIC_KEY = os.getenv("ORCHESTRATOR_SSH_PUBLIC_KEY", "")
+
+
+async def get_services_on_server_for_redeployment(server_handle: str) -> list[dict]:
+    """Get services deployed on a server for redeployment.
+    
+    Args:
+        server_handle: Server handle
+    
+    Returns:
+        List of service deployment records
+    """
+    api_url = os.getenv("API_URL", "http://api:8000")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{api_url}/api/servers/{server_handle}/services")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"Failed to get services for {server_handle}: {e}")
+        return []
 
 
 async def get_server_id_from_time4vps(time4vps_client: Time4VPSClient, server_handle: str) -> int | None:
@@ -331,6 +353,37 @@ async def run(state: dict) -> dict:
         await update_server_status_in_db(server_handle, "ready")
         
         recovery_text = "recovered and " if is_recovery else ""
+        
+        # Check for services to redeploy if this is incident recovery
+        services_count = 0
+        services_list_msg = ""
+        
+        if is_recovery:
+            logger.info(f"Checking for services to redeploy on {server_handle}")
+            services = await get_services_on_server_for_redeployment(server_handle)
+            services_count = len(services)
+            
+            if services_count > 0:
+                logger.warning(
+                    f"Found {services_count} services that need redeployment on {server_handle}. "
+                    "Automatic redeployment not yet implemented - manual action required."
+                )
+                
+                # Format list for notification
+                services_list_msg = "Services needing redeployment:\n" + "\n".join(
+                    [f"• {s.get('service_name')} (port {s.get('port')})" for s in services[:5]]
+                )
+                if services_count > 5:
+                    services_list_msg += f"\n...and {services_count - 5} more."
+                
+                # Notify about services needing redeployment
+                await notify_admins(
+                    f"⚠️ Server *{server_handle}* recovered, but {services_count} services need redeployment.\n\n"
+                    f"{services_list_msg}\n\n"
+                    "Please redeploy them manually.",
+                    level="warning"
+                )
+        
         message = f"""✅ Server {server_handle} {recovery_text}provisioned successfully!
         
 IP: {server_ip}
@@ -344,6 +397,9 @@ The server is now configured with:
 - Essential tools
 """
         
+        if is_recovery and services_count > 0:
+            message += f"\n⚠️  {services_count} services need manual redeployment"
+
         # Send notification to admins
         await notify_admins(
             f"Server *{server_handle}* {recovery_text}provisioned successfully! "
@@ -356,7 +412,8 @@ The server is now configured with:
             "provisioning_result": {
                 "status": "success",
                 "server_handle": server_handle,
-                "server_ip": server_ip
+                "server_ip": server_ip,
+                "services_to_redeploy": services_count if is_recovery else 0
             },
             "current_agent": "provisioner"
         }

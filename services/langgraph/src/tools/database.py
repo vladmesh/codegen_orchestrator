@@ -235,13 +235,42 @@ async def create_incident(
 async def get_services_on_server(
     server_handle: Annotated[str, "Server handle"],
 ) -> list[dict[str, Any]]:
-    """Get all services deployed on a server.
+    """Get all active service deployments on a server.
     
-    Used for incident recovery to know which services need redeployment.
+    Returns service deployment records with deployment_info for redeployment after recovery.
     """
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        resp = await client.get(f"{INTERNAL_API_URL}/api/servers/{server_handle}/ports")
+        resp = await client.get(f"{INTERNAL_API_URL}/api/servers/{server_handle}/services")
         resp.raise_for_status()
-        # Port allocations represent deployed services
+
         return resp.json()
 
+
+@tool
+async def create_service_deployment(
+    project_id: Annotated[str, "Project ID"],
+    service_name: Annotated[str, "Service name"],
+    server_handle: Annotated[str, "Server handle"],
+    port: Annotated[int, "Allocated port"],
+    deployment_info: Annotated[dict, "Deployment configuration (repo_url, branch, etc.)"],
+) -> dict[str, Any]:
+    """Create a service deployment record after successful deployment.
+    
+    This tracks the deployment for future recovery needs.
+    """
+    payload = {
+        "project_id": project_id,
+        "service_name": service_name,
+        "server_handle": server_handle,
+        "port": port,
+        "status": "running",
+        "deployment_info": deployment_info,
+    }
+    
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.post(
+            f"{INTERNAL_API_URL}/api/service-deployments/",
+            json=payload
+        )
+        resp.raise_for_status()
+        return resp.json()

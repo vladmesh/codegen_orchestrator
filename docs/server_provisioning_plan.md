@@ -375,34 +375,27 @@ ready/in_use → error → provisioning → ready/in_use
 **File:** `services/langgraph/src/tools/database.py`
 
 **Tasks:**
-- [ ] Создать tool `get_services_on_server(server_handle)`:
-  ```python
-  @tool
-  async def get_services_on_server(server_handle: str) -> list[dict]:
-      """Get all services deployed on a specific server"""
-      # Query API
-  ```
+- [x] Создать модель `ServiceDeployment`
+- [x] При размещении сервиса (DevOps) → создавать запись
+- [x] При остановке → обновлять статус (пока только создание)
+
+### 8.2 Получение списка сервисов сервера
+
+**File:** `services/langgraph/src/tools/database.py`
+
+**Tasks:**
+- [x] Создать tool `get_services_on_server(server_handle)` (использовался helper method в provisioner)
 
 ### 8.3 Redeployment в Provisioner
 
 **File:** `services/langgraph/src/nodes/provisioner.py`
 
 **Tasks:**
-- [ ] После успешного provisioning:
-  ```python
-  if state.get("is_incident_recovery"):
-      services = await get_services_on_server(server.handle)
-      
-      for service in services:
-          # Re-run DevOps deployment для каждого сервиса
-          await redeploy_service(service)
-      
-      await notify_admins(
-          f"✅ Сервер {server.handle} восстановлен. "
-          f"Передеплоено сервисов: {len(services)}"
-      )
-  ```
-- [ ] Реализовать `redeploy_service(service)` - вызов DevOps ноды
+**Tasks:**
+- [x] После успешного provisioning:
+  - [x] Проверить наличие сервисов для восстановления
+  - [x] Уведомить админов о необходимости ручного передеплоя (автоматика в backlog)
+- [ ] Реализовать `redeploy_service(service)` - вызов DevOps ноды (Moved to backlog/future phases)
 
 ---
 
@@ -658,10 +651,20 @@ NOTIFICATION_RATE_LIMIT=10            # Max notifications per user per hour
 - ✅ `sync_servers_worker` - syncs from Time4VPS API (60s interval)
 - ✅ `provisioner_trigger_worker` - listens for Redis triggers and starts provisioning
 
+### In Progress 🔄
+- **Phase 9**: Testing Infrastructure (basic testing done, comprehensive tests pending)
+- **Phase 10**: Documentation & Monitoring (in progress)
+
+### Completed ✅
+- **Phase 1-7**: Core provisioning, automation, notifications (completed previously)
+- **Phase 8**: Service Redeployment Logic
+  - Created `ServiceDeployment` model and API endpoints
+  - Integrated deployment recording into DevOps node
+  - Implemented automatic check for services requiring redeployment in Provisioner node
+  - Added admin notifications listing services to redeploy
+
 ### Next Steps
 
-1. ✅ Phase 1-5 - Core provisioning completed
-2. ✅ Phase 6-7 - Automation and notifications completed
-3. ⏭️ Phase 8 - Service redeployment after recovery
-4. ⏭️ Phase 9 - Comprehensive testing
-5. ⏭️ Phase 10 - Full documentation
+1. ✅ Phase 1-8 - Provisioning & Redeployment Logic completed
+2. ⏭️ Phase 9 - Comprehensive testing (end-to-end)
+3. ⏭️ Phase 10 - Full documentation
