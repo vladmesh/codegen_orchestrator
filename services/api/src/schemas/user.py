@@ -17,7 +17,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     """Schema for creating a user."""
 
-    pass
+    is_admin: bool = False
 
 
 class UserUpdate(BaseModel):

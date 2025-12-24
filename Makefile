@@ -91,3 +91,11 @@ seed:
 	else \
 		echo "  ⚠️  TIME4VPS_LOGIN/PASSWORD not set, skipping"; \
 	fi
+	@if [ -n "$$TELEGRAM_ID_ADMIN" ]; then \
+		curl -s -X POST "http://localhost:8000/users/" \
+			-H "Content-Type: application/json" \
+			-d "{\"telegram_id\": $$TELEGRAM_ID_ADMIN, \"username\": \"admin\", \"first_name\": \"Admin\", \"is_admin\": true}" > /dev/null && \
+		echo "  ✅ Admin user ($$TELEGRAM_ID_ADMIN) created"; \
+	else \
+		echo "  ⚠️  TELEGRAM_ID_ADMIN not set, skipping user creation"; \
+	fi

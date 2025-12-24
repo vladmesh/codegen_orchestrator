@@ -26,7 +26,13 @@ async def create_user(
             detail="User with this telegram_id already exists",
         )
 
-    user = User(telegram_id=user_in.telegram_id)
+    user = User(
+        telegram_id=user_in.telegram_id,
+        username=user_in.username,
+        first_name=user_in.first_name,
+        last_name=user_in.last_name,
+        is_admin=user_in.is_admin,
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)
