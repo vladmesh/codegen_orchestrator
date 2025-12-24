@@ -65,6 +65,32 @@ async def list_servers(
     return result.scalars().all()
 
 
+@router.get("/{handle}", response_model=ServerRead)
+async def get_server(
+    handle: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> Server:
+    """Get a server by handle."""
+    server = await db.get(Server, handle)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    return server
+
+
+@router.get("/{handle}/ports", response_model=list[PortAllocationRead])
+async def list_server_ports(
+    handle: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> list[PortAllocation]:
+    """List all port allocations for a server."""
+    if not await db.get(Server, handle):
+        raise HTTPException(status_code=404, detail="Server not found")
+    
+    query = select(PortAllocation).where(PortAllocation.server_handle == handle)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
 @router.post("/{handle}/ports", response_model=PortAllocationRead)
 async def allocate_port(
     handle: str,
@@ -94,3 +120,4 @@ async def allocate_port(
     await db.commit()
     await db.refresh(allocation)
     return allocation
+

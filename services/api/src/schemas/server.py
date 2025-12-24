@@ -13,6 +13,7 @@ class ServerBase(BaseModel):
     ssh_user: str = "root"
     capacity_cpu: int = 1
     capacity_ram_mb: int = 1024
+    capacity_disk_mb: int = 10240
     labels: dict[str, Any] = {}
     is_managed: bool = True
     status: str = "active"
@@ -26,7 +27,12 @@ class ServerCreate(ServerBase):
 
 
 class ServerRead(ServerBase):
-    """Schema for reading a server."""
+    """Schema for reading a server - includes usage metrics."""
+    
+    # Usage metrics
+    used_ram_mb: int = 0
+    used_disk_mb: int = 0
+    os_template: Optional[str] = None
     
     # Exclude ssh_key from public read model
     model_config = ConfigDict(from_attributes=True)

@@ -20,9 +20,17 @@ class Server(Base):
     # Store encrypted keys
     ssh_key_enc: Mapped[Optional[str]] = mapped_column(String) 
     
-    # Capacity metrics
+    # Capacity metrics (from Time4VPS API)
     capacity_cpu: Mapped[int] = mapped_column(Integer, default=1)
     capacity_ram_mb: Mapped[int] = mapped_column(Integer, default=1024)
+    capacity_disk_mb: Mapped[int] = mapped_column(Integer, default=10240)  # 10GB default
+    
+    # Usage metrics (from Time4VPS API)
+    used_ram_mb: Mapped[int] = mapped_column(Integer, default=0)
+    used_disk_mb: Mapped[int] = mapped_column(Integer, default=0)
+    
+    # OS info
+    os_template: Mapped[Optional[str]] = mapped_column(String(100))
     
     # Management flags
     is_managed: Mapped[bool] = mapped_column(default=True)
@@ -30,3 +38,14 @@ class Server(Base):
     notes: Mapped[Optional[str]] = mapped_column(String)
     
     labels: Mapped[dict] = mapped_column(JSON, default=dict)
+    
+    @property
+    def available_ram_mb(self) -> int:
+        """RAM available for new allocations."""
+        return self.capacity_ram_mb - self.used_ram_mb
+    
+    @property
+    def available_disk_mb(self) -> int:
+        """Disk available for new allocations."""
+        return self.capacity_disk_mb - self.used_disk_mb
+
