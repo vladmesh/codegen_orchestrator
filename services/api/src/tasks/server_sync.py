@@ -72,7 +72,11 @@ async def _sync_servers(db: AsyncSession):
         if not ip:
             continue
             
-        server_id = srv.get("id")
+        server_id = srv.get("server_id")  # Time4VPS uses 'server_id' not 'id'
+        if not server_id:
+            logger.warning(f"Server with IP {ip} has no server_id, skipping")
+            continue
+            
         hostname = srv.get("domain") # hostname/domain
         
         # Check if ignored (Ghost)

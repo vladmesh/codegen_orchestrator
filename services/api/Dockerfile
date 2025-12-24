@@ -6,10 +6,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY pyproject.toml ./
-
-# Install dependencies
+# Copy and install service dependencies
+COPY services/api/pyproject.toml ./
 RUN pip install --no-cache-dir .
 
 # Copy source

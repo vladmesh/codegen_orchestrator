@@ -21,6 +21,7 @@ class Server(Base):
     ssh_key_enc: Mapped[Optional[str]] = mapped_column(String) 
     
     # Capacity metrics
+    capacity_cpu: Mapped[int] = mapped_column(Integer, default=1)
     capacity_ram_mb: Mapped[int] = mapped_column(Integer, default=1024)
     
     # Management flags

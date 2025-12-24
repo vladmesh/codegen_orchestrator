@@ -51,8 +51,9 @@ test:
 migrate:
 	$(DOCKER_COMPOSE) exec api alembic upgrade head
 
+# Run migrations with correct user to avoid permission issues on generated files
 makemigrations:
-	$(DOCKER_COMPOSE) exec api alembic revision --autogenerate -m "$(MSG)"
+	$(COMPOSE_ENV) $(DOCKER_COMPOSE) run --rm --user $$(id -u):$$(id -g) api alembic revision --autogenerate -m "$(MSG)"
 
 # === Development ===
 

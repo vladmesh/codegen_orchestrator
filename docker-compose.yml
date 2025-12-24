@@ -35,6 +35,7 @@ services:
       REDIS_URL: redis://redis:6379
     volumes:
       - ./services/langgraph/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
       - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
       - api
@@ -63,10 +64,13 @@ services:
       - .env
     environment:
       API_URL: http://api:8000
-      LANGGRAPH_URL: http://langgraph:8080
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./services/telegram_bot/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
     depends_on:
       - api
-      - langgraph
+      - redis
     networks:
       - internal
 
