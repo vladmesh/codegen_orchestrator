@@ -35,6 +35,10 @@ class OrchestratorState(TypedDict):
     # Ресурсы
     allocated_resources: dict  # {resource_type: resource_id}
     
+    # Репозиторий (создаётся Архитектором)
+    repo_info: dict | None  # {full_name, html_url, clone_url}
+    architect_complete: bool
+    
     # Статус
     current_agent: str
     pending_actions: list[str]
@@ -45,37 +49,82 @@ class OrchestratorState(TypedDict):
     test_results: dict | None
 ```
 
+## Сервисы
+
+### Core Services
+
+| Сервис | Описание | Порт |
+|--------|----------|------|
+| `api` | FastAPI + SQLAlchemy, хранит проекты/серверы | 8000 |
+| `langgraph` | LangGraph worker, обрабатывает messages | - |
+| `telegram_bot` | Telegram интерфейс | - |
+| `worker-spawner` | Спавнит coding-worker контейнеры | - |
+
+### Worker Spawner
+
+Отдельный микросервис для изоляции Docker API от LangGraph.
+
+```
+┌─────────────────┐     Redis pub/sub     ┌──────────────────┐
+│   LangGraph     │ ──────────────────▶  │  Worker Spawner  │
+│   (no Docker)   │                       │  (Docker socket) │
+└─────────────────┘                       └──────────────────┘
+                                                   │
+                                                   ▼
+                                          ┌──────────────────┐
+                                          │  Coding Worker   │
+                                          │  (Factory.ai)    │
+                                          └──────────────────┘
+```
+
+**Коммуникация:**
+- LangGraph публикует `worker:spawn` с task details
+- Worker Spawner слушает, создаёт Docker контейнер
+- Результат публикуется в `worker:result:{request_id}`
+
+### Coding Worker
+
+Docker-контейнер с Factory.ai Droid CLI для кодогенерации.
+
+**Образ:** `coding-worker:latest` (Ubuntu 22.04 + Factory CLI + GitHub CLI)
+
+**Flow:**
+1. `git clone` репозитория
+2. Записывает `TASK.md` и `AGENTS.md`
+3. Запускает `droid exec --skip-permissions-unsafe`
+4. `git commit` + `git push`
+
+**Сборка:**
+```bash
+docker build -t coding-worker:latest services/coding-worker/
+```
+
 ## Граф
 
 ```python
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 
 graph = StateGraph(OrchestratorState)
 
 # Добавляем узлы (агентов)
-graph.add_node("brainstorm", brainstorm_agent)
-graph.add_node("architect", architect_agent)
-graph.add_node("developer", developer_agent)
-graph.add_node("tester", tester_agent)
-graph.add_node("devops", devops_agent)
-graph.add_node("zavhoz", zavhoz_agent)
-graph.add_node("documentator", documentator_agent)
+graph.add_node("brainstorm", brainstorm.run)
+graph.add_node("brainstorm_tools", brainstorm.execute_tools)
+graph.add_node("zavhoz", zavhoz.run)
+graph.add_node("zavhoz_tools", zavhoz.execute_tools)
+graph.add_node("architect", architect.run)
+graph.add_node("architect_tools", architect.execute_tools)
+graph.add_node("architect_spawn_worker", architect.spawn_factory_worker)
 
-# Добавляем рёбра
-graph.set_entry_point("brainstorm")
+# Рёбра
+graph.add_edge(START, "brainstorm")
+graph.add_conditional_edges("brainstorm", route_after_brainstorm)
+graph.add_conditional_edges("zavhoz", route_after_zavhoz)
+graph.add_conditional_edges("architect", route_after_architect)
+```
 
-# Условные переходы (пример)
-graph.add_conditional_edges(
-    "brainstorm",
-    route_after_brainstorm,
-    {
-        "architect": "architect",
-        "clarify": "brainstorm",  # нужно уточнение
-        "end": END
-    }
-)
-
-# ... остальные рёбра
+**Flow:**
+```
+START → Brainstorm → Zavhoz → Architect → Worker Spawner → Coding Worker → END
 ```
 
 ## Внешние зависимости

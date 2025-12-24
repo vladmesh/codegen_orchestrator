@@ -19,15 +19,15 @@
 
 ### Установить Sysbox на сервер оркестратора
 
-**Status:** TODO
+**Status:** DONE
 **Priority:** HIGH
 
 Для параллельных workers нужен Sysbox runtime.
 
 **Tasks:**
-- [ ] Скачать и установить Sysbox CE
-- [ ] Проверить `docker info | grep sysbox`
-- [ ] Протестировать запуск nested Docker
+- [x] Скачать и установить Sysbox CE
+- [x] Проверить `docker info | grep sysbox`
+- [x] Протестировать запуск nested Docker
 
 **Docs:** https://github.com/nestybox/sysbox
 
@@ -70,34 +70,31 @@
 
 ### Brainstorm → Architect flow
 
-**Status:** TODO
+**Status:** DONE
 **Priority:** MEDIUM
 
 Брейнсторм создаёт спецификацию, Архитектор генерирует проект.
 
 **Tasks:**
-- [ ] Реализовать brainstorm node с LLM
-- [ ] Определить формат project_spec
-- [ ] Реализовать architect node с вызовом Copier
-- [ ] Тестовый прогон: "Создай бота для погоды"
-
-**Open questions:**
-- Где хранить сгенерированный проект? (локально? GitHub сразу?)
+- [x] Реализовать brainstorm node с LLM
+- [x] Определить формат project_spec
+- [x] Реализовать architect node с Factory.ai
+- [x] GitHub App для создания репозиториев
 
 ---
 
 ### Zavhoz: выдача ресурсов
 
-**Status:** TODO
+**Status:** DONE
 **Priority:** MEDIUM
 
 Завхоз выдаёт handles для ресурсов, не раскрывая секреты LLM.
 
 **Tasks:**
-- [ ] Модель Resource в API (уже есть базовая)
-- [ ] Эндпоинты: allocate, get, list
+- [x] Модель Resource в API (уже есть базовая)
+- [x] Эндпоинты: allocate, get, list
 - [ ] Интеграция с SOPS для чтения реальных секретов
-- [ ] Tool для LangGraph: request_resource
+- [x] Tool для LangGraph: request_resource
 
 ---
 
@@ -105,16 +102,31 @@
 
 ### Worker Docker Image
 
-**Status:** TODO
+**Status:** DONE
 **Priority:** MEDIUM
 
-Образ с git, gh CLI, Claude Code для выполнения coding tasks.
+Образ с git, gh CLI, Factory.ai для выполнения coding tasks.
 
 **Tasks:**
-- [ ] Dockerfile на базе nestybox/ubuntu-jammy-systemd-docker
-- [ ] Установить git, gh, nodejs, claude-code
-- [ ] Скрипт execute_task.sh
-- [ ] Протестировать с Sysbox runtime
+- [x] Dockerfile на базе Ubuntu 22.04
+- [x] Установить git, gh, Factory.ai Droid CLI
+- [x] Скрипт execute_task.sh
+- [x] Протестировать с Sysbox runtime
+
+---
+
+### Worker Spawner Microservice
+
+**Status:** DONE
+**Priority:** HIGH
+
+Микросервис для изоляции Docker API от LangGraph.
+
+**Tasks:**
+- [x] Redis pub/sub коммуникация
+- [x] `worker:spawn` / `worker:result:{id}` каналы
+- [x] Docker socket mount
+- [x] Client library для LangGraph
 
 ---
 
@@ -235,4 +247,10 @@ Support for late 2025 SOTA models (gpt-5.2, Gemini 3 Pro, Claude Opus 4.5) and d
 
 ## Done
 
-*Пока пусто*
+- **Sysbox Installation** - Installed on dev machine
+- **Worker Docker Image** - `coding-worker:latest` with Factory.ai
+- **Worker Spawner** - Redis pub/sub microservice
+- **Architect Node** - Creates GitHub repos, spawns Factory workers
+- **GitHub App Integration** - Auto-detects org, creates repos
+- **Brainstorm → Zavhoz → Architect flow** - Tested end-to-end
+

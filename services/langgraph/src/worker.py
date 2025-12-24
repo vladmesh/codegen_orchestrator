@@ -1,9 +1,9 @@
 """LangGraph worker - consumes messages from Redis and processes through graph."""
 
 import asyncio
+from collections import defaultdict
 import logging
 import sys
-from collections import defaultdict
 
 from langchain_core.messages import AIMessage, HumanMessage
 
