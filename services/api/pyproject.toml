@@ -17,6 +17,10 @@ dependencies = [
     
     # HTTP client
     "httpx>=0.27.0",
+    "aiohttp>=3.9.0",
+    
+    # Redis (for pub/sub)
+    "redis[hiredis]>=5.0.0",
     
     # Utils
     "structlog>=24.0.0",

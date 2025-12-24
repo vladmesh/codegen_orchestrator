@@ -33,6 +33,15 @@ async def create_user(
     return user
 
 
+@router.get("/", response_model=list[UserRead])
+async def list_users(
+    db: AsyncSession = Depends(get_async_session),
+) -> list[User]:
+    """List all users."""
+    result = await db.execute(select(User))
+    return result.scalars().all()
+
+
 @router.get("/{user_id}", response_model=UserRead)
 async def get_user(
     user_id: int,

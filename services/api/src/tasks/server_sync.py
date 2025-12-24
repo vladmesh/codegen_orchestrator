@@ -8,10 +8,13 @@ import os
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.notifications import notify_admins
+
 from ..clients.time4vps import Time4VPSClient
 from ..database import async_session_maker
 from ..models.api_key import APIKey
 from ..models.server import Server
+from .provisioner_trigger import publish_provisioner_trigger
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +87,9 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
     # Fetch existing servers from DB
     result = await db.execute(select(Server))
     db_servers = {s.public_ip: s for s in result.scalars().all()}
+    
+    # Track new managed servers for notification
+    new_managed_servers = []
 
     for srv in api_servers:
         ip = srv.get("ip")
@@ -134,6 +140,10 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
             )
             db.add(new_server)
             logger.info(f"Discovered new server: {ip} (handle: vps-{server_id}, ghost: {is_ghost})")
+            
+            # Track new managed servers for notification
+            if is_managed:
+                new_managed_servers.append(new_server)
 
     # Check for missing servers
     api_ips = {s.get("ip") for s in api_servers if s.get("ip")}
@@ -143,6 +153,14 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
             logger.warning(f"Server {ip} is missing from Time4VPS API!")
 
     await db.commit()
+    
+    # Send notifications for new managed servers
+    for server in new_managed_servers:
+        await notify_admins(
+            f"New managed server discovered: *{server.handle}* ({server.public_ip}). "
+            "Provisioning will be triggered automatically.",
+            level="info"
+        )
 
 
 async def _sync_server_details(db: AsyncSession, client: Time4VPSClient):
@@ -195,6 +213,8 @@ async def _check_provisioning_triggers(db: AsyncSession):
     Looks for:
     - PENDING_SETUP servers (new managed servers)
     - FORCE_REBUILD servers (manual trigger)
+    
+    Automatically triggers provisioning via Redis pub/sub.
     """
     # Check for FORCE_REBUILD
     result = await db.execute(
@@ -204,11 +224,21 @@ async def _check_provisioning_triggers(db: AsyncSession):
     
     for server in force_rebuild_servers:
         logger.warning(
-            f"🔥 Server {server.handle} has FORCE_REBUILD status. "
-            "Manual provisioning trigger required via LangGraph."
+            f"🔥 Server {server.handle} has FORCE_REBUILD status. Triggering provisioner..."
         )
-        # TODO: Trigger provisioner automatically
-        # For now, requires manual intervention
+        
+        # Update status to PROVISIONING before triggering
+        server.status = "provisioning"
+        await db.commit()
+        
+        # Trigger provisioner
+        await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
+        
+        # Notify admins
+        await notify_admins(
+            f"Force rebuild triggered for server *{server.handle}*. Provisioning started.",
+            level="warning"
+        )
     
     # Check for PENDING_SETUP
     result = await db.execute(
@@ -218,7 +248,12 @@ async def _check_provisioning_triggers(db: AsyncSession):
     
     for server in pending_servers:
         logger.info(
-            f"📋 Server {server.handle} is PENDING_SETUP. "
-            "Automatic provisioning not yet implemented - manual trigger required."
+            f"📋 Server {server.handle} is PENDING_SETUP. Triggering automatic provisioning..."
         )
-        # TODO: Auto-trigger provisioner for pending_setup servers
+        
+        # Update status to PROVISIONING before triggering
+        server.status = "provisioning"
+        await db.commit()
+        
+        # Trigger provisioner
+        await publish_provisioner_trigger(server.handle, is_incident_recovery=False)

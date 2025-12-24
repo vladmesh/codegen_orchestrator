@@ -11,6 +11,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
     depends_on:
       db:
         condition: service_healthy
@@ -22,6 +23,7 @@ services:
       - ./services/api/src:/app/src:delegated
       - ./services/api/alembic.ini:/app/alembic.ini:ro
       - ./services/api/migrations:/app/migrations:delegated
+      - ./shared:/app/shared:delegated
     ports:
       - "8000:8000"
 
@@ -34,6 +36,7 @@ services:
     environment:
       API_URL: http://api:8000
       REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated

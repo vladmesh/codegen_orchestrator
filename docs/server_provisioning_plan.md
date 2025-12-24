@@ -277,53 +277,40 @@ ready/in_use → error → provisioning → ready/in_use
 **File:** `services/api/src/tasks/server_sync.py`
 
 **Tasks:**
-- [ ] При обнаружении нового managed сервера:
-  - [ ] Установить статус `pending_setup`
-  - [ ] Создать задачу на provisioning
-- [ ] Добавить функцию `detect_status_changes()`:
-  - [ ] Если сервер был в `ready/in_use` и стал недоступен → `error`
-  - [ ] Если сервер был `discovered` → `pending_setup`
-- [ ] Добавить функцию `check_force_rebuild_triggers()`:
-  - [ ] Если статус == `FORCE_REBUILD` → триггер provisioning
+- [x] При обнаружении нового managed сервера:
+  - [x] Установить статус `pending_setup`
+  - [x] Создать задачу на provisioning (через Redis pub/sub)
+- [x] Добавить функцию `detect_status_changes()` (встроена в sync logic)
+  - [x] Если сервер был в `ready/in_use` и стал недоступен → `error`
+  - [x] Если сервер был `discovered` → `pending_setup`
+- [x] Добавить функцию `check_force_rebuild_triggers()`:
+  - [x] Если статус == `FORCE_REBUILD` → триггер provisioning (через Redis pub/sub)
 
 ### 6.2 Создать Health Checker
 
 **File:** `services/api/src/tasks/health_checker.py`
 
 **Tasks:**
-- [ ] Создать worker `health_check_worker()`:
-  ```python
-  async def health_check_worker():
-      while True:
-          servers = await get_servers(status__in=["ready", "in_use"])
-          
-          for server in servers:
-              is_healthy = await check_server_health(server)
-              
-              if not is_healthy:
-                  await create_incident(server, type="server_unreachable")
-                  server.status = "error"
-                  await trigger_recovery(server)
-          
-          await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-  ```
-- [ ] Реализовать `check_server_health(server)`:
-  - SSH connectivity check
-  - Docker daemon check (optional)
-  - Disk space check (optional)
-- [ ] Реализовать `trigger_recovery(server)`:
-  - Create incident record
-  - Get affected services
-  - Trigger Provisioner через Redis/Queue
-  - Notify admins
+- [x] Создать worker `health_check_worker()` (реализован)
+- [x] Реализовать `check_server_health(server)` - SSH connectivity check
+  - [x] SSH connectivity check
+  - [ ] Docker daemon check (optional - not implemented)
+  - [ ] Disk space check (optional - not implemented)
+- [x] Реализовать `trigger_recovery(server)` (через Redis pub/sub):
+  - [x] Create incident record
+  - [ ] Get affected services (TO DO in Phase 8)
+  - [x] Trigger Provisioner через Redis pub/sub
+  - [x] Notify admins
 
 ### 6.3 Запустить workers в main
 
 **File:** `services/api/src/main.py`
 
 **Tasks:**
-- [ ] Добавить startup event для health_checker
-- [ ] Обеспечить graceful shutdown
+- [x] Добавить startup event для health_checker
+- [x] Добавить startup event для server_sync
+- [x] Добавить startup event для provisioner_trigger
+- [x] Обеспечить graceful shutdown
 
 ---
 
@@ -334,21 +321,10 @@ ready/in_use → error → provisioning → ready/in_use
 **File:** `services/langgraph/src/utils/notifications.py` (и копия в API)
 
 **Tasks:**
-- [ ] Создать функцию `notify_admins(message, level)`:
-  ```python
-  async def notify_admins(message: str, level: str = "info"):
-      users = await get_all_users()
-      emoji = {"info": "ℹ️", "warning": "⚠️", "error": "❌", "critical": "🚨"}
-      
-      for user in users:
-          await send_telegram_message(
-              user.telegram_id, 
-              f"{emoji[level]} {message}"
-          )
-  ```
-- [ ] Создать функцию `send_telegram_message(telegram_id, text)`
-- [ ] Добавить rate limiting (не спамить пользователей)
-- [ ] Добавить formatting (Markdown support)
+- [x] Создать функцию `notify_admins(message, level)` в `shared/notifications.py`
+- [x] Создать функцию `send_telegram_message(telegram_id, text)`
+- [x] Добавить rate limiting (10 messages per user per hour)
+- [x] Добавить formatting (Markdown support)
 
 ### 7.2 Обновить Telegram Bot
 
@@ -653,23 +629,39 @@ NOTIFICATION_RATE_LIMIT=10            # Max notifications per user per hour
 ### Completed ✅
 - **Phase 1**: Database models extended (Server, User, Incident)
 - **Phase 2**: Time4VPS client extended with password reset methods
-- **Phase 3**: API endpoints (incidents router + server provisioning endpoints)
-- **Phase 4**: Ansible playbooks (provision_server.yml + health_check.yml + vars)
-- **Bonus**: Fixed migration file permissions (docker-compose user configuration)
+- **Phase 3**: API endpoints for incident management and server provisioning (users, incidents, servers)
+- **Phase 4**: Ansible playbooks (provision_server.yml, health_check.yml, variables)
+- **Phase 5**: Provisioner Node - complete LangGraph integration with notifications
+- **Phase 6**: Server Sync & Health Monitoring - automatic provisioning triggers via Redis pub/sub
+- **Phase 7**: Notification Service - Telegram notifications for admins on all critical events
 
-### Completed ✅
-- **Phase 1**: Database models extended (Server, User, Incident)
-- **Phase 2**: Time4VPS client extended with password reset methods
-- **Phase 3**: API endpoints for incident management and server provisioning
-- **Phase 4**: Ansible playbooks (provision_server.yml, health_check.yml)
+### In Progress 🔄
+- **Phase 8**: Service Redeployment Logic (not started)
+- **Phase 9**: Testing Infrastructure (basic testing done, comprehensive tests pending)
+- **Phase 10**: Documentation & Monitoring (in progress)
+
+### Key Achievements
+
+**Automatic Provisioning**:
+- ✅ Health checker detects server issues → creates incident → triggers recovery automatically
+- ✅ Server sync detects FORCE_REBUILD → triggers provisioning automatically
+- ✅ Server sync detects PENDING_SETUP (new servers) → triggers provisioning automatically
+
+**Notifications**:
+- ✅ Admins notified on server unreachable (critical level)
+- ✅ Admins notified on provisioning success/failure
+- ✅ Admins notified on new server discovery
+- ✅ Rate limiting (10 messages per user per hour)
+
+**Workers Running**:
+- ✅ `health_check_worker` - monitors server SSH connectivity (60s interval)
+- ✅ `sync_servers_worker` - syncs from Time4VPS API (60s interval)
+- ✅ `provisioner_trigger_worker` - listens for Redis triggers and starts provisioning
 
 ### Next Steps
 
-1. ✅ Review and approve this plan
-2. ✅ Phase 1 - Models completed
-3. ✅ Phase 2 - Time4VPS API integration completed
-4. ✅ Phase 3 - API Endpoints completed
-5. ✅ Phase 4 - Ansible Playbooks completed
-6. ⏭️ Implement Provisioner Node (Phase 5)
-7. ⏭️ Implement Health Checker (Phase 6)
-8. ⏭️ Use FORCE_REBUILD for end-to-end testing
+1. ✅ Phase 1-5 - Core provisioning completed
+2. ✅ Phase 6-7 - Automation and notifications completed
+3. ⏭️ Phase 8 - Service redeployment after recovery
+4. ⏭️ Phase 9 - Comprehensive testing
+5. ⏭️ Phase 10 - Full documentation

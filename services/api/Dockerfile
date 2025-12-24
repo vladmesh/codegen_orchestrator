@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir .
 
 # Copy source
 COPY services/api/src ./src
+COPY shared ./shared
 COPY alembic ./alembic
 COPY alembic.ini ./
 

@@ -15,6 +15,8 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
+from shared.notifications import notify_admins
+
 from ..clients.time4vps import Time4VPSClient
 
 logger = logging.getLogger(__name__)
@@ -328,7 +330,8 @@ async def run(state: dict) -> dict:
         # Success! Update status to READY
         await update_server_status_in_db(server_handle, "ready")
         
-        message = f"""✅ Server {server_handle} provisioned successfully!
+        recovery_text = "recovered and " if is_recovery else ""
+        message = f"""✅ Server {server_handle} {recovery_text}provisioned successfully!
         
 IP: {server_ip}
 Status: READY
@@ -340,6 +343,13 @@ The server is now configured with:
 - UFW firewall
 - Essential tools
 """
+        
+        # Send notification to admins
+        await notify_admins(
+            f"Server *{server_handle}* {recovery_text}provisioned successfully! "
+            f"IP: {server_ip}. Server is now READY.",
+            level="success"
+        )
         
         return {
             "messages": [AIMessage(content=message)],
@@ -361,6 +371,13 @@ The server is now configured with:
                 "attempt": provisioning_attempts + 1,
                 "output": output[:500]  # Truncate
             }
+        )
+        
+        # Send notification to admins
+        await notify_admins(
+            f"Provisioning FAILED for server *{server_handle}*. "
+            f"Attempt {provisioning_attempts + 1}. Check logs for details.",
+            level="error"
         )
         
         return {

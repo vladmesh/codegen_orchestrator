@@ -8,9 +8,12 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.notifications import notify_admins
+
 from ..database import async_session_maker
 from ..models.incident import Incident, IncidentStatus
 from ..models.server import Server
+from .provisioner_trigger import publish_provisioner_trigger
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +84,8 @@ async def _handle_unhealthy_server(db: AsyncSession, server: Server):
     1. Check for active incidents (avoid duplicates)
     2. Create new incident if needed
     3. Update server status to ERROR
-    4. Log for recovery trigger
+    4. Trigger recovery via Provisioner
+    5. Send notification to admins
     
     Args:
         db: Database session
@@ -115,6 +119,7 @@ async def _handle_unhealthy_server(db: AsyncSession, server: Server):
         affected_services=[]  # TODO: Get services from port allocations
     )
     db.add(incident)
+    await db.flush()  # Flush to get incident.id
     
     # Update server status
     previous_status = server.status
@@ -123,13 +128,20 @@ async def _handle_unhealthy_server(db: AsyncSession, server: Server):
     
     logger.error(
         f"🚨 Server {server.handle} is UNHEALTHY! "
-        f"Created incident #{incident.id if hasattr(incident, 'id') else 'NEW'}. "
+        f"Created incident #{incident.id}. "
         f"Previous status: {previous_status}"
     )
     
-    # TODO: Trigger recovery via Provisioner
-    # For MVP: manual intervention required
-    logger.info(f"⚠️ Recovery needed for {server.handle} - manual intervention or FORCE_REBUILD")
+    # Trigger recovery via Provisioner
+    await publish_provisioner_trigger(server.handle, is_incident_recovery=True)
+    logger.info(f"🔄 Triggered automatic recovery for {server.handle}")
+    
+    # Send notification to admins
+    await notify_admins(
+        f"Server *{server.handle}* ({server.public_ip}) is unreachable! "
+        f"Incident #{incident.id} created. Automatic recovery initiated.",
+        level="critical"
+    )
 
 
 async def _check_all_servers(db: AsyncSession):

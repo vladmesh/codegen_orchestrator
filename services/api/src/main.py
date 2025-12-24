@@ -10,6 +10,7 @@ from . import routers
 from .database import engine
 from .tasks.server_sync import sync_servers_worker
 from .tasks.health_checker import health_check_worker
+from .tasks.provisioner_trigger import provisioner_trigger_worker
 
 
 @asynccontextmanager
@@ -18,6 +19,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     asyncio.create_task(sync_servers_worker())
     asyncio.create_task(health_check_worker())
+    asyncio.create_task(provisioner_trigger_worker())
     yield
     # Shutdown
     await engine.dispose()
