@@ -1,29 +1,64 @@
 """Zavhoz (Resource Manager) agent node."""
 
-from langchain_core.messages import AIMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import AIMessage, SystemMessage
+
+# Import tools
+from ..tools.time4vps import list_servers, get_server_details, reinstall_server, list_dns_zones
+from ..tools.database import register_server_in_db, allocate_port
+
+# Initialize Tools
+tools = [
+    list_servers,
+    get_server_details,
+    reinstall_server,
+    list_dns_zones,
+    register_server_in_db,
+    allocate_port
+]
+
+# Initialize LLM with tools
+llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm_with_tools = llm.bind_tools(tools)
 
 
 def run(state: dict) -> dict:
     """Run zavhoz agent.
 
     Allocates resources for the project.
-    LLM decides WHICH resources, Python code fetches the actual secrets.
+    Zavhoz manages infrastructure:
+    1. Checks inventory (Time4VPS).
+    2. ORDERS/PROVISIONS new servers if needed (via Time4VPS).
+    3. Registers servers in internal DB.
+    4. Allocates ports for services to avoid collision.
     """
-    project_spec = state.get("project_spec", {})
-    project_name = project_spec.get("name", "unknown")
+    messages = state.get("messages", [])
+    if not messages:
+        # Initial instruction
+        project_spec = state.get("project_spec", {})
+        messages = [
+            SystemMessage(content=f"""You are Zavhoz, the infrastructure manager.
+Your goal is to prepare the infrastructure for project: {project_spec.get('name', 'unknown')}.
 
-    # TODO: Implement actual resource allocation
-    # 1. LLM decides what resources are needed
-    # 2. Python code calls API to get/create resource handles
-    # 3. Return handles (not secrets!) in state
+Responsibilities:
+1. Ensure we have a server ready. Check Time4VPS inventory.
+2. If no free server, order/reinstall one (Ask user for confirmation if ordering).
+3. Register the server in our internal database.
+4. Allocate ports for services defined in project_spec.
 
-    allocated = {
-        "server": "prod_vps_1",
-        "telegram_bot": f"handle_{project_name}",
-    }
+Current Project Spec: {project_spec}
 
+Use your tools to inspect and provision resources.
+If you need to make actions, call the appropriate tools.
+""")
+        ]
+
+    # Invoke LLM
+    response = llm_with_tools.invoke(messages)
+    
+    # Return updated state (append message)
+    # LangGraph will handle tool execution if response has tool_calls
     return {
-        "messages": [AIMessage(content=f"Allocated resources: {allocated}")],
+        "messages": [response],
         "current_agent": "zavhoz",
-        "allocated_resources": allocated,
     }
