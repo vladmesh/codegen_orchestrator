@@ -195,7 +195,8 @@ def run_provisioning_playbook(
         "-v"  # Verbose for debugging
     ]
     
-    logger.info(f"Running provisioning playbook for {server_handle} at {server_ip}")
+    # Log password info for debugging (length only, not actual password)
+    logger.info(f"Running provisioning playbook for {server_handle} at {server_ip} (password length: {len(root_password)}, first 2 chars: {root_password[:2]})")
     
     try:
         process = subprocess.run(
@@ -583,7 +584,12 @@ async def run(state: dict) -> dict:
             "provisioning_result": {"status": "failed", "step": "password_reset"}
         }
     
-    # Step 2: Run Ansible playbook
+    # Step 2: Wait for server to stabilize after password reset
+    import asyncio
+    logger.info("Waiting 30s for server to stabilize after password reset...")
+    await asyncio.sleep(30)
+    
+    # Step 3: Run Ansible playbook
     success, output = run_provisioning_playbook(server_ip, password, server_handle)
     
     if success:

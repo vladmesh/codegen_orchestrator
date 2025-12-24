@@ -57,6 +57,11 @@ class Time4VPSClient:
             )
             resp.raise_for_status()
             result = resp.json()
+            
+            if "task_id" not in result:
+                logger.error(f"Unexpected reset_password response: {result}")
+                raise ValueError(f"No task_id in reset_password response: {result}")
+                
             return result["task_id"]
 
     async def get_task_result(self, server_id: int, task_id: int) -> dict[str, Any]:
@@ -112,9 +117,10 @@ class Time4VPSClient:
             if task.get("completed"):
                 # Task completed, extract password from results
                 results = task.get("results", "")
+                logger.debug(f"Password reset results: {results}")
                 password = self._extract_password(results)
                 if password:
-                    logger.info(f"Password reset completed for server {server_id}")
+                    logger.info(f"Password reset completed for server {server_id}, password length: {len(password)}")
                     return password
                 else:
                     raise ValueError(f"Password not found in task results: {results}")
@@ -125,10 +131,18 @@ class Time4VPSClient:
     def _extract_password(self, results: str) -> str | None:
         """Extract password from task results string.
         
-        Expected format: "New password: Xk9$mP3qR7"
-        or variations like "Password: ...", "Root password: ...", etc.
+        Time4VPS returns password in HTML format:
+        Password: \t<a onclick='...this.innerHTML = "ACTUAL_PASSWORD"'>Click...</a>
+        
+        Also handles plain text format: "New password: Xk9$mP3qR7"
         """
-        # Try various password patterns
+        # First try to extract from HTML format (innerHTML = "password")
+        html_pattern = r'innerHTML\s*=\s*["\']([^"\']+)["\']'
+        match = re.search(html_pattern, results)
+        if match:
+            return match.group(1)
+        
+        # Fallback to plain text patterns
         patterns = [
             r"(?:New\s+)?[Pp]assword:\s*(\S+)",
             r"(?:Root\s+)?[Pp]assword:\s*(\S+)",
@@ -138,7 +152,11 @@ class Time4VPSClient:
         for pattern in patterns:
             match = re.search(pattern, results, re.IGNORECASE)
             if match:
-                return match.group(1)
+                password = match.group(1)
+                # Skip if it's HTML tag
+                if password.startswith('<'):
+                    continue
+                return password
         
         return None
 
