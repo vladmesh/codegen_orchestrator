@@ -171,7 +171,22 @@ def create_graph() -> StateGraph:
     graph.add_node("provisioner", provisioner.run)
 
     # Add edges
-    graph.add_edge(START, "brainstorm")
+    # Add edges
+    # Start routing logic
+    def route_start(state: OrchestratorState) -> str:
+        """Route from start based on intent."""
+        if state.get("server_to_provision"):
+            return "provisioner"
+        return "brainstorm"
+
+    graph.add_conditional_edges(
+        START,
+        route_start,
+        {
+            "brainstorm": "brainstorm",
+            "provisioner": "provisioner",
+        },
+    )
 
     # After brainstorm: either execute tools, go to zavhoz, or end
     graph.add_conditional_edges(

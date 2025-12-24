@@ -2,8 +2,12 @@
 
 import asyncio
 from collections import defaultdict
+import json
 import logging
+import os
 import sys
+
+import redis.asyncio as redis
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -110,12 +114,74 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         )
 
 
-async def run_worker() -> None:
-    """Run the LangGraph worker loop."""
+
+
+PROVISIONER_TRIGGER_CHANNEL = "provisioner:trigger"
+
+async def listen_provisioner_triggers():
+    """Listen for provisioning triggers from Redis pub/sub."""
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+    try:
+        client = redis.from_url(redis_url, decode_responses=True)
+        pubsub = client.pubsub()
+        await pubsub.subscribe(PROVISIONER_TRIGGER_CHANNEL)
+        
+        logger.info(f"Subscribed to provisioning triggers on {PROVISIONER_TRIGGER_CHANNEL}")
+        
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                try:
+                    data = json.loads(message["data"])
+                    await process_provisioning_trigger(data)
+                except Exception as e:
+                    logger.error(f"Error processing trigger: {e}")
+    except asyncio.CancelledError:
+        logger.info("Provisioner listener cancelled")
+    except Exception as e:
+        logger.error(f"Provisioner listener failed: {e}")
+    finally:
+        await client.close()
+
+
+async def process_provisioning_trigger(data: dict) -> None:
+    """Run the graph for provisioning."""
+    server_handle = data.get("server_handle")
+    is_incident_recovery = data.get("is_incident_recovery", False)
+    
+    logger.info(f"🚀 Processing provisioning trigger for {server_handle}")
+    
+    state = {
+        "messages": [HumanMessage(content=f"Provision server {server_handle}")],
+        "server_to_provision": server_handle,
+        "is_incident_recovery": is_incident_recovery,
+        "current_agent": "provisioner",
+        "errors": [],
+        # Initialize required fields
+        "current_project": None,
+        "project_spec": None,
+        "allocated_resources": {},
+        "deployed_url": None,
+        "repo_info": None,
+        "architect_complete": False,
+        "project_complexity": None,
+        "provisioning_result": None,
+    }
+    
+    config = {"configurable": {"thread_id": f"provisioner-{server_handle}"}}
+    
+    try:
+        await graph.ainvoke(state, config)
+        logger.info(f"✅ Provisioning graph execution finished for {server_handle}")
+    except Exception as e:
+        logger.error(f"❌ Provisioning graph failed for {server_handle}: {e}")
+
+
+async def consume_chat_stream():
+    """Consume chat messages from Redis stream."""
     redis_client = RedisStreamClient()
     await redis_client.connect()
 
-    logger.info("LangGraph worker started, consuming from Redis Stream...")
+    logger.info("LangGraph chat consumer started...")
 
     try:
         async for message in redis_client.consume(
@@ -127,10 +193,18 @@ async def run_worker() -> None:
             await process_message(redis_client, message.data)
 
     except asyncio.CancelledError:
-        logger.info("Worker shutdown requested")
+        logger.info("Chat consumer shutdown requested")
     finally:
         await redis_client.close()
-        logger.info("Worker stopped")
+
+
+async def run_worker() -> None:
+    """Run the LangGraph worker loop."""
+    logger.info("Starting LangGraph worker services...")
+    await asyncio.gather(
+        consume_chat_stream(),
+        listen_provisioner_triggers(),
+    )
 
 
 def main() -> None:

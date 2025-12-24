@@ -64,11 +64,23 @@ async def get_server_id_from_time4vps(time4vps_client: Time4VPSClient, server_ha
     """
     try:
         servers = await time4vps_client.get_servers()
+        logger.info(f"Time4VPS returned {len(servers)} servers")
+        
         for server in servers:
+            if not isinstance(server, dict):
+                logger.warning(f"Unexpected server entry format: {server}")
+                continue
+                
+            srv_id = server.get('id') or server.get('server_id')
+            if not srv_id:
+                logger.warning(f"Server entry missing ID: {server}")
+                continue
+                
             # Match by handle (vps-{id})
-            if f"vps-{server['id']}" == server_handle:
-                return server['id']
-        logger.error(f"Server {server_handle} not found in Time4VPS API")
+            if f"vps-{srv_id}" == server_handle:
+                return srv_id
+                
+        logger.error(f"Server {server_handle} not found in Time4VPS API (scanned {len(servers)} servers)")
         return None
     except Exception as e:
         logger.exception(f"Failed to get server ID: {e}")
@@ -315,7 +327,7 @@ async def run(state: dict) -> dict:
     await update_server_status_in_db(server_handle, "provisioning")
     
     # Initialize Time4VPS client
-    time4vps_username = os.getenv("TIME4VPS_USERNAME")
+    time4vps_username = os.getenv("TIME4VPS_LOGIN") or os.getenv("TIME4VPS_USERNAME")
     time4vps_password = os.getenv("TIME4VPS_PASSWORD")
     
     if not time4vps_username or not time4vps_password:
