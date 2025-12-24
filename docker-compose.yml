@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: services/api/Dockerfile
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     env_file:
       - .env
     environment:
@@ -36,6 +37,8 @@ services:
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
+      - ./services/infrastructure:/app/services/infrastructure:delegated
+      - ~/.ssh:/root/.ssh:ro
       - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
       - api

@@ -156,9 +156,9 @@ async def allocate_port(
             if resp_server.status_code == 200:
                 server_info = resp_server.json()
                 allocation["server_ip"] = server_info.get("public_ip") or server_info.get("host")
-        except Exception:
-            # Don't fail the allocation if we can't get the IP, but it might cause issues later
-            pass
+        except Exception as e:
+            # allocate_port MUST return server_ip for DevOps to work
+            raise RuntimeError(f"Failed to fetch server IP for {server_handle}: {e}") from e
 
         return allocation
 

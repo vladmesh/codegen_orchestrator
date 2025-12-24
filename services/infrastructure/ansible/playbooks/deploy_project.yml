@@ -25,7 +25,7 @@
       copy:
         dest: "{{ project_dir }}/.env"
         content: |
-          PORT={{ port }}
+          PORT={{ service_port }}
           # Add other env vars here if needed
         mode: '0600'
 

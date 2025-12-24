@@ -87,7 +87,7 @@ async def run(state: dict) -> dict:
     # For now, let's assume the path is correct internally if we fix Dockerfile.
     
     # Construct inventory dynamically
-    inventory_content = f"{target_server_ip} ansible_user=root ansible_ssh_private_key_file=/root/.ssh/id_rsa ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+    inventory_content = f"{target_server_ip} ansible_user=root ansible_ssh_private_key_file=/root/.ssh/id_ed25519 ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
     
     # Create temp inventory file
     with tempfile.NamedTemporaryFile(mode='w', delete=False) as inventory_file:
@@ -98,7 +98,7 @@ async def run(state: dict) -> dict:
         f"project_name={project_name} "
         f"repo_full_name={repo_full_name} "
         f"github_token={token} "
-        f"port={target_port}"
+        f"service_port={target_port}"
     )
     
     cmd = [

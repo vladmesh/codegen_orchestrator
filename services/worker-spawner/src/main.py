@@ -62,6 +62,7 @@ async def spawn_container(request: SpawnRequest) -> SpawnResult:
         "docker",
         "run",
         "--rm",
+        "--runtime=sysbox-runc",  # Enable Docker-in-Docker via Sysbox
         "-e", f"GITHUB_TOKEN={request.github_token}",
         "-e", f"FACTORY_API_KEY={factory_api_key}",
         "-e", f"REPO={request.repo}",

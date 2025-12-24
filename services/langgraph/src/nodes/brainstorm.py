@@ -18,7 +18,7 @@ Your job:
 
 ## Available modules (from service-template):
 - **backend**: FastAPI REST API with PostgreSQL
-- **telegram_worker**: Telegram bot message handler
+- **tg_bot**: Telegram bot message handler
 - **notifications_worker**: Background notifications processor
 
 ## Entry points:
