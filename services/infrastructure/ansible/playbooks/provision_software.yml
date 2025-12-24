@@ -1,9 +1,9 @@
 ---
-# Provision Server Playbook
-# Автоматическая базовая настройка сервера для Codegen Orchestrator
-# Usage: ansible-playbook -i inventory/prod.ini playbooks/provision_server.yml -e "target_host=vps-267179"
+# Provision Software Playbook
+# Stage 2: System Updates and Software Installation (Slow)
+# Usage: ansible-playbook -i inventory/prod.ini playbooks/provision_software.yml -e "target_host=vps-267179"
 
-- name: Provision server for Codegen Orchestrator
+- name: Provision Software (Updates & Docker)
   hosts: "{{ target_host | default('all') }}"
   become: true
   vars_files:
@@ -19,37 +19,11 @@
 
   tasks:
     # ========================================
-    # 1. SSH Configuration
+    # 1. System Updates
     # ========================================
-    - name: Install SSH public key for orchestrator
-      authorized_key:
-        user: root
-        key: "{{ ssh_public_key }}"
-        state: present
-      tags: [ssh]
+    - name: Wait for any possibly running apt/dpkg processes
+      shell: "while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done;"
 
-    - name: Disable password authentication
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PasswordAuthentication'
-        line: 'PasswordAuthentication no'
-        state: present
-      when: disable_password_auth
-      notify: Restart SSH
-      tags: [ssh]
-
-    - name: Disable root password login
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PermitRootLogin'
-        line: 'PermitRootLogin prohibit-password'
-        state: present
-      notify: Restart SSH
-      tags: [ssh]
-
-    # ========================================
-    # 2. System Updates
-    # ========================================
     - name: Update apt cache
       apt:
         update_cache: yes
@@ -64,7 +38,7 @@
       tags: [system]
 
     # ========================================
-    # 3. Essential Tools Installation
+    # 2. Essential Tools Installation
     # ========================================
     - name: Install essential packages
       apt:
@@ -73,7 +47,7 @@
       tags: [packages]
 
     # ========================================
-    # 4. Docker Installation
+    # 3. Docker Installation
     # ========================================
     - name: Install Docker prerequisites
       apt:
@@ -116,21 +90,10 @@
       tags: [docker]
 
     # ========================================
-    # 5. Firewall (UFW) Configuration
+    # 4. Firewall (UFW) Application Rules
     # ========================================
-    - name: Install UFW
-      apt:
-        name: ufw
-        state: present
-      tags: [firewall]
-
-    - name: Allow SSH through firewall
-      ufw:
-        rule: allow
-        port: '22'
-        proto: tcp
-      tags: [firewall]
-
+    # Note: UFW and SSH are already enabled in Stage 1
+    
     - name: Allow HTTP through firewall
       ufw:
         rule: allow
@@ -145,14 +108,8 @@
         proto: tcp
       tags: [firewall]
 
-    - name: Enable UFW
-      ufw:
-        state: enabled
-        policy: deny
-      tags: [firewall]
-
     # ========================================
-    # 6. System Configuration
+    # 5. System Configuration
     # ========================================
     - name: Set timezone
       timezone:
@@ -165,7 +122,7 @@
       tags: [system]
 
     # ========================================
-    # 7. Verification
+    # 6. Verification
     # ========================================
     - name: Verify Docker is running
       command: docker --version
@@ -186,13 +143,7 @@
           - "UFW status: {{ ufw_status.stdout_lines[0] }}"
       tags: [verify]
 
-  handlers:
-    - name: Restart SSH
-      systemd:
-        name: sshd
-        state: restarted
-
   post_tasks:
-    - name: Provisioning complete
+    - name: Software provisioning complete
       debug:
-        msg: "Server {{ inventory_hostname }} has been successfully provisioned!"
+        msg: "Server {{ inventory_hostname }} software installation complete!"

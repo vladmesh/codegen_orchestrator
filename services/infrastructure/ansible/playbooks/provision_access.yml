@@ -1,0 +1,76 @@
+---
+# Provision Access Playbook
+# Stage 1: Fast configuration of SSH and Security
+# Usage: ansible-playbook -i inventory/prod.ini playbooks/provision_access.yml -e "target_host=vps-267179"
+
+- name: Provision Access (SSH & Firewall)
+  hosts: "{{ target_host | default('all') }}"
+  become: true
+  vars_files:
+    - ../group_vars/provision_vars.yml
+  
+  pre_tasks:
+    - name: Wait for server to be reachable
+      wait_for_connection:
+        timeout: 60
+    
+    - name: Gather facts
+      setup:
+
+  tasks:
+    # ========================================
+    # 1. SSH Configuration
+    # ========================================
+    - name: Install SSH public key for orchestrator
+      authorized_key:
+        user: root
+        key: "{{ ssh_public_key }}"
+        state: present
+      tags: [ssh]
+
+    - name: Disable password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+      when: disable_password_auth
+      notify: Restart SSH
+      tags: [ssh]
+
+    - name: Disable root password login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin prohibit-password'
+        state: present
+      notify: Restart SSH
+      tags: [ssh]
+
+    # ========================================
+    # 2. Basic Firewall (Fail-safe)
+    # ========================================
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+      tags: [firewall]
+
+    - name: Allow SSH through firewall
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+      tags: [firewall]
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+      tags: [firewall]
+
+  handlers:
+    - name: Restart SSH
+      systemd:
+        name: sshd
+        state: restarted

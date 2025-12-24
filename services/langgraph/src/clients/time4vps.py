@@ -118,7 +118,7 @@ class Time4VPSClient:
                 # Task completed, extract password from results
                 results = task.get("results", "")
                 logger.debug(f"Password reset results: {results}")
-                password = self._extract_password(results)
+                password = self.extract_password(results)
                 if password:
                     logger.info(f"Password reset completed for server {server_id}, password length: {len(password)}")
                     return password
@@ -128,7 +128,7 @@ class Time4VPSClient:
             # Not done yet, wait and retry
             await asyncio.sleep(poll_interval)
 
-    def _extract_password(self, results: str) -> str | None:
+    def extract_password(self, results: str) -> str | None:
         """Extract password from task results string.
         
         Time4VPS returns password in HTML format:
