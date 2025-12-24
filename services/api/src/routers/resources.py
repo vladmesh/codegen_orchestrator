@@ -42,9 +42,7 @@ async def get_resource(handle: str, db: AsyncSession = Depends(get_db)) -> Resou
 
 
 @router.post("/resources", response_model=ResourceRead)
-async def create_resource(
-    data: ResourceCreate, db: AsyncSession = Depends(get_db)
-) -> Resource:
+async def create_resource(data: ResourceCreate, db: AsyncSession = Depends(get_db)) -> Resource:
     """Create new resource."""
     resource = Resource(
         handle=data.handle,

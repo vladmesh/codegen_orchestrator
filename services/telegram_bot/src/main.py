@@ -21,8 +21,7 @@ redis_client = RedisStreamClient()
 async def start(update: Update, context) -> None:
     """Handle /start command."""
     await update.message.reply_text(
-        "Привет! Я оркестратор для генерации проектов.\n"
-        "Опиши, какой проект ты хочешь создать."
+        "Привет! Я оркестратор для генерации проектов.\nОпиши, какой проект ты хочешь создать."
     )
 
 
@@ -105,11 +104,7 @@ def main() -> None:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
 
     app = (
-        Application.builder()
-        .token(token)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
+        Application.builder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
     )
 
     app.add_handler(CommandHandler("start", start))

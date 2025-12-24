@@ -3,8 +3,9 @@
 import asyncio
 import logging
 import sys
+from collections import defaultdict
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -13,6 +14,14 @@ from shared.redis_client import RedisStreamClient
 from .graph import OrchestratorState, create_graph
 
 logger = logging.getLogger(__name__)
+
+# In-memory conversation history cache
+# Key: thread_id, Value: list of messages (last N messages)
+MAX_HISTORY_SIZE = 6
+conversation_history: dict[str, list] = defaultdict(list)
+
+# Create graph once at startup (with MemorySaver)
+graph = create_graph()
 
 
 async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
@@ -30,12 +39,16 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     logger.info(f"Processing message from user {user_id}: {text[:50]}...")
 
     try:
-        # Create graph for this request
-        graph = create_graph()
+        # Get existing conversation history
+        history = conversation_history[thread_id]
+        
+        # Add new user message to history
+        new_message = HumanMessage(content=text)
+        history.append(new_message)
 
-        # Prepare initial state
+        # Prepare initial state with full history
         state: OrchestratorState = {
-            "messages": [HumanMessage(content=text)],
+            "messages": list(history),  # Pass all history
             "current_project": None,
             "project_spec": None,
             "allocated_resources": {},
@@ -54,11 +67,20 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         messages = result.get("messages", [])
         if messages:
             last_message = messages[-1]
-            response_text = (
-                last_message.content
-                if hasattr(last_message, "content")
-                else str(last_message)
-            )
+            if isinstance(last_message.content, list):
+                # Handle list of blocks (text + image, etc.) - extract text
+                response_text = "".join(
+                    block["text"] for block in last_message.content if block.get("type") == "text"
+                )
+            else:
+                response_text = str(last_message.content)
+            
+            # Save AI response to history
+            history.append(AIMessage(content=response_text))
+            
+            # Trim history to keep only last N messages
+            if len(history) > MAX_HISTORY_SIZE:
+                conversation_history[thread_id] = history[-MAX_HISTORY_SIZE:]
         else:
             response_text = "Обработка завершена, но нет ответа."
 

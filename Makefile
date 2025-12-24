@@ -1,4 +1,8 @@
-.PHONY: lint format test build up down logs help
+.PHONY: lint format test build up down logs help nuke seed
+
+# Load .env file
+-include .env
+export
 
 DOCKER_COMPOSE ?= docker compose
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
@@ -20,6 +24,8 @@ help:
 	@echo "  make makemigrations MSG='...' - Create new migration"
 	@echo ""
 	@echo "  make shell       - Open shell in tooling container"
+	@echo "  make nuke        - Full reset: remove volumes, rebuild, migrate"
+	@echo "  make seed        - Seed database with API keys from env"
 
 # === Docker ===
 
@@ -59,3 +65,29 @@ makemigrations:
 
 shell:
 	$(TOOLING) bash
+
+# === Nuclear Option ===
+
+nuke:
+	@echo "🔥 Nuking everything..."
+	$(DOCKER_COMPOSE) down -v
+	$(DOCKER_COMPOSE) build --no-cache
+	$(DOCKER_COMPOSE) up -d
+	@echo "⏳ Waiting for DB to be healthy..."
+	@sleep 5
+	$(DOCKER_COMPOSE) exec api alembic upgrade head
+	@$(MAKE) seed
+	@echo "✅ Fresh environment ready!"
+
+# === Seeding ===
+
+seed:
+	@echo "🌱 Seeding database..."
+	@if [ -n "$$TIME4VPS_LOGIN" ] && [ -n "$$TIME4VPS_PASSWORD" ]; then \
+		curl -s -X POST "http://localhost:8000/api/api-keys/" \
+			-H "Content-Type: application/json" \
+			-d "{\"service\": \"time4vps\", \"type\": \"credentials\", \"value\": {\"username\": \"$$TIME4VPS_LOGIN\", \"password\": \"$$TIME4VPS_PASSWORD\"}}" > /dev/null && \
+		echo "  ✅ Time4VPS credentials added"; \
+	else \
+		echo "  ⚠️  TIME4VPS_LOGIN/PASSWORD not set, skipping"; \
+	fi

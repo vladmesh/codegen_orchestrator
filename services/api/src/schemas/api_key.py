@@ -1,7 +1,7 @@
 """API Key schemas."""
 
+
 from pydantic import BaseModel, ConfigDict
-from typing import Optional
 
 
 class APIKeyBase(BaseModel):
@@ -9,7 +9,7 @@ class APIKeyBase(BaseModel):
 
     service: str
     type: str = "system"
-    project_id: Optional[str] = None
+    project_id: str | None = None
 
 
 class APIKeyCreate(APIKeyBase):
@@ -23,8 +23,8 @@ class APIKeyRead(APIKeyBase):
 
     id: int
     # key_enc is internal, not exposed directly in read model usually?
-    # but for internal usage we might need it. Let's expose it for now 
+    # but for internal usage we might need it. Let's expose it for now
     # as we don't have a separate "decryption" endpoint yet.
     # Actually, better to expose nothing sensitive.
-    
+
     model_config = ConfigDict(from_attributes=True)

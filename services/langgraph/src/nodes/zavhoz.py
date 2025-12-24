@@ -5,16 +5,16 @@ All external API calls (Time4VPS) are done by background sync workers,
 not by the agent directly. This saves tokens and keeps secrets isolated.
 """
 
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage
 
 # Import tools - only DB tools, no direct Time4VPS access
 from ..tools.database import (
-    list_managed_servers,
-    find_suitable_server,
-    get_server_info,
     allocate_port,
+    find_suitable_server,
     get_next_available_port,
+    get_server_info,
+    list_managed_servers,
 )
 
 # Initialize Tools
@@ -25,6 +25,9 @@ tools = [
     allocate_port,
     get_next_available_port,
 ]
+
+# Tool name to function mapping
+tools_map = {tool.name: tool for tool in tools}
 
 # Initialize LLM with tools
 llm = ChatOpenAI(model="gpt-4o", temperature=0)
@@ -57,23 +60,79 @@ Be concise in your responses. Return structured data when possible.
 """
 
 
-def run(state: dict) -> dict:
+async def run(state: dict) -> dict:
     """Run zavhoz agent.
 
     Reads infrastructure data from DB and allocates resources.
     """
     messages = state.get("messages", [])
     project_spec = state.get("project_spec", {})
-    
+
     # Add system message if this is first invocation
-    if not any(msg.type == "system" for msg in messages if hasattr(msg, 'type')):
-        system_msg = SystemMessage(content=SYSTEM_PROMPT + f"\n\nCurrent Project Spec: {project_spec}")
+    if not any(msg.type == "system" for msg in messages if hasattr(msg, "type")):
+        system_msg = SystemMessage(
+            content=SYSTEM_PROMPT + f"\n\nCurrent Project Spec: {project_spec}"
+        )
         messages = [system_msg] + list(messages)
 
     # Invoke LLM
-    response = llm_with_tools.invoke(messages)
-    
+    response = await llm_with_tools.ainvoke(messages)
+
     return {
         "messages": [response],
         "current_agent": "zavhoz",
+    }
+
+
+async def execute_tools(state: dict) -> dict:
+    """Execute tool calls from Zavhoz LLM.
+
+    Processes server/port allocation tools and updates state.
+    """
+    messages = state.get("messages", [])
+    last_message = messages[-1]
+
+    if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
+        return {"messages": []}
+
+    tool_results = []
+    allocated_resources = state.get("allocated_resources", {}).copy()
+
+    for tool_call in last_message.tool_calls:
+        tool_name = tool_call["name"]
+        tool_func = tools_map.get(tool_name)
+
+        if tool_func:
+            try:
+                result = await tool_func.ainvoke(tool_call["args"])
+                
+                # Track allocated resources
+                if tool_name == "allocate_port" and result:
+                    port_key = f"{result.get('server_handle')}:{result.get('port')}"
+                    allocated_resources[port_key] = result
+                    
+                tool_results.append(
+                    ToolMessage(
+                        content=f"Result: {result}",
+                        tool_call_id=tool_call["id"],
+                    )
+                )
+            except Exception as e:
+                tool_results.append(
+                    ToolMessage(
+                        content=f"Error: {e!s}",
+                        tool_call_id=tool_call["id"],
+                    )
+                )
+        else:
+            tool_results.append(
+                ToolMessage(
+                    content=f"Unknown tool: {tool_name}",
+                    tool_call_id=tool_call["id"],
+                )
+            )
+
+    return {
+        "messages": tool_results,
+        "allocated_resources": allocated_resources,
     }

@@ -1,11 +1,12 @@
 """Alembic migrations environment."""
 
-import os
 from logging.config import fileConfig
+import os
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from alembic import context
 
 # Import models for autogenerate
 from services.api.src.models import Base

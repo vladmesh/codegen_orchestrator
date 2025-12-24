@@ -7,10 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # TODO: Add encryption logic
 # from cryptography.fernet import Fernet
 # ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
-
 from ..database import get_async_session
-from ..models import Server, PortAllocation
-from ..schemas import ServerCreate, ServerRead, PortAllocationCreate, PortAllocationRead
+from ..models import PortAllocation, Server
+from ..schemas import PortAllocationCreate, PortAllocationRead, ServerCreate, ServerRead
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
@@ -26,9 +25,9 @@ async def create_server(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Server with this handle already exists",
         )
-        
+
     # TODO: Encrypt ssh_key
-    ssh_key_encrypted = server_in.ssh_key # Mock encryption
+    ssh_key_encrypted = server_in.ssh_key  # Mock encryption
 
     server = Server(
         handle=server_in.handle,
@@ -50,17 +49,17 @@ async def create_server(
 async def list_servers(
     is_managed: bool | None = None,
     status: str | None = None,
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
 ) -> list[Server]:
     """List all servers with optional filtering."""
     query = select(Server)
-    
+
     if is_managed is not None:
         query = query.where(Server.is_managed == is_managed)
-    
+
     if status is not None:
         query = query.where(Server.status == status)
-        
+
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -85,7 +84,7 @@ async def list_server_ports(
     """List all port allocations for a server."""
     if not await db.get(Server, handle):
         raise HTTPException(status_code=404, detail="Server not found")
-    
+
     query = select(PortAllocation).where(PortAllocation.server_handle == handle)
     result = await db.execute(query)
     return result.scalars().all()
@@ -101,23 +100,23 @@ async def allocate_port(
     # Check server exists
     if not await db.get(Server, handle):
         raise HTTPException(status_code=404, detail="Server not found")
-        
+
     # Check if port is free
     query = select(PortAllocation).where(
-        PortAllocation.server_handle == handle,
-        PortAllocation.port == allocation_in.port
+        PortAllocation.server_handle == handle, PortAllocation.port == allocation_in.port
     )
     if (await db.execute(query)).scalar_one_or_none():
-         raise HTTPException(status_code=400, detail=f"Port {allocation_in.port} is already allocated on this server")
+        raise HTTPException(
+            status_code=400, detail=f"Port {allocation_in.port} is already allocated on this server"
+        )
 
     allocation = PortAllocation(
         server_handle=handle,
         port=allocation_in.port,
         service_name=allocation_in.service_name,
-        project_id=allocation_in.project_id
+        project_id=allocation_in.project_id,
     )
     db.add(allocation)
     await db.commit()
     await db.refresh(allocation)
     return allocation
-

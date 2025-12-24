@@ -2,8 +2,9 @@
 
 import base64
 import os
-import httpx
 from typing import Any
+
+import httpx
 
 
 class Time4VPSClient:
@@ -59,9 +60,7 @@ class Time4VPSClient:
         }
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{self.base_url}/order/{product_id}",
-                headers=headers,
-                json=payload
+                f"{self.base_url}/order/{product_id}", headers=headers, json=payload
             )
             resp.raise_for_status()
             return resp.json()
@@ -69,15 +68,10 @@ class Time4VPSClient:
     async def reinstall_server(self, server_id: int, os_name: str, ssh_key: str) -> dict[str, Any]:
         """Reinstall server with OS and SSH key."""
         headers = await self._get_auth_header()
-        payload = {
-            "os": os_name,
-            "ssh_key": ssh_key
-        }
+        payload = {"os": os_name, "ssh_key": ssh_key}
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{self.base_url}/server/{server_id}/reinstall",
-                headers=headers,
-                json=payload
+                f"{self.base_url}/server/{server_id}/reinstall", headers=headers, json=payload
             )
             resp.raise_for_status()
             return resp.json()
@@ -89,7 +83,7 @@ class Time4VPSClient:
             resp = await client.get(f"{self.base_url}/server/{server_id}/oses", headers=headers)
             resp.raise_for_status()
             return resp.json()
-            
+
     async def get_dns_zones(self) -> dict[str, Any]:
         """List DNS zones."""
         headers = await self._get_auth_header()
@@ -98,20 +92,15 @@ class Time4VPSClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def add_dns_record(self, domain_id: int, name: str, type: str, content: str, ttl: int = 300) -> dict[str, Any]:
+    async def add_dns_record(
+        self, domain_id: int, name: str, type: str, content: str, ttl: int = 300
+    ) -> dict[str, Any]:
         """Add DNS record."""
         headers = await self._get_auth_header()
-        payload = {
-            "name": name,
-            "type": type,
-            "content": content,
-            "ttl": ttl
-        }
+        payload = {"name": name, "type": type, "content": content, "ttl": ttl}
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{self.base_url}/dns/{domain_id}/record",
-                headers=headers,
-                json=payload
+                f"{self.base_url}/dns/{domain_id}/record", headers=headers, json=payload
             )
             resp.raise_for_status()
             return resp.json()

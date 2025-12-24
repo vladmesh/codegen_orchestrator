@@ -1,6 +1,6 @@
 """Port allocation model."""
 
-from sqlalchemy import String, Integer, ForeignKey
+from sqlalchemy import ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base

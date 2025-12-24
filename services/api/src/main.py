@@ -1,16 +1,15 @@
 """API Service - FastAPI with SQLAlchemy."""
 
+import asyncio
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI
 
-from .database import engine
 from . import routers
-
-
-import asyncio
+from .database import engine
 from .tasks.server_sync import sync_servers_worker
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -35,4 +34,3 @@ app.include_router(routers.users.router)
 app.include_router(routers.projects.router)
 app.include_router(routers.servers.router, prefix="/api")
 app.include_router(routers.api_keys.router, prefix="/api")
-

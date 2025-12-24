@@ -1,7 +1,7 @@
 """Tests for API service."""
 
-import pytest
 from httpx import ASGITransport, AsyncClient
+import pytest
 
 from services.api.src.main import app
 
@@ -9,9 +9,7 @@ from services.api.src.main import app
 @pytest.fixture
 async def client():
     """Create test client."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
 

@@ -218,6 +218,21 @@ orchestrator deploy
 
 ---
 
+---
+
+### Advanced Model Management & Dashboard
+
+**Status:** TODO
+**Priority:** MEDIUM
+
+Support for late 2025 SOTA models (gpt-5.2, Gemini 3 Pro, Claude Opus 4.5) and dynamic runtime configuration.
+
+**Tasks:**
+- [ ] Database schema for storing Model Configs (provider, model_name, api_key_ref, temperature, prompt_templates).
+- [ ] Admin Dashboard (Web UI) for managing these configs at runtime.
+- [ ] Dynamic LLM factory that reads from DB instead of envs.
+- [ ] Support for high-end models: `gpt-5.2`, `google/gemini-3-pro`, `anthropic/claude-opus-4.5`.
+
 ## Done
 
 *Пока пусто*

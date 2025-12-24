@@ -1,7 +1,8 @@
 """Project schemas."""
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
-from typing import Optional, Any
 
 
 class ProjectBase(BaseModel):
@@ -28,5 +29,5 @@ class ProjectRead(ProjectBase):
 class ProjectUpdate(BaseModel):
     """Schema for updating a project."""
 
-    status: Optional[str] = None
-    config: Optional[dict[str, Any]] = None
+    status: str | None = None
+    config: dict[str, Any] | None = None

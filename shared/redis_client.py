@@ -1,11 +1,11 @@
 """Redis Streams client for inter-service communication."""
 
 import asyncio
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 import json
 import logging
 import os
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from typing import Any
 
 import redis.asyncio as redis
@@ -123,7 +123,7 @@ class RedisStreamClient:
                 if not messages:
                     continue
 
-                for stream_name, stream_messages in messages:
+                for _stream_name, stream_messages in messages:
                     for message_id, fields in stream_messages:
                         try:
                             data = json.loads(fields.get("data", "{}"))

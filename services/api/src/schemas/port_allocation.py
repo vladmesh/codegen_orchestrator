@@ -1,7 +1,7 @@
 """Port Allocation schemas."""
 
+
 from pydantic import BaseModel, ConfigDict
-from typing import Optional
 
 
 class PortAllocationBase(BaseModel):
@@ -10,7 +10,7 @@ class PortAllocationBase(BaseModel):
     server_handle: str
     port: int
     service_name: str
-    project_id: Optional[str] = None
+    project_id: str | None = None
 
 
 class PortAllocationCreate(PortAllocationBase):

@@ -1,5 +1,5 @@
 """Routers package."""
 
-from . import health, resources, users, projects, servers, api_keys
+from . import api_keys, health, projects, resources, servers, users
 
 __all__ = ["health", "resources"]
