@@ -14,6 +14,9 @@ class ServerBase(BaseModel):
     capacity_cpu: int = 1
     capacity_ram_mb: int = 1024
     labels: dict[str, Any] = {}
+    is_managed: bool = True
+    status: str = "active"
+    notes: Optional[str] = None
 
 
 class ServerCreate(ServerBase):

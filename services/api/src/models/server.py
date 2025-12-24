@@ -21,7 +21,11 @@ class Server(Base):
     ssh_key_enc: Mapped[Optional[str]] = mapped_column(String) 
     
     # Capacity metrics
-    capacity_cpu: Mapped[int] = mapped_column(Integer, default=1)
     capacity_ram_mb: Mapped[int] = mapped_column(Integer, default=1024)
+    
+    # Management flags
+    is_managed: Mapped[bool] = mapped_column(default=True)
+    status: Mapped[str] = mapped_column(String(50), default="active") # active, maintenance, reserved, discovered, missing
+    notes: Mapped[Optional[str]] = mapped_column(String)
     
     labels: Mapped[dict] = mapped_column(JSON, default=dict)

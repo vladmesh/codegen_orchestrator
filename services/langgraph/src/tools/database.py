@@ -56,3 +56,13 @@ async def allocate_port(
         )
         resp.raise_for_status()
         return resp.json()
+
+
+@tool
+async def list_managed_servers() -> List[Dict[str, Any]]:
+    """List all active, managed servers available for deployment."""
+    async with httpx.AsyncClient() as client:
+        url = f"{INTERNAL_API_URL}/api/servers?is_managed=true&status=active"
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.json()

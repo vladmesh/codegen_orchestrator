@@ -9,10 +9,14 @@ from .database import engine
 from . import routers
 
 
+import asyncio
+from .tasks.server_sync import sync_servers_worker
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
     # Startup
+    asyncio.create_task(sync_servers_worker())
     yield
     # Shutdown
     await engine.dispose()

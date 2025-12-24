@@ -48,11 +48,21 @@ async def create_server(
 
 @router.get("/", response_model=list[ServerRead])
 async def list_servers(
-    db: AsyncSession = Depends(get_async_session),
+    is_managed: bool | None = None,
+    status: str | None = None,
+    db: AsyncSession = Depends(get_async_session)
 ) -> list[Server]:
-    """List all servers."""
-    result = await db.execute(select(Server))
-    return list(result.scalars().all())
+    """List all servers with optional filtering."""
+    query = select(Server)
+    
+    if is_managed is not None:
+        query = query.where(Server.is_managed == is_managed)
+    
+    if status is not None:
+        query = query.where(Server.status == status)
+        
+    result = await db.execute(query)
+    return result.scalars().all()
 
 
 @router.post("/{handle}/ports", response_model=PortAllocationRead)

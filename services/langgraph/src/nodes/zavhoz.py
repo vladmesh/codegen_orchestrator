@@ -4,17 +4,38 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, SystemMessage
 
 # Import tools
-from ..tools.time4vps import list_servers, get_server_details, reinstall_server, list_dns_zones
-from ..tools.database import register_server_in_db, allocate_port
+from ..tools.time4vps import (
+    list_servers, 
+    get_server_details, 
+    reinstall_server,    
+    get_dns_zones, 
+    add_dns_record,
+    order_server,
+    get_available_os
+)
+from ..tools.database import (
+    register_server_in_db, 
+    allocate_port,
+    list_managed_servers
+)
 
 # Initialize Tools
 tools = [
-    list_servers,
-    get_server_details,
-    reinstall_server,
-    list_dns_zones,
+    list_servers, # Keep for broad check if needed, or remove? User wants filtering.
+    # Actually, list_servers (Time4VPS) should be used only for Ordering context?
+    # Let's keep both but instruct via prompt which to use.
+    # Or better: remove list_servers (Time4VPS) and force usage of list_managed_servers for "Inventory"
+    # and only use order_server for "New".
+    # But for now, let's just add the new tool.
+    get_server_details, 
+    order_server, 
+    reinstall_server, 
+    get_available_os,
+    get_dns_zones,
+    add_dns_record,
     register_server_in_db,
-    allocate_port
+    allocate_port,
+    list_managed_servers
 ]
 
 # Initialize LLM with tools

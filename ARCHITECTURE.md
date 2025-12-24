@@ -211,6 +211,20 @@ sops -d secrets.yaml > /tmp/secrets.yaml
 | API ключи | `openai_main` | API key |
 | Домены | `example.com` | Cloudflare credentials |
 
+#### Управление Инфраструктурой (Server Management)
+
+Система поддерживает гибридную инфраструктуру, синхронизируемую с провайдером (Time4VPS).
+
+1.  **Source of Truth**: База данных (`api` сервис).
+    *   Фоновый worker (`server_sync.py`) каждую минуту опрашивает Time4VPS API.
+    *   Новые сервера автоматически добавляются со статусом `discovered`.
+    *   Удаленные сервера помечаются как `missing`.
+
+2.  **Ghost Servers & Filtering**:
+    *   Сервера, которые нужно игнорировать (личные машины разработчиков), прописываются в `GHOST_SERVERS`.
+    *   В базе они помечаются как `is_managed=False`.
+    *   Zavhoz использует инструмент `list_managed_servers`, который возвращает только `is_managed=True`.
+
 ## Persistence
 
 ### Checkpointing
