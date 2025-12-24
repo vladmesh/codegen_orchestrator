@@ -141,3 +141,100 @@ class Time4VPSClient:
                 return match.group(1)
         
         return None
+
+    async def get_available_os_templates(self, server_id: int) -> list[dict[str, Any]]:
+        """Get available OS templates for reinstall.
+        
+        Args:
+            server_id: Server ID
+            
+        Returns:
+            List of available OS templates
+        """
+        headers = self._get_auth_header()
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{self.base_url}/server/{server_id}/oses",
+                headers=headers
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def reinstall_server(
+        self,
+        server_id: int,
+        os_template: str,
+        ssh_key: str | None = None,
+        init_script_id: int | None = None
+    ) -> int:
+        """Reinstall server with specified OS.
+        
+        WARNING: All data on the server will be lost!
+        
+        Args:
+            server_id: Server ID
+            os_template: OS template name (e.g., "kvm-ubuntu-24.04-gpt-x86_64")
+            ssh_key: Optional SSH public key for immediate access
+            init_script_id: Optional init script ID
+        
+        Returns:
+            task_id for polling completion
+        """
+        headers = self._get_auth_header()
+        payload: dict[str, Any] = {"os": os_template}
+        
+        if ssh_key:
+            payload["ssh_key"] = ssh_key
+        if init_script_id:
+            payload["script"] = init_script_id
+        
+        logger.info(f"Triggering OS reinstall for server {server_id} with template {os_template}")
+        
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self.base_url}/server/{server_id}/reinstall",
+                headers=headers,
+                json=payload
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            task_id = result["task_id"]
+            logger.info(f"Reinstall task created: {task_id}")
+            return task_id
+
+    async def wait_for_task(
+        self,
+        server_id: int,
+        task_id: int,
+        timeout: int = 600,
+        poll_interval: int = 10
+    ) -> dict[str, Any]:
+        """Wait for any task to complete.
+        
+        Args:
+            server_id: Server ID
+            task_id: Task ID to wait for
+            timeout: Maximum wait time in seconds
+            poll_interval: Polling interval in seconds
+            
+        Returns:
+            Task result dict
+            
+        Raises:
+            TimeoutError: If task doesn't complete within timeout
+        """
+        start_time = asyncio.get_event_loop().time()
+        
+        while True:
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > timeout:
+                raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
+            
+            task = await self.get_task_result(server_id, task_id)
+            
+            if task.get("completed"):
+                logger.info(f"Task {task_id} completed for server {server_id}")
+                return task
+            
+            logger.debug(f"Task {task_id} still running, waiting {poll_interval}s...")
+            await asyncio.sleep(poll_interval)

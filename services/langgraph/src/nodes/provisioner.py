@@ -28,7 +28,33 @@ PROVISIONING_MAX_RETRIES = int(os.getenv("PROVISIONING_MAX_RETRIES", "3"))
 PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", "300"))
 PASSWORD_RESET_POLL_INTERVAL = int(os.getenv("PASSWORD_RESET_POLL_INTERVAL", "5"))
 
-ORCHESTRATOR_SSH_PUBLIC_KEY = os.getenv("ORCHESTRATOR_SSH_PUBLIC_KEY", "")
+
+def get_ssh_public_key() -> str | None:
+    """Read SSH public key from mounted ~/.ssh directory.
+    
+    Tries common key types in order of preference.
+    
+    Returns:
+        Public key string or None if not found
+    """
+    key_paths = [
+        "/root/.ssh/id_ed25519.pub",
+        "/root/.ssh/id_rsa.pub",
+        "/root/.ssh/id_ecdsa.pub",
+    ]
+    
+    for path in key_paths:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    key = f.read().strip()
+                    logger.info(f"Loaded SSH public key from {path}")
+                    return key
+            except Exception as e:
+                logger.warning(f"Failed to read {path}: {e}")
+    
+    logger.error("No SSH public key found in /root/.ssh/")
+    return None
 
 
 async def get_services_on_server_for_redeployment(server_handle: str) -> list[dict]:
@@ -201,6 +227,76 @@ def run_provisioning_playbook(
             os.remove(inventory_path)
 
 
+def run_provisioning_playbook_with_key(
+    server_ip: str,
+    server_handle: str
+) -> tuple[bool, str]:
+    """Run Ansible provisioning playbook using SSH key authentication.
+    
+    Used after OS reinstall when SSH key was provided during reinstall.
+    
+    Args:
+        server_ip: Server IP address
+        server_handle: Server handle for hostname
+    
+    Returns:
+        Tuple of (success: bool, output: str)
+    """
+    playbook_path = "/app/services/infrastructure/ansible/playbooks/provision_server.yml"
+    
+    # Create temporary inventory with key auth (uses default SSH key from ~/.ssh)
+    inventory_content = f"""[target]
+{server_ip} ansible_user=root ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+"""
+    
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.ini') as inv_file:
+        inv_file.write(inventory_content)
+        inventory_path = inv_file.name
+    
+    # Extra vars for playbook
+    extra_vars = f"target_host={server_ip} server_hostname={server_handle}"
+    
+    # Construct ansible-playbook command
+    cmd = [
+        "ansible-playbook",
+        "-i", inventory_path,
+        playbook_path,
+        "--extra-vars", extra_vars,
+        "-v"  # Verbose for debugging
+    ]
+    
+    logger.info(f"Running provisioning playbook (key auth) for {server_handle} at {server_ip}")
+    
+    try:
+        process = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=PROVISIONING_TIMEOUT
+        )
+        
+        # Log output
+        logger.info(f"Ansible stdout:\n{process.stdout}")
+        if process.stderr:
+            logger.warning(f"Ansible stderr:\n{process.stderr}")
+        
+        success = process.returncode == 0
+        output = process.stdout if success else f"{process.stderr}\n\n{process.stdout}"
+        
+        return success, output
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"Provisioning timeout after {PROVISIONING_TIMEOUT}s")
+        return False, f"Timeout after {PROVISIONING_TIMEOUT}s"
+    except Exception as e:
+        logger.exception(f"Provisioning exception: {e}")
+        return False, str(e)
+    finally:
+        # Cleanup
+        if os.path.exists(inventory_path):
+            os.remove(inventory_path)
+
+
 async def update_server_status_in_db(server_handle: str, status: str) -> bool:
     """Update server status in database via API.
     
@@ -267,6 +363,82 @@ async def create_incident_in_db(
         return False
 
 
+REINSTALL_TIMEOUT = int(os.getenv("REINSTALL_TIMEOUT", "900"))  # 15 minutes
+
+
+async def reinstall_and_provision(
+    time4vps_client: Time4VPSClient,
+    server_handle: str,
+    server_id: int,
+    server_ip: str,
+    os_template: str,
+    ssh_public_key: str
+) -> tuple[bool, str]:
+    """Reinstall OS and provision server.
+    
+    Used when password reset is not sufficient (SSH password auth disabled).
+    
+    Args:
+        time4vps_client: Time4VPS API client
+        server_handle: Server handle
+        server_id: Time4VPS server ID
+        server_ip: Server IP address
+        os_template: OS template to install
+        ssh_public_key: SSH public key for access
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    logger.info(f"🔄 Starting full OS reinstall for {server_handle} (ID: {server_id})")
+    
+    try:
+        # Step 1: Trigger reinstall
+        task_id = await time4vps_client.reinstall_server(
+            server_id=server_id,
+            os_template=os_template,
+            ssh_key=ssh_public_key
+        )
+        
+        logger.info(f"Reinstall task created: {task_id}. Waiting for completion...")
+        
+        # Notify admin about long-running operation
+        await notify_admins(
+            f"⏳ Server *{server_handle}* OS reinstall started. "
+            f"This will take ~10-15 minutes.",
+            level="info"
+        )
+        
+        # Step 2: Wait for reinstall to complete
+        await time4vps_client.wait_for_task(
+            server_id=server_id,
+            task_id=task_id,
+            timeout=REINSTALL_TIMEOUT,
+            poll_interval=15  # Check every 15 seconds
+        )
+        
+        logger.info(f"OS reinstall completed for {server_handle}")
+        
+        # Step 3: Wait a bit for server to boot
+        import asyncio
+        logger.info("Waiting 30s for server to boot...")
+        await asyncio.sleep(30)
+        
+        # Step 4: Run Ansible with SSH key
+        success, output = run_provisioning_playbook_with_key(server_ip, server_handle)
+        
+        if success:
+            return True, "OS reinstall and provisioning completed successfully"
+        else:
+            return False, f"Ansible failed after reinstall: {output[:500]}"
+            
+    except TimeoutError as e:
+        logger.error(f"Reinstall timeout: {e}")
+        return False, f"Reinstall timeout: {e}"
+    except Exception as e:
+        logger.exception(f"Reinstall failed: {e}")
+        return False, f"Reinstall failed: {e}"
+
+
 async def run(state: dict) -> dict:
     """Run provisioner node.
     
@@ -308,7 +480,14 @@ async def run(state: dict) -> dict:
         }
     
     server_ip = server_info.get("public_ip") or server_info.get("host")
+    server_status = server_info.get("status", "")
+    os_template = server_info.get("os_template", "kvm-ubuntu-24.04-gpt-x86_64")
     provisioning_attempts = server_info.get("provisioning_attempts", 0)
+    
+    # Determine if we should use reinstall path
+    use_reinstall = server_status == "force_rebuild" or state.get("force_reinstall", False)
+    
+    logger.info(f"Server {server_handle}: status={server_status}, use_reinstall={use_reinstall}")
     
     # Check max attempts
     if provisioning_attempts >= PROVISIONING_MAX_RETRIES:
@@ -340,9 +519,61 @@ async def run(state: dict) -> dict:
     
     time4vps_client = Time4VPSClient(time4vps_username, time4vps_password)
     
-    # Step 1: Reset password
-    logger.info(f"Starting provisioning for {server_handle} (attempt {provisioning_attempts + 1})")
+    # Get Time4VPS server ID
+    server_id = await get_server_id_from_time4vps(time4vps_client, server_handle)
+    if not server_id:
+        await update_server_status_in_db(server_handle, "error")
+        return {
+            "messages": [AIMessage(content=f"❌ Server {server_handle} not found in Time4VPS")],
+            "errors": state.get("errors", []) + ["Server not found in Time4VPS"]
+        }
     
+    logger.info(f"Starting provisioning for {server_handle} (attempt {provisioning_attempts + 1}, reinstall={use_reinstall})")
+    
+    # ===== REINSTALL PATH =====
+    if use_reinstall:
+        ssh_key = get_ssh_public_key()
+        if not ssh_key:
+            logger.error("SSH public key not found for reinstall")
+            await update_server_status_in_db(server_handle, "error")
+            return {
+                "messages": [AIMessage(content="❌ SSH public key not found in /root/.ssh/")],
+                "errors": state.get("errors", []) + ["Missing SSH public key"]
+            }
+        
+        success, message = await reinstall_and_provision(
+            time4vps_client=time4vps_client,
+            server_handle=server_handle,
+            server_id=server_id,
+            server_ip=server_ip,
+            os_template=os_template,
+            ssh_public_key=ssh_key
+        )
+        
+        if success:
+            await update_server_status_in_db(server_handle, "ready")
+            await notify_admins(
+                f"✅ Server *{server_handle}* reinstalled and provisioned successfully!",
+                level="success"
+            )
+            return {
+                "messages": [AIMessage(content=f"✅ {message}")],
+                "provisioning_result": {"status": "success", "method": "reinstall"}
+            }
+        else:
+            await update_server_status_in_db(server_handle, "error")
+            await create_incident_in_db(server_handle, "reinstall_failed", {"message": message})
+            await notify_admins(
+                f"❌ Server *{server_handle}* reinstall FAILED: {message[:200]}",
+                level="error"
+            )
+            return {
+                "messages": [AIMessage(content=f"❌ Reinstall failed: {message}")],
+                "errors": state.get("errors", []) + ["Reinstall failed"],
+                "provisioning_result": {"status": "failed", "method": "reinstall"}
+            }
+    
+    # ===== PASSWORD RESET PATH =====
     password = await reset_server_password(time4vps_client, server_handle)
     if not password:
         await update_server_status_in_db(server_handle, "error")
@@ -430,27 +661,30 @@ The server is now configured with:
             "current_agent": "provisioner"
         }
     else:
-        # Failure - update status and create incident
-        await update_server_status_in_db(server_handle, "error")
+        # Failure - set force_rebuild for next attempt (full OS reinstall)
+        # This handles cases where password auth is disabled
+        await update_server_status_in_db(server_handle, "force_rebuild")
         await create_incident_in_db(
             server_handle,
             "provisioning_failed",
             {
                 "step": "ansible_playbook",
                 "attempt": provisioning_attempts + 1,
-                "output": output[:500]  # Truncate
+                "output": output[:500],  # Truncate
+                "next_action": "force_rebuild"
             }
         )
         
         # Send notification to admins
         await notify_admins(
-            f"Provisioning FAILED for server *{server_handle}*. "
-            f"Attempt {provisioning_attempts + 1}. Check logs for details.",
-            level="error"
+            f"⚠️ Provisioning FAILED for server *{server_handle}*. "
+            f"Attempt {provisioning_attempts + 1}. "
+            f"Server marked for *force_rebuild* (full OS reinstall) on next attempt.",
+            level="warning"
         )
         
         return {
-            "messages": [AIMessage(content=f"❌ Provisioning failed for {server_handle}:\n\n{output[:300]}")],
-            "errors": state.get("errors", []) + ["Ansible playbook failed"],
-            "provisioning_result": {"status": "failed", "step": "ansible_playbook"}
+            "messages": [AIMessage(content=f"❌ Provisioning failed for {server_handle}. Server marked for force_rebuild.\n\n{output[:300]}")],
+            "errors": state.get("errors", []) + ["Ansible playbook failed - escalating to force_rebuild"],
+            "provisioning_result": {"status": "failed", "step": "ansible_playbook", "next_action": "force_rebuild"}
         }
