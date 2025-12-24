@@ -33,6 +33,8 @@ services:
     environment:
       API_URL: http://api:8000
       REDIS_URL: redis://redis:6379
+    volumes:
+      - ./services/langgraph/src:/app/src:delegated
     depends_on:
       - api
       - redis
