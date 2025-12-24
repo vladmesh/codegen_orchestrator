@@ -31,6 +31,7 @@ dependencies = [
     
     # Utils
     "structlog>=24.0.0",
+    "pyjwt[crypto]>=2.9.0",
 ]
 
 [project.optional-dependencies]

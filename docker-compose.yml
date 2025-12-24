@@ -35,6 +35,7 @@ services:
       REDIS_URL: redis://redis:6379
     volumes:
       - ./services/langgraph/src:/app/src:delegated
+      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
       - api
       - redis

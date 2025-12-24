@@ -1,0 +1,74 @@
+name: Deploy to Production
+
+# Manual trigger only - server not configured yet
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  DEPLOY_PATH: /opt/codegen_orchestrator
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Write secrets to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # Create secrets directory
+            sudo mkdir -p /opt/secrets
+            sudo chown deploy:deploy /opt/secrets
+            
+            # Write GitHub App credentials
+            echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > /opt/secrets/github_app.pem
+            chmod 600 /opt/secrets/github_app.pem
+            
+            # Write env file
+            cat > ${{ env.DEPLOY_PATH }}/.env << 'ENVEOF'
+            GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+            TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+            GHOST_SERVERS=${{ secrets.GHOST_SERVERS }}
+            ENVEOF
+
+      - name: Deploy application
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            
+            # Pull latest code
+            git pull origin main
+            
+            # Pull and restart containers
+            docker compose pull
+            docker compose up -d --remove-orphans
+            
+            # Run migrations
+            docker compose exec -T api alembic upgrade head
+            
+            # Cleanup
+            docker image prune -f

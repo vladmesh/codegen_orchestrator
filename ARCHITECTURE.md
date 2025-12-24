@@ -225,6 +225,23 @@ sops -d secrets.yaml > /tmp/secrets.yaml
     *   В базе они помечаются как `is_managed=False`.
     *   Zavhoz использует инструмент `list_managed_servers`, который возвращает только `is_managed=True`.
 
+#### GitHub App & Secrets
+
+Для работы с GitHub (создание репозиториев, управление workflows) используется GitHub App.
+
+| Secret Name | Описание | Где хранится |
+|-------------|----------|--------------|
+| `GH_APP_ID` | App ID приложения Project-Factory-Keeper | GitHub Secrets |
+| `GH_APP_PRIVATE_KEY` | Private Key (.pem) для подписи JWT | GitHub Secrets |
+
+**Локальная разработка:**
+- `GITHUB_APP_ID` → `.env`
+- Private Key → `~/.gemini/keys/github_app.pem` (mount в docker-compose)
+
+**Production:**
+- Secrets записываются на сервер через CI/CD workflow
+- Путь на проде: `/opt/secrets/github_app.pem`
+
 ## Persistence
 
 ### Checkpointing
