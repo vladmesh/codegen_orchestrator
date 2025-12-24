@@ -31,7 +31,7 @@
     - name: Add SSH key for deploy user
       authorized_key:
         user: deploy
-        key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+        key: "{{ ssh_public_key }}"
 
     - name: Allow sudo without password for deploy user
       copy:

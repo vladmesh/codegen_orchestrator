@@ -423,6 +423,10 @@ async def parallel_developer_node(state: dict) -> dict:
         "pending_tasks": []
     }
 
+# Service descriptions for workers
+# - **Tooling (`services/tooling`)**: Standard utility container for linting and formatting.
+# - **Infrastructure (`services/infrastructure`)**: Contains Ansible playbooks and roles for server configuration and deployment. This is the toolbox for the DevOps agent.
+
 async def spawn_sysbox_worker(task: dict) -> str:
     """Spawn Sysbox container for a task."""
     proc = await asyncio.create_subprocess_exec(

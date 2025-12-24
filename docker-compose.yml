@@ -41,6 +41,19 @@ services:
     networks:
       - internal
 
+  devops:
+    build:
+      context: .
+      dockerfile: services/infrastructure/Dockerfile
+    volumes:
+      - ./services/infrastructure/ansible:/app/ansible:delegated
+    env_file:
+      - .env
+    depends_on:
+      - api
+    networks:
+      - internal
+
   telegram_bot:
     build:
       context: .
