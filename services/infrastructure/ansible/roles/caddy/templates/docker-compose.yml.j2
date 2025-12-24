@@ -1,0 +1,10 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - {{ caddy_data_dir }}:/data
+      - {{ caddy_config_dir }}:/config

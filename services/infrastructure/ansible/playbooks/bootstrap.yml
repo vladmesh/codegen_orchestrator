@@ -1,0 +1,47 @@
+---
+# Bootstrap playbook - run FIRST on a fresh server with root access
+# This creates the deploy user so subsequent runs can use it
+# Usage: ansible-playbook -i inventory/prod.ini playbooks/bootstrap.yml
+
+- name: Bootstrap server with deploy user
+  hosts: prod
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Wait for server to be reachable
+      wait_for_connection:
+        timeout: 60
+
+    - name: Gather facts
+      setup:
+
+    - name: Ensure sudo group exists
+      group:
+        name: sudo
+        state: present
+
+    - name: Create deploy user
+      user:
+        name: deploy
+        groups: sudo
+        shell: /bin/bash
+        create_home: yes
+
+    - name: Add SSH key for deploy user
+      authorized_key:
+        user: deploy
+        key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+
+    - name: Allow sudo without password for deploy user
+      copy:
+        dest: /etc/sudoers.d/deploy
+        content: "deploy ALL=(ALL) NOPASSWD:ALL\n"
+        mode: '0440'
+        validate: '/usr/sbin/visudo -cf %s'
+
+    - name: Test deploy user access
+      command: echo "Deploy user configured successfully"
+      become_user: deploy
+      changed_when: false
+

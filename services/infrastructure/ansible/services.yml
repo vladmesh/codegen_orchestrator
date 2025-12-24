@@ -1,0 +1,28 @@
+---
+# Services configuration for deployment and Caddy reverse proxy
+# Each service is pulled from GitHub and proxied through Caddy
+#
+# Format:
+#   - name: service_name
+#     domain: example.com                     # primary domain
+#     domains:                                # optional: additional domains
+#       - www.example.com
+#     port: 8080                              # main upstream port
+#     routes:                                 # optional: path-based routing
+#       - path: /admin*
+#         port: 8000
+#     github_repo: user/repo                  # for compose download
+#     branch: main                            # optional, default: main
+#     compose_file: docker-compose.prod.yml   # optional
+
+services:
+  - name: personal_site
+    domain: vladmesh.dev
+    domains:
+      - www.vladmesh.dev
+    port: 4321
+    routes:
+      - path: /admin*
+        port: 8000
+    github_repo: vladmesh/personal_site
+    compose_file: infra/docker-compose.ansible.yml

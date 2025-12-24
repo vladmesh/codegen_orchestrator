@@ -1,0 +1,4 @@
+---
+- name: show service status
+  debug:
+    msg: "Services deployed successfully"

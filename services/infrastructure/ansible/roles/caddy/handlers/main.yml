@@ -1,0 +1,15 @@
+---
+- name: reload caddy
+  community.docker.docker_compose_v2:
+    project_src: /opt/caddy
+    state: present
+    services:
+      - caddy
+  register: caddy_reload
+  changed_when: false
+  ignore_errors: yes
+
+- name: restart caddy
+  community.docker.docker_compose_v2:
+    project_src: /opt/caddy
+    state: restarted

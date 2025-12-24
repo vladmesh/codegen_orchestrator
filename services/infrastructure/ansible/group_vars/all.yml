@@ -1,0 +1,63 @@
+---
+# Deploy user settings
+deploy_user: deploy
+deploy_group: sudo
+
+# SSH settings
+ssh_port: 22
+
+# Firewall - allowed ports
+firewall_allowed_ports:
+  - "22/tcp"   # SSH
+  - "80/tcp"   # HTTP
+  - "443/tcp"  # HTTPS
+
+# Basic packages to install
+base_packages:
+  - tmux
+  - htop
+  - curl
+  - wget
+  - git
+  - make
+  - vim
+  - unzip
+  - jq
+
+# Fail2ban settings
+fail2ban_bantime: 3600
+fail2ban_findtime: 600
+fail2ban_maxretry: 5
+
+# Docker settings
+docker_users:
+  - "{{ deploy_user }}"
+
+# Caddy proxy settings (services defined in services.yml)
+caddy_data_dir: /opt/caddy/data
+caddy_config_dir: /opt/caddy/config
+
+# Backup settings
+backup_enabled: true
+backup_repository: ""  # Set in prod.yml, e.g., "s3:s3.amazonaws.com/bucket-name"
+backup_password: ""    # Set via ansible-vault
+backup_paths:
+  - /opt/services
+backup_schedule: "0 3 * * *"  # Daily at 3 AM
+
+# Monitoring
+monitoring_enabled: true
+node_exporter_port: 9100
+
+# GitHub settings for service deployment
+# Generate PAT at https://github.com/settings/tokens with 'repo' and 'read:packages' scopes
+# Encrypt with: ansible-vault encrypt_string 'ghp_xxx' --name 'github_token'
+github_token: !vault |
+  $ANSIBLE_VAULT;1.1;AES256
+  33326333646632396365353335373532666232656530666132653432663563323365626232366264
+  6335323936633564393065643062663238616565646263330a623634363735373233313262373936
+  34356338373936336139376166313962626435336161333038326263383137643936646533386237
+  3031663037323766630a353139343638323165383166613963613537383962366264303165623564
+  61393333623133386238623637666635626332306532643937633631356563636231666639356535
+  6437366133323730366230633164613665303735633839386666
+ghcr_username: "vladmesh"

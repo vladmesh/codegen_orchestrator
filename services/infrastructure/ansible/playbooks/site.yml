@@ -1,0 +1,32 @@
+---
+# Main playbook - run this to fully configure the server
+- name: Configure production server
+  hosts: prod
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../services.yml
+
+  pre_tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+  roles:
+    - role: common
+      tags: [common]
+    - role: security
+      tags: [security]
+    - role: docker
+      tags: [docker]
+    - role: secrets
+      tags: [secrets, services]
+    - role: services
+      tags: [services]
+    - role: caddy
+      tags: [caddy, services]
+    - role: backup
+      tags: [backup]
+    - role: monitoring
+      tags: [monitoring]

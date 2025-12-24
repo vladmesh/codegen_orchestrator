@@ -1,0 +1,40 @@
+---
+- name: Create monitoring directory
+  file:
+    path: /opt/monitoring
+    state: directory
+    mode: '0755'
+  when: monitoring_enabled
+
+- name: Create node_exporter docker-compose file
+  copy:
+    dest: /opt/monitoring/docker-compose.yml
+    content: |
+      version: "3.8"
+
+      services:
+        node-exporter:
+          image: prom/node-exporter:latest
+          container_name: node-exporter
+          restart: unless-stopped
+          pid: host
+          ports:
+            - "{{ node_exporter_port }}:9100"
+          volumes:
+            - /proc:/host/proc:ro
+            - /sys:/host/sys:ro
+            - /:/rootfs:ro
+          command:
+            - '--path.procfs=/host/proc'
+            - '--path.sysfs=/host/sys'
+            - '--path.rootfs=/rootfs'
+            - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    mode: '0644'
+  when: monitoring_enabled
+  notify: restart monitoring
+
+- name: Start monitoring stack
+  community.docker.docker_compose_v2:
+    project_src: /opt/monitoring
+    state: present
+  when: monitoring_enabled

@@ -1,0 +1,29 @@
+---
+- name: Create Caddy directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - "{{ caddy_data_dir }}"
+    - "{{ caddy_config_dir }}"
+    - /opt/caddy
+
+- name: Generate Caddyfile from services
+  template:
+    src: Caddyfile.j2
+    dest: /opt/caddy/Caddyfile
+    mode: '0644'
+  notify: reload caddy
+
+- name: Create Caddy docker-compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/caddy/docker-compose.yml
+    mode: '0644'
+  notify: restart caddy
+
+- name: Start Caddy
+  community.docker.docker_compose_v2:
+    project_src: /opt/caddy
+    state: present

@@ -1,0 +1,39 @@
+---
+- name: Create services base directory
+  file:
+    path: /opt/services
+    state: directory
+    mode: '0755'
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+
+- name: Deploy service deployment script
+  template:
+    src: deploy.sh.j2
+    dest: /opt/services/deploy.sh
+    mode: '0700'
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+
+- name: Create directory for each service
+  file:
+    path: "/opt/services/{{ item.name }}"
+    state: directory
+    mode: '0755'
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+  loop: "{{ services }}"
+  when: services | length > 0
+
+- name: Ensure service directories are owned by deploy user (recursive)
+  file:
+    path: "/opt/services/{{ item.name }}"
+    state: directory
+    recurse: yes
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+  loop: "{{ services }}"
+  when: services | length > 0
+
+# Note: docker-compose files and .env are deployed by each service's own CI/CD workflow
+# Ansible only prepares directories and Caddy config

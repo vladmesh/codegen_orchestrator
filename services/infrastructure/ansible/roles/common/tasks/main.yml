@@ -1,0 +1,28 @@
+---
+- name: Install base packages
+  apt:
+    name: "{{ base_packages }}"
+    state: present
+
+- name: Set timezone
+  timezone:
+    name: UTC
+
+- name: Ensure deploy user exists
+  user:
+    name: "{{ deploy_user }}"
+    groups: "{{ deploy_group }}"
+    shell: /bin/bash
+    create_home: yes
+
+- name: Add SSH key for deploy user
+  authorized_key:
+    user: "{{ deploy_user }}"
+    key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+
+- name: Allow sudo without password for deploy user
+  copy:
+    dest: "/etc/sudoers.d/{{ deploy_user }}"
+    content: "{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    mode: '0440'
+    validate: '/usr/sbin/visudo -cf %s'
