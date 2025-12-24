@@ -1,0 +1,198 @@
+---
+# Provision Server Playbook
+# Автоматическая базовая настройка сервера для Codegen Orchestrator
+# Usage: ansible-playbook -i inventory/prod.ini playbooks/provision_server.yml -e "target_host=vps-267179"
+
+- name: Provision server for Codegen Orchestrator
+  hosts: "{{ target_host | default('all') }}"
+  become: true
+  vars_files:
+    - ../group_vars/provision_vars.yml
+  
+  pre_tasks:
+    - name: Wait for server to be reachable
+      wait_for_connection:
+        timeout: 60
+    
+    - name: Gather facts
+      setup:
+
+  tasks:
+    # ========================================
+    # 1. SSH Configuration
+    # ========================================
+    - name: Install SSH public key for orchestrator
+      authorized_key:
+        user: root
+        key: "{{ ssh_public_key }}"
+        state: present
+      tags: [ssh]
+
+    - name: Disable password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+      when: disable_password_auth
+      notify: Restart SSH
+      tags: [ssh]
+
+    - name: Disable root password login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin prohibit-password'
+        state: present
+      notify: Restart SSH
+      tags: [ssh]
+
+    # ========================================
+    # 2. System Updates
+    # ========================================
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      tags: [system]
+
+    - name: Upgrade all packages
+      apt:
+        upgrade: dist
+        autoremove: yes
+        autoclean: yes
+      tags: [system]
+
+    # ========================================
+    # 3. Essential Tools Installation
+    # ========================================
+    - name: Install essential packages
+      apt:
+        name: "{{ essential_packages }}"
+        state: present
+      tags: [packages]
+
+    # ========================================
+    # 4. Docker Installation
+    # ========================================
+    - name: Install Docker prerequisites
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+      tags: [docker]
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      tags: [docker]
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+      tags: [docker]
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+      tags: [docker]
+
+    - name: Ensure Docker service is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      tags: [docker]
+
+    # ========================================
+    # 5. Firewall (UFW) Configuration
+    # ========================================
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+      tags: [firewall]
+
+    - name: Allow SSH through firewall
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+      tags: [firewall]
+
+    - name: Allow HTTP through firewall
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+      tags: [firewall]
+
+    - name: Allow HTTPS through firewall
+      ufw:
+        rule: allow
+        port: '443'
+        proto: tcp
+      tags: [firewall]
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+      tags: [firewall]
+
+    # ========================================
+    # 6. System Configuration
+    # ========================================
+    - name: Set timezone
+      timezone:
+        name: "{{ timezone }}"
+      tags: [system]
+
+    - name: Set hostname
+      hostname:
+        name: "{{ server_hostname | default(inventory_hostname) }}"
+      tags: [system]
+
+    # ========================================
+    # 7. Verification
+    # ========================================
+    - name: Verify Docker is running
+      command: docker --version
+      register: docker_version
+      changed_when: false
+      tags: [verify]
+
+    - name: Verify UFW is active
+      command: ufw status
+      register: ufw_status
+      changed_when: false
+      tags: [verify]
+
+    - name: Display verification results
+      debug:
+        msg:
+          - "Docker version: {{ docker_version.stdout }}"
+          - "UFW status: {{ ufw_status.stdout_lines[0] }}"
+      tags: [verify]
+
+  handlers:
+    - name: Restart SSH
+      systemd:
+        name: sshd
+        state: restarted
+
+  post_tasks:
+    - name: Provisioning complete
+      debug:
+        msg: "Server {{ inventory_hostname }} has been successfully provisioned!"

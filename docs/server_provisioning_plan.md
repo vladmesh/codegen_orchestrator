@@ -653,16 +653,23 @@ NOTIFICATION_RATE_LIMIT=10            # Max notifications per user per hour
 ### Completed ✅
 - **Phase 1**: Database models extended (Server, User, Incident)
 - **Phase 2**: Time4VPS client extended with password reset methods
+- **Phase 3**: API endpoints (incidents router + server provisioning endpoints)
+- **Phase 4**: Ansible playbooks (provision_server.yml + health_check.yml + vars)
 - **Bonus**: Fixed migration file permissions (docker-compose user configuration)
 
-### In Progress 🔄
-- **Phase 3**: API endpoints for user/incident management
+### Completed ✅
+- **Phase 1**: Database models extended (Server, User, Incident)
+- **Phase 2**: Time4VPS client extended with password reset methods
+- **Phase 3**: API endpoints for incident management and server provisioning
+- **Phase 4**: Ansible playbooks (provision_server.yml, health_check.yml)
 
 ### Next Steps
 
 1. ✅ Review and approve this plan
 2. ✅ Phase 1 - Models completed
 3. ✅ Phase 2 - Time4VPS API integration completed
-4. ⏭️ Continue with Phase 3 (API Endpoints)
-5. ⏭️ Implement Provisioner Node (Phase 5)
-6. ⏭️ Use FORCE_REBUILD for end-to-end testing
+4. ✅ Phase 3 - API Endpoints completed
+5. ✅ Phase 4 - Ansible Playbooks completed
+6. ⏭️ Implement Provisioner Node (Phase 5)
+7. ⏭️ Implement Health Checker (Phase 6)
+8. ⏭️ Use FORCE_REBUILD for end-to-end testing

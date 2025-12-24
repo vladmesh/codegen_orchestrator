@@ -7,7 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from .nodes import architect, brainstorm, zavhoz, developer, devops
+from .nodes import architect, brainstorm, devops, developer, provisioner, zavhoz
 
 
 class OrchestratorState(TypedDict):
@@ -27,6 +27,11 @@ class OrchestratorState(TypedDict):
     repo_info: dict | None
     project_complexity: str | None
     architect_complete: bool
+
+    # Provisioning
+    server_to_provision: str | None      # Server handle to provision
+    is_incident_recovery: bool            # If True, redeploy services after
+    provisioning_result: dict | None      # Result from provisioner
 
     # Status
     current_agent: str
@@ -163,6 +168,7 @@ def create_graph() -> StateGraph:
     graph.add_node("developer", developer.run)
     graph.add_node("developer_spawn_worker", developer.spawn_developer_worker)
     graph.add_node("devops", devops.run)
+    graph.add_node("provisioner", provisioner.run)
 
     # Add edges
     graph.add_edge(START, "brainstorm")
@@ -241,6 +247,9 @@ def create_graph() -> StateGraph:
 
     # After devops: END
     graph.add_edge("devops", END)
+    
+    # Provisioner: END (standalone operation)
+    graph.add_edge("provisioner", END)
 
     memory = MemorySaver()
     return graph.compile(checkpointer=memory)

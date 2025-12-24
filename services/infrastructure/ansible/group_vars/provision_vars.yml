@@ -1,0 +1,44 @@
+---
+# Provision Variables
+# Переменные для кастомизации provisioning
+
+# ========================================
+# SSH Configuration
+# ========================================
+ssh_public_key: "{{ lookup('env', 'ORCHESTRATOR_SSH_PUBLIC_KEY') }}"
+disable_password_auth: true
+
+# ========================================
+# Firewall Configuration
+# ========================================
+firewall_allowed_ports:
+  - 22   # SSH
+  - 80   # HTTP
+  - 443  # HTTPS
+
+# ========================================
+# Docker Configuration
+# ========================================
+docker_version: "latest"
+docker_compose_version: "v2.24.0"
+
+# ========================================
+# System Configuration
+# ========================================
+timezone: "UTC"
+# server_hostname будет взят из inventory_hostname если не указан
+
+# ========================================
+# Essential Packages
+# ========================================
+essential_packages:
+  - curl
+  - git
+  - htop
+  - vim
+  - net-tools
+  - ca-certificates
+  - gnupg
+  - wget
+  - unzip
+  - software-properties-common

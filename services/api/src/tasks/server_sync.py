@@ -63,6 +63,9 @@ async def sync_servers_worker():
                     if now - last_details_sync > DETAILS_SYNC_INTERVAL:
                         await _sync_server_details(db, client)
                         last_details_sync = now
+                    
+                    # Check for servers requiring provisioning
+                    await _check_provisioning_triggers(db)
 
         except Exception as e:
             logger.error(f"Error in Server Sync Worker: {e}", exc_info=True)
@@ -107,8 +110,19 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
                 existing.labels = {**existing.labels, "provider_id": str(server_id)}
         else:
             # New Server Discovered
-            status = "discovered" if not is_ghost else "reserved"
+            # Check if it's a ghost server or managed
             is_managed = not is_ghost
+            
+            # Managed servers need provisioning by default
+            if is_managed:
+                status = "pending_setup"
+                logger.info(
+                    f"Discovered new MANAGED server: {ip} (handle: vps-{server_id}). "
+                    "Status set to PENDING_SETUP - requires provisioning."
+                )
+            else:
+                status = "reserved"  # Ghost servers are reserved
+                logger.info(f"Discovered ghost server: {ip} (handle: vps-{server_id})")
 
             new_server = Server(
                 handle=f"vps-{server_id}",
@@ -173,3 +187,38 @@ async def _sync_server_details(db: AsyncSession, client: Time4VPSClient):
 
     await db.commit()
     logger.info(f"Updated details for {updated_count} servers")
+
+
+async def _check_provisioning_triggers(db: AsyncSession):
+    """Check for servers that need provisioning.
+    
+    Looks for:
+    - PENDING_SETUP servers (new managed servers)
+    - FORCE_REBUILD servers (manual trigger)
+    """
+    # Check for FORCE_REBUILD
+    result = await db.execute(
+        select(Server).where(Server.status == "force_rebuild")
+    )
+    force_rebuild_servers = result.scalars().all()
+    
+    for server in force_rebuild_servers:
+        logger.warning(
+            f"🔥 Server {server.handle} has FORCE_REBUILD status. "
+            "Manual provisioning trigger required via LangGraph."
+        )
+        # TODO: Trigger provisioner automatically
+        # For now, requires manual intervention
+    
+    # Check for PENDING_SETUP
+    result = await db.execute(
+        select(Server).where(Server.status == "pending_setup")
+    )
+    pending_servers = result.scalars().all()
+    
+    for server in pending_servers:
+        logger.info(
+            f"📋 Server {server.handle} is PENDING_SETUP. "
+            "Automatic provisioning not yet implemented - manual trigger required."
+        )
+        # TODO: Auto-trigger provisioner for pending_setup servers

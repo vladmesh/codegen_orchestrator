@@ -163,6 +163,7 @@ async def allocate_port(
         return allocation
 
 
+
 @tool
 async def get_next_available_port(
     server_handle: Annotated[str, "Handle of the server"],
@@ -181,3 +182,66 @@ async def get_next_available_port(
     while port in allocated:
         port += 1
     return port
+
+
+@tool
+async def update_server_status(
+    handle: Annotated[str, "Server handle"],
+    status: Annotated[str, "New status (e.g., 'provisioning', 'ready', 'error')"],
+) -> dict[str, Any]:
+    """Update server status in database.
+    
+    Used by provisioner to track provisioning progress.
+    """
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.patch(
+            f"{INTERNAL_API_URL}/api/servers/{handle}",
+            json={"status": status}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+@tool
+async def create_incident(
+    server_handle: Annotated[str, "Server handle"],
+    incident_type: Annotated[str, "Type of incident (e.g., 'provisioning_failed')"],
+    details: Annotated[dict, "Incident details"] = None,
+) -> dict[str, Any]:
+    """Create an incident record for tracking issues.
+    
+    Used when provisioning or other operations fail.
+    """
+    if details is None:
+        details = {}
+        
+    payload = {
+        "server_handle": server_handle,
+        "incident_type": incident_type,
+        "details": details,
+        "affected_services": []
+    }
+    
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.post(
+            f"{INTERNAL_API_URL}/api/incidents/",
+            json=payload
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+@tool
+async def get_services_on_server(
+    server_handle: Annotated[str, "Server handle"],
+) -> list[dict[str, Any]]:
+    """Get all services deployed on a server.
+    
+    Used for incident recovery to know which services need redeployment.
+    """
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.get(f"{INTERNAL_API_URL}/api/servers/{server_handle}/ports")
+        resp.raise_for_status()
+        # Port allocations represent deployed services
+        return resp.json()
+

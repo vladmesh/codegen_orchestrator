@@ -1,0 +1,124 @@
+---
+# Health Check Playbook
+# Проверка состояния сервера
+# Usage: ansible-playbook -i inventory/prod.ini playbooks/health_check.yml -e "target_host=vps-267179"
+
+- name: Health check for server
+  hosts: "{{ target_host | default('all') }}"
+  become: true
+  gather_facts: true
+  
+  tasks:
+    # ========================================
+    # 1. SSH Connectivity (implicit via Ansible)
+    # ========================================
+    - name: Check SSH connectivity
+      ping:
+      register: ssh_check
+      ignore_errors: yes
+
+    # ========================================
+    # 2. Docker Daemon Status
+    # ========================================
+    - name: Check Docker daemon status
+      systemd:
+        name: docker
+      register: docker_status
+      ignore_errors: yes
+
+    - name: Get Docker version
+      command: docker --version
+      register: docker_version
+      changed_when: false
+      ignore_errors: yes
+
+    # ========================================
+    # 3. Disk Space Check
+    # ========================================
+    - name: Get disk usage
+      shell: df -h / | tail -1 | awk '{print $5}' | sed 's/%//'
+      register: disk_usage_percent
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Check disk space availability
+      set_fact:
+        disk_status: >-
+          {% if disk_usage_percent.stdout | int < 90 %}healthy{% elif disk_usage_percent.stdout | int < 95 %}degraded{% else %}critical{% endif %}
+
+    # ========================================
+    # 4. Firewall Status
+    # ========================================
+    - name: Check UFW status
+      command: ufw status
+      register: ufw_status
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Parse UFW status
+      set_fact:
+        firewall_active: "{{ 'active' in ufw_status.stdout.lower() }}"
+
+    # ========================================
+    # 5. Memory Usage (Optional)
+    # ========================================
+    - name: Get memory usage
+      shell: free | grep Mem | awk '{printf("%.0f", $3/$2 * 100)}'
+      register: memory_usage_percent
+      changed_when: false
+      ignore_errors: yes
+
+    # ========================================
+    # 6. Aggregate Health Status
+    # ========================================
+    - name: Determine overall health status
+      set_fact:
+        overall_status: >-
+          {% if ssh_check.failed or docker_status.failed or disk_status == 'critical' %}critical
+          {% elif disk_status == 'degraded' or memory_usage_percent.stdout | int > 90 %}degraded
+          {% else %}healthy{% endif %}
+
+    # ========================================
+    # 7. Display Results
+    # ========================================
+    - name: Display health check results
+      debug:
+        msg:
+          - "=========================================="
+          - "Health Check Results for {{ inventory_hostname }}"
+          - "=========================================="
+          - "Overall Status: {{ overall_status | upper }}"
+          - "SSH Connectivity: {{ 'OK' if not ssh_check.failed else 'FAILED' }}"
+          - "Docker Status: {{ docker_status.status.ActiveState | default('unknown') }}"
+          - "Docker Version: {{ docker_version.stdout | default('N/A') }}"
+          - "Disk Usage: {{ disk_usage_percent.stdout }}% ({{ disk_status }})"
+          - "Memory Usage: {{ memory_usage_percent.stdout }}%"
+          - "Firewall (UFW): {{ 'active' if firewall_active else 'inactive' }}"
+          - "=========================================="
+
+    # ========================================
+    # 8. Save Results to JSON (for automation)
+    # ========================================
+    - name: Create health check result
+      set_fact:
+        health_check_result:
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          hostname: "{{ inventory_hostname }}"
+          overall_status: "{{ overall_status }}"
+          checks:
+            ssh:
+              status: "{{ 'ok' if not ssh_check.failed else 'failed' }}"
+            docker:
+              status: "{{ docker_status.status.ActiveState | default('unknown') }}"
+              version: "{{ docker_version.stdout | default('N/A') }}"
+            disk:
+              usage_percent: "{{ disk_usage_percent.stdout | int }}"
+              status: "{{ disk_status }}"
+            memory:
+              usage_percent: "{{ memory_usage_percent.stdout | int }}"
+            firewall:
+              active: "{{ firewall_active }}"
+
+    - name: Output health check JSON
+      debug:
+        var: health_check_result
