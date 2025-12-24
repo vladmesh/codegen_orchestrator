@@ -1,6 +1,6 @@
 """LangGraph nodes package."""
 
-from . import architect, brainstorm, zavhoz
+from . import architect, brainstorm, zavhoz, developer, devops
 
-__all__ = ["architect", "brainstorm", "zavhoz"]
+__all__ = ["architect", "brainstorm", "zavhoz", "developer", "devops"]
 

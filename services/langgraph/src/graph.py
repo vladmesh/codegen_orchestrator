@@ -7,7 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from .nodes import architect, brainstorm, zavhoz
+from .nodes import architect, brainstorm, zavhoz, developer, devops
 
 
 class OrchestratorState(TypedDict):
@@ -25,6 +25,7 @@ class OrchestratorState(TypedDict):
 
     # Repository info (after architect creates it)
     repo_info: dict | None
+    project_complexity: str | None
     architect_complete: bool
 
     # Status
@@ -114,6 +115,15 @@ def route_after_architect(state: OrchestratorState) -> str:
     return END
 
 
+def route_after_developer(state: OrchestratorState) -> str:
+    """Decide where to go after developer.
+    
+    Routing logic:
+    - Always spawn worker to implement logic (for now)
+    """
+    return "developer_spawn_worker"
+
+
 def route_after_architect_tools(state: OrchestratorState) -> str:
     """Decide where to go after architect tools execution.
     
@@ -123,6 +133,19 @@ def route_after_architect_tools(state: OrchestratorState) -> str:
     if state.get("repo_info"):
         return "architect_spawn_worker"
     return "architect"
+
+
+def route_after_architect_spawn_worker(state: OrchestratorState) -> str:
+    """Decide where to go after architect spawns worker.
+    
+    Routing logic:
+    - If project is simple -> Skip Developer, go to DevOps
+    - Otherwise -> Developer
+    """
+    complexity = state.get("project_complexity", "complex")
+    if complexity == "simple":
+        return "devops"
+    return "developer"
 
 
 def create_graph() -> StateGraph:
@@ -137,6 +160,9 @@ def create_graph() -> StateGraph:
     graph.add_node("architect", architect.run)
     graph.add_node("architect_tools", architect.execute_tools)
     graph.add_node("architect_spawn_worker", architect.spawn_factory_worker)
+    graph.add_node("developer", developer.run)
+    graph.add_node("developer_spawn_worker", developer.spawn_developer_worker)
+    graph.add_node("devops", devops.run)
 
     # Add edges
     graph.add_edge(START, "brainstorm")
@@ -190,8 +216,31 @@ def create_graph() -> StateGraph:
         },
     )
 
-    # After spawning worker: END (for now, later will go to Developer)
-    graph.add_edge("architect_spawn_worker", END)
+    # After spawning worker: Proceed to Developer or DevOps
+    graph.add_conditional_edges(
+        "architect_spawn_worker",
+        route_after_architect_spawn_worker,
+        {
+            "developer": "developer",
+            "devops": "devops",
+        },
+    )
+
+    # Developer flow
+    graph.add_conditional_edges(
+        "developer",
+        route_after_developer,
+        {
+            "developer_spawn_worker": "developer_spawn_worker",
+            END: END,
+        },
+    )
+
+    # After developer spawn worker: Proceed to DevOps
+    graph.add_edge("developer_spawn_worker", "devops")
+
+    # After devops: END
+    graph.add_edge("devops", END)
 
     memory = MemorySaver()
     return graph.compile(checkpointer=memory)

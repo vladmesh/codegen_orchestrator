@@ -102,5 +102,4 @@ make run       # Запуск оркестратора
 
 - **Новый агент**: `ARCHITECTURE.md`, `docs/NODES.md`, `src/agents/`
 - **Интеграция с service-template**: `/home/vlad/projects/service-template/docs/ARCHITECTURE.md`
-- **Интеграция с prod_infra**: `/home/vlad/projects/prod_infra/README.md`
 - **Телеграм бот**: `src/telegram/`

@@ -1,0 +1,47 @@
+---
+- name: Deploy project via Docker Compose
+  hosts: all
+  gather_facts: no
+  vars:
+    project_dir: "/opt/services/{{ project_name }}"
+    
+  tasks:
+    - name: Ensure project directory exists
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user | default('root') }}"
+        group: "{{ ansible_user | default('root') }}"
+
+    - name: Download docker-compose file
+      get_url:
+        url: "https://{{ github_token }}@raw.githubusercontent.com/{{ repo_full_name }}/main/docker-compose-prod.yml"
+        dest: "{{ project_dir }}/docker-compose.yml"
+        force: yes
+        mode: '0644'
+
+    - name: Create .env file
+      copy:
+        dest: "{{ project_dir }}/.env"
+        content: |
+          PORT={{ port }}
+          # Add other env vars here if needed
+        mode: '0600'
+
+    - name: Login to GitHub Container Registry
+      command:
+        cmd: echo "{{ github_token }}" | docker login ghcr.io -u {{ repo_full_name.split('/')[0] }} --password-stdin
+      register: login_result
+      changed_when: login_result.rc == 0
+
+    - name: Pull and restart services
+      command:
+        cmd: docker compose up -d --pull always
+        chdir: "{{ project_dir }}"
+      register: compose_result
+      changed_when: "'Running' not in compose_result.stderr"
+
+    - name: Prune unused images
+      command: docker image prune -f
+      failed_when: false

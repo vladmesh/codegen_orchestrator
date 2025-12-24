@@ -15,9 +15,10 @@ async def create_project(
     name: Annotated[str, "Project name in snake_case (e.g., 'weather_bot')"],
     description: Annotated[str, "Brief project description"],
     modules: Annotated[
-        list[str], "Modules to generate: backend, telegram_worker, notifications_worker"
+        list[str], "Modules to generate: backend, tg_bot, notifications, frontend"
     ],
     entry_points: Annotated[list[str], "Entry points: telegram, frontend, api"],
+    telegram_token: Annotated[str | None, "Telegram Bot Token (if applicable)"] = None,
 ) -> dict[str, Any]:
     """Create a new project in the database.
 
@@ -28,17 +29,22 @@ async def create_project(
     """
     project_id = str(uuid.uuid4())[:8]
 
+    config_payload = {
+        "description": description,
+        "modules": modules,
+        "entry_points": entry_points,
+        "estimated_ram_mb": 512,
+        "estimated_disk_mb": 2048,
+    }
+
+    if telegram_token:
+        config_payload["secrets"] = {"telegram_token": telegram_token}
+
     payload = {
         "id": project_id,
         "name": name,
         "status": "pending_resources",
-        "config": {
-            "description": description,
-            "modules": modules,
-            "entry_points": entry_points,
-            "estimated_ram_mb": 512,
-            "estimated_disk_mb": 2048,
-        },
+        "config": config_payload,
     }
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -142,7 +148,19 @@ async def allocate_port(
             f"{INTERNAL_API_URL}/api/servers/{server_handle}/ports", json=payload
         )
         resp.raise_for_status()
-        return resp.json()
+        allocation = resp.json()
+
+        # Fetch server info to ensure downstream nodes (DevOps) have the IP
+        try:
+            resp_server = await client.get(f"{INTERNAL_API_URL}/api/servers/{server_handle}")
+            if resp_server.status_code == 200:
+                server_info = resp_server.json()
+                allocation["server_ip"] = server_info.get("public_ip") or server_info.get("host")
+        except Exception:
+            # Don't fail the allocation if we can't get the IP, but it might cause issues later
+            pass
+
+        return allocation
 
 
 @tool
