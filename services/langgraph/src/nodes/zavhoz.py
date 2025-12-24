@@ -18,7 +18,7 @@ tools = [
 ]
 
 # Initialize LLM with tools
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm = ChatOpenAI(model="gpt-5", temperature=0)
 llm_with_tools = llm.bind_tools(tools)
 
 
