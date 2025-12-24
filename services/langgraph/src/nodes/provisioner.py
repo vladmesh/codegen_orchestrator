@@ -371,12 +371,12 @@ async def reinstall_and_provision(
     server_handle: str,
     server_id: int,
     server_ip: str,
-    os_template: str,
-    ssh_public_key: str
+    os_template: str
 ) -> tuple[bool, str]:
     """Reinstall OS and provision server.
     
     Used when password reset is not sufficient (SSH password auth disabled).
+    Flow: Reinstall OS -> Reset password -> Ansible with password
     
     Args:
         time4vps_client: Time4VPS API client
@@ -384,7 +384,6 @@ async def reinstall_and_provision(
         server_id: Time4VPS server ID
         server_ip: Server IP address
         os_template: OS template to install
-        ssh_public_key: SSH public key for access
     
     Returns:
         Tuple of (success: bool, message: str)
@@ -392,11 +391,10 @@ async def reinstall_and_provision(
     logger.info(f"🔄 Starting full OS reinstall for {server_handle} (ID: {server_id})")
     
     try:
-        # Step 1: Trigger reinstall
+        # Step 1: Trigger reinstall (without ssh_key - it doesn't work reliably)
         task_id = await time4vps_client.reinstall_server(
             server_id=server_id,
-            os_template=os_template,
-            ssh_key=ssh_public_key
+            os_template=os_template
         )
         
         logger.info(f"Reinstall task created: {task_id}. Waiting for completion...")
@@ -418,13 +416,20 @@ async def reinstall_and_provision(
         
         logger.info(f"OS reinstall completed for {server_handle}")
         
-        # Step 3: Wait a bit for server to boot
+        # Step 3: Wait for server to boot
         import asyncio
-        logger.info("Waiting 30s for server to boot...")
-        await asyncio.sleep(30)
+        logger.info("Waiting 60s for server to fully boot...")
+        await asyncio.sleep(60)
         
-        # Step 4: Run Ansible with SSH key
-        success, output = run_provisioning_playbook_with_key(server_ip, server_handle)
+        # Step 4: Reset password to get SSH access
+        logger.info("Resetting password after reinstall...")
+        password = await reset_server_password(time4vps_client, server_handle)
+        
+        if not password:
+            return False, "Password reset failed after reinstall"
+        
+        # Step 5: Run Ansible with password
+        success, output = run_provisioning_playbook(server_ip, password, server_handle)
         
         if success:
             return True, "OS reinstall and provisioning completed successfully"
@@ -532,22 +537,12 @@ async def run(state: dict) -> dict:
     
     # ===== REINSTALL PATH =====
     if use_reinstall:
-        ssh_key = get_ssh_public_key()
-        if not ssh_key:
-            logger.error("SSH public key not found for reinstall")
-            await update_server_status_in_db(server_handle, "error")
-            return {
-                "messages": [AIMessage(content="❌ SSH public key not found in /root/.ssh/")],
-                "errors": state.get("errors", []) + ["Missing SSH public key"]
-            }
-        
         success, message = await reinstall_and_provision(
             time4vps_client=time4vps_client,
             server_handle=server_handle,
             server_id=server_id,
             server_ip=server_ip,
-            os_template=os_template,
-            ssh_public_key=ssh_key
+            os_template=os_template
         )
         
         if success:

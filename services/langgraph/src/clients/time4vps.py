@@ -198,6 +198,12 @@ class Time4VPSClient:
             )
             resp.raise_for_status()
             result = resp.json()
+            logger.debug(f"Reinstall API response: {result}")
+            
+            if "task_id" not in result:
+                logger.error(f"Unexpected reinstall response: {result}")
+                raise ValueError(f"No task_id in reinstall response: {result}")
+                
             task_id = result["task_id"]
             logger.info(f"Reinstall task created: {task_id}")
             return task_id
