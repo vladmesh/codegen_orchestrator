@@ -53,6 +53,50 @@ async def create_project(
 
 
 @tool
+async def list_projects(
+    status: Annotated[str | None, "Optional project status filter"] = None,
+) -> list[dict[str, Any]]:
+    """List projects from the database.
+
+    Args:
+        status: Optional project status to filter by.
+
+    Returns:
+        List of project records.
+    """
+    params = {"status": status} if status else None
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.get(f"{INTERNAL_API_URL}/projects/", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+
+@tool
+async def get_project_status(
+    project_id: Annotated[str, "Project ID"],
+) -> dict[str, Any]:
+    """Get a single project's status and metadata."""
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.get(f"{INTERNAL_API_URL}/projects/{project_id}")
+        resp.raise_for_status()
+        return resp.json()
+
+
+@tool
+async def create_project_intent(
+    intent: Annotated[str, "Intent type: new_project | update_project"],
+    summary: Annotated[str, "Short summary of the user's request"],
+    project_id: Annotated[str | None, "Project ID if applicable"] = None,
+) -> dict[str, Any]:
+    """Create a project intent for the orchestrator flow.
+
+    This does not persist anything to the database; it only returns
+    structured intent metadata for the Product Owner node.
+    """
+    return {"intent": intent, "summary": summary, "project_id": project_id}
+
+
+@tool
 async def list_managed_servers() -> list[dict[str, Any]]:
     """List all active, managed servers available for deployment.
 

@@ -7,7 +7,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from .nodes import architect, brainstorm, developer, devops, provisioner, zavhoz
+try:
+    from langgraph.graph import Send
+except ImportError:  # pragma: no cover - fallback for older LangGraph
+    from langgraph.pregel import Send
+
+from .nodes import architect, brainstorm, developer, devops, product_owner, provisioner, zavhoz
 
 
 class OrchestratorState(TypedDict):
@@ -19,6 +24,8 @@ class OrchestratorState(TypedDict):
     # Current project
     current_project: str | None
     project_spec: dict | None
+    project_intent: dict | None
+    po_intent: str | None
 
     # Resources (handle -> resource_id mapping)
     allocated_resources: dict
@@ -41,12 +48,12 @@ class OrchestratorState(TypedDict):
     deployed_url: str | None
 
 
-def route_after_brainstorm(state: OrchestratorState) -> str:
+def route_after_brainstorm(state: OrchestratorState) -> str | list[Send]:
     """Decide where to go after brainstorm.
 
     Routing logic:
     - If LLM made tool calls -> execute them
-    - If project was created -> proceed to Zavhoz
+    - If project was created -> dispatch Zavhoz + Architect in parallel
     - Otherwise -> END (waiting for user input)
     """
     messages = state.get("messages", [])
@@ -59,9 +66,12 @@ def route_after_brainstorm(state: OrchestratorState) -> str:
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "brainstorm_tools"
 
-    # If project was created, proceed to resource allocation
+    # If project was created, dispatch resources + architect in parallel
     if state.get("current_project"):
-        return "zavhoz"
+        return [
+            Send("zavhoz", {}),
+            Send("architect", {}),
+        ]
 
     # Otherwise END - LLM responded with a question, wait for user
     return END
@@ -72,8 +82,7 @@ def route_after_zavhoz(state: OrchestratorState) -> str:
 
     Routing logic:
     - If LLM made tool calls -> execute them
-    - If resources allocated -> proceed to Architect
-    - Otherwise -> END
+    - Otherwise -> END (Architect runs in parallel)
     """
     messages = state.get("messages", [])
     if not messages:
@@ -85,12 +94,36 @@ def route_after_zavhoz(state: OrchestratorState) -> str:
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "zavhoz_tools"
 
-    # Check if resources are allocated (has at least one resource)
-    allocated = state.get("allocated_resources", {})
-    if allocated:
-        return "architect"
+    return END
 
-    # Otherwise END - Zavhoz finished or needs input
+
+def route_after_product_owner(state: OrchestratorState) -> str:
+    """Decide where to go after product owner.
+
+    Routing logic:
+    - If LLM made tool calls -> execute them
+    - If intent is new project -> proceed to Brainstorm
+    - Otherwise -> END
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return END
+
+    last_message = messages[-1]
+
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "product_owner_tools"
+
+    if state.get("po_intent") == "new_project":
+        return "brainstorm"
+
+    return END
+
+
+def route_after_product_owner_tools(state: OrchestratorState) -> str:
+    """Decide where to go after product owner tools execution."""
+    if state.get("po_intent") == "new_project":
+        return "brainstorm"
     return END
 
 
@@ -158,6 +191,8 @@ def create_graph() -> StateGraph:
     graph = StateGraph(OrchestratorState)
 
     # Add nodes
+    graph.add_node("product_owner", product_owner.run)
+    graph.add_node("product_owner_tools", product_owner.execute_tools)
     graph.add_node("brainstorm", brainstorm.run)
     graph.add_node("brainstorm_tools", brainstorm.execute_tools)
     graph.add_node("zavhoz", zavhoz.run)
@@ -177,38 +212,53 @@ def create_graph() -> StateGraph:
         """Route from start based on intent."""
         if state.get("server_to_provision"):
             return "provisioner"
-        return "brainstorm"
+        return "product_owner"
 
     graph.add_conditional_edges(
         START,
         route_start,
         {
-            "brainstorm": "brainstorm",
+            "product_owner": "product_owner",
             "provisioner": "provisioner",
         },
     )
 
-    # After brainstorm: either execute tools, go to zavhoz, or end
+    # After product owner: either execute tools, go to brainstorm, or end
+    graph.add_conditional_edges(
+        "product_owner",
+        route_after_product_owner,
+        {
+            "product_owner_tools": "product_owner_tools",
+            "brainstorm": "brainstorm",
+            END: END,
+        },
+    )
+
+    # After product owner tools: go to brainstorm or end
+    graph.add_conditional_edges(
+        "product_owner_tools",
+        route_after_product_owner_tools,
+        {
+            "brainstorm": "brainstorm",
+            END: END,
+        },
+    )
+
+    # After brainstorm: either execute tools, dispatch or end
     graph.add_conditional_edges(
         "brainstorm",
         route_after_brainstorm,
-        {
-            "brainstorm_tools": "brainstorm_tools",
-            "zavhoz": "zavhoz",
-            END: END,
-        },
     )
 
     # After brainstorm tools execution: back to brainstorm to process result
     graph.add_edge("brainstorm_tools", "brainstorm")
 
-    # After zavhoz: either execute tools, go to architect, or end
+    # After zavhoz: either execute tools or end
     graph.add_conditional_edges(
         "zavhoz",
         route_after_zavhoz,
         {
             "zavhoz_tools": "zavhoz_tools",
-            "architect": "architect",
             END: END,
         },
     )

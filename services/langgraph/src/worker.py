@@ -54,6 +54,8 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
             "messages": list(history),  # Pass all history
             "current_project": None,
             "project_spec": None,
+            "project_intent": None,
+            "po_intent": None,
             "allocated_resources": {},
             "current_agent": "",
             "errors": [],
@@ -157,6 +159,8 @@ async def process_provisioning_trigger(data: dict) -> None:
         # Initialize required fields
         "current_project": None,
         "project_spec": None,
+        "project_intent": None,
+        "po_intent": None,
         "allocated_resources": {},
         "deployed_url": None,
         "repo_info": None,

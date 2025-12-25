@@ -19,6 +19,8 @@ async def test_initial_state():
         "messages": [],
         "current_project": None,
         "project_spec": None,
+        "project_intent": None,
+        "po_intent": None,
         "allocated_resources": {},
         "current_agent": "",
         "errors": [],
