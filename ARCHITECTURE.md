@@ -31,22 +31,38 @@ class OrchestratorState(TypedDict):
     # Текущий проект
     current_project: str | None
     project_spec: dict | None  # ТЗ от Брейнсторма
+    project_intent: dict | None
+    po_intent: str | None
     
     # Ресурсы
     allocated_resources: dict  # {resource_type: resource_id}
     
     # Репозиторий (создаётся Архитектором)
     repo_info: dict | None  # {full_name, html_url, clone_url}
+    project_complexity: str | None  # "simple" | "complex"
     architect_complete: bool
+    
+    # Engineering Subgraph (Phase 3)
+    engineering_status: str  # "idle" | "working" | "done" | "blocked"
+    review_feedback: str | None
+    engineering_iterations: int
+    test_results: dict | None
+    
+    # Human-in-the-Loop (Phase 4)
+    needs_human_approval: bool
+    human_approval_reason: str | None
+    
+    # Provisioning
+    server_to_provision: str | None
+    is_incident_recovery: bool
+    provisioning_result: dict | None
     
     # Статус
     current_agent: str
-    pending_actions: list[str]
     errors: list[str]
     
     # Результаты
     deployed_url: str | None
-    test_results: dict | None
 ```
 
 ## Сервисы
@@ -59,6 +75,7 @@ class OrchestratorState(TypedDict):
 | `langgraph` | LangGraph worker, обрабатывает messages | - |
 | `telegram_bot` | Telegram интерфейс | - |
 | `worker-spawner` | Спавнит coding-worker контейнеры | - |
+| `scheduler` | Фоновые задачи (github_sync, server_sync, health_checker) | - |
 
 ### Worker Spawner
 
@@ -99,33 +116,34 @@ Docker-контейнер с Factory.ai Droid CLI для кодогенерац�
 docker build -t coding-worker:latest services/coding-worker/
 ```
 
-## Граф
+## Граф (Phase 3 & 4 Architecture)
 
-```python
-from langgraph.graph import StateGraph, END, START
-
-graph = StateGraph(OrchestratorState)
-
-# Добавляем узлы (агентов)
-graph.add_node("brainstorm", brainstorm.run)
-graph.add_node("brainstorm_tools", brainstorm.execute_tools)
-graph.add_node("zavhoz", zavhoz.run)
-graph.add_node("zavhoz_tools", zavhoz.execute_tools)
-graph.add_node("architect", architect.run)
-graph.add_node("architect_tools", architect.execute_tools)
-graph.add_node("architect_spawn_worker", architect.spawn_factory_worker)
-
-# Рёбра
-graph.add_edge(START, "brainstorm")
-graph.add_conditional_edges("brainstorm", route_after_brainstorm)
-graph.add_conditional_edges("zavhoz", route_after_zavhoz)
-graph.add_conditional_edges("architect", route_after_architect)
+```
+                              ┌─────────────────┐
+                     ┌───────▶│    Zavhoz       │──────▶ END
+                     │        │   (Resources)   │
+┌───────┐   ┌────────┴──┐     └─────────────────┘
+│ START │──▶│ Brainstorm │                              
+└───────┘   └────────┬──┘     ┌─────────────────────────────────────┐
+                     │        │     Engineering Subgraph            │
+                     └───────▶│  ┌────────┐  ┌───────────┐  ┌─────┐│
+                              │  │Architect│─▶│ Developer │─▶│Tester│◀───┐
+                              │  └────────┘  └───────────┘  └──┬──┘│    │
+                              │        │                       │   │ (max 3)
+                              │        └──────────────────────┘   │
+                              └───────────────────────────────────┘
+                                              │
+                                              ▼
+                                       ┌────────────┐
+                                       │   DevOps   │──── Deploy via Ansible
+                                       └────────────┘
 ```
 
-**Flow:**
-```
-START → Brainstorm → Zavhoz → Architect → Worker Spawner → Coding Worker → END
-```
+**Key Features:**
+- **Parallel Dispatch**: After Brainstorm, Zavhoz and Engineering run in parallel
+- **Engineering Loop**: Architect → Developer → Tester, loops up to 3 times on failure
+- **Human-in-the-Loop**: If 3 iterations fail, `needs_human_approval=True` → END
+- **Pre-flight Check**: DevOps only runs if `engineering_status="done"` AND `allocated_resources` exists
 
 ## Внешние зависимости
 

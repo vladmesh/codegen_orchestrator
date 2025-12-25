@@ -73,53 +73,51 @@
 
 ---
 
-## 🏗️ Phase 3: The Graph Hierarchy (Re-Architecture)
+## 🏗️ Phase 3: The Graph Hierarchy (Re-Architecture) [DONE]
 **Objective**: Move from specific linear flows to a delegated hierarchy using the Star/Tree topology.
 
-### 3.1 Graph Refactoring & Subgraphs
+### 3.1 Graph Refactoring & Subgraphs [DONE]
 *   **Concept**: Use **LangGraph Subgraphs** to encapsulate complexity.
 *   **Engineering Subgraph**:
     *   Combines `Architect`, `Developer`, and `Tester`.
-    *   Exposes a single node to the PO: "Develop Feature X".
-    *   Internally loops until verified.
+    *   Exposes a single node to the PO: "Engineering".
+    *   Internally loops until verified (max 3 iterations).
 *   **Topology**:
     *   **Level 1**: `User <-> PO`.
     *   **Level 2**:
         *   `PO -> Zavhoz` (Resources).
         *   `PO -> Engineering Subgraph` (Creation & Logic).
     *   **Level 3 (Inside Engineering)**:
-        *   `Architect <-> Developer` (Code Loop).
+        *   `Architect -> Developer` (Code Loop).
         *   `Tester` (Verification).
 
-### 3.2 State Management
+### 3.2 State Management [DONE]
 *   **Sub-Graph Tracking**:
-    *   `engineering_status`: `idle` | `working` | `blocked`.
-    *   `zavhoz_status`: `idle` | `working` | `done`.
+    *   `engineering_status`: `idle` | `working` | `done` | `blocked`.
+    *   `needs_human_approval`: boolean for Human-in-the-Loop.
+    *   `engineering_iterations`: counter for loop limit.
 
 ---
 
-## ⚙️ Phase 4: Engineering & Operations Integration
+## ⚙️ Phase 4: Engineering & Operations Integration [DONE]
 **Objective**: Connect the specialists loop and deployment.
 
-### 4.1 Architect's "Sub-Graph" & Human-in-the-Loop
-*   **Orchestration**: Architect naturally loops with Developer.
-    *   "Write code" -> Dev -> "Done" -> Arch -> "Review".
-*   **Human-in-the-Loop (Interruption)**:
-    *   Use LangGraph `interrupt` mechanism.
-    *   If Architect/Dev is stuck or needs confirmation:
-        *   Pause execution.
-        *   Notify User (via PO).
-        *   Wait for User Input (e.g., feedback or manual file edit).
-        *   Resume execution from the interruption point.
+### 4.1 Architect's "Sub-Graph" & Human-in-the-Loop [DONE]
+*   **Orchestration**: Architect loops with Developer inside Engineering Subgraph.
+*   **Human-in-the-Loop (Max Iterations)**:
+    *   If iterations >= 3 and tests still fail:
+        *   Set `needs_human_approval = True`.
+        *   Route to END (wait for user).
+        *   User can provide feedback or manual intervention.
 
-### 4.2 Deployment Pipeline
-*   **Trigger**: Architect/Tester confirms `verified` status.
-*   **Pre-flight Check**: Check `server_info` (from Zavhoz).
+### 4.2 Deployment Pipeline [DONE]
+*   **Trigger**: Engineering Subgraph sets `engineering_status = "done"`.
+*   **Pre-flight Check**: Check `allocated_resources` (from Zavhoz).
     *   ✅ Ready: Call **DevOpsNode**.
-    *   ❌ Not Ready: Return `waiting_for_resources` to PO.
+    *   ❌ Not Ready: Return to END (wait for resources).
 
-### 4.3 DevOps Node
-*   **Input**: `repo_info` + `server_info`.
+### 4.3 DevOps Node [DONE]
+*   **Input**: `repo_info` + `allocated_resources`.
 *   **Action**: Run Ansible playbook.
 *   **Output**: Update Project Status to `active`.
 
