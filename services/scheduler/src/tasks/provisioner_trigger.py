@@ -8,7 +8,6 @@ import json
 import logging
 import os
 
-import aiohttp
 import redis.asyncio as redis
 
 logger = logging.getLogger(__name__)
@@ -43,30 +42,29 @@ async def trigger_provisioner(server_handle: str, is_incident_recovery: bool = F
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
-            # TODO: Update this URL once LangGraph API is set up
-            # For now, just log the intent
-            logger.info(
-                f"🚀 Would trigger Provisioner for {server_handle} "
-                f"(incident_recovery={is_incident_recovery})"
-            )
-            logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
+        # TODO: Update this URL once LangGraph API is set up
+        # For now, just log the intent
+        logger.info(
+            f"🚀 Would trigger Provisioner for {server_handle} "
+            f"(incident_recovery={is_incident_recovery})"
+        )
+        logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
 
-            # In production, this would call:
-            # async with session.post(
-            #     f"{LANGGRAPH_API_URL}/invoke",
-            #     json=payload,
-            #     timeout=aiohttp.ClientTimeout(total=30)
-            # ) as resp:
-            #     if resp.status == 200:
-            #         logger.info(f"Provisioner triggered for {server_handle}")
-            #         return True
-            #     else:
-            #         logger.error(f"Failed to trigger provisioner: {resp.status}")
-            #         return False
+        # In production, this would call:
+        # async with session.post(
+        #     f"{LANGGRAPH_API_URL}/invoke",
+        #     json=payload,
+        #     timeout=aiohttp.ClientTimeout(total=30)
+        # ) as resp:
+        #     if resp.status == 200:
+        #         logger.info(f"Provisioner triggered for {server_handle}")
+        #         return True
+        #     else:
+        #         logger.error(f"Failed to trigger provisioner: {resp.status}")
+        #         return False
 
-            # For MVP: assume success
-            return True
+        # For MVP: assume success
+        return True
 
     except Exception as e:
         logger.error(f"Error triggering provisioner for {server_handle}: {e}")
@@ -145,13 +143,13 @@ async def provisioner_trigger_worker():
             try:
                 await pubsub.unsubscribe(PROVISIONER_TRIGGER_CHANNEL)
                 await pubsub.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Error closing redis pubsub: {e}")
         if redis_client:
             try:
                 await redis_client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Error closing redis client: {e}")
         logger.info("Provisioner Trigger Worker stopped")
 
 
@@ -184,4 +182,3 @@ async def publish_provisioner_trigger(server_handle: str, is_incident_recovery: 
         logger.error(f"Failed to publish trigger for {server_handle}: {e}")
     finally:
         await redis_client.close()
-

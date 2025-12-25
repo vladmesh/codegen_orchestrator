@@ -4,18 +4,19 @@ from typing import Annotated, Any
 
 from langchain_core.tools import tool
 
+from ..schemas.tools import ServerInfo, ServerSearchResult
 from .base import api_client
-from ..schemas.tools import ServerSearchResult
 
 
 @tool
-async def list_managed_servers() -> list[dict[str, Any]]:
+async def list_managed_servers() -> list[ServerInfo]:
     """List all managed servers available for deployment.
 
     Returns servers with their capacity (RAM/Disk) and current usage.
     Only returns servers that are managed (not ghost/personal).
     """
-    return await api_client.get("/api/servers/?is_managed=true")
+    resp = await api_client.get("/api/servers/?is_managed=true")
+    return [ServerInfo(**s) for s in resp]
 
 
 @tool
@@ -37,7 +38,7 @@ async def find_suitable_server(
     """
     # Don't filter by status - include 'ready' and 'in_use' servers
     servers = await api_client.get("/api/servers?is_managed=true")
-    
+
     # Filter to only ready/in_use servers (active for deployment)
     servers = [s for s in servers if s.get("status") in ("ready", "in_use")]
 
@@ -60,7 +61,6 @@ async def find_suitable_server(
         return None
 
     # Return the one with most available RAM
-    # Return the one with most available RAM
     best = max(suitable, key=lambda s: s["available_ram_mb"])
     return ServerSearchResult(**best)
 
@@ -68,24 +68,26 @@ async def find_suitable_server(
 @tool
 async def get_server_info(
     handle: Annotated[str, "Handle/name of the server (e.g., 'vps-265601')"],
-) -> dict[str, Any]:
+) -> ServerInfo:
     """Get detailed information about a specific server.
 
     Returns capacity, usage, IP, OS, and other details for the server.
     """
-    return await api_client.get(f"/api/servers/{handle}")
+    resp = await api_client.get(f"/api/servers/{handle}")
+    return ServerInfo(**resp)
 
 
 @tool
 async def update_server_status(
     handle: Annotated[str, "Server handle"],
     status: Annotated[str, "New status (e.g., 'provisioning', 'ready', 'error')"],
-) -> dict[str, Any]:
+) -> ServerInfo:
     """Update server status in database.
 
     Used by provisioner to track provisioning progress.
     """
-    return await api_client.patch(f"/api/servers/{handle}", json={"status": status})
+    resp = await api_client.patch(f"/api/servers/{handle}", json={"status": status})
+    return ServerInfo(**resp)
 
 
 @tool

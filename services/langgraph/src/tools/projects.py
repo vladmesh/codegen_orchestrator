@@ -1,12 +1,12 @@
 """Project management tools for agents."""
 
+from typing import Annotated
 import uuid
-from typing import Annotated, Any
 
 from langchain_core.tools import tool
 
+from ..schemas.tools import ProjectCreateResult, ProjectInfo, ProjectIntent
 from .base import api_client
-from ..schemas.tools import ProjectCreateResult, ProjectIntent
 
 
 @tool
@@ -51,7 +51,7 @@ async def create_project(
 @tool
 async def list_projects(
     status: Annotated[str | None, "Optional project status filter"] = None,
-) -> list[dict[str, Any]]:
+) -> list[ProjectInfo]:
     """List projects from the database.
 
     Args:
@@ -61,15 +61,17 @@ async def list_projects(
         List of project records.
     """
     params = {"status": status} if status else None
-    return await api_client.get("/projects/", params=params)
+    resp = await api_client.get("/projects/", params=params)
+    return [ProjectInfo(**p) for p in resp]
 
 
 @tool
 async def get_project_status(
     project_id: Annotated[str, "Project ID"],
-) -> dict[str, Any]:
+) -> ProjectInfo:
     """Get a single project's status and metadata."""
-    return await api_client.get(f"/projects/{project_id}")
+    resp = await api_client.get(f"/projects/{project_id}")
+    return ProjectInfo(**resp)
 
 
 @tool
@@ -77,20 +79,20 @@ async def create_project_intent(
     intent: Annotated[str, "Intent type: new_project | update_project"],
     summary: Annotated[str, "Short summary of the user's request"],
     project_id: Annotated[str | None, "Project ID if applicable"] = None,
-) -> dict[str, Any]:
+) -> ProjectIntent:
     """Create a project intent for the orchestrator flow.
 
     This does not persist anything to the database; it only returns
     structured intent metadata for the Product Owner node.
     """
-    return {"intent": intent, "summary": summary, "project_id": project_id}
+    return ProjectIntent(intent=intent, summary=summary, project_id=project_id)
 
 
 @tool
 async def set_project_maintenance(
     project_id: Annotated[str, "Project ID to update"],
     update_description: Annotated[str, "Description of the update/feature to implement"],
-) -> dict[str, Any]:
+) -> ProjectInfo:
     """Set a project to maintenance status for updates.
 
     Use this when the user wants to update or add features to an existing project.
@@ -106,12 +108,12 @@ async def set_project_maintenance(
     # First verify project exists
     resp = await api_client.get_raw(f"/projects/{project_id}")
     if resp.status_code == 404:
-        return {"error": f"Project {project_id} not found"}
+        raise ValueError(f"Project {project_id} not found")
     resp.raise_for_status()
     project = resp.json()
 
     # Update status to maintenance
-    return await api_client.patch(
+    updated = await api_client.patch(
         f"/projects/{project_id}",
         json={
             "status": "maintenance",
@@ -121,3 +123,4 @@ async def set_project_maintenance(
             },
         },
     )
+    return ProjectInfo(**updated)

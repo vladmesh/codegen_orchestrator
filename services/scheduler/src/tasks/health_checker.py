@@ -9,10 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.notifications import notify_admins
-
 from src.db import async_session_maker
 from src.models.incident import Incident, IncidentStatus
 from src.models.server import Server
+
 from .provisioner_trigger import publish_provisioner_trigger
 
 logger = logging.getLogger(__name__)
@@ -159,7 +159,7 @@ async def _check_all_servers(db: AsyncSession):
     """
     # Get all servers that should be monitored
     result = await db.execute(
-        select(Server).where(Server.is_managed == True, Server.status.in_(["ready", "in_use"]))
+        select(Server).where(Server.is_managed, Server.status.in_(["ready", "in_use"]))
     )
     servers = result.scalars().all()
 

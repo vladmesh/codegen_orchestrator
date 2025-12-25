@@ -7,7 +7,6 @@ from sqlalchemy import select
 
 from shared.clients.github import GitHubAppClient
 from shared.notifications import notify_admins
-
 from src.db import async_session_maker
 from src.models.project import Project, ProjectStatus
 
@@ -54,7 +53,6 @@ async def sync_projects_worker():
                 # Map by ID for accurate tracking
                 # repo_id (int) -> repo_data
                 gh_repos_map = {r["id"]: r for r in github_repos}
-                gh_repos_by_name = {r["name"].lower(): r for r in github_repos}
 
                 # 3. Sync Logic: GitHub -> DB
                 for r in github_repos:

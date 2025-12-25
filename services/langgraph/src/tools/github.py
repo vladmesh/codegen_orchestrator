@@ -1,10 +1,11 @@
 """GitHub Tools for agents - repository management."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from langchain_core.tools import tool
 
 from ..clients.github import GitHubAppClient
+from ..schemas.tools import GitHubRepoResult
 
 # Singleton client instance
 _github_client: GitHubAppClient | None = None
@@ -22,7 +23,7 @@ def get_github_client() -> GitHubAppClient:
 async def create_github_repo(
     name: Annotated[str, "Repository name in snake_case or kebab-case"],
     description: Annotated[str, "Brief repository description"],
-) -> dict[str, Any]:
+) -> GitHubRepoResult:
     """Create a new GitHub repository in the organization.
 
     Automatically detects the organization from GitHub App installation.
@@ -42,13 +43,13 @@ async def create_github_repo(
         private=True,
     )
 
-    return {
-        "name": repo_data.name,
-        "full_name": repo_data.full_name,
-        "html_url": repo_data.html_url,
-        "clone_url": repo_data.clone_url,
-        "default_branch": repo_data.default_branch,
-    }
+    return GitHubRepoResult(
+        name=repo_data.name,
+        full_name=repo_data.full_name,
+        html_url=repo_data.html_url,
+        clone_url=repo_data.clone_url,
+        default_branch=repo_data.default_branch,
+    )
 
 
 @tool
