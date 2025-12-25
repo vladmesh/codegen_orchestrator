@@ -72,10 +72,9 @@
    cd codegen_orchestrator
    ```
 
-2. **Install pre-commit hooks** (for code quality)
+2. **Install git hooks** (for automatic code quality checks)
    ```bash
-   pip install pre-commit
-   pre-commit install
+   make setup-hooks
    ```
 
 3. **Set up environment**
@@ -99,9 +98,12 @@
 
 ### Development Workflow
 
-- **Code quality**: Pre-commit hooks automatically format and lint code on commit
+- **Code quality**: Git hooks automatically check formatting and run tests
+  - Pre-commit: Format and lint checks (blocks bad commits)
+  - Pre-push: Unit tests (blocks broken code from being pushed)
 - **Testing**: Write tests in `services/{service}/tests/{unit,integration}/`
 - **CI/CD**: GitHub Actions runs tests on every push/PR
+- **Skip hooks**: Use `--no-verify` flag (NOT recommended)
 
 See [TESTING.md](docs/TESTING.md) for detailed testing guide.
 

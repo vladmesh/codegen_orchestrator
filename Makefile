@@ -3,7 +3,8 @@
 	test-langgraph test-langgraph-unit test-langgraph-integration \
 	test-scheduler test-scheduler-unit test-scheduler-integration \
 	test-telegram test-telegram-unit \
-	build up down logs help nuke seed migrate makemigrations shell
+	build up down logs help nuke seed migrate makemigrations shell \
+	setup-hooks
 
 # Load .env file
 -include .env
@@ -31,6 +32,9 @@ help:
 	@echo "  make test-api-unit        - Run API unit tests"
 	@echo "  make test-langgraph-unit  - Run LangGraph unit tests"
 	@echo "  make test-clean           - Cleanup test containers"
+	@echo ""
+	@echo "Git Hooks:"
+	@echo "  make setup-hooks  - Install git hooks (format check, tests)"
 	@echo ""
 	@echo "  make migrate     - Run database migrations"
 	@echo "  make makemigrations MSG='...' - Create new migration"
@@ -60,6 +64,14 @@ lint:
 
 format:
 	$(TOOLING) sh -c "ruff format . && ruff check --fix ."
+
+# === Git Hooks ===
+
+setup-hooks:
+	@echo "🔧 Installing git hooks..."
+	@chmod +x .githooks/pre-commit .githooks/pre-push scripts/setup-hooks.sh
+	@bash scripts/setup-hooks.sh
+
 
 # === Testing ===
 
