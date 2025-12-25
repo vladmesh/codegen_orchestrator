@@ -1,13 +1,12 @@
 """Base agent node class with common functionality.
 
 Provides:
-- Dynamic prompt loading from database
+- Dynamic prompt loading from database (no fallbacks - fail fast)
 - Common tool execution logic
 - Error handling and logging
 """
 
 import logging
-from abc import ABC, abstractmethod
 from typing import Any
 
 from langchain_core.messages import ToolMessage
@@ -19,7 +18,7 @@ from ..config.agent_config import get_agent_config
 logger = logging.getLogger(__name__)
 
 
-class BaseAgentNode(ABC):
+class BaseAgentNode:
     """Base class for all LangGraph agent nodes.
     
     Handles:
@@ -27,10 +26,8 @@ class BaseAgentNode(ABC):
     - Common tool execution with error handling
     - State updates based on tool results
     
-    Subclasses must implement:
-    - agent_id: The agent identifier for config lookup
-    - tools: List of tools available to this agent
-    - handle_tool_result(): Custom logic for processing tool outputs
+    IMPORTANT: No fallbacks - if API is unavailable, we fail fast.
+    This ensures configuration issues are caught immediately.
     """
 
     def __init__(self, agent_id: str, tools: list[BaseTool]):
@@ -43,63 +40,31 @@ class BaseAgentNode(ABC):
         self.agent_id = agent_id
         self.tools = tools
         self.tools_map = {tool.name: tool for tool in tools}
-        self._cached_config: dict[str, Any] | None = None
-        self._llm_with_tools = None
-
-    @property
-    def fallback_prompt(self) -> str:
-        """Fallback system prompt if config fetch fails.
-        
-        Override in subclasses to provide agent-specific fallback.
-        """
-        return f"You are {self.agent_id}, an AI assistant."
-
-    @property
-    def fallback_model(self) -> str:
-        """Fallback model name."""
-        return "gpt-4o"
-
-    @property
-    def fallback_temperature(self) -> float:
-        """Fallback temperature."""
-        return 0.0
 
     async def get_config(self) -> dict[str, Any]:
-        """Get agent configuration from API with fallback.
+        """Get agent configuration from API.
         
         Returns:
             Config dict with keys: system_prompt, model_name, temperature
+            
+        Raises:
+            AgentConfigError: If config cannot be fetched
         """
-        config = await get_agent_config(self.agent_id)
-        if config:
-            self._cached_config = config
-            return config
-        
-        # Fallback to defaults if API unavailable
-        logger.warning(f"Using fallback config for {self.agent_id}")
-        return {
-            "system_prompt": self.fallback_prompt,
-            "model_name": self.fallback_model,
-            "temperature": self.fallback_temperature,
-        }
+        return await get_agent_config(self.agent_id)
 
     async def get_llm_with_tools(self):
-        """Get LLM with bound tools, configured from API.
-        
-        Creates a new LLM instance on each call to pick up config changes.
-        In practice, config is cached so this is cheap.
-        """
+        """Get LLM with bound tools, configured from API."""
         config = await self.get_config()
         llm = ChatOpenAI(
-            model=config.get("model_name", self.fallback_model),
-            temperature=config.get("temperature", self.fallback_temperature),
+            model=config.get("model_name", "gpt-4o"),
+            temperature=config.get("temperature", 0.0),
         )
         return llm.bind_tools(self.tools)
 
     async def get_system_prompt(self) -> str:
         """Get system prompt from config."""
         config = await self.get_config()
-        return config.get("system_prompt", self.fallback_prompt)
+        return config["system_prompt"]
 
     async def execute_tools(self, state: dict) -> dict:
         """Execute tool calls from the last message.
@@ -141,15 +106,7 @@ class BaseAgentNode(ABC):
     async def _execute_single_tool(
         self, tool_call: dict, state: dict
     ) -> dict[str, Any]:
-        """Execute a single tool call with error handling.
-        
-        Args:
-            tool_call: Tool call dict with name, args, id
-            state: Current graph state
-            
-        Returns:
-            Dict with 'message' (ToolMessage) and optional 'state_updates'
-        """
+        """Execute a single tool call with error handling."""
         tool_name = tool_call["name"]
         tool_func = self.tools_map.get(tool_name)
 

@@ -1,10 +1,12 @@
 """Product Owner (PO) agent node.
 
 Classifies user intent and coordinates the high-level flow.
+
+Uses BaseAgentNode for dynamic prompt loading from database.
+Note: execute_tools has custom logic for response formatting, not using BaseAgentNode.execute_tools.
 """
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
 
 from ..tools.database import (
     activate_project,
@@ -19,44 +21,9 @@ from ..tools.database import (
     save_project_secret,
     set_project_maintenance,
 )
+from .base import BaseAgentNode
 
-SYSTEM_PROMPT = """You are the Product Owner (PO) for the codegen orchestrator.
-
-Your job:
-1. Classify user intent: new project / status request / update / infrastructure / activate.
-2. For a NEW project, call `create_project_intent` with intent="new_project".
-   - Provide a short summary of the request.
-   - Do NOT ask detailed requirements (Brainstorm handles that).
-3. For PROJECT STATUS requests:
-   - `get_project_status` if user mentions a specific project ID.
-   - Otherwise call BOTH `list_active_incidents` AND `list_projects` together.
-4. For SERVER/INFRASTRUCTURE status requests:
-   - Use `list_managed_servers` to show available servers.
-   - Can be combined with `list_active_incidents` to show server health issues.
-5. For UPDATE/MAINTENANCE requests:
-   - Get the project ID from the user if missing.
-   - Call `set_project_maintenance` with the project ID and update description.
-   - This triggers the Engineering workflow (Architect → Developer → Tester).
-6. For ACTIVATE/LAUNCH requests (e.g., "запусти palindrome_bot"):
-   - Call `activate_project` to inspect the repository and change status.
-   - If secrets are missing, ASK the user for each one.
-   - When user provides a secret, call `save_project_secret` to store it.
-   - After saving, call `check_ready_to_deploy` to verify readiness.
-   - If ready=True, respond that you'll start deployment and set intent to "deploy".
-7. For RESOURCE QUERIES (e.g., "какие ключи есть?"):
-   - Use `list_resource_inventory` to show available resources.
-
-Guidelines:
-- Respond in the SAME LANGUAGE as the user.
-- Do not invent project or server status; use tools.
-- Keep responses concise.
-- When checking overall status, call relevant tools together in one request.
-- If there are active incidents, show them first with 🚨 severity.
-"""
-
-
-# LLM with tools
-llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
+# Tools available to PO
 tools = [
     list_active_incidents,
     list_projects,
@@ -71,9 +38,17 @@ tools = [
     check_ready_to_deploy,
     list_resource_inventory,
 ]
-llm_with_tools = llm.bind_tools(tools)
 
 tools_map = {tool.name: tool for tool in tools}
+
+
+class ProductOwnerNode(BaseAgentNode):
+    """Product Owner agent that classifies intent and coordinates flow."""
+    pass
+
+
+# Create singleton instance
+_node = ProductOwnerNode("product_owner", tools)
 
 
 def _format_project_line(project: dict) -> str:
@@ -91,8 +66,14 @@ async def run(state: dict) -> dict:
     """Run Product Owner agent."""
     messages = state.get("messages", [])
 
-    llm_messages = [SystemMessage(content=SYSTEM_PROMPT)]
+    # Get dynamic prompt from database
+    system_prompt = await _node.get_system_prompt()
+
+    llm_messages = [SystemMessage(content=system_prompt)]
     llm_messages.extend(messages)
+
+    # Get configured LLM
+    llm_with_tools = await _node.get_llm_with_tools()
 
     response = await llm_with_tools.ainvoke(llm_messages)
     return {
@@ -102,7 +83,11 @@ async def run(state: dict) -> dict:
 
 
 async def execute_tools(state: dict) -> dict:
-    """Execute tool calls from Product Owner LLM."""
+    """Execute tool calls from Product Owner LLM.
+    
+    Note: This has custom logic for response formatting that differs
+    from BaseAgentNode.execute_tools. Kept separate for compatibility.
+    """
     messages = state.get("messages", [])
     last_message = messages[-1]
 
@@ -375,4 +360,3 @@ async def execute_tools(state: dict) -> dict:
     }
 
     return updates
-

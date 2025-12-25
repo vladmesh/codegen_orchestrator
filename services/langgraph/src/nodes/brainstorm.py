@@ -3,7 +3,7 @@
 First node in the orchestrator graph. Gathers requirements from user,
 asks clarifying questions, and creates project spec.
 
-Refactored to use BaseAgentNode for dynamic prompt loading from database.
+Uses BaseAgentNode for dynamic prompt loading from database.
 """
 
 from typing import Any
@@ -13,43 +13,9 @@ from langchain_core.messages import SystemMessage
 from ..tools.database import create_project
 from .base import BaseAgentNode
 
-# Fallback prompt used when API is unavailable
-FALLBACK_PROMPT = """You are Brainstorm, the first agent in the codegen orchestrator.
-
-Your job:
-1. Understand what project the user wants to create
-2. Ask clarifying questions if requirements are unclear (max 2-3 rounds)
-3. When requirements are clear, create the project using the create_project tool
-
-## Available modules (from service-template):
-- **backend**: FastAPI REST API with PostgreSQL
-- **tg_bot**: Telegram bot message handler
-- **notifications_worker**: Background notifications processor
-
-## Entry points:
-- **telegram**: Needs a Telegram bot. **YOU MUST ASK FOR THE TELEGRAM BOT TOKEN**.
-- **frontend**: Web UI (needs domain allocation)
-- **api**: REST API (needs port allocation)
-
-## Guidelines:
-- Ask about: main functionality, which entry points needed, any external APIs
-- **If user wants a Telegram bot, explicitly ask for the Bot Token.**
-- Project name should be snake_case (e.g., weather_bot)
-- When ready, call create_project with all gathered info (including telegram_token if applicable)
-- Respond in the SAME LANGUAGE as the user
-"""
-
 
 class BrainstormNode(BaseAgentNode):
     """Brainstorm agent that gathers requirements and creates projects."""
-
-    @property
-    def fallback_prompt(self) -> str:
-        return FALLBACK_PROMPT
-
-    @property
-    def fallback_temperature(self) -> float:
-        return 0.7  # Brainstorm is more creative
 
     def handle_tool_result(
         self, tool_name: str, result: Any, state: dict

@@ -2,6 +2,8 @@
 
 Fetches agent prompts and settings from the API with TTL caching
 to avoid hitting the database on every LLM invocation.
+
+IMPORTANT: No fallbacks - if API is unavailable, we fail fast.
 """
 
 import asyncio
@@ -19,6 +21,11 @@ API_URL = os.getenv("API_URL", "http://api:8000")
 CACHE_TTL_SECONDS = int(os.getenv("AGENT_CONFIG_CACHE_TTL", "60"))
 
 
+class AgentConfigError(Exception):
+    """Raised when agent config cannot be fetched."""
+    pass
+
+
 class AgentConfigCache:
     """TTL cache for agent configurations."""
 
@@ -30,7 +37,7 @@ class AgentConfigCache:
     def _is_expired(self, cached_at: datetime) -> bool:
         return datetime.utcnow() - cached_at > self._ttl
 
-    async def get(self, agent_id: str) -> dict[str, Any] | None:
+    async def get(self, agent_id: str) -> dict[str, Any]:
         """Get agent config from cache or fetch from API.
         
         Args:
@@ -38,7 +45,9 @@ class AgentConfigCache:
             
         Returns:
             Agent config dict with keys: id, name, system_prompt, model_name, temperature
-            None if agent not found
+            
+        Raises:
+            AgentConfigError: If config cannot be fetched
         """
         # Check cache first (without lock for read)
         if agent_id in self._cache:
@@ -55,29 +64,35 @@ class AgentConfigCache:
                 if not self._is_expired(cached_at):
                     return config
 
-            # Fetch from API
+            # Fetch from API - fail fast if unavailable
             config = await self._fetch_from_api(agent_id)
-            if config:
-                self._cache[agent_id] = (config, datetime.utcnow())
+            self._cache[agent_id] = (config, datetime.utcnow())
             return config
 
-    async def _fetch_from_api(self, agent_id: str) -> dict[str, Any] | None:
-        """Fetch agent config from API."""
+    async def _fetch_from_api(self, agent_id: str) -> dict[str, Any]:
+        """Fetch agent config from API. Raises on failure."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"{API_URL}/api/agent-configs/{agent_id}")
+                
                 if resp.status_code == 200:
                     logger.info(f"Fetched agent config from API: {agent_id}")
                     return resp.json()
                 elif resp.status_code == 404:
-                    logger.warning(f"Agent config not found: {agent_id}")
-                    return None
+                    raise AgentConfigError(
+                        f"Agent config '{agent_id}' not found in database. "
+                        f"Run 'make seed' to populate agent configs."
+                    )
                 else:
-                    logger.error(f"Failed to fetch agent config {agent_id}: {resp.status_code}")
-                    return None
+                    raise AgentConfigError(
+                        f"Failed to fetch agent config '{agent_id}': "
+                        f"HTTP {resp.status_code} - {resp.text}"
+                    )
         except httpx.RequestError as e:
-            logger.error(f"Request error fetching agent config {agent_id}: {e}")
-            return None
+            raise AgentConfigError(
+                f"Cannot connect to API to fetch agent config '{agent_id}': {e}. "
+                f"Ensure API service is running."
+            ) from e
 
     def invalidate(self, agent_id: str | None = None) -> None:
         """Invalidate cache.
@@ -95,14 +110,17 @@ class AgentConfigCache:
 _cache = AgentConfigCache()
 
 
-async def get_agent_config(agent_id: str) -> dict[str, Any] | None:
+async def get_agent_config(agent_id: str) -> dict[str, Any]:
     """Get agent configuration with caching.
     
     Args:
         agent_id: Agent identifier
         
     Returns:
-        Config dict or None if not found
+        Config dict
+        
+    Raises:
+        AgentConfigError: If config cannot be fetched
     """
     return await _cache.get(agent_id)
 

@@ -551,11 +551,11 @@ agent_config_cache = AgentConfigCache()
 - [x] Рефакторинг `brainstorm.py` как proof-of-concept
 - [x] Добавить тесты
 
-### Фаза 3: Миграция nodes (3-4 дня)
-- [ ] Мигрировать `zavhoz.py`
-- [ ] Мигрировать `architect.py`
-- [ ] Мигрировать `product_owner.py`
-- [ ] Мигрировать `devops.py`
+### Фаза 3: Миграция nodes ✅ ЗАВЕРШЕНО
+- [x] Мигрировать `zavhoz.py`
+- [x] Мигрировать `architect.py`
+- [x] Мигрировать `product_owner.py`
+- [x] `devops.py` - без промпта (прямой Ansible)
 
 ### Фаза 4: Tools reorganization (1-2 дня)
 - [ ] Разбить `tools/database.py`
