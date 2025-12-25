@@ -138,13 +138,13 @@ async def set_project_maintenance(
 
 @tool
 async def list_managed_servers() -> list[dict[str, Any]]:
-    """List all active, managed servers available for deployment.
+    """List all managed servers available for deployment.
 
     Returns servers with their capacity (RAM/Disk) and current usage.
-    Only returns servers that are managed (not ghost/personal) and active.
+    Only returns servers that are managed (not ghost/personal).
     """
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        url = f"{INTERNAL_API_URL}/api/servers?is_managed=true&status=active"
+        url = f"{INTERNAL_API_URL}/api/servers/?is_managed=true"
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.json()

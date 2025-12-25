@@ -10,6 +10,7 @@ from ..tools.database import (
     create_project_intent,
     get_project_status,
     list_active_incidents,
+    list_managed_servers,
     list_projects,
     set_project_maintenance,
 )
@@ -17,16 +18,16 @@ from ..tools.database import (
 SYSTEM_PROMPT = """You are the Product Owner (PO) for the codegen orchestrator.
 
 Your job:
-1. **FIRST: Check for active incidents** by calling `list_active_incidents`.
-   - If there are active incidents, alert the user immediately with 🚨 severity.
-   - Explain which servers/services are affected and recovery status.
-2. Classify user intent: new project / status request / update.
-3. For a NEW project, call `create_project_intent` with intent="new_project".
+1. Classify user intent: new project / status request / update / infrastructure.
+2. For a NEW project, call `create_project_intent` with intent="new_project".
    - Provide a short summary of the request.
    - Do NOT ask detailed requirements (Brainstorm handles that).
-4. For STATUS requests, use:
+3. For PROJECT STATUS requests:
    - `get_project_status` if user mentions a specific project ID.
-   - Otherwise `list_projects`.
+   - Otherwise call BOTH `list_active_incidents` AND `list_projects` together.
+4. For SERVER/INFRASTRUCTURE status requests:
+   - Use `list_managed_servers` to show available servers.
+   - Can be combined with `list_active_incidents` to show server health issues.
 5. For UPDATE/MAINTENANCE requests:
    - Get the project ID from the user if missing.
    - Call `set_project_maintenance` with the project ID and update description.
@@ -34,16 +35,19 @@ Your job:
 
 Guidelines:
 - Respond in the SAME LANGUAGE as the user.
-- Do not invent project status; use tools.
+- Do not invent project or server status; use tools.
 - Keep responses concise.
-- ALWAYS check incidents first before processing user request.
+- When checking overall status, call relevant tools together in one request.
+- If there are active incidents, show them first with 🚨 severity.
 """
+
 
 # LLM with tools
 llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
 tools = [
-    list_active_incidents,  # Check incidents first
+    list_active_incidents,
     list_projects,
+    list_managed_servers,
     get_project_status,
     create_project_intent,
     set_project_maintenance,
@@ -143,8 +147,28 @@ async def execute_tools(state: dict) -> dict:
             if not projects:
                 response_parts.append("Проектов пока нет.")
             else:
-                lines = ["Проекты:"]
+                lines = ["📦 **Проекты:**"]
                 lines.extend(_format_project_line(project) for project in projects)
+                response_parts.append("\n".join(lines))
+            continue
+
+        if tool_name == "list_managed_servers":
+            servers = result or []
+            if not servers:
+                response_parts.append("Активных серверов нет.")
+            else:
+                lines = ["🖥️ **Серверы:**"]
+                for srv in servers:
+                    handle = srv.get("handle", "unknown")
+                    status = srv.get("status", "unknown")
+                    ip = srv.get("public_ip", "")
+                    ram_total = srv.get("capacity_ram_mb", 0)
+                    ram_used = srv.get("used_ram_mb", 0)
+                    status_emoji = "✅" if status in ("ready", "in_use") else "⚠️"
+                    lines.append(
+                        f"{status_emoji} *{handle}* [{status}] — {ip} "
+                        f"(RAM: {ram_used}/{ram_total} MB)"
+                    )
                 response_parts.append("\n".join(lines))
             continue
 
