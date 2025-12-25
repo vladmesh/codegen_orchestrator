@@ -1,25 +1,45 @@
-FROM python:3.12-slim
+# ===================================
+# Multi-stage Dockerfile for LangGraph Service
+# ===================================
 
-# Install system dependencies and Ansible
+# === Stage 1: Builder ===
+# Install dependencies in a separate stage for caching
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+# Install system dependencies needed for building
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install shared module first
+COPY shared ./shared
+RUN pip install --no-cache-dir --prefix=/install ./shared
+
+# Copy and install service dependencies (including Ansible)
+COPY services/langgraph/pyproject.toml ./
+RUN pip install --no-cache-dir --prefix=/install . && \
+    pip install --no-cache-dir --prefix=/install ansible
+
+# === Stage 2: Production ===
+# Create minimal runtime image with Ansible runtime dependencies
+FROM python:3.12-slim AS production
+
+WORKDIR /app
+
+# Install runtime dependencies for Ansible (git, ssh client)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     openssh-client \
     sshpass \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir ansible
+    && rm -rf /var/lib/apt/lists/*
 
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
 
-WORKDIR /app
-
-# Copy and install shared module first
-COPY shared ./shared
-RUN pip install --no-cache-dir ./shared
-
-# Copy and install service dependencies
-COPY services/langgraph/pyproject.toml ./
-RUN pip install --no-cache-dir .
-
-# Copy source
+# Copy source code and infrastructure
 COPY services/langgraph/src ./src
 COPY services/infrastructure ./services/infrastructure
 COPY secrets.yaml ./secrets.yaml

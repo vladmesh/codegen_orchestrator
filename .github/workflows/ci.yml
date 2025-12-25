@@ -11,7 +11,37 @@ on:
       - develop
 
 jobs:
-  # Job 1: Lint - Fast syntax and style checks
+  # Job 1: Detect Changes - Identify which services have been modified
+  detect-changes:
+    name: Detect Changed Services
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      langgraph: ${{ steps.filter.outputs.langgraph }}
+      scheduler: ${{ steps.filter.outputs.scheduler }}
+      telegram: ${{ steps.filter.outputs.telegram }}
+      shared: ${{ steps.filter.outputs.shared }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'services/api/**'
+            langgraph:
+              - 'services/langgraph/**'
+            scheduler:
+              - 'services/scheduler/**'
+            telegram:
+              - 'services/telegram_bot/**'
+            shared:
+              - 'shared/**'
+
+  # Job 2: Lint - Fast syntax and style checks (always run)
   lint:
     name: Lint (Ruff)
     runs-on: ubuntu-latest
@@ -34,23 +64,35 @@ jobs:
       - name: Lint
         run: ruff check .
 
-  # Job 2: Unit Tests - Fast tests without external dependencies
+  # Job 3: Unit Tests - Fast tests without external dependencies (conditional)
   test-unit:
     name: Unit Tests (${{ matrix.service }})
     runs-on: ubuntu-latest
+    needs: detect-changes
     strategy:
       fail-fast: false
       matrix:
-        service: [api, langgraph, scheduler, telegram]
+        include:
+          - service: api
+            changed: needs.detect-changes.outputs.api
+          - service: langgraph
+            changed: needs.detect-changes.outputs.langgraph
+          - service: scheduler
+            changed: needs.detect-changes.outputs.scheduler
+          - service: telegram
+            changed: needs.detect-changes.outputs.telegram
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        # Run if service changed OR shared module changed
+        if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
 
       - name: Cache Docker layers
         uses: actions/cache@v4
+        if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
         with:
           path: /tmp/.buildx-cache
           key: ${{ runner.os }}-buildx-${{ matrix.service }}-${{ hashFiles(format('services/{0}/pyproject.toml', matrix.service)) }}
@@ -59,15 +101,18 @@ jobs:
             ${{ runner.os }}-buildx-
 
       - name: Run unit tests
+        if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
         run: make test-${{ matrix.service }}-unit
         env:
           DOCKER_BUILDKIT: 1
 
-  # Job 3: Integration Tests - Tests with database/Redis
+  # Job 4: Integration Tests - Tests with database/Redis
   test-integration:
     name: Integration Tests
     runs-on: ubuntu-latest
-    needs: test-unit
+    needs: [detect-changes, test-unit]
+    # Run integration tests if test-unit ran (meaning there were changes)
+    if: always() && needs.test-unit.result != 'skipped'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
