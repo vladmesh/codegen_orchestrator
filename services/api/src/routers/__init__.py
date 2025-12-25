@@ -3,6 +3,7 @@
 from . import (
     agent_configs,
     api_keys,
+    available_models,
     health,
     incidents,
     projects,
@@ -15,6 +16,7 @@ from . import (
 __all__ = [
     "agent_configs",
     "api_keys",
+    "available_models",
     "health",
     "incidents",
     "projects",

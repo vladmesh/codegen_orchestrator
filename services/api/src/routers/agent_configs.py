@@ -83,6 +83,20 @@ async def update_agent_config(
 
     # Apply updates
     update_data = updates.model_dump(exclude_unset=True)
+
+    # Validate model_identifier if it's being updated
+    if "model_identifier" in update_data and "llm_provider" in update_data:
+        from .available_models import validate_model_identifier
+
+        await validate_model_identifier(
+            update_data["model_identifier"], update_data["llm_provider"]
+        )
+    elif "model_identifier" in update_data:
+        # Use existing provider
+        from .available_models import validate_model_identifier
+
+        await validate_model_identifier(update_data["model_identifier"], config.llm_provider)
+
     for field, value in update_data.items():
         setattr(config, field, value)
 

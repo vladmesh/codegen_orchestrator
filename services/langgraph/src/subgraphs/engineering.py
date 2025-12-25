@@ -11,7 +11,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from ..nodes import architect, developer
+from ..nodes import architect
+from ..nodes.developer import developer_node
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +179,8 @@ def create_engineering_subgraph() -> StateGraph:
     graph.add_node("architect", architect.run)
     graph.add_node("architect_tools", architect.execute_tools)
     graph.add_node("architect_spawn_worker", architect.spawn_factory_worker)
-    graph.add_node("developer", developer.run)
-    graph.add_node("developer_spawn_worker", developer.spawn_developer_worker)
+    graph.add_node("developer", developer_node.run)
+    graph.add_node("developer_spawn_worker", developer_node.spawn_worker)
     graph.add_node("tester", tester_node)
     graph.add_node("done", done_node)
     graph.add_node("blocked", blocked_node)
