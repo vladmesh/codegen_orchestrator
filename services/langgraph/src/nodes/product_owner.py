@@ -182,14 +182,18 @@ async def execute_tools(state: dict) -> dict:
     if project_intent and project_intent.get("project_id"):
         current_project = project_intent["project_id"]
 
+    # Build messages: always include ToolMessages for tool_call responses,
+    # then optionally add AIMessage with formatted response
+    messages = tool_results
+    if response_parts:
+        messages = tool_results + [AIMessage(content="\n\n".join(response_parts))]
+
     updates = {
-        "messages": tool_results,
+        "messages": messages,
         "po_intent": po_intent,
         "project_intent": project_intent,
         "current_project": current_project,
     }
 
-    if response_parts:
-        updates["messages"] = [AIMessage(content="\n\n".join(response_parts))]
-
     return updates
+
