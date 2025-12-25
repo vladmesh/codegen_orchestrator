@@ -38,15 +38,19 @@ def run_ansible_playbook(
     playbook_path = f"/app/services/infrastructure/ansible/playbooks/{playbook_name}"
 
     # Inventory construction
+    ssh_args = (
+        "ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
+    )
     if root_password:
         # Password authentication
         inventory_content = f"""[target]
-{server_ip} ansible_user=root ansible_ssh_pass={root_password} ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'  # noqa: E501
+{server_ip} ansible_user=root ansible_ssh_pass={root_password} {ssh_args}
 """
+
     else:
         # Key authentication (uses default SSH key from ~/.ssh)
         inventory_content = f"""[target]
-{server_ip} ansible_user=root ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'  # noqa: E501
+{server_ip} ansible_user=root {ssh_args}
 """
 
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".ini") as inv_file:
@@ -74,9 +78,7 @@ def run_ansible_playbook(
     logger.info(f"Running '{playbook_name}' for {server_handle} at {server_ip} (auth: {auth_mode})")
 
     try:
-        process = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout
-        )  # noqa: S603
+        process = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)  # noqa: S603
 
         # Log output (abbreviated)
         stdout_brief = (

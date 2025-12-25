@@ -112,7 +112,8 @@ class Time4VPSClient:
                 password = self.extract_password(results)
                 if password:
                     logger.info(
-                        f"Password reset completed for server {server_id}, password length: {len(password)}"
+                        f"Password reset completed for server {server_id}, "
+                        f"password length: {len(password)}"
                     )
                     return password
                 else:

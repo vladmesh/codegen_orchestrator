@@ -38,7 +38,8 @@ Your job:
 - Use best practices for Python/FastAPI development.
 """
 
-# LLM setup (if needed in future for decision making, currently acting as a simple pass-through/coordinator)
+# LLM setup (if needed in future for decision making,
+# currently acting as a simple pass-through/coordinator)
 llm = ChatOpenAI(model="gpt-4o", temperature=0)
 
 
@@ -101,7 +102,8 @@ Implement the business logic for the project based on the domain specifications.
     - Review `shared/spec/` (or `domains/`) for Open API/Async API specs.
 
 2.  **Generate Code**:
-    - Run `make generate-from-spec` (or equivalent in Makefile) to generate API routers and models from specs.
+    - Run `make generate-from-spec` (or equivalent in Makefile) to generate
+      API routers and models from specs.
     - Validate generated code with `make lint`.
 
 3.  **Implement Logic**:

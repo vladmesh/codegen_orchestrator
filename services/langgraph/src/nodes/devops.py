@@ -38,7 +38,7 @@ async def create_service_deployment_record(
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(f"{api_url}/api/service-deployments/", json=payload)
-            if resp.status_code == 201:
+            if resp.status_code == httpx.codes.CREATED:
                 logger.info(f"Created service deployment record for {service_name}")
                 return True
             else:
@@ -111,7 +111,8 @@ async def run(state: dict) -> dict:
     # Note: In the container, paths will depend on how we mount/copy things.
     # The Dockerfile copies `services/langgraph/src` to `./src`.
     # But where are the playbooks?
-    # We might need to adjust the Dockerfile to copy ansible playbooks too or assume they are mounted.
+    # We might need to adjust the Dockerfile to copy ansible playbooks too or
+    # assume they are mounted.
     # PROD FIX: The Dockerfile should copy infrastructure if we want to run ansible from inside.
     # Currently it assumes `services/langgraph/src` is copied.
     # I should update Dockerfile to copy `services/infrastructure` to `/app/services/infrastructure`
@@ -144,7 +145,7 @@ async def run(state: dict) -> dict:
     try:
         # Run Ansible
         # Use simple subprocess, capturing output
-        process = subprocess.run(
+        process = subprocess.run(  # noqa: S603
             cmd,
             capture_output=True,
             text=True,

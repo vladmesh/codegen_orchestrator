@@ -236,7 +236,7 @@ class GitHubAppClient:
                     headers=headers,
                     params={"ref": ref},
                 )
-                if resp.status_code == 404:
+                if resp.status_code == httpx.codes.NOT_FOUND:
                     return None
                 resp.raise_for_status()
                 return resp.text
@@ -268,7 +268,7 @@ class GitHubAppClient:
             async with httpx.AsyncClient() as client:
                 url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
                 resp = await client.get(url, headers=headers, params={"ref": ref})
-                if resp.status_code == 404:
+                if resp.status_code == httpx.codes.NOT_FOUND:
                     return []
                 resp.raise_for_status()
                 return [item["name"] for item in resp.json()]

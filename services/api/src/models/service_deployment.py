@@ -39,4 +39,7 @@ class ServiceDeployment(Base):
     deployment_info: Mapped[dict] = mapped_column(JSON, default=dict)
 
     def __repr__(self) -> str:
-        return f"<ServiceDeployment(id={self.id}, project={self.project_id}, service={self.service_name}, server={self.server_handle}, status={self.status})>"
+        return (
+            f"<ServiceDeployment(id={self.id}, project={self.project_id}, "
+            f"service={self.service_name}, server={self.server_handle}, status={self.status})>"
+        )

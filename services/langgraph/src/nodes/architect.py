@@ -168,11 +168,15 @@ Initialize this repository using the `service-template` framework.
 1.  **Initialize Project via Copier**:
     - The template is located at `gh:vladmesh/service-template`.
     - Use `copier` to generate the project structure.
-    - Run: `copier copy gh:vladmesh/service-template . --data project_name={project_spec.get("name", "project")} --data modules={",".join(project_spec.get("modules", ["backend"]))} --trust` (adjust modules as needed).
+    - Run: `copier copy gh:vladmesh/service-template . \
+      --data project_name={project_spec.get("name", "project")} \
+      --data modules={",".join(project_spec.get("modules", ["backend"]))} \
+      --trust` (adjust modules as needed).
     - If `copier` is not installed, install it: `pip install copier`.
 
 2.  **Define Domain Specifications**:
-    - Create YAML specifications in `shared/spec/` (or `domains/` if you prefer, but template uses `shared/spec`).
+    - Create YAML specifications in `shared/spec/` (or `domains/` if you prefer,
+      but template uses `shared/spec`).
     - Define entities, aggregates, and services.
 
 3.  **Setup Configuration**:

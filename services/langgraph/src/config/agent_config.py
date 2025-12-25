@@ -76,10 +76,10 @@ class AgentConfigCache:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"{API_URL}/api/agent-configs/{agent_id}")
 
-                if resp.status_code == 200:
+                if resp.status_code == httpx.codes.OK:
                     logger.info(f"Fetched agent config from API: {agent_id}")
                     return resp.json()
-                elif resp.status_code == 404:
+                elif resp.status_code == httpx.codes.NOT_FOUND:
                     raise AgentConfigError(
                         f"Agent config '{agent_id}' not found in database. "
                         f"Run 'make seed' to populate agent configs."

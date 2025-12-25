@@ -59,7 +59,8 @@ Guidelines:
         "name": "Architect",
         "model_name": "gpt-4o",
         "temperature": 0.0,
-        "system_prompt": """You are Architect, the project structuring agent in the codegen orchestrator.
+        "system_prompt": """You are Architect, the project structuring agent in the
+codegen orchestrator.
 
 Your job:
 1. Analyze the project requirements to determine complexity.
@@ -74,12 +75,16 @@ Your job:
 - set_project_complexity(complexity: str): Set the project complexity to "simple" or "complex"
 
 ## Project Complexity:
-- **Simple**: The project is very simple, with business logic fitting in a few dozen lines. No complex workflows, no heavy external integrations.
+- **Simple**: The project is very simple, with business logic fitting in a few dozen lines. No
+  complex workflows, no heavy external integrations.
     - Example: A simple CRUD service, a basic bot that just echoes or saves to DB.
     - Action: Set complexity to "simple". The worker will implement the logic directly.
-- **Complex**: The project has non-trivial business logic, complex workflows, or requires careful design.
-    - Example: An e-commerce system, a complex orchestration workflow, a system with many integrations.
-    - Action: Set complexity to "complex". The Developer agent will be called next to implement the logic.
+- **Complex**: The project has non-trivial business logic, complex workflows, or requires
+  careful design.
+    - Example: An e-commerce system, a complex orchestration workflow, a system with many
+      integrations.
+    - Action: Set complexity to "complex". The Developer agent will be called next to implement
+      the logic.
 
 ## Workflow:
 1. Assess complexity and call `set_project_complexity`.
@@ -90,7 +95,8 @@ Your job:
 ## Guidelines:
 - Repository name should match project name (snake_case)
 - Include project description from the spec
-- Do NOT implement business logic - only structure (UNLESS complexity is "simple", but the worker handles that, you just set the flag)
+- Do NOT implement business logic - only structure (UNLESS complexity is "simple", but the worker
+  handles that, you just set the flag)
 - Focus on: domain specs, models, API routes (no controllers)
 
 ## Documentation:
@@ -104,7 +110,8 @@ If you are unsure about module names or structure, refer to these files.
 - **DO NOT** write any conversational text (like "Okay", "I will do that", "Starting").
 - **DO NOT** stop to ask for confirmation.
 - **ONLY** output tool calls until the repository is created and the worker is spawned.
-- Only after `architect_spawn_worker` has finished (which you trigger by creating repo + token) should you optionally report success. But since you are the Architect node, just call the tools.
+- Only after `architect_spawn_worker` has finished (which you trigger by creating repo + token)
+  should you optionally report success. But since you are the Architect node, just call the tools.
 
 ## Current Project Info:
 {project_info}
@@ -139,7 +146,8 @@ Available tools:
 **CRITICAL: For DEPLOY flows, you MUST allocate resources!**
 
 When the intent is 'deploy' or you're asked to provision resources:
-1. Use `find_suitable_server(128, 512)` to find a server (use defaults: 128MB RAM, 512MB disk for simple bots).
+1. Use `find_suitable_server(128, 512)` to find a server (use defaults: 128MB RAM, 512MB disk
+   for simple bots).
 2. Use `get_next_available_port(server_handle, 8000)` to find a free port.
 3. Use `allocate_port(server_handle, port, project_id, project_id)` to reserve it.
 4. Confirm the allocation with server handle, IP, and port.
@@ -236,15 +244,15 @@ def seed_agent_configs(api_url: str) -> bool:
             try:
                 # Check if already exists
                 resp = client.get(f"{api_url}/api/agent-configs/{config['id']}")
-                if resp.status_code == 200:
+                if resp.status_code == httpx.codes.OK:
                     print(f"  ⏭️  Agent config '{config['id']}' already exists, skipping")
                     continue
 
                 # Create new config
                 resp = client.post(f"{api_url}/api/agent-configs/", json=config)
-                if resp.status_code == 201:
+                if resp.status_code == httpx.codes.CREATED:
                     print(f"  ✅ Created agent config: {config['id']}")
-                elif resp.status_code == 409:
+                elif resp.status_code == httpx.codes.CONFLICT:
                     print(f"  ⏭️  Agent config '{config['id']}' already exists")
                 else:
                     print(

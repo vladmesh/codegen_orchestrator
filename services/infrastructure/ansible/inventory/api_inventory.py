@@ -17,11 +17,12 @@ def get_inventory():
     headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
 
     try:
-        req = urllib.request.Request(f"{api_url}/api/servers/", headers=headers)
-        with urllib.request.urlopen(req) as response:
+        req = urllib.request.Request(f"{api_url}/api/servers/", headers=headers)  # noqa: S310
+        with urllib.request.urlopen(req) as response:  # noqa: S310
             data = json.loads(response.read().decode())
     except urllib.error.URLError as e:
-        # In case of API failure, print to stderr but return empty inventory to not break ansible completely
+        # In case of API failure, print to stderr but return empty inventory to
+        # not break ansible completely
         print(f"Error fetching inventory: {e}", file=sys.stderr)
         return {"_meta": {"hostvars": {}}}
 
@@ -64,9 +65,9 @@ def get_inventory():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 2 and (sys.argv[1] == "--list"):
+    if len(sys.argv) == 2 and (sys.argv[1] == "--list"):  # noqa: PLR2004
         print(json.dumps(get_inventory(), indent=2))
-    elif len(sys.argv) == 2 and (sys.argv[1] == "--host"):
+    elif len(sys.argv) == 2 and (sys.argv[1] == "--host"):  # noqa: PLR2004
         print(json.dumps({}))  # Not needed if _meta is used
     else:
         print("Usage: api_inventory.py --list")

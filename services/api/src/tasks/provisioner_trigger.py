@@ -43,7 +43,7 @@ async def trigger_provisioner(server_handle: str, is_incident_recovery: bool = F
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession():
             # TODO: Update this URL once LangGraph API is set up
             # For now, just log the intent
             logger.info(
@@ -145,13 +145,13 @@ async def provisioner_trigger_worker():
             try:
                 await pubsub.unsubscribe(PROVISIONER_TRIGGER_CHANNEL)
                 await pubsub.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Error closing pubsub: {e}")
         if redis_client:
             try:
                 await redis_client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Error closing redis client: {e}")
         logger.info("Provisioner Trigger Worker stopped")
 
 

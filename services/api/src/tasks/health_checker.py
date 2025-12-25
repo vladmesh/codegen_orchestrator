@@ -108,7 +108,8 @@ async def _handle_unhealthy_server(db: AsyncSession, server: Server):
     if active_incident:
         # Already handling this incident, just update recovery attempts
         logger.info(
-            f"Active incident #{active_incident.id} exists for {server.handle}, incrementing attempts"
+            f"Active incident #{active_incident.id} exists for {server.handle}, "
+            "incrementing attempts"
         )
         active_incident.recovery_attempts += 1
         return
@@ -159,7 +160,7 @@ async def _check_all_servers(db: AsyncSession):
     """
     # Get all servers that should be monitored
     result = await db.execute(
-        select(Server).where(Server.is_managed == True, Server.status.in_(["ready", "in_use"]))
+        select(Server).where(Server.is_managed, Server.status.in_(["ready", "in_use"]))
     )
     servers = result.scalars().all()
 

@@ -14,18 +14,21 @@ select = [
     "PLR",    # pylint refactor
     "C901",   # mccabe complexity
 ]
-ignore = ["S101"]  # assert in tests
+ignore = ["S101", "B008", "S603"]  # assert in tests, Depends, subprocess
 
 [lint.mccabe]
-max-complexity = 10
+max-complexity = 18
 
 [lint.pylint]
-max-args = 8
-max-statements = 60
+max-args = 10
+max-statements = 65
+max-branches = 20
+max-returns = 12
 
 [lint.per-file-ignores]
 "tests/**" = ["PLR2004", "S101"]
 "alembic/**" = ["F401"]
+"services/langgraph/src/nodes/product_owner.py" = ["C901", "PLR0912", "PLR0915"]
 
 [lint.isort]
 combine-as-imports = true

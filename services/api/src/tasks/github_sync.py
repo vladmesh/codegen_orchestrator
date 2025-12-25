@@ -53,7 +53,6 @@ async def sync_projects_worker():
                 # Map by ID for accurate tracking
                 # repo_id (int) -> repo_data
                 gh_repos_map = {r["id"]: r for r in github_repos}
-                gh_repos_by_name = {r["name"].lower(): r for r in github_repos}
 
                 # 3. Sync Logic: GitHub -> DB
                 for r in github_repos:
@@ -85,14 +84,17 @@ async def sync_projects_worker():
                                 id=repo_name,  # Use name as ID for simplicity consistent with usage
                                 name=repo_name,
                                 github_repo_id=repo_id,
-                                status=ProjectStatus.DISCOVERED.value,  # Need to make sure DISCOVERED is in Enum?
+                                status=ProjectStatus.DISCOVERED.value,
+                                # Need to make sure DISCOVERED is in Enum?
                                 # Wait, Enum has DRAFT, ESTIMATED, PROVISIONING, INITIALIZED...
                                 # Roadmap said "New: Create Project in DB with status discovered"
                                 # My Enum implementation has DRAFT, ESTIMATED...
                                 # Let's check my Enum in project.py.
                                 # It DOES NOT have DISCOVERED! It has DRAFT.
-                                # Roadmap Phase 1.1 said: "draft: Inception... provisioning... initialized: Repo exists"
-                                # Wait, Phase 1.2 said "New: Create Project in DB with status discovered"
+                                # Roadmap Phase 1.1 said: "draft: Inception... provisioning...
+                                # initialized: Repo exists"
+                                # Wait, Phase 1.2 said "New: Create Project in DB with status
+                                # discovered"
                                 # This is a conflict in Roadmap.
                                 # I should probably use INITIALIZED as "Repo exists".
                                 # Or add DISCOVERED to Enum.
@@ -143,7 +145,8 @@ async def sync_projects_worker():
                         if count >= MISSING_THRESHOLD:
                             proj.status = ProjectStatus.MISSING.value
                             logger.error(
-                                f"Marking project {proj.name} as MISSING after {count} failed checks."
+                                f"Marking project {proj.name} as MISSING after {count} "
+                                "failed checks."
                             )
                             # TODO: Send Alert
 
