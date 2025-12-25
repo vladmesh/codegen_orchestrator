@@ -104,13 +104,18 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     except Exception as e:
         logger.exception(f"Error processing message from user {user_id}: {e}")
 
+        # Clear conversation history to prevent corrupted state from persisting
+        if thread_id in conversation_history:
+            del conversation_history[thread_id]
+            logger.info(f"Cleared conversation history for {thread_id} due to error")
+
         # Send error message back
         await redis_client.publish(
             RedisStreamClient.OUTGOING_STREAM,
             {
                 "chat_id": chat_id,
                 "reply_to_message_id": data.get("message_id"),
-                "text": f"⚠️ Произошла ошибка при обработке: {e!s}",
+                "text": f"⚠️ Произошла ошибка при обработке: {e!s}\n\n_История диалога очищена._",
             },
         )
 

@@ -14,6 +14,7 @@ class ProjectStatus(str, Enum):
     # Inception
     DRAFT = "draft"
     DISCOVERED = "discovered"
+    SETUP_REQUIRED = "setup_required"  # User requested activation, collecting secrets
     ESTIMATED = "estimated"
 
     # Materialization

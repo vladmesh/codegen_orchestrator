@@ -79,3 +79,10 @@ def test_route_after_engineering_blocked():
 
     assert route_after_engineering(state) == END
 
+
+def test_route_after_po_tools_deploy_intent():
+    """Test routing to zavhoz when deploy intent is set."""
+    from services.langgraph.src.graph import route_after_product_owner_tools
+
+    state = {"po_intent": "deploy", "current_project": "test-123"}
+    assert route_after_product_owner_tools(state) == "zavhoz"

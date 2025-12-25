@@ -7,18 +7,23 @@ from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
 from ..tools.database import (
+    activate_project,
+    check_ready_to_deploy,
     create_project_intent,
     get_project_status,
+    inspect_repository,
     list_active_incidents,
     list_managed_servers,
     list_projects,
+    list_resource_inventory,
+    save_project_secret,
     set_project_maintenance,
 )
 
 SYSTEM_PROMPT = """You are the Product Owner (PO) for the codegen orchestrator.
 
 Your job:
-1. Classify user intent: new project / status request / update / infrastructure.
+1. Classify user intent: new project / status request / update / infrastructure / activate.
 2. For a NEW project, call `create_project_intent` with intent="new_project".
    - Provide a short summary of the request.
    - Do NOT ask detailed requirements (Brainstorm handles that).
@@ -32,6 +37,14 @@ Your job:
    - Get the project ID from the user if missing.
    - Call `set_project_maintenance` with the project ID and update description.
    - This triggers the Engineering workflow (Architect → Developer → Tester).
+6. For ACTIVATE/LAUNCH requests (e.g., "запусти palindrome_bot"):
+   - Call `activate_project` to inspect the repository and change status.
+   - If secrets are missing, ASK the user for each one.
+   - When user provides a secret, call `save_project_secret` to store it.
+   - After saving, call `check_ready_to_deploy` to verify readiness.
+   - If ready=True, respond that you'll start deployment and set intent to "deploy".
+7. For RESOURCE QUERIES (e.g., "какие ключи есть?"):
+   - Use `list_resource_inventory` to show available resources.
 
 Guidelines:
 - Respond in the SAME LANGUAGE as the user.
@@ -51,6 +64,12 @@ tools = [
     get_project_status,
     create_project_intent,
     set_project_maintenance,
+    # Activation flow tools
+    activate_project,
+    inspect_repository,
+    save_project_secret,
+    check_ready_to_deploy,
+    list_resource_inventory,
 ]
 llm_with_tools = llm.bind_tools(tools)
 
@@ -94,6 +113,7 @@ async def execute_tools(state: dict) -> dict:
     response_parts = []
     po_intent = state.get("po_intent")
     project_intent = state.get("project_intent")
+    repo_info = state.get("repo_info")  # Track repo_info for discovered projects
 
     for tool_call in last_message.tool_calls:
         tool_name = tool_call["name"]
@@ -108,7 +128,20 @@ async def execute_tools(state: dict) -> dict:
             )
             continue
 
-        result = await tool_func.ainvoke(tool_call["args"])
+        # Wrap tool execution in try/except to always return ToolMessage
+        try:
+            result = await tool_func.ainvoke(tool_call["args"])
+        except Exception as e:
+            # On error, return error as ToolMessage to prevent broken sequences
+            tool_results.append(
+                ToolMessage(
+                    content=f"Error executing {tool_name}: {e!s}",
+                    tool_call_id=tool_call["id"],
+                )
+            )
+            response_parts.append(f"⚠️ Ошибка при выполнении {tool_name}: {e!s}")
+            continue
+
         tool_results.append(
             ToolMessage(
                 content=f"Result: {result}",
@@ -202,6 +235,127 @@ async def execute_tools(state: dict) -> dict:
                 )
             continue
 
+        # === Activation Flow Tools ===
+
+        if tool_name == "activate_project":
+            if result.get("error"):
+                response_parts.append(f"Ошибка: {result['error']}")
+            else:
+                project_name = result.get("project_name", result.get("project_id"))
+                missing = result.get("missing_secrets", [])
+                current_project = result.get("project_id")
+                # Extract repo_info for DevOps
+                if result.get("repo_info"):
+                    repo_info = result["repo_info"]
+
+                if missing:
+                    secrets_list = ", ".join(f"`{s}`" for s in missing)
+                    response_parts.append(
+                        f"🔧 Проект **{project_name}** активирован для деплоя.\n\n"
+                        f"Для запуска нужны секреты: {secrets_list}\n\n"
+                        "Пожалуйста, пришлите значение для каждого."
+                    )
+                else:
+                    # All secrets configured - auto-trigger deploy!
+                    po_intent = "deploy"
+                    project_intent = {
+                        "intent": "deploy",
+                        "project_id": current_project,
+                    }
+                    response_parts.append(
+                        f"✅ Проект **{project_name}** готов к деплою! "
+                        "Все секреты настроены.\n\n🚀 Запускаю деплой..."
+                    )
+            continue
+
+        if tool_name == "save_project_secret":
+            if result.get("error"):
+                response_parts.append(f"Ошибка: {result['error']}")
+            else:
+                key = result.get("key")
+                missing = result.get("missing_secrets", [])
+                project_id = result.get("project_id")
+
+                if missing:
+                    secrets_list = ", ".join(f"`{s}`" for s in missing)
+                    response_parts.append(
+                        f"✅ Секрет `{key}` сохранён.\n\n"
+                        f"Ещё нужны: {secrets_list}"
+                    )
+                else:
+                    # All secrets configured - auto-trigger deploy!
+                    po_intent = "deploy"
+                    project_intent = {
+                        "intent": "deploy",
+                        "project_id": project_id,
+                    }
+                    current_project = project_id
+                    response_parts.append(
+                        f"✅ Секрет `{key}` сохранён. Все секреты настроены!\n\n"
+                        "🚀 Запускаю деплой..."
+                    )
+            continue
+
+        if tool_name == "check_ready_to_deploy":
+            if result.get("error"):
+                response_parts.append(f"Ошибка: {result['error']}")
+            elif result.get("ready"):
+                project_name = result.get("project_name", result.get("project_id"))
+                po_intent = "deploy"
+                project_intent = {
+                    "intent": "deploy",
+                    "project_id": result.get("project_id"),
+                }
+                response_parts.append(
+                    f"🚀 Проект **{project_name}** готов! Запускаю деплой..."
+                )
+            else:
+                missing = result.get("missing", [])
+                secrets_list = ", ".join(f"`{s}`" for s in missing)
+                response_parts.append(
+                    f"⏳ Ещё не готов к деплою. Не хватает: {secrets_list}"
+                )
+            continue
+
+        if tool_name == "list_resource_inventory":
+            servers = result.get("servers", [])
+            total_projects = result.get("total_projects", 0)
+            with_secrets = result.get("projects_with_secrets", 0)
+
+            lines = ["📊 **Инвентарь ресурсов:**", ""]
+            lines.append(f"**Проекты:** {total_projects} всего, {with_secrets} с секретами")
+            lines.append("")
+
+            if servers:
+                lines.append("**Серверы:**")
+                for srv in servers:
+                    handle = srv.get("handle", "?")
+                    status = srv.get("status", "?")
+                    ram = srv.get("available_ram_mb", 0)
+                    lines.append(f"- {handle} [{status}] — {ram} MB свободно")
+            else:
+                lines.append("Серверов нет.")
+
+            response_parts.append("\n".join(lines))
+            continue
+
+        if tool_name == "inspect_repository":
+            # Usually called internally, but format if called directly
+            if result.get("error"):
+                response_parts.append(f"Ошибка инспекции: {result['error']}")
+            else:
+                required = result.get("required_secrets", [])
+                missing = result.get("missing_secrets", [])
+                has_compose = result.get("has_docker_compose", False)
+
+                lines = [f"📁 **Репозиторий {result.get('project_id')}:**"]
+                lines.append(f"- Docker Compose: {'✅' if has_compose else '❌'}")
+                lines.append(f"- Требуемые секреты: {', '.join(required) if required else 'нет'}")
+                if missing:
+                    lines.append(f"- ⚠️ Не настроены: {', '.join(missing)}")
+                response_parts.append("\n".join(lines))
+            continue
+
     current_project = None
     if project_intent and project_intent.get("project_id"):
         current_project = project_intent["project_id"]
@@ -217,6 +371,7 @@ async def execute_tools(state: dict) -> dict:
         "po_intent": po_intent,
         "project_intent": project_intent,
         "current_project": current_project,
+        "repo_info": repo_info,
     }
 
     return updates

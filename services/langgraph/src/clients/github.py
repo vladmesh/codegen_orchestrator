@@ -193,3 +193,71 @@ class GitHubAppClient:
             data = resp.json()
             logger.info(f"Created repository: {data['html_url']}")
             return data
+
+    async def get_file_contents(
+        self, owner: str, repo: str, path: str, ref: str = "main"
+    ) -> str | None:
+        """Get contents of a file from a repository.
+
+        Args:
+            owner: Repository owner (org or user)
+            repo: Repository name
+            path: Path to file in repo (e.g., '.env.example')
+            ref: Branch or commit ref (default 'main')
+
+        Returns:
+            File contents as string, or None if file doesn't exist.
+        """
+        try:
+            token = await self.get_token(owner, repo)
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.raw+json",
+            }
+
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                    headers=headers,
+                    params={"ref": ref},
+                )
+                if resp.status_code == 404:
+                    return None
+                resp.raise_for_status()
+                return resp.text
+        except Exception as e:
+            logger.warning(f"Failed to get file {path} from {owner}/{repo}: {e}")
+            return None
+
+    async def list_repo_files(
+        self, owner: str, repo: str, path: str = "", ref: str = "main"
+    ) -> list[str]:
+        """List files in a repository directory.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            path: Directory path (empty for root)
+            ref: Branch or commit ref
+
+        Returns:
+            List of file/directory names.
+        """
+        try:
+            token = await self.get_token(owner, repo)
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            }
+
+            async with httpx.AsyncClient() as client:
+                url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+                resp = await client.get(url, headers=headers, params={"ref": ref})
+                if resp.status_code == 404:
+                    return []
+                resp.raise_for_status()
+                return [item["name"] for item in resp.json()]
+        except Exception as e:
+            logger.warning(f"Failed to list files in {owner}/{repo}/{path}: {e}")
+            return []
+

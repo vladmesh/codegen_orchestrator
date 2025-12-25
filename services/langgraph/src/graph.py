@@ -89,6 +89,7 @@ def route_after_zavhoz(state: OrchestratorState) -> str:
 
     Routing logic:
     - If LLM made tool calls -> execute them
+    - If deploy intent AND resources allocated -> DevOps
     - Otherwise -> END (Engineering runs in parallel)
     """
     messages = state.get("messages", [])
@@ -100,6 +101,16 @@ def route_after_zavhoz(state: OrchestratorState) -> str:
     # If LLM wants to call tools (e.g., find_suitable_server, allocate_port)
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "zavhoz_tools"
+    
+    # If activation flow (deploy intent) -> proceed to DevOps ONLY if resources allocated
+    if state.get("po_intent") == "deploy":
+        allocated = state.get("allocated_resources", {})
+        if allocated:
+            return "devops"
+        # Resources not allocated - Zavhoz didn't complete allocation
+        # This is likely a miscommunication, log and end
+        # TODO: Could loop back to zavhoz with a more explicit message
+        return END
 
     return END
 
@@ -137,6 +148,10 @@ def route_after_product_owner_tools(state: OrchestratorState) -> str:
     if po_intent == "maintenance":
         # Project update → Engineering directly (skip brainstorm)
         return "engineering"
+    
+    if po_intent == "deploy":
+        # Discovered project activation → Zavhoz for resource allocation
+        return "zavhoz"
     
     return END
 
@@ -267,6 +282,7 @@ def create_graph() -> StateGraph:
         route_after_product_owner_tools,
         {
             "brainstorm": "brainstorm",
+            "zavhoz": "zavhoz",
             "engineering": "engineering",
             END: END,
         },
@@ -287,6 +303,7 @@ def create_graph() -> StateGraph:
         route_after_zavhoz,
         {
             "zavhoz_tools": "zavhoz_tools",
+            "devops": "devops",
             END: END,
         },
     )

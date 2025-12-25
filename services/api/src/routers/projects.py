@@ -80,3 +80,24 @@ async def update_project(
     await db.commit()
     await db.refresh(project)
     return project
+
+
+@router.patch("/{project_id}", response_model=ProjectRead)
+async def patch_project(
+    project_id: str,
+    project_in: ProjectUpdate,
+    db: AsyncSession = Depends(get_async_session),
+) -> Project:
+    """Partial update of project (PATCH method)."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project_in.status is not None:
+        project.status = project_in.status
+    if project_in.config is not None:
+        project.config = project_in.config
+
+    await db.commit()
+    await db.refresh(project)
+    return project
