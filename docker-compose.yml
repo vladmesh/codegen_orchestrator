@@ -24,6 +24,7 @@ services:
       - ./services/api/alembic.ini:/app/alembic.ini:ro
       - ./services/api/migrations:/app/migrations:delegated
       - ./shared:/app/shared:delegated
+      - ./scripts:/app/scripts:ro
       - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
     ports:
       - "8000:8000"

@@ -1,5 +1,6 @@
 """Database models package."""
 
+from .agent_config import AgentConfig
 from .api_key import APIKey
 from .base import Base
 from .domain import Domain
@@ -13,6 +14,7 @@ from .telegram_bot import TelegramBot
 from .user import User
 
 __all__ = [
+    "AgentConfig",
     "Base",
     "Project",
     "Resource",

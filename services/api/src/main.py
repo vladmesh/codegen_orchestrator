@@ -34,3 +34,5 @@ app.include_router(routers.servers.router, prefix="/api")
 app.include_router(routers.api_keys.router, prefix="/api")
 app.include_router(routers.incidents.router, prefix="/api")
 app.include_router(routers.service_deployments.router, prefix="/api")
+app.include_router(routers.agent_configs.router, prefix="/api")
+

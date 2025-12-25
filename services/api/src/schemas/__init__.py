@@ -1,5 +1,6 @@
 """Common schemas."""
 
+from .agent_config import AgentConfigCreate, AgentConfigRead, AgentConfigUpdate
 from .api_key import APIKeyCreate, APIKeyRead
 from .incident import IncidentCreate, IncidentRead, IncidentUpdate
 from .port_allocation import PortAllocationCreate, PortAllocationRead
@@ -13,6 +14,9 @@ from .service_deployment import (
 from .user import UserCreate, UserRead, UserUpdate
 
 __all__ = [
+    "AgentConfigCreate",
+    "AgentConfigRead",
+    "AgentConfigUpdate",
     "UserCreate",
     "UserRead",
     "UserUpdate",
