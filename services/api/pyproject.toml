@@ -24,6 +24,7 @@ dependencies = [
     
     # Utils
     "structlog>=24.0.0",
+    "pyjwt[crypto]>=2.8.0",
 ]
 
 [build-system]
