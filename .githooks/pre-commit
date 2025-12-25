@@ -32,11 +32,14 @@ fi
 echo -e "${YELLOW}📝 Formatting ${STAGED_FILES}...${NC}"
 
 # Run make format (ruff format + ruff check --fix)
-docker compose run --rm tooling sh -c "ruff format $STAGED_FILES && ruff check --fix $STAGED_FILES" || true
+docker compose run --rm tooling sh -c "ruff format ${STAGED_FILES} && ruff check --fix ${STAGED_FILES}" || true
 
 # Add the formatted files back to the commit
-git add $STAGED_FILES
+for file in $STAGED_FILES; do
+    git add "$file"
+done
 
 echo -e "${GREEN}✅ Code formatted and added to commit${NC}"
 exit 0
+
 
