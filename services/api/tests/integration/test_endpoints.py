@@ -1,5 +1,7 @@
 """Integration tests for API endpoints."""
 
+import http
+
 from httpx import ASGITransport, AsyncClient
 import pytest
 
@@ -17,7 +19,7 @@ async def client():
 async def test_health(client):
     """Test health endpoint."""
     response = await client.get("/health")
-    assert response.status_code == 200
+    assert response.status_code == http.HTTPStatus.OK
     assert response.json() == {"status": "ok"}
 
 
@@ -25,6 +27,6 @@ async def test_health(client):
 async def test_root_endpoint(client):
     """Test root endpoint returns API info."""
     response = await client.get("/")
-    assert response.status_code == 200
+    assert response.status_code == http.HTTPStatus.OK
     data = response.json()
     assert "name" in data or "message" in data

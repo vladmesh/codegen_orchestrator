@@ -1,5 +1,9 @@
 """Unit tests for API models and schemas."""
 
+# Constants for test assertions
+MIN_PROJECT_STATUSES = 10  # We expect at least 10 project statuses
+MIN_SERVER_STATUSES = 5  #  We expect at least 5 server statuses
+
 
 def test_project_status_values():
     """Test that project status enum values are valid."""
@@ -12,7 +16,7 @@ def test_project_status_values():
 
     # Ensure we have multiple statuses
     statuses = list(ProjectStatus)
-    assert len(statuses) > 10
+    assert len(statuses) > MIN_PROJECT_STATUSES
 
 
 def test_server_status_values():
@@ -26,4 +30,4 @@ def test_server_status_values():
 
     # Ensure we have multiple statuses
     statuses = list(ServerStatus)
-    assert len(statuses) > 5
+    assert len(statuses) > MIN_SERVER_STATUSES

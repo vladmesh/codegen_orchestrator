@@ -18,11 +18,5 @@ async def test_graph_can_process_simple_message():
         mock_response.json.return_value = {"projects": [], "servers": [], "incidents": []}
         mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=mock_response)
 
-        initial_state = {
-            "messages": [{"role": "user", "content": "Hello"}],
-            "current_project": None,
-            "allocated_resources": {},
-        }
-
         # Just verify the graph structure is valid
         assert graph is not None
