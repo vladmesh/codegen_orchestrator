@@ -5,6 +5,12 @@ from typing import Annotated, Any
 from langchain_core.tools import tool
 
 from .base import api_client
+from ..schemas.tools import (
+    ProjectActivationResult,
+    RepositoryInspectionResult,
+    SecretSaveResult,
+    DeploymentReadinessResult,
+)
 
 
 def _parse_env_example(content: str) -> list[str]:
@@ -24,7 +30,7 @@ def _parse_env_example(content: str) -> list[str]:
 @tool
 async def activate_project(
     project_id: Annotated[str, "Project ID to activate for deployment"],
-) -> dict[str, Any]:
+) -> ProjectActivationResult:
     """Activate a discovered project for deployment.
 
     Changes project status to 'setup_required' and inspects the repository
@@ -74,21 +80,21 @@ async def activate_project(
         # Non-fatal: DevOps will fail later with a clear message
         pass
 
-    return {
-        "project_id": project_id,
-        "project_name": project_name,
-        "status": "setup_required",
-        "required_secrets": inspection.get("required_secrets", []),
-        "missing_secrets": inspection.get("missing_secrets", []),
-        "has_docker_compose": inspection.get("has_docker_compose", False),
-        "repo_info": repo_info,
-    }
+    return ProjectActivationResult(
+        project_id=project_id,
+        project_name=project_name,
+        status="setup_required",
+        required_secrets=inspection.required_secrets,
+        missing_secrets=inspection.missing_secrets,
+        has_docker_compose=inspection.has_docker_compose,
+        repo_info=repo_info,
+    )
 
 
 @tool
 async def inspect_repository(
     project_id: Annotated[str, "Project ID to inspect"],
-) -> dict[str, Any]:
+) -> RepositoryInspectionResult:
     """Inspect a project's repository to determine deployment requirements.
 
     Fetches .env.example to determine required secrets,
@@ -134,22 +140,22 @@ async def inspect_repository(
         # Check for docker-compose.yml
         has_docker_compose = "docker-compose.yml" in files or "docker-compose.yaml" in files
 
-        return {
-            "project_id": project_id,
-            "required_secrets": required_secrets,
-            "missing_secrets": missing_secrets,
-            "has_docker_compose": has_docker_compose,
-            "files": files[:20],  # Limit to first 20 files
-        }
+        return RepositoryInspectionResult(
+            project_id=project_id,
+            required_secrets=required_secrets,
+            missing_secrets=missing_secrets,
+            has_docker_compose=has_docker_compose,
+            files=files[:20],  # Limit to first 20 files
+        )
     except Exception as e:
-        return {
-            "project_id": project_id,
-            "error": f"Failed to inspect repository: {e}",
-            "required_secrets": [],
-            "missing_secrets": [],
-            "has_docker_compose": False,
-            "files": [],
-        }
+        return RepositoryInspectionResult(
+            project_id=project_id,
+            error=f"Failed to inspect repository: {e}",
+            required_secrets=[],
+            missing_secrets=[],
+            has_docker_compose=False,
+            files=[],
+        )
 
 
 @tool
@@ -157,7 +163,7 @@ async def save_project_secret(
     project_id: Annotated[str, "Project ID"],
     key: Annotated[str, "Secret key name (e.g., TELEGRAM_TOKEN)"],
     value: Annotated[str, "Secret value"],
-) -> dict[str, Any]:
+) -> SecretSaveResult:
     """Save a secret for a project's deployment.
 
     Stores the secret in project.config.secrets.
@@ -187,18 +193,18 @@ async def save_project_secret(
     # Re-inspect to get updated missing secrets
     inspection = await inspect_repository.ainvoke({"project_id": project_id})
 
-    return {
-        "saved": True,
-        "key": key,
-        "project_id": project_id,
-        "missing_secrets": inspection.get("missing_secrets", []),
-    }
+    return SecretSaveResult(
+        saved=True,
+        key=key,
+        project_id=project_id,
+        missing_secrets=inspection.missing_secrets,
+    )
 
 
 @tool
 async def check_ready_to_deploy(
     project_id: Annotated[str, "Project ID to check"],
-) -> dict[str, Any]:
+) -> DeploymentReadinessResult:
     """Check if a project has all requirements for deployment.
 
     Verifies all secrets are configured and repo is ready.
@@ -219,13 +225,13 @@ async def check_ready_to_deploy(
     # Inspect repo for requirements
     inspection = await inspect_repository.ainvoke({"project_id": project_id})
 
-    missing = inspection.get("missing_secrets", [])
+    missing = inspection.missing_secrets
     ready = len(missing) == 0
 
-    return {
-        "ready": ready,
-        "project_id": project_id,
-        "project_name": project.get("name"),
-        "missing": missing,
-        "has_docker_compose": inspection.get("has_docker_compose", False),
-    }
+    return DeploymentReadinessResult(
+        ready=ready,
+        project_id=project_id,
+        project_name=project.get("name"),
+        missing=missing,
+        has_docker_compose=inspection.has_docker_compose,
+    )

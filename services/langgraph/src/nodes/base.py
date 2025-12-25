@@ -124,10 +124,17 @@ class BaseAgentNode:
             
             # Let subclass handle the result for custom state updates
             state_updates = self.handle_tool_result(tool_name, result, state)
+
+            # Serialize Pydantic models if necessary
+            content_result = result
+            if hasattr(result, "model_dump"):
+                content_result = result.model_dump()
+            elif hasattr(result, "dict"):
+                content_result = result.dict()
             
             return {
                 "message": ToolMessage(
-                    content=f"Result: {result}",
+                    content=f"Result: {content_result}",
                     tool_call_id=tool_call["id"],
                 ),
                 "state_updates": state_updates,

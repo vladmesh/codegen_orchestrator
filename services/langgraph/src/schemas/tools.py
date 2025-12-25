@@ -7,7 +7,16 @@ Tools return these structures as dicts, but developers can reference
 these schemas to understand the expected fields.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+
+class ProjectIntent(BaseModel):
+    """Intent from Product Owner."""
+    intent: Literal["new_project", "update_project", "deploy", "maintenance"]
+    summary: str | None = None
+    project_id: str | None = None
 
 
 class ProjectActivationResult(BaseModel):

@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from langchain_core.tools import tool
 
 from .base import api_client
+from ..schemas.tools import ProjectCreateResult, ProjectIntent
 
 
 @tool
@@ -15,7 +16,7 @@ async def create_project(
     modules: Annotated[list[str], "Modules to generate: backend, tg_bot, notifications, frontend"],
     entry_points: Annotated[list[str], "Entry points: telegram, frontend, api"],
     telegram_token: Annotated[str | None, "Telegram Bot Token (if applicable)"] = None,
-) -> dict[str, Any]:
+) -> ProjectCreateResult:
     """Create a new project in the database.
 
     Call this when you have gathered enough information about the project.
@@ -43,7 +44,8 @@ async def create_project(
         "config": config_payload,
     }
 
-    return await api_client.post("/projects/", json=payload)
+    resp = await api_client.post("/projects/", json=payload)
+    return ProjectCreateResult(**resp)
 
 
 @tool

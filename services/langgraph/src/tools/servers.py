@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from langchain_core.tools import tool
 
 from .base import api_client
+from ..schemas.tools import ServerSearchResult
 
 
 @tool
@@ -21,7 +22,7 @@ async def list_managed_servers() -> list[dict[str, Any]]:
 async def find_suitable_server(
     min_ram_mb: Annotated[int, "Minimum available RAM in MB required"],
     min_disk_mb: Annotated[int, "Minimum available disk space in MB required"] = 0,
-) -> dict[str, Any] | None:
+) -> ServerSearchResult | None:
     """Find a server that has enough available resources.
 
     Searches managed servers for one with sufficient free RAM and disk.
@@ -59,7 +60,9 @@ async def find_suitable_server(
         return None
 
     # Return the one with most available RAM
-    return max(suitable, key=lambda s: s["available_ram_mb"])
+    # Return the one with most available RAM
+    best = max(suitable, key=lambda s: s["available_ram_mb"])
+    return ServerSearchResult(**best)
 
 
 @tool

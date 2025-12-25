@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from langchain_core.tools import tool
 
 from .base import api_client
+from ..schemas.tools import PortAllocationResult
 
 
 @tool
@@ -14,7 +15,7 @@ async def allocate_port(
     port: Annotated[int, "Port number to allocate"],
     service_name: Annotated[str, "Name of the service utilizing the port"],
     project_id: Annotated[str, "ID of the project owning the service"],
-) -> dict[str, Any]:
+) -> PortAllocationResult:
     """Allocate a specific port on a server to prevent collisions.
 
     Reserves a port for a service. If port is already taken, will error.
@@ -40,7 +41,7 @@ async def allocate_port(
         # allocate_port MUST return server_ip for DevOps to work
         raise RuntimeError(f"Failed to fetch server IP for {server_handle}: {e}") from e
 
-    return allocation
+    return PortAllocationResult(**allocation)
 
 
 @tool

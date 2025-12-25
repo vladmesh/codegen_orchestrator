@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from langchain_core.tools import tool
 
 from .base import api_client
+from ..schemas.tools import IncidentCreateResult
 
 
 @tool
@@ -12,7 +13,7 @@ async def create_incident(
     server_handle: Annotated[str, "Server handle"],
     incident_type: Annotated[str, "Type of incident (e.g., 'provisioning_failed')"],
     details: Annotated[dict, "Incident details"] = None,
-) -> dict[str, Any]:
+) -> IncidentCreateResult:
     """Create an incident record for tracking issues.
 
     Used when provisioning or other operations fail.
@@ -27,7 +28,8 @@ async def create_incident(
         "affected_services": [],
     }
 
-    return await api_client.post("/api/incidents/", json=payload)
+    resp = await api_client.post("/api/incidents/", json=payload)
+    return IncidentCreateResult(**resp)
 
 
 @tool
