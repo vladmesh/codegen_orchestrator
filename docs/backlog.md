@@ -245,6 +245,21 @@ Support for late 2025 SOTA models (gpt-5.2, Gemini 3 Pro, Claude Opus 4.5) and d
 - [ ] Dynamic LLM factory that reads from DB instead of envs.
 - [ ] Support for high-end models: `gpt-5.2`, `google/gemini-3-pro`, `anthropic/claude-opus-4.5`.
 
+### Refactor: Move background tasks out of API
+
+**Status:** DONE
+**Priority:** MEDIUM
+
+API should be a clean CRUD layer. All background polling/monitoring should be in a separate service.
+
+**Tasks:**
+- [x] Create `scheduler` or `worker` service in Docker
+- [x] Move `health_checker`, `server_sync`, `github_sync` from API
+- [x] Remove background task initialization from `api/src/main.py`
+- [x] Configure SSH keys and credentials only for the new service
+
+---
+
 ## Done
 
 - **Sysbox Installation** - Installed on dev machine
@@ -253,4 +268,5 @@ Support for late 2025 SOTA models (gpt-5.2, Gemini 3 Pro, Claude Opus 4.5) and d
 - **Architect Node** - Creates GitHub repos, spawns Factory workers
 - **GitHub App Integration** - Auto-detects org, creates repos
 - **Brainstorm → Zavhoz → Architect flow** - Tested end-to-end
+- **Scheduler Service** - Moved all background tasks out of API into dedicated service
 

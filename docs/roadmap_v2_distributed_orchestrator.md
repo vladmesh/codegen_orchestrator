@@ -30,6 +30,15 @@
     *   Store encrypted `.env` templates in the Database (or use a simple Vault solution).
     *   Ensure "Discovered" projects are flagged as `setup_required` if secrets are missing.
 
+### 1.4 Polling Consolidation (Scheduler Service) [DONE]
+*   **Goal**: Move all background polling/monitoring from API to a dedicated service.
+*   **Rationale**: API should be a clean CRUD layer. Polling workers need SSH keys and other credentials that shouldn't be in API.
+*   **Implementation**:
+    *   New `scheduler` service in Docker Compose.
+    *   Contains: `github_sync`, `server_sync`, `health_checker`, `provisioner_trigger` workers.
+    *   Shares database and Redis with API.
+    *   Has access to SSH keys for health checks.
+
 ### 1.2 GitHub Polling Service (The Heartbeat) [DONE]
 *   **Worker**: "Sync Projects Worker" (separate from LangGraph).
 *   **Frequency**: Every 5-10 minutes.

@@ -1,0 +1,256 @@
+"""Server sync worker - syncs servers and their specs from Time4VPS."""
+
+import asyncio
+import json
+import logging
+import os
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from shared.notifications import notify_admins
+
+from src.clients.time4vps import Time4VPSClient
+from src.database import async_session_maker
+from src.models.api_key import APIKey
+from src.models.server import Server
+from .provisioner_trigger import publish_provisioner_trigger
+
+logger = logging.getLogger(__name__)
+
+# Config
+GHOST_SERVERS = os.getenv("GHOST_SERVERS", "").split(",")
+GHOST_SERVERS = [ip.strip() for ip in GHOST_SERVERS if ip.strip()]
+
+# How often to sync (seconds)
+SYNC_INTERVAL = 60
+# How often to fetch detailed specs (more expensive, do less often)
+DETAILS_SYNC_INTERVAL = 300  # 5 minutes
+
+
+async def get_time4vps_client(db: AsyncSession) -> Time4VPSClient | None:
+    """Create Time4VPS client with credentials from DB."""
+    query = select(APIKey).where(APIKey.service == "time4vps")
+    result = await db.execute(query)
+    api_key = result.scalar_one_or_none()
+
+    if not api_key:
+        return None
+
+    try:
+        creds = json.loads(api_key.key_enc)
+        return Time4VPSClient(creds["username"], creds["password"])
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error(f"Failed to parse Time4VPS credentials: {e}")
+        return None
+
+
+async def sync_servers_worker():
+    """Background worker to sync servers from Time4VPS."""
+    logger.info("Starting Server Sync Worker")
+
+    last_details_sync = 0
+
+    while True:
+        try:
+            async with async_session_maker() as db:
+                client = await get_time4vps_client(db)
+                if not client:
+                    logger.warning("Time4VPS credentials not found. Skipping sync.")
+                else:
+                    # Basic sync every iteration
+                    await _sync_server_list(db, client)
+
+                    # Detailed specs sync less frequently
+                    now = asyncio.get_event_loop().time()
+                    if now - last_details_sync > DETAILS_SYNC_INTERVAL:
+                        await _sync_server_details(db, client)
+                        last_details_sync = now
+
+                    # Check for servers requiring provisioning
+                    await _check_provisioning_triggers(db)
+
+        except Exception as e:
+            logger.error(f"Error in Server Sync Worker: {e}", exc_info=True)
+
+        await asyncio.sleep(SYNC_INTERVAL)
+
+
+async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
+    """Sync basic server list - discover new, mark missing."""
+    try:
+        api_servers = await client.get_servers()
+    except Exception as e:
+        logger.error(f"Failed to fetch servers from Time4VPS: {e}")
+        return
+
+    # Fetch existing servers from DB
+    result = await db.execute(select(Server))
+    db_servers = {s.public_ip: s for s in result.scalars().all()}
+
+    # Track new managed servers for notification
+    new_managed_servers = []
+
+    for srv in api_servers:
+        ip = srv.get("ip")
+        if not ip:
+            continue
+
+        server_id = srv.get("server_id")
+        if not server_id:
+            logger.warning(f"Server with IP {ip} has no server_id, skipping")
+            continue
+
+        hostname = srv.get("domain")
+        is_ghost = ip in GHOST_SERVERS
+
+        existing = db_servers.get(ip)
+
+        if existing:
+            # Server exists - update if was missing
+            if existing.status == "missing":
+                existing.status = "active"
+                logger.info(f"Server {ip} reappeared")
+            # Update provider_id if changed
+            if existing.labels.get("provider_id") != str(server_id):
+                existing.labels = {**existing.labels, "provider_id": str(server_id)}
+        else:
+            # New Server Discovered
+            # Check if it's a ghost server or managed
+            is_managed = not is_ghost
+
+            # Managed servers need provisioning by default
+            if is_managed:
+                status = "pending_setup"
+                logger.info(
+                    f"Discovered new MANAGED server: {ip} (handle: vps-{server_id}). "
+                    "Status set to PENDING_SETUP - requires provisioning."
+                )
+            else:
+                status = "reserved"  # Ghost servers are reserved
+                logger.info(f"Discovered ghost server: {ip} (handle: vps-{server_id})")
+
+            new_server = Server(
+                handle=f"vps-{server_id}",
+                host=hostname,
+                public_ip=ip,
+                is_managed=is_managed,
+                status=status,
+                labels={"provider_id": str(server_id)},
+            )
+            db.add(new_server)
+            logger.info(f"Discovered new server: {ip} (handle: vps-{server_id}, ghost: {is_ghost})")
+
+            # Track new managed servers for notification
+            if is_managed:
+                new_managed_servers.append(new_server)
+
+    # Check for missing servers
+    api_ips = {s.get("ip") for s in api_servers if s.get("ip")}
+    for ip, srv in db_servers.items():
+        if ip not in api_ips and srv.status != "missing":
+            srv.status = "missing"
+            logger.warning(f"Server {ip} is missing from Time4VPS API!")
+
+    await db.commit()
+
+    # Send notifications for new managed servers
+    for server in new_managed_servers:
+        await notify_admins(
+            f"New managed server discovered: *{server.handle}* ({server.public_ip}). "
+            "Provisioning will be triggered automatically.",
+            level="info",
+        )
+
+
+async def _sync_server_details(db: AsyncSession, client: Time4VPSClient):
+    """Fetch detailed specs for each server (RAM, disk, OS)."""
+    logger.info("Syncing server details from Time4VPS...")
+
+    result = await db.execute(select(Server).where(Server.status.notin_(["missing"])))
+    servers = result.scalars().all()
+
+    updated_count = 0
+
+    for server in servers:
+        provider_id = server.labels.get("provider_id")
+        if not provider_id:
+            continue
+
+        try:
+            details = await client.get_server_details(int(provider_id))
+
+            # Update capacity and usage from API
+            server.capacity_cpu = details.get("cpu_cores", server.capacity_cpu)
+            server.capacity_ram_mb = details.get("ram_limit", server.capacity_ram_mb)
+            server.capacity_disk_mb = details.get("disk_limit", server.capacity_disk_mb)
+            server.used_ram_mb = details.get("ram_used", 0)
+            server.used_disk_mb = details.get("disk_usage", 0)
+            server.os_template = details.get("os")
+
+            # Update status based on Time4VPS status
+            api_status = details.get("status", "").lower()
+            if api_status == "active" and server.status == "discovered":
+                server.status = "active"
+
+            updated_count += 1
+            logger.debug(
+                f"Updated specs for {server.handle}: "
+                f"RAM {server.capacity_ram_mb}MB, Disk {server.capacity_disk_mb}MB"
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch details for server {server.handle}: {e}")
+            continue
+
+    await db.commit()
+    logger.info(f"Updated details for {updated_count} servers")
+
+
+async def _check_provisioning_triggers(db: AsyncSession):
+    """Check for servers that need provisioning.
+
+    Looks for:
+    - PENDING_SETUP servers (new managed servers)
+    - FORCE_REBUILD servers (manual trigger)
+
+    Automatically triggers provisioning via Redis pub/sub.
+    """
+    # Check for FORCE_REBUILD
+    result = await db.execute(select(Server).where(Server.status == "force_rebuild"))
+    force_rebuild_servers = result.scalars().all()
+
+    for server in force_rebuild_servers:
+        logger.warning(
+            f"🔥 Server {server.handle} has FORCE_REBUILD status. Triggering provisioner..."
+        )
+
+        # Update status to PROVISIONING before triggering
+        server.status = "provisioning"
+        await db.commit()
+
+        # Trigger provisioner
+        await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
+
+        # Notify admins
+        await notify_admins(
+            f"Force rebuild triggered for server *{server.handle}*. Provisioning started.",
+            level="warning",
+        )
+
+    # Check for PENDING_SETUP
+    result = await db.execute(select(Server).where(Server.status == "pending_setup"))
+    pending_servers = result.scalars().all()
+
+    for server in pending_servers:
+        logger.info(
+            f"📋 Server {server.handle} is PENDING_SETUP. Triggering automatic provisioning..."
+        )
+
+        # Update status to PROVISIONING before triggering
+        server.status = "provisioning"
+        await db.commit()
+
+        # Trigger provisioner
+        await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
+

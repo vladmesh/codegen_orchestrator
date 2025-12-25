@@ -97,6 +97,33 @@ services:
     networks:
       - internal
 
+  scheduler:
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PYTHONPATH: /app
+    volumes:
+      - ./services/scheduler/src:/app/src:delegated
+      - ./services/api/src/models:/app/src/models:delegated
+      - ./services/api/src/clients:/app/src/clients:delegated
+      - ./services/api/src/database.py:/app/src/database.py:delegated
+      - ./shared:/app/shared:delegated
+      - ~/.ssh:/root/.ssh:ro
+      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+
   # === Infrastructure ===
 
   db:
