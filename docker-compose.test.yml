@@ -1,0 +1,112 @@
+# Docker Compose configuration for testing
+# Optimized for fast test execution with minimal dependencies
+
+services:
+  # === Test Infrastructure ===
+
+  db-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: orchestrator_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d orchestrator_test" ]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    tmpfs:
+      - /var/lib/postgresql/data # Use tmpfs for faster test runs
+    networks:
+      - test-network
+
+  redis-test:
+    image: redis:7-alpine
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    networks:
+      - test-network
+
+  # === Service Tests ===
+
+  api-test:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile.test
+      target: test
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-test:5432/orchestrator_test
+      REDIS_URL: redis://redis-test:6379
+      PYTHONPATH: /app
+    depends_on:
+      db-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    networks:
+      - test-network
+    volumes:
+      - ./services/api/src:/app/src:ro
+      - ./services/api/tests:/app/tests:ro
+
+  langgraph-test:
+    build:
+      context: .
+      dockerfile: services/langgraph/Dockerfile.test
+      target: test
+    environment:
+      REDIS_URL: redis://redis-test:6379
+      PYTHONPATH: /app
+      # Mock API URL for tests
+      API_URL: http://mock-api:8000
+      # Mock OpenAI API key to avoid import errors (LLM instantiation at module level)
+      OPENAI_API_KEY: sk-test-mock-key-for-unit-tests
+    depends_on:
+      redis-test:
+        condition: service_healthy
+    networks:
+      - test-network
+    volumes:
+      - ./services/langgraph/src:/app/src:ro
+      - ./services/langgraph/tests:/app/tests:ro
+
+  scheduler-test:
+    build:
+      context: .
+      dockerfile: services/scheduler/Dockerfile.test
+      target: test
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-test:5432/orchestrator_test
+      REDIS_URL: redis://redis-test:6379
+      PYTHONPATH: /app
+    depends_on:
+      db-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    networks:
+      - test-network
+    volumes:
+      - ./services/scheduler/src:/app/src:ro
+      - ./services/scheduler/tests:/app/tests:ro
+
+  telegram-bot-test:
+    build:
+      context: .
+      dockerfile: services/telegram_bot/Dockerfile.test
+      target: test
+    environment:
+      API_URL: http://mock-api:8000
+      PYTHONPATH: /app
+    networks:
+      - test-network
+    volumes:
+      - ./services/telegram_bot/src:/app/src:ro
+      - ./services/telegram_bot/tests:/app/tests:ro
+
+networks:
+  test-network:
+    driver: bridge

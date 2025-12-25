@@ -1,4 +1,9 @@
-.PHONY: lint format test build up down logs help nuke seed
+.PHONY: lint format test test-unit test-integration test-all test-clean \
+	test-api test-api-unit test-api-integration \
+	test-langgraph test-langgraph-unit test-langgraph-integration \
+	test-scheduler test-scheduler-unit test-scheduler-integration \
+	test-telegram test-telegram-unit \
+	build up down logs help nuke seed migrate makemigrations shell
 
 # Load .env file
 -include .env
@@ -18,7 +23,14 @@ help:
 	@echo ""
 	@echo "  make lint        - Run linters"
 	@echo "  make format      - Format code"
-	@echo "  make test        - Run tests"
+	@echo ""
+	@echo "Testing:"
+	@echo "  make test-unit            - Run all unit tests (fast)"
+	@echo "  make test-integration     - Run all integration tests"
+	@echo "  make test-all             - Run ALL tests"
+	@echo "  make test-api-unit        - Run API unit tests"
+	@echo "  make test-langgraph-unit  - Run LangGraph unit tests"
+	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
 	@echo "  make migrate     - Run database migrations"
 	@echo "  make makemigrations MSG='...' - Create new migration"
@@ -49,8 +61,62 @@ lint:
 format:
 	$(TOOLING) sh -c "ruff format . && ruff check --fix ."
 
-test:
-	$(TOOLING) bash -lc "export HOME=/tmp && pip install -e ./services/api -e ./services/langgraph && pytest -v --cov=src --cov-report=term-missing tests/"
+# === Testing ===
+
+DOCKER_COMPOSE_TEST := DOCKER_BUILDKIT=1 docker compose -f docker-compose.test.yml
+
+# Individual service unit tests (fast, no external deps)
+test-api-unit:
+	$(DOCKER_COMPOSE_TEST) run --rm api-test pytest tests/unit -v
+
+test-langgraph-unit:
+	$(DOCKER_COMPOSE_TEST) run --rm langgraph-test pytest tests/unit -v
+
+test-scheduler-unit:
+	$(DOCKER_COMPOSE_TEST) run --rm scheduler-test pytest tests/unit -v
+
+test-telegram-unit:
+	$(DOCKER_COMPOSE_TEST) run --rm telegram-bot-test pytest tests/unit -v
+
+# Individual service integration tests (require infrastructure)
+test-api-integration:
+	$(DOCKER_COMPOSE_TEST) run --rm api-test pytest tests/integration -v
+
+test-langgraph-integration:
+	$(DOCKER_COMPOSE_TEST) run --rm langgraph-test pytest tests/integration -v
+
+test-scheduler-integration:
+	$(DOCKER_COMPOSE_TEST) run --rm scheduler-test pytest tests/integration -v
+
+# All tests for a specific service
+test-api:
+	$(DOCKER_COMPOSE_TEST) run --rm api-test pytest -v
+
+test-langgraph:
+	$(DOCKER_COMPOSE_TEST) run --rm langgraph-test pytest -v
+
+test-scheduler:
+	$(DOCKER_COMPOSE_TEST) run --rm scheduler-test pytest -v
+
+test-telegram:
+	$(DOCKER_COMPOSE_TEST) run --rm telegram-bot-test pytest -v
+
+# Run all unit tests (fast)
+test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit
+
+# Run all integration tests
+test-integration: test-api-integration test-langgraph-integration test-scheduler-integration
+
+# Run ALL tests
+test-all: test-api test-langgraph test-scheduler test-telegram
+
+# Legacy test command (now runs all tests)
+test: test-all
+
+# Cleanup test containers and volumes
+test-clean:
+	$(DOCKER_COMPOSE_TEST) down -v
+
 
 # === Database ===
 
