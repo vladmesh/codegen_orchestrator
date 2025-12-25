@@ -79,39 +79,39 @@ DOCKER_COMPOSE_TEST := DOCKER_BUILDKIT=1 docker compose -f docker-compose.test.y
 
 # Individual service unit tests (fast, no external deps)
 test-api-unit:
-	$(DOCKER_COMPOSE_TEST) run --rm api-test pytest tests/unit -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans api-test pytest tests/unit -v
 
 test-langgraph-unit:
-	$(DOCKER_COMPOSE_TEST) run --rm langgraph-test pytest tests/unit -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans langgraph-test pytest tests/unit -v
 
 test-scheduler-unit:
-	$(DOCKER_COMPOSE_TEST) run --rm scheduler-test pytest tests/unit -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans scheduler-test pytest tests/unit -v
 
 test-telegram-unit:
-	$(DOCKER_COMPOSE_TEST) run --rm telegram-bot-test pytest tests/unit -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans telegram-bot-test pytest tests/unit -v
 
 # Individual service integration tests (require infrastructure)
 test-api-integration:
-	$(DOCKER_COMPOSE_TEST) run --rm api-test pytest tests/integration -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans api-test pytest tests/integration -v
 
 test-langgraph-integration:
-	$(DOCKER_COMPOSE_TEST) run --rm langgraph-test pytest tests/integration -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans langgraph-test pytest tests/integration -v
 
 test-scheduler-integration:
-	$(DOCKER_COMPOSE_TEST) run --rm scheduler-test pytest tests/integration -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans scheduler-test pytest tests/integration -v
 
 # All tests for a specific service
 test-api:
-	$(DOCKER_COMPOSE_TEST) run --rm api-test pytest -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans api-test pytest -v
 
 test-langgraph:
-	$(DOCKER_COMPOSE_TEST) run --rm langgraph-test pytest -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans langgraph-test pytest -v
 
 test-scheduler:
-	$(DOCKER_COMPOSE_TEST) run --rm scheduler-test pytest -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans scheduler-test pytest -v
 
 test-telegram:
-	$(DOCKER_COMPOSE_TEST) run --rm telegram-bot-test pytest -v
+	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans telegram-bot-test pytest -v
 
 # Run all unit tests (fast)
 test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit
@@ -127,7 +127,7 @@ test: test-all
 
 # Cleanup test containers and volumes
 test-clean:
-	$(DOCKER_COMPOSE_TEST) down -v
+	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans
 
 
 # === Database ===
