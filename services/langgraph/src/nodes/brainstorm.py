@@ -2,14 +2,19 @@
 
 First node in the orchestrator graph. Gathers requirements from user,
 asks clarifying questions, and creates project spec.
+
+Refactored to use BaseAgentNode for dynamic prompt loading from database.
 """
 
-from langchain_core.messages import SystemMessage, ToolMessage
-from langchain_openai import ChatOpenAI
+from typing import Any
+
+from langchain_core.messages import SystemMessage
 
 from ..tools.database import create_project
+from .base import BaseAgentNode
 
-SYSTEM_PROMPT = """You are Brainstorm, the first agent in the codegen orchestrator.
+# Fallback prompt used when API is unavailable
+FALLBACK_PROMPT = """You are Brainstorm, the first agent in the codegen orchestrator.
 
 Your job:
 1. Understand what project the user wants to create
@@ -32,21 +37,34 @@ Your job:
 - Project name should be snake_case (e.g., weather_bot)
 - When ready, call create_project with all gathered info (including telegram_token if applicable)
 - Respond in the SAME LANGUAGE as the user
-
-## Example conversation:
-User: "Создай бота для погоды"
-You: "Отлично! Пара уточнений:
-1. Бот будет получать погоду по городу от пользователя?
-2. Нужен ли веб-интерфейс?
-3. Пожалуйста, предоставьте Telegram Bot Token для настройки."
-
-User: "Да, по городу. Веб не нужен. Токен: 123:ABC..."
-You: *calls create_project with telegram_token='123:ABC...'*
 """
 
-# LLM with tools
-llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
-llm_with_tools = llm.bind_tools([create_project])
+
+class BrainstormNode(BaseAgentNode):
+    """Brainstorm agent that gathers requirements and creates projects."""
+
+    @property
+    def fallback_prompt(self) -> str:
+        return FALLBACK_PROMPT
+
+    @property
+    def fallback_temperature(self) -> float:
+        return 0.7  # Brainstorm is more creative
+
+    def handle_tool_result(
+        self, tool_name: str, result: Any, state: dict
+    ) -> dict[str, Any]:
+        """Handle create_project result to update state."""
+        if tool_name == "create_project" and result:
+            return {
+                "current_project": result.get("id"),
+                "project_spec": result.get("config", {}),
+            }
+        return {}
+
+
+# Create singleton instance
+_node = BrainstormNode("brainstorm", [create_project])
 
 
 async def run(state: dict) -> dict:
@@ -57,9 +75,15 @@ async def run(state: dict) -> dict:
     """
     messages = state.get("messages", [])
 
+    # Get dynamic prompt from database
+    system_prompt = await _node.get_system_prompt()
+
     # Build message list with system prompt
-    llm_messages = [SystemMessage(content=SYSTEM_PROMPT)]
+    llm_messages = [SystemMessage(content=system_prompt)]
     llm_messages.extend(messages)
+
+    # Get configured LLM
+    llm_with_tools = await _node.get_llm_with_tools()
 
     # Invoke LLM
     response = await llm_with_tools.ainvoke(llm_messages)
@@ -73,34 +97,8 @@ async def run(state: dict) -> dict:
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Brainstorm LLM.
 
-    Processes create_project tool call and updates state.
+    Delegates to BaseAgentNode.execute_tools which handles:
+    - Tool execution with error handling
+    - State updates via handle_tool_result
     """
-    messages = state.get("messages", [])
-    last_message = messages[-1]
-
-    if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
-        return {"messages": []}
-
-    tool_results = []
-    created_project = None
-
-    for tool_call in last_message.tool_calls:
-        if tool_call["name"] == "create_project":
-            # Execute the tool
-            result = await create_project.ainvoke(tool_call["args"])
-            created_project = result
-
-            tool_results.append(
-                ToolMessage(
-                    content=f"Project created: {result}",
-                    tool_call_id=tool_call["id"],
-                )
-            )
-
-    updates = {"messages": tool_results}
-
-    if created_project:
-        updates["current_project"] = created_project.get("id")
-        updates["project_spec"] = created_project.get("config", {})
-
-    return updates
+    return await _node.execute_tools(state)

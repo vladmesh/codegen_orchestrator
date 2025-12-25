@@ -546,10 +546,10 @@ agent_config_cache = AgentConfigCache()
 - [x] Создать API endpoints для agent configs
 - [x] Seed initial prompts
 
-### Фаза 2: Base Node (1-2 дня)
-- [ ] Создать `BaseAgentNode` класс
-- [ ] Рефакторинг `brainstorm.py` как proof-of-concept
-- [ ] Добавить тесты
+### Фаза 2: Base Node ✅ ЗАВЕРШЕНО
+- [x] Создать `BaseAgentNode` класс
+- [x] Рефакторинг `brainstorm.py` как proof-of-concept
+- [x] Добавить тесты
 
 ### Фаза 3: Миграция nodes (3-4 дня)
 - [ ] Мигрировать `zavhoz.py`
