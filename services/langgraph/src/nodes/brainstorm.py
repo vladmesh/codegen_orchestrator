@@ -17,9 +17,7 @@ from .base import BaseAgentNode
 class BrainstormNode(BaseAgentNode):
     """Brainstorm agent that gathers requirements and creates projects."""
 
-    def handle_tool_result(
-        self, tool_name: str, result: Any, state: dict
-    ) -> dict[str, Any]:
+    def handle_tool_result(self, tool_name: str, result: Any, state: dict) -> dict[str, Any]:
         """Handle create_project result to update state."""
         if tool_name == "create_project" and result:
             return {

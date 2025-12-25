@@ -1,12 +1,12 @@
 """Port allocation tools for agents."""
 
 from http import HTTPStatus
-from typing import Annotated, Any
+from typing import Annotated
 
 from langchain_core.tools import tool
 
-from .base import api_client
 from ..schemas.tools import PortAllocationResult
+from .base import api_client
 
 
 @tool
@@ -26,10 +26,8 @@ async def allocate_port(
         "service_name": service_name,
         "project_id": project_id,
     }
-    
-    allocation = await api_client.post(
-        f"/api/servers/{server_handle}/ports", json=payload
-    )
+
+    allocation = await api_client.post(f"/api/servers/{server_handle}/ports", json=payload)
 
     # Fetch server info to ensure downstream nodes (DevOps) have the IP
     try:

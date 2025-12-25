@@ -38,18 +38,16 @@ tools = [create_github_repo, get_github_token, set_project_complexity]
 class ArchitectNode(BaseAgentNode):
     """Architect agent that creates project structure."""
 
-    def handle_tool_result(
-        self, tool_name: str, result: Any, state: dict
-    ) -> dict[str, Any]:
+    def handle_tool_result(self, tool_name: str, result: Any, state: dict) -> dict[str, Any]:
         """Handle repo creation and complexity setting."""
         updates = {}
-        
+
         if tool_name == "create_github_repo" and result:
-            updates["repo_info"] = result
-            
+            updates["repo_info"] = result.model_dump() if hasattr(result, "model_dump") else result
+
         if tool_name == "set_project_complexity" and result:
             updates["project_complexity"] = result
-            
+
         return updates
 
 
@@ -76,7 +74,7 @@ Entry Points: {project_spec.get("entry_points", [])}
 
     # Get dynamic prompt from database
     system_prompt_template = await _node.get_system_prompt()
-    
+
     # Replace placeholders in prompt
     system_content = system_prompt_template.format(
         project_info=project_info,
@@ -100,7 +98,7 @@ Entry Points: {project_spec.get("entry_points", [])}
 
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Architect LLM.
-    
+
     Delegates to BaseAgentNode.execute_tools which handles:
     - Tool execution with error handling
     - State updates via handle_tool_result (repo_info, project_complexity)

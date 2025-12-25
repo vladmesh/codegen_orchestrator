@@ -7,7 +7,8 @@ import re
 from typing import Any
 
 import httpx
-from shared.schemas import Time4VPSServer, Time4VPSServerDetails, Time4VPSTask, Time4VPSOSTemplate
+
+from shared.schemas import Time4VPSServer, Time4VPSServerDetails, Time4VPSTask
 
 logger = logging.getLogger(__name__)
 

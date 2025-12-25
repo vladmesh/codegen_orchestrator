@@ -5,6 +5,22 @@ Import from here instead of individual modules.
 """
 
 # Project management
+# Project activation flow
+from .activation import (
+    activate_project,
+    check_ready_to_deploy,
+    inspect_repository,
+    save_project_secret,
+)
+
+# GitHub tools
+from .github import create_github_repo, get_github_token
+
+# Incident tracking
+from .incidents import create_incident, list_active_incidents
+
+# Port allocation
+from .ports import allocate_port, get_next_available_port
 from .projects import (
     create_project,
     create_project_intent,
@@ -12,6 +28,9 @@ from .projects import (
     list_projects,
     set_project_maintenance,
 )
+
+# Resource inventory
+from .resources import create_service_deployment, list_resource_inventory
 
 # Server management
 from .servers import (
@@ -21,26 +40,6 @@ from .servers import (
     list_managed_servers,
     update_server_status,
 )
-
-# Port allocation
-from .ports import allocate_port, get_next_available_port
-
-# Incident tracking
-from .incidents import create_incident, list_active_incidents
-
-# Project activation flow
-from .activation import (
-    activate_project,
-    check_ready_to_deploy,
-    inspect_repository,
-    save_project_secret,
-)
-
-# Resource inventory
-from .resources import create_service_deployment, list_resource_inventory
-
-# GitHub tools
-from .github import create_github_repo, get_github_token
 
 __all__ = [
     # Projects

@@ -71,8 +71,12 @@ class Time4VPSTask(BaseModel):
     name: str = Field(..., description="Task name (e.g., 'Reset Root Password')")
     activated: str = Field(..., description="ISO timestamp when task was activated")
     assigned: str | None = Field(None, description="ISO timestamp when task was assigned to worker")
-    completed: str | None = Field(None, description="ISO timestamp when task completed (empty if pending)")
-    results: str | None = Field(None, description="Task result string (may contain password in HTML)")
+    completed: str | None = Field(
+        None, description="ISO timestamp when task completed (empty if pending)"
+    )
+    results: str | None = Field(
+        None, description="Task result string (may contain password in HTML)"
+    )
 
     @property
     def is_completed(self) -> bool:

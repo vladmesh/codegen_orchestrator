@@ -25,7 +25,7 @@ class RepoInfo(BaseModel):
     full_name: str = Field(..., description="Full repo name: 'owner/repo'")
     html_url: str = Field(..., description="Web URL: 'https://github.com/owner/repo'")
     clone_url: str = Field(..., description="Clone URL: 'https://github.com/owner/repo.git'")
-    
+
     # Optional fields (may be added later in the flow)
     default_branch: str = Field("main", description="Default branch name")
     ssh_url: str | None = Field(None, description="SSH clone URL if available")
@@ -88,7 +88,7 @@ class TestResults(BaseModel):
     total: int = Field(0, description="Total test count")
     output: str = Field("", description="Test output/logs (truncated)")
     duration_seconds: float = Field(0.0, description="Total test duration")
-    
+
     @property
     def success(self) -> bool:
         """Check if all tests passed."""

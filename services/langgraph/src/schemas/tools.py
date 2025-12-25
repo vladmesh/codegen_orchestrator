@@ -205,3 +205,35 @@ class IncidentInfo(BaseModel):
     status: str = Field(..., description="Incident status")
     details: dict = Field(default_factory=dict, description="Incident details")
     created_at: str | None = Field(None, description="Creation timestamp")
+
+
+class ServiceDeployment(BaseModel):
+    """Service deployment record."""
+
+    id: int = Field(..., description="Deployment ID")
+    project_id: str = Field(..., description="Project ID")
+    service_name: str = Field(..., description="Service name")
+    server_handle: str = Field(..., description="Server handle")
+    port: int = Field(..., description="Allocated port")
+    status: str = Field(..., description="Service status")
+    deployment_info: dict = Field(default_factory=dict, description="Deployment configuration")
+    created_at: str | None = Field(None, description="Creation timestamp")
+    updated_at: str | None = Field(None, description="Last update timestamp")
+
+
+class ResourceInventoryServer(BaseModel):
+    """Server summary for inventory."""
+
+    handle: str
+    status: str
+    available_ram_mb: int
+
+
+class ResourceInventory(BaseModel):
+    """Resource inventory summary."""
+
+    servers: list[ResourceInventoryServer] = Field(default_factory=list, description="Managed servers")
+    total_servers: int = Field(0, description="Total server count")
+    total_projects: int = Field(0, description="Total project count")
+    projects_with_secrets: int = Field(0, description="Projects with secrets configured")
+    projects_ready_to_deploy: int = Field(0, description="Projects ready to deploy")

@@ -7,9 +7,9 @@ IMPORTANT: No fallbacks - if API is unavailable, we fail fast.
 """
 
 import asyncio
+from datetime import datetime, timedelta
 import logging
 import os
-from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -23,6 +23,7 @@ CACHE_TTL_SECONDS = int(os.getenv("AGENT_CONFIG_CACHE_TTL", "60"))
 
 class AgentConfigError(Exception):
     """Raised when agent config cannot be fetched."""
+
     pass
 
 
@@ -39,13 +40,13 @@ class AgentConfigCache:
 
     async def get(self, agent_id: str) -> dict[str, Any]:
         """Get agent config from cache or fetch from API.
-        
+
         Args:
             agent_id: Agent identifier (e.g., "product_owner", "brainstorm")
-            
+
         Returns:
             Agent config dict with keys: id, name, system_prompt, model_name, temperature
-            
+
         Raises:
             AgentConfigError: If config cannot be fetched
         """
@@ -74,7 +75,7 @@ class AgentConfigCache:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"{API_URL}/api/agent-configs/{agent_id}")
-                
+
                 if resp.status_code == 200:
                     logger.info(f"Fetched agent config from API: {agent_id}")
                     return resp.json()
@@ -96,7 +97,7 @@ class AgentConfigCache:
 
     def invalidate(self, agent_id: str | None = None) -> None:
         """Invalidate cache.
-        
+
         Args:
             agent_id: Specific agent to invalidate, or None to clear all
         """
@@ -112,13 +113,13 @@ _cache = AgentConfigCache()
 
 async def get_agent_config(agent_id: str) -> dict[str, Any]:
     """Get agent configuration with caching.
-    
+
     Args:
         agent_id: Agent identifier
-        
+
     Returns:
         Config dict
-        
+
     Raises:
         AgentConfigError: If config cannot be fetched
     """

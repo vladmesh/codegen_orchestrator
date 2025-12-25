@@ -32,10 +32,14 @@ def check_ssh_access(server_ip: str, timeout: int = 10) -> bool:
     """
     cmd = [
         "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=5",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
         f"root@{server_ip}",
         "echo success",
     ]

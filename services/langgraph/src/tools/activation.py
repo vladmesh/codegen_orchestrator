@@ -1,16 +1,16 @@
 """Project activation tools for PO Supervisor flow."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from langchain_core.tools import tool
 
-from .base import api_client
 from ..schemas.tools import (
+    DeploymentReadinessResult,
     ProjectActivationResult,
     RepositoryInspectionResult,
     SecretSaveResult,
-    DeploymentReadinessResult,
 )
+from .base import api_client
 
 
 def _parse_env_example(content: str) -> list[str]:

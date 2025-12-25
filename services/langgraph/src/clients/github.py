@@ -4,6 +4,7 @@ import time
 
 import httpx
 import jwt
+
 from shared.schemas import GitHubRepository
 
 logger = logging.getLogger(__name__)
@@ -204,9 +205,7 @@ class GitHubAppClient:
         }
 
         async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}", headers=headers
-            )
+            resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
             resp.raise_for_status()
             return GitHubRepository.model_validate(resp.json())
 
@@ -276,4 +275,3 @@ class GitHubAppClient:
         except Exception as e:
             logger.warning(f"Failed to list files in {owner}/{repo}/{path}: {e}")
             return []
-

@@ -60,9 +60,11 @@ def run_ansible_playbook(
     # Construct ansible-playbook command
     cmd = [
         "ansible-playbook",
-        "-i", inventory_path,
+        "-i",
+        inventory_path,
         playbook_path,
-        "--extra-vars", extra_vars,
+        "--extra-vars",
+        extra_vars,
         "-v",
     ]
 

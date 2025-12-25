@@ -38,14 +38,15 @@ tools = [
 class ZavhozNode(BaseAgentNode):
     """Resource manager agent that allocates servers and ports."""
 
-    def handle_tool_result(
-        self, tool_name: str, result: Any, state: dict
-    ) -> dict[str, Any]:
+    def handle_tool_result(self, tool_name: str, result: Any, state: dict) -> dict[str, Any]:
         """Handle allocate_port result to track allocated resources."""
         if tool_name == "allocate_port" and result:
+            # Convert Pydantic model to dict if needed
+            result_dict = result.model_dump() if hasattr(result, "model_dump") else result
+            
             allocated_resources = state.get("allocated_resources", {}).copy()
-            port_key = f"{result.get('server_handle')}:{result.get('port')}"
-            allocated_resources[port_key] = result
+            port_key = f"{result_dict.get('server_handle')}:{result_dict.get('port')}"
+            allocated_resources[port_key] = result_dict
             return {"allocated_resources": allocated_resources}
         return {}
 
@@ -76,7 +77,7 @@ async def run(state: dict) -> dict:
         context_parts.append(f"Intent: {po_intent}")
         if po_intent == "deploy":
             context_parts.append("ACTION REQUIRED: Allocate server resources for deployment!")
-    
+
     context = "\n".join(context_parts) if context_parts else "No project context."
 
     # Get dynamic prompt from database

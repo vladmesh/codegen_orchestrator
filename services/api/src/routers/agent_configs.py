@@ -47,7 +47,7 @@ async def list_agent_configs(
     query = select(AgentConfig)
     if is_active is not None:
         query = query.where(AgentConfig.is_active == is_active)
-    
+
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -85,7 +85,7 @@ async def update_agent_config(
     update_data = updates.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(config, field, value)
-    
+
     # Increment version on any update
     if update_data:
         config.version += 1
@@ -107,6 +107,6 @@ async def delete_agent_config(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent config '{config_id}' not found",
         )
-    
+
     await db.delete(config)
     await db.commit()

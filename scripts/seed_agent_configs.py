@@ -247,7 +247,9 @@ def seed_agent_configs(api_url: str) -> bool:
                 elif resp.status_code == 409:
                     print(f"  ⏭️  Agent config '{config['id']}' already exists")
                 else:
-                    print(f"  ❌ Failed to create '{config['id']}': {resp.status_code} - {resp.text}")
+                    print(
+                        f"  ❌ Failed to create '{config['id']}': {resp.status_code} - {resp.text}"
+                    )
                     success = False
 
             except httpx.RequestError as e:

@@ -11,4 +11,3 @@ __all__ = [
     "health_check_worker",
     "provisioner_trigger_worker",
 ]
-

@@ -1,5 +1,4 @@
-"""API Service - FastAPI with SQLAlchemy.
-"""
+"""API Service - FastAPI with SQLAlchemy."""
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -35,4 +34,3 @@ app.include_router(routers.api_keys.router, prefix="/api")
 app.include_router(routers.incidents.router, prefix="/api")
 app.include_router(routers.service_deployments.router, prefix="/api")
 app.include_router(routers.agent_configs.router, prefix="/api")
-

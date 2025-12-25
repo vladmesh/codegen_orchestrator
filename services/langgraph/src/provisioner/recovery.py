@@ -2,10 +2,8 @@
 
 import logging
 import os
-import tempfile
 import subprocess
-
-import httpx
+import tempfile
 
 from shared.notifications import notify_admins
 
@@ -42,7 +40,9 @@ async def redeploy_service(
     playbook_path = "/app/services/infrastructure/ansible/playbooks/deploy_project.yml"
 
     # Construct inventory
-    inventory_content = f"{server_ip} ansible_user=root ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+    inventory_content = (
+        f"{server_ip} ansible_user=root ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+    )
 
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".ini") as inv_file:
         inv_file.write(inventory_content)

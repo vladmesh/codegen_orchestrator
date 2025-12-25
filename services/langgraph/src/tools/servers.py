@@ -1,10 +1,10 @@
 """Server management tools for agents."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from langchain_core.tools import tool
 
-from ..schemas.tools import ServerInfo, ServerSearchResult
+from ..schemas.tools import ServerInfo, ServerSearchResult, ServiceDeployment
 from .base import api_client
 
 
@@ -93,9 +93,10 @@ async def update_server_status(
 @tool
 async def get_services_on_server(
     server_handle: Annotated[str, "Server handle"],
-) -> list[dict[str, Any]]:
+) -> list[ServiceDeployment]:
     """Get all active service deployments on a server.
 
     Returns service deployment records with deployment_info for redeployment after recovery.
     """
-    return await api_client.get(f"/api/servers/{server_handle}/services")
+    resp = await api_client.get(f"/api/servers/{server_handle}/services")
+    return [ServiceDeployment(**sd) for sd in resp]

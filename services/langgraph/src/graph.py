@@ -148,7 +148,7 @@ def route_after_zavhoz(state: OrchestratorState) -> str:
     # If LLM wants to call tools (e.g., find_suitable_server, allocate_port)
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "zavhoz_tools"
-    
+
     # If activation flow (deploy intent) -> proceed to DevOps ONLY if resources allocated
     if state.get("po_intent") == "deploy":
         allocated = state.get("allocated_resources", {})
@@ -188,18 +188,18 @@ def route_after_product_owner(state: OrchestratorState) -> str:
 def route_after_product_owner_tools(state: OrchestratorState) -> str:
     """Decide where to go after product owner tools execution."""
     po_intent = state.get("po_intent")
-    
+
     if po_intent == "new_project":
         return "brainstorm"
-    
+
     if po_intent == "maintenance":
         # Project update → Engineering directly (skip brainstorm)
         return "engineering"
-    
+
     if po_intent == "deploy":
         # Discovered project activation → Zavhoz for resource allocation
         return "zavhoz"
-    
+
     return END
 
 

@@ -1,11 +1,11 @@
 """Incident tracking tools for agents."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from langchain_core.tools import tool
 
+from ..schemas.tools import IncidentCreateResult, IncidentInfo
 from .base import api_client
-from ..schemas.tools import IncidentCreateResult
 
 
 @tool
@@ -33,7 +33,7 @@ async def create_incident(
 
 
 @tool
-async def list_active_incidents() -> list[dict[str, Any]]:
+async def list_active_incidents() -> list[IncidentInfo]:
     """List all active incidents (detected or recovering).
 
     Use this to check for any ongoing server or service issues.
@@ -43,4 +43,5 @@ async def list_active_incidents() -> list[dict[str, Any]]:
     The Product Owner should call this proactively to alert users
     about any ongoing issues that may affect their projects.
     """
-    return await api_client.get("/api/incidents/active")
+    resp = await api_client.get("/api/incidents/active")
+    return [IncidentInfo(**i) for i in resp]

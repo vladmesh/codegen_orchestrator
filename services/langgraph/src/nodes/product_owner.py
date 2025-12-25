@@ -7,6 +7,7 @@ Note: execute_tools has custom logic for response formatting, not using BaseAgen
 """
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from pydantic import BaseModel
 
 from ..tools import (
     activate_project,
@@ -44,6 +45,7 @@ tools_map = {tool.name: tool for tool in tools}
 
 class ProductOwnerNode(BaseAgentNode):
     """Product Owner agent that classifies intent and coordinates flow."""
+
     pass
 
 
@@ -84,7 +86,7 @@ async def run(state: dict) -> dict:
 
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Product Owner LLM.
-    
+
     Note: This has custom logic for response formatting that differs
     from BaseAgentNode.execute_tools. Kept separate for compatibility.
     """
@@ -133,6 +135,12 @@ async def execute_tools(state: dict) -> dict:
                 tool_call_id=tool_call["id"],
             )
         )
+
+        # Convert Pydantic models to dicts for easier handling in existing logic
+        if isinstance(result, BaseModel):
+            result = result.model_dump()
+        elif isinstance(result, list):
+            result = [item.model_dump() if isinstance(item, BaseModel) else item for item in result]
 
         if tool_name == "list_active_incidents":
             incidents = result or []
@@ -264,8 +272,7 @@ async def execute_tools(state: dict) -> dict:
                 if missing:
                     secrets_list = ", ".join(f"`{s}`" for s in missing)
                     response_parts.append(
-                        f"✅ Секрет `{key}` сохранён.\n\n"
-                        f"Ещё нужны: {secrets_list}"
+                        f"✅ Секрет `{key}` сохранён.\n\nЕщё нужны: {secrets_list}"
                     )
                 else:
                     # All secrets configured - auto-trigger deploy!
@@ -291,15 +298,11 @@ async def execute_tools(state: dict) -> dict:
                     "intent": "deploy",
                     "project_id": result.get("project_id"),
                 }
-                response_parts.append(
-                    f"🚀 Проект **{project_name}** готов! Запускаю деплой..."
-                )
+                response_parts.append(f"🚀 Проект **{project_name}** готов! Запускаю деплой...")
             else:
                 missing = result.get("missing", [])
                 secrets_list = ", ".join(f"`{s}`" for s in missing)
-                response_parts.append(
-                    f"⏳ Ещё не готов к деплою. Не хватает: {secrets_list}"
-                )
+                response_parts.append(f"⏳ Ещё не готов к деплою. Не хватает: {secrets_list}")
             continue
 
         if tool_name == "list_resource_inventory":

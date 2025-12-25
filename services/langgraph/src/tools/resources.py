@@ -1,14 +1,15 @@
 """Resource inventory and deployment tools for agents."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from langchain_core.tools import tool
 
+from ..schemas.tools import ResourceInventory, ServiceDeployment
 from .base import api_client
 
 
 @tool
-async def list_resource_inventory() -> dict[str, Any]:
+async def list_resource_inventory() -> ResourceInventory:
     """List available resources: servers, configured projects, API keys.
 
     Use when user asks about resource status or what's available.
@@ -32,10 +33,7 @@ async def list_resource_inventory() -> dict[str, Any]:
         projects = []
 
     # Count projects with secrets
-    projects_with_secrets = sum(
-        1 for p in projects
-        if (p.get("config") or {}).get("secrets")
-    )
+    projects_with_secrets = sum(1 for p in projects if (p.get("config") or {}).get("secrets"))
 
     # Summarize servers
     server_summary = [
@@ -47,15 +45,13 @@ async def list_resource_inventory() -> dict[str, Any]:
         for s in servers
     ]
 
-    return {
-        "servers": server_summary,
-        "total_servers": len(servers),
-        "total_projects": len(projects),
-        "projects_with_secrets": projects_with_secrets,
-        "projects_ready_to_deploy": sum(
-            1 for p in projects if p.get("status") == "setup_required"
-        ),
-    }
+    return ResourceInventory(
+        servers=server_summary,
+        total_servers=len(servers),
+        total_projects=len(projects),
+        projects_with_secrets=projects_with_secrets,
+        projects_ready_to_deploy=sum(1 for p in projects if p.get("status") == "setup_required"),
+    )
 
 
 @tool
@@ -65,7 +61,7 @@ async def create_service_deployment(
     server_handle: Annotated[str, "Server handle"],
     port: Annotated[int, "Allocated port"],
     deployment_info: Annotated[dict, "Deployment configuration (repo_url, branch, etc.)"],
-) -> dict[str, Any]:
+) -> ServiceDeployment:
     """Create a service deployment record after successful deployment.
 
     This tracks the deployment for future recovery needs.
@@ -79,4 +75,5 @@ async def create_service_deployment(
         "deployment_info": deployment_info,
     }
 
-    return await api_client.post("/api/service-deployments/", json=payload)
+    resp = await api_client.post("/api/service-deployments/", json=payload)
+    return ServiceDeployment(**resp)

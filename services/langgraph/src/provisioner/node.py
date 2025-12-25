@@ -17,15 +17,15 @@ from langchain_core.messages import AIMessage
 from shared.notifications import notify_admins
 
 from ..clients.time4vps import Time4VPSClient
-from .ansible_runner import run_ansible_playbook, PROVISIONING_TIMEOUT, REINSTALL_TIMEOUT
+from .ansible_runner import PROVISIONING_TIMEOUT, REINSTALL_TIMEOUT, run_ansible_playbook
 from .api_client import (
     get_server_info,
-    update_server_status,
     update_server_labels,
+    update_server_status,
 )
 from .incidents import create_incident, resolve_active_incidents
 from .recovery import redeploy_all_services
-from .ssh import get_ssh_public_key, check_ssh_access
+from .ssh import check_ssh_access, get_ssh_public_key
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +359,9 @@ async def run(state: dict) -> dict:
     if check_ssh_access(server_ip):
         logger.info(f"Server {server_handle} is accessible via SSH Key. Skipping reinstall.")
     else:
-        logger.info(f"Server {server_handle} NOT accessible via SSH Key. Initiating Reinstall flow.")
+        logger.info(
+            f"Server {server_handle} NOT accessible via SSH Key. Initiating Reinstall flow."
+        )
         use_reinstall = True
 
     # Force reinstall override
@@ -446,6 +448,8 @@ async def run(state: dict) -> dict:
                 {"step": "software_setup", "output": output_soft[:500]},
             )
             return {
-                "messages": [AIMessage(content=f"❌ Phase 2 (Software) failed for {server_handle}")],
+                "messages": [
+                    AIMessage(content=f"❌ Phase 2 (Software) failed for {server_handle}")
+                ],
                 "errors": state.get("errors", []) + ["Phase 2 failed"],
             }
