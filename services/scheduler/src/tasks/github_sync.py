@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from shared.clients.github import GitHubAppClient
 
-from src.database import async_session_maker
+from src.db import async_session_maker
 from src.models.project import Project, ProjectStatus
 
 logger = logging.getLogger(__name__)
@@ -137,4 +137,3 @@ async def sync_projects_worker():
             logger.error(f"Error in GitHub Sync Worker: {e}", exc_info=True)
 
         await asyncio.sleep(SYNC_INTERVAL)
-

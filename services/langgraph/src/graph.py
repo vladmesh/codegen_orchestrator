@@ -7,11 +7,6 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-try:
-    from langgraph.graph import Send
-except ImportError:  # pragma: no cover - fallback for older LangGraph
-    from langgraph.pregel import Send
-
 from .nodes import architect, brainstorm, developer, devops, product_owner, provisioner, zavhoz
 
 
@@ -48,7 +43,7 @@ class OrchestratorState(TypedDict):
     deployed_url: str | None
 
 
-def route_after_brainstorm(state: OrchestratorState) -> str | list[Send]:
+def route_after_brainstorm(state: OrchestratorState) -> str:
     """Decide where to go after brainstorm.
 
     Routing logic:
@@ -68,10 +63,7 @@ def route_after_brainstorm(state: OrchestratorState) -> str | list[Send]:
 
     # If project was created, dispatch resources + architect in parallel
     if state.get("current_project"):
-        return [
-            Send("zavhoz", {}),
-            Send("architect", {}),
-        ]
+        return "dispatch_parallel"
 
     # Otherwise END - LLM responded with a question, wait for user
     return END
@@ -186,6 +178,11 @@ def route_after_architect_spawn_worker(state: OrchestratorState) -> str:
     return "developer"
 
 
+def dispatch_parallel(_: OrchestratorState) -> dict:
+    """Fan-out node to run Zavhoz and Architect in parallel."""
+    return {}
+
+
 def create_graph() -> StateGraph:
     """Create the orchestrator graph."""
     graph = StateGraph(OrchestratorState)
@@ -204,6 +201,7 @@ def create_graph() -> StateGraph:
     graph.add_node("developer_spawn_worker", developer.spawn_developer_worker)
     graph.add_node("devops", devops.run)
     graph.add_node("provisioner", provisioner.run)
+    graph.add_node("dispatch_parallel", dispatch_parallel)
 
     # Add edges
     # Add edges
@@ -248,7 +246,15 @@ def create_graph() -> StateGraph:
     graph.add_conditional_edges(
         "brainstorm",
         route_after_brainstorm,
+        {
+            "brainstorm_tools": "brainstorm_tools",
+            "dispatch_parallel": "dispatch_parallel",
+            END: END,
+        },
     )
+
+    graph.add_edge("dispatch_parallel", "zavhoz")
+    graph.add_edge("dispatch_parallel", "architect")
 
     # After brainstorm tools execution: back to brainstorm to process result
     graph.add_edge("brainstorm_tools", "brainstorm")

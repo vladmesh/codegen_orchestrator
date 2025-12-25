@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.notifications import notify_admins
 
-from src.database import async_session_maker
+from src.db import async_session_maker
 from src.models.incident import Incident, IncidentStatus
 from src.models.server import Server
 from .provisioner_trigger import publish_provisioner_trigger
@@ -205,4 +205,3 @@ async def health_check_worker():
             logger.error(f"Error in Health Check Worker: {e}", exc_info=True)
 
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-

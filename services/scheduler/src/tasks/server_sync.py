@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.notifications import notify_admins
 
 from src.clients.time4vps import Time4VPSClient
-from src.database import async_session_maker
+from src.db import async_session_maker
 from src.models.api_key import APIKey
 from src.models.server import Server
 from .provisioner_trigger import publish_provisioner_trigger
@@ -253,4 +253,3 @@ async def _check_provisioning_triggers(db: AsyncSession):
 
         # Trigger provisioner
         await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
-

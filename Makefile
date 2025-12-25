@@ -50,7 +50,7 @@ format:
 	$(TOOLING) sh -c "ruff format . && ruff check --fix ."
 
 test:
-	$(TOOLING) pytest -v --cov=src --cov-report=term-missing tests/
+	$(TOOLING) bash -lc "export HOME=/tmp && pip install -e ./services/api -e ./services/langgraph && pytest -v --cov=src --cov-report=term-missing tests/"
 
 # === Database ===
 

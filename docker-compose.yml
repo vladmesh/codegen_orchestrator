@@ -112,7 +112,6 @@ services:
       - ./services/scheduler/src:/app/src:delegated
       - ./services/api/src/models:/app/src/models:delegated
       - ./services/api/src/clients:/app/src/clients:delegated
-      - ./services/api/src/database.py:/app/src/database.py:delegated
       - ./shared:/app/shared:delegated
       - ~/.ssh:/root/.ssh:ro
       - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
