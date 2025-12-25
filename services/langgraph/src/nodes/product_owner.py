@@ -9,6 +9,7 @@ from langchain_openai import ChatOpenAI
 from ..tools.database import (
     create_project_intent,
     get_project_status,
+    list_active_incidents,
     list_projects,
     set_project_maintenance,
 )
@@ -16,14 +17,17 @@ from ..tools.database import (
 SYSTEM_PROMPT = """You are the Product Owner (PO) for the codegen orchestrator.
 
 Your job:
-1. Classify user intent: new project / status request / update.
-2. For a NEW project, call `create_project_intent` with intent="new_project".
+1. **FIRST: Check for active incidents** by calling `list_active_incidents`.
+   - If there are active incidents, alert the user immediately with 🚨 severity.
+   - Explain which servers/services are affected and recovery status.
+2. Classify user intent: new project / status request / update.
+3. For a NEW project, call `create_project_intent` with intent="new_project".
    - Provide a short summary of the request.
    - Do NOT ask detailed requirements (Brainstorm handles that).
-3. For STATUS requests, use:
+4. For STATUS requests, use:
    - `get_project_status` if user mentions a specific project ID.
    - Otherwise `list_projects`.
-4. For UPDATE/MAINTENANCE requests:
+5. For UPDATE/MAINTENANCE requests:
    - Get the project ID from the user if missing.
    - Call `set_project_maintenance` with the project ID and update description.
    - This triggers the Engineering workflow (Architect → Developer → Tester).
@@ -32,11 +36,18 @@ Guidelines:
 - Respond in the SAME LANGUAGE as the user.
 - Do not invent project status; use tools.
 - Keep responses concise.
+- ALWAYS check incidents first before processing user request.
 """
 
 # LLM with tools
 llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
-tools = [list_projects, get_project_status, create_project_intent, set_project_maintenance]
+tools = [
+    list_active_incidents,  # Check incidents first
+    list_projects,
+    get_project_status,
+    create_project_intent,
+    set_project_maintenance,
+]
 llm_with_tools = llm.bind_tools(tools)
 
 tools_map = {tool.name: tool for tool in tools}
@@ -100,6 +111,23 @@ async def execute_tools(state: dict) -> dict:
                 tool_call_id=tool_call["id"],
             )
         )
+
+        if tool_name == "list_active_incidents":
+            incidents = result or []
+            if incidents:
+                lines = ["🚨 **Активные инциденты:**"]
+                for inc in incidents:
+                    status_emoji = "🔄" if inc.get("status") == "recovering" else "⚠️"
+                    server = inc.get("server_handle", "unknown")
+                    inc_type = inc.get("incident_type", "unknown")
+                    attempts = inc.get("recovery_attempts", 0)
+                    lines.append(
+                        f"{status_emoji} Сервер *{server}* — {inc_type} "
+                        f"(попыток восстановления: {attempts})"
+                    )
+                lines.append("\n_Автовосстановление запущено. Новые деплои могут быть отложены._")
+                response_parts.insert(0, "\n".join(lines))  # Insert at beginning
+            continue
 
         if tool_name == "create_project_intent":
             po_intent = result.get("intent")

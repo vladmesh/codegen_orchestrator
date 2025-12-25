@@ -310,6 +310,23 @@ async def create_incident(
 
 
 @tool
+async def list_active_incidents() -> list[dict[str, Any]]:
+    """List all active incidents (detected or recovering).
+
+    Use this to check for any ongoing server or service issues.
+    Returns incidents that need attention - servers that are down,
+    provisioning failures, or services that have crashed.
+
+    The Product Owner should call this proactively to alert users
+    about any ongoing issues that may affect their projects.
+    """
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        resp = await client.get(f"{INTERNAL_API_URL}/api/incidents/active")
+        resp.raise_for_status()
+        return resp.json()
+
+
+@tool
 async def get_services_on_server(
     server_handle: Annotated[str, "Server handle"],
 ) -> list[dict[str, Any]]:
