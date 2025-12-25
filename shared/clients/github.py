@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-from typing import List, Dict, Any, Optional
+from typing import Any
 
 import httpx
 import jwt
@@ -27,9 +27,9 @@ class GitHubAppClient:
         if not os.path.exists(self.private_key_path):
             # Fallback for local dev if key is missing or env var explicit
             if os.getenv("GITHUB_PRIVATE_KEY_CONTENT"):
-                 self._private_key = os.getenv("GITHUB_PRIVATE_KEY_CONTENT")
-                 return self._private_key
-            
+                self._private_key = os.getenv("GITHUB_PRIVATE_KEY_CONTENT")
+                return self._private_key
+
             raise FileNotFoundError(f"GitHub App private key not found at {self.private_key_path}")
 
         with open(self.private_key_path) as f:
@@ -79,7 +79,7 @@ class GitHubAppClient:
             "Authorization": f"Bearer {jwt_token}",
             "Accept": "application/vnd.github+json",
         }
-        
+
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 "https://api.github.com/app/installations",
@@ -87,21 +87,21 @@ class GitHubAppClient:
             )
             resp.raise_for_status()
             installations = resp.json()
-        
+
         for inst in installations:
             if inst.get("account", {}).get("type") == "Organization":
                 return {
                     "org": inst["account"]["login"],
                     "installation_id": inst["id"],
                 }
-        
+
         if installations:
             account = installations[0].get("account", {})
             return {
                 "org": account.get("login"),
                 "installation_id": installations[0]["id"],
             }
-        
+
         raise RuntimeError("No GitHub App installations found")
 
     async def get_org_token(self, org: str) -> str:
@@ -155,14 +155,14 @@ class GitHubAppClient:
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github+json",
         }
-        
+
         payload = {
             "name": name,
             "description": description,
             "private": private,
             "auto_init": True,
         }
-        
+
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"https://api.github.com/orgs/{org}/repos",
@@ -174,18 +174,18 @@ class GitHubAppClient:
             logger.info(f"Created repository: {data['html_url']}")
             return data
 
-    async def list_org_repos(self, org: str) -> List[Dict[str, Any]]:
+    async def list_org_repos(self, org: str) -> list[dict[str, Any]]:
         """List all repositories in the organization."""
         token = await self.get_org_token(org)
         headers = {
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github+json",
         }
-        
+
         repos = []
         page = 1
         per_page = 100
-        
+
         async with httpx.AsyncClient() as client:
             while True:
                 resp = await client.get(
@@ -201,5 +201,5 @@ class GitHubAppClient:
                 if len(batch) < per_page:
                     break
                 page += 1
-                
+
         return repos

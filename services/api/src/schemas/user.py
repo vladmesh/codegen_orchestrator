@@ -22,7 +22,7 @@ class UserCreate(UserBase):
 
 class UserUpdate(BaseModel):
     """Schema for updating a user."""
-    
+
     username: str | None = None
     first_name: str | None = None
     last_name: str | None = None

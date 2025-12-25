@@ -8,10 +8,10 @@ from fastapi import FastAPI
 
 from . import routers
 from .database import engine
-from .tasks.server_sync import sync_servers_worker
 from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker
 from .tasks.provisioner_trigger import provisioner_trigger_worker
+from .tasks.server_sync import sync_servers_worker
 
 
 @asynccontextmanager

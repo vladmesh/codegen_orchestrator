@@ -40,19 +40,19 @@ async def list_service_deployments(
 ) -> list[ServiceDeployment]:
     """List all service deployments with optional filtering."""
     query = select(ServiceDeployment)
-    
+
     if server_handle is not None:
         query = query.where(ServiceDeployment.server_handle == server_handle)
-    
+
     if project_id is not None:
         query = query.where(ServiceDeployment.project_id == project_id)
-    
+
     if status is not None:
         query = query.where(ServiceDeployment.status == status)
-    
+
     # Order by most recent first
     query = query.order_by(ServiceDeployment.deployed_at.desc())
-    
+
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -79,14 +79,14 @@ async def update_service_deployment(
     deployment = await db.get(ServiceDeployment, deployment_id)
     if not deployment:
         raise HTTPException(status_code=404, detail="Service deployment not found")
-    
+
     # Update fields if provided
     if deployment_update.status is not None:
         deployment.status = deployment_update.status
-    
+
     if deployment_update.deployment_info is not None:
         deployment.deployment_info = deployment_update.deployment_info
-    
+
     await db.commit()
     await db.refresh(deployment)
     return deployment
@@ -101,6 +101,6 @@ async def delete_service_deployment(
     deployment = await db.get(ServiceDeployment, deployment_id)
     if not deployment:
         raise HTTPException(status_code=404, detail="Service deployment not found")
-    
+
     await db.delete(deployment)
     await db.commit()

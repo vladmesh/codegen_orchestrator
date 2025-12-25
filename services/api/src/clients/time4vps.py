@@ -46,14 +46,13 @@ class Time4VPSClient:
 
     async def reset_password(self, server_id: int) -> int:
         """Reset server root password.
-        
+
         Returns task_id for polling the result.
         """
         headers = self._get_auth_header()
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{self.base_url}/server/{server_id}/resetpassword", 
-                headers=headers
+                f"{self.base_url}/server/{server_id}/resetpassword", headers=headers
             )
             resp.raise_for_status()
             result = resp.json()
@@ -61,7 +60,7 @@ class Time4VPSClient:
 
     async def get_task_result(self, server_id: int, task_id: int) -> dict[str, Any]:
         """Get task status and result.
-        
+
         Returns dict with keys:
         - name: task name
         - activated: ISO timestamp
@@ -72,43 +71,40 @@ class Time4VPSClient:
         headers = self._get_auth_header()
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                f"{self.base_url}/server/{server_id}/task/{task_id}", 
-                headers=headers
+                f"{self.base_url}/server/{server_id}/task/{task_id}", headers=headers
             )
             resp.raise_for_status()
             return resp.json()
 
     async def wait_for_password_reset(
-        self, 
-        server_id: int, 
-        task_id: int, 
-        timeout: int = 300,
-        poll_interval: int = 5
+        self, server_id: int, task_id: int, timeout: int = 300, poll_interval: int = 5
     ) -> str:
         """Poll task until complete and extract new password.
-        
+
         Args:
             server_id: Server ID
             task_id: Task ID from reset_password
             timeout: Maximum wait time in seconds
             poll_interval: Polling interval in seconds
-            
+
         Returns:
             New root password
-            
+
         Raises:
             TimeoutError: If task doesn't complete within timeout
             ValueError: If password not found in results
         """
         start_time = asyncio.get_event_loop().time()
-        
+
         while True:
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed > timeout:
-                raise TimeoutError(f"Password reset task {task_id} did not complete within {timeout}s")
-            
+                raise TimeoutError(
+                    f"Password reset task {task_id} did not complete within {timeout}s"
+                )
+
             task = await self.get_task_result(server_id, task_id)
-            
+
             if task.get("completed"):
                 # Task completed, extract password from results
                 results = task.get("results", "")
@@ -118,13 +114,13 @@ class Time4VPSClient:
                     return password
                 else:
                     raise ValueError(f"Password not found in task results: {results}")
-            
+
             # Not done yet, wait and retry
             await asyncio.sleep(poll_interval)
 
     def _extract_password(self, results: str) -> str | None:
         """Extract password from task results string.
-        
+
         Expected format: "New password: Xk9$mP3qR7"
         or variations like "Password: ...", "Root password: ...", etc.
         """
@@ -134,10 +130,10 @@ class Time4VPSClient:
             r"(?:Root\s+)?[Pp]assword:\s*(\S+)",
             r"(?:New\s+)?root\s+password:\s*(\S+)",
         ]
-        
+
         for pattern in patterns:
             match = re.search(pattern, results, re.IGNORECASE)
             if match:
                 return match.group(1)
-        
+
         return None

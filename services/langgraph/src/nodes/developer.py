@@ -7,7 +7,7 @@ This node runs after the Architect has set up the initial project structure.
 import logging
 import os
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 
 from ..clients.github import GitHubAppClient
@@ -44,7 +44,7 @@ llm = ChatOpenAI(model="gpt-4o", temperature=0)
 
 async def run(state: dict) -> dict:
     """Run developer agent.
-    
+
     Currently just a localized step to prepare for worker spawning.
     In the future, this could analyze the codebase before spawning.
     """
@@ -57,24 +57,26 @@ async def spawn_developer_worker(state: dict) -> dict:
     """Spawn Factory.ai worker to implement business logic."""
     repo_info = state.get("repo_info", {})
     project_spec = state.get("project_spec", {})
-    
+
     if not repo_info:
         return {
-            "messages": [AIMessage(content="❌ No repository info found. Cannot spawn developer worker.")],
+            "messages": [
+                AIMessage(content="❌ No repository info found. Cannot spawn developer worker.")
+            ],
             "errors": state.get("errors", []) + ["No repository info for developer worker"],
         }
-    
+
     repo_full_name = repo_info.get("full_name")
     if not repo_full_name:
         return {
             "messages": [AIMessage(content="❌ Repository full_name not found.")],
             "errors": state.get("errors", []) + ["Repository full_name missing"],
         }
-    
+
     # Get fresh token for the repo
     github_client = GitHubAppClient()
     owner, repo = repo_full_name.split("/")
-    
+
     try:
         token = await github_client.get_token(owner, repo)
     except Exception as e:
@@ -83,9 +85,9 @@ async def spawn_developer_worker(state: dict) -> dict:
             "messages": [AIMessage(content=f"❌ Failed to get GitHub token: {e}")],
             "errors": state.get("errors", []) + [str(e)],
         }
-    
+
     # Build task for Factory.ai
-    task_content = f"""# Project: {project_spec.get('name', 'project')}
+    task_content = f"""# Project: {project_spec.get("name", "project")}
 
 ## Context
 The Architect agent has initialized the project using `service-template`.
@@ -117,11 +119,11 @@ Implement the business logic for the project based on the domain specifications.
 - Add unit and integration tests.
 
 ## Commit Message
-Implement business logic for {project_spec.get('name', 'project')}
+Implement business logic for {project_spec.get("name", "project")}
 """
-    
+
     logger.info(f"Spawning Developer worker for {repo_full_name}")
-    
+
     result = await request_spawn(
         repo=repo_full_name,
         github_token=token,
@@ -129,12 +131,12 @@ Implement business logic for {project_spec.get('name', 'project')}
         task_title=f"Implement business logic for {project_spec.get('name', 'project')}",
         model=os.getenv("FACTORY_MODEL", "claude-sonnet-4-5-20250929"),
     )
-    
+
     if result.success:
         message = f"""✅ Business logic implementation completed!
 
-Repository: {repo_info.get('html_url')}
-Commit: {result.commit_sha or 'N/A'}
+Repository: {repo_info.get("html_url")}
+Commit: {result.commit_sha or "N/A"}
 
 The developer worker has:
 - Implemented domain logic
@@ -149,6 +151,8 @@ Project is ready for review/deployment.
         }
     else:
         return {
-            "messages": [AIMessage(content=f"❌ Developer worker failed:\n\n{result.output[-500:]}")],
+            "messages": [
+                AIMessage(content=f"❌ Developer worker failed:\n\n{result.output[-500:]}")
+            ],
             "errors": state.get("errors", []) + ["Developer worker failed"],
         }

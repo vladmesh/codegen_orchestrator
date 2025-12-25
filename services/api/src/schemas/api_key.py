@@ -1,6 +1,5 @@
 """API Key schemas."""
 
-
 from pydantic import BaseModel, ConfigDict
 
 

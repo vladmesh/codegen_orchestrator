@@ -7,7 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from .nodes import architect, brainstorm, devops, developer, provisioner, zavhoz
+from .nodes import architect, brainstorm, developer, devops, provisioner, zavhoz
 
 
 class OrchestratorState(TypedDict):
@@ -29,9 +29,9 @@ class OrchestratorState(TypedDict):
     architect_complete: bool
 
     # Provisioning
-    server_to_provision: str | None      # Server handle to provision
-    is_incident_recovery: bool            # If True, redeploy services after
-    provisioning_result: dict | None      # Result from provisioner
+    server_to_provision: str | None  # Server handle to provision
+    is_incident_recovery: bool  # If True, redeploy services after
+    provisioning_result: dict | None  # Result from provisioner
 
     # Status
     current_agent: str
@@ -122,7 +122,7 @@ def route_after_architect(state: OrchestratorState) -> str:
 
 def route_after_developer(state: OrchestratorState) -> str:
     """Decide where to go after developer.
-    
+
     Routing logic:
     - Always spawn worker to implement logic (for now)
     """
@@ -131,7 +131,7 @@ def route_after_developer(state: OrchestratorState) -> str:
 
 def route_after_architect_tools(state: OrchestratorState) -> str:
     """Decide where to go after architect tools execution.
-    
+
     If we have repo_info now, we can spawn the worker.
     Otherwise go back to architect for more tool calls.
     """
@@ -142,7 +142,7 @@ def route_after_architect_tools(state: OrchestratorState) -> str:
 
 def route_after_architect_spawn_worker(state: OrchestratorState) -> str:
     """Decide where to go after architect spawns worker.
-    
+
     Routing logic:
     - If project is simple -> Skip Developer, go to DevOps
     - Otherwise -> Developer
@@ -262,10 +262,9 @@ def create_graph() -> StateGraph:
 
     # After devops: END
     graph.add_edge("devops", END)
-    
+
     # Provisioner: END (standalone operation)
     graph.add_edge("provisioner", END)
 
     memory = MemorySaver()
     return graph.compile(checkpointer=memory)
-

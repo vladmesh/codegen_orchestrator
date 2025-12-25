@@ -105,12 +105,12 @@ async def execute_tools(state: dict) -> dict:
         if tool_func:
             try:
                 result = await tool_func.ainvoke(tool_call["args"])
-                
+
                 # Track allocated resources
                 if tool_name == "allocate_port" and result:
                     port_key = f"{result.get('server_handle')}:{result.get('port')}"
                     allocated_resources[port_key] = result
-                    
+
                 tool_results.append(
                     ToolMessage(
                         content=f"Result: {result}",

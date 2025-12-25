@@ -24,24 +24,24 @@ async def create_github_repo(
     description: Annotated[str, "Brief repository description"],
 ) -> dict[str, Any]:
     """Create a new GitHub repository in the organization.
-    
+
     Automatically detects the organization from GitHub App installation.
     Creates a private repository with auto-initialized README.
     Returns repository details including clone URL.
     """
     client = get_github_client()
-    
+
     # Auto-detect organization from GitHub App installation
     installation = await client.get_first_org_installation()
     org = installation["org"]
-    
+
     repo_data = await client.create_repo(
         org=org,
         name=name,
         description=description,
         private=True,
     )
-    
+
     return {
         "name": repo_data["name"],
         "full_name": repo_data["full_name"],
@@ -56,17 +56,15 @@ async def get_github_token(
     repo_full_name: Annotated[str, "Full repository name (org/repo)"],
 ) -> str:
     """Get a GitHub installation token for a repository.
-    
+
     This token can be used for git operations (clone, push).
     Token is short-lived and scoped to the specific repository.
     """
     parts = repo_full_name.split("/")
     expected_parts = 2
     if len(parts) != expected_parts:
-        raise ValueError(
-            f"Invalid repo format: {repo_full_name}. Expected 'org/repo'"
-        )
-    
+        raise ValueError(f"Invalid repo format: {repo_full_name}. Expected 'org/repo'")
+
     owner, repo = parts
     client = get_github_client()
     return await client.get_token(owner, repo)

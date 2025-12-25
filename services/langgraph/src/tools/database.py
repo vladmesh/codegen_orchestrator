@@ -1,5 +1,6 @@
 """Database Tools for agents - access internal DB via API."""
 
+from http import HTTPStatus
 import os
 from typing import Annotated, Any
 import uuid
@@ -14,9 +15,7 @@ INTERNAL_API_URL = os.getenv("API_URL", "http://api:8000")
 async def create_project(
     name: Annotated[str, "Project name in snake_case (e.g., 'weather_bot')"],
     description: Annotated[str, "Brief project description"],
-    modules: Annotated[
-        list[str], "Modules to generate: backend, tg_bot, notifications, frontend"
-    ],
+    modules: Annotated[list[str], "Modules to generate: backend, tg_bot, notifications, frontend"],
     entry_points: Annotated[list[str], "Entry points: telegram, frontend, api"],
     telegram_token: Annotated[str | None, "Telegram Bot Token (if applicable)"] = None,
 ) -> dict[str, Any]:
@@ -153,7 +152,7 @@ async def allocate_port(
         # Fetch server info to ensure downstream nodes (DevOps) have the IP
         try:
             resp_server = await client.get(f"{INTERNAL_API_URL}/api/servers/{server_handle}")
-            if resp_server.status_code == 200:
+            if resp_server.status_code == HTTPStatus.OK:
                 server_info = resp_server.json()
                 allocation["server_ip"] = server_info.get("public_ip") or server_info.get("host")
         except Exception as e:
@@ -161,7 +160,6 @@ async def allocate_port(
             raise RuntimeError(f"Failed to fetch server IP for {server_handle}: {e}") from e
 
         return allocation
-
 
 
 @tool
@@ -190,13 +188,12 @@ async def update_server_status(
     status: Annotated[str, "New status (e.g., 'provisioning', 'ready', 'error')"],
 ) -> dict[str, Any]:
     """Update server status in database.
-    
+
     Used by provisioner to track provisioning progress.
     """
     async with httpx.AsyncClient(follow_redirects=True) as client:
         resp = await client.patch(
-            f"{INTERNAL_API_URL}/api/servers/{handle}",
-            json={"status": status}
+            f"{INTERNAL_API_URL}/api/servers/{handle}", json={"status": status}
         )
         resp.raise_for_status()
         return resp.json()
@@ -209,24 +206,21 @@ async def create_incident(
     details: Annotated[dict, "Incident details"] = None,
 ) -> dict[str, Any]:
     """Create an incident record for tracking issues.
-    
+
     Used when provisioning or other operations fail.
     """
     if details is None:
         details = {}
-        
+
     payload = {
         "server_handle": server_handle,
         "incident_type": incident_type,
         "details": details,
-        "affected_services": []
+        "affected_services": [],
     }
-    
+
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        resp = await client.post(
-            f"{INTERNAL_API_URL}/api/incidents/",
-            json=payload
-        )
+        resp = await client.post(f"{INTERNAL_API_URL}/api/incidents/", json=payload)
         resp.raise_for_status()
         return resp.json()
 
@@ -236,7 +230,7 @@ async def get_services_on_server(
     server_handle: Annotated[str, "Server handle"],
 ) -> list[dict[str, Any]]:
     """Get all active service deployments on a server.
-    
+
     Returns service deployment records with deployment_info for redeployment after recovery.
     """
     async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -255,7 +249,7 @@ async def create_service_deployment(
     deployment_info: Annotated[dict, "Deployment configuration (repo_url, branch, etc.)"],
 ) -> dict[str, Any]:
     """Create a service deployment record after successful deployment.
-    
+
     This tracks the deployment for future recovery needs.
     """
     payload = {
@@ -266,11 +260,8 @@ async def create_service_deployment(
         "status": "running",
         "deployment_info": deployment_info,
     }
-    
+
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        resp = await client.post(
-            f"{INTERNAL_API_URL}/api/service-deployments/",
-            json=payload
-        )
+        resp = await client.post(f"{INTERNAL_API_URL}/api/service-deployments/", json=payload)
         resp.raise_for_status()
         return resp.json()

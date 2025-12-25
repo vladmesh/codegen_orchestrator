@@ -63,12 +63,18 @@ async def spawn_container(request: SpawnRequest) -> SpawnResult:
         "run",
         "--rm",
         "--runtime=sysbox-runc",  # Enable Docker-in-Docker via Sysbox
-        "-e", f"GITHUB_TOKEN={request.github_token}",
-        "-e", f"FACTORY_API_KEY={factory_api_key}",
-        "-e", f"REPO={request.repo}",
-        "-e", f"TASK_CONTENT={request.task_content}",
-        "-e", f"TASK_TITLE={request.task_title}",
-        "-e", f"MODEL={request.model}",
+        "-e",
+        f"GITHUB_TOKEN={request.github_token}",
+        "-e",
+        f"FACTORY_API_KEY={factory_api_key}",
+        "-e",
+        f"REPO={request.repo}",
+        "-e",
+        f"TASK_CONTENT={request.task_content}",
+        "-e",
+        f"TASK_TITLE={request.task_title}",
+        "-e",
+        f"MODEL={request.model}",
     ]
 
     if request.agents_content:
@@ -86,9 +92,7 @@ async def spawn_container(request: SpawnRequest) -> SpawnResult:
         )
 
         try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=request.timeout_seconds
-            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=request.timeout_seconds)
             output = stdout.decode() if stdout else ""
         except TimeoutError:
             proc.kill()
@@ -109,8 +113,7 @@ async def spawn_container(request: SpawnRequest) -> SpawnResult:
 
         success = proc.returncode == 0
         logger.info(
-            f"Worker {request.request_id} completed: "
-            f"success={success}, commit={commit_sha}"
+            f"Worker {request.request_id} completed: success={success}, commit={commit_sha}"
         )
 
         return SpawnResult(
@@ -131,9 +134,7 @@ async def spawn_container(request: SpawnRequest) -> SpawnResult:
         )
 
 
-async def handle_request(
-    redis_client: redis.Redis, message: dict[str, Any]
-) -> None:
+async def handle_request(redis_client: redis.Redis, message: dict[str, Any]) -> None:
     """Handle a spawn request from Redis."""
     try:
         data = json.loads(message["data"])

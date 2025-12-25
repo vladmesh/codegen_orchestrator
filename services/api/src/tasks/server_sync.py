@@ -66,7 +66,7 @@ async def sync_servers_worker():
                     if now - last_details_sync > DETAILS_SYNC_INTERVAL:
                         await _sync_server_details(db, client)
                         last_details_sync = now
-                    
+
                     # Check for servers requiring provisioning
                     await _check_provisioning_triggers(db)
 
@@ -87,7 +87,7 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
     # Fetch existing servers from DB
     result = await db.execute(select(Server))
     db_servers = {s.public_ip: s for s in result.scalars().all()}
-    
+
     # Track new managed servers for notification
     new_managed_servers = []
 
@@ -118,7 +118,7 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
             # New Server Discovered
             # Check if it's a ghost server or managed
             is_managed = not is_ghost
-            
+
             # Managed servers need provisioning by default
             if is_managed:
                 status = "pending_setup"
@@ -140,7 +140,7 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
             )
             db.add(new_server)
             logger.info(f"Discovered new server: {ip} (handle: vps-{server_id}, ghost: {is_ghost})")
-            
+
             # Track new managed servers for notification
             if is_managed:
                 new_managed_servers.append(new_server)
@@ -153,13 +153,13 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
             logger.warning(f"Server {ip} is missing from Time4VPS API!")
 
     await db.commit()
-    
+
     # Send notifications for new managed servers
     for server in new_managed_servers:
         await notify_admins(
             f"New managed server discovered: *{server.handle}* ({server.public_ip}). "
             "Provisioning will be triggered automatically.",
-            level="info"
+            level="info",
         )
 
 
@@ -209,51 +209,47 @@ async def _sync_server_details(db: AsyncSession, client: Time4VPSClient):
 
 async def _check_provisioning_triggers(db: AsyncSession):
     """Check for servers that need provisioning.
-    
+
     Looks for:
     - PENDING_SETUP servers (new managed servers)
     - FORCE_REBUILD servers (manual trigger)
-    
+
     Automatically triggers provisioning via Redis pub/sub.
     """
     # Check for FORCE_REBUILD
-    result = await db.execute(
-        select(Server).where(Server.status == "force_rebuild")
-    )
+    result = await db.execute(select(Server).where(Server.status == "force_rebuild"))
     force_rebuild_servers = result.scalars().all()
-    
+
     for server in force_rebuild_servers:
         logger.warning(
             f"🔥 Server {server.handle} has FORCE_REBUILD status. Triggering provisioner..."
         )
-        
+
         # Update status to PROVISIONING before triggering
         server.status = "provisioning"
         await db.commit()
-        
+
         # Trigger provisioner
         await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
-        
+
         # Notify admins
         await notify_admins(
             f"Force rebuild triggered for server *{server.handle}*. Provisioning started.",
-            level="warning"
+            level="warning",
         )
-    
+
     # Check for PENDING_SETUP
-    result = await db.execute(
-        select(Server).where(Server.status == "pending_setup")
-    )
+    result = await db.execute(select(Server).where(Server.status == "pending_setup"))
     pending_servers = result.scalars().all()
-    
+
     for server in pending_servers:
         logger.info(
             f"📋 Server {server.handle} is PENDING_SETUP. Triggering automatic provisioning..."
         )
-        
+
         # Update status to PROVISIONING before triggering
         server.status = "provisioning"
         await db.commit()
-        
+
         # Trigger provisioner
         await publish_provisioner_trigger(server.handle, is_incident_recovery=False)

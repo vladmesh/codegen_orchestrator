@@ -60,9 +60,13 @@ async def list_active_incidents(
     db: AsyncSession = Depends(get_async_session),
 ) -> list[Incident]:
     """Get all active incidents (detected or recovering)."""
-    query = select(Incident).where(
-        Incident.status.in_([IncidentStatus.DETECTED.value, IncidentStatus.RECOVERING.value])
-    ).order_by(Incident.detected_at.desc())
+    query = (
+        select(Incident)
+        .where(
+            Incident.status.in_([IncidentStatus.DETECTED.value, IncidentStatus.RECOVERING.value])
+        )
+        .order_by(Incident.detected_at.desc())
+    )
 
     result = await db.execute(query)
     return result.scalars().all()

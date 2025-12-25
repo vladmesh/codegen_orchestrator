@@ -71,10 +71,11 @@ If you are unsure about module names or structure, refer to these files.
 {allocated_resources}
 """
 
+
 @tool
 def set_project_complexity(complexity: str):
     """Set the project complexity level.
-    
+
     Args:
         complexity: "simple" or "complex"
     """
@@ -92,32 +93,32 @@ tools_map = {tool.name: tool for tool in tools}
 
 async def run(state: dict) -> dict:
     """Run architect agent.
-    
+
     Creates GitHub repo and prepares for code generation.
     """
     messages = state.get("messages", [])
     project_spec = state.get("project_spec", {})
     allocated_resources = state.get("allocated_resources", {})
-    
+
     # Build context for LLM
     project_info = f"""
-Name: {project_spec.get('name', 'unknown')}
-Description: {project_spec.get('description', 'No description')}
-Modules: {project_spec.get('modules', [])}
-Entry Points: {project_spec.get('entry_points', [])}
+Name: {project_spec.get("name", "unknown")}
+Description: {project_spec.get("description", "No description")}
+Modules: {project_spec.get("modules", [])}
+Entry Points: {project_spec.get("entry_points", [])}
 """
-    
+
     system_content = SYSTEM_PROMPT.format(
         project_info=project_info,
         allocated_resources=allocated_resources,
     )
-    
+
     llm_messages = [SystemMessage(content=system_content)]
     llm_messages.extend(messages)
-    
+
     # Invoke LLM
     response = await llm_with_tools.ainvoke(llm_messages)
-    
+
     return {
         "messages": [response],
         "current_agent": "architect",
@@ -128,30 +129,30 @@ async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Architect LLM."""
     messages = state.get("messages", [])
     last_message = messages[-1]
-    
+
     if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
         return {"messages": []}
-    
+
     tool_results = []
     repo_info = state.get("repo_info", {})
     project_complexity = state.get("project_complexity")
-    
+
     for tool_call in last_message.tool_calls:
         tool_name = tool_call["name"]
         tool_func = tools_map.get(tool_name)
-        
+
         if tool_func:
             try:
                 result = await tool_func.ainvoke(tool_call["args"])
-                
+
                 # Track created repo
                 if tool_name == "create_github_repo" and result:
                     repo_info = result
-                
+
                 # Track complexity
                 if tool_name == "set_project_complexity":
                     project_complexity = result
-                
+
                 tool_results.append(
                     ToolMessage(
                         content=f"Result: {result}",
@@ -173,7 +174,7 @@ async def execute_tools(state: dict) -> dict:
                     tool_call_id=tool_call["id"],
                 )
             )
-    
+
     return {
         "messages": tool_results,
         "repo_info": repo_info,
@@ -183,31 +184,31 @@ async def execute_tools(state: dict) -> dict:
 
 async def spawn_factory_worker(state: dict) -> dict:
     """Spawn Factory.ai worker to generate project structure.
-    
+
     This node is called after repo is created and token is obtained.
     It spawns a Sysbox container with Factory.ai Droid to generate code.
     """
     repo_info = state.get("repo_info", {})
     project_spec = state.get("project_spec", {})
     project_complexity = state.get("project_complexity", "complex")  # Default to complex
-    
+
     if not repo_info:
         return {
             "messages": [AIMessage(content="❌ No repository info found. Cannot spawn worker.")],
             "errors": state.get("errors", []) + ["No repository info for architect worker"],
         }
-    
+
     repo_full_name = repo_info.get("full_name")
     if not repo_full_name:
         return {
             "messages": [AIMessage(content="❌ Repository full_name not found.")],
             "errors": state.get("errors", []) + ["Repository full_name missing"],
         }
-    
+
     # Get fresh token for the repo
     github_client = GitHubAppClient()
     owner, repo = repo_full_name.split("/")
-    
+
     try:
         token = await github_client.get_token(owner, repo)
     except Exception as e:
@@ -216,7 +217,7 @@ async def spawn_factory_worker(state: dict) -> dict:
             "messages": [AIMessage(content=f"❌ Failed to get GitHub token: {e}")],
             "errors": state.get("errors", []) + [str(e)],
         }
-    
+
     # If simple, add implementation instructions directly
     extra_instructions = ""
     if project_complexity == "simple":
@@ -228,14 +229,14 @@ async def spawn_factory_worker(state: dict) -> dict:
     - THIS IS THE FINAL STEP, so make sure it works.
 """
 
-    task_content = f"""# Project: {project_spec.get('name', 'project')}
+    task_content = f"""# Project: {project_spec.get("name", "project")}
 
 ## Description
-{project_spec.get('description', 'No description provided')}
+{project_spec.get("description", "No description provided")}
 
 ## Requirements
-- Modules: {', '.join(project_spec.get('modules', []))}
-- Entry Points: {', '.join(project_spec.get('entry_points', []))}
+- Modules: {", ".join(project_spec.get("modules", []))}
+- Entry Points: {", ".join(project_spec.get("entry_points", []))}
 
 ## Task
 Initialize this repository using the `service-template` framework.
@@ -243,7 +244,7 @@ Initialize this repository using the `service-template` framework.
 1.  **Initialize Project via Copier**:
     - The template is located at `gh:vladmesh/service-template`.
     - Use `copier` to generate the project structure.
-    - Run: `copier copy gh:vladmesh/service-template . --data project_name={project_spec.get('name', 'project')} --data modules={','.join(project_spec.get('modules', ['backend']))} --trust` (adjust modules as needed).
+    - Run: `copier copy gh:vladmesh/service-template . --data project_name={project_spec.get("name", "project")} --data modules={",".join(project_spec.get("modules", ["backend"]))} --trust` (adjust modules as needed).
     - If `copier` is not installed, install it: `pip install copier`.
 
 2.  **Define Domain Specifications**:
@@ -268,11 +269,11 @@ Initialize this repository using the `service-template` framework.
 - All code should be async-ready (Python 3.12+).
 
 ## Commit Message
-Initial project structure for {project_spec.get('name', 'project')} using service-template
+Initial project structure for {project_spec.get("name", "project")} using service-template
 """
-    
+
     logger.info(f"Spawning Factory worker for {repo_full_name}")
-    
+
     result = await request_spawn(
         repo=repo_full_name,
         github_token=token,
@@ -280,12 +281,12 @@ Initial project structure for {project_spec.get('name', 'project')} using servic
         task_title=f"Initial structure for {project_spec.get('name', 'project')}",
         model=os.getenv("FACTORY_MODEL", "claude-sonnet-4-5-20250929"),
     )
-    
+
     if result.success:
         message = f"""✅ Project structure created successfully!
 
-Repository: {repo_info.get('html_url')}
-Commit: {result.commit_sha or 'N/A'}
+Repository: {repo_info.get("html_url")}
+Commit: {result.commit_sha or "N/A"}
 
 The repository now has:
 - Domain specifications
@@ -304,4 +305,3 @@ Next step: Developer agent will implement business logic.
             "messages": [AIMessage(content=f"❌ Factory worker failed:\n\n{result.output[-500:]}")],
             "errors": state.get("errors", []) + ["Factory worker failed"],
         }
-

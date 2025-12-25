@@ -7,9 +7,8 @@ import logging
 import os
 import sys
 
-import redis.asyncio as redis
-
 from langchain_core.messages import AIMessage, HumanMessage
+import redis.asyncio as redis
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -45,7 +44,7 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     try:
         # Get existing conversation history
         history = conversation_history[thread_id]
-        
+
         # Add new user message to history
         new_message = HumanMessage(content=text)
         history.append(new_message)
@@ -78,10 +77,10 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
                 )
             else:
                 response_text = str(last_message.content)
-            
+
             # Save AI response to history
             history.append(AIMessage(content=response_text))
-            
+
             # Trim history to keep only last N messages
             if len(history) > MAX_HISTORY_SIZE:
                 conversation_history[thread_id] = history[-MAX_HISTORY_SIZE:]
@@ -114,9 +113,8 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         )
 
 
-
-
 PROVISIONER_TRIGGER_CHANNEL = "provisioner:trigger"
+
 
 async def listen_provisioner_triggers():
     """Listen for provisioning triggers from Redis pub/sub."""
@@ -125,9 +123,9 @@ async def listen_provisioner_triggers():
         client = redis.from_url(redis_url, decode_responses=True)
         pubsub = client.pubsub()
         await pubsub.subscribe(PROVISIONER_TRIGGER_CHANNEL)
-        
+
         logger.info(f"Subscribed to provisioning triggers on {PROVISIONER_TRIGGER_CHANNEL}")
-        
+
         async for message in pubsub.listen():
             if message["type"] == "message":
                 try:
@@ -147,9 +145,9 @@ async def process_provisioning_trigger(data: dict) -> None:
     """Run the graph for provisioning."""
     server_handle = data.get("server_handle")
     is_incident_recovery = data.get("is_incident_recovery", False)
-    
+
     logger.info(f"🚀 Processing provisioning trigger for {server_handle}")
-    
+
     state = {
         "messages": [HumanMessage(content=f"Provision server {server_handle}")],
         "server_to_provision": server_handle,
@@ -166,9 +164,9 @@ async def process_provisioning_trigger(data: dict) -> None:
         "project_complexity": None,
         "provisioning_result": None,
     }
-    
+
     config = {"configurable": {"thread_id": f"provisioner-{server_handle}"}}
-    
+
     try:
         await graph.ainvoke(state, config)
         logger.info(f"✅ Provisioning graph execution finished for {server_handle}")

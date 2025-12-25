@@ -2,13 +2,11 @@
 
 import asyncio
 import logging
-import os
-from datetime import datetime
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.clients.github import GitHubAppClient
+
 from ..database import async_session_maker
 from ..models.project import Project, ProjectStatus
 
@@ -31,7 +29,7 @@ async def sync_projects_worker():
         try:
             async with async_session_maker() as db:
                 client = GitHubAppClient()
-                
+
                 # 1. Get Organization
                 try:
                     # Try to find the org we are installed on
@@ -51,7 +49,7 @@ async def sync_projects_worker():
                     logger.error(f"Failed to fetch repositories: {e}")
                     await asyncio.sleep(SYNC_INTERVAL)
                     continue
-                
+
                 # Map by ID for accurate tracking
                 # repo_id (int) -> repo_data
                 gh_repos_map = {r["id"]: r for r in github_repos}
@@ -61,36 +59,38 @@ async def sync_projects_worker():
                 for r in github_repos:
                     repo_id = r["id"]
                     repo_name = r["name"]
-                    
+
                     # Try to find in DB by github_repo_id
                     query = select(Project).where(Project.github_repo_id == repo_id)
                     result = await db.execute(query)
                     project = result.scalar_one_or_none()
-                    
+
                     if not project:
                         # Try to find by name (legacy projects or first sync)
                         # We use simple matching.
                         query = select(Project).where(Project.name == repo_name)
                         result = await db.execute(query)
                         project = result.scalar_one_or_none()
-                        
+
                         if project:
                             # Link legacy project
-                            logger.info(f"Linking existing project '{project.name}' to GitHub ID {repo_id}")
+                            logger.info(
+                                f"Linking existing project '{project.name}' to GitHub ID {repo_id}"
+                            )
                             project.github_repo_id = repo_id
                         else:
                             # Create new project
                             logger.info(f"Discovered new project: {repo_name} (ID: {repo_id})")
                             project = Project(
-                                id=repo_name, # Use name as ID for simplicity consistent with usage
+                                id=repo_name,  # Use name as ID for simplicity consistent with usage
                                 name=repo_name,
                                 github_repo_id=repo_id,
-                                status=ProjectStatus.DISCOVERED.value, # Need to make sure DISCOVERED is in Enum?
+                                status=ProjectStatus.DISCOVERED.value,  # Need to make sure DISCOVERED is in Enum?
                                 # Wait, Enum has DRAFT, ESTIMATED, PROVISIONING, INITIALIZED...
                                 # Roadmap said "New: Create Project in DB with status discovered"
-                                # My Enum implementation has DRAFT, ESTIMATED... 
+                                # My Enum implementation has DRAFT, ESTIMATED...
                                 # Let's check my Enum in project.py.
-                                # It DOES NOT have DISCOVERED! It has DRAFT. 
+                                # It DOES NOT have DISCOVERED! It has DRAFT.
                                 # Roadmap Phase 1.1 said: "draft: Inception... provisioning... initialized: Repo exists"
                                 # Wait, Phase 1.2 said "New: Create Project in DB with status discovered"
                                 # This is a conflict in Roadmap.
@@ -100,27 +100,31 @@ async def sync_projects_worker():
                                 # I'll use INITIALIZED.
                             )
                             # Actually, let's fix the Enum if needed.
-                            # Enum: 
+                            # Enum:
                             # INITIALIZED = "initialized"
                             # I'll use INITIALIZED.
-                            project.status = ProjectStatus.DISCOVERED.value 
+                            project.status = ProjectStatus.DISCOVERED.value
                             db.add(project)
 
                     # Update metadata
                     # (Can update description, etc if we had those fields)
-                    
+
                     # Reset missing counter if it was missing
                     if project.id in missing_counters:
                         del missing_counters[project.id]
                         if project.status == ProjectStatus.MISSING.value:
-                            project.status = ProjectStatus.ACTIVE.value # Or INITIALIZED? Active implies deployed.
+                            project.status = (
+                                ProjectStatus.ACTIVE.value
+                            )  # Or INITIALIZED? Active implies deployed.
                             logger.info(f"Project {project.name} recovered from MISSING state.")
 
                 # 4. Sync Logic: DB -> GitHub (Detect Missing)
                 # Iterate all projects that SHOULD be on GitHub
                 query = select(Project).where(
                     Project.github_repo_id.is_not(None),
-                    Project.status.notin_([ProjectStatus.MISSING.value, ProjectStatus.ARCHIVED.value])
+                    Project.status.notin_(
+                        [ProjectStatus.MISSING.value, ProjectStatus.ARCHIVED.value]
+                    ),
                 )
                 result = await db.execute(query)
                 db_projects = result.scalars().all()
@@ -130,15 +134,17 @@ async def sync_projects_worker():
                         # Missing!
                         count = missing_counters.get(proj.id, 0) + 1
                         missing_counters[proj.id] = count
-                        
+
                         logger.warning(
                             f"Project {proj.name} (ID: {proj.github_repo_id}) not found on GitHub. "
                             f"Attempt {count}/{MISSING_THRESHOLD}"
                         )
-                        
+
                         if count >= MISSING_THRESHOLD:
                             proj.status = ProjectStatus.MISSING.value
-                            logger.error(f"Marking project {proj.name} as MISSING after {count} failed checks.")
+                            logger.error(
+                                f"Marking project {proj.name} as MISSING after {count} failed checks."
+                            )
                             # TODO: Send Alert
 
                 await db.commit()

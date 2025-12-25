@@ -1,6 +1,5 @@
 """Port Allocation schemas."""
 
-
 from pydantic import BaseModel, ConfigDict
 
 

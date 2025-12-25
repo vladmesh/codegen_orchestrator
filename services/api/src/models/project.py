@@ -1,9 +1,8 @@
 """Project model."""
 
 from enum import Enum
-from typing import Optional
 
-from sqlalchemy import JSON, String, Integer
+from sqlalchemy import JSON, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -11,16 +10,16 @@ from .base import Base
 
 class ProjectStatus(str, Enum):
     """Project lifecycle status."""
-    
+
     # Inception
     DRAFT = "draft"
     DISCOVERED = "discovered"
     ESTIMATED = "estimated"
-    
+
     # Materialization
     PROVISIONING = "provisioning"
     INITIALIZED = "initialized"
-    
+
     # Construction
     DESIGNING = "designing"
     DESIGNED = "designed"
@@ -28,11 +27,11 @@ class ProjectStatus(str, Enum):
     IMPLEMENTED = "implemented"
     VERIFYING = "verifying"
     VERIFIED = "verified"
-    
+
     # Production
     DEPLOYING = "deploying"
     ACTIVE = "active"
-    
+
     # Maintenance & Issues
     MAINTENANCE = "maintenance"
     MISSING = "missing"
@@ -47,10 +46,10 @@ class Project(Base):
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
-    
+
     # GitHub Repo ID is immutable, tracking the source of truth
     github_repo_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    
+
     status: Mapped[str] = mapped_column(String(50), default=ProjectStatus.DRAFT.value)
-    
+
     config: Mapped[dict] = mapped_column(JSON, default=dict)
