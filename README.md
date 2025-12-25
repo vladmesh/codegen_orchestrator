@@ -57,6 +57,54 @@
 - **Prod серверы**: Управляются через prod_infra, используются для деплоя сгенерированных проектов
 - **Телеграм**: Основной интерфейс для взаимодействия с человеком
 
+## Development Setup
+
+### Prerequisites
+- Docker & Docker Compose
+- Python 3.12+
+- Git
+
+### Quick Start
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/vladmesh/codegen_orchestrator.git
+   cd codegen_orchestrator
+   ```
+
+2. **Install pre-commit hooks** (for code quality)
+   ```bash
+   pip install pre-commit
+   pre-commit install
+   ```
+
+3. **Set up environment**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your credentials
+   ```
+
+4. **Start services**
+   ```bash
+   make up
+   make migrate
+   make seed
+   ```
+
+5. **Run tests**
+   ```bash
+   make test-unit  # Fast unit tests
+   make test-all   # All tests
+   ```
+
+### Development Workflow
+
+- **Code quality**: Pre-commit hooks automatically format and lint code on commit
+- **Testing**: Write tests in `services/{service}/tests/{unit,integration}/`
+- **CI/CD**: GitHub Actions runs tests on every push/PR
+
+See [TESTING.md](docs/TESTING.md) for detailed testing guide.
+
 ## Документация
 
 - [AGENTS.md](AGENTS.md) — описание каждого агента
