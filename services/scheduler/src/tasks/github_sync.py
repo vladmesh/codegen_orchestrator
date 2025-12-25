@@ -6,6 +6,7 @@ import logging
 from sqlalchemy import select
 
 from shared.clients.github import GitHubAppClient
+from shared.notifications import notify_admins
 
 from src.db import async_session_maker
 from src.models.project import Project, ProjectStatus
@@ -128,7 +129,12 @@ async def sync_projects_worker():
                             logger.error(
                                 f"Marking project {proj.name} as MISSING after {count} failed checks."
                             )
-                            # TODO: Send Alert
+                            # Send critical alert to admins
+                            await notify_admins(
+                                f"🚨 Project *{proj.name}* (GitHub ID: {proj.github_repo_id}) is MISSING! "
+                                f"Repository not found after {count} consecutive checks.",
+                                level="critical",
+                            )
 
                 await db.commit()
                 logger.debug(f"Synced {len(github_repos)} repositories.")

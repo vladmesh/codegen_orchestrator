@@ -97,6 +97,46 @@ async def create_project_intent(
 
 
 @tool
+async def set_project_maintenance(
+    project_id: Annotated[str, "Project ID to update"],
+    update_description: Annotated[str, "Description of the update/feature to implement"],
+) -> dict[str, Any]:
+    """Set a project to maintenance status for updates.
+
+    Use this when the user wants to update or add features to an existing project.
+    This will trigger the Engineering flow (Architect → Developer → Tester).
+
+    Args:
+        project_id: ID of the project to update
+        update_description: Description of what needs to be updated
+
+    Returns:
+        Updated project details
+    """
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        # First verify project exists
+        resp = await client.get(f"{INTERNAL_API_URL}/projects/{project_id}")
+        if resp.status_code == 404:
+            return {"error": f"Project {project_id} not found"}
+        resp.raise_for_status()
+        project = resp.json()
+
+        # Update status to maintenance
+        resp = await client.patch(
+            f"{INTERNAL_API_URL}/projects/{project_id}",
+            json={
+                "status": "maintenance",
+                "config": {
+                    **project.get("config", {}),
+                    "maintenance_request": update_description,
+                },
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+@tool
 async def list_managed_servers() -> list[dict[str, Any]]:
     """List all active, managed servers available for deployment.
 

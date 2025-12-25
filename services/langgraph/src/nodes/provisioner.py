@@ -395,6 +395,63 @@ async def create_incident_in_db(server_handle: str, incident_type: str, details:
         return False
 
 
+async def resolve_active_incidents(server_handle: str) -> bool:
+    """Resolve all active incidents for a server after successful recovery.
+
+    Args:
+        server_handle: Server handle
+
+    Returns:
+        True if successful
+    """
+    from datetime import datetime
+
+    import httpx
+
+    api_url = os.getenv("API_URL", "http://api:8000")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            # Get active incidents for this server
+            resp = await client.get(
+                f"{api_url}/api/incidents/",
+                params={"server_handle": server_handle, "status": "detected"},
+            )
+            resp.raise_for_status()
+            incidents = resp.json()
+
+            # Also check for recovering status
+            resp2 = await client.get(
+                f"{api_url}/api/incidents/",
+                params={"server_handle": server_handle, "status": "recovering"},
+            )
+            resp2.raise_for_status()
+            incidents.extend(resp2.json())
+
+            if not incidents:
+                logger.debug(f"No active incidents to resolve for {server_handle}")
+                return True
+
+            resolved_at = datetime.utcnow().isoformat()
+
+            for incident in incidents:
+                incident_id = incident.get("id")
+                await client.patch(
+                    f"{api_url}/api/incidents/{incident_id}",
+                    json={
+                        "status": "resolved",
+                        "resolved_at": resolved_at,
+                    },
+                )
+                logger.info(f"Resolved incident #{incident_id} for server {server_handle}")
+
+            return True
+
+    except Exception as e:
+        logger.error(f"Failed to resolve incidents for {server_handle}: {e}")
+        return False
+
+
 REINSTALL_TIMEOUT = int(os.getenv("REINSTALL_TIMEOUT", "900"))  # 15 minutes
 
 
@@ -538,6 +595,9 @@ async def handle_provisioning_success(
     services_list_msg = ""
 
     if is_recovery:
+        # Resolve any active incidents for this server
+        await resolve_active_incidents(server_handle)
+        
         logger.info(f"Checking for services to redeploy on {server_handle}")
         services = await get_services_on_server_for_redeployment(server_handle)
         services_count = len(services)

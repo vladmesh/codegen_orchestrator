@@ -129,8 +129,15 @@ def route_after_product_owner(state: OrchestratorState) -> str:
 
 def route_after_product_owner_tools(state: OrchestratorState) -> str:
     """Decide where to go after product owner tools execution."""
-    if state.get("po_intent") == "new_project":
+    po_intent = state.get("po_intent")
+    
+    if po_intent == "new_project":
         return "brainstorm"
+    
+    if po_intent == "maintenance":
+        # Project update → Engineering directly (skip brainstorm)
+        return "engineering"
+    
     return END
 
 
@@ -254,12 +261,13 @@ def create_graph() -> StateGraph:
         },
     )
 
-    # After product owner tools: go to brainstorm or end
+    # After product owner tools: go to brainstorm, engineering (maintenance), or end
     graph.add_conditional_edges(
         "product_owner_tools",
         route_after_product_owner_tools,
         {
             "brainstorm": "brainstorm",
+            "engineering": "engineering",
             END: END,
         },
     )

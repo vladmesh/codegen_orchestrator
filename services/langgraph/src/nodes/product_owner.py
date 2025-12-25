@@ -6,7 +6,12 @@ Classifies user intent and coordinates the high-level flow.
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
-from ..tools.database import create_project_intent, get_project_status, list_projects
+from ..tools.database import (
+    create_project_intent,
+    get_project_status,
+    list_projects,
+    set_project_maintenance,
+)
 
 SYSTEM_PROMPT = """You are the Product Owner (PO) for the codegen orchestrator.
 
@@ -18,7 +23,10 @@ Your job:
 3. For STATUS requests, use:
    - `get_project_status` if user mentions a specific project ID.
    - Otherwise `list_projects`.
-4. For UPDATE/MAINTENANCE requests, ask for a specific project ID if missing.
+4. For UPDATE/MAINTENANCE requests:
+   - Get the project ID from the user if missing.
+   - Call `set_project_maintenance` with the project ID and update description.
+   - This triggers the Engineering workflow (Architect → Developer → Tester).
 
 Guidelines:
 - Respond in the SAME LANGUAGE as the user.
@@ -28,7 +36,7 @@ Guidelines:
 
 # LLM with tools
 llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
-tools = [list_projects, get_project_status, create_project_intent]
+tools = [list_projects, get_project_status, create_project_intent, set_project_maintenance]
 llm_with_tools = llm.bind_tools(tools)
 
 tools_map = {tool.name: tool for tool in tools}
@@ -124,11 +132,33 @@ async def execute_tools(state: dict) -> dict:
                 )
             else:
                 response_parts.append("Проект не найден.")
+            continue
+
+        if tool_name == "set_project_maintenance":
+            if result.get("error"):
+                response_parts.append(f"Ошибка: {result['error']}")
+            else:
+                po_intent = "maintenance"
+                project_intent = {
+                    "intent": "maintenance",
+                    "project_id": result.get("id"),
+                    "maintenance_request": result.get("config", {}).get("maintenance_request"),
+                }
+                response_parts.append(
+                    f"Проект {result.get('name')} переведён в режим обслуживания. "
+                    "Запускаю Engineering flow..."
+                )
+            continue
+
+    current_project = None
+    if project_intent and project_intent.get("project_id"):
+        current_project = project_intent["project_id"]
 
     updates = {
         "messages": tool_results,
         "po_intent": po_intent,
         "project_intent": project_intent,
+        "current_project": current_project,
     }
 
     if response_parts:
