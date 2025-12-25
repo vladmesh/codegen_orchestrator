@@ -562,9 +562,11 @@ agent_config_cache = AgentConfigCache()
 - [x] Создать `InternalAPIClient`
 - [x] Обновить импорты
 
-### Фаза 5: Pydantic schemas (1-2 дня)
-- [ ] Добавить схемы состояния
-- [ ] Добавить валидацию в nodes
+### Фаза 5: Pydantic schemas (1-2 дня) ✅ В ПРОЦЕССЕ
+- [x] Добавить Shared схемы (Time4VPS, GitHub)
+- [x] Добавить схемы состояния (`OrchestratorState` в `src/schemas`)
+- [x] Добавить схемы инструментов (`src/schemas/tools.py`)
+- [ ] Полная миграция всех инструментов на Pydantic (начато)
 - [ ] Тесты
 
 ---

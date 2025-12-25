@@ -43,11 +43,11 @@ async def create_github_repo(
     )
 
     return {
-        "name": repo_data["name"],
-        "full_name": repo_data["full_name"],
-        "html_url": repo_data["html_url"],
-        "clone_url": repo_data["clone_url"],
-        "default_branch": repo_data.get("default_branch", "main"),
+        "name": repo_data.name,
+        "full_name": repo_data.full_name,
+        "html_url": repo_data.html_url,
+        "clone_url": repo_data.clone_url,
+        "default_branch": repo_data.default_branch,
     }
 
 

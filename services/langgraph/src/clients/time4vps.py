@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 import httpx
+from shared.schemas import Time4VPSServer, Time4VPSServerDetails, Time4VPSTask, Time4VPSOSTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -28,21 +29,22 @@ class Time4VPSClient:
             self._auth_header = f"Basic {encoded_auth}"
         return {"Authorization": self._auth_header}
 
-    async def get_servers(self) -> list[dict[str, Any]]:
+    async def get_servers(self) -> list[Time4VPSServer]:
         """List all servers."""
         headers = self._get_auth_header()
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{self.base_url}/server", headers=headers)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            return [Time4VPSServer.model_validate(item) for item in data]
 
-    async def get_server_details(self, server_id: int) -> dict[str, Any]:
+    async def get_server_details(self, server_id: int) -> Time4VPSServerDetails:
         """Get details for a specific server."""
         headers = self._get_auth_header()
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{self.base_url}/server/{server_id}", headers=headers)
             resp.raise_for_status()
-            return resp.json()
+            return Time4VPSServerDetails.model_validate(resp.json())
 
     async def reset_password(self, server_id: int) -> int:
         """Reset server root password.
@@ -63,23 +65,15 @@ class Time4VPSClient:
 
             return result["task_id"]
 
-    async def get_task_result(self, server_id: int, task_id: int) -> dict[str, Any]:
-        """Get task status and result.
-
-        Returns dict with keys:
-        - name: task name
-        - activated: ISO timestamp
-        - assigned: ISO timestamp or empty string
-        - completed: ISO timestamp or empty string (if not done)
-        - results: result string or empty string (if not done)
-        """
+    async def get_task_result(self, server_id: int, task_id: int) -> Time4VPSTask:
+        """Get task status and result."""
         headers = self._get_auth_header()
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 f"{self.base_url}/server/{server_id}/task/{task_id}", headers=headers
             )
             resp.raise_for_status()
-            return resp.json()
+            return Time4VPSTask.model_validate(resp.json())
 
     async def wait_for_password_reset(
         self, server_id: int, task_id: int, timeout: int = 300, poll_interval: int = 5
@@ -110,9 +104,9 @@ class Time4VPSClient:
 
             task = await self.get_task_result(server_id, task_id)
 
-            if task.get("completed"):
+            if task.completed:
                 # Task completed, extract password from results
-                results = task.get("results", "")
+                results = task.results or ""
                 logger.debug(f"Password reset results: {results}")
                 password = self.extract_password(results)
                 if password:
@@ -233,11 +227,8 @@ class Time4VPSClient:
             logger.info(f"Time4VPS returned {len(servers)} servers")
 
             for server in servers:
-                if not isinstance(server, dict):
-                    logger.warning(f"Unexpected server entry format: {server}")
-                    continue
-
-                srv_id = server.get("id") or server.get("server_id")
+                # server is now Time4VPSServer model
+                srv_id = server.id
                 if not srv_id:
                     logger.warning(f"Server entry missing ID: {server}")
                     continue
@@ -256,7 +247,7 @@ class Time4VPSClient:
 
     async def wait_for_task(
         self, server_id: int, task_id: int, timeout: int = 600, poll_interval: int = 10
-    ) -> dict[str, Any]:
+    ) -> Time4VPSTask:
         """Wait for any task to complete.
 
         Args:
@@ -280,7 +271,7 @@ class Time4VPSClient:
 
             task = await self.get_task_result(server_id, task_id)
 
-            if task.get("completed"):
+            if task.completed:
                 logger.info(f"Task {task_id} completed for server {server_id}")
                 return task
 

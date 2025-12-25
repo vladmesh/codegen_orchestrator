@@ -13,45 +13,92 @@ from .subgraphs.engineering import create_engineering_subgraph
 
 
 class OrchestratorState(TypedDict):
-    """Global state for the orchestrator."""
+    """Global state for the orchestrator.
 
-    # Messages (conversation history)
+    This TypedDict defines all state fields passed between nodes.
+    For nested dict structures, see src/schemas/ for detailed schemas:
+
+    - repo_info: See `src.schemas.RepoInfo`
+    - allocated_resources: Values are `src.schemas.AllocatedResource`
+    - project_intent: See `src.schemas.ProjectIntent`
+    - provisioning_result: See `src.schemas.ProvisioningResult`
+    - test_results: See `src.schemas.TestResults`
+    """
+
+    # ============================================================
+    # MESSAGES (LangChain conversation history)
+    # ============================================================
     messages: Annotated[list, add_messages]
 
-    # Current project
+    # ============================================================
+    # PROJECT CONTEXT
+    # ============================================================
+    # Project ID currently being worked on
     current_project: str | None
+    # Project specification from Brainstorm (see schemas.ProjectSpec)
     project_spec: dict | None
+    # Intent classification (see services.langgraph.src.schemas.ProjectIntent)
     project_intent: dict | None
+    # High-level intent: "new_project", "maintenance", or "deploy"
     po_intent: str | None
 
-    # Resources (handle -> resource_id mapping)
+    # ============================================================
+    # ALLOCATED RESOURCES
+    # Keys: "server_handle:port" or service name
+    # Values: AllocatedResource schema (server_handle, server_ip, port, service_name)
+    # ============================================================
     allocated_resources: dict
 
-    # Repository info (after architect creates it)
+    # ============================================================
+    # REPOSITORY INFO
+    # Set by Architect after creating GitHub repo
+    # Schema: shared.schemas.RepoInfo (full_name, html_url, clone_url)
+    # ============================================================
     repo_info: dict | None
+    # Project complexity: "simple" or "complex"
     project_complexity: str | None
+    # Whether Architect phase is complete
     architect_complete: bool
 
-    # Engineering subgraph tracking (Phase 3)
-    engineering_status: str  # "idle" | "working" | "done" | "blocked"
+    # ============================================================
+    # ENGINEERING SUBGRAPH STATE
+    # Tracks Architect → Developer → Tester loop
+    # ============================================================
+    # Status: "idle", "working", "done", "blocked"
+    engineering_status: str
+    # Feedback from code review iteration
     review_feedback: str | None
+    # Number of iterations through the loop
     engineering_iterations: int
+    # Test results (see shared.schemas.TestResults)
     test_results: dict | None
 
-    # Human-in-the-loop (Phase 4)
+    # ============================================================
+    # HUMAN-IN-THE-LOOP FLAGS
+    # ============================================================
+    # Whether human approval is needed to continue
     needs_human_approval: bool
+    # Reason for requesting human approval
     human_approval_reason: str | None
 
-    # Provisioning
-    server_to_provision: str | None  # Server handle to provision
-    is_incident_recovery: bool  # If True, redeploy services after
-    provisioning_result: dict | None  # Result from provisioner
+    # ============================================================
+    # PROVISIONING (Server setup)
+    # ============================================================
+    # Server handle to provision (e.g., "vps-267179")
+    server_to_provision: str | None
+    # If True, redeploy services after provisioning (incident recovery)
+    is_incident_recovery: bool
+    # Result from provisioner (see shared.schemas.ProvisioningResult)
+    provisioning_result: dict | None
 
-    # Status
+    # ============================================================
+    # STATUS & RESULTS
+    # ============================================================
+    # Current active agent name
     current_agent: str
+    # List of accumulated errors
     errors: list[str]
-
-    # Results
+    # Deployed application URL (e.g., "http://1.2.3.4:8080")
     deployed_url: str | None
 
 

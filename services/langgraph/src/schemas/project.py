@@ -1,4 +1,4 @@
-"""Schemas for LangGraph orchestrator."""
+"""Project-related schemas."""
 
 from enum import Enum
 
