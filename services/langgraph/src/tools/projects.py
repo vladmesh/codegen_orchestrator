@@ -1,5 +1,6 @@
 """Project management tools for agents."""
 
+from http import HTTPStatus
 from typing import Annotated
 import uuid
 
@@ -107,7 +108,7 @@ async def set_project_maintenance(
     """
     # First verify project exists
     resp = await api_client.get_raw(f"/projects/{project_id}")
-    if resp.status_code == 404:
+    if resp.status_code == HTTPStatus.NOT_FOUND:
         raise ValueError(f"Project {project_id} not found")
     resp.raise_for_status()
     project = resp.json()

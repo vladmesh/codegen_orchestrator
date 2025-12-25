@@ -108,7 +108,8 @@ async def _handle_unhealthy_server(db: AsyncSession, server: Server):
     if active_incident:
         # Already handling this incident, just update recovery attempts
         logger.info(
-            f"Active incident #{active_incident.id} exists for {server.handle}, incrementing attempts"
+            f"Active incident #{active_incident.id} exists for "
+            f"{server.handle}, incrementing attempts"
         )
         active_incident.recovery_attempts += 1
         return

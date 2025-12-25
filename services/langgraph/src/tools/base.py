@@ -3,6 +3,7 @@
 Provides InternalAPIClient singleton for consistent API access.
 """
 
+from http import HTTPStatus
 import os
 
 import httpx
@@ -55,7 +56,7 @@ class InternalAPIClient:
         client = await self._get_client()
         resp = await client.delete(path, **kwargs)
         resp.raise_for_status()
-        if resp.status_code == 204:
+        if resp.status_code == HTTPStatus.NO_CONTENT:
             return None
         return resp.json()
 

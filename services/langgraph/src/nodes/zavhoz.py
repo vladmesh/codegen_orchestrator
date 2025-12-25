@@ -43,7 +43,7 @@ class ZavhozNode(BaseAgentNode):
         if tool_name == "allocate_port" and result:
             # Convert Pydantic model to dict if needed
             result_dict = result.model_dump() if hasattr(result, "model_dump") else result
-            
+
             allocated_resources = state.get("allocated_resources", {}).copy()
             port_key = f"{result_dict.get('server_handle')}:{result_dict.get('port')}"
             allocated_resources[port_key] = result_dict

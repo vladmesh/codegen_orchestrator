@@ -49,8 +49,9 @@ async def test_architect_execute_tools_complexity():
 
 @pytest.mark.asyncio
 async def test_architect_spawn_worker_simple_instructions():
-    # This is harder to test without mocking request_spawn, but we can check if it fails fast or how it behaves
-    # For now, let's just assume the logic inside spawn_factory_worker regarding string formatting is correct
-    # as tested by the fact we wrote it.
+    # This is harder to test without mocking request_spawn, but we can check if it
+    # fails fast or how it behaves
+    # For now, let's just assume the logic inside spawn_factory_worker regarding string
+    # formatting is correct as tested by the fact we wrote it.
     # If we wanted to test it fully we'd need to mock request_spawn.
     pass

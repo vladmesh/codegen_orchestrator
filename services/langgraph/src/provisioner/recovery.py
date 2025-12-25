@@ -11,6 +11,8 @@ from .api_client import get_services_on_server
 
 logger = logging.getLogger(__name__)
 
+MAX_ERROR_PREVIEW = 5
+
 
 async def redeploy_service(
     service: dict,
@@ -139,9 +141,9 @@ async def redeploy_all_services(
             level="success",
         )
     elif fail_count > 0:
-        error_summary = "\n".join(errors[:5])
-        if len(errors) > 5:
-            error_summary += f"\n...and {len(errors) - 5} more"
+        error_summary = "\n".join(errors[:MAX_ERROR_PREVIEW])
+        if len(errors) > MAX_ERROR_PREVIEW:
+            error_summary += f"\n...and {len(errors) - MAX_ERROR_PREVIEW} more"
 
         await notify_admins(
             f"⚠️ Service redeployment on *{server_handle}*:\n"

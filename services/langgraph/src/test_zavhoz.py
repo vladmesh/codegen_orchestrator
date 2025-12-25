@@ -23,7 +23,8 @@ async def main():
     # The run function in nodes/zavhoz.py is sync (invokes LLM synchronously)
     # But some tools are async. LangChain handles this?
     # Wait, invoke() on ChatOpenAI is sync.
-    # But tools are async def. LangChart/LangGraph mandates sync tools\n    # for sync agents or async for async.
+    # But tools are async def. LangChart/LangGraph mandates sync tools
+    # for sync agents or async for async.
     # Our Zavhoz node uses `llm_with_tools.invoke(messages)`. This is a sync call.
     # If tools are async, this might fail or return coroutines depending on LangChain version.
     # Let's see. If it fails, we fix it to `ainvoke`.

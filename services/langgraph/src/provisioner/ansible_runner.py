@@ -7,6 +7,8 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
+MAX_LOG_LENGTH = 1000
+
 # Configuration from environment
 PROVISIONING_TIMEOUT = int(os.getenv("PROVISIONING_TIMEOUT", "1200"))  # 20 minutes
 REINSTALL_TIMEOUT = int(os.getenv("REINSTALL_TIMEOUT", "900"))  # 15 minutes
@@ -39,12 +41,12 @@ def run_ansible_playbook(
     if root_password:
         # Password authentication
         inventory_content = f"""[target]
-{server_ip} ansible_user=root ansible_ssh_pass={root_password} ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+{server_ip} ansible_user=root ansible_ssh_pass={root_password} ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'  # noqa: E501
 """
     else:
         # Key authentication (uses default SSH key from ~/.ssh)
         inventory_content = f"""[target]
-{server_ip} ansible_user=root ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+{server_ip} ansible_user=root ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'  # noqa: E501
 """
 
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".ini") as inv_file:
@@ -72,11 +74,15 @@ def run_ansible_playbook(
     logger.info(f"Running '{playbook_name}' for {server_handle} at {server_ip} (auth: {auth_mode})")
 
     try:
-        process = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        process = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout
+        )  # noqa: S603
 
         # Log output (abbreviated)
         stdout_brief = (
-            process.stdout[:1000] + "..." if len(process.stdout) > 1000 else process.stdout
+            process.stdout[:MAX_LOG_LENGTH] + "..."
+            if len(process.stdout) > MAX_LOG_LENGTH
+            else process.stdout
         )
         logger.info(f"Ansible stdout:\n{stdout_brief}")
 
@@ -88,7 +94,11 @@ def run_ansible_playbook(
             output = process.stdout
         else:
             # On failure, capture stderr and the LAST 1000 chars of stdout
-            stdout_tail = process.stdout[-1000:] if len(process.stdout) > 1000 else process.stdout
+            stdout_tail = (
+                process.stdout[-MAX_LOG_LENGTH:]
+                if len(process.stdout) > MAX_LOG_LENGTH
+                else process.stdout
+            )
             output = f"STDERR: {process.stderr}\n\nSTDOUT TAIL:\n{stdout_tail}"
 
         return success, output

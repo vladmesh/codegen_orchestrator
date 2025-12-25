@@ -159,7 +159,8 @@ async def reinstall_and_provision(
         await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
 
         await notify_admins(
-            f"✅ Server *{server_handle}* connectivity established. Starting software installation...",
+            f"✅ Server *{server_handle}* connectivity established. "
+            "Starting software installation...",
             level="info",
         )
 
@@ -316,7 +317,10 @@ async def run(state: dict) -> dict:
         return {
             "messages": [
                 AIMessage(
-                    content=f"❌ Max provisioning attempts ({PROVISIONING_MAX_RETRIES}) exceeded for {server_handle}"
+                    content=(
+                        f"❌ Max provisioning attempts ({PROVISIONING_MAX_RETRIES}) "
+                        f"exceeded for {server_handle}"
+                    )
                 )
             ],
             "errors": state.get("errors", []) + ["Max provisioning attempts exceeded"],

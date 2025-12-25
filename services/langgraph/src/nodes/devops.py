@@ -77,7 +77,7 @@ async def run(state: dict) -> dict:
 
     # Simple heuristic: take the first allocated http/service resource
     # In reality we might filter by "is_web_service" or similar if we had that metadata
-    for key, res in allocated_resources.items():
+    for _, res in allocated_resources.items():
         if res.get("port") and res.get("server_ip"):
             target_resource = res
             target_server_ip = res.get("server_ip")
@@ -119,7 +119,11 @@ async def run(state: dict) -> dict:
     # For now, let's assume the path is correct internally if we fix Dockerfile.
 
     # Construct inventory dynamically
-    inventory_content = f"{target_server_ip} ansible_user=root ansible_ssh_private_key_file=/root/.ssh/id_ed25519 ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+    inventory_content = (
+        f"{target_server_ip} ansible_user=root "
+        "ansible_ssh_private_key_file=/root/.ssh/id_ed25519 "
+        "ansible_ssh_common_args='-o StrictHostKeyChecking=no'"
+    )
 
     # Create temp inventory file
     with tempfile.NamedTemporaryFile(mode="w", delete=False) as inventory_file:
@@ -145,7 +149,7 @@ async def run(state: dict) -> dict:
             capture_output=True,
             text=True,
             timeout=300,  # 5 minutes timeout
-        )
+        )  # noqa: S603
 
         if process.returncode == 0:
             deployed_url = f"http://{target_server_ip}:{target_port}"
@@ -181,7 +185,10 @@ Port: {target_port}
                 "errors": state.get("errors", []) + ["Deployment failed"],
                 "messages": [
                     AIMessage(
-                        content=f"❌ Deployment failed:\n\n{process.stderr[-500:]}\n\nSTDOUT:\n{process.stdout[-200:]}"
+                        content=(
+                            f"❌ Deployment failed:\n\n{process.stderr[-500:]}\n\n"
+                            f"STDOUT:\n{process.stdout[-200:]}"
+                        )
                     )
                 ],
                 "current_agent": "devops",

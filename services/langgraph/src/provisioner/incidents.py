@@ -1,6 +1,7 @@
 """Incident management for provisioner."""
 
 from datetime import datetime
+from http import HTTPStatus
 import logging
 import os
 
@@ -73,7 +74,7 @@ async def resolve_active_incidents(server_handle: str) -> bool:
                     f"{api_url}/api/incidents/",
                     params={"server_handle": server_handle, "status": status},
                 )
-                if resp.status_code == 200:
+                if resp.status_code == HTTPStatus.OK:
                     incidents.extend(resp.json())
 
             if not incidents:

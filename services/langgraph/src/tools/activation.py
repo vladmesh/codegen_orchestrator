@@ -1,5 +1,7 @@
 """Project activation tools for PO Supervisor flow."""
 
+from http import HTTPStatus
+import logging
 from typing import Annotated
 
 from langchain_core.tools import tool
@@ -11,6 +13,8 @@ from ..schemas.tools import (
     SecretSaveResult,
 )
 from .base import api_client
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_env_example(content: str) -> list[str]:
@@ -50,7 +54,7 @@ async def activate_project(
 
     # Get current project
     resp = await api_client.get_raw(f"/projects/{project_id}")
-    if resp.status_code == 404:
+    if resp.status_code == HTTPStatus.NOT_FOUND:
         return {"error": f"Project {project_id} not found"}
     resp.raise_for_status()
     project = resp.json()
@@ -76,9 +80,9 @@ async def activate_project(
             "html_url": f"https://github.com/{org}/{project_name}",
             "clone_url": f"https://github.com/{org}/{project_name}.git",
         }
-    except Exception:
+    except Exception as e:
         # Non-fatal: DevOps will fail later with a clear message
-        pass
+        logger.warning(f"Failed to fetch repo info for DevOps: {e}")
 
     return ProjectActivationResult(
         project_id=project_id,
@@ -111,7 +115,7 @@ async def inspect_repository(
 
     # Get project to find repo info
     resp = await api_client.get_raw(f"/projects/{project_id}")
-    if resp.status_code == 404:
+    if resp.status_code == HTTPStatus.NOT_FOUND:
         return {"error": f"Project {project_id} not found"}
     resp.raise_for_status()
     project = resp.json()
@@ -173,7 +177,7 @@ async def save_project_secret(
     """
     # Get current project
     resp = await api_client.get_raw(f"/projects/{project_id}")
-    if resp.status_code == 404:
+    if resp.status_code == HTTPStatus.NOT_FOUND:
         return {"error": f"Project {project_id} not found"}
     resp.raise_for_status()
     project = resp.json()
@@ -217,7 +221,7 @@ async def check_ready_to_deploy(
     """
     # Get project
     resp = await api_client.get_raw(f"/projects/{project_id}")
-    if resp.status_code == 404:
+    if resp.status_code == HTTPStatus.NOT_FOUND:
         return {"error": f"Project {project_id} not found", "ready": False}
     resp.raise_for_status()
     project = resp.json()

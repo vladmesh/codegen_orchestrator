@@ -232,7 +232,9 @@ class ResourceInventoryServer(BaseModel):
 class ResourceInventory(BaseModel):
     """Resource inventory summary."""
 
-    servers: list[ResourceInventoryServer] = Field(default_factory=list, description="Managed servers")
+    servers: list[ResourceInventoryServer] = Field(
+        default_factory=list, description="Managed servers"
+    )
     total_servers: int = Field(0, description="Total server count")
     total_projects: int = Field(0, description="Total project count")
     projects_with_secrets: int = Field(0, description="Projects with secrets configured")

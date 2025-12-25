@@ -1,5 +1,6 @@
 """API client for provisioner - communicates with the API service."""
 
+from http import HTTPStatus
 import logging
 import os
 
@@ -75,7 +76,7 @@ async def update_server_labels(server_handle: str, labels: dict) -> bool:
         async with httpx.AsyncClient() as client:
             # Fetch current to merge safely
             resp = await client.get(f"{api_url}/api/servers/{server_handle}")
-            if resp.status_code == 200:
+            if resp.status_code == HTTPStatus.OK:
                 current_labels = resp.json().get("labels", {}) or {}
                 current_labels.update(labels)
                 final_labels = current_labels
@@ -129,7 +130,7 @@ async def increment_provisioning_attempts(server_handle: str) -> bool:
         async with httpx.AsyncClient() as client:
             # Get current count
             resp = await client.get(f"{api_url}/api/servers/{server_handle}")
-            if resp.status_code != 200:
+            if resp.status_code != HTTPStatus.OK:
                 return False
 
             current = resp.json().get("provisioning_attempts", 0)

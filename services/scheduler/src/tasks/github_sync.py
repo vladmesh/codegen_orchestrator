@@ -125,11 +125,13 @@ async def sync_projects_worker():
                         if count >= MISSING_THRESHOLD:
                             proj.status = ProjectStatus.MISSING.value
                             logger.error(
-                                f"Marking project {proj.name} as MISSING after {count} failed checks."
+                                f"Marking project {proj.name} as MISSING "
+                                f"after {count} failed checks."
                             )
                             # Send critical alert to admins
                             await notify_admins(
-                                f"🚨 Project *{proj.name}* (GitHub ID: {proj.github_repo_id}) is MISSING! "
+                                f"🚨 Project *{proj.name}* (GitHub ID: {proj.github_repo_id}) "
+                                "is MISSING! "
                                 f"Repository not found after {count} consecutive checks.",
                                 level="critical",
                             )
