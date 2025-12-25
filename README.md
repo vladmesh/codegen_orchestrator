@@ -98,12 +98,12 @@
 
 ### Development Workflow
 
-- **Code quality**: Git hooks automatically check formatting and run tests
-  - Pre-commit: Format and lint checks (blocks bad commits)
-  - Pre-push: Unit tests (blocks broken code from being pushed)
+- **Code quality**: Git hooks provide automatic quality enforcement
+  - **Pre-commit**: Automatically formats code with `ruff format` and adds to commit (never blocks)
+  - **Pre-push**: Runs linters and unit tests, BLOCKS push if either fails
 - **Testing**: Write tests in `services/{service}/tests/{unit,integration}/`
 - **CI/CD**: GitHub Actions runs tests on every push/PR
-- **Skip hooks**: Use `--no-verify` flag (NOT recommended)
+- **Skip hooks**: Use `--no-verify` flag if absolutely necessary (NOT recommended)
 
 See [TESTING.md](docs/TESTING.md) for detailed testing guide.
 
