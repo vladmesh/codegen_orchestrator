@@ -1,6 +1,6 @@
 """Integration tests for LangGraph execution."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -12,11 +12,10 @@ async def test_graph_can_process_simple_message():
 
     graph = create_graph()
 
-    # Mock the API calls
-    with patch("src.nodes.product_owner.httpx.AsyncClient") as mock_client:
-        mock_response = AsyncMock()
-        mock_response.json.return_value = {"projects": [], "servers": [], "incidents": []}
-        mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=mock_response)
+    # Mock the InternalAPIClient used by tools
+    with patch("src.tools.base.InternalAPIClient.get") as mock_get:
+        # Mock typical API responses
+        mock_get.return_value = {"projects": [], "servers": [], "incidents": []}
 
         # Just verify the graph structure is valid
         assert graph is not None
