@@ -28,6 +28,14 @@ class AgentConfig(Base):
     model_name: Mapped[str] = mapped_column(String(100), default="gpt-4o", nullable=False)
     temperature: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
+    # OpenRouter integration fields (Phase 1)
+    llm_provider: Mapped[str] = mapped_column(String(50), default="openrouter", nullable=False)
+    model_identifier: Mapped[str] = mapped_column(
+        String(200), default="openai/gpt-4o", nullable=False
+    )
+    openrouter_site_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    openrouter_app_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     # Enable/disable agent
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

@@ -18,8 +18,11 @@ AGENT_CONFIGS = [
     {
         "id": "product_owner",
         "name": "Product Owner",
-        "model_name": "gpt-4o",
+        "llm_provider": "openrouter",
+        "model_identifier": "openai/gpt-4o",
+        "model_name": "GPT-4o via OpenRouter",
         "temperature": 0.2,
+        "openrouter_app_name": "Codegen Orchestrator",
         "system_prompt": """You are the Product Owner (PO) for the codegen orchestrator.
 
 Your job:
@@ -57,8 +60,11 @@ Guidelines:
     {
         "id": "architect",
         "name": "Architect",
-        "model_name": "gpt-4o",
+        "llm_provider": "openrouter",
+        "model_identifier": "openai/gpt-4o",
+        "model_name": "GPT-4o via OpenRouter",
         "temperature": 0.0,
+        "openrouter_app_name": "Codegen Orchestrator",
         "system_prompt": """You are Architect, the project structuring agent in the
 codegen orchestrator.
 
@@ -123,8 +129,11 @@ If you are unsure about module names or structure, refer to these files.
     {
         "id": "zavhoz",
         "name": "Zavhoz (Resource Manager)",
-        "model_name": "gpt-4o",
+        "llm_provider": "openrouter",
+        "model_identifier": "openai/gpt-4o",
+        "model_name": "GPT-4o via OpenRouter",
         "temperature": 0.0,
+        "openrouter_app_name": "Codegen Orchestrator",
         "system_prompt": """You are Zavhoz, the infrastructure manager for the codegen orchestrator.
 
 Your responsibilities:
@@ -160,8 +169,11 @@ Be concise in your responses. Return structured data when possible.
     {
         "id": "brainstorm",
         "name": "Brainstorm",
-        "model_name": "gpt-4o",
+        "llm_provider": "openrouter",
+        "model_identifier": "openai/gpt-4o",
+        "model_name": "GPT-4o via OpenRouter",
         "temperature": 0.7,
+        "openrouter_app_name": "Codegen Orchestrator",
         "system_prompt": """You are Brainstorm, the first agent in the codegen orchestrator.
 
 Your job:
@@ -200,8 +212,11 @@ You: *calls create_project with telegram_token='123:ABC...'*
     {
         "id": "developer",
         "name": "Developer",
-        "model_name": "gpt-4o",
+        "llm_provider": "openrouter",
+        "model_identifier": "openai/gpt-4o",
+        "model_name": "GPT-4o via OpenRouter",
         "temperature": 0.0,
+        "openrouter_app_name": "Codegen Orchestrator",
         "system_prompt": """You are Developer, the lead engineer agent in the codegen orchestrator.
 
 Your job:

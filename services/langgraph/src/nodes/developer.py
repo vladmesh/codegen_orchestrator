@@ -8,7 +8,6 @@ import logging
 import os
 
 from langchain_core.messages import AIMessage
-from langchain_openai import ChatOpenAI
 
 from ..clients.github import GitHubAppClient
 from ..clients.worker_spawner import request_spawn
@@ -37,10 +36,6 @@ Your job:
 - Ensure 100% test coverage for new logic.
 - Use best practices for Python/FastAPI development.
 """
-
-# LLM setup (if needed in future for decision making,
-# currently acting as a simple pass-through/coordinator)
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
 
 
 async def run(state: dict) -> dict:

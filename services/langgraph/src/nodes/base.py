@@ -11,9 +11,9 @@ from typing import Any
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
-from langchain_openai import ChatOpenAI
 
 from ..config.agent_config_cache import agent_config_cache
+from ..llm.factory import LLMFactory
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +55,7 @@ class BaseAgentNode:
     async def get_llm_with_tools(self):
         """Get LLM with bound tools, configured from API."""
         config = await self.get_config()
-        llm = ChatOpenAI(
-            model=config.get("model_name", "gpt-4o"),
-            temperature=config.get("temperature", 0.0),
-        )
+        llm = LLMFactory.create_llm(config)
         return llm.bind_tools(self.tools)
 
     async def get_system_prompt(self) -> str:

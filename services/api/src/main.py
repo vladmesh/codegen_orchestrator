@@ -25,6 +25,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+@app.get("/")
+async def root():
+    """Root endpoint - API information."""
+    return {
+        "name": "Codegen Orchestrator API",
+        "version": "0.1.0",
+        "description": "Internal API for database access",
+    }
+
+
 app.include_router(routers.health.router)
 app.include_router(routers.resources.router)
 app.include_router(routers.users.router)
