@@ -586,11 +586,28 @@ export LANGCHAIN_API_KEY=...
 
 ### Логирование
 
-Каждый агент логирует:
-- Входные данные
-- Принятые решения
-- Вызванные инструменты
-- Результаты
+Все сервисы используют `structlog` для структурированного логирования:
+
+```python
+from shared.logging_config import setup_logging
+import structlog
+
+setup_logging(service_name="langgraph")
+logger = structlog.get_logger()
+```
+
+**Ключевые особенности:**
+- JSON-формат для Grafana Loki (production)
+- Console-формат для разработки
+- `correlation_id` для трассировки запросов через сервисы
+- `@log_node_execution` декоратор для LangGraph нод
+
+**Стандартные события:**
+- `node_start`, `node_complete`, `node_failed` — жизненный цикл ноды
+- `message_received`, `message_sent` — Telegram сообщения
+- `ansible_playbook_start/complete` — Ansible операции
+
+Подробнее: [docs/LOGGING.md](docs/LOGGING.md)
 
 ## Открытые вопросы
 

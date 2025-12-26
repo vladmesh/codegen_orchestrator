@@ -111,6 +111,26 @@ See [TESTING.md](docs/TESTING.md) for detailed testing guide.
 
 - [AGENTS.md](AGENTS.md) — описание каждого агента
 - [ARCHITECTURE.md](ARCHITECTURE.md) — техническая архитектура
+- [docs/LOGGING.md](docs/LOGGING.md) — руководство по структурированному логированию
+
+## Logging
+
+Проект использует `structlog` для структурированного логирования с поддержкой JSON-формата.
+
+```python
+from shared.logging_config import setup_logging
+import structlog
+
+setup_logging(service_name="my_service")
+logger = structlog.get_logger()
+logger.info("event_name", user_id=123, duration_ms=45.2)
+```
+
+**Environment variables:**
+- `LOG_LEVEL` — уровень логирования (DEBUG, INFO, WARNING, ERROR)
+- `LOG_FORMAT` — формат вывода: `json` (production) или `console` (dev)
+
+Подробнее см. [docs/LOGGING.md](docs/LOGGING.md).
 
 ## Roadmap
 
