@@ -40,6 +40,7 @@ class TestLLMFactory:
         config = {
             "llm_provider": "openrouter",
             "model_identifier": "openai/gpt-4o",
+            "temperature": 0.0,
         }
 
         with patch.dict(os.environ, {"OPEN_ROUTER_KEY": "test-key"}):
@@ -65,23 +66,21 @@ class TestLLMFactory:
         assert llm.temperature == EXPECTED_TEMP_LOW
 
     def test_default_provider_is_openrouter(self):
-        """Test that default provider is OpenRouter."""
+        """Test that missing provider raises error."""
         config = {
             "model_identifier": "openai/gpt-4o",
+            "temperature": 0.0,
         }
 
-        with patch.dict(os.environ, {"OPEN_ROUTER_KEY": "test-key"}):
-            llm = LLMFactory.create_llm(config)
-
-        assert isinstance(llm, ChatOpenAI)
-        # Should use OpenRouter by default
-        assert "openrouter.ai" in str(llm.openai_api_base or llm.base_url or "")
+        with pytest.raises(KeyError, match="llm_provider"):
+            LLMFactory.create_llm(config)
 
     def test_unknown_provider_raises_error(self):
         """Test that unknown provider raises ValueError."""
         config = {
             "llm_provider": "unknown_provider",
             "model_identifier": "some-model",
+            "temperature": EXPECTED_TEMP_LOW,
         }
 
         with pytest.raises(ValueError, match="Unknown LLM provider"):
@@ -92,6 +91,7 @@ class TestLLMFactory:
         config = {
             "llm_provider": "openrouter",
             "model_identifier": "openai/gpt-4o",
+            "temperature": EXPECTED_TEMP_LOW,
         }
 
         # Ensure key is not set
@@ -104,6 +104,7 @@ class TestLLMFactory:
         config = {
             "llm_provider": "openai",
             "model_identifier": "gpt-4o",
+            "temperature": EXPECTED_TEMP_LOW,
         }
 
         # Ensure key is not set
@@ -112,7 +113,7 @@ class TestLLMFactory:
                 LLMFactory.create_llm(config)
 
     def test_temperature_defaults_to_zero(self):
-        """Test that temperature defaults to 0.0 if not specified."""
+        """Test that missing temperature raises KeyError."""
         config = {
             "llm_provider": "openrouter",
             "model_identifier": "openai/gpt-4o",
@@ -120,6 +121,5 @@ class TestLLMFactory:
         }
 
         with patch.dict(os.environ, {"OPEN_ROUTER_KEY": "test-key"}):
-            llm = LLMFactory.create_llm(config)
-
-        assert llm.temperature == 0.0
+            with pytest.raises(KeyError, match="temperature"):
+                LLMFactory.create_llm(config)
