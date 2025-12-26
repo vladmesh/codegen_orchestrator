@@ -45,7 +45,7 @@ from .servers import (
 )
 
 # Spec tools
-from .specs import create_project_spec_yaml, get_project_spec, update_project_spec
+from .specs import create_project_spec_yaml, create_spec_md, get_project_spec, update_project_spec
 
 __all__ = [
     # Projects
@@ -84,4 +84,5 @@ __all__ = [
     "get_project_spec",
     "update_project_spec",
     "create_project_spec_yaml",
+    "create_spec_md",
 ]
