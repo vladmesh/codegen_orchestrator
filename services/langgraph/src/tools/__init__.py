@@ -45,7 +45,7 @@ from .servers import (
 )
 
 # Spec tools
-from .specs import get_project_spec, update_project_spec
+from .specs import create_project_spec_yaml, get_project_spec, update_project_spec
 
 __all__ = [
     # Projects
@@ -80,6 +80,8 @@ __all__ = [
     # Delegation
     "delegate_to_analyst",
     "create_file_in_repo",
+    # Specs
     "get_project_spec",
     "update_project_spec",
+    "create_project_spec_yaml",
 ]

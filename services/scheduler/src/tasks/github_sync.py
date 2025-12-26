@@ -5,10 +5,12 @@ import time
 
 from sqlalchemy import select
 import structlog
+import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.models.project import Project, ProjectStatus
 from shared.notifications import notify_admins
+from shared.schemas.project_spec import ProjectSpecYAML
 from src.db import async_session_maker
 
 logger = structlog.get_logger()
@@ -112,6 +114,33 @@ async def sync_projects_worker():  # noqa: PLR0915
 
                     # Update metadata
                     # (Can update description, etc if we had those fields)
+
+                    # Sync project spec from .project-spec.yaml
+                    try:
+                        owner, repo = r.full_name.split("/")
+                        spec_content = await client.get_file_contents(
+                            owner, repo, ".project-spec.yaml"
+                        )
+                        if spec_content:
+                            # Parse and validate YAML
+                            spec_dict = yaml.safe_load(spec_content)
+                            # Validate against schema
+                            spec_model = ProjectSpecYAML(**spec_dict)
+                            # Store in database
+                            project.project_spec = spec_model.to_yaml_dict()
+                            logger.info(
+                                "project_spec_synced",
+                                project_name=project.name,
+                                spec_version=spec_dict.get("version", "unknown"),
+                            )
+                    except Exception as e:
+                        # Spec sync is non-critical, log and continue
+                        logger.debug(
+                            "project_spec_sync_skipped",
+                            project_name=project.name,
+                            error=str(e),
+                            error_type=type(e).__name__,
+                        )
 
                     # Reset missing counter if it was missing
                     if project.id in missing_counters:

@@ -54,3 +54,6 @@ class Project(Base):
     status: Mapped[str] = mapped_column(String(50), default=ProjectStatus.DRAFT.value)
 
     config: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # Project specification from .project-spec.yaml (machine-readable)
+    project_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)

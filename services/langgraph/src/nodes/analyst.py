@@ -10,7 +10,7 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage
 
-from ..tools import create_project, get_project_spec, update_project_spec
+from ..tools import create_project, create_project_spec_yaml, get_project_spec, update_project_spec
 from .base import LLMNode, log_node_execution
 
 
@@ -28,7 +28,9 @@ class AnalystNode(LLMNode):
 
 
 # Create singleton instance
-_node = AnalystNode("analyst", [create_project, get_project_spec, update_project_spec])
+_node = AnalystNode(
+    "analyst", [create_project, get_project_spec, update_project_spec, create_project_spec_yaml]
+)
 
 
 @log_node_execution("analyst")

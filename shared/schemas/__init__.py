@@ -14,6 +14,12 @@ from .github import (
     GitHubInstallation,
     GitHubRepository,
 )
+from .project_spec import (
+    EntryPointSpec,
+    InfrastructureSpec,
+    ProjectInfo,
+    ProjectSpecYAML,
+)
 from .time4vps import (
     Time4VPSOSTemplate,
     Time4VPSServer,
@@ -39,6 +45,11 @@ __all__ = [
     "GitHubInstallation",
     "GitHubRepository",
     "GitHubFileContent",
+    # Project Spec
+    "ProjectSpecYAML",
+    "ProjectInfo",
+    "EntryPointSpec",
+    "InfrastructureSpec",
     # Worker events
     "WorkerEvent",
     "WorkerStarted",
