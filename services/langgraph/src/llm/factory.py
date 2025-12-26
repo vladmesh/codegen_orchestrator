@@ -49,9 +49,17 @@ class LLMFactory:
             ... }
             >>> llm = LLMFactory.create_llm(config)
         """
-        provider = config.get("llm_provider", "openrouter")
-        model_id = config.get("model_identifier", "openai/gpt-4o")
-        temperature = config.get("temperature", 0.0)
+        provider = config.get("llm_provider")
+        if not provider:
+            raise KeyError("Agent config missing llm_provider")
+
+        model_id = config.get("model_identifier")
+        if not model_id:
+            raise KeyError("Agent config missing model_identifier")
+
+        temperature = config.get("temperature")
+        if temperature is None:
+            raise KeyError("Agent config missing temperature")
 
         logger.info(
             "llm_create",

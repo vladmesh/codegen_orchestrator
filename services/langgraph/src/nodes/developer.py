@@ -4,15 +4,13 @@ Orchestrates the implementation of business logic by spawning a Factory.ai worke
 This node runs after the Architect has set up the initial project structure.
 """
 
-import time
-
 from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
 
 from ..clients.worker_spawner import request_spawn
-from .base import BaseAgentNode, log_node_execution
+from .base import BaseAgentNode
 
 logger = structlog.get_logger()
 
@@ -29,7 +27,6 @@ class DeveloperNode(BaseAgentNode):
         """Initialize Developer node."""
         super().__init__(agent_id="developer", tools=[])
 
-    @log_node_execution("developer")
     async def run(self, state: dict) -> dict:
         """Run developer agent.
 
@@ -46,7 +43,6 @@ class DeveloperNode(BaseAgentNode):
             "current_agent": "developer",
         }
 
-    @log_node_execution("developer_spawn_worker")
     async def spawn_worker(self, state: dict) -> dict:
         """Spawn Factory.ai worker to implement business logic.
 
@@ -80,7 +76,7 @@ class DeveloperNode(BaseAgentNode):
                 ]
             }
 
-        logger.info("spawning_developer_worker", repo_name=repo_name)
+        logger.info("developer_worker_spawn_requested", repo_name=repo_name)
 
         try:
             # Get GitHub App installation token for authentication
@@ -104,7 +100,6 @@ class DeveloperNode(BaseAgentNode):
             )
 
             # Spawn the worker
-            start = time.time()
             worker_result = await request_spawn(
                 repository_url=authenticated_clone_url,
                 task_description=project_spec.get("description", "Implement business logic"),
@@ -112,14 +107,6 @@ class DeveloperNode(BaseAgentNode):
                     "project_name": repo_info.get("name"),
                     "spec": project_spec,
                 },
-            )
-            duration_ms = (time.time() - start) * 1000
-
-            logger.info(
-                "worker_result_received",
-                repo_name=repo_name,
-                success=worker_result.get("success"),
-                duration_ms=round(duration_ms, 2),
             )
 
             if worker_result.get("success"):
@@ -145,6 +132,7 @@ class DeveloperNode(BaseAgentNode):
                 "developer_worker_spawn_failed",
                 error=str(e),
                 error_type=type(e).__name__,
+                repo_name=repo_name,
                 exc_info=True,
             )
             return {

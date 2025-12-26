@@ -2,8 +2,8 @@
 
 Classifies user intent and coordinates the high-level flow.
 
-Uses BaseAgentNode for dynamic prompt loading from database.
-Note: execute_tools has custom logic for response formatting, not using BaseAgentNode.execute_tools.
+Uses LLMNode for dynamic prompt loading from database.
+Note: execute_tools has custom logic for response formatting, not using LLMNode.execute_tools.
 """
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
@@ -22,7 +22,7 @@ from ..tools import (
     save_project_secret,
     set_project_maintenance,
 )
-from .base import BaseAgentNode, log_node_execution
+from .base import LLMNode, log_node_execution
 
 # Tools available to PO
 tools = [
@@ -43,7 +43,7 @@ tools = [
 tools_map = {tool.name: tool for tool in tools}
 
 
-class ProductOwnerNode(BaseAgentNode):
+class ProductOwnerNode(LLMNode):
     """Product Owner agent that classifies intent and coordinates flow."""
 
     pass
@@ -90,7 +90,7 @@ async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Product Owner LLM.
 
     Note: This has custom logic for response formatting that differs
-    from BaseAgentNode.execute_tools. Kept separate for compatibility.
+    from LLMNode.execute_tools. Kept separate for compatibility.
     """
     messages = state.get("messages", [])
     last_message = messages[-1]

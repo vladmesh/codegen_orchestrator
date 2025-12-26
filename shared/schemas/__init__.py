@@ -20,6 +20,14 @@ from .time4vps import (
     Time4VPSServerDetails,
     Time4VPSTask,
 )
+from .worker_events import (
+    WorkerCompleted,
+    WorkerEvent,
+    WorkerFailed,
+    WorkerProgress,
+    WorkerStarted,
+    parse_worker_event,
+)
 
 __all__ = [
     # Time4VPS
@@ -31,6 +39,13 @@ __all__ = [
     "GitHubInstallation",
     "GitHubRepository",
     "GitHubFileContent",
+    # Worker events
+    "WorkerEvent",
+    "WorkerStarted",
+    "WorkerProgress",
+    "WorkerCompleted",
+    "WorkerFailed",
+    "parse_worker_event",
     # Orchestrator State is local to LangGraph
     # Tools Results are local to LangGraph
 ]

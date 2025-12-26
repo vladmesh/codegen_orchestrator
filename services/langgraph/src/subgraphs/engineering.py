@@ -4,7 +4,6 @@ Encapsulates the Architect → Developer → Tester loop with review cycles.
 This subgraph is exposed as a single node to the Product Owner.
 """
 
-import logging
 from typing import Annotated
 
 from langgraph.graph import END, START, StateGraph
@@ -12,9 +11,8 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from ..nodes import architect
+from ..nodes.base import FunctionalNode
 from ..nodes.developer import developer_node
-
-logger = logging.getLogger(__name__)
 
 # Maximum iterations before escalating to PO
 MAX_ITERATIONS = 3
@@ -120,25 +118,26 @@ def route_after_tester(state: EngineeringState) -> str:
     return "developer"
 
 
-async def tester_node(state: EngineeringState) -> dict:
-    """Tester node - runs tests and reports results.
+class TesterNode(FunctionalNode):
+    """Tester node - runs tests and reports results."""
 
-    For now, this is a simplified version that marks as passed.
-    Full implementation would spawn a worker to run `make test`.
-    """
-    iteration_count = state.get("iteration_count", 0) + 1
+    def __init__(self):
+        super().__init__(node_id="tester")
 
-    # TODO: Implement actual test running via worker spawner
-    # For now, assume tests pass after the first implementation
-    test_passed = True
+    async def run(self, state: EngineeringState) -> dict:
+        """Run tests and update engineering state."""
+        iteration_count = state.get("iteration_count", 0) + 1
 
-    if test_passed:
-        return {
-            "test_results": {"passed": True, "output": "All tests passed"},
-            "iteration_count": iteration_count,
-            "engineering_status": "done",
-        }
-    else:
+        # TODO: Implement actual test running via worker spawner
+        # For now, assume tests pass after the first implementation
+        test_passed = True
+
+        if test_passed:
+            return {
+                "test_results": {"passed": True, "output": "All tests passed"},
+                "iteration_count": iteration_count,
+                "engineering_status": "done",
+            }
         return {
             "test_results": {"passed": False, "output": "Tests failed"},
             "iteration_count": iteration_count,
@@ -147,21 +146,38 @@ async def tester_node(state: EngineeringState) -> dict:
         }
 
 
-async def done_node(state: EngineeringState) -> dict:
+class DoneNode(FunctionalNode):
     """Mark engineering as complete."""
-    return {
-        "engineering_status": "done",
-        "needs_human_approval": False,
-    }
+
+    def __init__(self):
+        super().__init__(node_id="done")
+
+    async def run(self, state: EngineeringState) -> dict:
+        return {
+            "engineering_status": "done",
+            "needs_human_approval": False,
+        }
 
 
-async def blocked_node(state: EngineeringState) -> dict:
+class BlockedNode(FunctionalNode):
     """Mark engineering as blocked, needs human intervention."""
-    return {
-        "engineering_status": "blocked",
-        "needs_human_approval": True,
-        "human_approval_reason": f"Max iterations ({MAX_ITERATIONS}) reached. Tests still failing.",
-    }
+
+    def __init__(self):
+        super().__init__(node_id="blocked")
+
+    async def run(self, state: EngineeringState) -> dict:
+        return {
+            "engineering_status": "blocked",
+            "needs_human_approval": True,
+            "human_approval_reason": (
+                f"Max iterations ({MAX_ITERATIONS}) reached. Tests still failing."
+            ),
+        }
+
+
+tester_node = TesterNode()
+done_node = DoneNode()
+blocked_node = BlockedNode()
 
 
 def create_engineering_subgraph() -> StateGraph:
@@ -181,9 +197,9 @@ def create_engineering_subgraph() -> StateGraph:
     graph.add_node("architect_spawn_worker", architect.spawn_factory_worker)
     graph.add_node("developer", developer_node.run)
     graph.add_node("developer_spawn_worker", developer_node.spawn_worker)
-    graph.add_node("tester", tester_node)
-    graph.add_node("done", done_node)
-    graph.add_node("blocked", blocked_node)
+    graph.add_node("tester", tester_node.run)
+    graph.add_node("done", done_node.run)
+    graph.add_node("blocked", blocked_node.run)
 
     # Edges
     graph.add_edge(START, "architect")

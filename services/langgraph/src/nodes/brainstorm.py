@@ -3,7 +3,7 @@
 First node in the orchestrator graph. Gathers requirements from user,
 asks clarifying questions, and creates project spec.
 
-Uses BaseAgentNode for dynamic prompt loading from database.
+Uses LLMNode for dynamic prompt loading from database.
 """
 
 from typing import Any
@@ -11,10 +11,10 @@ from typing import Any
 from langchain_core.messages import SystemMessage
 
 from ..tools import create_project
-from .base import BaseAgentNode, log_node_execution
+from .base import LLMNode, log_node_execution
 
 
-class BrainstormNode(BaseAgentNode):
+class BrainstormNode(LLMNode):
     """Brainstorm agent that gathers requirements and creates projects."""
 
     def handle_tool_result(self, tool_name: str, result: Any, state: dict) -> dict[str, Any]:
@@ -63,7 +63,7 @@ async def run(state: dict) -> dict:
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Brainstorm LLM.
 
-    Delegates to BaseAgentNode.execute_tools which handles:
+    Delegates to LLMNode.execute_tools which handles:
     - Tool execution with error handling
     - State updates via handle_tool_result
     """

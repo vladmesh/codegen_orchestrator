@@ -41,6 +41,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
+# Install required Ansible collections
+RUN ansible-galaxy collection install ansible.posix community.general
+
 # Copy source code and infrastructure
 COPY services/langgraph/src ./src
 COPY services/infrastructure ./services/infrastructure

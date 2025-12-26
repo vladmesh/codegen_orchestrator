@@ -31,6 +31,10 @@ async def create_agent_config(
         system_prompt=config_in.system_prompt,
         model_name=config_in.model_name,
         temperature=config_in.temperature,
+        llm_provider=config_in.llm_provider,
+        model_identifier=config_in.model_identifier,
+        openrouter_site_url=config_in.openrouter_site_url,
+        openrouter_app_name=config_in.openrouter_app_name,
         is_active=config_in.is_active,
     )
     db.add(config)

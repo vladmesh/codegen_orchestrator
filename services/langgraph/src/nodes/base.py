@@ -1,4 +1,4 @@
-"""Base agent node class with common functionality.
+"""Base node classes for LangGraph agents.
 
 Provides:
 - Dynamic prompt loading from database (no fallbacks - fail fast)
@@ -8,6 +8,7 @@ Provides:
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import wraps
 import time
 from typing import Any, TypeVar
@@ -17,6 +18,7 @@ from langchain_core.tools import BaseTool
 import structlog
 
 from ..config.agent_config_cache import agent_config_cache
+from ..config.cli_agent_config import cli_agent_config_cache
 from ..llm.factory import LLMFactory
 
 logger = structlog.get_logger()
@@ -24,96 +26,27 @@ logger = structlog.get_logger()
 T = TypeVar("T")
 
 
-def log_node_execution(node_name: str) -> Callable:
-    """Decorator to log node start/end and inject context.
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Retry policy for deterministic nodes."""
 
-    Args:
-        node_name: Name of the node for logging context.
-
-    Returns:
-        Decorated async function with structured logging.
-    """
-
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        @wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> T:
-            state: dict | None = None
-            if args:
-                if isinstance(args[0], dict):
-                    state = args[0]
-                elif len(args) > 1 and isinstance(args[1], dict):
-                    state = args[1]
-
-            if state is None:
-                state = kwargs.get("state") if isinstance(kwargs.get("state"), dict) else {}
-
-            preexisting_context = structlog.contextvars.get_contextvars()
-            bound_thread = False
-
-            bind_kwargs: dict[str, Any] = {"node": node_name}
-            thread_id = state.get("thread_id") if isinstance(state, dict) else None
-            if thread_id and "thread_id" not in preexisting_context:
-                bind_kwargs["thread_id"] = thread_id
-                bound_thread = True
-
-            structlog.contextvars.bind_contextvars(**bind_kwargs)
-
-            logger.info("node_start")
-            start = time.time()
-
-            try:
-                result = await func(*args, **kwargs)
-                duration = (time.time() - start) * 1000
-
-                state_updates = list(result.keys()) if isinstance(result, dict) else []
-                logger.info(
-                    "node_complete",
-                    duration_ms=round(duration, 2),
-                    state_updates=state_updates,
-                )
-
-                return result
-
-            except Exception as e:
-                duration = (time.time() - start) * 1000
-
-                logger.error(
-                    "node_failed",
-                    duration_ms=round(duration, 2),
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    exc_info=True,
-                )
-                raise
-            finally:
-                structlog.contextvars.unbind_contextvars("node")
-                if bound_thread:
-                    structlog.contextvars.unbind_contextvars("thread_id")
-
-        return wrapper
-
-    return decorator
+    max_attempts: int = 1
+    backoff_seconds: float = 0.0
 
 
-class BaseAgentNode:
-    """Base class for all LangGraph agent nodes.
+class BaseNode:
+    """Base node for LangGraph nodes."""
 
-    Handles:
-    - Fetching agent config (prompt, model, temperature) from API
-    - Common tool execution with error handling
-    - State updates based on tool results
+    def __init__(self, node_id: str | None = None, timeout_seconds: int | None = None):
+        self.node_id = node_id
+        self.timeout_seconds = timeout_seconds
 
-    IMPORTANT: No fallbacks - if API is unavailable, we fail fast.
-    This ensures configuration issues are caught immediately.
-    """
+
+class LLMNode(BaseNode):
+    """Base class for LLM-backed nodes."""
 
     def __init__(self, agent_id: str, tools: list[BaseTool]):
-        """Initialize the agent node.
-
-        Args:
-            agent_id: Identifier for fetching config (e.g., "brainstorm", "product_owner")
-            tools: List of LangChain tools available to this agent
-        """
+        super().__init__(node_id=agent_id)
         self.agent_id = agent_id
         self.tools = tools
         self.tools_map = {tool.name: tool for tool in tools}
@@ -262,3 +195,154 @@ class BaseAgentNode:
             Dict of state updates to apply
         """
         return {}
+
+
+class CLIAgentNode(BaseNode):
+    """Base class for CLI coding agents."""
+
+    provider: str = "cli"
+
+    def __init__(
+        self,
+        node_id: str | None = None,
+        model: str | None = None,
+        prompt_template: str | None = None,
+        timeout_seconds: int | None = None,
+        workspace_image: str | None = None,
+        required_credentials: list[str] | None = None,
+        provider: str | None = None,
+    ):
+        resolved_provider = provider or self.provider
+        super().__init__(node_id=node_id or resolved_provider, timeout_seconds=timeout_seconds)
+        self.provider = resolved_provider
+        self.model = model
+        self.prompt_template = prompt_template
+        self.workspace_image = workspace_image
+        self.required_credentials = required_credentials or []
+
+    async def get_config(self) -> dict[str, Any]:
+        """Get agent configuration from API.
+
+        Returns:
+            Config dict with keys: prompt_template, model, etc.
+        """
+        if not self.node_id:
+            raise ValueError("Node ID required to fetch config")
+        return await cli_agent_config_cache.get(self.node_id)
+
+
+class CodexNode(CLIAgentNode):
+    """OpenAI Codex CLI agent."""
+
+    provider = "codex"
+
+
+class FactoryNode(CLIAgentNode):
+    """Factory.ai Droid CLI agent."""
+
+    provider = "factory"
+
+
+class ClaudeNode(CLIAgentNode):
+    """Claude Code CLI agent."""
+
+    provider = "claude"
+
+
+class FunctionalNode(BaseNode):
+    """Deterministic node without LLM involvement."""
+
+    def __init__(
+        self,
+        node_id: str,
+        timeout_seconds: int | None = None,
+        retry_policy: RetryPolicy | None = None,
+    ):
+        super().__init__(node_id=node_id, timeout_seconds=timeout_seconds)
+        self.retry_policy = retry_policy or RetryPolicy()
+
+
+def log_node_execution(node_name: str) -> Callable:
+    """Decorator to log node start/end and inject context.
+
+    Args:
+        node_name: Name of the node for logging context.
+
+    Returns:
+        Decorated async function with structured logging.
+    """
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> T:
+            state: dict | None = None
+            if args:
+                if isinstance(args[0], dict):
+                    state = args[0]
+                elif len(args) > 1 and isinstance(args[1], dict):
+                    state = args[1]
+
+            if state is None:
+                state = kwargs.get("state") if isinstance(kwargs.get("state"), dict) else {}
+
+            preexisting_context = structlog.contextvars.get_contextvars()
+            bound_thread = False
+
+            bind_kwargs: dict[str, Any] = {"node": node_name}
+            thread_id = state.get("thread_id") if isinstance(state, dict) else None
+            if thread_id and "thread_id" not in preexisting_context:
+                bind_kwargs["thread_id"] = thread_id
+                bound_thread = True
+
+            structlog.contextvars.bind_contextvars(**bind_kwargs)
+
+            logger.info("node_start")
+            start = time.time()
+
+            try:
+                result = await func(*args, **kwargs)
+                duration = (time.time() - start) * 1000
+
+                state_updates = list(result.keys()) if isinstance(result, dict) else []
+                logger.info(
+                    "node_complete",
+                    duration_ms=round(duration, 2),
+                    state_updates=state_updates,
+                )
+
+                return result
+
+            except Exception as e:
+                duration = (time.time() - start) * 1000
+
+                logger.error(
+                    "node_failed",
+                    duration_ms=round(duration, 2),
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
+                )
+                raise
+            finally:
+                structlog.contextvars.unbind_contextvars("node")
+                if bound_thread:
+                    structlog.contextvars.unbind_contextvars("thread_id")
+
+        return wrapper
+
+    return decorator
+
+
+class BaseAgentNode(LLMNode):
+    """Base class for all LangGraph agent nodes.
+
+    Handles:
+    - Fetching agent config (prompt, model, temperature) from API
+    - Common tool execution with error handling
+    - State updates based on tool results
+
+    IMPORTANT: No fallbacks - if API is unavailable, we fail fast.
+    This ensures configuration issues are caught immediately.
+    """
+
+    pass

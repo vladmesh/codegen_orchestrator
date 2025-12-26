@@ -183,12 +183,21 @@ seed:
 		echo "  ⚠️  TIME4VPS_LOGIN/PASSWORD not set, skipping"; \
 	fi
 	@if [ -n "$$TELEGRAM_ID_ADMIN" ]; then \
-		curl -s -X POST "http://localhost:8000/users/" \
-			-H "Content-Type: application/json" \
-			-d "{\"telegram_id\": $$TELEGRAM_ID_ADMIN, \"username\": \"admin\", \"first_name\": \"Admin\", \"is_admin\": true}" > /dev/null && \
-		echo "  ✅ Admin user ($$TELEGRAM_ID_ADMIN) created"; \
+		status=$$(curl -s -o /dev/null -w "%{http_code}" \
+			"http://localhost:8000/users/by-telegram/$$TELEGRAM_ID_ADMIN"); \
+		if [ "$$status" = "200" ]; then \
+			echo "  ⏭️  Admin user ($$TELEGRAM_ID_ADMIN) already exists, skipping"; \
+		else \
+			curl -s -X POST "http://localhost:8000/users/" \
+				-H "Content-Type: application/json" \
+				-d "{\"telegram_id\": $$TELEGRAM_ID_ADMIN, \"username\": \"admin\", \"first_name\": \"Admin\", \"is_admin\": true}" > /dev/null && \
+			echo "  ✅ Admin user ($$TELEGRAM_ID_ADMIN) created"; \
+		fi; \
 	else \
 		echo "  ⚠️  TELEGRAM_ID_ADMIN not set, skipping user creation"; \
 	fi
 	@echo "🤖 Seeding agent configurations..."
-	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_agent_configs.py --api-url http://localhost:8000 || echo "  ⚠️  Agent config seeding failed (API may not be ready)"
+	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_agent_configs.py \
+		--api-url http://localhost:8000 \
+		--configs-path /app/scripts/agent_configs.yaml \
+		--cli-configs-path /app/scripts/cli_agent_configs.yaml || echo "  ⚠️  Agent config seeding failed (API may not be ready)"
