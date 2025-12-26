@@ -70,8 +70,7 @@ class DeveloperNode(BaseAgentNode):
                 "messages": [
                     AIMessage(
                         content=(
-                            f"❌ No clone URL for repository '{repo_name}'. "
-                            "Cannot spawn worker."
+                            f"❌ No clone URL for repository '{repo_name}'. Cannot spawn worker."
                         )
                     )
                 ]

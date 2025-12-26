@@ -51,6 +51,7 @@ services:
     volumes:
       - ./services/api/src:/app/src:ro
       - ./services/api/tests:/app/tests:ro
+      - ./shared:/app/shared:ro
 
   langgraph-test:
     build:
@@ -72,6 +73,7 @@ services:
     volumes:
       - ./services/langgraph/src:/app/src:ro
       - ./services/langgraph/tests:/app/tests:ro
+      - ./shared:/app/shared:ro
 
   scheduler-test:
     build:
@@ -92,6 +94,7 @@ services:
     volumes:
       - ./services/scheduler/src:/app/src:ro
       - ./services/scheduler/tests:/app/tests:ro
+      - ./shared:/app/shared:ro
 
   telegram-bot-test:
     build:
@@ -106,6 +109,7 @@ services:
     volumes:
       - ./services/telegram_bot/src:/app/src:ro
       - ./services/telegram_bot/tests:/app/tests:ro
+      - ./shared:/app/shared:ro
 
 networks:
   test-network:

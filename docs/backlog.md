@@ -183,6 +183,39 @@
 
 ## Ideas / Future
 
+### OpenTelemetry Integration
+
+**Status:** BACKLOG  
+**Priority:** MEDIUM  
+**Prerequisites:** Structured Logging Implementation
+
+Distributed tracing для визуализации flow запросов через все микросервисы.
+
+**Benefits:**
+- Видеть весь путь запроса через все сервисы с временными метками
+- Автоматическая связь логов через trace_id
+- Flamegraph для поиска bottleneck'ов
+- Метрики latency/error rate из коробки
+
+**Tasks:**
+- [ ] Поднять Grafana Tempo для traces
+- [ ] Добавить `opentelemetry-api` и `opentelemetry-sdk` в зависимости
+- [ ] Создать `shared/telemetry.py` с setup функцией
+- [ ] Auto-instrument FastAPI (одна строка - `FastAPIInstrumentor.instrument_app(app)`)
+- [ ] Добавить manual spans в ключевые LangGraph nodes (Zavhoz, Developer, DevOps)
+- [ ] Настроить Grafana dashboards для traces
+- [ ] Интеграция Tempo с Loki (клик на лог → показать trace)
+
+**Stack:**
+- Grafana Tempo (traces storage)
+- Grafana Loki (logs storage)
+- Prometheus (metrics)
+- Unified Grafana UI
+
+**Docs:** https://opentelemetry.io/docs/
+
+---
+
 ### Cost Tracking
 
 Отслеживание расходов на LLM.

@@ -3,10 +3,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+import structlog
 
 from ..database import get_async_session
 from ..models import Project
 from ..schemas import ProjectCreate, ProjectRead, ProjectUpdate
+
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -17,8 +20,11 @@ async def create_project(
     db: AsyncSession = Depends(get_async_session),
 ) -> Project:
     """Create a new project."""
+    logger.info("creating_project", project_id=project_in.id, name=project_in.name)
+
     # Check if ID exists
     if await db.get(Project, project_in.id):
+        logger.warning("project_creation_failed_duplicate", project_id=project_in.id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Project with this ID already exists",
@@ -33,6 +39,14 @@ async def create_project(
     db.add(project)
     await db.commit()
     await db.refresh(project)
+
+    logger.info(
+        "project_created",
+        project_id=project.id,
+        status=project.status,
+        config_keys=list(project.config.keys()) if project.config else [],
+    )
+
     return project
 
 
@@ -79,6 +93,9 @@ async def update_project(
 
     await db.commit()
     await db.refresh(project)
+
+    logger.info("project_updated", project_id=project.id, status=project.status)
+
     return project
 
 
@@ -100,4 +117,7 @@ async def patch_project(
 
     await db.commit()
     await db.refresh(project)
+
+    logger.info("project_patched", project_id=project.id, status=project.status)
+
     return project

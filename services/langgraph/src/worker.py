@@ -3,12 +3,15 @@
 import asyncio
 from collections import defaultdict
 import json
-import logging
 import os
 import sys
+import time
 
 from langchain_core.messages import AIMessage, HumanMessage
 import redis.asyncio as redis
+import structlog
+
+from shared.logging_config import setup_logging
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -16,7 +19,7 @@ from shared.redis_client import RedisStreamClient
 
 from .graph import OrchestratorState, create_graph
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # In-memory conversation history cache
 # Key: thread_id, Value: list of messages (last N messages)
@@ -37,9 +40,16 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     user_id = data.get("user_id")
     chat_id = data.get("chat_id")
     text = data.get("text", "")
+    text = data.get("text", "")
     thread_id = data.get("thread_id", f"user_{user_id}")
+    correlation_id = data.get("correlation_id")
 
-    logger.info(f"Processing message from user {user_id}: {text[:50]}...")
+    # Bind request context
+    structlog.contextvars.bind_contextvars(
+        thread_id=thread_id, correlation_id=correlation_id, user_id=user_id
+    )
+
+    logger.info("message_received", chat_id=chat_id, message_length=len(text))
 
     try:
         # Get existing conversation history
@@ -66,7 +76,9 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         config = {"configurable": {"thread_id": thread_id}}
 
         # Run the graph
+        start_time = time.time()
         result = await graph.ainvoke(state, config)
+        duration = (time.time() - start_time) * 1000
 
         # Get the last AI message
         messages = result.get("messages", [])
@@ -99,15 +111,24 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
             },
         )
 
-        logger.info(f"Sent response to user {user_id}")
+        logger.info(
+            "response_sent", duration_ms=round(duration, 2), response_length=len(response_text)
+        )
 
     except Exception as e:
-        logger.exception(f"Error processing message from user {user_id}: {e}")
+        duration = (time.time() - start_time) * 1000 if "start_time" in locals() else 0
+        logger.error(
+            "message_processing_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            duration_ms=round(duration, 2),
+            exc_info=True,
+        )
 
         # Clear conversation history to prevent corrupted state from persisting
         if thread_id in conversation_history:
             del conversation_history[thread_id]
-            logger.info(f"Cleared conversation history for {thread_id} due to error")
+            logger.info("conversation_history_cleared")
 
         # Send error message back
         await redis_client.publish(
@@ -153,7 +174,9 @@ async def process_provisioning_trigger(data: dict) -> None:
     server_handle = data.get("server_handle")
     is_incident_recovery = data.get("is_incident_recovery", False)
 
-    logger.info(f"🚀 Processing provisioning trigger for {server_handle}")
+    structlog.contextvars.bind_contextvars(server_handle=server_handle, trigger="provisioner")
+
+    logger.info("provisioner_trigger_received", is_incident_recovery=is_incident_recovery)
 
     state = {
         "messages": [HumanMessage(content=f"Provision server {server_handle}")],
@@ -178,9 +201,11 @@ async def process_provisioning_trigger(data: dict) -> None:
 
     try:
         await graph.ainvoke(state, config)
-        logger.info(f"✅ Provisioning graph execution finished for {server_handle}")
+        logger.info("provisioning_graph_complete")
     except Exception as e:
-        logger.error(f"❌ Provisioning graph failed for {server_handle}: {e}")
+        logger.error("provisioning_graph_failed", error=str(e), exc_info=True)
+    finally:
+        structlog.contextvars.clear_contextvars()
 
 
 async def consume_chat_stream():
@@ -216,10 +241,7 @@ async def run_worker() -> None:
 
 def main() -> None:
     """Entry point for the worker."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    setup_logging(service_name="langgraph")
 
     logger.info("Starting LangGraph worker...")
     asyncio.run(run_worker())

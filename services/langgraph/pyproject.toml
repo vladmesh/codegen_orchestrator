@@ -17,7 +17,7 @@ dependencies = [
     "redis[hiredis]>=5.0.0",
     
     # Utils
-    "structlog>=24.0.0",
+    "structlog>=25.1.0",
     "pyjwt[crypto]>=2.9.0",
     
     # Infrastructure
