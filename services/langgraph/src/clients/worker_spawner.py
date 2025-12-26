@@ -7,14 +7,13 @@ Used by LangGraph nodes to trigger container spawning.
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import json
+import os
 import uuid
 
 from pydantic import ValidationError
 import redis.asyncio as redis
 
 from shared.logging_config import get_logger
-from shared.schemas.worker_events import WorkerEventUnion, parse_worker_event
-from src.config.settings import get_settings
 
 logger = get_logger(__name__)
 
