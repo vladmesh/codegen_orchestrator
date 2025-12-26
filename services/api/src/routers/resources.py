@@ -5,8 +5,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.models import Resource
+
 from ..database import get_async_session as get_db
-from ..models import Resource
 
 router = APIRouter(tags=["resources"])
 

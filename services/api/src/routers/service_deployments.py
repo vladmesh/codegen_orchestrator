@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.models import ServiceDeployment
+
 from ..database import get_async_session
-from ..models import ServiceDeployment
 from ..schemas import ServiceDeploymentCreate, ServiceDeploymentRead, ServiceDeploymentUpdate
 
 router = APIRouter(prefix="/service-deployments", tags=["service-deployments"])

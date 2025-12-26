@@ -9,10 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.models.incident import Incident, IncidentStatus
+from shared.models.server import Server
 from shared.notifications import notify_admins
 from src.db import async_session_maker
-from src.models.incident import Incident, IncidentStatus
-from src.models.server import Server
 
 from .provisioner_trigger import publish_provisioner_trigger
 

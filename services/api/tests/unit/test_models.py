@@ -7,7 +7,7 @@ MIN_SERVER_STATUSES = 5  #  We expect at least 5 server statuses
 
 def test_project_status_values():
     """Test that project status enum values are valid."""
-    from src.models.project import ProjectStatus
+    from shared.models.project import ProjectStatus
 
     # Test a few key status values
     assert ProjectStatus.DRAFT == "draft"
@@ -21,7 +21,7 @@ def test_project_status_values():
 
 def test_server_status_values():
     """Test that server status enum values are valid."""
-    from src.models.server import ServerStatus
+    from shared.models.server import ServerStatus
 
     # Test a few key status values
     assert ServerStatus.DISCOVERED == "discovered"

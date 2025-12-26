@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.models import APIKey
+
 from ..database import get_async_session
-from ..models import APIKey
 from ..schemas import APIKeyCreate, APIKeyRead
 
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])

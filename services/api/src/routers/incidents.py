@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.models import Incident, IncidentStatus
+
 from ..database import get_async_session
-from ..models import Incident, IncidentStatus
 from ..schemas import IncidentCreate, IncidentRead, IncidentUpdate
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])

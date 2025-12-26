@@ -5,8 +5,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.models import Project
+
 from ..database import get_async_session
-from ..models import Project
 from ..schemas import ProjectCreate, ProjectRead, ProjectUpdate
 
 logger = structlog.get_logger()

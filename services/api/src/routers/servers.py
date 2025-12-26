@@ -4,11 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.models import PortAllocation, Server, ServiceDeployment
+
 # TODO: Add encryption logic
 # from cryptography.fernet import Fernet
 # ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 from ..database import get_async_session
-from ..models import PortAllocation, Server, ServiceDeployment
 from ..schemas import (
     PortAllocationCreate,
     PortAllocationRead,
@@ -156,7 +157,7 @@ async def force_rebuild_server(
     db: AsyncSession = Depends(get_async_session),
 ) -> Server:
     """Trigger FORCE_REBUILD for a server."""
-    from ..models import ServerStatus
+    from shared.models import ServerStatus
 
     server = await db.get(Server, handle)
     if not server:
@@ -174,7 +175,7 @@ async def get_server_incidents(
     db: AsyncSession = Depends(get_async_session),
 ) -> list:
     """Get incident history for a server."""
-    from ..models import Incident
+    from shared.models import Incident
 
     # Verify server exists
     if not await db.get(Server, handle):
@@ -210,7 +211,7 @@ async def provision_server(
     db: AsyncSession = Depends(get_async_session),
 ) -> dict:
     """Manual provisioning trigger (will integrate with LangGraph)."""
-    from ..models import ServerStatus
+    from shared.models import ServerStatus
 
     server = await db.get(Server, handle)
     if not server:

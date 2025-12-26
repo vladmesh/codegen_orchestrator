@@ -13,8 +13,8 @@ from alembic import context
 # Add the parent directory to sys.path so we can import src
 sys.path.append(os.getcwd())
 
+from shared.models import Base
 from src.database import DATABASE_URL
-from src.models import Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

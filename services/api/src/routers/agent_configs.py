@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.models import AgentConfig
+
 from ..database import get_async_session
-from ..models import AgentConfig
 from ..schemas.agent_config import AgentConfigCreate, AgentConfigRead, AgentConfigUpdate
 
 router = APIRouter(prefix="/agent-configs", tags=["agent-configs"])

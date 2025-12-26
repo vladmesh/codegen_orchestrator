@@ -7,9 +7,9 @@ from sqlalchemy import select
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.models.project import Project, ProjectStatus
 from shared.notifications import notify_admins
 from src.db import async_session_maker
-from src.models.project import Project, ProjectStatus
 
 logger = structlog.get_logger()
 

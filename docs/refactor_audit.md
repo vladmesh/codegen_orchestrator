@@ -1,7 +1,7 @@
 # Refactor Audit
 
 ## DRY / duplicate logic
-- Duplicate workers in API and Scheduler: server sync, health checks, GitHub sync, and provisioner trigger exist twice with near-identical logic (e.g., `services/api/src/tasks/server_sync.py` and `services/scheduler/src/tasks/server_sync.py`). Decide on one home (likely scheduler) and move shared logic into a common module.
+- [x] Duplicate workers in API and Scheduler: server sync, health checks, GitHub sync, and provisioner trigger exist twice with near-identical logic (e.g., `services/api/src/tasks/server_sync.py` and `services/scheduler/src/tasks/server_sync.py`). Decide on one home (likely scheduler) and move shared logic into a common module.
 - Duplicate GitHub client implementations: `shared/clients/github.py` and `services/langgraph/src/clients/github.py` diverge in error handling and key loading. Consolidate into a single shared client.
 - [x] Duplicate Time4VPS client implementations: `services/api/src/clients/time4vps.py` and `services/langgraph/src/clients/time4vps.py` overlap heavily; unify and reuse in tools/workers.
 
@@ -17,8 +17,8 @@
 
 ## Legacy / incomplete / likely broken
 - [x] `services/langgraph/src/tools/time4vps.py` instantiates `Time4VPSClient()` without credentials (constructor requires username/password). either inject config or remove dead code.
-- `services/scheduler/src/models/` is empty but tasks import `src.models.*`; this looks broken or unfinished. Share models from the API service or move them into `shared`.
-- `services/api/src/tasks/*` exists even though `services/api/src/main.py` states background tasks live in scheduler. Remove or rewire to avoid confusion.
+- [x] `services/scheduler/src/models/` is empty but tasks import `src.models.*`; this looks broken or unfinished. Share models from the API service or move them into `shared`.
+- [x] `services/api/src/tasks/*` exists even though `services/api/src/main.py` states background tasks live in scheduler. Remove or rewire to avoid confusion.
 
 ## Security-related TODOs
 - API key and SSH key encryption is stubbed (e.g., `services/api/src/routers/api_keys.py`, `services/api/src/routers/servers.py`). Implement encryption or move secrets to a dedicated secrets service.

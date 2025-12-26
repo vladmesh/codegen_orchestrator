@@ -33,7 +33,7 @@ COPY --from=builder /install /usr/local
 
 # Copy source code
 COPY services/scheduler/src ./src
-COPY services/api/src/models ./src/models
+
 COPY services/api/src/clients ./src/clients
 COPY shared ./shared
 

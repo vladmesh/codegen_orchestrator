@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.models import User
+
 from ..database import get_async_session
-from ..models import User
 from ..schemas import UserCreate, UserRead
 
 router = APIRouter(prefix="/users", tags=["users"])
