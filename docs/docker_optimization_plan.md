@@ -314,9 +314,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 - [x] 1.3 (Опционально) Унифицировать установку shared
 
 ### Фаза 2 (Dependencies)
-- [ ] 2.1 Создать `requirements.lock` для langgraph
-- [ ] 2.2 Создать lock-файлы для остальных сервисов
-- [ ] 2.3 Обновить Dockerfiles для использования lock-файлов
+- [x] 2.1 Создать `requirements.lock` для langgraph
+- [x] 2.2 Создать lock-файлы для остальных сервисов
+- [x] 2.3 Обновить Dockerfiles для использования lock-файлов
 
 ### Фаза 3 (Architecture)
 - [ ] 3.1 Создать base image

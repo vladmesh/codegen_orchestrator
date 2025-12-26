@@ -4,7 +4,7 @@
 	test-scheduler test-scheduler-unit test-scheduler-integration \
 	test-telegram test-telegram-unit \
 	build up down logs help nuke seed migrate makemigrations shell \
-	setup-hooks
+	setup-hooks lock-deps
 
 # Load .env file
 -include .env
@@ -42,14 +42,27 @@ help:
 	@echo "  make shell       - Open shell in tooling container"
 	@echo "  make nuke        - Full reset: remove volumes, rebuild, migrate"
 	@echo "  make seed        - Seed database with API keys from env"
+	@echo "  make lock-deps   - Regenerate all requirements.lock files"
+
+# === Dependency Lock Files ===
+
+TOOLING_UV := $(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev run --rm --remove-orphans -e XDG_CACHE_HOME=/workspace/.cache tooling
+
+lock-deps:
+	@echo "🔒 Generating requirements.lock files with uv..."
+	$(TOOLING_UV) uv pip compile services/langgraph/pyproject.toml -o services/langgraph/requirements.lock
+	$(TOOLING_UV) uv pip compile services/api/pyproject.toml -o services/api/requirements.lock
+	$(TOOLING_UV) uv pip compile services/scheduler/pyproject.toml -o services/scheduler/requirements.lock
+	$(TOOLING_UV) uv pip compile services/telegram_bot/pyproject.toml -o services/telegram_bot/requirements.lock
+	@echo "✅ All lock files updated!"
 
 # === Docker ===
 
 up:
-	$(DOCKER_COMPOSE) up -d
+	$(DOCKER_COMPOSE) up -d --remove-orphans
 
 down:
-	$(DOCKER_COMPOSE) down
+	$(DOCKER_COMPOSE) down --remove-orphans
 
 logs:
 	$(DOCKER_COMPOSE) logs -f

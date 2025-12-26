@@ -18,9 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY shared ./shared
 RUN pip install --no-cache-dir --prefix=/install ./shared
 
-# Copy and install service dependencies (including Ansible)
-COPY services/langgraph/pyproject.toml ./
-RUN pip install --no-cache-dir --prefix=/install .
+# Copy and install service dependencies from lock file (faster, no resolution)
+COPY services/langgraph/requirements.lock ./
+RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
 
 # === Stage 2: Production ===
 # Create minimal runtime image with Ansible runtime dependencies
