@@ -4,16 +4,14 @@ Orchestrates the implementation of business logic by spawning a Factory.ai worke
 This node runs after the Architect has set up the initial project structure.
 """
 
-import logging
-
 from langchain_core.messages import AIMessage
+import structlog
 
-from shared.clients.github import GitHubAppClient
-
+from ..clients.github import GitHubAppClient
 from ..clients.worker_spawner import request_spawn
 from .base import BaseAgentNode
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 class DeveloperNode(BaseAgentNode):
@@ -64,83 +62,78 @@ class DeveloperNode(BaseAgentNode):
             }
 
         repo_name = repo_info.get("name", "")
-        repo_full_name = repo_info.get("full_name")
+        repo_clone_url = repo_info.get("clone_url", "")
 
-        if not repo_full_name:
+        if not repo_clone_url:
             return {
                 "messages": [
                     AIMessage(
                         content=(
-                            f"❌ No full_name for repository '{repo_name}'. Cannot spawn worker."
+                            f"❌ No clone URL for repository '{repo_name}'. Cannot spawn worker."
                         )
                     )
                 ]
             }
 
-        if "/" not in repo_full_name:
-            return {
-                "messages": [
-                    AIMessage(
-                        content=(
-                            "❌ Invalid repository full_name "
-                            f"'{repo_full_name}'. Expected 'org/repo'."
-                        )
-                    )
-                ]
-            }
-
-        logger.info(f"Spawning developer worker for repository: {repo_name}")
+        logger.info("developer_worker_spawn_requested", repo_name=repo_name)
 
         try:
             # Get GitHub App installation token for authentication
             github_client = GitHubAppClient()
-            owner, repo = repo_full_name.split("/", 1)
-            access_token = await github_client.get_token(owner, repo)
+            installation_id = repo_info.get("installation_id")
 
-            modules = project_spec.get("modules") or []
-            entry_points = project_spec.get("entry_points") or []
-            description = project_spec.get("description") or "Implement business logic"
-
-            # Spawn the worker
-            worker_result = await request_spawn(
-                repo=repo_full_name,
-                github_token=access_token,
-                task_content=(
-                    f"# Project: {repo_name}\n\n"
-                    f"## Description\n{description}\n\n"
-                    "## Requirements\n"
-                    f"- Modules: {', '.join(modules)}\n"
-                    f"- Entry Points: {', '.join(entry_points)}\n\n"
-                    "## Task\n"
-                    "Implement the business logic according to the project specification.\n"
-                ),
-                task_title=f"Implement business logic for {repo_name}",
-            )
-
-            if worker_result.success:
+            if not installation_id:
                 return {
                     "messages": [
                         AIMessage(
-                            content=f"✅ Developer worker spawned successfully for {repo_name}!\n"
-                            f"Request ID: {worker_result.request_id}"
-                        )
-                    ],
-                    "worker_info": worker_result.__dict__,
-                }
-            else:
-                return {
-                    "messages": [
-                        AIMessage(
-                            content=(
-                                "❌ Failed to spawn developer worker:\n\n"
-                                f"{worker_result.output[-500:]}"
-                            )
+                            content=f"❌ No GitHub App installation ID found for '{repo_name}'."
                         )
                     ]
                 }
 
+            access_token = await github_client.get_installation_token(installation_id)
+
+            # Prepare clone URL with authentication
+            authenticated_clone_url = repo_clone_url.replace(
+                "https://", f"https://x-access-token:{access_token}@"
+            )
+
+            # Spawn the worker
+            worker_result = await request_spawn(
+                repository_url=authenticated_clone_url,
+                task_description=project_spec.get("description", "Implement business logic"),
+                context={
+                    "project_name": repo_info.get("name"),
+                    "spec": project_spec,
+                },
+            )
+
+            if worker_result.get("success"):
+                return {
+                    "messages": [
+                        AIMessage(
+                            content=f"✅ Developer worker spawned successfully for {repo_name}!\n"
+                            f"Worker ID: {worker_result.get('worker_id', 'N/A')}"
+                        )
+                    ],
+                    "worker_info": worker_result,
+                }
+            else:
+                error_msg = worker_result.get("error", "Unknown error")
+                return {
+                    "messages": [
+                        AIMessage(content=f"❌ Failed to spawn developer worker: {error_msg}")
+                    ]
+                }
+
         except Exception as e:
-            logger.error(f"Error spawning developer worker: {e}", exc_info=True)
+            logger.error(
+                "developer_worker_spawn_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                repo_name=repo_name,
+                exc_info=True,
+            )
             return {
                 "messages": [AIMessage(content=f"❌ Error spawning developer worker: {str(e)}")]
             }
