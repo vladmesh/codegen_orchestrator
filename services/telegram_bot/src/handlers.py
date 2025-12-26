@@ -128,7 +128,7 @@ async def _handle_menu(query, parts: list[str]) -> None:
         await query.edit_message_text(
             "🏠 **Главное меню**\n\nВыберите действие:",
             reply_markup=main_menu_keyboard(),
-            parse_mode="Markdown",
+            parse_mode=None,
         )
 
 
@@ -156,7 +156,7 @@ async def _handle_projects(query, parts: list[str]) -> None:
         await query.edit_message_text(
             "📦 **Проекты:**\n\nНажмите на проект для подробностей:",
             reply_markup=projects_list_keyboard(projects),
-            parse_mode="Markdown",
+            parse_mode=None,
         )
 
     elif action == ACTION_NEW:
@@ -165,7 +165,7 @@ async def _handle_projects(query, parts: list[str]) -> None:
             "Опишите ваш проект в чате. Например:\n\n"
             "_Создай телеграм-бота для погоды с командами /weather и /settings_",
             reply_markup=back_to_menu_keyboard(),
-            parse_mode="Markdown",
+            parse_mode=None,
         )
 
 
@@ -194,14 +194,14 @@ async def _handle_project(query, parts: list[str]) -> None:
         await query.edit_message_text(
             _format_project_details(project),
             reply_markup=project_details_keyboard(project_id),
-            parse_mode="Markdown",
+            parse_mode=None,
         )
 
     elif action == ACTION_MAINTENANCE:
         await query.edit_message_text(
             f"🔧 **Режим обслуживания**\n\nОпишите, что нужно изменить в проекте `{project_id}`:",
             reply_markup=back_to_menu_keyboard(),
-            parse_mode="Markdown",
+            parse_mode=None,
         )
 
     elif action == ACTION_DEPLOY:
@@ -210,7 +210,7 @@ async def _handle_project(query, parts: list[str]) -> None:
             f"Для запуска деплоя проекта `{project_id}` напишите:\n"
             f"_Задеплой проект {project_id}_",
             reply_markup=back_to_menu_keyboard(),
-            parse_mode="Markdown",
+            parse_mode=None,
         )
 
 
@@ -219,7 +219,7 @@ async def _handle_servers(query, parts: list[str]) -> None:
     action = parts[1] if len(parts) > 1 else ACTION_LIST
 
     if action == ACTION_LIST:
-        servers = await _api_get("/servers?is_managed=true")
+        servers = await _api_get("/api/servers?is_managed=true")
 
         if servers is None:
             await query.edit_message_text(
@@ -241,5 +241,5 @@ async def _handle_servers(query, parts: list[str]) -> None:
         await query.edit_message_text(
             "\n".join(lines),
             reply_markup=servers_list_keyboard(servers),
-            parse_mode="Markdown",
+            parse_mode=None,
         )
