@@ -309,9 +309,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 ## Чеклист выполнения
 
 ### Фаза 1 (Quick Wins)
-- [ ] 1.1 Добавить `profiles: ["dev"]` к tooling
-- [ ] 1.2 Убрать дубликат `pip install ansible` в langgraph
-- [ ] 1.3 (Опционально) Унифицировать установку shared
+- [x] 1.1 Добавить `profiles: ["dev"]` к tooling
+- [x] 1.2 Убрать дубликат `pip install ansible` в langgraph
+- [x] 1.3 (Опционально) Унифицировать установку shared
 
 ### Фаза 2 (Dependencies)
 - [ ] 2.1 Создать `requirements.lock` для langgraph
