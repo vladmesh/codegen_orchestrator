@@ -54,7 +54,12 @@ async def create_incident(
             )
             return True
     except Exception as e:
-        logger.error("incident_create_failed", error=str(e))
+        logger.error(
+            "incident_create_failed",
+            server_handle=server_handle,
+            incident_type=incident_type,
+            error=str(e),
+        )
         return False
 
 
