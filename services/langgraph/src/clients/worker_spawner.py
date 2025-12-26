@@ -6,13 +6,14 @@ Used by LangGraph nodes to trigger container spawning.
 
 from dataclasses import dataclass
 import json
-import logging
 import os
 import uuid
 
 import redis.asyncio as redis
 
-logger = logging.getLogger(__name__)
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SPAWN_CHANNEL = "worker:spawn"
@@ -103,7 +104,7 @@ async def request_spawn(
         }
 
         await redis_client.publish(SPAWN_CHANNEL, json.dumps(request_data))
-        logger.info(f"Published spawn request: {request_id}")
+        logger.info("worker_spawn_published", request_id=request_id, repo=repo)
 
         # Wait for result (timeout handled by spawner service)
         async for message in pubsub.listen():

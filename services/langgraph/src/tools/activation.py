@@ -1,10 +1,11 @@
 """Project activation tools for PO Supervisor flow."""
 
 from http import HTTPStatus
-import logging
 from typing import Annotated
 
 from langchain_core.tools import tool
+
+from shared.logging_config import get_logger
 
 from ..schemas.tools import (
     DeploymentReadinessResult,
@@ -14,7 +15,7 @@ from ..schemas.tools import (
 )
 from .base import api_client
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _parse_env_example(content: str) -> list[str]:
@@ -82,7 +83,11 @@ async def activate_project(
         }
     except Exception as e:
         # Non-fatal: DevOps will fail later with a clear message
-        logger.warning(f"Failed to fetch repo info for DevOps: {e}")
+        logger.warning(
+            "repo_info_fetch_failed",
+            project_id=project_id,
+            error=str(e),
+        )
 
     return ProjectActivationResult(
         project_id=project_id,

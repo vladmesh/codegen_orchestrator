@@ -1,13 +1,13 @@
-import logging
 import os
 import time
 
 import httpx
 import jwt
 
+from shared.logging_config import get_logger
 from shared.schemas.github import GitHubRepository
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class GitHubAppClient:
@@ -19,7 +19,7 @@ class GitHubAppClient:
         self._private_key = None
 
         if not self.app_id:
-            logger.warning("GITHUB_APP_ID not set. GitHub App features disabled.")
+            logger.warning("github_app_id_missing", env_var="GITHUB_APP_ID")
 
     def _load_private_key(self) -> str:
         if self._private_key:
@@ -126,8 +126,8 @@ class GitHubAppClient:
                 )
                 resp.raise_for_status()
                 return resp.json()["token"]
-        except Exception as e:
-            logger.error(f"Failed to get GitHub App token for org {org}: {e}")
+        except Exception:
+            logger.exception("github_app_token_failed", org=org)
             raise
 
     async def get_token(self, owner: str, repo: str) -> str:
@@ -147,8 +147,8 @@ class GitHubAppClient:
                 )
                 resp.raise_for_status()
                 return resp.json()["token"]
-        except Exception as e:
-            logger.error(f"Failed to get GitHub App token for {owner}/{repo}: {e}")
+        except Exception:
+            logger.exception("github_app_token_failed", owner=owner, repo=repo)
             raise
 
     async def create_repo(
@@ -176,7 +176,12 @@ class GitHubAppClient:
             )
             resp.raise_for_status()
             data = resp.json()
-            logger.info(f"Created repository: {data['html_url']}")
+            logger.info(
+                "github_repo_created",
+                org=org,
+                name=name,
+                repo_url=data.get("html_url"),
+            )
             return GitHubRepository.model_validate(data)
 
     async def list_org_repos(self, org: str) -> list[GitHubRepository]:
@@ -244,7 +249,13 @@ class GitHubAppClient:
                 resp.raise_for_status()
                 return resp.text
         except Exception as e:
-            logger.warning(f"Failed to get file {path} from {owner}/{repo}: {e}")
+            logger.warning(
+                "github_file_fetch_failed",
+                owner=owner,
+                repo=repo,
+                path=path,
+                error=str(e),
+            )
             return None
 
     async def list_repo_files(
@@ -266,5 +277,11 @@ class GitHubAppClient:
                 resp.raise_for_status()
                 return [item["name"] for item in resp.json()]
         except Exception as e:
-            logger.warning(f"Failed to list files in {owner}/{repo}/{path}: {e}")
+            logger.warning(
+                "github_list_files_failed",
+                owner=owner,
+                repo=repo,
+                path=path,
+                error=str(e),
+            )
             return []

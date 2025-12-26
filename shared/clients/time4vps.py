@@ -2,16 +2,16 @@
 
 import asyncio
 import base64
-import logging
 import os
 import re
 from typing import Any
 
 import httpx
 
+from shared.logging_config import get_logger
 from shared.schemas import Time4VPSServer, Time4VPSServerDetails, Time4VPSTask
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Time4VPSClient:
@@ -31,7 +31,9 @@ class Time4VPSClient:
 
         if not self.username or not self.password:
             logger.warning(
-                "Time4VPS credentials not provided. Client will fail on authenticated requests."
+                "time4vps_credentials_missing",
+                username_set=bool(self.username),
+                password_set=bool(self.password),
             )
 
     def _get_auth_header(self) -> dict[str, str]:
@@ -80,7 +82,7 @@ class Time4VPSClient:
             result = resp.json()
 
             if "task_id" not in result:
-                logger.error(f"Unexpected reset_password response: {result}")
+                logger.error("time4vps_reset_password_missing_task_id", response=result)
                 raise ValueError(f"No task_id in reset_password response: {result}")
 
             return result["task_id"]
@@ -127,12 +129,13 @@ class Time4VPSClient:
             if task.completed:
                 # Task completed, extract password from results
                 results = task.results or ""
-                logger.debug(f"Password reset results: {results}")
+                logger.debug("time4vps_password_reset_results", results=results)
                 password = self.extract_password(results)
                 if password:
                     logger.info(
-                        f"Password reset completed for server {server_id}, "
-                        f"password length: {len(password)}"
+                        "time4vps_password_reset_completed",
+                        server_id=server_id,
+                        password_length=len(password),
                     )
                     return password
                 else:
@@ -216,7 +219,11 @@ class Time4VPSClient:
         if init_script_id:
             payload["script"] = init_script_id
 
-        logger.info(f"Triggering OS reinstall for server {server_id} with template {os_template}")
+        logger.info(
+            "time4vps_reinstall_triggered",
+            server_id=server_id,
+            os_template=os_template,
+        )
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -224,14 +231,14 @@ class Time4VPSClient:
             )
             resp.raise_for_status()
             result = resp.json()
-            logger.debug(f"Reinstall API response: {result}")
+            logger.debug("time4vps_reinstall_response", response=result)
 
             if "task_id" not in result:
-                logger.error(f"Unexpected reinstall response: {result}")
+                logger.error("time4vps_reinstall_missing_task_id", response=result)
                 raise ValueError(f"No task_id in reinstall response: {result}")
 
             task_id = result["task_id"]
-            logger.info(f"Reinstall task created: {task_id}")
+            logger.info("time4vps_reinstall_task_created", task_id=task_id, server_id=server_id)
             return task_id
 
     async def get_server_id_by_handle(self, server_handle: str) -> int | None:
@@ -245,13 +252,13 @@ class Time4VPSClient:
         """
         try:
             servers = await self.get_servers()
-            logger.info(f"Time4VPS returned {len(servers)} servers")
+            logger.info("time4vps_servers_listed", count=len(servers))
 
             for server in servers:
                 # server is now Time4VPSServer model
                 srv_id = server.id
                 if not srv_id:
-                    logger.warning(f"Server entry missing ID: {server}")
+                    logger.warning("time4vps_server_missing_id", server=server.model_dump())
                     continue
 
                 # Match by handle (vps-{id})
@@ -259,11 +266,13 @@ class Time4VPSClient:
                     return srv_id
 
             logger.error(
-                f"Server {server_handle} not found in Time4VPS API (scanned {len(servers)} servers)"
+                "time4vps_server_handle_not_found",
+                server_handle=server_handle,
+                scanned=len(servers),
             )
             return None
-        except Exception as e:
-            logger.exception(f"Failed to get server ID for {server_handle}: {e}")
+        except Exception:
+            logger.exception("time4vps_server_lookup_failed", server_handle=server_handle)
             return None
 
     async def wait_for_task(
@@ -293,8 +302,13 @@ class Time4VPSClient:
             task = await self.get_task_result(server_id, task_id)
 
             if task.completed:
-                logger.info(f"Task {task_id} completed for server {server_id}")
+                logger.info("time4vps_task_completed", server_id=server_id, task_id=task_id)
                 return task
 
-            logger.debug(f"Task {task_id} still running, waiting {poll_interval}s...")
+            logger.debug(
+                "time4vps_task_waiting",
+                server_id=server_id,
+                task_id=task_id,
+                poll_interval=poll_interval,
+            )
             await asyncio.sleep(poll_interval)

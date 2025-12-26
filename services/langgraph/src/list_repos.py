@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import os
 import sys
 
@@ -9,10 +8,10 @@ sys.path.append(os.path.abspath("services/langgraph/src"))
 import httpx
 
 from shared.clients.github import GitHubAppClient
+from shared.logging_config import get_logger, setup_logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+setup_logging(service_name="langgraph")
+logger = get_logger(__name__)
 
 
 async def list_repos():
@@ -23,11 +22,11 @@ async def list_repos():
         try:
             installation = await client.get_first_org_installation()
         except RuntimeError as e:
-            logger.error(f"Failed to find org installation: {e}")
+            logger.error("github_org_installation_failed", error=str(e))
             return
 
         org = installation["org"]
-        logger.info(f"Target Organization: {org}")
+        logger.info("github_org_target", org=org)
 
         # Get token
         token = await client.get_org_token(org)
@@ -65,8 +64,8 @@ async def list_repos():
                 for repo in repos:
                     print(f"  - {repo['name']}")
 
-    except Exception as e:
-        logger.exception(f"Error listing repos: {e}")
+    except Exception:
+        logger.exception("github_repo_listing_failed")
 
 
 if __name__ == "__main__":
