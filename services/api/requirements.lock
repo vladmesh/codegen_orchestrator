@@ -64,6 +64,10 @@ multidict==6.7.0
     # via
     #   aiohttp
     #   yarl
+numpy==2.4.0
+    # via pgvector
+pgvector==0.4.2
+    # via api (services/api/pyproject.toml)
 propcache==0.4.1
     # via
     #   aiohttp
