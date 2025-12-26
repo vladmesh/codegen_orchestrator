@@ -36,7 +36,7 @@ async def _api_get(path: str) -> dict | list | None:
     url = f"{settings.api_url}{path}"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.get(url)
             response.raise_for_status()
             return response.json()
