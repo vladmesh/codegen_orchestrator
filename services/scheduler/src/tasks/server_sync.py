@@ -127,16 +127,16 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient) -> tuple[i
     missing_count = 0
 
     for srv in api_servers:
-        ip = srv.get("ip")
+        ip = srv.ip
         if not ip:
             continue
 
-        server_id = srv.get("server_id")
+        server_id = srv.id
         if not server_id:
             logger.warning(f"Server with IP {ip} has no server_id, skipping")
             continue
 
-        hostname = srv.get("domain")
+        hostname = srv.domain
         is_ghost = ip in GHOST_SERVERS
 
         existing = db_servers.get(ip)
@@ -195,7 +195,7 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient) -> tuple[i
                 new_managed_servers.append(new_server)
 
     # Check for missing servers
-    api_ips = {s.get("ip") for s in api_servers if s.get("ip")}
+    api_ips = {s.ip for s in api_servers if s.ip}
     for ip, srv in db_servers.items():
         if ip not in api_ips and srv.status != "missing":
             srv.status = "missing"
@@ -229,7 +229,8 @@ async def _sync_server_details(db: AsyncSession, client: Time4VPSClient) -> int:
             continue
 
         try:
-            details = await client.get_server_details(int(provider_id))
+            details_model = await client.get_server_details(int(provider_id))
+            details = details_model.model_dump()
 
             # Update capacity and usage from API
             server.capacity_cpu = details.get("cpu_cores", server.capacity_cpu)

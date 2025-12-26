@@ -4,7 +4,8 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
-from ..clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient
+
 from ..schemas.tools import GitHubRepoResult
 
 # Singleton client instance

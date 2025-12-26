@@ -1,10 +1,11 @@
 import logging
 import os
 import time
-from typing import Any
 
 import httpx
 import jwt
+
+from shared.schemas.github import GitHubRepository
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,11 @@ class GitHubAppClient:
             return resp.json()["id"]
 
     async def get_first_org_installation(self) -> dict:
-        """Get the first organization installation for this GitHub App."""
+        """Get the first organization installation for this GitHub App.
+
+        Returns:
+            Dict with 'org' (organization login) and 'installation_id'
+        """
         jwt_token = self._generate_jwt()
         headers = {
             "Authorization": f"Bearer {jwt_token}",
@@ -148,7 +153,7 @@ class GitHubAppClient:
 
     async def create_repo(
         self, org: str, name: str, description: str = "", private: bool = True
-    ) -> dict:
+    ) -> GitHubRepository:
         """Create a new repository in the organization."""
         token = await self.get_org_token(org)
         headers = {
@@ -172,9 +177,9 @@ class GitHubAppClient:
             resp.raise_for_status()
             data = resp.json()
             logger.info(f"Created repository: {data['html_url']}")
-            return data
+            return GitHubRepository.model_validate(data)
 
-    async def list_org_repos(self, org: str) -> list[dict[str, Any]]:
+    async def list_org_repos(self, org: str) -> list[GitHubRepository]:
         """List all repositories in the organization."""
         token = await self.get_org_token(org)
         headers = {
@@ -197,9 +202,69 @@ class GitHubAppClient:
                 batch = resp.json()
                 if not batch:
                     break
-                repos.extend(batch)
+                repos.extend([GitHubRepository.model_validate(r) for r in batch])
                 if len(batch) < per_page:
                     break
                 page += 1
 
         return repos
+
+    async def get_repo(self, owner: str, repo: str) -> GitHubRepository:
+        """Get repository information."""
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
+            resp.raise_for_status()
+            return GitHubRepository.model_validate(resp.json())
+
+    async def get_file_contents(
+        self, owner: str, repo: str, path: str, ref: str = "main"
+    ) -> str | None:
+        """Get contents of a file from a repository."""
+        try:
+            token = await self.get_token(owner, repo)
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.raw+json",
+            }
+
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                    headers=headers,
+                    params={"ref": ref},
+                )
+                if resp.status_code == httpx.codes.NOT_FOUND:
+                    return None
+                resp.raise_for_status()
+                return resp.text
+        except Exception as e:
+            logger.warning(f"Failed to get file {path} from {owner}/{repo}: {e}")
+            return None
+
+    async def list_repo_files(
+        self, owner: str, repo: str, path: str = "", ref: str = "main"
+    ) -> list[str]:
+        """List files in a repository directory."""
+        try:
+            token = await self.get_token(owner, repo)
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+            }
+
+            async with httpx.AsyncClient() as client:
+                url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+                resp = await client.get(url, headers=headers, params={"ref": ref})
+                if resp.status_code == httpx.codes.NOT_FOUND:
+                    return []
+                resp.raise_for_status()
+                return [item["name"] for item in resp.json()]
+        except Exception as e:
+            logger.warning(f"Failed to list files in {owner}/{repo}/{path}: {e}")
+            return []

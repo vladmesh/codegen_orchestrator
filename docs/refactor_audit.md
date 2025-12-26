@@ -28,5 +28,3 @@
 - Status strings are duplicated in multiple places instead of using enums (`services/api/src/models/server.py` defines enums, but tasks compare raw strings). Use shared enums/constants to avoid drift.
 - `asyncio.get_event_loop()` is used for timing in async code (e.g., `services/api/src/tasks/server_sync.py`, `services/langgraph/src/clients/time4vps.py`). Prefer `asyncio.get_running_loop()` or `time.monotonic()` in 3.12.
 
-## Dependency hygiene
-- Each service has its own `pyproject.toml` with only minimum versions and no lockfile. Consider a shared constraints/lock strategy to keep dependencies aligned and avoid drift.

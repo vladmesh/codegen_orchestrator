@@ -6,8 +6,9 @@ import sys
 # Add the service directory to sys.path to allow imports
 sys.path.append(os.path.abspath("services/langgraph/src"))
 
-from clients.github import GitHubAppClient
 import httpx
+
+from shared.clients.github import GitHubAppClient
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

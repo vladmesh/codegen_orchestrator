@@ -39,7 +39,7 @@ class Time4VPSClient:
         if not self._auth_header:
             if not self.username or not self.password:
                 raise ValueError("Time4VPS credentials not set (username/password)")
-            
+
             auth_str = f"{self.username}:{self.password}"
             encoded_auth = base64.b64encode(auth_str.encode()).decode()
             self._auth_header = f"Basic {encoded_auth}"

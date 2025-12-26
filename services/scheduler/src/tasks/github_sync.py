@@ -67,12 +67,12 @@ async def sync_projects_worker():  # noqa: PLR0915
 
                 # Map by ID for accurate tracking
                 # repo_id (int) -> repo_data
-                gh_repos_map = {r["id"]: r for r in github_repos}
+                gh_repos_map = {r.id: r for r in github_repos}
 
                 # 3. Sync Logic: GitHub -> DB
                 for r in github_repos:
-                    repo_id = r["id"]
-                    repo_name = r["name"]
+                    repo_id = r.id
+                    repo_name = r.name
                     repos_synced += 1
 
                     # Try to find in DB by github_repo_id
