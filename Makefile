@@ -12,7 +12,10 @@ export
 
 DOCKER_COMPOSE ?= docker compose
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
-TOOLING := $(COMPOSE_ENV) $(DOCKER_COMPOSE) run --rm --remove-orphans tooling
+TOOLING := $(COMPOSE_ENV) $(DOCKER_COMPOSE) run --rm  tooling
+
+# Test Project Name for Isolation
+TEST_PROJECT := codegen_orchestrator_test
 
 # Default target
 help:
@@ -46,7 +49,7 @@ help:
 
 # === Dependency Lock Files ===
 
-TOOLING_UV := $(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev run --rm --remove-orphans -e XDG_CACHE_HOME=/workspace/.cache tooling
+TOOLING_UV := $(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev run --rm  -e XDG_CACHE_HOME=/workspace/.cache tooling
 
 lock-deps:
 	@echo "🔒 Generating requirements.lock files with uv..."
@@ -59,10 +62,10 @@ lock-deps:
 # === Docker ===
 
 up:
-	$(DOCKER_COMPOSE) up -d --remove-orphans
+	$(DOCKER_COMPOSE) up -d 
 
 down:
-	$(DOCKER_COMPOSE) down --remove-orphans
+	$(DOCKER_COMPOSE) down 
 
 logs:
 	$(DOCKER_COMPOSE) logs -f
@@ -88,43 +91,65 @@ setup-hooks:
 
 # === Testing ===
 
-DOCKER_COMPOSE_TEST := DOCKER_BUILDKIT=1 docker compose -f docker-compose.test.yml
+DOCKER_COMPOSE_TEST := DOCKER_BUILDKIT=1 docker compose -p $(TEST_PROJECT) -f docker-compose.test.yml
 
 # Individual service unit tests (fast, no external deps)
 test-api-unit:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans api-test pytest tests/unit -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  api-test pytest tests/unit -v
 
 test-langgraph-unit:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans langgraph-test pytest tests/unit -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  langgraph-test pytest tests/unit -v
 
 test-scheduler-unit:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans scheduler-test pytest tests/unit -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  scheduler-test pytest tests/unit -v
 
 test-telegram-unit:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans telegram-bot-test pytest tests/unit -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  telegram-bot-test pytest tests/unit -v
 
 # Individual service integration tests (require infrastructure)
 test-api-integration:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans api-test pytest tests/integration -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  api-test pytest tests/integration -v
 
 test-langgraph-integration:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans langgraph-test pytest tests/integration -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  langgraph-test pytest tests/integration -v
 
 test-scheduler-integration:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans scheduler-test pytest tests/integration -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  scheduler-test pytest tests/integration -v
 
 # All tests for a specific service
 test-api:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans api-test pytest -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  api-test pytest -v
 
 test-langgraph:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans langgraph-test pytest -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  langgraph-test pytest -v
 
 test-scheduler:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans scheduler-test pytest -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  scheduler-test pytest -v
 
 test-telegram:
-	$(DOCKER_COMPOSE_TEST) run --rm --remove-orphans telegram-bot-test pytest -v
+	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
+	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
+	$(DOCKER_COMPOSE_TEST) run --rm  telegram-bot-test pytest -v
 
 # Run all unit tests (fast)
 test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit
@@ -140,7 +165,7 @@ test: test-all
 
 # Cleanup test containers and volumes
 test-clean:
-	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans
+	$(DOCKER_COMPOSE_TEST) down -v 
 
 
 # === Database ===
