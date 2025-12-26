@@ -8,12 +8,15 @@ import time
 
 import structlog
 from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 # Add shared to path
 sys.path.insert(0, "/app")
 from shared.logging_config import setup_logging
 from shared.redis_client import RedisStreamClient
+
+from .handlers import handle_callback_query
+from .keyboards import main_menu_keyboard
 
 logger = structlog.get_logger()
 
@@ -22,9 +25,22 @@ redis_client = RedisStreamClient()
 
 
 async def start(update: Update, context) -> None:
-    """Handle /start command."""
+    """Handle /start command - show main menu."""
     await update.message.reply_text(
-        "Привет! Я оркестратор для генерации проектов.\nОпиши, какой проект ты хочешь создать."
+        "🏠 **Главное меню**\n\n"
+        "Привет! Я оркестратор для генерации проектов.\n\n"
+        "Выберите действие или опишите проект в чате:",
+        reply_markup=main_menu_keyboard(),
+        parse_mode="Markdown",
+    )
+
+
+async def menu(update: Update, context) -> None:
+    """Handle /menu command - show main menu."""
+    await update.message.reply_text(
+        "🏠 **Главное меню**\n\nВыберите действие:",
+        reply_markup=main_menu_keyboard(),
+        parse_mode="Markdown",
     )
 
 
@@ -150,7 +166,14 @@ def main() -> None:
         Application.builder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
     )
 
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu))
+
+    # Callback query handler for inline buttons
+    app.add_handler(CallbackQueryHandler(handle_callback_query))
+
+    # Text message handler (goes to LangGraph via Redis)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("telegram_bot_starting")
