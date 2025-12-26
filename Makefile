@@ -12,7 +12,7 @@ export
 
 DOCKER_COMPOSE ?= docker compose
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
-TOOLING := $(COMPOSE_ENV) $(DOCKER_COMPOSE) run --rm tooling
+TOOLING := $(COMPOSE_ENV) $(DOCKER_COMPOSE) run --rm --remove-orphans tooling
 
 # Default target
 help:
@@ -179,4 +179,3 @@ seed:
 	fi
 	@echo "🤖 Seeding agent configurations..."
 	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_agent_configs.py --api-url http://localhost:8000 || echo "  ⚠️  Agent config seeding failed (API may not be ready)"
-
