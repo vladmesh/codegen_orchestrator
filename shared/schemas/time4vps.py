@@ -20,7 +20,7 @@ class Time4VPSServer(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    id: int = Field(..., description="Unique server ID in Time4VPS")
+    id: int = Field(..., description="Unique server ID in Time4VPS", validation_alias="server_id")
     name: str | None = Field(None, description="Server display name")
     domain: str | None = Field(None, description="Server hostname/domain")
     ip: str | None = Field(None, description="Primary IP address")
@@ -36,7 +36,7 @@ class Time4VPSServerDetails(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    id: int = Field(..., description="Unique server ID")
+    id: int = Field(..., description="Unique server ID", validation_alias="server_id")
     name: str | None = Field(None, description="Server display name")
     domain: str | None = Field(None, description="Server hostname")
     ip: str | None = Field(None, description="Primary IP address")
