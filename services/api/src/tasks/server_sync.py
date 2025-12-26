@@ -8,9 +8,9 @@ import os
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.clients.time4vps import Time4VPSClient
 from shared.notifications import notify_admins
 
-from ..clients.time4vps import Time4VPSClient
 from ..database import async_session_maker
 from ..models.api_key import APIKey
 from ..models.server import Server
@@ -39,7 +39,7 @@ async def get_time4vps_client(db: AsyncSession) -> Time4VPSClient | None:
 
     try:
         creds = json.loads(api_key.key_enc)
-        return Time4VPSClient(creds["username"], creds["password"])
+        return Time4VPSClient(username=creds["username"], password=creds["password"])
     except (json.JSONDecodeError, KeyError) as e:
         logger.error(f"Failed to parse Time4VPS credentials: {e}")
         return None
@@ -92,16 +92,16 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
     new_managed_servers = []
 
     for srv in api_servers:
-        ip = srv.get("ip")
+        ip = srv.ip
         if not ip:
             continue
 
-        server_id = srv.get("server_id")
+        server_id = srv.id
         if not server_id:
             logger.warning(f"Server with IP {ip} has no server_id, skipping")
             continue
 
-        hostname = srv.get("domain")
+        hostname = srv.domain
         is_ghost = ip in GHOST_SERVERS
 
         existing = db_servers.get(ip)
@@ -146,7 +146,7 @@ async def _sync_server_list(db: AsyncSession, client: Time4VPSClient):
                 new_managed_servers.append(new_server)
 
     # Check for missing servers
-    api_ips = {s.get("ip") for s in api_servers if s.get("ip")}
+    api_ips = {s.ip for s in api_servers if s.ip}
     for ip, srv in db_servers.items():
         if ip not in api_ips and srv.status != "missing":
             srv.status = "missing"
@@ -178,12 +178,23 @@ async def _sync_server_details(db: AsyncSession, client: Time4VPSClient):
             continue
 
         try:
-            details = await client.get_server_details(int(provider_id))
+            details_model = await client.get_server_details(int(provider_id))
+            # Convert to dict to access raw fields if they are in 'extra' or mapped differently
+            details = details_model.model_dump()
 
             # Update capacity and usage from API
+            # Note: server_sync expects 'ram_limit', schema has 'ram_mb'.
+            # If API provides 'ram_limit', it will be in model_extra (ConfigDict(extra="allow"))
+            # or we should check mapped fields. Sticking to keys found in typical
+            # Time4VPS responses.
+            # Using get() on the dict covers both mapped fields and extra fields.
             server.capacity_cpu = details.get("cpu_cores", server.capacity_cpu)
-            server.capacity_ram_mb = details.get("ram_limit", server.capacity_ram_mb)
-            server.capacity_disk_mb = details.get("disk_limit", server.capacity_disk_mb)
+            server.capacity_ram_mb = details.get(
+                "ram_limit", details.get("ram_mb", server.capacity_ram_mb)
+            )
+            server.capacity_disk_mb = details.get(
+                "disk_limit", details.get("disk_gb", server.capacity_disk_mb)
+            )
             server.used_ram_mb = details.get("ram_used", 0)
             server.used_disk_mb = details.get("disk_usage", 0)
             server.os_template = details.get("os")

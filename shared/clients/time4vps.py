@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import logging
+import os
 import re
 from typing import Any
 
@@ -16,15 +17,29 @@ logger = logging.getLogger(__name__)
 class Time4VPSClient:
     """Client for Time4VPS API."""
 
-    def __init__(self, username: str, password: str):
+    def __init__(self, username: str | None = None, password: str | None = None):
+        """Initialize Time4VPS Client.
+
+        Args:
+            username: Time4VPS username. Defaults to TIME4VPS_USERNAME env var.
+            password: Time4VPS password. Defaults to TIME4VPS_PASSWORD env var.
+        """
         self.base_url = "https://billing.time4vps.com/api"
-        self.username = username
-        self.password = password
+        self.username = username or os.getenv("TIME4VPS_USERNAME")
+        self.password = password or os.getenv("TIME4VPS_PASSWORD")
         self._auth_header: str | None = None
+
+        if not self.username or not self.password:
+            logger.warning(
+                "Time4VPS credentials not provided. Client will fail on authenticated requests."
+            )
 
     def _get_auth_header(self) -> dict[str, str]:
         """Construct Basic Auth header."""
         if not self._auth_header:
+            if not self.username or not self.password:
+                raise ValueError("Time4VPS credentials not set (username/password)")
+            
             auth_str = f"{self.username}:{self.password}"
             encoded_auth = base64.b64encode(auth_str.encode()).decode()
             self._auth_header = f"Basic {encoded_auth}"
@@ -37,6 +52,7 @@ class Time4VPSClient:
             resp = await client.get(f"{self.base_url}/server", headers=headers)
             resp.raise_for_status()
             data = resp.json()
+            # API returns list of servers
             return [Time4VPSServer.model_validate(item) for item in data]
 
     async def get_server_details(self, server_id: int) -> Time4VPSServerDetails:
@@ -94,10 +110,10 @@ class Time4VPSClient:
             TimeoutError: If task doesn't complete within timeout
             ValueError: If password not found in results
         """
-        start_time = asyncio.get_event_loop().time()
+        start_time = asyncio.get_running_loop().time()
 
         while True:
-            elapsed = asyncio.get_event_loop().time() - start_time
+            elapsed = asyncio.get_running_loop().time() - start_time
             if elapsed > timeout:
                 raise TimeoutError(
                     f"Password reset task {task_id} did not complete within {timeout}s"
@@ -264,10 +280,10 @@ class Time4VPSClient:
         Raises:
             TimeoutError: If task doesn't complete within timeout
         """
-        start_time = asyncio.get_event_loop().time()
+        start_time = asyncio.get_running_loop().time()
 
         while True:
-            elapsed = asyncio.get_event_loop().time() - start_time
+            elapsed = asyncio.get_running_loop().time() - start_time
             if elapsed > timeout:
                 raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
 

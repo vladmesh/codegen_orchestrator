@@ -14,9 +14,9 @@ import os
 from langchain_core.messages import AIMessage
 import structlog
 
+from shared.clients.time4vps import Time4VPSClient
 from shared.notifications import notify_admins
 
-from ..clients.time4vps import Time4VPSClient
 from ..nodes.base import log_node_execution
 from .ansible_runner import PROVISIONING_TIMEOUT, REINSTALL_TIMEOUT, run_ansible_playbook
 from .api_client import (
@@ -190,9 +190,7 @@ async def reinstall_and_provision(
         logger.error("reinstall_timeout", error=str(e))
         return False, f"Reinstall timeout: {e}"
     except Exception as e:
-        logger.error(
-            "reinstall_failed", error=str(e), error_type=type(e).__name__, exc_info=True
-        )
+        logger.error("reinstall_failed", error=str(e), error_type=type(e).__name__, exc_info=True)
         return False, f"Reinstall failed: {e}"
 
 

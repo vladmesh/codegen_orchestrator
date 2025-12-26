@@ -4,7 +4,7 @@ from typing import Annotated, Any
 
 from langchain_core.tools import tool
 
-from ..clients.time4vps import Time4VPSClient
+from shared.clients.time4vps import Time4VPSClient
 
 client = Time4VPSClient()
 
