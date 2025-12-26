@@ -4,20 +4,23 @@ Client for requesting coding worker spawns via Redis pub/sub.
 Used by LangGraph nodes to trigger container spawning.
 """
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import json
-import os
 import uuid
 
+from pydantic import ValidationError
 import redis.asyncio as redis
 
 from shared.logging_config import get_logger
+from shared.schemas.worker_events import WorkerEventUnion, parse_worker_event
+from src.config.settings import get_settings
 
 logger = get_logger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SPAWN_CHANNEL = "worker:spawn"
 RESULT_CHANNEL = "worker:result"
+EVENTS_CHANNEL_PREFIX = "worker:events"
 
 
 @dataclass
@@ -43,6 +46,12 @@ class SpawnResult:
     exit_code: int
     output: str
     commit_sha: str | None = None
+    branch: str | None = None
+    files_changed: list[str] | None = None
+    summary: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    logs_tail: str | None = None
 
 
 async def request_spawn(
@@ -83,7 +92,8 @@ async def request_spawn(
         timeout_seconds=timeout_seconds,
     )
 
-    redis_client = redis.from_url(REDIS_URL)
+    settings = get_settings()
+    redis_client = redis.from_url(settings.redis_url)
     pubsub = redis_client.pubsub()
 
     # Subscribe to result channel before publishing request
@@ -129,4 +139,46 @@ async def request_spawn(
         )
     finally:
         await pubsub.unsubscribe(result_channel)
+        await redis_client.aclose()
+
+
+async def subscribe_worker_events(
+    request_id: str,
+    stop_on_terminal: bool = False,
+) -> AsyncIterator[WorkerEventUnion]:
+    """Subscribe to worker events for a specific request."""
+
+    settings = get_settings()
+    redis_client = redis.from_url(settings.redis_url)
+    pubsub = redis_client.pubsub()
+    channel = f"{EVENTS_CHANNEL_PREFIX}:{request_id}"
+    await pubsub.subscribe(channel)
+
+    try:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+
+            try:
+                data = json.loads(message["data"])
+            except json.JSONDecodeError:
+                logger.warning("worker_event_invalid_json", request_id=request_id)
+                continue
+
+            try:
+                event = parse_worker_event(data)
+            except ValidationError as exc:
+                logger.warning(
+                    "worker_event_validation_failed",
+                    request_id=request_id,
+                    errors=exc.errors(),
+                )
+                continue
+
+            yield event
+
+            if stop_on_terminal and event.event_type in ("completed", "failed"):
+                return
+    finally:
+        await pubsub.unsubscribe(channel)
         await redis_client.aclose()

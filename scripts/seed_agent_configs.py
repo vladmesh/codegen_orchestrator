@@ -61,7 +61,19 @@ def seed_agent_configs(api_url: str, configs_path: Path) -> bool:
                 # Check if already exists
                 resp = client.get(f"{api_url}/api/agent-configs/{config['id']}")
                 if resp.status_code == httpx.codes.OK:
-                    print(f"  ⏭️  Agent config '{config['id']}' already exists, skipping")
+                    payload = {k: v for k, v in config.items() if k != "id"}
+                    resp = client.patch(
+                        f"{api_url}/api/agent-configs/{config['id']}",
+                        json=payload,
+                    )
+                    if resp.status_code == httpx.codes.OK:
+                        print(f"  🔁 Updated agent config: {config['id']}")
+                    else:
+                        print(
+                            f"  ❌ Failed to update '{config['id']}': "
+                            f"{resp.status_code} - {resp.text}"
+                        )
+                        success = False
                     continue
 
                 # Create new config
@@ -98,7 +110,19 @@ def seed_cli_agent_configs(api_url: str, configs_path: Path) -> bool:
                 # Check if already exists
                 resp = client.get(f"{api_url}/api/cli-agent-configs/{config['id']}")
                 if resp.status_code == httpx.codes.OK:
-                    print(f"  ⏭️  CLI Agent config '{config['id']}' already exists, skipping")
+                    payload = {k: v for k, v in config.items() if k != "id"}
+                    resp = client.patch(
+                        f"{api_url}/api/cli-agent-configs/{config['id']}",
+                        json=payload,
+                    )
+                    if resp.status_code == httpx.codes.OK:
+                        print(f"  🔁 Updated CLI agent config: {config['id']}")
+                    else:
+                        print(
+                            f"  ❌ Failed to update CLI '{config['id']}': "
+                            f"{resp.status_code} - {resp.text}"
+                        )
+                        success = False
                     continue
 
                 # Create new config

@@ -17,8 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Copier and Jinja2
-RUN pip3 install --no-cache-dir copier jinja2
+# Install Copier, Jinja2, and Redis client
+RUN pip3 install --no-cache-dir copier jinja2 redis
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -38,6 +38,7 @@ ENV PATH="/root/.local/bin:$PATH"
 
 # Copy scripts
 COPY scripts/execute_task.sh /scripts/execute_task.sh
+COPY scripts/publish_event.py /scripts/publish_event.py
 RUN chmod +x /scripts/execute_task.sh
 
 WORKDIR /workspace

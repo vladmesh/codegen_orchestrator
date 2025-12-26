@@ -38,9 +38,11 @@ COPY services/api/src ./src
 
 COPY alembic ./alembic
 COPY alembic.ini ./
+COPY services/api/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Expose port
 EXPOSE 8000
 
-# Run application
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run application (migrations first)
+CMD ["/entrypoint.sh"]

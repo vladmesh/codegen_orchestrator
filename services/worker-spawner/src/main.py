@@ -5,6 +5,7 @@ for AI coding tasks (Factory.ai Droid).
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import tempfile
@@ -16,12 +17,16 @@ import redis.asyncio as redis
 import structlog
 
 from shared.logging_config import setup_logging
+from shared.schemas.worker_events import WorkerCompleted, WorkerFailed
+
+from src.config import get_settings
+from src.event_listener import wait_for_terminal_event
 
 logger = structlog.get_logger()
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 SPAWN_CHANNEL = "worker:spawn"
 RESULT_CHANNEL = "worker:result"
+EVENTS_CHANNEL_PREFIX = "worker:events"
 
 
 @dataclass
@@ -47,9 +52,48 @@ class SpawnResult:
     exit_code: int
     output: str
     commit_sha: str | None = None
+    branch: str | None = None
+    files_changed: list[str] | None = None
+    summary: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    logs_tail: str | None = None
 
 
-async def spawn_container(request: SpawnRequest) -> SpawnResult:
+def result_from_event(event: WorkerCompleted | WorkerFailed) -> SpawnResult:
+    """Convert a worker event into a spawn result."""
+
+    if isinstance(event, WorkerCompleted):
+        return SpawnResult(
+            request_id=event.request_id,
+            success=True,
+            exit_code=0,
+            output=event.summary,
+            commit_sha=event.commit_sha,
+            branch=event.branch,
+            files_changed=event.files_changed,
+            summary=event.summary,
+        )
+
+    output = event.error_message
+    if event.logs_tail:
+        output = f"{event.error_message}\n\n{event.logs_tail}"
+    return SpawnResult(
+        request_id=event.request_id,
+        success=False,
+        exit_code=1,
+        output=output,
+        error_type=event.error_type,
+        error_message=event.error_message,
+        logs_tail=event.logs_tail,
+    )
+
+
+async def spawn_container(
+    request: SpawnRequest,
+    redis_url: str,
+    events_channel: str,
+) -> SpawnResult:
     """Spawn a Docker container to run the coding task."""
     factory_api_key = os.getenv("FACTORY_AI_API_KEY")
     if not factory_api_key:
@@ -85,6 +129,12 @@ async def spawn_container(request: SpawnRequest) -> SpawnResult:
         f"TASK_TITLE={request.task_title}",
         "-e",
         f"MODEL={request.model}",
+        "-e",
+        f"ORCHESTRATOR_REDIS_URL={redis_url}",
+        "-e",
+        f"ORCHESTRATOR_REQUEST_ID={request.request_id}",
+        "-e",
+        f"ORCHESTRATOR_EVENTS_CHANNEL={events_channel}",
     ]
 
     if request.agents_content:
@@ -185,16 +235,54 @@ async def spawn_container(request: SpawnRequest) -> SpawnResult:
             os.remove(cid_path)
 
 
-async def handle_request(redis_client: redis.Redis, message: dict[str, Any]) -> None:
+async def handle_request(
+    redis_client: redis.Redis,
+    message: dict[str, Any],
+    redis_url: str,
+) -> None:
     """Handle a spawn request from Redis."""
+    pubsub = None
+    events_channel = None
     try:
         data = json.loads(message["data"])
         request = SpawnRequest(**data)
 
         logger.info("spawn_request_received", request_id=request.request_id, repo=request.repo)
 
-        # Spawn the container
-        result = await spawn_container(request)
+        events_channel = f"{EVENTS_CHANNEL_PREFIX}:{request.request_id}"
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(events_channel)
+
+        spawn_task = asyncio.create_task(
+            spawn_container(request, redis_url, events_channel),
+        )
+        event_task = asyncio.create_task(wait_for_terminal_event(pubsub))
+
+        done, _pending = await asyncio.wait(
+            {spawn_task, event_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        event = None
+        if event_task in done:
+            event = event_task.result()
+            spawn_result = await spawn_task
+        else:
+            spawn_result = spawn_task.result()
+            try:
+                event = await asyncio.wait_for(event_task, timeout=5)
+            except TimeoutError:
+                event = None
+
+        if event_task and not event_task.done():
+            event_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await event_task
+
+        if isinstance(event, (WorkerCompleted, WorkerFailed)):
+            result = result_from_event(event)
+        else:
+            result = spawn_result
 
         # Publish result back to Redis
         result_data = asdict(result)
@@ -216,14 +304,21 @@ async def handle_request(redis_client: redis.Redis, message: dict[str, Any]) -> 
             error_type=type(e).__name__,
             exc_info=True,
         )
+    finally:
+        if pubsub and events_channel:
+            await pubsub.unsubscribe(events_channel)
+            close_result = pubsub.close()
+            if asyncio.iscoroutine(close_result):
+                await close_result
 
 
 async def main() -> None:
     """Main loop - listen for spawn requests."""
     setup_logging(service_name="worker_spawner")
-    logger.info("worker_spawner_starting", redis_url=REDIS_URL)
+    settings = get_settings()
+    logger.info("worker_spawner_starting", redis_url=settings.redis_url)
 
-    redis_client = redis.from_url(REDIS_URL)
+    redis_client = redis.from_url(settings.redis_url)
     pubsub = redis_client.pubsub()
 
     await pubsub.subscribe(SPAWN_CHANNEL)
@@ -232,7 +327,7 @@ async def main() -> None:
     async for message in pubsub.listen():
         if message["type"] == "message":
             # Handle request in background to not block listener
-            asyncio.create_task(handle_request(redis_client, message))
+            asyncio.create_task(handle_request(redis_client, message, settings.redis_url))
 
 
 if __name__ == "__main__":

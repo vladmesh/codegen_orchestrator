@@ -1,5 +1,6 @@
 """Server schemas."""
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -34,6 +35,7 @@ class ServerRead(ServerBase):
     used_ram_mb: int = 0
     used_disk_mb: int = 0
     os_template: str | None = None
+    provisioning_started_at: datetime | None = None
 
     # Exclude ssh_key from public read model
     model_config = ConfigDict(from_attributes=True)
