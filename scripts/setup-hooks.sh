@@ -19,8 +19,18 @@ cd "$REPO_ROOT"
 chmod +x .githooks/pre-commit
 chmod +x .githooks/pre-push
 
-# Configure git to use .githooks directory
-git config core.hooksPath .githooks
+# Install hooks into .git/hooks (default hook location)
+GIT_HOOKS_DIR=$(git rev-parse --git-path hooks)
+mkdir -p "$GIT_HOOKS_DIR"
+
+for hook in pre-commit pre-push; do
+    if ! ln -sf "$REPO_ROOT/.githooks/$hook" "$GIT_HOOKS_DIR/$hook"; then
+        cp -f "$REPO_ROOT/.githooks/$hook" "$GIT_HOOKS_DIR/$hook"
+    fi
+done
+
+# Ensure repo uses .git/hooks even if user has a global hooksPath
+git config core.hooksPath .git/hooks
 
 echo -e "${GREEN}✅ Git hooks installed successfully!${NC}"
 echo ""

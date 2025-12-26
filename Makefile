@@ -63,7 +63,7 @@ lint:
 	$(TOOLING) ruff check .
 
 format:
-	$(TOOLING) sh -c "ruff format . && ruff check --fix ."
+	$(TOOLING) sh -c "ruff format $(if $(FILES),$(FILES),.) && ruff check --fix $(if $(FILES),$(FILES),.)"
 
 # === Git Hooks ===
 
@@ -179,5 +179,4 @@ seed:
 	fi
 	@echo "🤖 Seeding agent configurations..."
 	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_agent_configs.py --api-url http://localhost:8000 || echo "  ⚠️  Agent config seeding failed (API may not be ready)"
-
 
