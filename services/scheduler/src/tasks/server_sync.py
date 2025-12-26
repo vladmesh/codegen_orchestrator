@@ -9,10 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.clients.time4vps import Time4VPSClient
 from shared.models.api_key import APIKey
 from shared.models.server import Server
 from shared.notifications import notify_admins
-from src.clients.time4vps import Time4VPSClient
 from src.db import async_session_maker
 
 from .provisioner_trigger import publish_provisioner_trigger
