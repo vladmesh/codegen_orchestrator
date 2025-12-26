@@ -152,7 +152,7 @@ async def listen_provisioner_triggers():
         pubsub = client.pubsub()
         await pubsub.subscribe(PROVISIONER_TRIGGER_CHANNEL)
 
-        logger.info(f"Subscribed to provisioning triggers on {PROVISIONER_TRIGGER_CHANNEL}")
+        logger.info("provisioner_subscribed", channel=PROVISIONER_TRIGGER_CHANNEL)
 
         async for message in pubsub.listen():
             if message["type"] == "message":
@@ -160,11 +160,21 @@ async def listen_provisioner_triggers():
                     data = json.loads(message["data"])
                     await process_provisioning_trigger(data)
                 except Exception as e:
-                    logger.error(f"Error processing trigger: {e}")
+                    logger.error(
+                        "provisioner_trigger_processing_failed",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        exc_info=True,
+                    )
     except asyncio.CancelledError:
-        logger.info("Provisioner listener cancelled")
+        logger.info("provisioner_listener_cancelled")
     except Exception as e:
-        logger.error(f"Provisioner listener failed: {e}")
+        logger.error(
+            "provisioner_listener_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
     finally:
         await client.close()
 

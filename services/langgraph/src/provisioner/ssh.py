@@ -1,10 +1,11 @@
 """SSH utilities for provisioner."""
 
-import logging
 import os
 import subprocess
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger()
 
 
 def get_ssh_public_key() -> str | None:

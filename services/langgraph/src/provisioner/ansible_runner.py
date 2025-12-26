@@ -1,11 +1,12 @@
 """Ansible playbook execution for provisioner."""
 
-import logging
 import os
 import subprocess
 import tempfile
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger()
 
 MAX_LOG_LENGTH = 1000
 
@@ -75,7 +76,13 @@ def run_ansible_playbook(
     ]
 
     auth_mode = "password" if root_password else "key"
-    logger.info(f"Running '{playbook_name}' for {server_handle} at {server_ip} (auth: {auth_mode})")
+    logger.info(
+        "ansible_playbook_start",
+        playbook=playbook_name,
+        server_handle=server_handle,
+        server_ip=server_ip,
+        auth_mode=auth_mode,
+    )
 
     try:
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)  # noqa: S603
@@ -86,10 +93,10 @@ def run_ansible_playbook(
             if len(process.stdout) > MAX_LOG_LENGTH
             else process.stdout
         )
-        logger.info(f"Ansible stdout:\n{stdout_brief}")
+        logger.debug("ansible_stdout", output=stdout_brief)
 
         if process.stderr:
-            logger.warning(f"Ansible stderr:\n{process.stderr}")
+            logger.warning("ansible_stderr", output=process.stderr[:MAX_LOG_LENGTH])
 
         success = process.returncode == 0
         if success:
@@ -106,10 +113,16 @@ def run_ansible_playbook(
         return success, output
 
     except subprocess.TimeoutExpired:
-        logger.error(f"Playbook {playbook_name} timeout after {timeout}s")
+        logger.error("ansible_playbook_timeout", playbook=playbook_name, timeout=timeout)
         return False, f"Timeout after {timeout}s"
     except Exception as e:
-        logger.exception(f"Provisioning exception: {e}")
+        logger.error(
+            "ansible_playbook_exception",
+            playbook=playbook_name,
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
         return False, str(e)
     finally:
         # Cleanup

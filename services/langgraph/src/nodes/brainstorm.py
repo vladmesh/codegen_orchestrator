@@ -11,7 +11,7 @@ from typing import Any
 from langchain_core.messages import SystemMessage
 
 from ..tools import create_project
-from .base import BaseAgentNode
+from .base import BaseAgentNode, log_node_execution
 
 
 class BrainstormNode(BaseAgentNode):
@@ -31,6 +31,7 @@ class BrainstormNode(BaseAgentNode):
 _node = BrainstormNode("brainstorm", [create_project])
 
 
+@log_node_execution("brainstorm")
 async def run(state: dict) -> dict:
     """Run brainstorm agent.
 
@@ -58,6 +59,7 @@ async def run(state: dict) -> dict:
     }
 
 
+@log_node_execution("brainstorm_tools")
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Brainstorm LLM.
 

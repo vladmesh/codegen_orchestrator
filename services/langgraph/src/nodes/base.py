@@ -4,18 +4,76 @@ Provides:
 - Dynamic prompt loading from database (no fallbacks - fail fast)
 - Common tool execution logic
 - Error handling and logging
+- Node execution decorator for structured logging
 """
 
-import logging
-from typing import Any
+from collections.abc import Callable
+from functools import wraps
+import time
+from typing import Any, TypeVar
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
+import structlog
 
 from ..config.agent_config_cache import agent_config_cache
 from ..llm.factory import LLMFactory
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
+
+T = TypeVar("T")
+
+
+def log_node_execution(node_name: str) -> Callable:
+    """Decorator to log node start/end and inject context.
+
+    Args:
+        node_name: Name of the node for logging context.
+
+    Returns:
+        Decorated async function with structured logging.
+    """
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        async def wrapper(state: dict, *args: Any, **kwargs: Any) -> T:
+            # Inject node context
+            structlog.contextvars.bind_contextvars(
+                node=node_name,
+                thread_id=state.get("thread_id"),
+            )
+
+            logger.info("node_start")
+            start = time.time()
+
+            try:
+                result = await func(state, *args, **kwargs)
+                duration = (time.time() - start) * 1000
+
+                state_updates = list(result.keys()) if isinstance(result, dict) else []
+                logger.info(
+                    "node_complete",
+                    duration_ms=round(duration, 2),
+                    state_updates=state_updates,
+                )
+
+                return result
+
+            except Exception as e:
+                duration = (time.time() - start) * 1000
+
+                logger.error(
+                    "node_failed",
+                    duration_ms=round(duration, 2),
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
+                )
+                raise
+
+        return wrapper
+
+    return decorator
 
 
 class BaseAgentNode:
@@ -106,7 +164,7 @@ class BaseAgentNode:
         tool_func = self.tools_map.get(tool_name)
 
         if not tool_func:
-            logger.warning(f"Unknown tool called: {tool_name}")
+            logger.warning("unknown_tool_called", tool_name=tool_name)
             return {
                 "message": ToolMessage(
                     content=f"Unknown tool: {tool_name}",
@@ -135,7 +193,13 @@ class BaseAgentNode:
                 "state_updates": state_updates,
             }
         except Exception as e:
-            logger.exception(f"Tool {tool_name} failed: {e}")
+            logger.error(
+                "tool_execution_failed",
+                tool_name=tool_name,
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
             return {
                 "message": ToolMessage(
                     content=f"Error executing {tool_name}: {e!s}",

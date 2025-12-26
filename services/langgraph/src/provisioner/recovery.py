@@ -1,15 +1,16 @@
 """Service recovery for provisioner - redeploys services after server recovery."""
 
-import logging
 import os
 import subprocess
 import tempfile
+
+import structlog
 
 from shared.notifications import notify_admins
 
 from .api_client import get_services_on_server
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 MAX_ERROR_PREVIEW = 5
 
@@ -59,7 +60,7 @@ async def redeploy_service(
 
     cmd = ["ansible-playbook", "-i", inventory_path, playbook_path, "--extra-vars", extra_vars]
 
-    logger.info(f"Redeploying {service_name} to {server_ip}:{port}")
+    logger.info("service_redeploying", service_name=service_name, server_ip=server_ip, port=port)
 
     try:
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -96,10 +97,10 @@ async def redeploy_all_services(
     services = await get_services_on_server(server_handle)
 
     if not services:
-        logger.info(f"No services to redeploy on {server_handle}")
+        logger.info("no_services_to_redeploy", server_handle=server_handle)
         return 0, 0, []
 
-    logger.info(f"Found {len(services)} services to redeploy on {server_handle}")
+    logger.info("services_found_for_redeployment", server_handle=server_handle, count=len(services))
 
     # Get GitHub token
     github_client = GitHubAppClient()
@@ -128,11 +129,11 @@ async def redeploy_all_services(
 
         if success:
             success_count += 1
-            logger.info(f"✅ {message}")
+            logger.info("service_redeployed", service_name=service_name)
         else:
             fail_count += 1
             errors.append(f"{service_name}: {message}")
-            logger.error(f"❌ {message}")
+            logger.error("service_redeploy_failed", service_name=service_name, error=message)
 
     # Notify about results
     if fail_count == 0 and success_count > 0:

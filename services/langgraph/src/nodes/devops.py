@@ -4,17 +4,18 @@ Orchestrates the deployment of the application using Ansible.
 Runs after the Developer agent/worker has completed implementation.
 """
 
-import logging
 import os
 import subprocess
 import tempfile
 
 import httpx
 from langchain_core.messages import AIMessage
+import structlog
 
 from ..clients.github import GitHubAppClient
+from .base import log_node_execution
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 async def create_service_deployment_record(
@@ -39,16 +40,27 @@ async def create_service_deployment_record(
         async with httpx.AsyncClient() as client:
             resp = await client.post(f"{api_url}/api/service-deployments/", json=payload)
             if resp.status_code == httpx.codes.CREATED:
-                logger.info(f"Created service deployment record for {service_name}")
+                logger.info("service_deployment_record_created", service_name=service_name)
                 return True
             else:
-                logger.error(f"Failed to create service deployment record: {resp.text}")
+                logger.error(
+                    "service_deployment_record_failed",
+                    service_name=service_name,
+                    status_code=resp.status_code,
+                    response=resp.text[:200],
+                )
                 return False
     except Exception as e:
-        logger.error(f"Error creating service deployment record: {e}")
+        logger.error(
+            "service_deployment_record_error",
+            service_name=service_name,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
         return False
 
 
+@log_node_execution("devops")
 async def run(state: dict) -> dict:
     """Run devops agent.
 
@@ -100,7 +112,12 @@ async def run(state: dict) -> dict:
     try:
         token = await github_client.get_token(owner, repo)
     except Exception as e:
-        logger.exception(f"Failed to get GitHub token: {e}")
+        logger.error(
+            "github_token_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
         return {
             "errors": state.get("errors", []) + [f"Failed to get GitHub token: {e}"],
             "messages": [AIMessage(content=f"❌ Failed to get GitHub token: {e}")],
@@ -140,7 +157,12 @@ async def run(state: dict) -> dict:
 
     cmd = ["ansible-playbook", "-i", inventory_path, playbook_path, "--extra-vars", extra_vars]
 
-    logger.info(f"Running deployment for {repo_full_name} on {target_server_ip}:{target_port}")
+    logger.info(
+        "deployment_start",
+        repo=repo_full_name,
+        server_ip=target_server_ip,
+        port=target_port,
+    )
 
     try:
         # Run Ansible
@@ -181,7 +203,11 @@ Port: {target_port}
                 "current_agent": "devops",
             }
         else:
-            logger.error(f"Ansible failed: {process.stderr}")
+            logger.error(
+                "ansible_failed",
+                exit_code=process.returncode,
+                stderr=process.stderr[-500:] if process.stderr else None,
+            )
             return {
                 "errors": state.get("errors", []) + ["Deployment failed"],
                 "messages": [
@@ -196,7 +222,12 @@ Port: {target_port}
             }
 
     except Exception as e:
-        logger.exception("Deployment exception")
+        logger.error(
+            "deployment_exception",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
         return {
             "errors": state.get("errors", []) + [f"Deployment exception: {e}"],
             "messages": [AIMessage(content=f"❌ Deployment crashed: {e}")],

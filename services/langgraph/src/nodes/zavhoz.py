@@ -7,10 +7,10 @@ not by the agent directly. This saves tokens and keeps secrets isolated.
 Uses BaseAgentNode for dynamic prompt loading from database.
 """
 
-import logging
 from typing import Any
 
 from langchain_core.messages import SystemMessage
+import structlog
 
 from ..tools import (
     allocate_port,
@@ -20,9 +20,9 @@ from ..tools import (
     get_server_info,
     list_managed_servers,
 )
-from .base import BaseAgentNode
+from .base import BaseAgentNode, log_node_execution
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Initialize Tools
 tools = [
@@ -55,12 +55,12 @@ class ZavhozNode(BaseAgentNode):
 _node = ZavhozNode("zavhoz", tools)
 
 
+@log_node_execution("zavhoz")
 async def run(state: dict) -> dict:
     """Run zavhoz agent.
 
     Reads infrastructure data from DB and allocates resources.
     """
-    logger.info("Starting Zavhoz agent run...")
 
     messages = state.get("messages", [])
     project_spec = state.get("project_spec", {})
@@ -101,6 +101,7 @@ async def run(state: dict) -> dict:
     }
 
 
+@log_node_execution("zavhoz_tools")
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Zavhoz LLM.
 

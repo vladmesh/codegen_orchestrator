@@ -22,7 +22,7 @@ from ..tools import (
     save_project_secret,
     set_project_maintenance,
 )
-from .base import BaseAgentNode
+from .base import BaseAgentNode, log_node_execution
 
 # Tools available to PO
 tools = [
@@ -64,6 +64,7 @@ def _format_project_line(project: dict) -> str:
     return f"- {project_id} ({name}) [{status}]{description}"
 
 
+@log_node_execution("product_owner")
 async def run(state: dict) -> dict:
     """Run Product Owner agent."""
     messages = state.get("messages", [])
@@ -84,6 +85,7 @@ async def run(state: dict) -> dict:
     }
 
 
+@log_node_execution("product_owner_tools")
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Product Owner LLM.
 

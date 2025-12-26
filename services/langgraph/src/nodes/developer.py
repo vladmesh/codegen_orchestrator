@@ -4,15 +4,14 @@ Orchestrates the implementation of business logic by spawning a Factory.ai worke
 This node runs after the Architect has set up the initial project structure.
 """
 
-import logging
-
 from langchain_core.messages import AIMessage
+import structlog
 
 from ..clients.github import GitHubAppClient
 from ..clients.worker_spawner import request_spawn
 from .base import BaseAgentNode
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 class DeveloperNode(BaseAgentNode):
@@ -76,7 +75,7 @@ class DeveloperNode(BaseAgentNode):
                 ]
             }
 
-        logger.info(f"Spawning developer worker for repository: {repo_name}")
+        logger.info("spawning_developer_worker", repo_name=repo_name)
 
         try:
             # Get GitHub App installation token for authentication
@@ -128,7 +127,12 @@ class DeveloperNode(BaseAgentNode):
                 }
 
         except Exception as e:
-            logger.error(f"Error spawning developer worker: {e}", exc_info=True)
+            logger.error(
+                "developer_worker_spawn_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
             return {
                 "messages": [AIMessage(content=f"❌ Error spawning developer worker: {str(e)}")]
             }

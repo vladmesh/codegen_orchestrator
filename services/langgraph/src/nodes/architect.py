@@ -6,19 +6,19 @@ Generates high-level architecture without business logic.
 Uses BaseAgentNode for dynamic prompt loading from database.
 """
 
-import logging
 import os
 from typing import Any
 
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import tool
+import structlog
 
 from ..clients.github import GitHubAppClient
 from ..clients.worker_spawner import request_spawn
 from ..tools.github import create_github_repo, get_github_token
-from .base import BaseAgentNode
+from .base import BaseAgentNode, log_node_execution
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @tool
@@ -55,6 +55,7 @@ class ArchitectNode(BaseAgentNode):
 _node = ArchitectNode("architect", tools)
 
 
+@log_node_execution("architect")
 async def run(state: dict) -> dict:
     """Run architect agent.
 
@@ -96,6 +97,7 @@ Entry Points: {project_spec.get("entry_points", [])}
     }
 
 
+@log_node_execution("architect_tools")
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Architect LLM.
 
@@ -106,6 +108,7 @@ async def execute_tools(state: dict) -> dict:
     return await _node.execute_tools(state)
 
 
+@log_node_execution("architect_spawn_worker")
 async def spawn_factory_worker(state: dict) -> dict:
     """Spawn Factory.ai worker to generate project structure.
 
@@ -136,7 +139,12 @@ async def spawn_factory_worker(state: dict) -> dict:
     try:
         token = await github_client.get_token(owner, repo)
     except Exception as e:
-        logger.exception(f"Failed to get GitHub token: {e}")
+        logger.error(
+            "github_token_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
         return {
             "messages": [AIMessage(content=f"❌ Failed to get GitHub token: {e}")],
             "errors": state.get("errors", []) + [str(e)],
@@ -200,7 +208,7 @@ Initialize this repository using the `service-template` framework.
 Initial project structure for {project_spec.get("name", "project")} using service-template
 """
 
-    logger.info(f"Spawning Factory worker for {repo_full_name}")
+    logger.info("spawning_factory_worker", repo=repo_full_name)
 
     result = await request_spawn(
         repo=repo_full_name,

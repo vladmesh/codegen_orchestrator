@@ -1,12 +1,12 @@
 """API endpoints for OpenRouter model management."""
 
 from datetime import datetime, timedelta
-import logging
 
 from fastapi import APIRouter, HTTPException, Query
 import httpx
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 router = APIRouter()
 
@@ -59,7 +59,7 @@ async def list_available_models(
         }
 
     except httpx.HTTPError as e:
-        logger.error(f"Failed to fetch OpenRouter models: {e}")
+        logger.error("openrouter_fetch_failed", error=str(e), error_type=type(e).__name__)
         raise HTTPException(
             status_code=503,
             detail="Failed to fetch models from OpenRouter API",
@@ -96,7 +96,7 @@ async def get_model_details(model_id: str):
     except HTTPException:
         raise
     except httpx.HTTPError as e:
-        logger.error(f"Failed to fetch OpenRouter models: {e}")
+        logger.error("openrouter_fetch_failed", error=str(e), error_type=type(e).__name__)
         raise HTTPException(
             status_code=503,
             detail="Failed to fetch models from OpenRouter API",
@@ -116,11 +116,11 @@ async def _fetch_openrouter_models() -> list[dict]:
 
     # Check cache validity
     if _is_cache_valid():
-        logger.debug("Returning cached OpenRouter models")
+        logger.debug("openrouter_cache_hit")
         return _models_cache
 
     # Fetch fresh data from OpenRouter
-    logger.info("Fetching models from OpenRouter API...")
+    logger.info("openrouter_fetching_models")
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get("https://openrouter.ai/api/v1/models")
@@ -130,7 +130,7 @@ async def _fetch_openrouter_models() -> list[dict]:
     _models_cache = data.get("data", [])
     _cache_timestamp = datetime.now()
 
-    logger.info(f"Cached {len(_models_cache)} models from OpenRouter")
+    logger.info("openrouter_models_cached", model_count=len(_models_cache))
     return _models_cache
 
 

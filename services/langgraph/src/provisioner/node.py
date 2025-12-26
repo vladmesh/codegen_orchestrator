@@ -9,14 +9,15 @@ Handles automated server provisioning:
 """
 
 import asyncio
-import logging
 import os
 
 from langchain_core.messages import AIMessage
+import structlog
 
 from shared.notifications import notify_admins
 
 from ..clients.time4vps import Time4VPSClient
+from ..nodes.base import log_node_execution
 from .ansible_runner import PROVISIONING_TIMEOUT, REINSTALL_TIMEOUT, run_ansible_playbook
 from .api_client import (
     get_server_info,
@@ -27,7 +28,7 @@ from .incidents import create_incident, resolve_active_incidents
 from .recovery import redeploy_all_services
 from .ssh import check_ssh_access, get_ssh_public_key
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Configuration from environment
 PROVISIONING_MAX_RETRIES = int(os.getenv("PROVISIONING_MAX_RETRIES", "3"))
@@ -50,13 +51,13 @@ async def reset_server_password(
     """
     server_id = await time4vps_client.get_server_id_by_handle(server_handle)
     if not server_id:
-        logger.error(f"Cannot reset password: server {server_handle} not found")
+        logger.error("password_reset_server_not_found", server_handle=server_handle)
         return None
 
     try:
-        logger.info(f"Triggering password reset for server {server_handle} (ID: {server_id})")
+        logger.info("password_reset_triggered", server_handle=server_handle, server_id=server_id)
         task_id = await time4vps_client.reset_password(server_id)
-        logger.info(f"Password reset task created: {task_id}")
+        logger.info("password_reset_task_created", task_id=task_id)
 
         password = await time4vps_client.wait_for_password_reset(
             server_id,
@@ -65,14 +66,19 @@ async def reset_server_password(
             poll_interval=PASSWORD_RESET_POLL_INTERVAL,
         )
 
-        logger.info(f"Password reset completed for server {server_handle}")
+        logger.info("password_reset_completed", server_handle=server_handle)
         return password
 
     except TimeoutError as e:
-        logger.error(f"Password reset timeout: {e}")
+        logger.error("password_reset_timeout", error=str(e))
         return None
     except Exception as e:
-        logger.exception(f"Password reset failed: {e}")
+        logger.error(
+            "password_reset_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
         return None
 
 
@@ -100,7 +106,7 @@ async def reinstall_and_provision(
     Returns:
         Tuple of (success: bool, message: str)
     """
-    logger.info(f"🔄 Starting full OS reinstall for {server_handle} (ID: {server_id})")
+    logger.info("os_reinstall_start", server_handle=server_handle, server_id=server_id)
 
     try:
         # Step 1: Trigger reinstall
@@ -108,7 +114,7 @@ async def reinstall_and_provision(
             server_id=server_id, os_template=os_template, ssh_key=ssh_public_key
         )
 
-        logger.info(f"Reinstall task created: {task_id}. Waiting for completion...")
+        logger.info("reinstall_task_created", task_id=task_id)
 
         await notify_admins(
             f"⏳ Server *{server_handle}* OS reinstall started. This will take ~10-15 minutes.",
@@ -123,7 +129,7 @@ async def reinstall_and_provision(
             poll_interval=15,
         )
 
-        logger.info(f"OS reinstall completed for {server_handle}")
+        logger.info("os_reinstall_completed", server_handle=server_handle)
 
         # Extract password from reinstall result
         results = task_result.get("results", "")
@@ -181,10 +187,12 @@ async def reinstall_and_provision(
             return False, f"Phase 2 (Software) failed: {output_soft[:500]}"
 
     except TimeoutError as e:
-        logger.error(f"Reinstall timeout: {e}")
+        logger.error("reinstall_timeout", error=str(e))
         return False, f"Reinstall timeout: {e}"
     except Exception as e:
-        logger.exception(f"Reinstall failed: {e}")
+        logger.error(
+            "reinstall_failed", error=str(e), error_type=type(e).__name__, exc_info=True
+        )
         return False, f"Reinstall failed: {e}"
 
 
@@ -218,7 +226,7 @@ async def handle_provisioning_success(
         await resolve_active_incidents(server_handle)
 
         # Redeploy services
-        logger.info(f"Starting service redeployment on {server_handle}")
+        logger.info("service_redeployment_start", server_handle=server_handle)
         services_redeployed, services_failed, errors = await redeploy_all_services(
             server_handle, server_ip
         )
@@ -259,6 +267,7 @@ The server is now configured with:
     }
 
 
+@log_node_execution("provisioner")
 async def run(state: dict) -> dict:
     """Run provisioner node.
 
@@ -356,21 +365,23 @@ async def run(state: dict) -> dict:
                 "errors": state.get("errors", []) + ["Server not found in Time4VPS"],
             }
 
-    logger.info(f"Starting provisioning for {server_handle} (attempt {provisioning_attempts + 1})")
+    logger.info(
+        "provisioning_start",
+        server_handle=server_handle,
+        attempt=provisioning_attempts + 1,
+    )
 
     # Decide: reinstall or existing access
     use_reinstall = False
     if check_ssh_access(server_ip):
-        logger.info(f"Server {server_handle} is accessible via SSH Key. Skipping reinstall.")
+        logger.info("ssh_access_ok", server_handle=server_handle)
     else:
-        logger.info(
-            f"Server {server_handle} NOT accessible via SSH Key. Initiating Reinstall flow."
-        )
+        logger.info("ssh_access_failed", server_handle=server_handle)
         use_reinstall = True
 
     # Force reinstall override
     if force_reinstall or server_status == "force_rebuild":
-        logger.info(f"Force reinstall requested for {server_handle}")
+        logger.info("force_reinstall_requested", server_handle=server_handle)
         use_reinstall = True
 
     # ===== REINSTALL PATH =====
@@ -404,7 +415,7 @@ async def run(state: dict) -> dict:
 
     # ===== EXISTING ACCESS PATH =====
     else:
-        logger.info(f"Running provisioning playbooks on existing setup for {server_handle}")
+        logger.info("provisioning_existing_setup", server_handle=server_handle)
 
         # Phase 1: Access
         success_access, output_access = run_ansible_playbook(
