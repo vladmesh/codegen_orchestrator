@@ -4,7 +4,7 @@ Zavhoz manages infrastructure by reading from internal DB.
 All external API calls (Time4VPS) are done by background sync workers,
 not by the agent directly. This saves tokens and keeps secrets isolated.
 
-Uses BaseAgentNode for dynamic prompt loading from database.
+Uses LLMNode for dynamic prompt loading from database.
 """
 
 from typing import Any
@@ -20,7 +20,7 @@ from ..tools import (
     get_server_info,
     list_managed_servers,
 )
-from .base import BaseAgentNode, log_node_execution
+from .base import LLMNode, log_node_execution
 
 logger = structlog.get_logger()
 
@@ -35,7 +35,7 @@ tools = [
 ]
 
 
-class ZavhozNode(BaseAgentNode):
+class ZavhozNode(LLMNode):
     """Resource manager agent that allocates servers and ports."""
 
     def handle_tool_result(self, tool_name: str, result: Any, state: dict) -> dict[str, Any]:
@@ -105,7 +105,7 @@ async def run(state: dict) -> dict:
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Zavhoz LLM.
 
-    Delegates to BaseAgentNode.execute_tools which handles:
+    Delegates to LLMNode.execute_tools which handles:
     - Tool execution with error handling
     - State updates via handle_tool_result (allocated_resources)
     """

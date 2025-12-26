@@ -12,22 +12,22 @@ import structlog
 from shared.clients.github import GitHubAppClient
 
 from ..clients.worker_spawner import request_spawn
-from .base import BaseAgentNode, log_node_execution
+from .base import FactoryNode, log_node_execution
 
 logger = structlog.get_logger()
 
 
-class DeveloperNode(BaseAgentNode):
+class DeveloperNode(FactoryNode):
     """Developer agent - spawns Factory.ai workers for code implementation.
 
-    This node doesn't use LLM tools directly, but inherits from BaseAgentNode
+    This node doesn't use LLM tools directly, but inherits from FactoryNode
     for consistency with other agents. The actual coding work is delegated to
     Factory.ai workers.
     """
 
     def __init__(self):
         """Initialize Developer node."""
-        super().__init__(agent_id="developer", tools=[])
+        super().__init__(node_id="developer")
 
     @log_node_execution("developer")
     async def run(self, state: dict) -> dict:

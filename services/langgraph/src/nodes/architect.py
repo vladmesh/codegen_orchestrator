@@ -3,7 +3,7 @@
 Creates project structure using Factory.ai Droid in an isolated container.
 Generates high-level architecture without business logic.
 
-Uses BaseAgentNode for dynamic prompt loading from database.
+Uses LLMNode for dynamic prompt loading from database.
 """
 
 import os
@@ -17,7 +17,7 @@ from shared.clients.github import GitHubAppClient
 
 from ..clients.worker_spawner import request_spawn
 from ..tools.github import create_github_repo, get_github_token
-from .base import BaseAgentNode, log_node_execution
+from .base import FactoryNode, LLMNode, log_node_execution
 
 logger = structlog.get_logger()
 
@@ -36,7 +36,7 @@ def set_project_complexity(complexity: str):
 tools = [create_github_repo, get_github_token, set_project_complexity]
 
 
-class ArchitectNode(BaseAgentNode):
+class ArchitectNode(LLMNode):
     """Architect agent that creates project structure."""
 
     def handle_tool_result(self, tool_name: str, result: Any, state: dict) -> dict[str, Any]:
@@ -102,59 +102,67 @@ Entry Points: {project_spec.get("entry_points", [])}
 async def execute_tools(state: dict) -> dict:
     """Execute tool calls from Architect LLM.
 
-    Delegates to BaseAgentNode.execute_tools which handles:
+    Delegates to LLMNode.execute_tools which handles:
     - Tool execution with error handling
     - State updates via handle_tool_result (repo_info, project_complexity)
     """
     return await _node.execute_tools(state)
 
 
-@log_node_execution("architect_spawn_worker")
-async def spawn_factory_worker(state: dict) -> dict:
-    """Spawn Factory.ai worker to generate project structure.
+class ArchitectWorkerNode(FactoryNode):
+    """CLI node that spawns Factory.ai worker for project scaffolding."""
 
-    This node is called after repo is created and token is obtained.
-    It spawns a Sysbox container with Factory.ai Droid to generate code.
-    """
-    repo_info = state.get("repo_info", {})
-    project_spec = state.get("project_spec", {})
-    project_complexity = state.get("project_complexity", "complex")  # Default to complex
+    def __init__(self):
+        super().__init__(node_id="architect_spawn_worker")
 
-    if not repo_info:
-        return {
-            "messages": [AIMessage(content="❌ No repository info found. Cannot spawn worker.")],
-            "errors": state.get("errors", []) + ["No repository info for architect worker"],
-        }
+    @log_node_execution("architect_spawn_worker")
+    async def run(self, state: dict) -> dict:
+        """Spawn Factory.ai worker to generate project structure.
 
-    repo_full_name = repo_info.get("full_name")
-    if not repo_full_name:
-        return {
-            "messages": [AIMessage(content="❌ Repository full_name not found.")],
-            "errors": state.get("errors", []) + ["Repository full_name missing"],
-        }
+        This node is called after repo is created and token is obtained.
+        It spawns a Sysbox container with Factory.ai Droid to generate code.
+        """
+        repo_info = state.get("repo_info", {})
+        project_spec = state.get("project_spec", {})
+        project_complexity = state.get("project_complexity", "complex")  # Default to complex
 
-    # Get fresh token for the repo
-    github_client = GitHubAppClient()
-    owner, repo = repo_full_name.split("/")
+        if not repo_info:
+            return {
+                "messages": [
+                    AIMessage(content="❌ No repository info found. Cannot spawn worker.")
+                ],
+                "errors": state.get("errors", []) + ["No repository info for architect worker"],
+            }
 
-    try:
-        token = await github_client.get_token(owner, repo)
-    except Exception as e:
-        logger.error(
-            "github_token_failed",
-            error=str(e),
-            error_type=type(e).__name__,
-            exc_info=True,
-        )
-        return {
-            "messages": [AIMessage(content=f"❌ Failed to get GitHub token: {e}")],
-            "errors": state.get("errors", []) + [str(e)],
-        }
+        repo_full_name = repo_info.get("full_name")
+        if not repo_full_name:
+            return {
+                "messages": [AIMessage(content="❌ Repository full_name not found.")],
+                "errors": state.get("errors", []) + ["Repository full_name missing"],
+            }
 
-    # If simple, add implementation instructions directly
-    extra_instructions = ""
-    if project_complexity == "simple":
-        extra_instructions = """
+        # Get fresh token for the repo
+        github_client = GitHubAppClient()
+        owner, repo = repo_full_name.split("/")
+
+        try:
+            token = await github_client.get_token(owner, repo)
+        except Exception as e:
+            logger.error(
+                "github_token_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+            return {
+                "messages": [AIMessage(content=f"❌ Failed to get GitHub token: {e}")],
+                "errors": state.get("errors", []) + [str(e)],
+            }
+
+        # If simple, add implementation instructions directly
+        extra_instructions = ""
+        if project_complexity == "simple":
+            extra_instructions = """
 5.  **Implement Business Logic (SIMPLE PROJECT)**:
     - Since this is a simple project, please implement the business logic immediately.
     - Connect the generated API routers to your implementation.
@@ -162,7 +170,7 @@ async def spawn_factory_worker(state: dict) -> dict:
     - THIS IS THE FINAL STEP, so make sure it works.
 """
 
-    task_content = f"""# Project: {project_spec.get("name", "project")}
+        task_content = f"""# Project: {project_spec.get("name", "project")}
 
 ## Description
 {project_spec.get("description", "No description provided")}
@@ -209,18 +217,18 @@ Initialize this repository using the `service-template` framework.
 Initial project structure for {project_spec.get("name", "project")} using service-template
 """
 
-    logger.info("spawning_factory_worker", repo=repo_full_name)
+        logger.info("spawning_factory_worker", repo=repo_full_name)
 
-    result = await request_spawn(
-        repo=repo_full_name,
-        github_token=token,
-        task_content=task_content,
-        task_title=f"Initial structure for {project_spec.get('name', 'project')}",
-        model=os.getenv("FACTORY_MODEL", "claude-sonnet-4-5-20250929"),
-    )
+        result = await request_spawn(
+            repo=repo_full_name,
+            github_token=token,
+            task_content=task_content,
+            task_title=f"Initial structure for {project_spec.get('name', 'project')}",
+            model=os.getenv("FACTORY_MODEL", "claude-sonnet-4-5-20250929"),
+        )
 
-    if result.success:
-        message = f"""✅ Project structure created successfully!
+        if result.success:
+            message = f"""✅ Project structure created successfully!
 
 Repository: {repo_info.get("html_url")}
 Commit: {result.commit_sha or "N/A"}
@@ -233,12 +241,18 @@ The repository now has:
 
 Next step: Developer agent will implement business logic.
 """
-        return {
-            "messages": [AIMessage(content=message)],
-            "architect_complete": True,
-        }
-    else:
-        return {
-            "messages": [AIMessage(content=f"❌ Factory worker failed:\n\n{result.output[-500:]}")],
-            "errors": state.get("errors", []) + ["Factory worker failed"],
-        }
+            return {
+                "messages": [AIMessage(content=message)],
+                "architect_complete": True,
+            }
+        else:
+            return {
+                "messages": [
+                    AIMessage(content=f"❌ Factory worker failed:\n\n{result.output[-500:]}")
+                ],
+                "errors": state.get("errors", []) + ["Factory worker failed"],
+            }
+
+
+_worker_node = ArchitectWorkerNode()
+spawn_factory_worker = _worker_node.run
