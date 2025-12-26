@@ -17,7 +17,7 @@ from .activation import (
 from .delegation import delegate_to_analyst
 
 # GitHub tools
-from .github import create_github_repo, get_github_token
+from .github import create_file_in_repo, create_github_repo, get_github_token
 
 # Incident tracking
 from .incidents import create_incident, list_active_incidents
@@ -43,6 +43,9 @@ from .servers import (
     list_managed_servers,
     update_server_status,
 )
+
+# Spec tools
+from .specs import get_project_spec, update_project_spec
 
 __all__ = [
     # Projects
@@ -76,4 +79,7 @@ __all__ = [
     "get_github_token",
     # Delegation
     "delegate_to_analyst",
+    "create_file_in_repo",
+    "get_project_spec",
+    "update_project_spec",
 ]

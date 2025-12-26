@@ -15,7 +15,7 @@ import structlog
 from shared.clients.github import GitHubAppClient
 
 from ..clients.worker_spawner import request_spawn
-from ..tools.github import create_github_repo, get_github_token
+from ..tools.github import create_file_in_repo, create_github_repo, get_github_token
 from .base import FactoryNode, LLMNode, log_node_execution
 
 logger = structlog.get_logger()
@@ -32,7 +32,7 @@ def set_project_complexity(complexity: str):
 
 
 # Tools available to architect
-tools = [create_github_repo, get_github_token, set_project_complexity]
+tools = [create_github_repo, create_file_in_repo, get_github_token, set_project_complexity]
 
 
 class ArchitectNode(LLMNode):
@@ -71,6 +71,9 @@ Name: {project_spec.get("name", "unknown")}
 Description: {project_spec.get("description", "No description")}
 Modules: {project_spec.get("modules", [])}
 Entry Points: {project_spec.get("entry_points", [])}
+
+Detailed Spec:
+{project_spec.get("detailed_spec", "N/A")}
 """
 
     # Get dynamic prompt from database

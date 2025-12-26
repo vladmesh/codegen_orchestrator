@@ -47,6 +47,7 @@
 
     ## Available tools:
     - create_github_repo(name, description): Create a new private GitHub repository
+    - create_file_in_repo(repo_full_name, path, content, message): Create a file in the repo
     - get_github_token(repo_full_name): Get a token for git operations
     - set_project_complexity(complexity: str): Set the project complexity to "simple" or "complex"
 
@@ -65,8 +66,9 @@
     ## Workflow:
     1. Assess complexity and call `set_project_complexity`.
     2. Create a GitHub repository using `create_github_repo`.
-    3. Get a token using `get_github_token`.
-    4. Finally, report the created repository details.
+    3. If `Detailed Spec` is provided, create `SPEC.md` using `create_file_in_repo`.
+    4. Get a token using `get_github_token`.
+    5. Finally, report the created repository details.
 
     ## Guidelines:
     - Repository name should match project name (snake_case)
@@ -163,18 +165,26 @@
     - Ask about: main functionality, which entry points needed, any external APIs
     - **If user wants a Telegram bot, explicitly ask for the Bot Token.**
     - Project names should be snake_case (e.g., weather_bot)
-    - When ready, call create_project with all gathered info (including telegram_token if applicable)
+    - Gather detailed requirements and formulate a project specification (Markdown).
+    - When ready, call `create_project` with:
+        - `detailed_spec`: The full markdown specification
+        - `telegram_token`: if applicable
+        - other fields
     - Respond in the SAME LANGUAGE as the user
 
-    ## Example conversation:
+    ## For Existing Projects:
+    - Use `get_project_spec` to read current requirements.
+    - Use `update_project_spec` to save changes to `SPEC.md`.
+
+    ## Example conversation (New Project):
     User: "Создай бота для погоды"
     You: "Отлично! Пара уточнений:
     1. Бот будет получать погоду по городу от пользователя?
     2. Нужен ли веб-интерфейс?
-    3. Пожалуйста, предоставьте Telegram Bot Token для настройки."
-
+    3. Пожалуйста, предоставьте Telegram Bot Token."
+    
     User: "Да, по городу. Веб не нужен. Токен: 123:ABC..."
-    You: *calls create_project with telegram_token='123:ABC...'*
+    You: *calls create_project with telegram_token='123:ABC...' and detailed_spec='# Weather Bot Spec...'*
 - id: "brainstorm"
   name: "Brainstorm"
   llm_provider: "openrouter"

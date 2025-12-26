@@ -285,3 +285,65 @@ class GitHubAppClient:
                 error=str(e),
             )
             return []
+
+    async def create_or_update_file(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        content: str,
+        message: str,
+        branch: str = "main",
+    ) -> dict:
+        """Create or update a file in the repository."""
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        # First, try to get existing file SHA to support updates
+        sha = None
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                    headers=headers,
+                    params={"ref": branch},
+                )
+                if resp.status_code == httpx.codes.OK:
+                    sha = resp.json().get("sha")
+        except Exception:  # noqa: S110
+            pass
+
+        # Prepare payload
+        import base64
+
+        content_b64 = base64.b64encode(content.encode()).decode()
+        payload = {
+            "message": message,
+            "content": content_b64,
+            "branch": branch,
+        }
+        if sha:
+            payload["sha"] = sha
+
+        # Create/Update file
+        async with httpx.AsyncClient() as client:
+            resp = await client.put(
+                f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            logger.info(
+                "github_file_updated",
+                owner=owner,
+                repo=repo,
+                path=path,
+                action="update" if sha else "create",
+                sha=data["content"]["sha"],
+            )
+            return data["content"]

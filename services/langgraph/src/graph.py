@@ -8,7 +8,7 @@ from langgraph.graph.message import add_messages
 from langgraph.types import Send
 from typing_extensions import TypedDict
 
-from .nodes import analyst, brainstorm, devops, product_owner, provisioner, zavhoz
+from .nodes import analyst, devops, product_owner, provisioner, zavhoz
 from .subgraphs.engineering import create_engineering_subgraph
 
 
@@ -104,33 +104,7 @@ class OrchestratorState(TypedDict):
     deployed_url: str | None
 
 
-def route_after_brainstorm(state: OrchestratorState) -> str | list[Send]:
-    """Decide where to go after brainstorm.
-
-    Routing logic:
-    - If LLM made tool calls -> execute them
-    - If project was created -> dispatch Zavhoz + Engineering in parallel
-    - Otherwise -> END (waiting for user input)
-    """
-    messages = state.get("messages", [])
-    if not messages:
-        return END
-
-    last_message = messages[-1]
-
-    # If LLM wants to call tools (e.g., create_project)
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "brainstorm_tools"
-
-    # If project was created, dispatch resources + engineering in parallel
-    if state.get("current_project"):
-        return [
-            Send("zavhoz", {}),
-            Send("engineering", {}),
-        ]
-
-    # Otherwise END - LLM responded with a question, wait for user
-    return END
+# route_after_brainstorm removed
 
 
 def route_after_zavhoz(state: OrchestratorState) -> str:
@@ -182,7 +156,7 @@ def route_after_product_owner(state: OrchestratorState) -> str:
         return "product_owner_tools"
 
     if state.get("po_intent") == "new_project":
-        return "brainstorm"
+        return "analyst"
 
     return END
 
@@ -192,7 +166,7 @@ def route_after_product_owner_tools(state: OrchestratorState) -> str:
     po_intent = state.get("po_intent")
 
     if po_intent == "new_project":
-        return "brainstorm"
+        return "analyst"
 
     if po_intent == "maintenance":
         # Project update → Engineering directly (skip brainstorm)
@@ -323,8 +297,7 @@ def create_graph() -> StateGraph:
     # Add nodes
     graph.add_node("product_owner", product_owner.run)
     graph.add_node("product_owner_tools", product_owner.execute_tools)
-    graph.add_node("brainstorm", brainstorm.run)
-    graph.add_node("brainstorm_tools", brainstorm.execute_tools)
+    # Brainstorm node removed
     graph.add_node("zavhoz", zavhoz.run)
     graph.add_node("zavhoz_tools", zavhoz.execute_tools)
     graph.add_node("engineering", run_engineering_subgraph)
@@ -355,7 +328,7 @@ def create_graph() -> StateGraph:
         route_after_product_owner,
         {
             "product_owner_tools": "product_owner_tools",
-            "brainstorm": "brainstorm",
+            "analyst": "analyst",
             END: END,
         },
     )
@@ -365,7 +338,6 @@ def create_graph() -> StateGraph:
         "product_owner_tools",
         route_after_product_owner_tools,
         {
-            "brainstorm": "brainstorm",
             "zavhoz": "zavhoz",
             "engineering": "engineering",
             "analyst": "analyst",
@@ -382,14 +354,7 @@ def create_graph() -> StateGraph:
     # After analyst tools execution: back to analyst to process result
     graph.add_edge("analyst_tools", "analyst")
 
-    # After brainstorm: either execute tools, dispatch parallel, or end
-    graph.add_conditional_edges(
-        "brainstorm",
-        route_after_brainstorm,
-    )
-
-    # After brainstorm tools execution: back to brainstorm to process result
-    graph.add_edge("brainstorm_tools", "brainstorm")
+    # Brainstorm edges removed
 
     # After zavhoz: either execute tools or end
     graph.add_conditional_edges(

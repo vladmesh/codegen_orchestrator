@@ -70,3 +70,33 @@ async def get_github_token(
     owner, repo = parts
     client = get_github_client()
     return await client.get_token(owner, repo)
+
+
+@tool
+async def create_file_in_repo(
+    repo_full_name: Annotated[str, "Full repository name (org/repo)"],
+    path: Annotated[str, "File path in the repository (e.g., 'SPEC.md', 'docs/README.md')"],
+    content: Annotated[str, "Content of the file"],
+    message: Annotated[str, "Commit message"],
+    branch: Annotated[str, "Branch name"] = "main",
+) -> str:
+    """Create or update a file in the repository.
+
+    Returns the SHA of the created/updated file.
+    """
+    parts = repo_full_name.split("/")
+    if len(parts) != 2:  # noqa: PLR2004
+        raise ValueError(f"Invalid repo format: {repo_full_name}. Expected 'org/repo'")
+
+    owner, repo = parts
+    client = get_github_client()
+
+    result = await client.create_or_update_file(
+        owner=owner,
+        repo=repo,
+        path=path,
+        content=content,
+        message=message,
+        branch=branch,
+    )
+    return result.get("sha", "")

@@ -17,6 +17,7 @@ async def create_project(
     modules: Annotated[list[str], "Modules to generate: backend, tg_bot, notifications, frontend"],
     entry_points: Annotated[list[str], "Entry points: telegram, frontend, api"],
     telegram_token: Annotated[str | None, "Telegram Bot Token (if applicable)"] = None,
+    detailed_spec: Annotated[str | None, "Full detailed project specification in Markdown"] = None,
 ) -> ProjectCreateResult:
     """Create a new project in the database.
 
@@ -34,6 +35,9 @@ async def create_project(
         "estimated_ram_mb": 512,
         "estimated_disk_mb": 2048,
     }
+
+    if detailed_spec:
+        config_payload["detailed_spec"] = detailed_spec
 
     if telegram_token:
         config_payload["secrets"] = {"telegram_token": telegram_token}
