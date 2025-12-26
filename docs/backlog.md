@@ -293,6 +293,22 @@ API should be a clean CRUD layer. All background polling/monitoring should be in
 
 ---
 
+### Technical Debt / Optimizations
+
+### Singleton HTTP Client (Telegram Bot)
+
+**Status:** TODO
+**Priority:** LOW (Defer until high load)
+
+Использовать Singleton `httpx.AsyncClient` в Telegram Bot для переиспользования SSL-соединений.
+
+**Tasks:**
+- [ ] Вынести `httpx.AsyncClient` в глобальную переменную или Dependency Injection в `services/telegram_bot`
+- [ ] Использовать этот клиент во всех handlers вместо создания нового на каждый запрос
+- [ ] Корректно закрывать клиент при shutdown
+
+---
+
 ## Done
 
 - **Sysbox Installation** - Installed on dev machine
