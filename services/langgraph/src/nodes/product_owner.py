@@ -106,6 +106,7 @@ async def execute_tools(state: dict) -> dict:
     po_intent = state.get("po_intent")
     project_intent = state.get("project_intent")
     repo_info = state.get("repo_info")  # Track repo_info for discovered projects
+    analyst_task = None  # Track analyst delegation
 
     for tool_call in last_message.tool_calls:
         tool_name = tool_call["name"]
@@ -375,7 +376,7 @@ async def execute_tools(state: dict) -> dict:
     }
 
     # Add analyst_task if delegation occurred
-    if "analyst_task" in dir():
+    if analyst_task is not None:
         updates["analyst_task"] = analyst_task
 
     return updates

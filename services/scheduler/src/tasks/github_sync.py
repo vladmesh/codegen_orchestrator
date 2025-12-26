@@ -3,6 +3,7 @@
 import asyncio
 import time
 
+from pydantic import ValidationError
 from sqlalchemy import select
 import structlog
 import yaml
@@ -133,6 +134,19 @@ async def sync_projects_worker():  # noqa: PLR0915
                                 project_name=project.name,
                                 spec_version=spec_dict.get("version", "unknown"),
                             )
+                    except ValidationError as e:
+                        # Validation failed - Notify admins!
+                        logger.error(
+                            "project_spec_validation_failed",
+                            project_name=project.name,
+                            error=str(e),
+                        )
+                        await notify_admins(
+                            f"⚠️ Invalid Specification for *{project.name}*\n"
+                            f"The `.project-spec.yaml` file is invalid:\n"
+                            f"```\n{str(e)[:1000]}\n```",
+                            level="warning",
+                        )
                     except Exception as e:
                         # Spec sync is non-critical, log and continue
                         logger.debug(
