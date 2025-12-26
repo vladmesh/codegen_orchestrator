@@ -32,11 +32,14 @@ class Time4VPSServerDetails(BaseModel):
     """Detailed server info from GET /api/server/{server_id}.
 
     Contains full server specifications including OS, resources, and network info.
+    Note: This endpoint does NOT return server_id in response - the caller
+    already knows it from the request parameter.
     """
 
     model_config = ConfigDict(extra="allow")
 
-    id: int = Field(..., description="Unique server ID", validation_alias="server_id")
+    # Note: server_id is NOT returned by the detail endpoint.
+    # The caller already has it from the request parameter.
     name: str | None = Field(None, description="Server display name")
     domain: str | None = Field(None, description="Server hostname")
     ip: str | None = Field(None, description="Primary IP address")

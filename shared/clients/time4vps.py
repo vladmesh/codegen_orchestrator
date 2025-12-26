@@ -56,7 +56,10 @@ class Time4VPSClient:
             return [Time4VPSServer.model_validate(item) for item in data]
 
     async def get_server_details(self, server_id: int) -> Time4VPSServerDetails:
-        """Get details for a specific server."""
+        """Get details for a specific server.
+
+        Note: The response does not include server_id - use the parameter if needed.
+        """
         headers = self._get_auth_header()
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{self.base_url}/server/{server_id}", headers=headers)

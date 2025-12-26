@@ -73,7 +73,7 @@ async def sync_servers_worker():
                     ) = await _sync_server_list(db, client)
 
                     # Detailed specs sync less frequently
-                    now = asyncio.get_event_loop().time()
+                    now = time.monotonic()
                     if now - last_details_sync > DETAILS_SYNC_INTERVAL:
                         details_updated = await _sync_server_details(db, client)
                         last_details_sync = now
