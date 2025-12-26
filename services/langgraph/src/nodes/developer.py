@@ -4,6 +4,8 @@ Orchestrates the implementation of business logic by spawning a Factory.ai worke
 This node runs after the Architect has set up the initial project structure.
 """
 
+import json
+
 from langchain_core.messages import AIMessage
 import structlog
 
@@ -53,7 +55,7 @@ class DeveloperNode(BaseAgentNode):
             Updated state with worker spawn result
         """
         repo_info = state.get("repo_info", {})
-        project_spec = state.get("project_spec", {})
+        project_spec = state.get("project_spec") or {}
 
         if not repo_info:
             return {
@@ -62,15 +64,15 @@ class DeveloperNode(BaseAgentNode):
                 ]
             }
 
-        repo_name = repo_info.get("name", "")
-        repo_clone_url = repo_info.get("clone_url", "")
+        repo_full_name = repo_info.get("full_name", "")
+        repo_name = repo_info.get("name") or repo_full_name.split("/")[-1]
 
-        if not repo_clone_url:
+        if not repo_full_name:
             return {
                 "messages": [
                     AIMessage(
                         content=(
-                            f"❌ No clone URL for repository '{repo_name}'. Cannot spawn worker."
+                            f"❌ No full_name for repository '{repo_name}'. Cannot spawn worker."
                         )
                     )
                 ]
@@ -81,32 +83,35 @@ class DeveloperNode(BaseAgentNode):
         try:
             # Get GitHub App installation token for authentication
             github_client = GitHubAppClient()
-            installation_id = repo_info.get("installation_id")
 
-            if not installation_id:
+            if "/" not in repo_full_name:
                 return {
                     "messages": [
                         AIMessage(
-                            content=f"❌ No GitHub App installation ID found for '{repo_name}'."
+                            content=(
+                                f"❌ Invalid repository full_name '{repo_full_name}'. "
+                                "Expected 'org/repo'."
+                            )
                         )
                     ]
                 }
 
-            access_token = await github_client.get_installation_token(installation_id)
+            owner, repo = repo_full_name.split("/", 1)
+            access_token = await github_client.get_token(owner, repo)
 
-            # Prepare clone URL with authentication
-            authenticated_clone_url = repo_clone_url.replace(
-                "https://", f"https://x-access-token:{access_token}@"
-            )
+            task_content = project_spec.get("description") or "Implement business logic."
+            if project_spec:
+                task_content += "\n\nProject spec:\n"
+                task_content += json.dumps(project_spec, indent=2, ensure_ascii=True)
+
+            task_title = f"Implement business logic for {project_spec.get('name', repo_name)}"
 
             # Spawn the worker
             worker_result = await request_spawn(
-                repository_url=authenticated_clone_url,
-                task_description=project_spec.get("description", "Implement business logic"),
-                context={
-                    "project_name": repo_info.get("name"),
-                    "spec": project_spec,
-                },
+                repo=repo_full_name,
+                github_token=access_token,
+                task_content=task_content,
+                task_title=task_title,
             )
 
             if worker_result.get("success"):
