@@ -1,7 +1,7 @@
 """Analyst agent node.
 
 Analyzes user requirements, asks clarifying questions, and creates project specs.
-Takes over responsibilities from Brainstorm for new project creation.
+Handles all new project creation and requirements analysis.
 
 Uses LLMNode for dynamic prompt loading from database.
 """

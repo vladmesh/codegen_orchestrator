@@ -169,7 +169,7 @@ def route_after_product_owner_tools(state: OrchestratorState) -> str:
         return "analyst"
 
     if po_intent == "maintenance":
-        # Project update → Engineering directly (skip brainstorm)
+        # Project update → Engineering directly
         return "engineering"
 
     if po_intent == "deploy":
@@ -322,7 +322,7 @@ def create_graph() -> StateGraph:
         },
     )
 
-    # After product owner: either execute tools, go to brainstorm, or end
+    # After product owner: either execute tools, go to analyst, or end
     graph.add_conditional_edges(
         "product_owner",
         route_after_product_owner,
@@ -333,7 +333,7 @@ def create_graph() -> StateGraph:
         },
     )
 
-    # After product owner tools: go to brainstorm, engineering (maintenance), or end
+    # After product owner tools: go to analyst, engineering (maintenance), or end
     graph.add_conditional_edges(
         "product_owner_tools",
         route_after_product_owner_tools,
@@ -353,8 +353,6 @@ def create_graph() -> StateGraph:
 
     # After analyst tools execution: back to analyst to process result
     graph.add_edge("analyst_tools", "analyst")
-
-    # Brainstorm edges removed
 
     # After zavhoz: either execute tools or end
     graph.add_conditional_edges(
