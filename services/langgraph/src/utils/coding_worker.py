@@ -5,11 +5,12 @@ Utility for spawning Sysbox containers to run AI coding agents.
 
 import asyncio
 from dataclasses import dataclass
-import logging
 import os
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # Path to AGENTS.md template
 AGENTS_TEMPLATE_PATH = (
@@ -84,8 +85,8 @@ async def spawn_coding_worker(
 
     cmd.append("coding-worker:latest")
 
-    logger.info(f"Spawning coding worker for repo: {repo}")
-    logger.debug(f"Task: {task_content[:200]}...")
+    logger.info("coding_worker_spawn_requested", repo=repo)
+    logger.debug("coding_worker_task_preview", task_preview=task_content[:200])
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -115,9 +116,13 @@ async def spawn_coding_worker(
 
         success = proc.returncode == 0
 
-        logger.info(f"Worker completed: success={success}, exit_code={proc.returncode}")
+        logger.info(
+            "coding_worker_completed",
+            success=success,
+            exit_code=proc.returncode,
+        )
         if commit_sha:
-            logger.info(f"Commit SHA: {commit_sha}")
+            logger.info("coding_worker_commit_pushed", commit_sha=commit_sha)
 
         return WorkerResult(
             success=success,
@@ -127,7 +132,7 @@ async def spawn_coding_worker(
         )
 
     except Exception as e:
-        logger.exception(f"Failed to spawn coding worker: {e}")
+        logger.exception("coding_worker_spawn_failed", error=str(e))
         return WorkerResult(
             success=False,
             exit_code=-1,

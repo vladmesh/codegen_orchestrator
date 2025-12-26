@@ -1,12 +1,13 @@
 """API client for provisioner - communicates with the API service."""
 
 from http import HTTPStatus
-import logging
 import os
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _get_api_url() -> str:
@@ -31,7 +32,11 @@ async def get_server_info(server_handle: str) -> dict | None:
             resp.raise_for_status()
             return resp.json()
     except Exception as e:
-        logger.error(f"Failed to get server info for {server_handle}: {e}")
+        logger.error(
+            "api_server_info_failed",
+            server_handle=server_handle,
+            error=str(e),
+        )
         return None
 
 
@@ -53,10 +58,19 @@ async def update_server_status(server_handle: str, status: str) -> bool:
                 f"{api_url}/api/servers/{server_handle}", json={"status": status}
             )
             resp.raise_for_status()
-            logger.info(f"Updated server {server_handle} status to {status}")
+            logger.info(
+                "api_server_status_updated",
+                server_handle=server_handle,
+                status=status,
+            )
             return True
     except Exception as e:
-        logger.error(f"Failed to update server status: {e}")
+        logger.error(
+            "api_server_status_update_failed",
+            server_handle=server_handle,
+            status=status,
+            error=str(e),
+        )
         return False
 
 
@@ -87,10 +101,19 @@ async def update_server_labels(server_handle: str, labels: dict) -> bool:
                 f"{api_url}/api/servers/{server_handle}", json={"labels": final_labels}
             )
             resp.raise_for_status()
-            logger.info(f"Updated server {server_handle} labels to {final_labels}")
+            logger.info(
+                "api_server_labels_updated",
+                server_handle=server_handle,
+                labels=final_labels,
+            )
             return True
     except Exception as e:
-        logger.error(f"Failed to update server labels: {e}")
+        logger.error(
+            "api_server_labels_update_failed",
+            server_handle=server_handle,
+            labels=labels,
+            error=str(e),
+        )
         return False
 
 
@@ -111,7 +134,11 @@ async def get_services_on_server(server_handle: str) -> list[dict]:
             resp.raise_for_status()
             return resp.json()
     except Exception as e:
-        logger.error(f"Failed to get services for {server_handle}: {e}")
+        logger.error(
+            "api_server_services_fetch_failed",
+            server_handle=server_handle,
+            error=str(e),
+        )
         return []
 
 
@@ -143,5 +170,9 @@ async def increment_provisioning_attempts(server_handle: str) -> bool:
             resp.raise_for_status()
             return True
     except Exception as e:
-        logger.error(f"Failed to increment provisioning attempts: {e}")
+        logger.error(
+            "api_provisioning_attempt_increment_failed",
+            server_handle=server_handle,
+            error=str(e),
+        )
         return False

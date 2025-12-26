@@ -2,12 +2,13 @@
 
 from datetime import datetime
 from http import HTTPStatus
-import logging
 import os
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _get_api_url() -> str:
@@ -46,10 +47,14 @@ async def create_incident(
                 },
             )
             resp.raise_for_status()
-            logger.info(f"Created incident for server {server_handle}: {incident_type}")
+            logger.info(
+                "incident_created",
+                server_handle=server_handle,
+                incident_type=incident_type,
+            )
             return True
     except Exception as e:
-        logger.error(f"Failed to create incident: {e}")
+        logger.error("incident_create_failed", error=str(e))
         return False
 
 
@@ -78,7 +83,7 @@ async def resolve_active_incidents(server_handle: str) -> bool:
                     incidents.extend(resp.json())
 
             if not incidents:
-                logger.debug(f"No active incidents to resolve for {server_handle}")
+                logger.debug("incident_resolve_skipped", server_handle=server_handle)
                 return True
 
             resolved_at = datetime.utcnow().isoformat()
@@ -92,10 +97,18 @@ async def resolve_active_incidents(server_handle: str) -> bool:
                         "resolved_at": resolved_at,
                     },
                 )
-                logger.info(f"Resolved incident #{incident_id} for server {server_handle}")
+                logger.info(
+                    "incident_resolved",
+                    incident_id=incident_id,
+                    server_handle=server_handle,
+                )
 
             return True
 
     except Exception as e:
-        logger.error(f"Failed to resolve incidents for {server_handle}: {e}")
+        logger.error(
+            "incident_resolve_failed",
+            server_handle=server_handle,
+            error=str(e),
+        )
         return False

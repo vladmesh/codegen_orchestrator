@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import sys
 
 # from dotenv import load_dotenv
@@ -7,12 +6,13 @@ import sys
 # Load environment
 # load_dotenv()
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 # Add src to path
 sys.path.append("/app")
+
+from shared.logging_config import get_logger, setup_logging
+
+setup_logging(service_name="langgraph")
+logger = get_logger(__name__)
 
 
 async def main():
@@ -26,13 +26,15 @@ async def main():
     }
 
     logger.info(
-        f"Triggering provisioner run for {state['server_to_provision']} with force_reinstall=False"
+        "provisioner_run_triggered",
+        server_handle=state["server_to_provision"],
+        force_reinstall=state["force_reinstall"],
     )
 
     result = await provisioner_run(state)
 
-    logger.info("Provisioner run completed!")
-    logger.info(f"Result: {result}")
+    logger.info("provisioner_run_completed")
+    logger.info("provisioner_run_result", result=result)
 
     if "provisioning_result" in result and result["provisioning_result"].get("status") == "success":
         print("✅ VERIFICATION SUCCESS")

@@ -5,12 +5,13 @@ based on database configuration, supporting multiple providers through OpenRoute
 or direct connections.
 """
 
-import logging
 import os
 
 from langchain_openai import ChatOpenAI
 
-logger = logging.getLogger(__name__)
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class LLMFactory:
@@ -52,7 +53,12 @@ class LLMFactory:
         model_id = config.get("model_identifier", "openai/gpt-4o")
         temperature = config.get("temperature", 0.0)
 
-        logger.info(f"Creating LLM: provider={provider}, model={model_id}, temp={temperature}")
+        logger.info(
+            "llm_create",
+            provider=provider,
+            model=model_id,
+            temperature=temperature,
+        )
 
         if provider == "openrouter":
             return LLMFactory._create_openrouter_llm(config, model_id, temperature)
