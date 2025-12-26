@@ -28,25 +28,25 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
-# Get list of staged Python files
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+# Get list of staged Python files (NUL-delimited to preserve spaces)
+mapfile -d '' -t STAGED_FILES < <(git diff --cached --name-only --diff-filter=ACM -z -- '*.py')
 
-if [ -z "$STAGED_FILES" ]; then
+if [ "${#STAGED_FILES[@]}" -eq 0 ]; then
     echo -e "${GREEN}✅ No Python files to format${NC}"
     exit 0
 fi
 
-STAGED_FILES=$(echo "$STAGED_FILES" | tr '\n' ' ')
+FILES_ESCAPED=$(printf '%q ' "${STAGED_FILES[@]}")
 echo -e "${YELLOW}📝 Formatting staged Python files...${NC}"
 
 # Run make format (ruff format + ruff check --fix)
-if ! make format FILES="$STAGED_FILES"; then
+if ! make format FILES="$FILES_ESCAPED"; then
     echo -e "${RED}❌ Formatting failed. Aborting commit.${NC}"
     exit 1
 fi
 
 # Add the formatted files back to the commit
-for file in $STAGED_FILES; do
+for file in "${STAGED_FILES[@]}"; do
     git add "$file"
 done
 
