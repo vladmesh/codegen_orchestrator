@@ -1,11 +1,21 @@
 """Service deployment model for tracking deployed services on servers."""
 
 from datetime import datetime
+from enum import Enum
 
 from sqlalchemy import JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
+
+
+class DeploymentStatus(str, Enum):
+    """Service deployment status lifecycle."""
+
+    RUNNING = "running"
+    STOPPED = "stopped"
+    FAILED = "failed"
+    PENDING = "pending"
 
 
 class ServiceDeployment(Base):
@@ -32,7 +42,7 @@ class ServiceDeployment(Base):
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Status: "running", "stopped", "failed"
-    status: Mapped[str] = mapped_column(default="running", index=True)
+    status: Mapped[str] = mapped_column(default=DeploymentStatus.RUNNING.value, index=True)
 
     # Deployment information for redeployment
     # Expected keys: repo_url, branch, docker_compose_path, env_vars, etc.

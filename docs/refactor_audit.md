@@ -25,6 +25,6 @@
 
 ## Consistency / modernization
 - Logging style is inconsistent: `services/api/src/tasks/*` uses stdlib logging; scheduler and langgraph use structlog. Standardize on structlog and ensure shared modules follow it.
-- Status strings are duplicated in multiple places instead of using enums (`services/api/src/models/server.py` defines enums, but tasks compare raw strings). Use shared enums/constants to avoid drift.
+- [x] Status strings are duplicated in multiple places instead of using enums (`services/api/src/models/server.py` defines enums, but tasks compare raw strings). Use shared enums/constants to avoid drift. **DONE: Added `DeploymentStatus` Enum in `shared/models/service_deployment.py` and updated `services/api/src/routers/servers.py` to use `ServerStatus` and `DeploymentStatus`.**
 - [x] `asyncio.get_event_loop()` is used for timing in async code (e.g., `services/api/src/tasks/server_sync.py`, `services/langgraph/src/clients/time4vps.py`). Prefer `asyncio.get_running_loop()` or `time.monotonic()` in 3.12.
 

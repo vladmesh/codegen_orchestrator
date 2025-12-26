@@ -5,6 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import PortAllocation, Server, ServiceDeployment
+from shared.models.server import ServerStatus
+from shared.models.service_deployment import DeploymentStatus
 
 # TODO: Add encryption logic
 # from cryptography.fernet import Fernet
@@ -157,7 +159,6 @@ async def force_rebuild_server(
     db: AsyncSession = Depends(get_async_session),
 ) -> Server:
     """Trigger FORCE_REBUILD for a server."""
-    from shared.models import ServerStatus
 
     server = await db.get(Server, handle)
     if not server:
@@ -211,7 +212,6 @@ async def provision_server(
     db: AsyncSession = Depends(get_async_session),
 ) -> dict:
     """Manual provisioning trigger (will integrate with LangGraph)."""
-    from shared.models import ServerStatus
 
     server = await db.get(Server, handle)
     if not server:
@@ -244,7 +244,7 @@ async def get_server_services(
         select(ServiceDeployment)
         .where(
             ServiceDeployment.server_handle == handle,
-            ServiceDeployment.status == "running",  # Only active deployments
+            ServiceDeployment.status == DeploymentStatus.RUNNING.value,  # Only active deployments
         )
         .order_by(ServiceDeployment.deployed_at.desc())
     )
