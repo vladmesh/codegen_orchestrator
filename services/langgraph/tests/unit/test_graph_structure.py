@@ -5,6 +5,7 @@ import pytest
 from src.graph import (
     OrchestratorState,
     create_graph,
+    route_after_analyst,
     route_after_engineering,
 )
 
@@ -25,6 +26,7 @@ async def test_initial_state():
         "project_spec": None,
         "project_intent": None,
         "po_intent": None,
+        "analyst_task": None,
         "allocated_resources": {},
         "repo_info": None,
         "project_complexity": None,
@@ -44,6 +46,7 @@ async def test_initial_state():
     }
     assert state["current_project"] is None
     assert state["engineering_status"] == "idle"
+    assert state["analyst_task"] is None
 
 
 def test_route_after_engineering_done_with_resources():
@@ -86,3 +89,48 @@ def test_route_after_po_tools_deploy_intent():
 
     state = {"po_intent": "deploy", "current_project": "test-123"}
     assert route_after_product_owner_tools(state) == "zavhoz"
+
+
+def test_route_after_po_tools_delegate_analyst():
+    """Test routing to analyst when delegate_analyst intent is set."""
+    from src.graph import route_after_product_owner_tools
+
+    state = {"po_intent": "delegate_analyst"}
+    assert route_after_product_owner_tools(state) == "analyst"
+
+
+def test_route_after_analyst_with_project():
+    """Test routing to parallel dispatch when project created by analyst."""
+    from langgraph.types import Send
+
+    class MockMessage:
+        tool_calls = None
+
+    state = {"messages": [MockMessage()], "current_project": "test-project-123"}
+    result = route_after_analyst(state)
+    assert isinstance(result, list)
+    # Should dispatch to both zavhoz and engineering in parallel
+    expected_parallel_nodes = 2  # noqa: PLR2004
+    assert len(result) == expected_parallel_nodes
+    assert all(isinstance(r, Send) for r in result)
+
+
+def test_route_after_analyst_no_project():
+    """Test routing to END when analyst is still gathering requirements."""
+    from langgraph.graph import END
+
+    class MockMessage:
+        tool_calls = None
+
+    state = {"messages": [MockMessage()], "current_project": None}
+    assert route_after_analyst(state) == END
+
+
+def test_route_after_analyst_with_tool_calls():
+    """Test routing to analyst_tools when analyst wants to call tools."""
+
+    class MockMessage:
+        tool_calls = [{"name": "create_project", "args": {}}]
+
+    state = {"messages": [MockMessage()], "current_project": None}
+    assert route_after_analyst(state) == "analyst_tools"

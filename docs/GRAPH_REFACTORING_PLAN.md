@@ -65,7 +65,7 @@ Server: vps-123 (1.2.3.4:8080)
 
 ---
 
-## Итерация 2: Разделение PO → PO + Analyst
+## Итерация 2: Разделение PO → PO + Analyst ✅
 
 **Цель:** PO — коммуникатор, Analyst — работа с проектами.
 
@@ -73,8 +73,8 @@ Server: vps-123 (1.2.3.4:8080)
 
 | Компонент | Роль | Tools |
 |-----------|------|-------|
-| **PO** | Общение с юзером, статусы, отчёты | `list_projects`, `get_project_status`, `list_incidents` |
-| **Analyst** | Анализ требований, спеки, ТЗ | `create_project_spec`, `update_project_spec`, `validate_spec` |
+| **PO** | Общение с юзером, статусы, отчёты | `list_projects`, `get_project_status`, `list_incidents`, `delegate_to_analyst` |
+| **Analyst** | Анализ требований, спеки, ТЗ | `create_project` |
 
 ### Логика роутинга PO → Analyst
 
@@ -90,15 +90,17 @@ Server: vps-123 (1.2.3.4:8080)
 ```
 
 **Шаги:**
-1. [ ] Создать `nodes/analyst.py` с LLMNode
-2. [ ] Добавить tool `delegate_to_analyst` в PO
-3. [ ] Промпт Analyst: анализ требований, генерация/изменение спеки
-4. [ ] Роутинг в графе: `product_owner → analyst → spec_manager`
-5. [ ] Убрать `brainstorm` — его функции переходят к Analyst
+1. [x] Создать `nodes/analyst.py` с LLMNode
+2. [x] Добавить tool `delegate_to_analyst` в PO
+3. [x] Промпт Analyst: анализ требований, генерация/изменение спеки
+4. [x] Роутинг в графе: `product_owner → analyst → [zavhoz || engineering]`
+5. [ ] Убрать `brainstorm` — его функции переходят к Analyst (отложено)
 
 **Файлы:**
-- `services/langgraph/src/nodes/analyst.py` — новая нода
-- `services/langgraph/src/graph.py` — обновить роутинг
+- `services/langgraph/src/nodes/analyst.py` — новая нода ✅
+- `services/langgraph/src/tools/delegation.py` — tool для делегирования ✅
+- `services/langgraph/src/graph.py` — обновить роутинг ✅
+- `scripts/agent_configs.yaml` — добавлен конфиг Analyst ✅
 
 ---
 

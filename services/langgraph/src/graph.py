@@ -8,7 +8,7 @@ from langgraph.graph.message import add_messages
 from langgraph.types import Send
 from typing_extensions import TypedDict
 
-from .nodes import brainstorm, devops, product_owner, provisioner, zavhoz
+from .nodes import analyst, brainstorm, devops, product_owner, provisioner, zavhoz
 from .subgraphs.engineering import create_engineering_subgraph
 
 
@@ -39,8 +39,10 @@ class OrchestratorState(TypedDict):
     project_spec: dict | None
     # Intent classification (see services.langgraph.src.schemas.ProjectIntent)
     project_intent: dict | None
-    # High-level intent: "new_project", "maintenance", or "deploy"
+    # High-level intent: "new_project", "maintenance", "deploy", or "delegate_analyst"
     po_intent: str | None
+    # Task description for Analyst (set by PO when delegating)
+    analyst_task: str | None
 
     # ============================================================
     # ALLOCATED RESOURCES
@@ -200,6 +202,10 @@ def route_after_product_owner_tools(state: OrchestratorState) -> str:
         # Discovered project activation → Zavhoz for resource allocation
         return "zavhoz"
 
+    if po_intent == "delegate_analyst":
+        # New project or requirements change → Analyst
+        return "analyst"
+
     return END
 
 
@@ -275,6 +281,35 @@ async def run_engineering_subgraph(state: OrchestratorState) -> dict:
     }
 
 
+def route_after_analyst(state: OrchestratorState) -> str | list[Send]:
+    """Decide where to go after analyst.
+
+    Routing logic:
+    - If LLM made tool calls -> execute them
+    - If project was created -> dispatch Zavhoz + Engineering in parallel
+    - Otherwise -> END (waiting for user input)
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return END
+
+    last_message = messages[-1]
+
+    # If LLM wants to call tools (e.g., create_project)
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "analyst_tools"
+
+    # If project was created, dispatch resources + engineering in parallel
+    if state.get("current_project"):
+        return [
+            Send("zavhoz", {}),
+            Send("engineering", {}),
+        ]
+
+    # Otherwise END - LLM responded with a question, wait for user
+    return END
+
+
 def create_graph() -> StateGraph:
     """Create the orchestrator graph.
 
@@ -295,6 +330,8 @@ def create_graph() -> StateGraph:
     graph.add_node("engineering", run_engineering_subgraph)
     graph.add_node("devops", devops.run)
     graph.add_node("provisioner", provisioner.run)
+    graph.add_node("analyst", analyst.run)
+    graph.add_node("analyst_tools", analyst.execute_tools)
 
     # Start routing logic
     def route_start(state: OrchestratorState) -> str:
@@ -331,9 +368,19 @@ def create_graph() -> StateGraph:
             "brainstorm": "brainstorm",
             "zavhoz": "zavhoz",
             "engineering": "engineering",
+            "analyst": "analyst",
             END: END,
         },
     )
+
+    # After analyst: either execute tools, dispatch parallel, or end
+    graph.add_conditional_edges(
+        "analyst",
+        route_after_analyst,
+    )
+
+    # After analyst tools execution: back to analyst to process result
+    graph.add_edge("analyst_tools", "analyst")
 
     # After brainstorm: either execute tools, dispatch parallel, or end
     graph.add_conditional_edges(

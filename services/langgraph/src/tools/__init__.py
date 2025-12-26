@@ -13,6 +13,9 @@ from .activation import (
     save_project_secret,
 )
 
+# Delegation tools
+from .delegation import delegate_to_analyst
+
 # GitHub tools
 from .github import create_github_repo, get_github_token
 
@@ -71,4 +74,6 @@ __all__ = [
     # GitHub
     "create_github_repo",
     "get_github_token",
+    # Delegation
+    "delegate_to_analyst",
 ]

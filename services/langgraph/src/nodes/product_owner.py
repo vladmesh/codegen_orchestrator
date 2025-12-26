@@ -13,6 +13,7 @@ from ..tools import (
     activate_project,
     check_ready_to_deploy,
     create_project_intent,
+    delegate_to_analyst,
     get_project_status,
     inspect_repository,
     list_active_incidents,
@@ -38,6 +39,8 @@ tools = [
     save_project_secret,
     check_ready_to_deploy,
     list_resource_inventory,
+    # Delegation tools
+    delegate_to_analyst,
 ]
 
 tools_map = {tool.name: tool for tool in tools}
@@ -168,6 +171,13 @@ async def execute_tools(state: dict) -> dict:
                 response_parts.append(
                     "Для обновления проекта нужен его ID. Укажите ID, и я продолжу."
                 )
+            continue
+
+        if tool_name == "delegate_to_analyst":
+            po_intent = "delegate_analyst"
+            # Store the task description for analyst to pick up
+            analyst_task = result.get("task_description", "")
+            response_parts.append("🔍 Передаю задачу Аналитику для проработки требований...")
             continue
 
         if tool_name == "list_projects":
@@ -363,5 +373,9 @@ async def execute_tools(state: dict) -> dict:
         "current_project": current_project,
         "repo_info": repo_info,
     }
+
+    # Add analyst_task if delegation occurred
+    if "analyst_task" in dir():
+        updates["analyst_task"] = analyst_task
 
     return updates
