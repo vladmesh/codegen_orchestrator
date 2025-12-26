@@ -52,10 +52,10 @@ Server: vps-123 (1.2.3.4:8080)
 ### Реализация
 
 **Шаги:**
-1. [ ] Добавить inline keyboard в `telegram_bot` сервис
-2. [ ] Создать callback handlers для кнопок
-3. [ ] Прямые вызовы API (`GET /projects`, `GET /servers`) без LLM
-4. [ ] Роутинг: кнопка → API, текст → PO
+1. [x] Добавить inline keyboard в `telegram_bot` сервис
+2. [x] Создать callback handlers для кнопок
+3. [x] Прямые вызовы API (`GET /projects`, `GET /servers`) без LLM
+4. [x] Роутинг: кнопка → API, текст → PO
 
 **Файлы:**
 - `services/telegram_bot/src/handlers/menu.py` — новые handlers
