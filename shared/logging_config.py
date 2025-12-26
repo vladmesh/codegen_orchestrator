@@ -3,11 +3,13 @@
 This module provides a standardized logging setup using structlog that outputs
 either JSON (for production/Grafana Loki) or console format (for development).
 
+Configuration is read from environment variables or passed explicitly.
+
 Usage:
     from shared.logging_config import setup_logging
     import structlog
 
-    setup_logging(service_name="api", log_format="json", log_level="INFO")
+    setup_logging(service_name="api")  # Uses env defaults for format/level
     logger = structlog.get_logger()
     logger.info("event_name", key1=value1, key2=value2)
 """

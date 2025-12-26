@@ -20,8 +20,7 @@ RUN pip install --no-cache-dir --prefix=/install ./shared
 
 # Copy and install service dependencies (including Ansible)
 COPY services/langgraph/pyproject.toml ./
-RUN pip install --no-cache-dir --prefix=/install . && \
-    pip install --no-cache-dir --prefix=/install ansible
+RUN pip install --no-cache-dir --prefix=/install .
 
 # === Stage 2: Production ===
 # Create minimal runtime image with Ansible runtime dependencies

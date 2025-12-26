@@ -3,22 +3,26 @@
 Fetches agent prompts and settings from the API with TTL caching
 to avoid hitting the database on every LLM invocation.
 
+Uses service-specific config for API URL and cache TTL.
+
 IMPORTANT: No fallbacks - if API is unavailable, we fail fast.
 """
 
 import asyncio
 from datetime import datetime, timedelta
-import logging
-import os
 from typing import Any
 
 import httpx
+import structlog
 
-logger = logging.getLogger(__name__)
+from src.config.settings import get_settings
 
-# Configuration
-API_URL = os.getenv("API_URL", "http://api:8000")
-CACHE_TTL_SECONDS = int(os.getenv("AGENT_CONFIG_CACHE_TTL", "60"))
+logger = structlog.get_logger(__name__)
+
+# Get validated settings
+_settings = get_settings()
+API_URL = _settings.api_url
+CACHE_TTL_SECONDS = _settings.agent_config_cache_ttl
 
 
 class AgentConfigError(Exception):
@@ -54,7 +58,7 @@ class AgentConfigCache:
         if agent_id in self._cache:
             config, cached_at = self._cache[agent_id]
             if not self._is_expired(cached_at):
-                logger.debug(f"Cache hit for agent config: {agent_id}")
+                logger.debug("config_cache_hit", agent_id=agent_id)
                 return config
 
         # Fetch with lock to prevent thundering herd
@@ -77,7 +81,7 @@ class AgentConfigCache:
                 resp = await client.get(f"{API_URL}/api/agent-configs/{agent_id}")
 
                 if resp.status_code == httpx.codes.OK:
-                    logger.info(f"Fetched agent config from API: {agent_id}")
+                    logger.info("config_fetched", agent_id=agent_id)
                     return resp.json()
                 elif resp.status_code == httpx.codes.NOT_FOUND:
                     raise AgentConfigError(

@@ -19,6 +19,7 @@ dependencies = [
     # Utils
     "structlog>=25.1.0",
     "pyjwt[crypto]>=2.9.0",
+    "pydantic-settings>=2.0.0",
     
     # Infrastructure
     "ansible-core>=2.16.0",

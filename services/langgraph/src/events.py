@@ -1,8 +1,10 @@
-"""Event publishing helpers for orchestrator."""
+"""Event publishing helpers for orchestrator.
 
-import os
+Uses service-specific config for Redis URL.
+"""
 
 from shared.redis_client import RedisStreamClient
+from src.config.settings import get_settings
 
 EVENTS_STREAM = "orchestrator:events"
 
@@ -14,7 +16,8 @@ async def get_redis_client() -> RedisStreamClient:
     """Get or create Redis client."""
     global _redis_client
     if _redis_client is None:
-        _redis_client = RedisStreamClient(os.getenv("REDIS_URL", "redis://localhost:6379"))
+        settings = get_settings()
+        _redis_client = RedisStreamClient(settings.redis_url)
         await _redis_client.connect()
     return _redis_client
 

@@ -1,13 +1,17 @@
-"""Database connection and session handling for scheduler."""
+"""Database connection and session handling for scheduler.
+
+Uses service-specific config with fail-fast validation.
+"""
 
 from collections.abc import AsyncGenerator
-import os
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set")
+from src.config import get_settings
+
+# Get validated settings - will fail fast if DATABASE_URL is not set
+settings = get_settings()
+DATABASE_URL = settings.database_url
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)

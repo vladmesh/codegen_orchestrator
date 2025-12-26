@@ -12,8 +12,8 @@
 - `services/scheduler/src/tasks/server_sync.py` (~317 LOC) and `services/api/src/routers/servers.py` (~252 LOC) both carry multiple concerns; consider a service layer or helper modules.
 
 ## Config / env hygiene (policy violations)
-- Many defaults are used for env vars despite the AGENTS rule forbidding defaults. Examples: `services/api/src/database.py`, `shared/logging_config.py`, `shared/redis_client.py`, `shared/notifications.py`, `services/langgraph/src/config/agent_config.py`, `services/langgraph/src/tools/base.py`, `services/langgraph/src/events.py`. Centralize config with strict validation (e.g., pydantic-settings) and fail fast on missing values.
-- Scheduler already enforces `DATABASE_URL` in `services/scheduler/src/db.py` while API silently falls back to local defaults. Align behavior across services.
+- [x] Many defaults are used for env vars despite the AGENTS rule forbidding defaults. Examples: `services/api/src/database.py`, `shared/logging_config.py`, `shared/redis_client.py`, `shared/notifications.py`, `services/langgraph/src/config/agent_config.py`, `services/langgraph/src/tools/base.py`, `services/langgraph/src/events.py`. Centralize config with strict validation (e.g., pydantic-settings) and fail fast on missing values. **DONE: Created service-specific Settings classes in each service (`src/config.py`) inheriting from `shared/config.py` BaseSettings. Each service validates only the env vars it needs.**
+- [x] Scheduler already enforces `DATABASE_URL` in `services/scheduler/src/db.py` while API silently falls back to local defaults. Align behavior across services. **DONE: Both API and Scheduler now use service-specific config with required DATABASE_URL field.**
 
 ## Legacy / incomplete / likely broken
 - [x] `services/langgraph/src/tools/time4vps.py` instantiates `Time4VPSClient()` without credentials (constructor requires username/password). either inject config or remove dead code.

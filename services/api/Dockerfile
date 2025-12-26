@@ -13,6 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy and install shared module first
+COPY shared ./shared
+RUN pip install --no-cache-dir --prefix=/install ./shared
+
 # Copy and install service dependencies
 COPY services/api/pyproject.toml ./
 RUN pip install --no-cache-dir --prefix=/install .
@@ -28,7 +32,7 @@ COPY --from=builder /install /usr/local
 
 # Copy source code
 COPY services/api/src ./src
-COPY shared ./shared
+
 COPY alembic ./alembic
 COPY alembic.ini ./
 

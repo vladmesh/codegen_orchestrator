@@ -89,6 +89,7 @@ services:
     env_file:
       - .env
     environment:
+      API_URL: http://api:8000
       REDIS_URL: redis://redis:6379
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -106,9 +107,9 @@ services:
     env_file:
       - .env
     environment:
+      API_URL: http://api:8000
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
     volumes:
       - ./services/scheduler/src:/app/src:delegated
@@ -156,6 +157,7 @@ services:
   # === Tooling ===
 
   tooling:
+    profiles: [ "dev" ]
     build:
       context: .
       dockerfile: tooling/Dockerfile

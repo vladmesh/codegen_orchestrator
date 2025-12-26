@@ -1,23 +1,35 @@
 """Notification service for sending Telegram messages to admins.
 
 Shared utility used by both API and LangGraph services.
+Configuration is read from environment or passed explicitly.
 """
 
 import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta
 from http import HTTPStatus
-import logging
 import os
 
 import aiohttp
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
-# Configuration
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-API_BASE_URL = os.getenv("API_BASE_URL", "http://api:8000")
-NOTIFICATION_RATE_LIMIT = int(os.getenv("NOTIFICATION_RATE_LIMIT", "10"))  # per hour
+
+def _get_config():
+    """Get notification config from environment."""
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    api_url = os.getenv("API_URL", os.getenv("API_BASE_URL", ""))
+    rate_limit = int(os.getenv("NOTIFICATION_RATE_LIMIT", "10"))
+
+    if not api_url:
+        logger.warning("API_URL not set, notify_admins will not work")
+
+    return telegram_token, api_url, rate_limit
+
+
+# Get config at module load
+TELEGRAM_BOT_TOKEN, API_BASE_URL, NOTIFICATION_RATE_LIMIT = _get_config()
 
 # Rate limiting storage (in-memory, simple MVP)
 # Format: {telegram_id: [timestamp1, timestamp2, ...]}
@@ -49,12 +61,12 @@ async def send_telegram_message(
         True if sent successfully, False otherwise
     """
     if not TELEGRAM_BOT_TOKEN:
-        logger.warning("TELEGRAM_BOT_TOKEN not set, skipping notification")
+        logger.warning("telegram_token_missing", action="skip_notification")
         return False
 
     # Check rate limit
     if not _check_rate_limit(telegram_id):
-        logger.warning(f"Rate limit exceeded for user {telegram_id}, skipping notification")
+        logger.warning("rate_limit_exceeded", telegram_id=telegram_id, action="skip_notification")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -70,21 +82,23 @@ async def send_telegram_message(
                 url, json=payload, timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == HTTPStatus.OK:
-                    logger.info(f"Notification sent to user {telegram_id}")
+                    logger.info("notification_sent", telegram_id=telegram_id)
                     _record_message(telegram_id)
                     return True
                 else:
                     error_text = await resp.text()
                     logger.error(
-                        f"Failed to send notification to {telegram_id}: "
-                        f"status={resp.status}, error={error_text}"
+                        "notification_failed",
+                        telegram_id=telegram_id,
+                        status=resp.status,
+                        error=error_text,
                     )
                     return False
     except TimeoutError:
-        logger.error(f"Timeout sending notification to {telegram_id}")
+        logger.error("notification_timeout", telegram_id=telegram_id)
         return False
     except Exception as e:
-        logger.error(f"Error sending notification to {telegram_id}: {e}")
+        logger.error("notification_error", telegram_id=telegram_id, error=str(e))
         return False
 
 
@@ -98,6 +112,10 @@ async def notify_admins(message: str, level: str = "info") -> int:
     Returns:
         Number of users successfully notified
     """
+    if not API_BASE_URL:
+        logger.error("api_url_not_configured", action="skip_admin_notifications")
+        return 0
+
     # Get all users from API
     try:
         async with aiohttp.ClientSession() as session:
@@ -105,16 +123,16 @@ async def notify_admins(message: str, level: str = "info") -> int:
                 f"{API_BASE_URL}/users", timeout=aiohttp.ClientTimeout(total=5)
             ) as resp:
                 if resp.status != HTTPStatus.OK:
-                    logger.error(f"Failed to fetch users from API: {resp.status}")
+                    logger.error("fetch_users_failed", status=resp.status)
                     return 0
 
                 users = await resp.json()
     except Exception as e:
-        logger.error(f"Failed to fetch users from API: {e}")
+        logger.error("fetch_users_error", error=str(e))
         return 0
 
     if not users:
-        logger.warning("No users found in database, cannot send notifications")
+        logger.warning("no_users_found", action="skip_notifications")
         return 0
 
     # Filter admin users (for MVP, all users are admins)
@@ -133,7 +151,12 @@ async def notify_admins(message: str, level: str = "info") -> int:
     # Count successes
     success_count = sum(1 for r in results if r is True)
 
-    logger.info(f"Notified {success_count}/{len(admin_users)} admins with level={level}")
+    logger.info(
+        "admins_notified",
+        success_count=success_count,
+        total_admins=len(admin_users),
+        level=level,
+    )
 
     return success_count
 

@@ -1,12 +1,14 @@
 """Base utilities for database tools.
 
 Provides InternalAPIClient singleton for consistent API access.
+Uses service-specific config for API URL.
 """
 
 from http import HTTPStatus
-import os
 
 import httpx
+
+from src.config.settings import get_settings
 
 
 class InternalAPIClient:
@@ -17,7 +19,8 @@ class InternalAPIClient:
     """
 
     def __init__(self):
-        self.base_url = os.getenv("API_URL", "http://api:8000")
+        settings = get_settings()
+        self.base_url = settings.api_url
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -76,4 +79,4 @@ class InternalAPIClient:
 api_client = InternalAPIClient()
 
 # Legacy constant for backward compatibility
-INTERNAL_API_URL = os.getenv("API_URL", "http://api:8000")
+INTERNAL_API_URL = get_settings().api_url

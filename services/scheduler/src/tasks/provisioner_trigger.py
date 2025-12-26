@@ -10,11 +10,13 @@ import os
 import redis.asyncio as redis
 import structlog
 
+from src.config import get_settings
+
 logger = structlog.get_logger()
 
-# Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+# Configuration from service settings
+_settings = get_settings()
+REDIS_URL = _settings.redis_url
 LANGGRAPH_API_URL = os.getenv("LANGGRAPH_API_URL", "http://langgraph:8001")
 
 # Redis channel for provisioning triggers
@@ -91,7 +93,7 @@ async def provisioner_trigger_worker():
 
     try:
         # Connect to Redis
-        redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
         # Subscribe to provisioner trigger channel
         pubsub = redis_client.pubsub()
@@ -208,7 +210,7 @@ async def publish_provisioner_trigger(server_handle: str, is_incident_recovery: 
         server_handle: Server handle to provision
         is_incident_recovery: True if this is incident recovery
     """
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
     try:
         payload = json.dumps(
