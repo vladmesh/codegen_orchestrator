@@ -8,6 +8,7 @@ Runs all background workers:
 """
 
 import asyncio
+
 import structlog
 
 from shared.logging_config import setup_logging

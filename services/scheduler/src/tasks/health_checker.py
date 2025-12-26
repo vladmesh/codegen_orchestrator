@@ -7,7 +7,6 @@ import time
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 import structlog
 
 from shared.notifications import notify_admins

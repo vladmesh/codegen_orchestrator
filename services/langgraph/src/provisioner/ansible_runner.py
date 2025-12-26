@@ -1,9 +1,9 @@
 """Ansible playbook execution for provisioner."""
 
 import os
-import time
 import subprocess
 import tempfile
+import time
 
 import structlog
 

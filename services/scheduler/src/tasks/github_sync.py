@@ -4,7 +4,6 @@ import asyncio
 import time
 
 from sqlalchemy import select
-
 import structlog
 
 from shared.clients.github import GitHubAppClient
@@ -19,7 +18,7 @@ SYNC_INTERVAL = 300  # 5 minutes
 MISSING_THRESHOLD = 3  # Alert after 3 consecutive checks where repo is missing
 
 
-async def sync_projects_worker():
+async def sync_projects_worker():  # noqa: PLR0915
     """Background worker to sync projects from GitHub."""
     logger.info("github_sync_worker_started")
 

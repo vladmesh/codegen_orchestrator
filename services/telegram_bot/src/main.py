@@ -6,9 +6,9 @@ import os
 import sys
 import time
 
+import structlog
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-import structlog
 
 # Add shared to path
 sys.path.insert(0, "/app")
