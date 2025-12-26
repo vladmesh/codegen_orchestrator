@@ -18,6 +18,7 @@ from langchain_core.tools import BaseTool
 import structlog
 
 from ..config.agent_config_cache import agent_config_cache
+from ..config.cli_agent_config import cli_agent_config_cache
 from ..llm.factory import LLMFactory
 
 logger = structlog.get_logger()
@@ -218,6 +219,16 @@ class CLIAgentNode(BaseNode):
         self.prompt_template = prompt_template
         self.workspace_image = workspace_image
         self.required_credentials = required_credentials or []
+
+    async def get_config(self) -> dict[str, Any]:
+        """Get agent configuration from API.
+
+        Returns:
+            Config dict with keys: prompt_template, model, etc.
+        """
+        if not self.node_id:
+            raise ValueError("Node ID required to fetch config")
+        return await cli_agent_config_cache.get(self.node_id)
 
 
 class CodexNode(CLIAgentNode):
