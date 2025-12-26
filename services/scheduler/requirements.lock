@@ -63,6 +63,8 @@ pyjwt==2.10.1
     # via scheduler (services/scheduler/pyproject.toml)
 python-dotenv==1.2.1
     # via pydantic-settings
+pyyaml==6.0.3
+    # via scheduler (services/scheduler/pyproject.toml)
 redis==7.1.0
     # via scheduler (services/scheduler/pyproject.toml)
 sqlalchemy==2.0.45

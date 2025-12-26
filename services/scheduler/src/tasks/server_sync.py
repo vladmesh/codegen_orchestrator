@@ -282,7 +282,7 @@ async def _check_provisioning_triggers(db: AsyncSession) -> int:
     Automatically triggers provisioning via Redis pub/sub.
     """
     triggers_published = 0
-    now = datetime.now(UTC)
+    now = datetime.now(UTC).replace(tzinfo=None)
     stuck_timeout = timedelta(seconds=PROVISIONING_STUCK_TIMEOUT_SECONDS)
     trigger_cooldown = timedelta(seconds=PROVISIONING_TRIGGER_COOLDOWN_SECONDS)
     # Check for FORCE_REBUILD
