@@ -13,7 +13,8 @@ from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import tool
 import structlog
 
-from ..clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient
+
 from ..clients.worker_spawner import request_spawn
 from ..tools.github import create_github_repo, get_github_token
 from .base import BaseAgentNode, log_node_execution

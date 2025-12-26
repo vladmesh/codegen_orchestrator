@@ -12,7 +12,8 @@ import httpx
 from langchain_core.messages import AIMessage
 import structlog
 
-from ..clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient
+
 from .base import log_node_execution
 
 logger = structlog.get_logger()

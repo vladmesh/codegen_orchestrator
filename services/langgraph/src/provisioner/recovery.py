@@ -129,7 +129,7 @@ async def redeploy_all_services(
     Returns:
         Tuple of (success_count, fail_count, error_messages)
     """
-    from ..clients.github import GitHubAppClient
+    from shared.clients.github import GitHubAppClient
 
     logger.info(
         "incident_recovery_start",

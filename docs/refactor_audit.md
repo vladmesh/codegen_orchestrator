@@ -2,7 +2,7 @@
 
 ## DRY / duplicate logic
 - [x] Duplicate workers in API and Scheduler: server sync, health checks, GitHub sync, and provisioner trigger exist twice with near-identical logic (e.g., `services/api/src/tasks/server_sync.py` and `services/scheduler/src/tasks/server_sync.py`). Decide on one home (likely scheduler) and move shared logic into a common module.
-- Duplicate GitHub client implementations: `shared/clients/github.py` and `services/langgraph/src/clients/github.py` diverge in error handling and key loading. Consolidate into a single shared client.
+- [x] Duplicate GitHub client implementations: `shared/clients/github.py` and `services/langgraph/src/clients/github.py` diverge in error handling and key loading. Consolidate into a single shared client.
 - [x] Duplicate Time4VPS client implementations: `services/api/src/clients/time4vps.py` and `services/langgraph/src/clients/time4vps.py` overlap heavily; unify and reuse in tools/workers.
 
 ## Large / multi-responsibility modules

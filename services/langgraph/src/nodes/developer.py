@@ -9,7 +9,8 @@ import time
 from langchain_core.messages import AIMessage
 import structlog
 
-from ..clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient
+
 from ..clients.worker_spawner import request_spawn
 from .base import BaseAgentNode, log_node_execution
 
