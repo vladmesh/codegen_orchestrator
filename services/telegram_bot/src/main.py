@@ -4,15 +4,18 @@ import asyncio
 import logging
 import os
 import sys
+import time
 
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
+import structlog
 
 # Add shared to path
 sys.path.insert(0, "/app")
+from shared.logging_config import setup_logging
 from shared.redis_client import RedisStreamClient
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Global Redis client
 redis_client = RedisStreamClient()
@@ -31,20 +34,43 @@ async def handle_message(update: Update, context) -> None:
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
     text = update.message.text
+    correlation_id = f"msg_{message_id}_{int(time.time())}"
 
-    # Publish to Redis Stream for LangGraph to process
-    await redis_client.publish(
-        RedisStreamClient.INCOMING_STREAM,
-        {
-            "user_id": user_id,
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": text,
-            "thread_id": f"user_{user_id}",  # For LangGraph checkpointing
-        },
+    preexisting_context = structlog.contextvars.get_contextvars()
+    bind_keys = []
+    for key, value in {
+        "correlation_id": correlation_id,
+        "user_id": user_id,
+        "chat_id": chat_id,
+        "message_id": message_id,
+    }.items():
+        if key not in preexisting_context:
+            bind_keys.append(key)
+        structlog.contextvars.bind_contextvars(**{key: value})
+
+    logger.info(
+        "message_received",
+        text_length=len(text) if text else 0,
     )
 
-    logger.info(f"Published message from user {user_id} to Redis Stream")
+    try:
+        # Publish to Redis Stream for LangGraph to process
+        await redis_client.publish(
+            RedisStreamClient.INCOMING_STREAM,
+            {
+                "user_id": user_id,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "thread_id": f"user_{user_id}",  # For LangGraph checkpointing
+                "correlation_id": correlation_id,
+            },
+        )
+
+        logger.info("message_published", stream=RedisStreamClient.INCOMING_STREAM)
+    finally:
+        if bind_keys:
+            structlog.contextvars.unbind_contextvars(*bind_keys)
 
 
 async def outgoing_consumer(bot: Bot) -> None:
@@ -64,18 +90,36 @@ async def outgoing_consumer(bot: Bot) -> None:
         reply_to = data.get("reply_to_message_id")
 
         if not chat_id or not text:
-            logger.warning(f"Invalid outgoing message: {data}")
+            logger.warning("invalid_outgoing_message", payload=data)
             continue
 
         try:
+            correlation_id = data.get("correlation_id")
+            preexisting_context = structlog.contextvars.get_contextvars()
+            bind_keys = []
+            if correlation_id and "correlation_id" not in preexisting_context:
+                bind_keys.append("correlation_id")
+            if correlation_id:
+                structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
+
+            logger.info("sending_message", chat_id=chat_id, reply_to_message_id=reply_to)
             await bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 reply_to_message_id=reply_to,
             )
-            logger.info(f"Sent message to chat {chat_id}")
+            logger.info("message_sent", chat_id=chat_id)
         except Exception as e:
-            logger.error(f"Failed to send message to {chat_id}: {e}")
+            logger.error(
+                "message_send_failed",
+                chat_id=chat_id,
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+        finally:
+            if bind_keys:
+                structlog.contextvars.unbind_contextvars(*bind_keys)
 
 
 async def post_init(app: Application) -> None:
@@ -94,10 +138,7 @@ async def post_shutdown(app: Application) -> None:
 
 def main() -> None:
     """Run the bot."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    setup_logging(service_name="telegram_bot")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -112,7 +153,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Bot starting...")
+    logger.info("telegram_bot_starting")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

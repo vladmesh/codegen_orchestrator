@@ -24,6 +24,6 @@ RUN pip install --no-cache-dir .
 
 # Copy source
 COPY services/worker-spawner/src ./src
+COPY shared ./shared
 
 CMD ["python", "-m", "src.main"]
-

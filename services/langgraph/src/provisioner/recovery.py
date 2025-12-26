@@ -60,19 +60,56 @@ async def redeploy_service(
 
     cmd = ["ansible-playbook", "-i", inventory_path, playbook_path, "--extra-vars", extra_vars]
 
-    logger.info("service_redeploying", service_name=service_name, server_ip=server_ip, port=port)
+    logger.info(
+        "service_redeployment",
+        service_name=service_name,
+        server_ip=server_ip,
+        port=port,
+        status="start",
+    )
 
     try:
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if process.returncode == 0:
+            logger.info(
+                "service_redeployment",
+                service_name=service_name,
+                server_ip=server_ip,
+                port=port,
+                status="success",
+            )
             return True, f"Service {service_name} redeployed successfully"
         else:
+            logger.error(
+                "service_redeployment",
+                service_name=service_name,
+                server_ip=server_ip,
+                port=port,
+                status="failed",
+                error=process.stderr[-500:],
+            )
             return False, f"Ansible failed: {process.stderr[-500:]}"
 
     except subprocess.TimeoutExpired:
+        logger.error(
+            "service_redeployment",
+            service_name=service_name,
+            server_ip=server_ip,
+            port=port,
+            status="timeout",
+        )
         return False, f"Deployment timeout for {service_name}"
     except Exception as e:
+        logger.error(
+            "service_redeployment",
+            service_name=service_name,
+            server_ip=server_ip,
+            port=port,
+            status="error",
+            error=str(e),
+            error_type=type(e).__name__,
+        )
         return False, f"Deployment error: {e}"
     finally:
         if os.path.exists(inventory_path):
@@ -94,10 +131,22 @@ async def redeploy_all_services(
     """
     from ..clients.github import GitHubAppClient
 
+    logger.info(
+        "incident_recovery_start",
+        server_handle=server_handle,
+        server_ip=server_ip,
+    )
     services = await get_services_on_server(server_handle)
 
     if not services:
         logger.info("no_services_to_redeploy", server_handle=server_handle)
+        logger.info(
+            "incident_recovery_complete",
+            server_handle=server_handle,
+            server_ip=server_ip,
+            success_count=0,
+            fail_count=0,
+        )
         return 0, 0, []
 
     logger.info("services_found_for_redeployment", server_handle=server_handle, count=len(services))
@@ -154,4 +203,11 @@ async def redeploy_all_services(
             level="warning",
         )
 
+    logger.info(
+        "incident_recovery_complete",
+        server_handle=server_handle,
+        server_ip=server_ip,
+        success_count=success_count,
+        fail_count=fail_count,
+    )
     return success_count, fail_count, errors

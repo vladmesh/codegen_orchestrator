@@ -1,16 +1,18 @@
 """GitHub sync worker - syncs projects and their status from GitHub."""
 
 import asyncio
-import logging
+import time
 
 from sqlalchemy import select
+
+import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.notifications import notify_admins
 from src.db import async_session_maker
 from src.models.project import Project, ProjectStatus
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Config
 SYNC_INTERVAL = 300  # 5 minutes
@@ -19,13 +21,15 @@ MISSING_THRESHOLD = 3  # Alert after 3 consecutive checks where repo is missing
 
 async def sync_projects_worker():
     """Background worker to sync projects from GitHub."""
-    logger.info("Starting GitHub Sync Worker")
+    logger.info("github_sync_worker_started")
 
     # In-memory failure tracking for robust alerting
     # {project_id: fail_count}
     missing_counters = {}
 
     while True:
+        start_time = time.time()
+        repos_synced = 0
         try:
             async with async_session_maker() as db:
                 client = GitHubAppClient()
@@ -36,19 +40,31 @@ async def sync_projects_worker():
                     install_info = await client.get_first_org_installation()
                     org_name = install_info["org"]
                 except Exception as e:
-                    logger.error(f"Failed to resolve GitHub App installation: {e}")
+                    logger.error(
+                        "github_app_installation_resolve_failed",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        exc_info=True,
+                    )
                     await asyncio.sleep(SYNC_INTERVAL)
                     continue
 
-                logger.info(f"Syncing projects for Organization: {org_name}")
+                logger.info("github_sync_start", org_name=org_name)
 
                 # 2. Fetch all Repositories
                 try:
                     github_repos = await client.list_org_repos(org_name)
                 except Exception as e:
-                    logger.error(f"Failed to fetch repositories: {e}")
+                    logger.error(
+                        "github_repos_fetch_failed",
+                        org_name=org_name,
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        exc_info=True,
+                    )
                     await asyncio.sleep(SYNC_INTERVAL)
                     continue
+                logger.info("github_repos_fetched", org_name=org_name, repo_count=len(github_repos))
 
                 # Map by ID for accurate tracking
                 # repo_id (int) -> repo_data
@@ -58,6 +74,7 @@ async def sync_projects_worker():
                 for r in github_repos:
                     repo_id = r["id"]
                     repo_name = r["name"]
+                    repos_synced += 1
 
                     # Try to find in DB by github_repo_id
                     query = select(Project).where(Project.github_repo_id == repo_id)
@@ -74,12 +91,18 @@ async def sync_projects_worker():
                         if project:
                             # Link legacy project
                             logger.info(
-                                f"Linking existing project '{project.name}' to GitHub ID {repo_id}"
+                                "project_linked_to_github",
+                                project_name=project.name,
+                                github_repo_id=repo_id,
                             )
                             project.github_repo_id = repo_id
                         else:
                             # Create new project
-                            logger.info(f"Discovered new project: {repo_name} (ID: {repo_id})")
+                            logger.info(
+                                "github_project_discovered",
+                                project_name=repo_name,
+                                github_repo_id=repo_id,
+                            )
                             project = Project(
                                 id=repo_name,  # Use name as ID for simplicity consistent with usage
                                 name=repo_name,
@@ -98,7 +121,11 @@ async def sync_projects_worker():
                             project.status = (
                                 ProjectStatus.ACTIVE.value
                             )  # Or INITIALIZED? Active implies deployed.
-                            logger.info(f"Project {project.name} recovered from MISSING state.")
+                            logger.info(
+                                "project_recovered",
+                                project_name=project.name,
+                                github_repo_id=repo_id,
+                            )
 
                 # 4. Sync Logic: DB -> GitHub (Detect Missing)
                 # Iterate all projects that SHOULD be on GitHub
@@ -118,15 +145,20 @@ async def sync_projects_worker():
                         missing_counters[proj.id] = count
 
                         logger.warning(
-                            f"Project {proj.name} (ID: {proj.github_repo_id}) not found on GitHub. "
-                            f"Attempt {count}/{MISSING_THRESHOLD}"
+                            "project_missing_from_github",
+                            project_name=proj.name,
+                            github_repo_id=proj.github_repo_id,
+                            attempt=count,
+                            threshold=MISSING_THRESHOLD,
                         )
 
                         if count >= MISSING_THRESHOLD:
                             proj.status = ProjectStatus.MISSING.value
                             logger.error(
-                                f"Marking project {proj.name} as MISSING "
-                                f"after {count} failed checks."
+                                "project_marked_missing",
+                                project_name=proj.name,
+                                github_repo_id=proj.github_repo_id,
+                                attempts=count,
                             )
                             # Send critical alert to admins
                             await notify_admins(
@@ -137,9 +169,21 @@ async def sync_projects_worker():
                             )
 
                 await db.commit()
-                logger.debug(f"Synced {len(github_repos)} repositories.")
+                logger.debug("github_sync_db_updated", repo_count=len(github_repos))
 
         except Exception as e:
-            logger.error(f"Error in GitHub Sync Worker: {e}", exc_info=True)
+            logger.error(
+                "github_sync_worker_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+        finally:
+            duration = time.time() - start_time
+            logger.info(
+                "github_sync_complete",
+                repos_synced=repos_synced,
+                duration_sec=round(duration, 2),
+            )
 
         await asyncio.sleep(SYNC_INTERVAL)

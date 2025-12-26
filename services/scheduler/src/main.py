@@ -8,28 +8,26 @@ Runs all background workers:
 """
 
 import asyncio
-import logging
-import sys
+import structlog
+
+from shared.logging_config import setup_logging
 
 from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker
 from .tasks.provisioner_trigger import provisioner_trigger_worker
 from .tasks.server_sync import sync_servers_worker
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 async def main():
     """Run all background workers concurrently."""
-    logger.info("🚀 Starting Scheduler Service")
-    logger.info("Workers: github_sync, server_sync, health_checker, provisioner_trigger")
+    setup_logging(service_name="scheduler")
+    logger.info("scheduler_started")
+    logger.info(
+        "scheduler_workers_configured",
+        workers=["github_sync", "server_sync", "health_checker", "provisioner_trigger"],
+    )
 
     # Create tasks for all workers
     tasks = [
@@ -43,12 +41,17 @@ async def main():
         # Wait for all tasks (they run forever)
         await asyncio.gather(*tasks)
     except asyncio.CancelledError:
-        logger.info("Scheduler shutdown requested")
+        logger.info("scheduler_shutdown_requested")
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as e:
-        logger.error(f"Scheduler error: {e}", exc_info=True)
+        logger.error(
+            "scheduler_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
         raise
 
 
@@ -56,4 +59,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Scheduler stopped by user")
+        logger.info("scheduler_stopped_by_user")

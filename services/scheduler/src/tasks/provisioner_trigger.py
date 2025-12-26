@@ -5,12 +5,12 @@ Uses Redis pub/sub to receive trigger events from health_checker and server_sync
 
 import asyncio
 import json
-import logging
 import os
 
 import redis.asyncio as redis
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
@@ -45,10 +45,11 @@ async def trigger_provisioner(server_handle: str, is_incident_recovery: bool = F
         # TODO: Update this URL once LangGraph API is set up
         # For now, just log the intent
         logger.info(
-            f"🚀 Would trigger Provisioner for {server_handle} "
-            f"(incident_recovery={is_incident_recovery})"
+            "provisioner_trigger_requested",
+            server_handle=server_handle,
+            is_incident_recovery=is_incident_recovery,
         )
-        logger.debug(f"Payload: {json.dumps(payload, indent=2)}")
+        logger.debug("provisioner_trigger_payload", payload=payload)
 
         # In production, this would call:
         # async with session.post(
@@ -67,13 +68,23 @@ async def trigger_provisioner(server_handle: str, is_incident_recovery: bool = F
         return True
 
     except Exception as e:
-        logger.error(f"Error triggering provisioner for {server_handle}: {e}")
+        logger.error(
+            "provisioner_trigger_failed",
+            server_handle=server_handle,
+            is_incident_recovery=is_incident_recovery,
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
         return False
 
 
 async def provisioner_trigger_worker():
     """Background worker that listens for provisioning trigger events via Redis pub/sub."""
-    logger.info(f"Starting Provisioner Trigger Worker (listening on {PROVISIONER_TRIGGER_CHANNEL})")
+    logger.info(
+        "provisioner_trigger_worker_started",
+        channel=PROVISIONER_TRIGGER_CHANNEL,
+    )
 
     redis_client = None
     pubsub = None
@@ -86,7 +97,7 @@ async def provisioner_trigger_worker():
         pubsub = redis_client.pubsub()
         await pubsub.subscribe(PROVISIONER_TRIGGER_CHANNEL)
 
-        logger.info(f"✅ Subscribed to Redis channel: {PROVISIONER_TRIGGER_CHANNEL}")
+        logger.info("redis_channel_subscribed", channel=PROVISIONER_TRIGGER_CHANNEL)
 
         # Listen for messages using while loop
         while True:
@@ -107,36 +118,63 @@ async def provisioner_trigger_worker():
                     is_incident_recovery = data.get("is_incident_recovery", False)
 
                     if not server_handle:
-                        logger.warning(f"Received trigger without server_handle: {data}")
+                        logger.warning("provisioner_trigger_missing_handle", payload=data)
                         continue
 
                     logger.info(
-                        f"📩 Received provisioning trigger: {server_handle} "
-                        f"(incident_recovery={is_incident_recovery})"
+                        "provisioner_trigger_received",
+                        server_handle=server_handle,
+                        is_incident_recovery=is_incident_recovery,
                     )
 
                     # Trigger provisioner
                     success = await trigger_provisioner(server_handle, is_incident_recovery)
 
                     if success:
-                        logger.info(f"✅ Successfully triggered provisioner for {server_handle}")
+                        logger.info(
+                            "provisioner_trigger_succeeded",
+                            server_handle=server_handle,
+                        )
                     else:
-                        logger.error(f"❌ Failed to trigger provisioner for {server_handle}")
+                        logger.error(
+                            "provisioner_trigger_failed",
+                            server_handle=server_handle,
+                        )
 
                 except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse trigger message: {e}, data={message['data']}")
+                    logger.error(
+                        "provisioner_trigger_parse_failed",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        raw_message=message.get("data"),
+                    )
                 except Exception as e:
-                    logger.error(f"Error processing trigger message: {e}", exc_info=True)
+                    logger.error(
+                        "provisioner_trigger_processing_error",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        exc_info=True,
+                    )
 
             except asyncio.CancelledError:
-                logger.info("Provisioner Trigger Worker cancelled")
+                logger.info("provisioner_trigger_worker_cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in message loop: {e}", exc_info=True)
+                logger.error(
+                    "provisioner_trigger_worker_loop_error",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
+                )
                 await asyncio.sleep(1)
 
     except Exception as e:
-        logger.error(f"Error in Provisioner Trigger Worker: {e}", exc_info=True)
+        logger.error(
+            "provisioner_trigger_worker_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
 
     finally:
         if pubsub:
@@ -144,13 +182,21 @@ async def provisioner_trigger_worker():
                 await pubsub.unsubscribe(PROVISIONER_TRIGGER_CHANNEL)
                 await pubsub.close()
             except Exception as e:
-                logger.error(f"Error closing redis pubsub: {e}")
+                logger.error(
+                    "redis_pubsub_close_failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
         if redis_client:
             try:
                 await redis_client.close()
             except Exception as e:
-                logger.error(f"Error closing redis client: {e}")
-        logger.info("Provisioner Trigger Worker stopped")
+                logger.error(
+                    "redis_client_close_failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+        logger.info("provisioner_trigger_worker_stopped")
 
 
 async def publish_provisioner_trigger(server_handle: str, is_incident_recovery: bool = False):
@@ -175,10 +221,17 @@ async def publish_provisioner_trigger(server_handle: str, is_incident_recovery: 
         await redis_client.publish(PROVISIONER_TRIGGER_CHANNEL, payload)
 
         logger.info(
-            f"📤 Published provisioning trigger for {server_handle} "
-            f"(incident_recovery={is_incident_recovery})"
+            "provisioner_trigger_published",
+            server_handle=server_handle,
+            is_incident_recovery=is_incident_recovery,
         )
     except Exception as e:
-        logger.error(f"Failed to publish trigger for {server_handle}: {e}")
+        logger.error(
+            "provisioner_trigger_publish_failed",
+            server_handle=server_handle,
+            is_incident_recovery=is_incident_recovery,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
     finally:
         await redis_client.close()

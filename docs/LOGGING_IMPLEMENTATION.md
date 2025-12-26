@@ -18,11 +18,11 @@
 
 | Service | Status | Logging Approach | Issues |
 |---------|--------|------------------|--------|
-| **api** | ✅ | `logging.basicConfig()` | Нет контекста (user_id, project_id) |
-| **langgraph** | ✅ | `logging.basicConfig()` | Нет информации о nodes, thread_id |
-| **scheduler** | ✅ | Basic logging | Нет метрик (duration, items processed) |
-| **telegram_bot** | ✅ | Basic logging | Нет correlation_id |
-| **worker-spawner** | ✅ | Basic logging | Нет lifecycle tracking |
+| **api** | ✅ | `structlog` (middleware + routers) | — |
+| **langgraph** | ✅ | `structlog` (worker + nodes) | — |
+| **scheduler** | ✅ | `structlog` (workers + metrics) | — |
+| **telegram_bot** | ✅ | `structlog` (correlation_id) | — |
+| **worker-spawner** | ✅ | `structlog` (lifecycle events) | — |
 | **coding-worker** | ⚠️ | Stdout only | Нет интеграции |
 | **infrastructure** | ⚠️ | Ansible logs | Нужна интеграция |
 
@@ -327,8 +327,8 @@ logger.info("test_event", user_id=123)
                        exc_info=True)
                    raise
                finally:
-                   # Clear node context
-                   structlog.contextvars.clear_contextvars()
+                   # Clear node context without dropping request scope
+                   structlog.contextvars.unbind_contextvars("node")
            
            return wrapper
        return decorator
@@ -495,7 +495,7 @@ logger.info("service_redeployment",
 
 ---
 
-### Phase 4: Background Services (Day 6)
+### Phase 4: Background Services (Done)
 
 **Goal:** Migrate remaining services to structured logging
 

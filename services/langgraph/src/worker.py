@@ -108,6 +108,7 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
                 "chat_id": chat_id,
                 "reply_to_message_id": data.get("message_id"),
                 "text": response_text,
+                "correlation_id": correlation_id,
             },
         )
 

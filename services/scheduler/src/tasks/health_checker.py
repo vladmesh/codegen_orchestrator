@@ -2,11 +2,13 @@
 
 import asyncio
 from datetime import datetime
-import logging
 import os
+import time
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+import structlog
 
 from shared.notifications import notify_admins
 from src.db import async_session_maker
@@ -15,7 +17,7 @@ from src.models.server import Server
 
 from .provisioner_trigger import publish_provisioner_trigger
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Configuration
 HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "60"))  # 1 minute
@@ -33,9 +35,10 @@ async def _check_server_health(server: Server) -> bool:
         True if healthy (SSH accessible), False otherwise
     """
     if not server.public_ip:
-        logger.warning(f"Server {server.handle} has no public IP, skipping health check")
+        logger.warning("health_check_skipped_no_ip", server_handle=server.handle)
         return True  # Assume healthy if no IP to check
 
+    start = time.time()
     try:
         # Use asyncio subprocess to test SSH connectivity
         process = await asyncio.create_subprocess_exec(
@@ -66,20 +69,45 @@ async def _check_server_health(server: Server) -> bool:
 
         if not is_healthy:
             logger.warning(
-                f"SSH health check failed for {server.handle} ({server.public_ip}): "
-                f"returncode={process.returncode}, stderr={stderr.decode()[:200]}"
+                "server_health_check_failed",
+                server_handle=server.handle,
+                server_ip=server.public_ip,
+                return_code=process.returncode,
+                stderr_preview=stderr.decode()[:200],
             )
 
+        duration_ms = (time.time() - start) * 1000
+        logger.info(
+            "server_health_check",
+            server_handle=server.handle,
+            server_ip=server.public_ip,
+            status="healthy" if is_healthy else "unhealthy",
+            response_time_ms=round(duration_ms, 2),
+        )
         return is_healthy
 
     except TimeoutError:
-        logger.warning(f"SSH timeout for server {server.handle} ({server.public_ip})")
+        duration_ms = (time.time() - start) * 1000
+        logger.warning(
+            "server_health_check_timeout",
+            server_handle=server.handle,
+            server_ip=server.public_ip,
+            response_time_ms=round(duration_ms, 2),
+        )
         return False
     except FileNotFoundError:
-        logger.error(f"SSH key not found at {SSH_KEY_PATH}")
+        logger.error("ssh_key_missing", key_path=SSH_KEY_PATH)
         return True  # Don't mark as unhealthy if SSH key missing
     except Exception as e:
-        logger.warning(f"SSH check failed for {server.handle}: {e}")
+        duration_ms = (time.time() - start) * 1000
+        logger.warning(
+            "server_health_check_error",
+            server_handle=server.handle,
+            server_ip=server.public_ip,
+            response_time_ms=round(duration_ms, 2),
+            error=str(e),
+            error_type=type(e).__name__,
+        )
         return False
 
 
@@ -108,8 +136,9 @@ async def _handle_unhealthy_server(db: AsyncSession, server: Server):
     if active_incident:
         # Already handling this incident, just update recovery attempts
         logger.info(
-            f"Active incident #{active_incident.id} exists for "
-            f"{server.handle}, incrementing attempts"
+            "incident_recovery_attempt_incremented",
+            incident_id=active_incident.id,
+            server_handle=server.handle,
         )
         active_incident.recovery_attempts += 1
         return
@@ -135,14 +164,16 @@ async def _handle_unhealthy_server(db: AsyncSession, server: Server):
     server.last_incident = datetime.utcnow()
 
     logger.error(
-        f"🚨 Server {server.handle} is UNHEALTHY! "
-        f"Created incident #{incident.id}. "
-        f"Previous status: {previous_status}"
+        "server_unhealthy_incident_created",
+        server_handle=server.handle,
+        server_ip=server.public_ip,
+        incident_id=incident.id,
+        previous_status=previous_status,
     )
 
     # Trigger recovery via Provisioner
     await publish_provisioner_trigger(server.handle, is_incident_recovery=True)
-    logger.info(f"🔄 Triggered automatic recovery for {server.handle}")
+    logger.info("incident_recovery_triggered", server_handle=server.handle)
 
     # Send notification to admins
     await notify_admins(
@@ -165,13 +196,14 @@ async def _check_all_servers(db: AsyncSession):
     servers = result.scalars().all()
 
     if not servers:
-        logger.debug("No servers to health check")
+        logger.debug("health_check_no_servers")
         return
 
-    logger.info(f"Running health checks for {len(servers)} servers...")
+    logger.info("health_check_start", servers_count=len(servers))
 
     healthy_count = 0
     unhealthy_count = 0
+    start = time.time()
 
     for server in servers:
         is_healthy = await _check_server_health(server)
@@ -180,7 +212,7 @@ async def _check_all_servers(db: AsyncSession):
             # Update last_health_check timestamp
             server.last_health_check = datetime.utcnow()
             healthy_count += 1
-            logger.debug(f"✓ {server.handle} is healthy")
+            logger.debug("server_healthy", server_handle=server.handle)
         else:
             # Handle unhealthy server
             await _handle_unhealthy_server(db, server)
@@ -188,7 +220,13 @@ async def _check_all_servers(db: AsyncSession):
 
     await db.commit()
 
-    logger.info(f"Health check complete: {healthy_count} healthy, {unhealthy_count} unhealthy")
+    duration = time.time() - start
+    logger.info(
+        "health_check_complete",
+        healthy_count=healthy_count,
+        unhealthy_count=unhealthy_count,
+        duration_sec=round(duration, 2),
+    )
 
 
 async def health_check_worker():
@@ -196,13 +234,18 @@ async def health_check_worker():
 
     Runs every HEALTH_CHECK_INTERVAL seconds.
     """
-    logger.info(f"Starting Health Check Worker (interval: {HEALTH_CHECK_INTERVAL}s)")
+    logger.info("health_check_worker_started", interval_sec=HEALTH_CHECK_INTERVAL)
 
     while True:
         try:
             async with async_session_maker() as db:
                 await _check_all_servers(db)
         except Exception as e:
-            logger.error(f"Error in Health Check Worker: {e}", exc_info=True)
+            logger.error(
+                "health_check_worker_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
 
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)

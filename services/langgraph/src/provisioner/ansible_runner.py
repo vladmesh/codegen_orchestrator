@@ -1,6 +1,7 @@
 """Ansible playbook execution for provisioner."""
 
 import os
+import time
 import subprocess
 import tempfile
 
@@ -84,6 +85,8 @@ def run_ansible_playbook(
         auth_mode=auth_mode,
     )
 
+    start = time.time()
+
     try:
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)  # noqa: S603
 
@@ -99,6 +102,14 @@ def run_ansible_playbook(
             logger.warning("ansible_stderr", output=process.stderr[:MAX_LOG_LENGTH])
 
         success = process.returncode == 0
+        duration = time.time() - start
+        logger.info(
+            "ansible_playbook_complete",
+            playbook=playbook_name,
+            server_handle=server_handle,
+            exit_code=process.returncode,
+            duration_sec=round(duration, 2),
+        )
         if success:
             output = process.stdout
         else:

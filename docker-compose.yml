@@ -93,6 +93,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./services/worker-spawner/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
     depends_on:
       - redis
     networks:

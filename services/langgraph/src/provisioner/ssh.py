@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import time
 
 import structlog
 
@@ -45,8 +46,25 @@ def check_ssh_access(server_ip: str, timeout: int = 10) -> bool:
         "echo success",
     ]
 
+    start = time.time()
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return result.returncode == 0 and "success" in result.stdout
-    except Exception:
+        success = result.returncode == 0 and "success" in result.stdout
+        duration_ms = (time.time() - start) * 1000
+        logger.info(
+            "ssh_connection_test",
+            host=server_ip,
+            success=success,
+            duration_ms=round(duration_ms, 2),
+        )
+        return success
+    except Exception as e:
+        duration_ms = (time.time() - start) * 1000
+        logger.warning(
+            "ssh_connection_test_failed",
+            host=server_ip,
+            duration_ms=round(duration_ms, 2),
+            error=str(e),
+            error_type=type(e).__name__,
+        )
         return False

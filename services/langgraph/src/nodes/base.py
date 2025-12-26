@@ -36,18 +36,33 @@ def log_node_execution(node_name: str) -> Callable:
 
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         @wraps(func)
-        async def wrapper(state: dict, *args: Any, **kwargs: Any) -> T:
-            # Inject node context
-            structlog.contextvars.bind_contextvars(
-                node=node_name,
-                thread_id=state.get("thread_id"),
-            )
+        async def wrapper(*args: Any, **kwargs: Any) -> T:
+            state: dict | None = None
+            if args:
+                if isinstance(args[0], dict):
+                    state = args[0]
+                elif len(args) > 1 and isinstance(args[1], dict):
+                    state = args[1]
+
+            if state is None:
+                state = kwargs.get("state") if isinstance(kwargs.get("state"), dict) else {}
+
+            preexisting_context = structlog.contextvars.get_contextvars()
+            bound_thread = False
+
+            bind_kwargs: dict[str, Any] = {"node": node_name}
+            thread_id = state.get("thread_id") if isinstance(state, dict) else None
+            if thread_id and "thread_id" not in preexisting_context:
+                bind_kwargs["thread_id"] = thread_id
+                bound_thread = True
+
+            structlog.contextvars.bind_contextvars(**bind_kwargs)
 
             logger.info("node_start")
             start = time.time()
 
             try:
-                result = await func(state, *args, **kwargs)
+                result = await func(*args, **kwargs)
                 duration = (time.time() - start) * 1000
 
                 state_updates = list(result.keys()) if isinstance(result, dict) else []
@@ -70,6 +85,10 @@ def log_node_execution(node_name: str) -> Callable:
                     exc_info=True,
                 )
                 raise
+            finally:
+                structlog.contextvars.unbind_contextvars("node")
+                if bound_thread:
+                    structlog.contextvars.unbind_contextvars("thread_id")
 
         return wrapper
 
@@ -162,6 +181,7 @@ class BaseAgentNode:
         """Execute a single tool call with error handling."""
         tool_name = tool_call["name"]
         tool_func = self.tools_map.get(tool_name)
+        tool_call_id = tool_call.get("id")
 
         if not tool_func:
             logger.warning("unknown_tool_called", tool_name=tool_name)
@@ -172,8 +192,26 @@ class BaseAgentNode:
                 )
             }
 
+        logger.info(
+            "tool_execution_start",
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            args=tool_call.get("args", {}),
+        )
+        start = time.time()
+
         try:
             result = await tool_func.ainvoke(tool_call["args"])
+
+            duration = (time.time() - start) * 1000
+
+            logger.info(
+                "tool_execution_complete",
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                duration_ms=round(duration, 2),
+                result_type=type(result).__name__,
+            )
 
             # Let subclass handle the result for custom state updates
             state_updates = self.handle_tool_result(tool_name, result, state)
@@ -193,9 +231,12 @@ class BaseAgentNode:
                 "state_updates": state_updates,
             }
         except Exception as e:
+            duration = (time.time() - start) * 1000
             logger.error(
                 "tool_execution_failed",
                 tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                duration_ms=round(duration, 2),
                 error=str(e),
                 error_type=type(e).__name__,
                 exc_info=True,
