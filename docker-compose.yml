@@ -52,6 +52,7 @@ services:
       - internal
 
   devops:
+    profiles: [ "infra" ]
     build:
       context: .
       dockerfile: services/infrastructure/Dockerfile

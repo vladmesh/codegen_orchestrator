@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # ===================================
 # Multi-stage Dockerfile for API Service
 # ===================================
@@ -15,11 +16,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy and install shared module first
 COPY shared ./shared
-RUN pip install --no-cache-dir --prefix=/install ./shared
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir --prefix=/install ./shared
 
 # Copy and install service dependencies from lock file (faster, no resolution)
 COPY services/api/requirements.lock ./
-RUN pip install --no-cache-dir --prefix=/install -r requirements.lock
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir --prefix=/install -r requirements.lock
 
 # === Stage 2: Production ===
 # Create minimal runtime image
