@@ -10,7 +10,13 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage
 
-from ..tools import create_project, create_project_spec_yaml, get_project_spec, update_project_spec
+from ..tools import (
+    create_project,
+    create_project_spec_yaml,
+    create_spec_md,
+    get_project_spec,
+    update_project_spec,
+)
 from .base import LLMNode, log_node_execution
 
 
@@ -29,7 +35,14 @@ class AnalystNode(LLMNode):
 
 # Create singleton instance
 _node = AnalystNode(
-    "analyst", [create_project, get_project_spec, update_project_spec, create_project_spec_yaml]
+    "analyst",
+    [
+        create_project,
+        get_project_spec,
+        update_project_spec,
+        create_project_spec_yaml,
+        create_spec_md,
+    ],
 )
 
 
@@ -47,6 +60,17 @@ async def run(state: dict) -> dict:
 
     # Build message list with system prompt
     llm_messages = [SystemMessage(content=system_prompt)]
+
+    # Add delegated task description if present
+    analyst_task = state.get("analyst_task")
+    if analyst_task:
+        llm_messages.append(
+            SystemMessage(
+                content=f"TASK FROM PRODUCT OWNER:\n{analyst_task}\n\n"
+                "Analyze these requirements and propose a project specification."
+            )
+        )
+
     llm_messages.extend(messages)
 
     # Get configured LLM
@@ -58,6 +82,7 @@ async def run(state: dict) -> dict:
     return {
         "messages": [response],
         "current_agent": "analyst",
+        "analyst_task": None,  # Clear the task after processing to prevent loop repetition
     }
 
 
