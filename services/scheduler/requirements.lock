@@ -14,6 +14,10 @@ asyncpg==0.31.0
     # via scheduler (services/scheduler/pyproject.toml)
 attrs==25.4.0
     # via aiohttp
+numpy>=1.0
+    # via pgvector
+pgvector==0.4.0
+    # via scheduler (services/scheduler/pyproject.toml)
 certifi==2025.11.12
     # via
     #   httpcore
