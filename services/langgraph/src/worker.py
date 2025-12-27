@@ -47,7 +47,7 @@ async def _resolve_user_id(telegram_id: int) -> int | None:
     Returns None if user not found or API error.
     """
     settings = get_settings()
-    url = f"{settings.api_url}/api/users/by-telegram/{telegram_id}"
+    url = f"{settings.api_url}/users/by-telegram/{telegram_id}"
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
