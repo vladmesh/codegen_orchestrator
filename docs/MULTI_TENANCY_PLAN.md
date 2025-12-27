@@ -49,9 +49,8 @@
 ## User Review Required
 
 > [!IMPORTANT]
-> **Backward Compatibility**: Существующие проекты в БД не имеют `owner_id`. Нужно решить:
-> - Назначить всех существующих проектов себе (вашему telegram_id)?
-> - Или оставить их без owner (null), и они будут видны только админам?
+> **Backward Compatibility (DECIDED)**: Существующие проекты без `owner_id` остаются подвешенными.
+> Они видны только админам и требуют ручного назначения владельца или удаления.
 
 > [!WARNING]
 > **Breaking Change**: После внедрения whitelist другие пользователи не смогут писать боту без добавления их telegram_id в `ALLOWED_TELEGRAM_IDS`.

@@ -52,6 +52,8 @@ async def _post_rag_message(payload: dict) -> None:
 
 async def start(update: Update, context) -> None:
     """Handle /start command - show main menu."""
+    if update.effective_user:
+        await _ensure_user_registered(update.effective_user)
     await update.message.reply_text(
         "🏠 **Главное меню**\n\n"
         "Привет! Я оркестратор для генерации проектов.\n\n"
@@ -63,6 +65,8 @@ async def start(update: Update, context) -> None:
 
 async def menu(update: Update, context) -> None:
     """Handle /menu command - show main menu."""
+    if update.effective_user:
+        await _ensure_user_registered(update.effective_user)
     await update.message.reply_text(
         "🏠 **Главное меню**\n\nВыберите действие:",
         reply_markup=main_menu_keyboard(),

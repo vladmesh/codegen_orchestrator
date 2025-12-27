@@ -19,6 +19,7 @@ from shared.models.project import Project, ProjectStatus
 from shared.notifications import notify_admins
 from shared.schemas.github import GitHubRepository
 from shared.schemas.project_spec import ProjectSpecYAML
+from src.config import get_settings
 from src.db import async_session_maker
 
 logger = structlog.get_logger()
@@ -38,7 +39,8 @@ async def _ingest_to_rag(
     Documents are indexed with hash-based deduplication - unchanged
     content will be skipped by the API automatically.
     """
-    api_url = os.getenv("API_URL")
+    settings = get_settings()
+    api_url = settings.api_url
     secret = os.getenv("RAG_INGEST_SECRET")
 
     if not api_url or not secret:
@@ -75,7 +77,7 @@ async def _ingest_to_rag(
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                f"{api_url}/api/rag/ingest",
+                f"{api_url}/rag/ingest",
                 content=body,
                 headers=headers,
             )

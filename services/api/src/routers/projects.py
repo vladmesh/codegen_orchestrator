@@ -33,18 +33,26 @@ async def _check_project_access(
     db: AsyncSession,
 ) -> None:
     """Check if user has access to project. Raises 403 if denied."""
-    if not telegram_id:
+    if telegram_id is None:
         return  # No auth header - allow (backward compat for internal calls)
 
     user = await _resolve_user(telegram_id, db)
 
-    if user and not user.is_admin:
-        # Regular user: must be owner or project has no owner
-        if project.owner_id is not None and project.owner_id != user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied: not project owner",
-            )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with telegram_id {telegram_id} not found",
+        )
+
+    if user.is_admin:
+        return
+
+    # Regular user: must be owner; unowned projects are admin-only
+    if project.owner_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: not project owner",
+        )
 
 
 @router.post("/", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -118,9 +126,14 @@ async def list_projects(
     query = select(Project)
 
     # Filter by owner if user provided and not admin
-    if x_telegram_id:
+    if x_telegram_id is not None:
         user = await _resolve_user(x_telegram_id, db)
-        if user and not user.is_admin:
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User with telegram_id {x_telegram_id} not found",
+            )
+        if not user.is_admin:
             # Regular user: only their projects
             query = query.where(Project.owner_id == user.id)
 
