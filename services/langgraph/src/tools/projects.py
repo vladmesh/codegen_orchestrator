@@ -5,6 +5,7 @@ from typing import Annotated
 import uuid
 
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedState
 
 from ..schemas.tools import ProjectCreateResult, ProjectInfo, ProjectIntent
 from .base import api_client
@@ -18,6 +19,8 @@ async def create_project(
     entry_points: Annotated[list[str], "Entry points: telegram, frontend, api"],
     telegram_token: Annotated[str | None, "Telegram Bot Token (if applicable)"] = None,
     detailed_spec: Annotated[str | None, "Full detailed project specification in Markdown"] = None,
+    # Injected from graph state - not visible to LLM
+    state: Annotated[dict, InjectedState] = None,
 ) -> ProjectCreateResult:
     """Create a new project in the database.
 
@@ -49,13 +52,20 @@ async def create_project(
         "config": config_payload,
     }
 
-    resp = await api_client.post("/projects/", json=payload)
+    # Build headers with user context for ownership assignment
+    headers = {}
+    if state and state.get("telegram_user_id"):
+        headers["X-Telegram-ID"] = str(state["telegram_user_id"])
+
+    resp = await api_client.post("/projects/", json=payload, headers=headers or None)
     return ProjectCreateResult(**resp)
 
 
 @tool
 async def list_projects(
     status: Annotated[str | None, "Optional project status filter"] = None,
+    # Injected from graph state - not visible to LLM
+    state: Annotated[dict, InjectedState] = None,
 ) -> list[ProjectInfo]:
     """List projects from the database.
 
@@ -66,16 +76,29 @@ async def list_projects(
         List of project records.
     """
     params = {"status": status} if status else None
-    resp = await api_client.get("/projects/", params=params)
+
+    # Build headers with user context for ownership filtering
+    headers = {}
+    if state and state.get("telegram_user_id"):
+        headers["X-Telegram-ID"] = str(state["telegram_user_id"])
+
+    resp = await api_client.get("/projects/", params=params, headers=headers or None)
     return [ProjectInfo(**p) for p in resp]
 
 
 @tool
 async def get_project_status(
     project_id: Annotated[str, "Project ID"],
+    # Injected from graph state - not visible to LLM
+    state: Annotated[dict, InjectedState] = None,
 ) -> ProjectInfo:
     """Get a single project's status and metadata."""
-    resp = await api_client.get(f"/projects/{project_id}")
+    # Build headers with user context for ownership check
+    headers = {}
+    if state and state.get("telegram_user_id"):
+        headers["X-Telegram-ID"] = str(state["telegram_user_id"])
+
+    resp = await api_client.get(f"/projects/{project_id}", headers=headers or None)
     return ProjectInfo(**resp)
 
 
@@ -97,6 +120,8 @@ async def create_project_intent(
 async def set_project_maintenance(
     project_id: Annotated[str, "Project ID to update"],
     update_description: Annotated[str, "Description of the update/feature to implement"],
+    # Injected from graph state - not visible to LLM
+    state: Annotated[dict, InjectedState] = None,
 ) -> ProjectInfo:
     """Set a project to maintenance status for updates.
 
@@ -110,6 +135,11 @@ async def set_project_maintenance(
     Returns:
         Updated project details
     """
+    # Build headers with user context for ownership check
+    headers = {}
+    if state and state.get("telegram_user_id"):
+        headers["X-Telegram-ID"] = str(state["telegram_user_id"])
+
     # First verify project exists
     resp = await api_client.get_raw(f"/projects/{project_id}")
     if resp.status_code == HTTPStatus.NOT_FOUND:
@@ -127,5 +157,6 @@ async def set_project_maintenance(
                 "maintenance_request": update_description,
             },
         },
+        headers=headers or None,
     )
     return ProjectInfo(**updated)

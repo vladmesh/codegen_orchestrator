@@ -3,10 +3,12 @@
 import asyncio
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 import json
 import sys
 import time
 
+import httpx
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import ValidationError
 import redis.asyncio as redis
@@ -39,6 +41,37 @@ provisioning_cooldowns: dict[str, datetime] = {}
 graph = create_graph()
 
 
+async def _resolve_user_id(telegram_id: int) -> int | None:
+    """Resolve internal user.id from telegram_id via API.
+
+    Returns None if user not found or API error.
+    """
+    settings = get_settings()
+    url = f"{settings.api_url}/api/users/by-telegram/{telegram_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(url)
+            if response.status_code == HTTPStatus.OK:
+                user_data = response.json()
+                return user_data.get("id")
+            elif response.status_code == HTTPStatus.NOT_FOUND:
+                logger.debug("user_not_found_in_db", telegram_id=telegram_id)
+            else:
+                logger.warning(
+                    "user_resolution_unexpected_status",
+                    telegram_id=telegram_id,
+                    status_code=response.status_code,
+                )
+    except Exception as e:
+        logger.warning(
+            "user_id_resolution_failed",
+            telegram_id=telegram_id,
+            error=str(e),
+        )
+    return None
+
+
 async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     """Process a single message through the LangGraph.
 
@@ -46,16 +79,21 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         redis_client: Redis client for sending responses.
         data: Message data from Telegram.
     """
-    user_id = data.get("user_id")
+    telegram_user_id = data.get("user_id")  # This is telegram_id from Telegram API
     chat_id = data.get("chat_id")
     text = data.get("text", "")
-    text = data.get("text", "")
-    thread_id = data.get("thread_id", f"user_{user_id}")
+    thread_id = data.get("thread_id", f"user_{telegram_user_id}")
     correlation_id = data.get("correlation_id")
+
+    # Resolve internal user_id from telegram_id
+    internal_user_id = await _resolve_user_id(telegram_user_id) if telegram_user_id else None
 
     # Bind request context
     structlog.contextvars.bind_contextvars(
-        thread_id=thread_id, correlation_id=correlation_id, user_id=user_id
+        thread_id=thread_id,
+        correlation_id=correlation_id,
+        telegram_user_id=telegram_user_id,
+        user_id=internal_user_id,
     )
 
     logger.info("message_received", chat_id=chat_id, message_length=len(text))
@@ -79,6 +117,9 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
             "current_agent": "",
             "errors": [],
             "deployed_url": None,
+            # User context for multi-tenancy
+            "telegram_user_id": telegram_user_id,
+            "user_id": internal_user_id,
         }
 
         # LangGraph config with thread_id for checkpointing
@@ -114,7 +155,7 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         await redis_client.publish(
             RedisStreamClient.OUTGOING_STREAM,
             {
-                "user_id": user_id,
+                "user_id": telegram_user_id,  # Telegram bot expects telegram_id
                 "chat_id": chat_id,
                 "reply_to_message_id": data.get("message_id"),
                 "text": response_text,

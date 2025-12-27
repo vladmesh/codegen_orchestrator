@@ -33,31 +33,31 @@ class InternalAPIClient:
             )
         return self._client
 
-    async def get(self, path: str, **kwargs) -> dict | list:
+    async def get(self, path: str, headers: dict | None = None, **kwargs) -> dict | list:
         """Make GET request to internal API."""
         client = await self._get_client()
-        resp = await client.get(path, **kwargs)
+        resp = await client.get(path, headers=headers, **kwargs)
         resp.raise_for_status()
         return resp.json()
 
-    async def post(self, path: str, **kwargs) -> dict:
+    async def post(self, path: str, headers: dict | None = None, **kwargs) -> dict:
         """Make POST request to internal API."""
         client = await self._get_client()
-        resp = await client.post(path, **kwargs)
+        resp = await client.post(path, headers=headers, **kwargs)
         resp.raise_for_status()
         return resp.json()
 
-    async def patch(self, path: str, **kwargs) -> dict:
+    async def patch(self, path: str, headers: dict | None = None, **kwargs) -> dict:
         """Make PATCH request to internal API."""
         client = await self._get_client()
-        resp = await client.patch(path, **kwargs)
+        resp = await client.patch(path, headers=headers, **kwargs)
         resp.raise_for_status()
         return resp.json()
 
-    async def delete(self, path: str, **kwargs) -> dict | None:
+    async def delete(self, path: str, headers: dict | None = None, **kwargs) -> dict | None:
         """Make DELETE request to internal API."""
         client = await self._get_client()
-        resp = await client.delete(path, **kwargs)
+        resp = await client.delete(path, headers=headers, **kwargs)
         resp.raise_for_status()
         if resp.status_code == HTTPStatus.NO_CONTENT:
             return None

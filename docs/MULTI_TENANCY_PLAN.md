@@ -488,7 +488,7 @@ async def _handle_servers(query, parts: list[str]) -> None:
 
 ---
 
-### LangGraph - User Propagation
+### LangGraph - User Propagation (✅ Completed)
 
 #### [MODIFY] [worker.py](file:///home/vlad/projects/codegen_orchestrator/services/langgraph/src/worker.py)
 

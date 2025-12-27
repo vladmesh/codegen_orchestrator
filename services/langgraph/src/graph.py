@@ -94,6 +94,14 @@ class OrchestratorState(TypedDict):
     provisioning_result: dict | None
 
     # ============================================================
+    # USER CONTEXT (Multi-tenancy)
+    # ============================================================
+    # Telegram user ID (from Telegram API, e.g., 123456789)
+    telegram_user_id: int | None
+    # Internal database user.id (from users table, e.g., 42)
+    user_id: int | None
+
+    # ============================================================
     # STATUS & RESULTS
     # ============================================================
     # Current active agent name
