@@ -8,12 +8,12 @@ import hmac
 import json
 import os
 import time
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
-import tiktoken
 
 from shared.models import Project, RAGChunk, RAGDocument, RAGMessage, RAGScope, User
 
@@ -27,6 +27,9 @@ from ..schemas.rag import (
 )
 
 logger = structlog.get_logger()
+
+if TYPE_CHECKING:
+    import tiktoken
 
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -106,7 +109,7 @@ async def ingest_documents(
 
     await _validate_payload_targets(db, payload)
 
-    encoding = tiktoken.get_encoding(ENCODING_NAME)
+    encoding = _get_encoding()
     docs_indexed = 0
     docs_skipped = 0
 
@@ -191,6 +194,17 @@ def _verify_ingest_signature(request: Request, body: bytes) -> None:
 def _build_signature(secret: str, timestamp: int, body: bytes) -> str:
     message = f"{timestamp}.".encode() + body
     return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _get_encoding() -> tiktoken.Encoding:
+    try:
+        import tiktoken
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="tiktoken is required for RAG ingestion",
+        ) from exc
+    return tiktoken.get_encoding(ENCODING_NAME)
 
 
 async def _upsert_document(
