@@ -295,6 +295,25 @@ API should be a clean CRUD layer. All background polling/monitoring should be in
 
 ### Technical Debt / Optimizations
 
+### MemorySaver Eviction (LangGraph)
+
+**Status:** TODO
+**Priority:** LOW (Defer until memory becomes an issue)
+
+`MemorySaver` хранит все checkpoints графа в RAM без eviction. При ~2.7KB на checkpoint это ~20MB/неделю при активном использовании.
+
+**Options:**
+1. Periodic cleanup task (`graph.checkpointer.storage.clear()`)
+2. Custom TTLMemorySaver wrapper с LRU eviction
+3. Migrate to PostgresSaver (requires direct DB access from langgraph)
+
+**Tasks:**
+- [ ] Добавить memory stats logging для мониторинга
+- [ ] Реализовать периодическую очистку старых threads
+- [ ] Или мигрировать на PostgresSaver если нужен persistent state
+
+---
+
 ### Singleton HTTP Client (Telegram Bot)
 
 **Status:** TODO
