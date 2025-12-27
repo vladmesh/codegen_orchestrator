@@ -1,59 +1,148 @@
-# ORCHESTRATOR MVP GAP ANALYSIS
+# MVP Gap Analysis & Critical Roadmap
+
+**Last Updated:** 2025-01-27
 
 ## Executive Summary
-The Codegen Orchestrator has a solid "Happy Path" vertical slice. The logic for interacting with users, creating GitHub repos, and syncing them is in place. However, it completely lacks the **Resilience**, **Security**, and **Operations** layers required for a "Real" production project.
 
-**Current State:** prototype / proof-of-concept.
-**Target State:** Stable MVP for daily use.
+Codegen Orchestrator имеет рабочий прототип "Happy Path", способный создавать GitHub репозитории и синхронизировать их. Однако отсутствуют необходимые слои **Resilience**, **Security** и **Operations** для стабильного MVP.
 
-## Critical Gaps (Must Fix for MVP)
+**Current State:** Proof-of-Concept / Prototype  
+**Target State:** Stable, Secure, and Deployable MVP
 
-### 1. 🚨 Data Loss on Restart (Resilience)
-- **Problem**: `services/langgraph/src/graph.py` uses `MemorySaver` for checkpointing.
-- **Impact**: Every time the `langgraph` container redeploys (which is necessary for code updates), **ALL** active conversation threads and process states are lost. Users are stranded.
-- **Fix**: Replace `MemorySaver` with `PostgresSaver` (using `langgraph-checkpoint-postgres`).
+---
 
-### 2. 🔓 Zero Access Control (Security)
-- **Problem**: `services/telegram_bot` accepts messages from **ANY** Telegram user. There is no whitelist of allowed `user_id`s.
-- **Impact**: If the bot username leaks, anyone can trigger resource allocation, see project details, or theoretically spawn costly workers.
-- **Fix**: Implement an `ALLOWED_USER_IDS` environment variable and middleware in the bot to reject unauthorized users immediately.
+## 1. 🚨 Critical Blockers (Must Fix)
 
-### 3. 🏁 Scheduler Race Conditions (Reliability)
-- **Problem**: `services/scheduler` runs `while True` loops for syncing. If you scale the scheduler to >1 replica (for high availability), or if a rolling update overlaps, multiple instances will run simultaneously.
-- **Impact**: Duplicate database inserts, racing GitHub API calls, potential data corruption.
-- **Fix**: Implement Distributed Locking (using Redis) for all background tasks. e.g. `with redis_lock("github_sync", timeout=300): ...`.
+### 1.1 Resilience & State Management ❌
+- **Problem**: `services/langgraph/src/graph.py:387` использует `MemorySaver`
+- **Impact**: Рестарт контейнера `langgraph` уничтожает ВСЕ conversation threads и состояния процессов
+- **Location**: `graph.py:387-388`
+- **Fix**: Интегрировать `langgraph-checkpoint-postgres` для персистенции в PostgreSQL
 
-### 4. 📝 Missing Deployment Engine (Feature)
-- **Problem**: The "DevOps" node is largely a placeholder. The system can "create" a repo, but it cannot "deploy" the resulting application to a server.
-- **Impact**: You can't actually *run* the projects you build without manual intervention.
-- **Fix**: Implement the `Ansible` wrapper in `services/infrastructure` and wire it into the `devops` node.
+### 1.2 Developer Node Instability ❌
+- **Problem**: `request_spawn()` возвращает `SpawnResult` dataclass, но `developer.py:117` обращается к нему как к dict через `.get()`
+- **Impact**: `AttributeError` при попытке запустить coding worker
+- **Location**: `services/langgraph/src/nodes/developer.py:117`
+- **Fix**: Заменить `worker_result.get("success")` на `worker_result.success`
 
-### 5. 📉 No Production Observability (Ops)
-- **Problem**: `docs/LOGGING.md` describes a beautiful JSON logging setup, but the infrastructure to **collect and view** it (Prometheus, Loki, Grafana) is missing from `docker-compose.yml`.
-- **Impact**: Debugging production issues requires grepping raw `docker logs`. No alerts on failures.
-- **Fix**: Add `loki`, `promtail`, `grafana` to the stack. Configure `structlog` to ship to Loki (or use Promtail to scrape Docker stdout).
+### 1.3 API Path Mismatch ❌
+- **Problem**: `InternalAPIClient` использует `base_url=http://api:8000` и делает запросы на `/projects/`, но API роутеры подключены с `prefix="/api"` → реальный путь `/api/projects/`
+- **Impact**: 404 ошибки при любых API вызовах из LangGraph tools
+- **Location**: `services/langgraph/src/tools/base.py:23`, `services/api/src/main.py:89`
+- **Fix**: Изменить base_url на `http://api:8000/api` или обновить все пути в tools
+
+### 1.4 Worker Image Build ⚠️
+- **Problem**: `coding-worker:latest` не собирается автоматически через docker-compose
+- **Impact**: На чистой машине worker spawning падает
+- **Location**: `services/coding-worker/Dockerfile` (существует, но не в compose)
+- **Fix**: Добавить в Makefile команду `build-worker` или документировать manual build
+
+---
+
+## 2. 🔐 Security & Secrets
+
+### 2.1 Telegram Access Control ❌
+- **Problem**: Бот принимает сообщения от ЛЮБОГО пользователя без whitelist
+- **Impact**: Неавторизованный доступ к ресурсам и проектам
+- **Location**: `services/telegram_bot/src/main.py`
+- **Fix**: Добавить `ALLOWED_USER_IDS` middleware
+
+### 2.2 Secret Management ❌
+- **Problem**: Секреты хранятся в plaintext с TODO комментариями
+- **Location**: `services/api/src/routers/api_keys.py:36-37, 72-73`
+- **Evidence**: `# TODO: Add real encryption here` + `encrypted_value = key_value`
+- **Fix**: Реализовать SOPS/AGE или database-level encryption
+
+### 2.3 API Authentication ❌
+- **Problem**: Нет Auth/ACL на API endpoints
+- **Impact**: Полагается только на network isolation
+- **Fix**: Добавить authentication middleware
+
+---
+
+## 3. 🧩 Architecture
+
+### 3.1 Scheduler Race Conditions ❌
+- **Problem**: `services/scheduler/src/main.py` запускает workers через `asyncio.gather()` без distributed locking
+- **Impact**: Несколько реплик = дублирование действий
+- **Fix**: Добавить Redis distributed locks для всех background tasks
+
+---
+
+## 4. 🚀 DevOps & Deployment
+
+### 4.1 Ansible Playbook Limitations ⚠️
+- **Problem**: `deploy_project.yml` пишет только `PORT` в `.env`
+- **Impact**: Проекты не получают необходимые secrets (DB passwords, API keys)
+- **Location**: `services/infrastructure/ansible/playbooks/deploy_project.yml:27-29`
+- **Fix**: Генерировать полный `.env` из project config
+
+### 4.2 Insecure Docker Login ⚠️
+- **Problem**: GitHub token передаётся через echo pipe в docker login
+- **Location**: `deploy_project.yml:34`
+- **Fix**: Использовать `docker login --password-stdin` с proper stdin handling
+
+---
+
+## 5. 👁️ Observability & Docs
+
+### 5.1 Missing Observability Stack ⚠️
+- **Problem**: Нет Prometheus, Loki, Grafana в `docker-compose.yml`
+- **Fix**: Добавить observability stack и настроить structlog для ship logs
+
+### 5.2 Documentation Drift ⚠️
+- **Problem**: 
+  - `ARCHITECTURE.md:126` упоминает "Brainstorm" node (удалён, заменён на Analyst)
+  - `docs/NODES.md`, `product_owner_design.md` ссылаются на Brainstorm
+- **Fix**: Обновить документацию, заменить Brainstorm → Analyst
+
+---
+
+## ✅ Resolved Issues (Removed from Gap Analysis)
+
+### RAG Scoping ✅
+- **Was**: "RAG operates in scope=public"
+- **Status**: FIXED — реализован полноценный scope-based filtering с `user_id` и `project_id`
+- **Location**: `services/api/src/routers/rag.py:96-141, 333-392`
+
+### User-Project Binding ✅
+- **Was**: "No explicit binding between Telegram messages and Projects"
+- **Status**: FIXED — `project_id` передаётся в RAG через API endpoints и LangGraph tools
+- **Location**: `services/langgraph/src/tools/rag.py:21`
+
+### Schema & State Conflicts ✅
+- **Was**: "ProjectStatus enums conflict"
+- **Status**: NOT AN ISSUE — `ProjectStatus` и `ServerStatus` чётко определены без конфликтов
+- **Location**: `shared/models/project.py:11-40`, `shared/models/server.py:12-34`
+
+### DevOps Node Placeholder ✅
+- **Was**: "DevOps node is a placeholder"
+- **Status**: FIXED — полностью реализован с Ansible integration
+- **Location**: `services/langgraph/src/nodes/devops.py` (251 lines)
+
+---
 
 ## Recommended Roadmap
 
-### Phase 1: Stability (The "Don't Lose Data" Update)
-1.  **Persist State**: Integrate `langgraph-checkpoint-postgres`.
-2.  **Lock Scheduler**: Add Redis Distributed Locks to all cron tasks.
-3.  **Secure Bot**: Add `telegram_bot` middleware to check `user_id` vs `admin_list`.
+### Phase 1: Stabilization (Critical)
+| Priority | Task | Effort |
+|----------|------|--------|
+| P0 | Fix API path mismatch (1.3) | 30min |
+| P0 | Fix Developer node dataclass access (1.2) | 15min |
+| P1 | Implement Postgres Checkpointer (1.1) | 2-4h |
+| P1 | Add Redis locks to Scheduler (3.1) | 2h |
+| P2 | Document/automate coding-worker build (1.4) | 30min |
 
-### Phase 2: Visibility (The "See What's Happening" Update)
-1.  **Observability Stack**: Add Grafana/Loki to Docker Compose.
-2.  **Dashboards**: Create a basic dashboard for "Active Agents", "Error Rate", "Server Health".
+### Phase 2: Security
+| Priority | Task | Effort |
+|----------|------|--------|
+| P0 | Telegram user whitelist (2.1) | 1h |
+| P1 | API authentication middleware (2.3) | 2-4h |
+| P1 | Implement secret encryption (2.2) | 4h |
 
-### Phase 3: Deployment (The "Real World" Update)
-1.  **DevOps Node**: Implement Ansible runners.
-2.  **Secrets Management**: Implement SOPS for managing real production secrets (API keys for the *generated* apps).
-
-## Code Analysis Specifics
-
-| Component | Status | Issue |
-|-----------|--------|-------|
-| `langgraph` | ⚠️ Risky | Uses `MemorySaver`. Logic is good, persistence is non-existent. |
-| `scheduler` | ⚠️ Risky | No locking. `_ingest_to_rag` is "fire-and-forget" with no retry queue. |
-| `api` | ⚠️ Open | No auth middleware. Relies entirely on network isolation. |
-| `telegram_bot` | 🚨 Insecure | No user filtering. Logic is tightly coupled to API. |
-| `shared` | ✅ Good | Models and schemas are well structured. |
+### Phase 3: Operations
+| Priority | Task | Effort |
+|----------|------|--------|
+| P1 | Update Ansible for full .env (4.1, 4.2) | 2h |
+| P2 | Add observability stack (5.1) | 4h |
+| P2 | Update documentation (5.2) | 1h |
