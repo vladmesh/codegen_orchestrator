@@ -55,8 +55,8 @@ async def test_auth_middleware_no_whitelist_set():
         update.effective_user.id = 55555
         context = MagicMock()
 
-        result = await auth_middleware(update, context)
+        update.message.reply_text = AsyncMock()
 
-        # Current logic: verify behavior when list is empty
-        # In code: if not admin_ids: return True (allow all warning)
-        assert result is True
+        # Verify it raises Stop (fail-closed)
+        with pytest.raises(ApplicationHandlerStop):
+            await auth_middleware(update, context)

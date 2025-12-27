@@ -1,6 +1,6 @@
 """Pydantic schemas for agent configuration."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AgentConfigBase(BaseModel):
@@ -39,8 +39,7 @@ class AgentConfigRead(AgentConfigBase):
     id: str
     version: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentConfigUpdate(BaseModel):

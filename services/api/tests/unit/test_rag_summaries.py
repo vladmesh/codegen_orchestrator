@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,7 +20,7 @@ async def test_get_summaries():
         id=1,
         user_id=TEST_USER_ID,
         summary_text="Test summary",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
         message_ids=[],
         project_id="p1",
         thread_id="t1",

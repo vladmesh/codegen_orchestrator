@@ -54,7 +54,7 @@ async def test_handle_servers_calls_correct_endpoint():
     with patch("src.handlers._api_get", new_callable=AsyncMock) as mock_api_get:
         mock_api_get.return_value = []
 
-        await _handle_servers(query, ["servers", "list"])
+        await _handle_servers(query, ["servers", "list"], user_is_admin=True)
 
         # Verify correct path and telegram_id passed
         mock_api_get.assert_called_once_with("/servers?is_managed=true", telegram_id=12345)
