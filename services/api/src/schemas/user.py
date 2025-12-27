@@ -20,6 +20,12 @@ class UserCreate(UserBase):
     is_admin: bool = False
 
 
+class UserUpsert(UserBase):
+    """Schema for upserting a user."""
+
+    is_admin: bool | None = None
+
+
 class UserUpdate(BaseModel):
     """Schema for updating a user."""
 

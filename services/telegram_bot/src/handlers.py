@@ -170,8 +170,8 @@ async def _handle_projects(query, parts: list[str]) -> None:
     action = parts[1] if len(parts) > 1 else ACTION_LIST
 
     if action == ACTION_LIST:
-        # Updated endpoint to /api/projects
-        projects = await _api_get("/api/projects")
+        # Updated endpoint to /projects
+        projects = await _api_get("/projects")
 
         if projects is None:
             await query.edit_message_text(
@@ -219,8 +219,8 @@ async def _handle_project(query, parts: list[str]) -> None:
         return
 
     if action == ACTION_DETAILS:
-        # Updated endpoint to /api/projects
-        project = await _api_get(f"/api/projects/{project_id}")
+        # Updated endpoint to /projects
+        project = await _api_get(f"/projects/{project_id}")
 
         if project is None:
             await query.edit_message_text(
@@ -260,7 +260,7 @@ async def _handle_servers(query, parts: list[str]) -> None:
     action = parts[1] if len(parts) > 1 else ACTION_LIST
 
     if action == ACTION_LIST:
-        servers = await _api_get("/api/servers?is_managed=true")
+        servers = await _api_get("/servers?is_managed=true")
 
         if servers is None:
             await query.edit_message_text(

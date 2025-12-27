@@ -1,5 +1,7 @@
 """Users router."""
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.models import User
 
 from ..database import get_async_session
-from ..schemas import UserCreate, UserRead
+from ..schemas import UserCreate, UserRead, UserUpsert
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -35,6 +37,40 @@ async def create_user(
         is_admin=user_in.is_admin,
     )
     db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.post("/upsert", response_model=UserRead)
+async def upsert_user(
+    user_in: UserUpsert,
+    db: AsyncSession = Depends(get_async_session),
+) -> User:
+    """Create or update user by telegram_id."""
+    query = select(User).where(User.telegram_id == user_in.telegram_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+
+    if user:
+        # Update existing user
+        user.username = user_in.username
+        user.first_name = user_in.first_name
+        user.last_name = user_in.last_name
+        if user_in.is_admin is not None:
+            user.is_admin = user_in.is_admin
+        user.last_seen = datetime.utcnow()
+    else:
+        # Create new user
+        user = User(
+            telegram_id=user_in.telegram_id,
+            username=user_in.username,
+            first_name=user_in.first_name,
+            last_name=user_in.last_name,
+            is_admin=user_in.is_admin if user_in.is_admin is not None else False,
+        )
+        db.add(user)
+
     await db.commit()
     await db.refresh(user)
     return user

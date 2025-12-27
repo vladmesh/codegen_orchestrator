@@ -12,7 +12,7 @@ from .service_deployment import (
     ServiceDeploymentRead,
     ServiceDeploymentUpdate,
 )
-from .user import UserCreate, UserRead, UserUpdate
+from .user import UserCreate, UserRead, UserUpdate, UserUpsert
 
 __all__ = [
     "AgentConfigCreate",
@@ -40,4 +40,5 @@ __all__ = [
     "ServiceDeploymentCreate",
     "ServiceDeploymentRead",
     "ServiceDeploymentUpdate",
+    "UserUpsert",
 ]

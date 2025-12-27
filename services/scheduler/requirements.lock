@@ -14,18 +14,15 @@ asyncpg==0.31.0
     # via scheduler (services/scheduler/pyproject.toml)
 attrs==25.4.0
     # via aiohttp
-numpy>=1.0
-    # via pgvector
-pgvector==0.4.0
-    # via scheduler (services/scheduler/pyproject.toml)
 certifi==2025.11.12
     # via
     #   httpcore
     #   httpx
-charset-normalizer==3.4.4
-    # via requests
+    #   requests
 cffi==2.0.0
     # via cryptography
+charset-normalizer==3.4.4
+    # via requests
 cryptography==46.0.3
     # via pyjwt
 frozenlist==1.8.0
@@ -46,11 +43,16 @@ idna==3.11
     # via
     #   anyio
     #   httpx
+    #   requests
     #   yarl
 multidict==6.7.0
     # via
     #   aiohttp
     #   yarl
+numpy==2.4.0
+    # via pgvector
+pgvector==0.4.0
+    # via scheduler (services/scheduler/pyproject.toml)
 propcache==0.4.1
     # via
     #   aiohttp

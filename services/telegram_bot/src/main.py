@@ -20,6 +20,7 @@ from shared.redis_client import RedisStreamClient
 from .config import get_settings
 from .handlers import handle_callback_query
 from .keyboards import main_menu_keyboard
+from .middleware import auth_middleware
 
 logger = structlog.get_logger()
 
@@ -63,8 +64,38 @@ async def menu(update: Update, context) -> None:
     )
 
 
+async def _ensure_user_registered(tg_user) -> None:
+    """Upsert user in database via API."""
+    settings = get_settings()
+    admin_ids = settings.get_admin_ids()
+    is_admin = tg_user.id in admin_ids
+
+    payload = {
+        "telegram_id": tg_user.id,
+        "username": tg_user.username,
+        "first_name": tg_user.first_name,
+        "last_name": tg_user.last_name,
+        "is_admin": is_admin,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # Upsert endpoint
+            await client.post(f"{settings.api_url}/api/users/upsert", json=payload)
+    except httpx.HTTPError as e:
+        logger.warning("user_registration_failed", error=str(e))
+
+
 async def handle_message(update: Update, context) -> None:
     """Handle incoming messages - publish to Redis Stream."""
+    # Auth check
+    if not await auth_middleware(update, context):
+        return
+
+    # Ensure user is registered in DB
+    if update.effective_user:
+        await _ensure_user_registered(update.effective_user)
+
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
@@ -208,6 +239,9 @@ def main() -> None:
     # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
+
+    # Global Auth Middleware (runs first for everything else)
+    app.add_handler(MessageHandler(filters.ALL, lambda u, c: auth_middleware(u, c)), group=-1)
 
     # Callback query handler for inline buttons
     app.add_handler(CallbackQueryHandler(handle_callback_query))

@@ -2,7 +2,7 @@
 
 from enum import Enum
 
-from sqlalchemy import JSON, Integer, String
+from sqlalchemy import JSON, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -57,3 +57,8 @@ class Project(Base):
 
     # Project specification from .project-spec.yaml (machine-readable)
     project_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Owner (User ID)
+    owner_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True
+    )
