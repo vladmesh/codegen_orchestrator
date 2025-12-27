@@ -490,8 +490,13 @@ async def _upsert_document(
     if not chunk_texts:
         return True
 
-    # Generate embeddings for all chunks
-    embeddings = await _generate_chunk_embeddings(chunk_texts)
+    # Create metadata-enriched texts for embedding (improves search by title/source)
+    doc_title = doc.title or doc.path or doc.source_id
+    metadata_prefix = f"Title: {doc_title}\nSource: {doc.source_id}\n\n"
+    embedding_texts = [metadata_prefix + chunk for chunk in chunk_texts]
+
+    # Generate embeddings with metadata-enriched text
+    embeddings = await _generate_chunk_embeddings(embedding_texts)
 
     chunks = []
     for idx, chunk_text in enumerate(chunk_texts):
@@ -503,10 +508,10 @@ async def _upsert_document(
                 project_id=project_id,
                 scope=scope.value,
                 chunk_index=idx,
-                chunk_text=chunk_text,
+                chunk_text=chunk_text,  # Store original text for display
                 chunk_hash=_hash_text(chunk_text),
                 token_count=len(encoding.encode(chunk_text)),
-                embedding=embedding,
+                embedding=embedding,  # Embedding includes metadata
                 embedding_model=EMBEDDING_MODEL if embedding else None,
                 tsv=func.to_tsvector("simple", chunk_text),
             )
