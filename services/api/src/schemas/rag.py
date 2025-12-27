@@ -72,3 +72,40 @@ class RAGDocsIngestResult(BaseModel):
     documents_received: int
     documents_indexed: int
     documents_skipped: int
+
+
+# --- Query schemas ---
+
+
+class RAGQueryRequest(BaseModel):
+    """Request for RAG search."""
+
+    query: str
+    user_id: int | None = None
+    project_id: str | None = None
+    scope: Literal["project", "user", "public"] = "project"
+    top_k: int = 5
+    max_tokens: int = 2000
+    min_similarity: float = 0.7
+
+
+class RAGChunkResult(BaseModel):
+    """Single chunk result from RAG search."""
+
+    chunk_text: str
+    score: float
+    source_type: str
+    source_id: str
+    source_uri: str | None = None
+    title: str | None = None
+    chunk_index: int
+    token_count: int | None = None
+
+
+class RAGQueryResult(BaseModel):
+    """RAG search response."""
+
+    query: str
+    results: list[RAGChunkResult]
+    total_tokens: int
+    truncated: bool = False

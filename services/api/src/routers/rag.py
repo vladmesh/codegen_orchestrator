@@ -15,15 +15,19 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.clients.embedding import generate_embeddings
 from shared.models import Project, RAGChunk, RAGDocument, RAGMessage, RAGScope, User
 
 from ..database import get_async_session
 from ..schemas.rag import (
+    RAGChunkResult,
     RAGDocsIngest,
     RAGDocsIngestResult,
     RAGDocumentPayload,
     RAGMessageCreate,
     RAGMessageRead,
+    RAGQueryRequest,
+    RAGQueryResult,
 )
 
 logger = structlog.get_logger()
@@ -37,6 +41,8 @@ CHUNK_TOKEN_TARGET = 512
 CHUNK_OVERLAP_TOKENS = 50
 ENCODING_NAME = "cl100k_base"
 MAX_SIGNATURE_SKEW_SECONDS = 5 * 60
+EMBEDDING_MODEL = "openai/text-embedding-3-small"
+EMBEDDING_DIMENSIONS = 512
 
 
 @router.post("/messages", response_model=RAGMessageRead, status_code=status.HTTP_201_CREATED)
@@ -80,6 +86,80 @@ async def create_rag_message(
     await db.commit()
     await db.refresh(rag_message)
     return rag_message
+
+
+@router.post("/query", response_model=RAGQueryResult)
+async def query_rag(
+    request: RAGQueryRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> RAGQueryResult:
+    """Search RAG index for relevant context.
+
+    Performs vector cosine similarity search with scope-based filtering.
+    Returns chunks sorted by relevance, limited by token budget.
+    """
+    # Validate scope requirements
+    if request.scope == "project" and not request.project_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="project_id is required for project scope",
+        )
+    if request.scope in ("project", "user") and not request.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="user_id is required for non-public scope",
+        )
+
+    # Generate embedding for query
+    try:
+        query_result = await generate_embeddings(
+            [request.query],
+            model=EMBEDDING_MODEL,
+            dimensions=EMBEDDING_DIMENSIONS,
+        )
+        if not query_result.embeddings:
+            raise ValueError("No embedding returned")
+        query_embedding = query_result.embeddings[0]
+    except Exception as exc:
+        logger.warning(
+            "query_embedding_failed",
+            error=str(exc),
+            query_preview=request.query[:100],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding service unavailable",
+        ) from exc
+
+    # Build and execute vector search query
+    results = await _search_chunks(
+        db,
+        query_embedding,
+        scope=request.scope,
+        user_id=request.user_id,
+        project_id=request.project_id,
+        top_k=request.top_k,
+        min_similarity=request.min_similarity,
+    )
+
+    # Apply token budget
+    chunk_results, total_tokens, truncated = _apply_token_budget(results, request.max_tokens)
+
+    logger.info(
+        "rag_query_completed",
+        query_preview=request.query[:50],
+        scope=request.scope,
+        results_count=len(chunk_results),
+        total_tokens=total_tokens,
+        truncated=truncated,
+    )
+
+    return RAGQueryResult(
+        query=request.query,
+        results=chunk_results,
+        total_tokens=total_tokens,
+        truncated=truncated,
+    )
 
 
 @router.post("/ingest", response_model=RAGDocsIngestResult)
@@ -207,6 +287,129 @@ def _get_encoding() -> tiktoken.Encoding:
     return tiktoken.get_encoding(ENCODING_NAME)
 
 
+async def _generate_chunk_embeddings(chunk_texts: list[str]) -> list[list[float] | None]:
+    """Generate embeddings for chunks via OpenRouter.
+
+    Returns list of embeddings or None for each chunk.
+    On failure, logs warning and returns empty list (graceful degradation).
+    """
+    if not chunk_texts:
+        return []
+
+    try:
+        result = await generate_embeddings(
+            chunk_texts,
+            model=EMBEDDING_MODEL,
+            dimensions=EMBEDDING_DIMENSIONS,
+        )
+        logger.info(
+            "embeddings_generated",
+            chunk_count=len(chunk_texts),
+            total_tokens=result.total_tokens,
+            model=result.model,
+        )
+        return result.embeddings
+    except ValueError as exc:
+        # Missing API key or invalid response
+        logger.warning(
+            "embedding_generation_skipped",
+            error=str(exc),
+            chunk_count=len(chunk_texts),
+        )
+        return []
+    except Exception as exc:
+        # Network or API error - graceful fallback
+        logger.warning(
+            "embedding_generation_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            chunk_count=len(chunk_texts),
+        )
+        return []
+
+
+async def _search_chunks(
+    db: AsyncSession,
+    query_embedding: list[float],
+    *,
+    scope: str,
+    user_id: int | None,
+    project_id: str | None,
+    top_k: int,
+    min_similarity: float,
+) -> list[tuple[RAGChunk, float, RAGDocument]]:
+    """Search chunks by vector cosine similarity with scope filtering.
+
+    Returns list of (chunk, similarity_score, document) tuples.
+    Designed for future extension to hybrid FTS+vector search.
+    """
+    from sqlalchemy import text
+
+    # Build scope filter conditions
+    conditions = [RAGChunk.embedding.isnot(None)]
+
+    if scope == "public":
+        conditions.append(RAGChunk.scope == "public")
+    elif scope == "user":
+        conditions.append(RAGChunk.user_id == user_id)
+        conditions.append(RAGChunk.scope.in_(["user", "public"]))
+    elif scope == "project":
+        conditions.append(RAGChunk.project_id == project_id)
+        conditions.append(RAGChunk.scope.in_(["project", "user", "public"]))
+
+    # Vector cosine similarity: 1 - cosine_distance
+    # pgvector uses <=> for cosine distance (0 = identical, 2 = opposite)
+    embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
+    similarity_expr = 1 - RAGChunk.embedding.cosine_distance(text(f"'{embedding_str}'::vector"))
+
+    stmt = (
+        select(RAGChunk, similarity_expr.label("similarity"), RAGDocument)
+        .join(RAGDocument, RAGChunk.document_id == RAGDocument.id)
+        .where(*conditions)
+        .where(similarity_expr >= min_similarity)
+        .order_by(similarity_expr.desc())
+        .limit(top_k)
+    )
+
+    result = await db.execute(stmt)
+    return [(row.RAGChunk, row.similarity, row.RAGDocument) for row in result]
+
+
+def _apply_token_budget(
+    results: list[tuple[RAGChunk, float, RAGDocument]],
+    max_tokens: int,
+) -> tuple[list[RAGChunkResult], int, bool]:
+    """Apply token budget limit to search results.
+
+    Returns (chunk_results, total_tokens, was_truncated).
+    """
+    chunk_results: list[RAGChunkResult] = []
+    total_tokens = 0
+    truncated = False
+
+    for chunk, score, doc in results:
+        chunk_tokens = chunk.token_count or 0
+        if total_tokens + chunk_tokens > max_tokens and chunk_results:
+            truncated = True
+            break
+
+        chunk_results.append(
+            RAGChunkResult(
+                chunk_text=chunk.chunk_text,
+                score=score,
+                source_type=doc.source_type,
+                source_id=doc.source_id,
+                source_uri=doc.source_uri,
+                title=doc.title,
+                chunk_index=chunk.chunk_index,
+                token_count=chunk_tokens,
+            )
+        )
+        total_tokens += chunk_tokens
+
+    return chunk_results, total_tokens, truncated
+
+
 async def _upsert_document(
     db: AsyncSession,
     payload: RAGDocsIngest,
@@ -254,8 +457,15 @@ async def _upsert_document(
     await db.execute(delete(RAGChunk).where(RAGChunk.document_id == document.id))
 
     chunk_texts = _chunk_document(doc.content, encoding)
+    if not chunk_texts:
+        return True
+
+    # Generate embeddings for all chunks
+    embeddings = await _generate_chunk_embeddings(chunk_texts)
+
     chunks = []
     for idx, chunk_text in enumerate(chunk_texts):
+        embedding = embeddings[idx] if idx < len(embeddings) else None
         chunks.append(
             RAGChunk(
                 document_id=document.id,
@@ -266,6 +476,8 @@ async def _upsert_document(
                 chunk_text=chunk_text,
                 chunk_hash=_hash_text(chunk_text),
                 token_count=len(encoding.encode(chunk_text)),
+                embedding=embedding,
+                embedding_model=EMBEDDING_MODEL if embedding else None,
                 tsv=func.to_tsvector("simple", chunk_text),
             )
         )

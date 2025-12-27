@@ -21,6 +21,7 @@ from ..tools import (
     list_projects,
     list_resource_inventory,
     save_project_secret,
+    search_project_context,
     set_project_maintenance,
 )
 from .base import LLMNode, log_node_execution
@@ -41,6 +42,8 @@ tools = [
     list_resource_inventory,
     # Delegation tools
     delegate_to_analyst,
+    # RAG context search
+    search_project_context,
 ]
 
 tools_map = {tool.name: tool for tool in tools}
