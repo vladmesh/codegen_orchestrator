@@ -8,7 +8,7 @@ from .domain import Domain
 from .incident import Incident, IncidentStatus, IncidentType
 from .port_allocation import PortAllocation
 from .project import Project
-from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGScope
+from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGMessage, RAGScope
 from .resource import Resource
 from .server import Server, ServerStatus
 from .service_deployment import ServiceDeployment
@@ -24,6 +24,7 @@ __all__ = [
     "RAGChunk",
     "RAGConversationSummary",
     "RAGDocument",
+    "RAGMessage",
     "RAGScope",
     "Server",
     "ServerStatus",

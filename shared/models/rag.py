@@ -84,3 +84,22 @@ class RAGConversationSummary(Base):
 
     summary_text: Mapped[str] = mapped_column(Text)
     message_ids: Mapped[list[str] | None] = mapped_column(JSON)
+
+
+class RAGMessage(Base):
+    """Raw chat messages captured for summarization."""
+
+    __tablename__ = "rag_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    project_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("projects.id"), nullable=True, index=True
+    )
+    role: Mapped[str] = mapped_column(String(20))
+    message_text: Mapped[str] = mapped_column(Text)
+    message_id: Mapped[str | None] = mapped_column(String(128))
+    source: Mapped[str] = mapped_column(String(50), default="telegram")
+    summarized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )

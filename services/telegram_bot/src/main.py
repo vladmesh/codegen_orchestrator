@@ -1,11 +1,13 @@
 """Telegram Bot - Main entry point."""
 
 import asyncio
+from http import HTTPStatus
 import logging
 import os
 import sys
 import time
 
+import httpx
 import structlog
 from telegram import Bot, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
@@ -15,6 +17,7 @@ sys.path.insert(0, "/app")
 from shared.logging_config import setup_logging
 from shared.redis_client import RedisStreamClient
 
+from .config import get_settings
 from .handlers import handle_callback_query
 from .keyboards import main_menu_keyboard
 
@@ -22,6 +25,22 @@ logger = structlog.get_logger()
 
 # Global Redis client
 redis_client = RedisStreamClient()
+
+
+async def _post_rag_message(payload: dict) -> None:
+    settings = get_settings()
+    url = f"{settings.api_url}/api/rag/messages"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(url, json=payload)
+            if response.status_code >= HTTPStatus.BAD_REQUEST:
+                logger.warning(
+                    "rag_message_log_failed",
+                    status_code=response.status_code,
+                    response=response.text,
+                )
+    except httpx.HTTPError as e:
+        logger.warning("rag_message_log_failed", error=str(e))
 
 
 async def start(update: Update, context) -> None:
@@ -83,6 +102,16 @@ async def handle_message(update: Update, context) -> None:
             },
         )
 
+        await _post_rag_message(
+            {
+                "telegram_id": user_id,
+                "role": "user",
+                "message_text": text,
+                "message_id": str(message_id),
+                "source": "telegram",
+            }
+        )
+
         logger.info("message_published", stream=RedisStreamClient.INCOMING_STREAM)
     finally:
         if bind_keys:
@@ -119,12 +148,22 @@ async def outgoing_consumer(bot: Bot) -> None:
                 structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
 
             logger.info("sending_message", chat_id=chat_id, reply_to_message_id=reply_to)
-            await bot.send_message(
+            sent_message = await bot.send_message(
                 chat_id=chat_id,
                 text=text,
                 reply_to_message_id=reply_to,
             )
             logger.info("message_sent", chat_id=chat_id)
+
+            await _post_rag_message(
+                {
+                    "telegram_id": data.get("user_id") or chat_id,
+                    "role": "assistant",
+                    "message_text": text,
+                    "message_id": str(sent_message.message_id),
+                    "source": "telegram",
+                }
+            )
         except Exception as e:
             logger.error(
                 "message_send_failed",
