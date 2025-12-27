@@ -1,16 +1,13 @@
 """Servers router."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.models import PortAllocation, Server, ServiceDeployment
+from shared.models import PortAllocation, Server, ServiceDeployment, User
 from shared.models.server import ServerStatus
 from shared.models.service_deployment import DeploymentStatus
 
-# TODO: Add encryption logic
-# from cryptography.fernet import Fernet
-# ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 from ..database import get_async_session
 from ..schemas import (
     PortAllocationCreate,
@@ -23,12 +20,43 @@ from ..schemas import (
 router = APIRouter(prefix="/servers", tags=["servers"])
 
 
+async def _require_admin_if_user(
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+) -> None:
+    """Require admin if X-Telegram-ID header is provided.
+
+    Internal services (without header) are allowed through.
+    External users (with header) must be admins.
+    """
+    if x_telegram_id is None:
+        # Internal service call - allow
+        return
+
+    query = select(User).where(User.telegram_id == x_telegram_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with telegram_id {x_telegram_id} not found",
+        )
+
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required for server management",
+        )
+
+
 @router.post("/", response_model=ServerRead, status_code=status.HTTP_201_CREATED)
 async def create_server(
     server_in: ServerCreate,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> Server:
-    """Create a new server."""
+    """Create a new server (admin only)."""
     if await db.get(Server, server_in.handle):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -59,8 +87,9 @@ async def list_servers(
     is_managed: bool | None = None,
     status: str | None = None,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> list[Server]:
-    """List all servers with optional filtering."""
+    """List all servers with optional filtering (admin only)."""
     query = select(Server)
 
     if is_managed is not None:
@@ -77,8 +106,9 @@ async def list_servers(
 async def get_server(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> Server:
-    """Get a server by handle."""
+    """Get a server by handle (admin only)."""
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
@@ -89,8 +119,9 @@ async def get_server(
 async def list_server_ports(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> list[PortAllocation]:
-    """List all port allocations for a server."""
+    """List all port allocations for a server (admin only)."""
     if not await db.get(Server, handle):
         raise HTTPException(status_code=404, detail="Server not found")
 
@@ -104,8 +135,9 @@ async def allocate_port(
     handle: str,
     allocation_in: PortAllocationCreate,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> PortAllocation:
-    """Allocate a port on a server."""
+    """Allocate a port on a server (admin only)."""
     # Check server exists
     if not await db.get(Server, handle):
         raise HTTPException(status_code=404, detail="Server not found")
@@ -136,8 +168,9 @@ async def update_server(
     handle: str,
     updates: dict,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> Server:
-    """Update server fields (e.g., status for FORCE_REBUILD)."""
+    """Update server fields (admin only)."""
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
@@ -157,8 +190,9 @@ async def update_server(
 async def force_rebuild_server(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> Server:
-    """Trigger FORCE_REBUILD for a server."""
+    """Trigger FORCE_REBUILD for a server (admin only)."""
 
     server = await db.get(Server, handle)
     if not server:
@@ -174,8 +208,9 @@ async def force_rebuild_server(
 async def get_server_incidents(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> list:
-    """Get incident history for a server."""
+    """Get incident history for a server (admin only)."""
     from shared.models import Incident
 
     # Verify server exists
@@ -210,8 +245,9 @@ async def get_server_incidents(
 async def provision_server(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> dict:
-    """Manual provisioning trigger (will integrate with LangGraph)."""
+    """Manual provisioning trigger (admin only)."""
 
     server = await db.get(Server, handle)
     if not server:
@@ -234,8 +270,9 @@ async def provision_server(
 async def get_server_services(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
 ) -> list[ServiceDeployment]:
-    """Get all services deployed on a specific server."""
+    """Get all services deployed on a specific server (admin only)."""
     # Verify server exists
     if not await db.get(Server, handle):
         raise HTTPException(status_code=404, detail="Server not found")

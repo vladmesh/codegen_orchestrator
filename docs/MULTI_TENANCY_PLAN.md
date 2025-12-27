@@ -228,7 +228,7 @@ group=-1)  # Run before other handlers
 
 ---
 
-### API - User Management
+### API - User Management (✅ Completed)
 
 #### [NEW] [users.py](file:///home/vlad/projects/codegen_orchestrator/services/api/src/routers/users.py) - Add endpoints
 
@@ -334,7 +334,7 @@ async def require_admin(
 
 ---
 
-### API - Project Authorization
+### API - Project Authorization (✅ Completed)
 
 #### [MODIFY] [projects.py](file:///home/vlad/projects/codegen_orchestrator/services/api/src/routers/projects.py)
 
@@ -428,7 +428,7 @@ async def get_project(
 
 ---
 
-### API - Admin Endpoints
+### API - Admin Endpoints (✅ Completed)
 
 #### [MODIFY] [servers.py](file:///home/vlad/projects/codegen_orchestrator/services/api/src/routers/servers.py)
 
@@ -448,7 +448,7 @@ async def list_servers(
 
 ---
 
-### Telegram Handlers - Pass User Context
+### Telegram Handlers - Pass User Context (✅ Completed)
 
 #### [MODIFY] [handlers.py](file:///home/vlad/projects/codegen_orchestrator/services/telegram_bot/src/handlers.py)
 
@@ -639,7 +639,7 @@ psql $DATABASE_URL -c "\d projects"
 3. Verify user B doesn't see user A's projects
 4. Verify admin sees all projects
 
-### Phase 4: Admin Endpoints
+### Phase 4: Admin Endpoints (✅ Completed)
 1. Call `/api/servers` without header → 401
 2. Call with regular user header → 403
 3. Call with admin user header → 200 OK

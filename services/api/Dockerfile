@@ -36,8 +36,8 @@ COPY --from=builder /install /usr/local
 # Copy source code
 COPY services/api/src ./src
 
-COPY alembic ./alembic
-COPY alembic.ini ./
+COPY services/api/migrations ./migrations
+COPY services/api/alembic.ini ./alembic.ini
 COPY services/api/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
