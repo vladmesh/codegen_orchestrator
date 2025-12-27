@@ -30,10 +30,16 @@ redis_client = RedisStreamClient()
 
 async def _post_rag_message(payload: dict) -> None:
     settings = get_settings()
-    url = f"{settings.api_url}/api/rag/messages"
+    # Ensure no double /api
+    url = f"{settings.api_url}/rag/messages"
+
+    headers = {}
+    if payload.get("telegram_id"):
+        headers["X-Telegram-ID"] = str(payload["telegram_id"])
+
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(url, json=payload)
+            response = await client.post(url, json=payload, headers=headers)
             if response.status_code >= HTTPStatus.BAD_REQUEST:
                 logger.warning(
                     "rag_message_log_failed",
@@ -78,10 +84,13 @@ async def _ensure_user_registered(tg_user) -> None:
         "is_admin": is_admin,
     }
 
+    headers = {"X-Telegram-ID": str(tg_user.id)}
+
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Upsert endpoint
-            await client.post(f"{settings.api_url}/api/users/upsert", json=payload)
+            # Fix: Remove /api prefix as settings.api_url likely includes it
+            await client.post(f"{settings.api_url}/users/upsert", json=payload, headers=headers)
     except httpx.HTTPError as e:
         logger.warning("user_registration_failed", error=str(e))
 
