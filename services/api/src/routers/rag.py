@@ -362,6 +362,36 @@ async def _search_chunks(
     embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
     similarity_expr = 1 - RAGChunk.embedding.cosine_distance(text(f"'{embedding_str}'::vector"))
 
+    # First, query all candidates without min_similarity filter for diagnostics
+    candidates_stmt = (
+        select(similarity_expr.label("similarity"))
+        .select_from(RAGChunk)
+        .where(*conditions)
+        .order_by(similarity_expr.desc())
+        .limit(20)
+    )
+    candidates_result = await db.execute(candidates_stmt)
+    candidate_scores = [row.similarity for row in candidates_result]
+
+    if candidate_scores:
+        logger.debug(
+            "rag_search_candidates",
+            scope=scope,
+            project_id=project_id,
+            min_similarity_threshold=min_similarity,
+            candidates_count=len(candidate_scores),
+            max_score=round(max(candidate_scores), 4),
+            min_score=round(min(candidate_scores), 4),
+            passing_count=sum(1 for s in candidate_scores if s >= min_similarity),
+        )
+    else:
+        logger.debug(
+            "rag_search_no_candidates",
+            scope=scope,
+            project_id=project_id,
+        )
+
+    # Now run the actual filtered query
     stmt = (
         select(RAGChunk, similarity_expr.label("similarity"), RAGDocument)
         .join(RAGDocument, RAGChunk.document_id == RAGDocument.id)

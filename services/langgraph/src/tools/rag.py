@@ -39,7 +39,7 @@ async def search_project_context(
             "scope": "public",
             "top_k": 5,
             "max_tokens": 2000,
-            "min_similarity": 0.7,
+            "min_similarity": 0.25,  # Lower threshold for text-embedding-3-small
         }
 
         result = await api_client.post("/api/rag/query", json=payload)
