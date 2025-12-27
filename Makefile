@@ -76,10 +76,18 @@ build:
 # === Quality ===
 
 lint:
-	$(TOOLING) ruff check .
+	@$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev down tooling 2>/dev/null || true
+	@$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev run --rm tooling ruff check .; \
+	EXIT_CODE=$$?; \
+	$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev down; \
+	exit $$EXIT_CODE
 
 format:
-	$(TOOLING) sh -c "ruff format $(if $(FILES),$(FILES),.) && ruff check --fix $(if $(FILES),$(FILES),.)"
+	@$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev down tooling 2>/dev/null || true
+	@$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev run --rm tooling sh -c "ruff format $(if $(FILES),$(FILES),.) && ruff check --fix $(if $(FILES),$(FILES),.)"; \
+	EXIT_CODE=$$?; \
+	$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev down; \
+	exit $$EXIT_CODE
 
 # === Git Hooks ===
 
@@ -95,61 +103,94 @@ DOCKER_COMPOSE_TEST := DOCKER_BUILDKIT=1 docker compose -p $(TEST_PROJECT) -f do
 
 # Individual service unit tests (fast, no external deps)
 test-api-unit:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  api-test pytest tests/unit -v
+	@echo "🧪 Running API unit tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from api-test api-test db-test redis-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 test-langgraph-unit:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  langgraph-test pytest tests/unit -v
+	@echo "🧪 Running LangGraph unit tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from langgraph-test langgraph-test redis-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 test-scheduler-unit:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  scheduler-test pytest tests/unit -v
+	@echo "🧪 Running Scheduler unit tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from scheduler-test scheduler-test db-test redis-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 test-telegram-unit:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  telegram-bot-test pytest tests/unit -v
+	@echo "🧪 Running Telegram bot unit tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from telegram-bot-test telegram-bot-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 # Individual service integration tests (require infrastructure)
 test-api-integration:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  api-test pytest tests/integration -v
+	@echo "🧪 Running API integration tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from api-test api-test db-test redis-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 test-langgraph-integration:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  langgraph-test pytest tests/integration -v
+	@echo "🧪 Running LangGraph integration tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from langgraph-test langgraph-test redis-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 test-scheduler-integration:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  scheduler-test pytest tests/integration -v
+	@echo "🧪 Running Scheduler integration tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from scheduler-test scheduler-test db-test redis-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 # All tests for a specific service
 test-api:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  api-test pytest -v
+	@echo "🧪 Running all API tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from api-test api-test db-test redis-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 test-langgraph:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  langgraph-test pytest -v
+	@echo "🧪 Running all LangGraph tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from langgraph-test langgraph-test redis-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 test-scheduler:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  scheduler-test pytest -v
+	@echo "🧪 Running all Scheduler tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from scheduler-test scheduler-test db-test redis-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 test-telegram:
-	@$(DOCKER_COMPOSE_TEST) down -v  2>/dev/null || true
-	@trap '$(DOCKER_COMPOSE_TEST) down -v ' EXIT; \
-	$(DOCKER_COMPOSE_TEST) run --rm  telegram-bot-test pytest -v
+	@echo "🧪 Running all Telegram bot tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from telegram-bot-test telegram-bot-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v; \
+	exit $$EXIT_CODE
 
 # Run all unit tests (fast)
 test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit
@@ -165,7 +206,8 @@ test: test-all
 
 # Cleanup test containers and volumes
 test-clean:
-	$(DOCKER_COMPOSE_TEST) down -v 
+	@echo "🧹 Cleaning up test containers and volumes..."
+	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 
 
 
 # === Database ===
