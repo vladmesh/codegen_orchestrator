@@ -78,7 +78,7 @@ class AgentConfigCache:
         """Fetch agent config from API. Raises on failure."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{API_URL}/api/agent-configs/{agent_id}")
+                resp = await client.get(f"{API_URL}/agent-configs/{agent_id}")
 
                 if resp.status_code == httpx.codes.OK:
                     logger.info("config_fetched", agent_id=agent_id)
