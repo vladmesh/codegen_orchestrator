@@ -109,15 +109,15 @@ def api_url_field(required: bool = True):
     """Internal API URL field definition."""
     if required:
         return Field(
-            ...,
+            default="http://api:8000/api",
             alias="API_URL",
-            description="Internal API service URL",
-            examples=["http://api:8000"],
+            description="Internal API service URL (must include /api prefix)",
+            examples=["http://api:8000/api"],
         )
     return Field(
         default=None,
         alias="API_URL",
-        description="Internal API service URL (optional)",
+        description="Internal API service URL (optional, must include /api prefix)",
     )
 
 

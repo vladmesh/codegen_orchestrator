@@ -41,7 +41,7 @@ services:
     env_file:
       - .env
     environment:
-      API_URL: http://api:8000
+      API_URL: http://api:8000/api
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
     volumes:
@@ -77,7 +77,7 @@ services:
     env_file:
       - .env
     environment:
-      API_URL: http://api:8000
+      API_URL: http://api:8000/api
       REDIS_URL: redis://redis:6379
     volumes:
       - ./services/telegram_bot/src:/app/src:delegated
@@ -95,7 +95,7 @@ services:
     env_file:
       - .env
     environment:
-      API_URL: http://api:8000
+      API_URL: http://api:8000/api
       REDIS_URL: redis://redis:6379
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -113,7 +113,7 @@ services:
     env_file:
       - .env
     environment:
-      API_URL: http://api:8000
+      API_URL: http://api:8000/api
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app

@@ -114,18 +114,19 @@ class DeveloperNode(BaseAgentNode):
                 task_title=task_title,
             )
 
-            if worker_result.get("success"):
+            if worker_result.success:
                 return {
                     "messages": [
                         AIMessage(
                             content=f"✅ Developer worker spawned successfully for {repo_name}!\n"
-                            f"Worker ID: {worker_result.get('worker_id', 'N/A')}"
+                            f"Commit: {worker_result.commit_sha or 'N/A'}\n"
+                            f"Branch: {worker_result.branch or 'N/A'}"
                         )
                     ],
                     "worker_info": worker_result,
                 }
             else:
-                error_msg = worker_result.get("error", "Unknown error")
+                error_msg = worker_result.error_message or "Unknown error"
                 return {
                     "messages": [
                         AIMessage(content=f"❌ Failed to spawn developer worker: {error_msg}")

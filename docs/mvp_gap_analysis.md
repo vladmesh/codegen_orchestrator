@@ -19,19 +19,7 @@ Codegen Orchestrator имеет рабочий прототип "Happy Path", с
 - **Location**: `graph.py:387-388`
 - **Fix**: Интегрировать `langgraph-checkpoint-postgres` для персистенции в PostgreSQL
 
-### 1.2 Developer Node Instability ❌
-- **Problem**: `request_spawn()` возвращает `SpawnResult` dataclass, но `developer.py:117` обращается к нему как к dict через `.get()`
-- **Impact**: `AttributeError` при попытке запустить coding worker
-- **Location**: `services/langgraph/src/nodes/developer.py:117`
-- **Fix**: Заменить `worker_result.get("success")` на `worker_result.success`
-
-### 1.3 API Path Mismatch ❌
-- **Problem**: `InternalAPIClient` использует `base_url=http://api:8000` и делает запросы на `/projects/`, но API роутеры подключены с `prefix="/api"` → реальный путь `/api/projects/`
-- **Impact**: 404 ошибки при любых API вызовах из LangGraph tools
-- **Location**: `services/langgraph/src/tools/base.py:23`, `services/api/src/main.py:89`
-- **Fix**: Изменить base_url на `http://api:8000/api` или обновить все пути в tools
-
-### 1.4 Worker Image Build ⚠️
+### 1.2 Worker Image Build ⚠️
 - **Problem**: `coding-worker:latest` не собирается автоматически через docker-compose
 - **Impact**: На чистой машине worker spawning падает
 - **Location**: `services/coding-worker/Dockerfile` (существует, но не в compose)
@@ -127,11 +115,9 @@ Codegen Orchestrator имеет рабочий прототип "Happy Path", с
 ### Phase 1: Stabilization (Critical)
 | Priority | Task | Effort |
 |----------|------|--------|
-| P0 | Fix API path mismatch (1.3) | 30min |
-| P0 | Fix Developer node dataclass access (1.2) | 15min |
 | P1 | Implement Postgres Checkpointer (1.1) | 2-4h |
 | P1 | Add Redis locks to Scheduler (3.1) | 2h |
-| P2 | Document/automate coding-worker build (1.4) | 30min |
+| P2 | Document/automate coding-worker build (1.2) | 30min |
 
 ### Phase 2: Security
 | Priority | Task | Effort |
