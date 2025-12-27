@@ -114,6 +114,7 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         await redis_client.publish(
             RedisStreamClient.OUTGOING_STREAM,
             {
+                "user_id": user_id,
                 "chat_id": chat_id,
                 "reply_to_message_id": data.get("message_id"),
                 "text": response_text,

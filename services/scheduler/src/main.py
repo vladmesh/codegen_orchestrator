@@ -16,6 +16,7 @@ from shared.logging_config import setup_logging
 from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker
 from .tasks.provisioner_trigger import provisioner_trigger_worker
+from .tasks.rag_summarizer import rag_summarizer_worker
 from .tasks.server_sync import sync_servers_worker
 
 logger = structlog.get_logger()
@@ -27,7 +28,13 @@ async def main():
     logger.info("scheduler_started")
     logger.info(
         "scheduler_workers_configured",
-        workers=["github_sync", "server_sync", "health_checker", "provisioner_trigger"],
+        workers=[
+            "github_sync",
+            "server_sync",
+            "health_checker",
+            "provisioner_trigger",
+            "rag_summarizer",
+        ],
     )
 
     # Create tasks for all workers
@@ -36,6 +43,7 @@ async def main():
         asyncio.create_task(sync_projects_worker(), name="github_sync"),
         asyncio.create_task(health_check_worker(), name="health_checker"),
         asyncio.create_task(provisioner_trigger_worker(), name="provisioner_trigger"),
+        asyncio.create_task(rag_summarizer_worker(), name="rag_summarizer"),
     ]
 
     try:

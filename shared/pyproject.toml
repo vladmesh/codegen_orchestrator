@@ -5,6 +5,7 @@ description = "Shared utilities for codegen_orchestrator services"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic-settings>=2.0.0",
+    "pgvector>=0.2.5",
     "redis[hiredis]>=5.0.0",
     "structlog>=25.1.0",
 ]

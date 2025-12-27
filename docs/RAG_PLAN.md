@@ -11,29 +11,29 @@ This document is aligned with docs/GRAPH_REFACTORING_PLAN.md (Iteration 4).
 - Provide "enrichment" as optional context, not a rewrite of user input.
 
 ## Scope model
-- project scope: only data from a single project (tenant_id + project_id required).
-- tenant scope: all data owned by a tenant (tenant_id required).
-- public scope: shared docs about the orchestrator/product (scope = public, tenant_id NULL).
+- project scope: only data from a single project (user_id + project_id required).
+- user scope: all data owned by a user (user_id required).
+- public scope: shared docs about the orchestrator/product (scope = public, user_id NULL).
 
 ## Data model (index layer)
 The RAG service stores indexed copies of content in a dedicated layer.
 
 - rag_documents
-  - id, tenant_id, project_id, scope, source_type, source_id, source_uri
+  - id, user_id, project_id, scope, source_type, source_id, source_uri
   - source_hash, source_updated_at, language
   - title, body, tsv, created_at, updated_at
 - rag_chunks
-  - id, document_id, tenant_id, project_id, scope
+  - id, document_id, user_id, project_id, scope
   - chunk_index, chunk_text, chunk_hash, token_count
   - embedding (vector(512)), embedding_model, tsv
   - created_at
 
-Note: retrieval should run on rag_chunks. If you do not denormalize tenant_id/project_id/scope into rag_chunks, expose a SECURITY BARRIER view that joins rag_chunks to rag_documents and apply filters there.
+Note: retrieval should run on rag_chunks. If you do not denormalize user_id/project_id/scope into rag_chunks, expose a SECURITY BARRIER view that joins rag_chunks to rag_documents and apply filters there.
 - rag_conversation_summaries
-  - id, tenant_id, project_id, thread_id
+  - id, user_id, project_id, thread_id
   - summary_text, message_ids, created_at
 - rag_query_logs (optional in v1)
-  - id, tenant_id, project_id, scope, query_text, latency_ms
+  - id, user_id, project_id, scope, query_text, latency_ms
   - result_count, token_usage, created_at
 
 ## Infrastructure additions
@@ -42,14 +42,14 @@ Note: retrieval should run on rag_chunks. If you do not denormalize tenant_id/pr
   - CREATE EXTENSION IF NOT EXISTS vector;
   - CREATE EXTENSION IF NOT EXISTS pg_trgm; (optional, for FTS quality)
   - CREATE EXTENSION IF NOT EXISTS unaccent; (optional)
-- Create DB roles:
+- Phase 2 (RLS): create DB roles:
   - app/rag_service role without BYPASSRLS (used by services).
   - admin/migration role for Alembic and backfills.
 
-## RLS implementation notes
+## RLS implementation notes (Phase 2)
 - RLS is enforced by Postgres, not by the service itself.
 - The service must set session variables per transaction:
-  - SET LOCAL app.tenant_id = '<tenant_id>';
+  - SET LOCAL app.user_id = '<user_id>';
   - SET LOCAL app.project_id = '<project_id>'; (required for project scope)
 - Use a non-superuser role without BYPASSRLS for app connections.
 - If using pgbouncer with transaction pooling, set variables in every transaction.
@@ -62,23 +62,23 @@ CREATE POLICY rag_documents_select ON rag_documents
 FOR SELECT
 USING (
   scope = 'public'
-  OR (scope = 'tenant' AND tenant_id = current_setting('app.tenant_id')::uuid)
-  OR (scope = 'project' AND tenant_id = current_setting('app.tenant_id')::uuid
-      AND project_id = current_setting('app.project_id')::uuid)
+  OR (scope = 'user' AND user_id = current_setting('app.user_id')::int)
+  OR (scope = 'project' AND user_id = current_setting('app.user_id')::int
+      AND project_id = current_setting('app.project_id'))
 );
 
 CREATE POLICY rag_documents_insert ON rag_documents
 FOR INSERT
 WITH CHECK (
-  tenant_id = current_setting('app.tenant_id')::uuid
-  AND (scope != 'project' OR project_id = current_setting('app.project_id')::uuid)
+  user_id = current_setting('app.user_id')::int
+  AND (scope != 'project' OR project_id = current_setting('app.project_id'))
 );
 ```
 
 Example transaction:
 ```sql
 BEGIN;
-SET LOCAL app.tenant_id = '...';
+SET LOCAL app.user_id = '...';
 SET LOCAL app.project_id = '...';
 -- queries here
 COMMIT;
@@ -90,12 +90,12 @@ COMMIT;
 Scope: agree on identifiers and service responsibilities.
 
 Tasks:
-- Define tenant identity (tenant_id vs account_id mapping).
+- Define user identity (user_id vs telegram_id mapping).
 - Define project ownership rules (who can query what).
 - Define "public" corpus boundaries.
 - Draft API contract:
-  - POST /rag/query (scope, tenant_id, project_id, query, top_k, mode)
-  - POST /rag/enrich (scope, tenant_id, project_id, message, top_k)
+  - POST /rag/query (scope, user_id, project_id, query, top_k, mode)
+  - POST /rag/enrich (scope, user_id, project_id, message, top_k)
   - POST /rag/ingest (source_type, source_id, content, metadata)
 - Define v1 sources (spec, README, decisions, incidents, summaries).
 
@@ -110,15 +110,13 @@ Tasks:
 - Enable pgvector extension (via Alembic or init SQL).
 - Add tables: rag_documents, rag_chunks, rag_conversation_summaries (include source metadata).
 - Add FTS indexes on rag_chunks.tsv and vector indexes on rag_chunks.embedding.
-- Implement hybrid access control:
-  - RLS policies on rag_documents/rag_chunks/rag_conversation_summaries.
-  - Apply scope + project_id checks for project scope.
-  - Strict filtering in RAG service queries by tenant_id/scope.
-  - Ensure the service sets SET LOCAL app.tenant_id/app.project_id per transaction.
+- Access control for v1:
+  - No RLS in Iteration 1 (deferred to Phase 2).
+  - Service-level filtering by user_id/scope will be added with the RAG service.
 
 Done when:
 - Tables and indexes are created.
-- Queries are filtered by tenant_id/scope and enforced by RLS.
+- Schema is ready for hybrid search; RLS will be added in Phase 2.
 
 ### Iteration 2 - Ingestion pipelines (v1 sources)
 Scope: populate the index layer from existing sources.
@@ -160,7 +158,7 @@ Scope: return context in a predictable, testable way.
 
 Tasks:
 - Implement search flow:
-  - Hard filter by tenant_id, project_id, scope
+  - Hard filter by user_id, project_id, scope
   - Full-text search on rag_chunks.tsv to gather candidates
   - Vector search on rag_chunks.embedding for semantic matches
   - Merge and rerank (simple RRF or score merge)
@@ -235,14 +233,14 @@ Done when:
 ## Open questions and options
 These are unresolved and should be decided during Iteration 0/1.
 
-1) Tenant identity
-   - Decision: use tenant_id as the canonical identifier (currently 1:1 with the existing account record).
+1) User identity
+   - Decision: use user_id (users.id) as the canonical identifier.
    - Note: project_id is used for scoping convenience and noise reduction.
-   - Risk: moving from single-tenant accounts to org/account later can be painful.
+   - Risk: moving from single-user to org/account later can be painful.
 
 2) Public corpus
    - Option A: separate table with scope=public
-   - Option B: same tables with scope='public' and tenant_id NULL
+   - Option B: same tables with scope='public' and user_id NULL
    - Recommendation: Option B + SECURITY BARRIER view for all reads to keep a single retrieval path.
    - When to revisit: if public corpus grows significantly or needs a different retention/audit policy.
    - Risk: accidental mixing if filters/views are inconsistent.
@@ -259,9 +257,9 @@ These are unresolved and should be decided during Iteration 0/1.
    - Risk: code embeddings are expensive and noisy.
 
 5) Access control enforcement
-   - Decision: hybrid enforcement (RLS + service-level filtering).
-   - Rationale: RLS provides a hard safety barrier, service filtering keeps intent explicit.
-   - Risk: more setup and testing complexity.
+   - Decision: v1 uses service-level filtering only; add RLS in Phase 2.
+   - Rationale: reduce early DB changes; RLS adds a hard safety barrier later.
+   - Risk: more setup and testing complexity when RLS is added.
 
 6) Embedding provider
    - Decision: OpenAI text-embedding-3-small, 512 dimensions.

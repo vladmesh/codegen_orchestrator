@@ -5,7 +5,7 @@ services:
   # === Test Infrastructure ===
 
   db-test:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: orchestrator_test
       POSTGRES_USER: postgres

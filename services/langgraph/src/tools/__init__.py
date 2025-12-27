@@ -32,6 +32,9 @@ from .projects import (
     set_project_maintenance,
 )
 
+# RAG search tools
+from .rag import search_project_context, search_user_context
+
 # Resource inventory
 from .resources import create_service_deployment, list_resource_inventory
 
@@ -85,4 +88,7 @@ __all__ = [
     "update_project_spec",
     "create_project_spec_yaml",
     "create_spec_md",
+    # RAG
+    "search_project_context",
+    "search_user_context",
 ]

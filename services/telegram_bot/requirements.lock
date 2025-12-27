@@ -13,7 +13,9 @@ hiredis==3.3.0
 httpcore==1.0.9
     # via httpx
 httpx==0.28.1
-    # via python-telegram-bot
+    # via
+    #   python-telegram-bot
+    #   telegram-bot (services/telegram_bot/pyproject.toml)
 idna==3.11
     # via
     #   anyio
