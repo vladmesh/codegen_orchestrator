@@ -33,6 +33,19 @@ class RAGMessageRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RAGSummaryRead(BaseModel):
+    """Schema for reading a conversation summary."""
+
+    id: int
+    user_id: int
+    project_id: str | None = None
+    thread_id: str | None = None
+    summary_text: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class RAGRepoInfo(BaseModel):
     """Repository metadata for RAG ingestion."""
 

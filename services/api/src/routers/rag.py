@@ -16,7 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.clients.embedding import generate_embeddings
-from shared.models import Project, RAGChunk, RAGDocument, RAGMessage, RAGScope, User
+from shared.models import (
+    Project,
+    RAGChunk,
+    RAGConversationSummary,
+    RAGDocument,
+    RAGMessage,
+    RAGScope,
+    User,
+)
 
 from ..database import get_async_session
 from ..schemas.rag import (
@@ -28,6 +36,7 @@ from ..schemas.rag import (
     RAGMessageRead,
     RAGQueryRequest,
     RAGQueryResult,
+    RAGSummaryRead,
 )
 
 logger = structlog.get_logger()
@@ -160,6 +169,23 @@ async def query_rag(
         total_tokens=total_tokens,
         truncated=truncated,
     )
+
+
+@router.get("/summaries", response_model=list[RAGSummaryRead])
+async def get_summaries(
+    user_id: int,
+    limit: int = 5,
+    db: AsyncSession = Depends(get_async_session),
+) -> list[RAGConversationSummary]:
+    """Get recent conversation summaries for a user."""
+    query = (
+        select(RAGConversationSummary)
+        .where(RAGConversationSummary.user_id == user_id)
+        .order_by(RAGConversationSummary.created_at.desc())
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    return list(result.scalars().all())
 
 
 @router.post("/ingest", response_model=RAGDocsIngestResult)

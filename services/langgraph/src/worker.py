@@ -8,7 +8,7 @@ import sys
 import time
 
 import httpx
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import ValidationError
 import redis.asyncio as redis
 import structlog
@@ -67,6 +67,36 @@ async def _resolve_user_id(telegram_id: int) -> int | None:
     return None
 
 
+async def _get_conversation_context(user_id: int) -> str | None:
+    """Fetch recent conversation summaries for context enrichment."""
+    try:
+        response = await api_client.get(f"rag/summaries?user_id={user_id}&limit=3")
+        summaries = response.json()
+        if summaries:
+            return "\n\n".join(s["summary_text"] for s in summaries)
+    except Exception as e:
+        logger.warning("context_enrichment_failed", error=str(e))
+    return None
+
+
+async def _log_memory_stats():
+    """Log conversation history memory usage statistics."""
+    total_messages = sum(len(h) for h in conversation_history.values())
+    thread_count = len(conversation_history)
+    logger.info(
+        "memory_stats",
+        thread_count=thread_count,
+        total_messages=total_messages,
+    )
+
+
+async def _periodic_memory_stats():
+    """Periodically log memory statistics."""
+    while True:
+        await asyncio.sleep(300)  # Log every 5 minutes
+        await _log_memory_stats()
+
+
 async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     """Process a single message through the LangGraph.
 
@@ -96,6 +126,15 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     try:
         # Get existing conversation history
         history = conversation_history[thread_id]
+
+        # Enrich context if history is empty
+        if not history and internal_user_id:
+            context = await _get_conversation_context(internal_user_id)
+            if context:
+                history.insert(
+                    0,
+                    SystemMessage(content=f"[Предыдущий контекст диалога]\n{context}"),
+                )
 
         # Add new user message to history
         new_message = HumanMessage(content=text)
@@ -369,6 +408,7 @@ async def run_worker() -> None:
         consume_chat_stream(),
         listen_provisioner_triggers(),
         listen_worker_events(),
+        _periodic_memory_stats(),
     )
 
 
