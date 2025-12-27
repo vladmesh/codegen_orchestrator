@@ -10,7 +10,14 @@ import httpx
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("e2e_test")
 
-API_URL = "http://localhost:8000"
+API_BASE_URL = "http://localhost:8000"
+
+
+def _api_url(path: str) -> str:
+    base = API_BASE_URL.rstrip("/")
+    if base.endswith("/api"):
+        raise RuntimeError("API_BASE_URL must not include /api")
+    return f"{base}/api/{path.lstrip('/')}"
 
 
 def generate_random_string(length=8):
@@ -22,7 +29,7 @@ async def wait_for_api():
     async with httpx.AsyncClient() as client:
         for _ in range(30):
             try:
-                response = await client.get(f"{API_URL}/health")
+                response = await client.get(f"{API_BASE_URL}/health")
                 if response.status_code == httpx.codes.OK:
                     logger.info("✅ API is healthy")
                     return True
@@ -38,7 +45,7 @@ async def test_projects(client):
     logger.info("🧪 Testing Projects...")
 
     # List projects (should have synced ones)
-    response = await client.get(f"{API_URL}/api/projects/")
+    response = await client.get(_api_url("projects/"))
     projects = response.json()
     logger.info(f"Found {len(projects)} synced projects")
 
@@ -51,7 +58,7 @@ async def test_projects(client):
         "config": {"description": "Created by E2E test"},
     }
 
-    response = await client.post(f"{API_URL}/api/projects/", json=new_project)
+    response = await client.post(_api_url("projects/"), json=new_project)
     if response.status_code != httpx.codes.CREATED:
         logger.error(f"Failed to create project: {response.text}")
         return False
@@ -59,7 +66,7 @@ async def test_projects(client):
     logger.info(f"✅ Created project {project_id}")
 
     # Verify it exists
-    response = await client.get(f"{API_URL}/api/projects/{project_id}")
+    response = await client.get(_api_url(f"projects/{project_id}"))
     if response.status_code != httpx.codes.OK:
         logger.error("Failed to retrieve created project")
         return False
@@ -73,7 +80,7 @@ async def test_servers(client):
     logger.info("🧪 Testing Servers...")
 
     # List servers (should have synced ones)
-    response = await client.get(f"{API_URL}/api/servers/")
+    response = await client.get(_api_url("servers/"))
     servers = response.json()
     logger.info(f"Found {len(servers)} synced servers")
 
@@ -94,7 +101,7 @@ async def test_servers(client):
         "labels": {"test": "true"},
     }
 
-    response = await client.post(f"{API_URL}/api/servers/", json=new_server)
+    response = await client.post(_api_url("servers/"), json=new_server)
     if response.status_code != httpx.codes.CREATED:
         logger.error(f"Failed to create server: {response.text}")
         return False

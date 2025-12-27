@@ -1,7 +1,6 @@
 """Telegram Bot - Main entry point."""
 
 import asyncio
-from http import HTTPStatus
 import logging
 import os
 import sys
@@ -17,6 +16,7 @@ sys.path.insert(0, "/app")
 from shared.logging_config import setup_logging
 from shared.redis_client import RedisStreamClient
 
+from .clients.api import api_client
 from .config import get_settings
 from .handlers import handle_callback_query
 from .keyboards import main_menu_keyboard
@@ -29,23 +29,12 @@ redis_client = RedisStreamClient()
 
 
 async def _post_rag_message(payload: dict) -> None:
-    settings = get_settings()
-    # Ensure no double /api
-    url = f"{settings.api_url}/rag/messages"
-
     headers = {}
     if payload.get("telegram_id"):
         headers["X-Telegram-ID"] = str(payload["telegram_id"])
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            if response.status_code >= HTTPStatus.BAD_REQUEST:
-                logger.warning(
-                    "rag_message_log_failed",
-                    status_code=response.status_code,
-                    response=response.text,
-                )
+        await api_client.post_json("rag/messages", headers=headers, json=payload)
     except httpx.HTTPError as e:
         logger.warning("rag_message_log_failed", error=str(e))
 
@@ -91,10 +80,7 @@ async def _ensure_user_registered(tg_user) -> None:
     headers = {"X-Telegram-ID": str(tg_user.id)}
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            # Upsert endpoint
-            # Fix: Remove /api prefix as settings.api_url likely includes it
-            await client.post(f"{settings.api_url}/users/upsert", json=payload, headers=headers)
+        await api_client.post_json("users/upsert", headers=headers, json=payload)
     except httpx.HTTPError as e:
         logger.warning("user_registration_failed", error=str(e))
 

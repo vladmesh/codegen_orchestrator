@@ -22,13 +22,13 @@ async def list_resource_inventory() -> ResourceInventory:
     """
     # Get servers
     try:
-        servers = await api_client.get("/api/servers/?is_managed=true")
+        servers = await api_client.list_servers(is_managed=True)
     except Exception:
         servers = []
 
     # Get projects
     try:
-        projects = await api_client.get("/projects/")
+        projects = await api_client.list_projects()
     except Exception:
         projects = []
 
@@ -75,5 +75,5 @@ async def create_service_deployment(
         "deployment_info": deployment_info,
     }
 
-    resp = await api_client.post("/api/service-deployments/", json=payload)
+    resp = await api_client.create_service_deployment(payload)
     return ServiceDeployment(**resp)

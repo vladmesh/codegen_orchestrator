@@ -16,7 +16,6 @@ logger = structlog.get_logger(__name__)
 
 # Get validated settings
 _settings = get_settings()
-API_URL = _settings.api_url
 CACHE_TTL_SECONDS = _settings.agent_config_cache_ttl
 
 
@@ -69,23 +68,22 @@ class CLIAgentConfigCache:
     async def _fetch_from_api(self, agent_id: str) -> dict[str, Any]:
         """Fetch CLI agent config from API."""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{API_URL}/api/cli-agent-configs/{agent_id}")
+            from src.clients.api import api_client
 
-                if resp.status_code == httpx.codes.OK:
-                    logger.info("cli_config_fetched", agent_id=agent_id)
-                    return resp.json()
-                elif resp.status_code == httpx.codes.NOT_FOUND:
-                    raise CLIAgentConfigError(f"CLI Agent config '{agent_id}' not found. ")
-                else:
-                    raise CLIAgentConfigError(
-                        f"Failed to fetch CLI agent config '{agent_id}': "
-                        f"HTTP {resp.status_code} - {resp.text}"
-                    )
-        except httpx.RequestError as e:
+            config = await api_client.get_cli_agent_config(agent_id)
+            logger.info("cli_config_fetched", agent_id=agent_id)
+            return config
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == httpx.codes.NOT_FOUND:
+                raise CLIAgentConfigError(f"CLI Agent config '{agent_id}' not found.") from exc
             raise CLIAgentConfigError(
-                f"Cannot connect to API to fetch CLI agent config '{agent_id}': {e}"
-            ) from e
+                f"Failed to fetch CLI agent config '{agent_id}': "
+                f"HTTP {exc.response.status_code} - {exc.response.text}"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise CLIAgentConfigError(
+                f"Cannot connect to API to fetch CLI agent config '{agent_id}': {exc}"
+            ) from exc
 
     def invalidate(self, agent_id: str | None = None) -> None:
         """Invalidate cache."""

@@ -1,16 +1,11 @@
 """Scheduler service configuration.
 
-Requires: DATABASE_URL, REDIS_URL, API_URL
+Requires: DATABASE_URL, REDIS_URL, API_BASE_URL
 """
 
 from functools import lru_cache
 
-from shared.config import (
-    BaseSettings,
-    api_url_field,
-    database_url_field,
-    redis_url_field,
-)
+from shared.config import BaseSettings, api_base_url_field, database_url_field, redis_url_field
 
 
 class Settings(BaseSettings):
@@ -19,7 +14,7 @@ class Settings(BaseSettings):
     # Required
     database_url: str = database_url_field(required=True)
     redis_url: str = redis_url_field(required=True)
-    api_url: str = api_url_field(required=True)
+    api_base_url: str = api_base_url_field(required=True)
 
 
 @lru_cache

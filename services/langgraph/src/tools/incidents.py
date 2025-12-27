@@ -28,7 +28,7 @@ async def create_incident(
         "affected_services": [],
     }
 
-    resp = await api_client.post("/api/incidents/", json=payload)
+    resp = await api_client.create_incident(payload)
     return IncidentCreateResult(**resp)
 
 
@@ -43,5 +43,5 @@ async def list_active_incidents() -> list[IncidentInfo]:
     The Product Owner should call this proactively to alert users
     about any ongoing issues that may affect their projects.
     """
-    resp = await api_client.get("/api/incidents/active")
+    resp = await api_client.list_active_incidents()
     return [IncidentInfo(**i) for i in resp]

@@ -3,7 +3,6 @@
 import asyncio
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from http import HTTPStatus
 import json
 import sys
 import time
@@ -21,6 +20,7 @@ from shared.schemas.worker_events import parse_worker_event
 sys.path.insert(0, "/app")
 from shared.redis_client import RedisStreamClient
 
+from .clients.api import api_client
 from .config.settings import get_settings
 from .events import publish_event
 from .graph import OrchestratorState, create_graph
@@ -46,28 +46,23 @@ async def _resolve_user_id(telegram_id: int) -> int | None:
 
     Returns None if user not found or API error.
     """
-    settings = get_settings()
-    url = f"{settings.api_url}/users/by-telegram/{telegram_id}"
-
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(url)
-            if response.status_code == HTTPStatus.OK:
-                user_data = response.json()
-                return user_data.get("id")
-            elif response.status_code == HTTPStatus.NOT_FOUND:
-                logger.debug("user_not_found_in_db", telegram_id=telegram_id)
-            else:
-                logger.warning(
-                    "user_resolution_unexpected_status",
-                    telegram_id=telegram_id,
-                    status_code=response.status_code,
-                )
-    except Exception as e:
+        user_data = await api_client.get_user_by_telegram(telegram_id)
+        return user_data.get("id")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == httpx.codes.NOT_FOUND:
+            logger.debug("user_not_found_in_db", telegram_id=telegram_id)
+        else:
+            logger.warning(
+                "user_resolution_unexpected_status",
+                telegram_id=telegram_id,
+                status_code=exc.response.status_code,
+            )
+    except Exception as exc:
         logger.warning(
             "user_id_resolution_failed",
             telegram_id=telegram_id,
-            error=str(e),
+            error=str(exc),
         )
     return None
 

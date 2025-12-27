@@ -7,35 +7,23 @@ import pytest
 from src.handlers import _api_get, _handle_projects, _handle_servers
 
 
-@pytest.fixture
-def mock_settings():
-    with patch("src.handlers.get_settings") as mock:
-        mock.return_value.api_url = "http://api:8000/api"
-        yield mock
-
-
 @pytest.mark.asyncio
-async def test_api_get_constructs_correct_url(mock_settings):
-    """Test that _api_get ensures correct URL construction."""
-    with patch("httpx.AsyncClient") as mock_client:
-        mock_get = AsyncMock()
-        mock_get.return_value.status_code = 200
-        mock_get.return_value.json.return_value = {}
-        mock_client.return_value.__aenter__.return_value.get = mock_get
+async def test_api_get_constructs_correct_url():
+    """Test that _api_get forwards path and headers to the client."""
+    with patch("src.handlers.api_client.get_json", new_callable=AsyncMock) as mock_get_json:
+        mock_get_json.return_value = {}
 
         # Case 1: Path starting with / (no telegram_id)
         await _api_get("/projects")
-        mock_get.assert_called_with("http://api:8000/api/projects", headers={})
+        mock_get_json.assert_called_with("/projects", headers={})
 
         # Case 2: Path without /
         await _api_get("servers")
-        mock_get.assert_called_with("http://api:8000/api/servers", headers={})
+        mock_get_json.assert_called_with("servers", headers={})
 
         # Case 3: With telegram_id
         await _api_get("/projects", telegram_id=12345)
-        mock_get.assert_called_with(
-            "http://api:8000/api/projects", headers={"X-Telegram-ID": "12345"}
-        )
+        mock_get_json.assert_called_with("/projects", headers={"X-Telegram-ID": "12345"})
 
 
 @pytest.mark.asyncio

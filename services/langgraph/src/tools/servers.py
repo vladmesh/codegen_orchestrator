@@ -15,7 +15,7 @@ async def list_managed_servers() -> list[ServerInfo]:
     Returns servers with their capacity (RAM/Disk) and current usage.
     Only returns servers that are managed (not ghost/personal).
     """
-    resp = await api_client.get("/api/servers/?is_managed=true")
+    resp = await api_client.list_servers(is_managed=True)
     return [ServerInfo(**s) for s in resp]
 
 
@@ -37,7 +37,7 @@ async def find_suitable_server(
         Server details if found, None otherwise.
     """
     # Don't filter by status - include 'ready' and 'in_use' servers
-    servers = await api_client.get("/api/servers?is_managed=true")
+    servers = await api_client.list_servers(is_managed=True)
 
     # Filter to only ready/in_use servers (active for deployment)
     servers = [s for s in servers if s.get("status") in ("ready", "in_use")]
@@ -73,7 +73,7 @@ async def get_server_info(
 
     Returns capacity, usage, IP, OS, and other details for the server.
     """
-    resp = await api_client.get(f"/api/servers/{handle}")
+    resp = await api_client.get_server(handle)
     return ServerInfo(**resp)
 
 
@@ -86,7 +86,7 @@ async def update_server_status(
 
     Used by provisioner to track provisioning progress.
     """
-    resp = await api_client.patch(f"/api/servers/{handle}", json={"status": status})
+    resp = await api_client.update_server(handle, {"status": status})
     return ServerInfo(**resp)
 
 
@@ -98,5 +98,5 @@ async def get_services_on_server(
 
     Returns service deployment records with deployment_info for redeployment after recovery.
     """
-    resp = await api_client.get(f"/api/servers/{server_handle}/services")
+    resp = await api_client.get_server_services(server_handle)
     return [ServiceDeployment(**sd) for sd in resp]

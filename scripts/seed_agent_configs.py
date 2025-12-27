@@ -5,7 +5,7 @@ This script populates the database with agent prompts extracted from the
 original hardcoded values in the LangGraph node files.
 
 Usage:
-    python scripts/seed_agent_configs.py [--api-url http://localhost:8000]
+    python scripts/seed_agent_configs.py [--api-base-url http://localhost:8000]
 """
 
 import argparse
@@ -17,6 +17,13 @@ import yaml
 
 CONFIG_PATH = Path(__file__).resolve().parent / "agent_configs.yaml"
 CLI_CONFIG_PATH = Path(__file__).resolve().parent / "cli_agent_configs.yaml"
+
+
+def _api_url(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/api"):
+        raise RuntimeError("API_BASE_URL must not include /api")
+    return f"{base}/api/{path.lstrip('/')}"
 
 
 def load_configs(path: Path) -> list[dict]:
@@ -39,7 +46,7 @@ def load_configs(path: Path) -> list[dict]:
     return configs
 
 
-def seed_agent_configs(api_url: str, configs_path: Path) -> bool:
+def seed_agent_configs(api_base_url: str, configs_path: Path) -> bool:
     """Seed agent configurations to the database.
 
     Args:
@@ -59,11 +66,11 @@ def seed_agent_configs(api_url: str, configs_path: Path) -> bool:
         for config in configs:
             try:
                 # Check if already exists
-                resp = client.get(f"{api_url}/api/agent-configs/{config['id']}")
+                resp = client.get(_api_url(api_base_url, f"agent-configs/{config['id']}"))
                 if resp.status_code == httpx.codes.OK:
                     payload = {k: v for k, v in config.items() if k != "id"}
                     resp = client.patch(
-                        f"{api_url}/api/agent-configs/{config['id']}",
+                        _api_url(api_base_url, f"agent-configs/{config['id']}"),
                         json=payload,
                     )
                     if resp.status_code == httpx.codes.OK:
@@ -77,7 +84,7 @@ def seed_agent_configs(api_url: str, configs_path: Path) -> bool:
                     continue
 
                 # Create new config
-                resp = client.post(f"{api_url}/api/agent-configs/", json=config)
+                resp = client.post(_api_url(api_base_url, "agent-configs/"), json=config)
                 if resp.status_code == httpx.codes.CREATED:
                     print(f"  ✅ Created agent config: {config['id']}")
                 elif resp.status_code == httpx.codes.CONFLICT:
@@ -95,7 +102,7 @@ def seed_agent_configs(api_url: str, configs_path: Path) -> bool:
     return success
 
 
-def seed_cli_agent_configs(api_url: str, configs_path: Path) -> bool:
+def seed_cli_agent_configs(api_base_url: str, configs_path: Path) -> bool:
     """Seed CLI agent configurations to the database."""
     configs = load_configs(configs_path)
     if not configs:
@@ -108,11 +115,11 @@ def seed_cli_agent_configs(api_url: str, configs_path: Path) -> bool:
         for config in configs:
             try:
                 # Check if already exists
-                resp = client.get(f"{api_url}/api/cli-agent-configs/{config['id']}")
+                resp = client.get(_api_url(api_base_url, f"cli-agent-configs/{config['id']}"))
                 if resp.status_code == httpx.codes.OK:
                     payload = {k: v for k, v in config.items() if k != "id"}
                     resp = client.patch(
-                        f"{api_url}/api/cli-agent-configs/{config['id']}",
+                        _api_url(api_base_url, f"cli-agent-configs/{config['id']}"),
                         json=payload,
                     )
                     if resp.status_code == httpx.codes.OK:
@@ -126,7 +133,7 @@ def seed_cli_agent_configs(api_url: str, configs_path: Path) -> bool:
                     continue
 
                 # Create new config
-                resp = client.post(f"{api_url}/api/cli-agent-configs/", json=config)
+                resp = client.post(_api_url(api_base_url, "cli-agent-configs/"), json=config)
                 if resp.status_code == httpx.codes.CREATED:
                     print(f"  ✅ Created CLI agent config: {config['id']}")
                 elif resp.status_code == httpx.codes.CONFLICT:
@@ -147,9 +154,15 @@ def seed_cli_agent_configs(api_url: str, configs_path: Path) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="Seed agent configurations")
     parser.add_argument(
-        "--api-url",
+        "--api-base-url",
+        dest="api_base_url",
         default="http://localhost:8000",
-        help="API base URL (default: http://localhost:8000)",
+        help="API base URL (no /api, default: http://localhost:8000)",
+    )
+    parser.add_argument(
+        "--api-url",
+        dest="api_base_url",
+        help="DEPRECATED: use --api-base-url (no /api)",
     )
     parser.add_argument(
         "--configs-path",
@@ -163,10 +176,10 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"🌱 Seeding configurations to {args.api_url}...")
+    print(f"🌱 Seeding configurations to {args.api_base_url}...")
 
-    llm_success = seed_agent_configs(args.api_url, Path(args.configs_path))
-    cli_success = seed_cli_agent_configs(args.api_url, Path(args.cli_configs_path))
+    llm_success = seed_agent_configs(args.api_base_url, Path(args.configs_path))
+    cli_success = seed_cli_agent_configs(args.api_base_url, Path(args.cli_configs_path))
 
     if llm_success and cli_success:
         print("\n✅ All configurations seeded successfully!")

@@ -1,6 +1,5 @@
 """Port allocation tools for agents."""
 
-from http import HTTPStatus
 from typing import Annotated
 
 from langchain_core.tools import tool
@@ -27,14 +26,12 @@ async def allocate_port(
         "project_id": project_id,
     }
 
-    allocation = await api_client.post(f"/api/servers/{server_handle}/ports", json=payload)
+    allocation = await api_client.allocate_server_port(server_handle, payload)
 
     # Fetch server info to ensure downstream nodes (DevOps) have the IP
     try:
-        resp_server = await api_client.get_raw(f"/api/servers/{server_handle}")
-        if resp_server.status_code == HTTPStatus.OK:
-            server_info = resp_server.json()
-            allocation["server_ip"] = server_info.get("public_ip") or server_info.get("host")
+        server_info = await api_client.get_server(server_handle)
+        allocation["server_ip"] = server_info.get("public_ip") or server_info.get("host")
     except Exception as e:
         # allocate_port MUST return server_ip for DevOps to work
         raise RuntimeError(f"Failed to fetch server IP for {server_handle}: {e}") from e
@@ -51,7 +48,7 @@ async def get_next_available_port(
 
     Searches from start_port upwards to find an unallocated port.
     """
-    ports_data = await api_client.get(f"/api/servers/{server_handle}/ports")
+    ports_data = await api_client.list_server_ports(server_handle)
     allocated = {p["port"] for p in ports_data}
 
     port = start_port

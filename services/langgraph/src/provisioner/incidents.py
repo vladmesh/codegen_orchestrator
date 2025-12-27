@@ -1,19 +1,11 @@
 """Incident management for provisioner."""
 
 from datetime import datetime
-from http import HTTPStatus
-import os
-
-import httpx
 
 from shared.logging_config import get_logger
+from src.clients.api import api_client
 
 logger = get_logger(__name__)
-
-
-def _get_api_url() -> str:
-    """Get API base URL."""
-    return os.getenv("API_URL", "http://api:8000")
 
 
 async def create_incident(
@@ -33,26 +25,21 @@ async def create_incident(
     Returns:
         True if successful
     """
-    api_url = _get_api_url()
-
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{api_url}/api/incidents/",
-                json={
-                    "server_handle": server_handle,
-                    "incident_type": incident_type,
-                    "details": details,
-                    "affected_services": affected_services or [],
-                },
-            )
-            resp.raise_for_status()
-            logger.info(
-                "incident_created",
-                server_handle=server_handle,
-                incident_type=incident_type,
-            )
-            return True
+        await api_client.create_incident(
+            {
+                "server_handle": server_handle,
+                "incident_type": incident_type,
+                "details": details,
+                "affected_services": affected_services or [],
+            }
+        )
+        logger.info(
+            "incident_created",
+            server_handle=server_handle,
+            incident_type=incident_type,
+        )
+        return True
     except Exception as e:
         logger.error(
             "incident_create_failed",
@@ -72,43 +59,35 @@ async def resolve_active_incidents(server_handle: str) -> bool:
     Returns:
         True if successful
     """
-    api_url = _get_api_url()
-
     try:
-        async with httpx.AsyncClient() as client:
-            # Get active incidents (detected + recovering)
-            incidents = []
+        incidents: list[dict] = []
+        for status in ["detected", "recovering"]:
+            incidents.extend(
+                await api_client.list_incidents({"server_handle": server_handle, "status": status})
+            )
 
-            for status in ["detected", "recovering"]:
-                resp = await client.get(
-                    f"{api_url}/api/incidents/",
-                    params={"server_handle": server_handle, "status": status},
-                )
-                if resp.status_code == HTTPStatus.OK:
-                    incidents.extend(resp.json())
-
-            if not incidents:
-                logger.debug("incident_resolve_skipped", server_handle=server_handle)
-                return True
-
-            resolved_at = datetime.utcnow().isoformat()
-
-            for incident in incidents:
-                incident_id = incident.get("id")
-                await client.patch(
-                    f"{api_url}/api/incidents/{incident_id}",
-                    json={
-                        "status": "resolved",
-                        "resolved_at": resolved_at,
-                    },
-                )
-                logger.info(
-                    "incident_resolved",
-                    incident_id=incident_id,
-                    server_handle=server_handle,
-                )
-
+        if not incidents:
+            logger.debug("incident_resolve_skipped", server_handle=server_handle)
             return True
+
+        resolved_at = datetime.utcnow().isoformat()
+
+        for incident in incidents:
+            incident_id = incident.get("id")
+            await api_client.update_incident(
+                incident_id,
+                {
+                    "status": "resolved",
+                    "resolved_at": resolved_at,
+                },
+            )
+            logger.info(
+                "incident_resolved",
+                incident_id=incident_id,
+                server_handle=server_handle,
+            )
+
+        return True
 
     except Exception as e:
         logger.error(

@@ -41,7 +41,8 @@ services:
     env_file:
       - .env
     environment:
-      API_URL: http://api:8000/api
+      API_BASE_URL: http://api:8000
+      PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
     volumes:
@@ -77,7 +78,8 @@ services:
     env_file:
       - .env
     environment:
-      API_URL: http://api:8000/api
+      API_BASE_URL: http://api:8000
+      PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
     volumes:
       - ./services/telegram_bot/src:/app/src:delegated
@@ -95,8 +97,8 @@ services:
     env_file:
       - .env
     environment:
-      API_URL: http://api:8000/api
       REDIS_URL: redis://redis:6379
+      PYTHONPYCACHEPREFIX: /tmp/pycache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./services/worker-spawner/src:/app/src:delegated
@@ -113,14 +115,13 @@ services:
     env_file:
       - .env
     environment:
-      API_URL: http://api:8000/api
+      API_BASE_URL: http://api:8000
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
     volumes:
       - ./services/scheduler/src:/app/src:delegated
-      - ./services/api/src/models:/app/src/models:delegated
-      - ./services/api/src/clients:/app/src/clients:delegated
       - ./shared:/app/shared:delegated
       - ~/.ssh:/root/.ssh:ro
       - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro

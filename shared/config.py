@@ -105,19 +105,19 @@ def redis_url_field(required: bool = True):
     )
 
 
-def api_url_field(required: bool = True):
-    """Internal API URL field definition."""
+def api_base_url_field(required: bool = True):
+    """Internal API base URL field definition (no /api prefix)."""
     if required:
         return Field(
-            default="http://api:8000/api",
-            alias="API_URL",
-            description="Internal API service URL (must include /api prefix)",
-            examples=["http://api:8000/api"],
+            ...,
+            alias="API_BASE_URL",
+            description="Internal API base URL (must NOT include /api prefix)",
+            examples=["http://api:8000"],
         )
     return Field(
         default=None,
-        alias="API_URL",
-        description="Internal API service URL (optional, must include /api prefix)",
+        alias="API_BASE_URL",
+        description="Internal API base URL (optional, must NOT include /api prefix)",
     )
 
 

@@ -54,7 +54,7 @@ async def search_project_context(
             "min_similarity": 0.25,  # Lower threshold for text-embedding-3-small
         }
 
-        result = await api_client.post("/api/rag/query", json=payload)
+        result = await api_client.query_rag(payload)
 
         if not result.get("results"):
             return "No relevant context found for this query."
@@ -136,7 +136,7 @@ async def search_user_context(
             "min_similarity": 0.7,
         }
 
-        result = await api_client.post("/api/rag/query", json=payload)
+        result = await api_client.query_rag(payload)
 
         if not result.get("results"):
             return "No relevant context found across your projects."

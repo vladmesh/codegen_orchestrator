@@ -19,6 +19,7 @@ from shared.models.project import Project, ProjectStatus
 from shared.notifications import notify_admins
 from shared.schemas.github import GitHubRepository
 from shared.schemas.project_spec import ProjectSpecYAML
+from src.clients.api import api_client
 from src.config import get_settings
 from src.db import async_session_maker
 
@@ -40,14 +41,13 @@ async def _ingest_to_rag(
     content will be skipped by the API automatically.
     """
     settings = get_settings()
-    api_url = settings.api_url
     secret = os.getenv("RAG_INGEST_SECRET")
 
-    if not api_url or not secret:
+    if not settings.api_base_url or not secret:
         logger.debug(
             "rag_ingest_skipped",
             reason="missing_config",
-            has_api_url=bool(api_url),
+            has_api_url=bool(settings.api_base_url),
             has_secret=bool(secret),
         )
         return
@@ -75,23 +75,16 @@ async def _ingest_to_rag(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{api_url}/rag/ingest",
-                content=body,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            result = resp.json()
+        result = await api_client.ingest_rag(body=body, headers=headers)
 
-            logger.info(
-                "rag_ingest_success",
-                project_id=project_id,
-                repo=repo_full_name,
-                docs_received=result.get("documents_received", 0),
-                docs_indexed=result.get("documents_indexed", 0),
-                docs_skipped=result.get("documents_skipped", 0),
-            )
+        logger.info(
+            "rag_ingest_success",
+            project_id=project_id,
+            repo=repo_full_name,
+            docs_received=result.get("documents_received", 0),
+            docs_indexed=result.get("documents_indexed", 0),
+            docs_skipped=result.get("documents_skipped", 0),
+        )
     except httpx.HTTPStatusError as exc:
         logger.warning(
             "rag_ingest_http_error",

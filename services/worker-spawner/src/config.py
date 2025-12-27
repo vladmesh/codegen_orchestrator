@@ -1,15 +1,11 @@
 """Worker Spawner service configuration.
 
-Requires: REDIS_URL, API_URL
+Requires: REDIS_URL
 """
 
 from functools import lru_cache
 
-from shared.config import (
-    BaseSettings,
-    api_url_field,
-    redis_url_field,
-)
+from shared.config import BaseSettings, redis_url_field
 
 
 class Settings(BaseSettings):
@@ -17,7 +13,6 @@ class Settings(BaseSettings):
 
     # Required
     redis_url: str = redis_url_field(required=True)
-    api_url: str = api_url_field(required=True)
 
 
 @lru_cache

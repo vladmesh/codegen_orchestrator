@@ -6,7 +6,7 @@ import httpx
 import redis.asyncio as aioredis
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-API_URL = os.getenv("API_URL", "http://localhost:8000/api")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 INCOMING_STREAM = "telegram:incoming"
 OUTGOING_STREAM = "telegram:outgoing"
 
@@ -36,7 +36,10 @@ async def verify_api_access(user_id: int, other_user_id: int):
     """Verify project visibility via API."""
     print("\n🔍 Verifying API access control...")
 
-    async with httpx.AsyncClient(base_url=API_URL) as client:
+    if API_BASE_URL.rstrip("/").endswith("/api"):
+        raise RuntimeError("API_BASE_URL must not include /api")
+
+    async with httpx.AsyncClient(base_url=f"{API_BASE_URL.rstrip('/')}/api") as client:
         # 1. Check owner access
         print(f"   Checking access for Owner (ID: {user_id})...")
         resp = await client.get("/projects/", headers={"X-Telegram-ID": str(user_id)})

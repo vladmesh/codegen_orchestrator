@@ -40,6 +40,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-test:5432/orchestrator_test
       REDIS_URL: redis://redis-test:6379
+      API_BASE_URL: http://mock-api:8000
       PYTHONPATH: /app
     depends_on:
       db-test:
@@ -62,7 +63,7 @@ services:
       REDIS_URL: redis://redis-test:6379
       PYTHONPATH: /app
       # Mock API URL for tests
-      API_URL: http://mock-api:8000
+      API_BASE_URL: http://mock-api:8000
       # Mock OpenAI API key to avoid import errors (LLM instantiation at module level)
       OPENAI_API_KEY: sk-test-mock-key-for-unit-tests
     depends_on:
@@ -83,6 +84,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-test:5432/orchestrator_test
       REDIS_URL: redis://redis-test:6379
+      API_BASE_URL: http://mock-api:8000
       PYTHONPATH: /app
     depends_on:
       db-test:
@@ -102,7 +104,9 @@ services:
       dockerfile: services/telegram_bot/Dockerfile.test
       target: test
     environment:
-      API_URL: http://mock-api:8000
+      API_BASE_URL: http://mock-api:8000
+      REDIS_URL: redis://redis-test:6379
+      TELEGRAM_BOT_TOKEN: test-token
       PYTHONPATH: /app
     networks:
       - test-network

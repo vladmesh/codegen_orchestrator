@@ -1,18 +1,9 @@
 """API client for provisioner - communicates with the API service."""
 
-from http import HTTPStatus
-import os
-
-import httpx
-
 from shared.logging_config import get_logger
+from src.clients.api import api_client
 
 logger = get_logger(__name__)
-
-
-def _get_api_url() -> str:
-    """Get API base URL."""
-    return os.getenv("API_URL", "http://api:8000")
 
 
 async def get_server_info(server_handle: str) -> dict | None:
@@ -24,13 +15,8 @@ async def get_server_info(server_handle: str) -> dict | None:
     Returns:
         Server info dict or None on error
     """
-    api_url = _get_api_url()
-
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{api_url}/api/servers/{server_handle}")
-            resp.raise_for_status()
-            return resp.json()
+        return await api_client.get_server(server_handle)
     except Exception as e:
         logger.error(
             "api_server_info_failed",
@@ -50,20 +36,14 @@ async def update_server_status(server_handle: str, status: str) -> bool:
     Returns:
         True if successful
     """
-    api_url = _get_api_url()
-
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.patch(
-                f"{api_url}/api/servers/{server_handle}", json={"status": status}
-            )
-            resp.raise_for_status()
-            logger.info(
-                "api_server_status_updated",
-                server_handle=server_handle,
-                status=status,
-            )
-            return True
+        await api_client.update_server(server_handle, {"status": status})
+        logger.info(
+            "api_server_status_updated",
+            server_handle=server_handle,
+            status=status,
+        )
+        return True
     except Exception as e:
         logger.error(
             "api_server_status_update_failed",
@@ -84,29 +64,19 @@ async def update_server_labels(server_handle: str, labels: dict) -> bool:
     Returns:
         True if successful
     """
-    api_url = _get_api_url()
-
     try:
-        async with httpx.AsyncClient() as client:
-            # Fetch current to merge safely
-            resp = await client.get(f"{api_url}/api/servers/{server_handle}")
-            if resp.status_code == HTTPStatus.OK:
-                current_labels = resp.json().get("labels", {}) or {}
-                current_labels.update(labels)
-                final_labels = current_labels
-            else:
-                final_labels = labels
+        current = await api_client.get_server(server_handle)
+        current_labels = current.get("labels", {}) or {}
+        current_labels.update(labels)
+        final_labels = current_labels
 
-            resp = await client.patch(
-                f"{api_url}/api/servers/{server_handle}", json={"labels": final_labels}
-            )
-            resp.raise_for_status()
-            logger.info(
-                "api_server_labels_updated",
-                server_handle=server_handle,
-                labels=final_labels,
-            )
-            return True
+        await api_client.update_server(server_handle, {"labels": final_labels})
+        logger.info(
+            "api_server_labels_updated",
+            server_handle=server_handle,
+            labels=final_labels,
+        )
+        return True
     except Exception as e:
         logger.error(
             "api_server_labels_update_failed",
@@ -126,13 +96,8 @@ async def get_services_on_server(server_handle: str) -> list[dict]:
     Returns:
         List of service deployment records
     """
-    api_url = _get_api_url()
-
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{api_url}/api/servers/{server_handle}/services")
-            resp.raise_for_status()
-            return resp.json()
+        return await api_client.get_server_services(server_handle)
     except Exception as e:
         logger.error(
             "api_server_services_fetch_failed",
@@ -151,24 +116,14 @@ async def increment_provisioning_attempts(server_handle: str) -> bool:
     Returns:
         True if successful
     """
-    api_url = _get_api_url()
-
     try:
-        async with httpx.AsyncClient() as client:
-            # Get current count
-            resp = await client.get(f"{api_url}/api/servers/{server_handle}")
-            if resp.status_code != HTTPStatus.OK:
-                return False
-
-            current = resp.json().get("provisioning_attempts", 0)
-
-            # Increment
-            resp = await client.patch(
-                f"{api_url}/api/servers/{server_handle}",
-                json={"provisioning_attempts": current + 1},
-            )
-            resp.raise_for_status()
-            return True
+        current = await api_client.get_server(server_handle)
+        attempts = current.get("provisioning_attempts", 0)
+        await api_client.update_server(
+            server_handle,
+            {"provisioning_attempts": attempts + 1},
+        )
+        return True
     except Exception as e:
         logger.error(
             "api_provisioning_attempt_increment_failed",

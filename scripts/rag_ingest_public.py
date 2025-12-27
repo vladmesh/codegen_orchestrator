@@ -19,13 +19,20 @@ def _get_env(name: str) -> str:
     return value
 
 
+def _api_url(base_url: str, path: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/api"):
+        raise RuntimeError("API_BASE_URL must not include /api")
+    return f"{base}/api/{path.lstrip('/')}"
+
+
 def _hash_text(text: str) -> str:
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return f"sha256:{digest}"
 
 
 def main() -> None:
-    api_url = _get_env("API_URL").rstrip("/")
+    api_base_url = _get_env("API_BASE_URL")
     secret = _get_env("RAG_INGEST_SECRET")
 
     readme_path = Path(__file__).resolve().parents[1] / "README.md"
@@ -68,7 +75,7 @@ def main() -> None:
     ).hexdigest()
 
     req = request.Request(  # noqa: S310
-        f"{api_url}/api/rag/ingest",
+        _api_url(api_base_url, "rag/ingest"),
         data=body,
         method="POST",
         headers={

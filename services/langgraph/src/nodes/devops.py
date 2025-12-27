@@ -8,11 +8,11 @@ import os
 import subprocess
 import tempfile
 
-import httpx
 from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from src.clients.api import api_client
 
 from .base import FunctionalNode, log_node_execution
 
@@ -27,7 +27,6 @@ async def create_service_deployment_record(
     deployment_info: dict,
 ) -> bool:
     """Create a service deployment record via API."""
-    api_url = os.getenv("API_URL", "http://api:8000")
     payload = {
         "project_id": project_id,
         "service_name": service_name,
@@ -38,19 +37,9 @@ async def create_service_deployment_record(
     }
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{api_url}/api/service-deployments/", json=payload)
-            if resp.status_code == httpx.codes.CREATED:
-                logger.info("service_deployment_record_created", service_name=service_name)
-                return True
-            else:
-                logger.error(
-                    "service_deployment_record_failed",
-                    service_name=service_name,
-                    status_code=resp.status_code,
-                    response=resp.text[:200],
-                )
-                return False
+        await api_client.create_service_deployment(payload)
+        logger.info("service_deployment_record_created", service_name=service_name)
+        return True
     except Exception as e:
         logger.error(
             "service_deployment_record_error",

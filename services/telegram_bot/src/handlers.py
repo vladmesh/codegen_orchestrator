@@ -10,7 +10,7 @@ import structlog
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from .config import get_settings
+from .clients.api import api_client
 from .keyboards import (
     ACTION_BACK,
     ACTION_DEPLOY,
@@ -46,24 +46,14 @@ def escape_markdown(text: str) -> str:
 
 async def _api_get(path: str, telegram_id: int | None = None) -> dict | list | None:
     """Make GET request to API service."""
-    settings = get_settings()
-    # Ensure path starts with /
-    if not path.startswith("/"):
-        path = f"/{path}"
-
-    url = f"{settings.api_url}{path}"
-
     headers = {}
     if telegram_id:
         headers["X-Telegram-ID"] = str(telegram_id)
 
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+        return await api_client.get_json(path, headers=headers)
     except httpx.HTTPError as e:
-        logger.error("api_request_failed", url=url, error=str(e))
+        logger.error("api_request_failed", path=path, error=str(e))
         return None
 
 

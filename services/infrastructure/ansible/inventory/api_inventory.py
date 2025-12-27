@@ -7,17 +7,21 @@ import urllib.request
 
 
 def get_inventory():
-    api_url = os.environ.get("ORCHESTRATOR_API_URL")
+    api_url = os.environ.get("ORCHESTRATOR_API_BASE_URL") or os.environ.get("ORCHESTRATOR_API_URL")
     api_token = os.environ.get("ORCHESTRATOR_API_TOKEN")
 
     if not api_url:
         # Fallback for empty inventory to avoid breaking if var not set
         return {"_meta": {"hostvars": {}}}
 
+    base_url = api_url.rstrip("/")
+    if base_url.endswith("/api"):
+        raise RuntimeError("ORCHESTRATOR_API_BASE_URL must not include /api")
+
     headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
 
     try:
-        req = urllib.request.Request(f"{api_url}/api/servers/", headers=headers)  # noqa: S310
+        req = urllib.request.Request(f"{base_url}/api/servers/", headers=headers)  # noqa: S310
         with urllib.request.urlopen(req) as response:  # noqa: S310
             data = json.loads(response.read().decode())
     except urllib.error.URLError as e:

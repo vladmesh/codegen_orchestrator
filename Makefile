@@ -223,6 +223,6 @@ seed:
 	fi
 	@echo "🤖 Seeding agent configurations..."
 	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_agent_configs.py \
-		--api-url http://localhost:8000 \
+		--api-base-url http://localhost:8000 \
 		--configs-path /app/scripts/agent_configs.yaml \
 		--cli-configs-path /app/scripts/cli_agent_configs.yaml || echo "  ⚠️  Agent config seeding failed (API may not be ready)"

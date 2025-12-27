@@ -21,7 +21,6 @@ logger = structlog.get_logger(__name__)
 
 # Get validated settings
 _settings = get_settings()
-API_URL = _settings.api_url
 CACHE_TTL_SECONDS = _settings.agent_config_cache_ttl
 
 
@@ -77,27 +76,26 @@ class AgentConfigCache:
     async def _fetch_from_api(self, agent_id: str) -> dict[str, Any]:
         """Fetch agent config from API. Raises on failure."""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{API_URL}/agent-configs/{agent_id}")
+            from src.clients.api import api_client
 
-                if resp.status_code == httpx.codes.OK:
-                    logger.info("config_fetched", agent_id=agent_id)
-                    return resp.json()
-                elif resp.status_code == httpx.codes.NOT_FOUND:
-                    raise AgentConfigError(
-                        f"Agent config '{agent_id}' not found in database. "
-                        f"Run 'make seed' to populate agent configs."
-                    )
-                else:
-                    raise AgentConfigError(
-                        f"Failed to fetch agent config '{agent_id}': "
-                        f"HTTP {resp.status_code} - {resp.text}"
-                    )
-        except httpx.RequestError as e:
+            config = await api_client.get_agent_config(agent_id)
+            logger.info("config_fetched", agent_id=agent_id)
+            return config
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == httpx.codes.NOT_FOUND:
+                raise AgentConfigError(
+                    f"Agent config '{agent_id}' not found in database. "
+                    f"Run 'make seed' to populate agent configs."
+                ) from exc
             raise AgentConfigError(
-                f"Cannot connect to API to fetch agent config '{agent_id}': {e}. "
+                f"Failed to fetch agent config '{agent_id}': "
+                f"HTTP {exc.response.status_code} - {exc.response.text}"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise AgentConfigError(
+                f"Cannot connect to API to fetch agent config '{agent_id}': {exc}. "
                 f"Ensure API service is running."
-            ) from e
+            ) from exc
 
     def invalidate(self, agent_id: str | None = None) -> None:
         """Invalidate cache.

@@ -19,11 +19,15 @@ logger = structlog.get_logger(__name__)
 def _get_config():
     """Get notification config from environment."""
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    api_url = os.getenv("API_URL", os.getenv("API_BASE_URL", ""))
+    api_url = os.getenv("API_BASE_URL", "")
     rate_limit = int(os.getenv("NOTIFICATION_RATE_LIMIT", "10"))
 
+    if api_url.rstrip("/").endswith("/api"):
+        logger.error("API_BASE_URL must not include /api, notify_admins disabled")
+        api_url = ""
+
     if not api_url:
-        logger.warning("API_URL not set, notify_admins will not work")
+        logger.warning("API_BASE_URL not set, notify_admins will not work")
 
     return telegram_token, api_url, rate_limit
 
@@ -120,7 +124,7 @@ async def notify_admins(message: str, level: str = "info") -> int:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{API_BASE_URL}/users", timeout=aiohttp.ClientTimeout(total=5)
+                f"{API_BASE_URL}/api/users", timeout=aiohttp.ClientTimeout(total=5)
             ) as resp:
                 if resp.status != HTTPStatus.OK:
                     logger.error("fetch_users_failed", status=resp.status)
