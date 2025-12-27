@@ -36,7 +36,7 @@ async def search_project_context(
             "query": query,
             "project_id": project_id,
             "user_id": user_id,
-            "scope": "project",
+            "scope": "public",
             "top_k": 5,
             "max_tokens": 2000,
             "min_similarity": 0.7,
