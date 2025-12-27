@@ -1,11 +1,11 @@
 """Projects router."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.models import Project
+from shared.models import Project, User
 
 from ..database import get_async_session
 from ..schemas import ProjectCreate, ProjectRead, ProjectUpdate
@@ -15,9 +15,42 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+async def _resolve_user(
+    telegram_id: int | None,
+    db: AsyncSession,
+) -> User | None:
+    """Resolve User from telegram_id."""
+    if not telegram_id:
+        return None
+    query = select(User).where(User.telegram_id == telegram_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+async def _check_project_access(
+    project: Project,
+    telegram_id: int | None,
+    db: AsyncSession,
+) -> None:
+    """Check if user has access to project. Raises 403 if denied."""
+    if not telegram_id:
+        return  # No auth header - allow (backward compat for internal calls)
+
+    user = await _resolve_user(telegram_id, db)
+
+    if user and not user.is_admin:
+        # Regular user: must be owner or project has no owner
+        if project.owner_id is not None and project.owner_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: not project owner",
+            )
+
+
 @router.post("/", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 async def create_project(
     project_in: ProjectCreate,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> Project:
     """Create a new project."""
@@ -31,11 +64,19 @@ async def create_project(
             detail="Project with this ID already exists",
         )
 
+    # Resolve owner
+    owner_id = None
+    if x_telegram_id:
+        user = await _resolve_user(x_telegram_id, db)
+        if user:
+            owner_id = user.id
+
     project = Project(
         id=project_in.id,
         name=project_in.name,
         status=project_in.status,
         config=project_in.config,
+        owner_id=owner_id,
     )
     db.add(project)
     await db.commit()
@@ -45,6 +86,7 @@ async def create_project(
         "project_created",
         project_id=project.id,
         status=project.status,
+        owner_id=owner_id,
         config_keys=list(project.config.keys()) if project.config else [],
     )
 
@@ -54,24 +96,37 @@ async def create_project(
 @router.get("/{project_id}", response_model=ProjectRead)
 async def get_project(
     project_id: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> Project:
     """Get project by ID."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db)
     return project
 
 
 @router.get("/", response_model=list[ProjectRead])
 async def list_projects(
     status: str | None = None,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> list[Project]:
     """List projects, optionally filtered by status."""
     query = select(Project)
+
+    # Filter by owner if user provided and not admin
+    if x_telegram_id:
+        user = await _resolve_user(x_telegram_id, db)
+        if user and not user.is_admin:
+            # Regular user: only their projects
+            query = query.where(Project.owner_id == user.id)
+
     if status:
         query = query.where(Project.status == status)
+
     result = await db.execute(query)
     return list(result.scalars().all())
 
@@ -80,12 +135,15 @@ async def list_projects(
 async def update_project(
     project_id: str,
     project_in: ProjectUpdate,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> Project:
     """Update project."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db)
 
     if project_in.status is not None:
         project.status = project_in.status
@@ -104,12 +162,15 @@ async def update_project(
 async def patch_project(
     project_id: str,
     project_in: ProjectUpdate,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> Project:
     """Partial update of project (PATCH method)."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db)
 
     if project_in.status is not None:
         project.status = project_in.status

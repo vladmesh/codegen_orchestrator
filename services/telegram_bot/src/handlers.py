@@ -44,7 +44,7 @@ def escape_markdown(text: str) -> str:
     return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", str(text))
 
 
-async def _api_get(path: str) -> dict | list | None:
+async def _api_get(path: str, telegram_id: int | None = None) -> dict | list | None:
     """Make GET request to API service."""
     settings = get_settings()
     # Ensure path starts with /
@@ -53,9 +53,13 @@ async def _api_get(path: str) -> dict | list | None:
 
     url = f"{settings.api_url}{path}"
 
+    headers = {}
+    if telegram_id:
+        headers["X-Telegram-ID"] = str(telegram_id)
+
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url)
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             return response.json()
     except httpx.HTTPError as e:
@@ -168,10 +172,11 @@ async def _handle_menu(query, parts: list[str]) -> None:
 async def _handle_projects(query, parts: list[str]) -> None:
     """Handle projects list callbacks."""
     action = parts[1] if len(parts) > 1 else ACTION_LIST
+    telegram_id = query.from_user.id
 
     if action == ACTION_LIST:
         # Updated endpoint to /projects
-        projects = await _api_get("/projects")
+        projects = await _api_get("/projects", telegram_id=telegram_id)
 
         if projects is None:
             await query.edit_message_text(
@@ -209,6 +214,7 @@ async def _handle_project(query, parts: list[str]) -> None:
     """Handle single project callbacks."""
     action = parts[1] if len(parts) > 1 else ""
     project_id = parts[2] if len(parts) > 2 else ""  # noqa: PLR2004
+    telegram_id = query.from_user.id
 
     if not project_id:
         await query.edit_message_text(
@@ -220,7 +226,7 @@ async def _handle_project(query, parts: list[str]) -> None:
 
     if action == ACTION_DETAILS:
         # Updated endpoint to /projects
-        project = await _api_get(f"/projects/{project_id}")
+        project = await _api_get(f"/projects/{project_id}", telegram_id=telegram_id)
 
         if project is None:
             await query.edit_message_text(
@@ -258,9 +264,10 @@ async def _handle_project(query, parts: list[str]) -> None:
 async def _handle_servers(query, parts: list[str]) -> None:
     """Handle servers list callbacks."""
     action = parts[1] if len(parts) > 1 else ACTION_LIST
+    telegram_id = query.from_user.id
 
     if action == ACTION_LIST:
-        servers = await _api_get("/servers?is_managed=true")
+        servers = await _api_get("/servers?is_managed=true", telegram_id=telegram_id)
 
         if servers is None:
             await query.edit_message_text(
