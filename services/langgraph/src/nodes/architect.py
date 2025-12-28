@@ -1,52 +1,95 @@
 """Architect agent node.
 
-Creates project structure using Factory.ai Droid in an isolated container.
-Generates high-level architecture without business logic.
+Simplified Architect that:
+1. Creates GitHub repository
+2. Selects modules from service-template (backend, tg_bot, etc.)
+3. Sets deployment hints and project complexity
+4. Passes control to Preparer (copier) and then Developer (Factory.ai)
 
 Uses LLMNode for dynamic prompt loading from database.
 """
 
 from typing import Any
 
-from langchain_core.messages import AIMessage, SystemMessage
-from langchain_core.tools import tool
+from langchain_core.messages import SystemMessage
 import structlog
 
-from shared.clients.github import GitHubAppClient
-
-from ..clients.worker_spawner import request_spawn
-from ..tools.github import create_file_in_repo, create_github_repo, get_github_token
-from .base import FactoryNode, LLMNode, log_node_execution
+from ..tools.architect_tools import (
+    customize_task_instructions,
+    select_modules,
+    set_deployment_hints,
+    set_project_complexity,
+)
+from ..tools.github import create_github_repo, get_github_token
+from .base import LLMNode, log_node_execution
 
 logger = structlog.get_logger()
 
 
-@tool
-def set_project_complexity(complexity: str):
-    """Set the project complexity level.
-
-    Args:
-        complexity: "simple" or "complex"
-    """
-    return complexity
-
-
-# Tools available to architect
-tools = [create_github_repo, create_file_in_repo, get_github_token, set_project_complexity]
+# Tools available to architect (simplified - no more Factory.ai spawning)
+tools = [
+    create_github_repo,
+    get_github_token,
+    select_modules,
+    set_deployment_hints,
+    customize_task_instructions,
+    set_project_complexity,
+]
 
 
 class ArchitectNode(LLMNode):
-    """Architect agent that creates project structure."""
+    """Architect agent that creates project structure.
+
+    Simplified to only handle:
+    - Repository creation
+    - Module selection
+    - Deployment hints
+    - Project complexity
+
+    The actual code scaffolding is done by the Preparer node.
+    """
 
     def handle_tool_result(self, tool_name: str, result: Any, state: dict) -> dict[str, Any]:
-        """Handle repo creation and complexity setting."""
+        """Handle tool results and update state accordingly."""
         updates = {}
 
         if tool_name == "create_github_repo" and result:
             updates["repo_info"] = result.model_dump() if hasattr(result, "model_dump") else result
 
-        if tool_name == "set_project_complexity" and result:
-            updates["project_complexity"] = result
+        if tool_name == "select_modules" and result and not result.startswith("Error"):
+            # Parse modules from result string: "Selected modules: ['backend', 'tg_bot']"
+            import ast
+
+            try:
+                modules_str = result.split(": ", 1)[1]
+                modules = ast.literal_eval(modules_str)
+                updates["selected_modules"] = modules
+            except (ValueError, IndexError, SyntaxError):
+                logger.warning("failed_to_parse_modules", result=result)
+
+        if tool_name == "set_deployment_hints" and result and not result.startswith("Error"):
+            # Parse hints from result: "Deployment hints saved: {...}"
+            import ast
+
+            try:
+                hints_str = result.split(": ", 1)[1]
+                hints = ast.literal_eval(hints_str)
+                updates["deployment_hints"] = hints
+            except (ValueError, IndexError, SyntaxError):
+                logger.warning("failed_to_parse_hints", result=result)
+
+        if tool_name == "customize_task_instructions" and result and not result.startswith("Error"):
+            # Store the instructions from tool call args, not the confirmation message
+            # The actual instructions are in the tool call, not the result
+            pass  # Handled separately in execute_tools
+
+        if tool_name == "set_project_complexity" and result and not result.startswith("Error"):
+            # Parse complexity from result: "Project complexity set to: simple"
+            try:
+                complexity = result.split(": ", 1)[1]
+                updates["project_complexity"] = complexity
+            except (ValueError, IndexError):
+                logger.warning("failed_to_parse_complexity", result=result)
 
         return updates
 
@@ -116,137 +159,33 @@ async def execute_tools(state: dict) -> dict:
 
     Delegates to LLMNode.execute_tools which handles:
     - Tool execution with error handling
-    - State updates via handle_tool_result (repo_info, project_complexity)
+    - State updates via handle_tool_result
+
+    Special handling for customize_task_instructions to extract
+    the actual instruction text from tool call args.
     """
-    return await _node.execute_tools(state)
+    # First, extract custom_task_instructions from tool calls if present
+    messages = state.get("messages", [])
+    custom_instructions = None
+
+    if messages:
+        last_message = messages[-1]
+        if hasattr(last_message, "tool_calls"):
+            for tool_call in last_message.tool_calls:
+                if tool_call["name"] == "customize_task_instructions":
+                    custom_instructions = tool_call["args"].get("instructions", "")
+                    break
+
+    # Execute tools via LLMNode
+    result = await _node.execute_tools(state)
+
+    # Add custom_task_instructions if it was set
+    if custom_instructions:
+        result["custom_task_instructions"] = custom_instructions
+
+    return result
 
 
-class ArchitectWorkerNode(FactoryNode):
-    """CLI node that spawns Factory.ai worker for project scaffolding."""
-
-    def __init__(self):
-        super().__init__(node_id="architect.spawn_factory_worker")
-
-    @log_node_execution("architect_spawn_worker")
-    async def run(self, state: dict) -> dict:
-        """Spawn Factory.ai worker to generate project structure.
-
-        This node is called after repo is created and token is obtained.
-        It spawns a Sysbox container with Factory.ai Droid to generate code.
-        """
-        repo_info = state.get("repo_info") or {}
-        project_spec = state.get("project_spec") or {}
-        project_complexity = state.get("project_complexity", "complex")  # Default to complex
-
-        if not repo_info:
-            return {
-                "messages": [
-                    AIMessage(content="❌ No repository info found. Cannot spawn worker.")
-                ],
-                "errors": state.get("errors", []) + ["No repository info for architect worker"],
-            }
-
-        repo_full_name = repo_info.get("full_name")
-        if not repo_full_name:
-            return {
-                "messages": [AIMessage(content="❌ Repository full_name not found.")],
-                "errors": state.get("errors", []) + ["Repository full_name missing"],
-            }
-
-        # Get fresh token for the repo
-        github_client = GitHubAppClient()
-        owner, repo = repo_full_name.split("/")
-
-        try:
-            token = await github_client.get_token(owner, repo)
-        except Exception as e:
-            logger.error(
-                "github_token_failed",
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True,
-            )
-            return {
-                "messages": [AIMessage(content=f"❌ Failed to get GitHub token: {e}")],
-                "errors": state.get("errors", []) + [str(e)],
-            }
-
-        config = await self.get_config()
-        prompt_template = config["prompt_template"]
-
-        # If simple, add implementation instructions directly
-        extra_instructions = ""
-        if project_complexity == "simple":
-            extra_instructions = (
-                "5.  **Implement Business Logic (SIMPLE PROJECT)**:\n"
-                "    - Since this is a simple project, please implement the business logic "
-                "immediately.\n"
-                "    - Connect the generated API routers to your implementation.\n"
-                "    - Ensure tests pass.\n"
-                "    - THIS IS THE FINAL STEP, so make sure it works.\n"
-            )
-
-        project_name = project_spec.get("name", "project")
-        description = project_spec.get("description", "No description provided")
-        modules = project_spec.get("modules") or []
-        entry_points = project_spec.get("entry_points") or []
-
-        prompt_vars = {
-            "project_name": project_name,
-            "description": description,
-            "modules": ", ".join(modules),
-            "entry_points": ", ".join(entry_points),
-            "modules_csv": ",".join(modules or ["backend"]),
-            "extra_instructions": extra_instructions,
-            "task_instructions": "",
-        }
-
-        task_content = prompt_template.format(**prompt_vars)
-
-        model_name = config.get("model_name")
-        if not model_name:
-            raise RuntimeError(
-                "CLI agent config 'architect.spawn_factory_worker' missing model_name"
-            )
-        timeout_seconds = config.get("timeout_seconds") or 600
-
-        logger.info("spawning_factory_worker", repo=repo_full_name)
-
-        result = await request_spawn(
-            repo=repo_full_name,
-            github_token=token,
-            task_content=task_content,
-            task_title=f"Initial structure for {project_spec.get('name', 'project')}",
-            model=model_name,
-            timeout_seconds=timeout_seconds,
-        )
-
-        if result.success:
-            message = f"""✅ Project structure created successfully!
-
-Repository: {repo_info.get("html_url")}
-Commit: {result.commit_sha or "N/A"}
-
-The repository now has:
-- Domain specifications
-- Project configuration
-- Docker setup
-- CI/CD workflow
-
-Next step: Developer agent will implement business logic.
-"""
-            return {
-                "messages": [AIMessage(content=message)],
-                "architect_complete": True,
-            }
-        else:
-            return {
-                "messages": [
-                    AIMessage(content=f"❌ Factory worker failed:\n\n{result.output[-500:]}")
-                ],
-                "errors": state.get("errors", []) + ["Factory worker failed"],
-            }
-
-
-_worker_node = ArchitectWorkerNode()
-spawn_factory_worker = _worker_node.run
+# Note: ArchitectWorkerNode (spawn_factory_worker) has been removed.
+# Project scaffolding is now handled by the Preparer node which runs copier
+# and writes TASK.md/AGENTS.md. See nodes/preparer.py.

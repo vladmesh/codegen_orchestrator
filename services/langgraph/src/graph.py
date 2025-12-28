@@ -79,6 +79,20 @@ class OrchestratorState(TypedDict):
     architect_complete: bool
 
     # ============================================================
+    # PREPARER STATE (from Architect node)
+    # ============================================================
+    # Modules selected by Architect (e.g., ["backend", "tg_bot"])
+    selected_modules: list[str] | None
+    # Deployment configuration hints from Architect
+    deployment_hints: dict | None
+    # Custom instructions for Developer from Architect
+    custom_task_instructions: str | None
+    # Whether Preparer has run copier and committed
+    repo_prepared: bool
+    # Commit SHA from Preparer
+    preparer_commit_sha: str | None
+
+    # ============================================================
     # ENGINEERING SUBGRAPH STATE
     # Tracks Architect → Developer → Tester loop
     # ============================================================
@@ -265,6 +279,13 @@ async def run_engineering_subgraph(state: OrchestratorState) -> dict:
         "repo_info": state.get("repo_info"),
         "project_complexity": state.get("project_complexity"),
         "architect_complete": state.get("architect_complete", False),
+        # Preparer state
+        "selected_modules": state.get("selected_modules"),
+        "deployment_hints": state.get("deployment_hints"),
+        "custom_task_instructions": state.get("custom_task_instructions"),
+        "repo_prepared": state.get("repo_prepared", False),
+        "preparer_commit_sha": state.get("preparer_commit_sha"),
+        # Engineering loop state
         "engineering_status": "working",
         "review_feedback": None,
         "iteration_count": 0,
@@ -283,6 +304,13 @@ async def run_engineering_subgraph(state: OrchestratorState) -> dict:
         "repo_info": result.get("repo_info"),
         "project_complexity": result.get("project_complexity"),
         "architect_complete": result.get("architect_complete", False),
+        # Preparer state
+        "selected_modules": result.get("selected_modules"),
+        "deployment_hints": result.get("deployment_hints"),
+        "custom_task_instructions": result.get("custom_task_instructions"),
+        "repo_prepared": result.get("repo_prepared", False),
+        "preparer_commit_sha": result.get("preparer_commit_sha"),
+        # Engineering loop state
         "engineering_status": result.get("engineering_status", "idle"),
         "review_feedback": result.get("review_feedback"),
         "engineering_iterations": result.get("iteration_count", 0),
