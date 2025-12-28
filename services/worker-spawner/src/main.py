@@ -1,7 +1,7 @@
 """Worker Spawner Service.
 
 Listens to Redis for spawn requests and creates Docker containers
-for AI coding tasks (Factory.ai Droid).
+for AI coding tasks (Factory.ai Droid) and project preparation (Preparer).
 """
 
 import asyncio
@@ -24,9 +24,14 @@ from src.event_listener import wait_for_terminal_event
 
 logger = structlog.get_logger()
 
+# Coding worker channels (Factory.ai)
 SPAWN_CHANNEL = "worker:spawn"
 RESULT_CHANNEL = "worker:result"
 EVENTS_CHANNEL_PREFIX = "worker:events"
+
+# Preparer channels (lightweight container)
+PREPARER_SPAWN_CHANNEL = "preparer:spawn"
+PREPARER_RESULT_CHANNEL = "preparer:result"
 
 
 @dataclass
@@ -41,6 +46,21 @@ class SpawnRequest:
     model: str = "claude-sonnet-4-5-20250929"
     agents_content: str | None = None
     timeout_seconds: int = 600
+
+
+@dataclass
+class PreparerRequest:
+    """Request to spawn a preparer container."""
+
+    request_id: str
+    repo_url: str
+    project_name: str
+    modules: str  # comma-separated: "backend,tg_bot"
+    github_token: str
+    task_md: str = ""
+    agents_md: str = ""
+    service_template_ref: str = "main"
+    timeout_seconds: int = 120
 
 
 @dataclass
@@ -237,6 +257,175 @@ async def spawn_container(
             os.remove(cid_path)
 
 
+async def spawn_preparer_container(request: PreparerRequest) -> SpawnResult:
+    """Spawn a preparer container to prepare project structure."""
+    # Build repo URL with embedded token
+    repo_url = request.repo_url
+    if "github.com" in repo_url and request.github_token:
+        # Embed token in URL for git auth
+        repo_url = repo_url.replace(
+            "https://github.com",
+            f"https://x-access-token:{request.github_token}@github.com",
+        )
+
+    # Create temp path for cidfile
+    cid_file = tempfile.NamedTemporaryFile(delete=False)
+    cid_path = cid_file.name
+    cid_file.close()
+    os.unlink(cid_path)
+
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--cidfile",
+        cid_path,
+        "-e",
+        f"REPO_URL={repo_url}",
+        "-e",
+        f"PROJECT_NAME={request.project_name}",
+        "-e",
+        f"MODULES={request.modules}",
+        "-e",
+        f"SERVICE_TEMPLATE_REF={request.service_template_ref}",
+    ]
+
+    if request.task_md:
+        cmd.extend(["-e", f"TASK_MD={request.task_md}"])
+    if request.agents_md:
+        cmd.extend(["-e", f"AGENTS_MD={request.agents_md}"])
+
+    image_name = "preparer:latest"
+    cmd.append(image_name)
+
+    logger.info(
+        "preparer_container_creating",
+        request_id=request.request_id,
+        project_name=request.project_name,
+        modules=request.modules,
+    )
+    start_time = time.time()
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        container_id = None
+        # Wait a bit for cidfile to be created
+        await asyncio.sleep(0.5)
+        try:
+            with open(cid_path) as handle:
+                container_id = handle.read().strip() or None
+        except FileNotFoundError:
+            pass
+
+        if container_id:
+            logger.info(
+                "preparer_container_created",
+                request_id=request.request_id,
+                container_id=container_id[:12],
+            )
+
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=request.timeout_seconds)
+            output = stdout.decode() if stdout else ""
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return SpawnResult(
+                request_id=request.request_id,
+                success=False,
+                exit_code=-1,
+                output=f"Preparer timeout after {request.timeout_seconds}s",
+            )
+
+        # Parse output for commit SHA
+        commit_sha = None
+        for line in output.split("\n"):
+            if line.startswith("COMMIT_SHA="):
+                commit_sha = line.split("=", 1)[-1].strip()
+                break
+
+        success = proc.returncode == 0
+        duration = time.time() - start_time
+        logger.info(
+            "preparer_execution_complete",
+            request_id=request.request_id,
+            exit_code=proc.returncode or 0,
+            duration_sec=round(duration, 2),
+            success=success,
+            commit_sha=commit_sha,
+        )
+
+        return SpawnResult(
+            request_id=request.request_id,
+            success=success,
+            exit_code=proc.returncode or 0,
+            output=output,
+            commit_sha=commit_sha,
+        )
+
+    except Exception as e:
+        logger.error(
+            "preparer_spawn_failed",
+            request_id=request.request_id,
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
+        return SpawnResult(
+            request_id=request.request_id,
+            success=False,
+            exit_code=-1,
+            output=str(e),
+        )
+    finally:
+        if os.path.exists(cid_path):
+            os.remove(cid_path)
+
+
+async def handle_preparer_request(
+    redis_client: redis.Redis,
+    message: dict[str, Any],
+) -> None:
+    """Handle a preparer spawn request from Redis."""
+    try:
+        data = json.loads(message["data"])
+        request = PreparerRequest(**data)
+
+        logger.info(
+            "preparer_request_received",
+            request_id=request.request_id,
+            project_name=request.project_name,
+        )
+
+        result = await spawn_preparer_container(request)
+
+        # Publish result back to Redis
+        result_data = asdict(result)
+        await redis_client.publish(
+            f"{PREPARER_RESULT_CHANNEL}:{request.request_id}",
+            json.dumps(result_data),
+        )
+
+        logger.info(
+            "preparer_result_published",
+            request_id=request.request_id,
+            success=result.success,
+        )
+
+    except Exception as e:
+        logger.error(
+            "preparer_request_handling_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
+
+
 async def handle_request(
     redis_client: redis.Redis,
     message: dict[str, Any],
@@ -323,13 +512,25 @@ async def main() -> None:
     redis_client = redis.from_url(settings.redis_url)
     pubsub = redis_client.pubsub()
 
-    await pubsub.subscribe(SPAWN_CHANNEL)
-    logger.info("redis_channel_subscribed", channel=SPAWN_CHANNEL)
+    # Subscribe to both coding worker and preparer channels
+    await pubsub.subscribe(SPAWN_CHANNEL, PREPARER_SPAWN_CHANNEL)
+    logger.info(
+        "redis_channels_subscribed",
+        channels=[SPAWN_CHANNEL, PREPARER_SPAWN_CHANNEL],
+    )
 
     async for message in pubsub.listen():
         if message["type"] == "message":
-            # Handle request in background to not block listener
-            asyncio.create_task(handle_request(redis_client, message, settings.redis_url))
+            channel = message.get("channel")
+            if isinstance(channel, bytes):
+                channel = channel.decode()
+
+            if channel == PREPARER_SPAWN_CHANNEL:
+                # Handle preparer request
+                asyncio.create_task(handle_preparer_request(redis_client, message))
+            else:
+                # Handle coding worker request
+                asyncio.create_task(handle_request(redis_client, message, settings.redis_url))
 
 
 if __name__ == "__main__":

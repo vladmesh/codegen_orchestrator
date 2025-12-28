@@ -13,6 +13,15 @@ from .activation import (
     save_project_secret,
 )
 
+# Architect tools (module selection, deployment hints)
+from .architect_tools import (
+    AVAILABLE_MODULES,
+    customize_task_instructions,
+    select_modules,
+    set_deployment_hints,
+    set_project_complexity,
+)
+
 # Delegation tools
 from .delegation import delegate_to_analyst
 
@@ -91,4 +100,10 @@ __all__ = [
     # RAG
     "search_project_context",
     "search_user_context",
+    # Architect tools
+    "AVAILABLE_MODULES",
+    "select_modules",
+    "set_deployment_hints",
+    "customize_task_instructions",
+    "set_project_complexity",
 ]
