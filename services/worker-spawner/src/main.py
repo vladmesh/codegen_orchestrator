@@ -106,9 +106,11 @@ async def spawn_container(
         )
 
     # Build docker run command
+    # Create temp path for cidfile (docker requires non-existent file)
     cid_file = tempfile.NamedTemporaryFile(delete=False)
     cid_path = cid_file.name
     cid_file.close()
+    os.unlink(cid_path)  # Remove file - docker will create it
 
     cmd = [
         "docker",

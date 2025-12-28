@@ -44,7 +44,7 @@ class ZavhozNode(LLMNode):
             # Convert Pydantic model to dict if needed
             result_dict = result.model_dump() if hasattr(result, "model_dump") else result
 
-            allocated_resources = state.get("allocated_resources", {}).copy()
+            allocated_resources = (state.get("allocated_resources") or {}).copy()
             port_key = f"{result_dict.get('server_handle')}:{result_dict.get('port')}"
             allocated_resources[port_key] = result_dict
             return {"allocated_resources": allocated_resources}
@@ -63,7 +63,7 @@ async def run(state: dict) -> dict:
     """
 
     messages = state.get("messages", [])
-    project_spec = state.get("project_spec", {})
+    project_spec = state.get("project_spec") or {}
     po_intent = state.get("po_intent", "")
     current_project = state.get("current_project", "")
 

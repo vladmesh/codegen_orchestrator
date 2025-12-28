@@ -62,8 +62,18 @@ async def run(state: dict) -> dict:
     Creates GitHub repo and prepares for code generation.
     """
     messages = state.get("messages", [])
-    project_spec = state.get("project_spec", {})
-    allocated_resources = state.get("allocated_resources", {})
+    project_spec = state.get("project_spec") or {}
+    allocated_resources = state.get("allocated_resources") or {}
+
+    # Debug: log what project_spec we received
+    logger.info(
+        "architect_run_project_spec",
+        project_spec_exists=bool(project_spec),
+        project_spec_type=type(state.get("project_spec")).__name__,
+        project_spec_name=project_spec.get("name") if project_spec else None,
+        project_spec_keys=list(project_spec.keys()) if project_spec else None,
+        raw_project_spec=state.get("project_spec"),
+    )
 
     # Build context for LLM
     project_info = f"""
@@ -124,8 +134,8 @@ class ArchitectWorkerNode(FactoryNode):
         This node is called after repo is created and token is obtained.
         It spawns a Sysbox container with Factory.ai Droid to generate code.
         """
-        repo_info = state.get("repo_info", {})
-        project_spec = state.get("project_spec", {})
+        repo_info = state.get("repo_info") or {}
+        project_spec = state.get("project_spec") or {}
         project_complexity = state.get("project_complexity", "complex")  # Default to complex
 
         if not repo_info:

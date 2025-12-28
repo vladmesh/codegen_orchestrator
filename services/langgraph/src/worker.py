@@ -70,8 +70,8 @@ async def _resolve_user_id(telegram_id: int) -> int | None:
 async def _get_conversation_context(user_id: int) -> str | None:
     """Fetch recent conversation summaries for context enrichment."""
     try:
-        response = await api_client.get(f"rag/summaries?user_id={user_id}&limit=3")
-        summaries = response.json()
+        # api_client.get() already returns parsed JSON (list or dict)
+        summaries = await api_client.get(f"rag/summaries?user_id={user_id}&limit=3")
         if summaries:
             return "\n\n".join(s["summary_text"] for s in summaries)
     except Exception as e:

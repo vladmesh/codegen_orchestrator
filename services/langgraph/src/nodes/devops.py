@@ -65,9 +65,9 @@ class DevOpsNode(FunctionalNode):
         3. Run Ansible playbook to deploy.
         4. Return status.
         """
-        repo_info = state.get("repo_info", {})
-        project_spec = state.get("project_spec", {})
-        allocated_resources = state.get("allocated_resources", {})
+        repo_info = state.get("repo_info") or {}
+        project_spec = state.get("project_spec") or {}
+        allocated_resources = state.get("allocated_resources") or {}
 
         if not repo_info:
             return {

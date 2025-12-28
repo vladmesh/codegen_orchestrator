@@ -14,6 +14,18 @@ from ..nodes import architect
 from ..nodes.base import FunctionalNode
 from ..nodes.developer import developer_node
 
+
+def _merge_errors(left: list[str], right: list[str]) -> list[str]:
+    """Reducer that merges error lists without duplicates."""
+    seen = set(left)
+    result = list(left)
+    for err in right:
+        if err not in seen:
+            result.append(err)
+            seen.add(err)
+    return result
+
+
 # Maximum iterations before escalating to PO
 MAX_ITERATIONS = 3
 
@@ -44,8 +56,8 @@ class EngineeringState(TypedDict):
     needs_human_approval: bool
     human_approval_reason: str | None
 
-    # Errors
-    errors: list[str]
+    # Errors (merges without duplicates)
+    errors: Annotated[list[str], _merge_errors]
 
 
 def route_after_architect(state: EngineeringState) -> str:

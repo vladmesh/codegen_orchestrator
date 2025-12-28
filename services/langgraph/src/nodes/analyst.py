@@ -25,10 +25,28 @@ class AnalystNode(LLMNode):
 
     def handle_tool_result(self, tool_name: str, result: Any, state: dict) -> dict[str, Any]:
         """Handle create_project result to update state."""
+        import structlog
+
+        logger = structlog.get_logger()
+
         if tool_name == "create_project" and result:
+            # result is ProjectCreateResult (Pydantic model), access via attributes
+            config = result.config if hasattr(result, "config") else {}
+
+            # Debug: log what we're setting
+            logger.info(
+                "analyst_setting_project_spec",
+                result_id=result.id if hasattr(result, "id") else None,
+                result_name=result.name if hasattr(result, "name") else None,
+                config_type=type(config).__name__,
+                config_name=config.get("name") if isinstance(config, dict) else None,
+                config_keys=list(config.keys()) if isinstance(config, dict) else None,
+                full_config=config,
+            )
+
             return {
-                "current_project": result.get("id"),
-                "project_spec": result.get("config", {}),
+                "current_project": result.id,
+                "project_spec": config,
             }
         return {}
 

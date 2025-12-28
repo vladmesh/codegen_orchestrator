@@ -20,7 +20,7 @@ from .clients.api import api_client
 from .config import get_settings
 from .handlers import handle_callback_query
 from .keyboards import main_menu_keyboard
-from .middleware import auth_middleware
+from .middleware import auth_middleware, is_admin
 
 logger = structlog.get_logger()
 
@@ -43,11 +43,12 @@ async def start(update: Update, context) -> None:
     """Handle /start command - show main menu."""
     if update.effective_user:
         await _ensure_user_registered(update.effective_user)
+    user_is_admin = is_admin(context)
     await update.message.reply_text(
         "🏠 **Главное меню**\n\n"
         "Привет! Я оркестратор для генерации проектов.\n\n"
         "Выберите действие или опишите проект в чате:",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=main_menu_keyboard(is_admin=user_is_admin),
         parse_mode="Markdown",
     )
 
@@ -56,9 +57,10 @@ async def menu(update: Update, context) -> None:
     """Handle /menu command - show main menu."""
     if update.effective_user:
         await _ensure_user_registered(update.effective_user)
+    user_is_admin = is_admin(context)
     await update.message.reply_text(
         "🏠 **Главное меню**\n\nВыберите действие:",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=main_menu_keyboard(is_admin=user_is_admin),
         parse_mode="Markdown",
     )
 

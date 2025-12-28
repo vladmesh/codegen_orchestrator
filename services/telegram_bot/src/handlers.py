@@ -28,6 +28,7 @@ from .keyboards import (
     projects_list_keyboard,
     servers_list_keyboard,
 )
+from .middleware import is_admin
 
 logger = structlog.get_logger()
 
@@ -124,18 +125,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     parts = data.split(":")
     prefix = parts[0]
+    user_is_admin = is_admin(context)
 
-    logger.info("callback_received", data=data, prefix=prefix)
+    logger.info("callback_received", data=data, prefix=prefix, is_admin=user_is_admin)
 
     try:
         if prefix == PREFIX_MENU:
-            await _handle_menu(query, parts)
+            await _handle_menu(query, parts, user_is_admin)
         elif prefix == PREFIX_PROJECTS:
             await _handle_projects(query, parts)
         elif prefix == PREFIX_PROJECT:
             await _handle_project(query, parts)
         elif prefix == PREFIX_SERVERS:
-            await _handle_servers(query, parts)
+            await _handle_servers(query, parts, user_is_admin)
         else:
             logger.warning("unknown_callback_prefix", prefix=prefix, data=data)
     except Exception as e:
@@ -147,14 +149,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
 
-async def _handle_menu(query, parts: list[str]) -> None:
+async def _handle_menu(query, parts: list[str], user_is_admin: bool = False) -> None:
     """Handle menu callbacks."""
     action = parts[1] if len(parts) > 1 else ACTION_BACK
 
     if action == ACTION_BACK:
         await query.edit_message_text(
             "🏠 *Главное меню*\n\nВыберите действие:",
-            reply_markup=main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(is_admin=user_is_admin),
             parse_mode="MarkdownV2",
         )
 
@@ -251,8 +253,25 @@ async def _handle_project(query, parts: list[str]) -> None:
         )
 
 
-async def _handle_servers(query, parts: list[str]) -> None:
-    """Handle servers list callbacks."""
+async def _handle_servers(query, parts: list[str], user_is_admin: bool = False) -> None:
+    """Handle servers list callbacks.
+
+    Admin-only: regular users cannot access server list.
+    """
+    # Permission check: only admins can view servers
+    if not user_is_admin:
+        logger.warning(
+            "unauthorized_servers_access",
+            telegram_id=query.from_user.id,
+            username=query.from_user.username,
+        )
+        await query.edit_message_text(
+            "🚫 *Доступ запрещён*\n\nПросмотр серверов доступен только администраторам\\.",
+            reply_markup=back_to_menu_keyboard(),
+            parse_mode="MarkdownV2",
+        )
+        return
+
     action = parts[1] if len(parts) > 1 else ACTION_LIST
     telegram_id = query.from_user.id
 

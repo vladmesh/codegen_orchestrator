@@ -1,6 +1,6 @@
 # MVP Gap Analysis & Critical Roadmap
 
-**Last Updated:** 2025-01-27
+**Last Updated:** 2025-12-28
 
 ## Executive Summary
 
@@ -13,35 +13,26 @@ Codegen Orchestrator имеет рабочий прототип "Happy Path", с
 
 ## 1. 🚨 Critical Blockers (Must Fix)
 
-### 1.1 Resilience & State Management ❌
-- **Problem**: `services/langgraph/src/graph.py:387` использует `MemorySaver`
-- **Impact**: Рестарт контейнера `langgraph` уничтожает ВСЕ conversation threads и состояния процессов
-- **Location**: `graph.py:387-388`
-- **Fix**: Интегрировать `langgraph-checkpoint-postgres` для персистенции в PostgreSQL
+_All critical blockers resolved._
 
-### 1.2 Worker Image Build ⚠️
-- **Problem**: `coding-worker:latest` не собирается автоматически через docker-compose
-- **Impact**: На чистой машине worker spawning падает
-- **Location**: `services/coding-worker/Dockerfile` (существует, но не в compose)
-- **Fix**: Добавить в Makefile команду `build-worker` или документировать manual build
+## 1.5 Previously Critical (Now Resolved)
+
+### 1.1 Worker Image Build ✅ RESOLVED
+- **Was**: `coding-worker:latest` не собирался автоматически
+- **Status**: FIXED — добавлено в `make build` и отдельный `make build-coding-worker`
+- **Location**: `Makefile:73-78`
 
 ---
 
 ## 2. 🔐 Security & Secrets
 
-### 2.1 Telegram Access Control ❌
-- **Problem**: Бот принимает сообщения от ЛЮБОГО пользователя без whitelist
-- **Impact**: Неавторизованный доступ к ресурсам и проектам
-- **Location**: `services/telegram_bot/src/main.py`
-- **Fix**: Добавить `ALLOWED_USER_IDS` middleware
-
-### 2.2 Secret Management ❌
+### 2.1 Secret Management ❌
 - **Problem**: Секреты хранятся в plaintext с TODO комментариями
 - **Location**: `services/api/src/routers/api_keys.py:36-37, 72-73`
 - **Evidence**: `# TODO: Add real encryption here` + `encrypted_value = key_value`
 - **Fix**: Реализовать SOPS/AGE или database-level encryption
 
-### 2.3 API Authentication ❌
+### 2.2 API Authentication ❌
 - **Problem**: Нет Auth/ACL на API endpoints
 - **Impact**: Полагается только на network isolation
 - **Fix**: Добавить authentication middleware
@@ -108,27 +99,38 @@ Codegen Orchestrator имеет рабочий прототип "Happy Path", с
 - **Status**: FIXED — полностью реализован с Ansible integration
 - **Location**: `services/langgraph/src/nodes/devops.py` (251 lines)
 
+### State Management / MemorySaver ✅
+- **Was**: "MemorySaver теряет состояние при рестарте"
+- **Status**: FIXED — реализовано ручное хранение сообщений в PostgreSQL через RAG
+- **Note**: Решено использовать custom persistence вместо langgraph-checkpoint-postgres
+
+### Telegram Access Control ✅
+- **Was**: "Middleware при пустом whitelist пропускает всех (fail-open)"
+- **Status**: FIXED — реализована двухуровневая авторизация:
+  1. Админы (из `ADMIN_TELEGRAM_IDS` env) → полный доступ
+  2. Пользователи из БД (созданные админом) → базовый доступ
+  3. Остальные → блокировка (fail-closed)
+- **Features**: Серверы и чужие проекты скрыты для обычных пользователей
+- **Location**: `services/telegram_bot/src/middleware.py`, `handlers.py`, `keyboards.py`
+
 ---
 
 ## Recommended Roadmap
 
-### Phase 1: Stabilization (Critical)
+### Phase 1: Security (Critical)
 | Priority | Task | Effort |
 |----------|------|--------|
-| P1 | Implement Postgres Checkpointer (1.1) | 2-4h |
 | P1 | Add Redis locks to Scheduler (3.1) | 2h |
-| P2 | Document/automate coding-worker build (1.2) | 30min |
+| P1 | API authentication middleware (2.2) | 2-4h |
+| P1 | Implement secret encryption (2.1) | 4h |
 
-### Phase 2: Security
+### Phase 2: Stabilization
 | Priority | Task | Effort |
 |----------|------|--------|
-| P0 | Telegram user whitelist (2.1) | 1h |
-| P1 | API authentication middleware (2.3) | 2-4h |
-| P1 | Implement secret encryption (2.2) | 4h |
+| P1 | Update Ansible for full .env (4.1, 4.2) | 2h |
 
 ### Phase 3: Operations
 | Priority | Task | Effort |
 |----------|------|--------|
-| P1 | Update Ansible for full .env (4.1, 4.2) | 2h |
 | P2 | Add observability stack (5.1) | 4h |
 | P2 | Update documentation (5.2) | 1h |

@@ -32,6 +32,7 @@ async def create_project(
     project_id = str(uuid.uuid4())[:8]
 
     config_payload = {
+        "name": name,  # Include name for downstream nodes (architect, etc.)
         "description": description,
         "modules": modules,
         "entry_points": entry_points,

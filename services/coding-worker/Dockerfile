@@ -1,7 +1,7 @@
 # Coding Worker Container
 # Simple container with Factory.ai Droid CLI
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Copier, Jinja2, and Redis client
-RUN pip3 install --no-cache-dir copier jinja2 redis
+RUN pip3 install --no-cache-dir --break-system-packages copier jinja2 redis
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

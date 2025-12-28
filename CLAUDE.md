@@ -14,7 +14,8 @@ Multi-agent orchestrator using LangGraph for automated code generation and deplo
 # Development
 make up                    # Start all services
 make down                  # Stop services
-make build                 # Build Docker images
+make build                 # Build all Docker images (including coding-worker)
+make build-coding-worker   # Build only coding-worker image
 make migrate               # Run database migrations
 make makemigrations MSG='description'  # Create new migration
 make seed                  # Seed database with API keys

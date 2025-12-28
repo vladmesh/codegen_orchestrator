@@ -1,6 +1,6 @@
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -17,13 +17,13 @@ TEST_USER_ID = 123
 @pytest.mark.asyncio
 async def test_get_conversation_context_returns_summaries():
     with patch("src.worker.api_client") as mock_client:
-        # Mock successful response
-        mock_response = MagicMock()
-        mock_response.json.return_value = [
-            {"summary_text": "Summary 1"},
-            {"summary_text": "Summary 2"},
-        ]
-        mock_client.get = AsyncMock(return_value=mock_response)
+        # api_client.get() returns parsed JSON directly, not a response object
+        mock_client.get = AsyncMock(
+            return_value=[
+                {"summary_text": "Summary 1"},
+                {"summary_text": "Summary 2"},
+            ]
+        )
 
         context = await _get_conversation_context(user_id=TEST_USER_ID)
 

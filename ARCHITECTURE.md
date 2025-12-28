@@ -103,7 +103,7 @@ class OrchestratorState(TypedDict):
 
 Docker-контейнер с Factory.ai Droid CLI для кодогенерации.
 
-**Образ:** `coding-worker:latest` (Ubuntu 22.04 + Factory CLI + GitHub CLI)
+**Образ:** `coding-worker:latest` (Ubuntu 24.04 + Factory CLI + GitHub CLI)
 
 **Flow:**
 1. `git clone` репозитория

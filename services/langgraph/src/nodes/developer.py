@@ -54,7 +54,7 @@ class DeveloperNode(BaseAgentNode):
         Returns:
             Updated state with worker spawn result
         """
-        repo_info = state.get("repo_info", {})
+        repo_info = state.get("repo_info") or {}
         project_spec = state.get("project_spec") or {}
 
         if not repo_info:

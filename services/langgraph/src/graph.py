@@ -12,6 +12,22 @@ from .nodes import analyst, devops, product_owner, provisioner, zavhoz
 from .subgraphs.engineering import create_engineering_subgraph
 
 
+def _last_value(left: str, right: str) -> str:
+    """Reducer that keeps the last (rightmost) value for concurrent updates."""
+    return right
+
+
+def _merge_errors(left: list[str], right: list[str]) -> list[str]:
+    """Reducer that merges error lists without duplicates."""
+    seen = set(left)
+    result = list(left)
+    for err in right:
+        if err not in seen:
+            result.append(err)
+            seen.add(err)
+    return result
+
+
 class OrchestratorState(TypedDict):
     """Global state for the orchestrator.
 
@@ -104,10 +120,10 @@ class OrchestratorState(TypedDict):
     # ============================================================
     # STATUS & RESULTS
     # ============================================================
-    # Current active agent name
-    current_agent: str
-    # List of accumulated errors
-    errors: list[str]
+    # Current active agent name (uses last-value reducer for parallel updates)
+    current_agent: Annotated[str, _last_value]
+    # List of accumulated errors (merges without duplicates)
+    errors: Annotated[list[str], _merge_errors]
     # Deployed application URL (e.g., "http://1.2.3.4:8080")
     deployed_url: str | None
 
@@ -223,6 +239,21 @@ async def run_engineering_subgraph(state: OrchestratorState) -> dict:
     This node invokes the compiled engineering subgraph and
     propagates its final state back.
     """
+    import structlog
+
+    logger = structlog.get_logger()
+
+    # Debug: log what state we received
+    project_spec = state.get("project_spec")
+    logger.info(
+        "engineering_subgraph_starting",
+        current_project=state.get("current_project"),
+        project_spec_exists=project_spec is not None,
+        project_spec_type=type(project_spec).__name__ if project_spec else None,
+        project_spec_name=project_spec.get("name") if isinstance(project_spec, dict) else None,
+        project_spec_keys=list(project_spec.keys()) if isinstance(project_spec, dict) else None,
+    )
+
     engineering_graph = create_engineering_subgraph()
 
     # Prepare initial state for the subgraph
@@ -271,6 +302,10 @@ def route_after_analyst(state: OrchestratorState) -> str | list[Send]:
     - If project was created -> dispatch Zavhoz + Engineering in parallel
     - Otherwise -> END (waiting for user input)
     """
+    import structlog
+
+    logger = structlog.get_logger()
+
     messages = state.get("messages", [])
     if not messages:
         return END
@@ -283,9 +318,24 @@ def route_after_analyst(state: OrchestratorState) -> str | list[Send]:
 
     # If project was created, dispatch resources + engineering in parallel
     if state.get("current_project"):
+        # Debug: log the state before dispatching
+        project_spec = state.get("project_spec")
+        logger.info(
+            "route_after_analyst_dispatching",
+            current_project=state.get("current_project"),
+            project_spec_exists=project_spec is not None,
+            project_spec_type=type(project_spec).__name__ if project_spec else None,
+            project_spec_name=project_spec.get("name") if isinstance(project_spec, dict) else None,
+        )
+        # Explicitly pass project_spec to ensure it's available in subgraph
+        # This works around potential state propagation issues with Send()
+        engineering_state = {
+            "project_spec": project_spec,
+            "current_project": state.get("current_project"),
+        }
         return [
             Send("zavhoz", {}),
-            Send("engineering", {}),
+            Send("engineering", engineering_state),
         ]
 
     # Otherwise END - LLM responded with a question, wait for user

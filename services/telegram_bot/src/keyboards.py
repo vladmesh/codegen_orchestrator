@@ -17,8 +17,12 @@ ACTION_DEPLOY = "deploy"
 ACTION_MAINTENANCE = "maintenance"
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Build main menu keyboard."""
+def main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
+    """Build main menu keyboard.
+
+    Args:
+        is_admin: If True, show admin-only options (servers list).
+    """
     keyboard = [
         [
             InlineKeyboardButton(
@@ -26,12 +30,18 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             )
         ],
         [InlineKeyboardButton("➕ Новый проект", callback_data=f"{PREFIX_PROJECTS}:{ACTION_NEW}")],
-        [
-            InlineKeyboardButton(
-                "🖥️ Список серверов", callback_data=f"{PREFIX_SERVERS}:{ACTION_LIST}"
-            )
-        ],
     ]
+
+    # Admin-only: servers list
+    if is_admin:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "🖥️ Список серверов", callback_data=f"{PREFIX_SERVERS}:{ACTION_LIST}"
+                )
+            ]
+        )
+
     return InlineKeyboardMarkup(keyboard)
 
 
