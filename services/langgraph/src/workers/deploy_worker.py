@@ -17,7 +17,7 @@ from shared.queues import DEPLOY_QUEUE, WORKER_GROUP, ensure_consumer_groups
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
-from ..nodes.devops import devops_node
+from ..subgraphs.devops import create_devops_subgraph
 
 logger = structlog.get_logger(__name__)
 
@@ -98,8 +98,39 @@ async def process_deploy_job(job_data: dict) -> dict:
                     "server_ip"
                 ] = server.get("public_ip")
 
-        # Run DevOps node
-        result = await devops_node.run(state)
+        # Run DevOps subgraph
+        devops_subgraph = create_devops_subgraph()
+
+        # Prepare subgraph input
+        subgraph_input = {
+            "project_id": project_id,
+            "project_spec": project,
+            "repo_info": {
+                "full_name": project.get("repository_url", "")
+                .replace("https://github.com/", "")
+                .rstrip(".git"),
+                "html_url": project.get("repository_url"),
+            },
+            "allocated_resources": {
+                f"{allocation['server_handle']}:{allocation['port']}": {
+                    "port": allocation["port"],
+                    "server_handle": allocation["server_handle"],
+                    "server_ip": allocation.get("server_ip"),
+                }
+            },
+            "provided_secrets": job_data.get("provided_secrets", {}),
+            # Initialize empty fields
+            "messages": [],
+            "env_variables": [],
+            "env_analysis": {},
+            "resolved_secrets": {},
+            "missing_user_secrets": [],
+            "deployment_result": None,
+            "deployed_url": None,
+            "errors": [],
+        }
+
+        result = await devops_subgraph.ainvoke(subgraph_input)
 
         if result.get("deployed_url"):
             logger.info(
@@ -110,6 +141,15 @@ async def process_deploy_job(job_data: dict) -> dict:
             return {
                 "status": "success",
                 "deployed_url": result["deployed_url"],
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
+        elif result.get("missing_user_secrets"):
+            missing = result.get("missing_user_secrets")
+            logger.info("deploy_job_missing_secrets", job_id=job_id, missing=missing)
+            return {
+                "status": "failed",
+                "error": f"Missing secrets: {', '.join(missing)}",
+                "missing_secrets": missing,
                 "finished_at": datetime.now(UTC).isoformat(),
             }
         else:
