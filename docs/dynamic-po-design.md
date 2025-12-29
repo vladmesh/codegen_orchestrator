@@ -438,35 +438,35 @@ PO:
 ### Phase 1: Foundation
 
 **1.1. Thread ID Management**
-- [ ] Add `thread:sequence:{user_id}` key to Redis
-- [ ] Helper function `generate_thread_id(user_id) -> str`
-- [ ] Helper function `get_current_thread_id(user_id) -> str`
-- [ ] Store thread_id in POSessionState
+- [x] Add `thread:sequence:{user_id}` key to Redis
+- [x] Helper function `generate_thread_id(user_id) -> str`
+- [x] Helper function `get_current_thread_id(user_id) -> str`
+- [x] Store thread_id in POSessionState
 
 **1.2. Capability Registry**
-- [ ] Create `services/langgraph/src/capabilities/__init__.py`
-- [ ] Define CAPABILITY_REGISTRY with tool references
-- [ ] Function `get_tools_for_capabilities(capabilities: list[str]) -> list[Tool]`
-- [ ] Function `list_available_capabilities() -> dict`
+- [x] Create `services/langgraph/src/capabilities/__init__.py`
+- [x] Define CAPABILITY_REGISTRY with tool references
+- [x] Function `get_tools_for_capabilities(capabilities: list[str]) -> list[Tool]`
+- [x] Function `list_available_capabilities() -> dict`
 
 **1.3. Base Tools**
-- [ ] Implement `respond_to_user` tool
-- [ ] Implement `search_knowledge` tool (stub, connect to RAG later)
-- [ ] Implement `request_capabilities` tool
-- [ ] Implement `finish_task` tool
+- [x] Implement `respond_to_user` tool
+- [x] Implement `search_knowledge` tool (stub, connect to RAG later)
+- [x] Implement `request_capabilities` tool
+- [x] Implement `finish_task` tool
 
 ### Phase 2: Intent Parser
 
 **2.1. Parser Implementation**
-- [ ] Create `services/langgraph/src/nodes/intent_parser.py`
-- [ ] Define parser prompt with capability descriptions
-- [ ] Use gpt-4o-mini via OpenRouter
-- [ ] Structured output: `{capabilities, thread_id, task_summary}`
+- [x] Create `services/langgraph/src/nodes/intent_parser.py`
+- [x] Define parser prompt with capability descriptions
+- [x] Use gpt-4o-mini via OpenRouter
+- [x] Structured output: `{capabilities, thread_id, task_summary}`
 
 **2.2. Parser Integration**
-- [ ] Add intent_parser node to graph
-- [ ] Route: START → intent_parser → product_owner
-- [ ] Pass parsed capabilities and thread_id to PO state
+- [x] Add intent_parser node to graph
+- [x] Route: START → intent_parser → product_owner
+- [x] Pass parsed capabilities and thread_id to PO state
 
 ### Phase 3: Dynamic ProductOwner
 
