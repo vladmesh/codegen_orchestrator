@@ -4,6 +4,7 @@ Orchestrates the deployment of the application using Ansible.
 Runs after the Developer agent/worker has completed implementation.
 """
 
+import json
 import os
 import subprocess
 import tempfile
@@ -44,6 +45,70 @@ async def create_service_deployment_record(
         logger.error(
             "service_deployment_record_error",
             service_name=service_name,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        return False
+
+
+# SSH key path for deployment
+SSH_KEY_PATH = "/root/.ssh/id_ed25519"
+
+
+async def setup_ci_secrets(
+    github_client: GitHubAppClient,
+    owner: str,
+    repo: str,
+    server_ip: str,
+    project_name: str,
+) -> bool:
+    """Configure GitHub Actions secrets for CI/CD deployment.
+
+    Sets the following secrets:
+    - DEPLOY_HOST: Server IP address
+    - DEPLOY_USER: SSH user (root)
+    - DEPLOY_SSH_KEY: SSH private key
+    - DEPLOY_PROJECT_PATH: Path on server
+    - DEPLOY_COMPOSE_FILES: Compose files to use
+
+    Returns:
+        True if all secrets were set successfully, False otherwise.
+    """
+    # Read SSH private key from mounted volume
+    if not os.path.exists(SSH_KEY_PATH):
+        logger.warning("ssh_key_not_found", path=SSH_KEY_PATH)
+        return False
+
+    try:
+        with open(SSH_KEY_PATH) as f:
+            ssh_key = f.read()
+    except Exception as e:
+        logger.error("ssh_key_read_failed", error=str(e))
+        return False
+
+    secrets = {
+        "DEPLOY_HOST": server_ip,
+        "DEPLOY_USER": "root",
+        "DEPLOY_SSH_KEY": ssh_key,
+        "DEPLOY_PROJECT_PATH": f"/opt/services/{project_name}",
+        "DEPLOY_COMPOSE_FILES": "infra/compose.base.yml infra/compose.prod.yml",
+    }
+
+    try:
+        count = await github_client.set_repository_secrets(owner, repo, secrets)
+        logger.info(
+            "ci_secrets_configured",
+            owner=owner,
+            repo=repo,
+            secrets_count=count,
+            total=len(secrets),
+        )
+        return count == len(secrets)
+    except Exception as e:
+        logger.error(
+            "ci_secrets_setup_failed",
+            owner=owner,
+            repo=repo,
             error=str(e),
             error_type=type(e).__name__,
         )
@@ -121,17 +186,6 @@ class DevOpsNode(FunctionalNode):
 
         # Prepare Ansible Playbook execution
         playbook_path = "/app/services/infrastructure/ansible/playbooks/deploy_project.yml"
-        # Note: In the container, paths will depend on how we mount/copy things.
-        # The Dockerfile copies `services/langgraph/src` to `./src`.
-        # But where are the playbooks?
-        # We might need to adjust the Dockerfile to copy ansible playbooks too or
-        # assume they are mounted.
-        # PROD FIX: The Dockerfile should copy infrastructure if we want to run ansible from inside.
-        # Currently it assumes `services/langgraph/src` is copied.
-        # I should update Dockerfile to copy `services/infrastructure`
-        # to `/app/services/infrastructure`
-
-        # For now, let's assume the path is correct internally if we fix Dockerfile.
 
         # Construct inventory dynamically
         inventory_content = (
@@ -145,14 +199,39 @@ class DevOpsNode(FunctionalNode):
             inventory_file.write(inventory_content)
             inventory_path = inventory_file.name
 
-        extra_vars = (
-            f"project_name={project_name} "
-            f"repo_full_name={repo_full_name} "
-            f"github_token={token} "
-            f"service_port={target_port}"
-        )
+        # Build extra vars for Ansible
+        extra_vars_dict = {
+            "project_name": project_name,
+            "repo_full_name": repo_full_name,
+            "github_token": token,
+            "service_port": target_port,
+        }
 
-        cmd = ["ansible-playbook", "-i", inventory_path, playbook_path, "--extra-vars", extra_vars]
+        # Add telegram token if available (from project config secrets)
+        config = project_spec.get("config") or {}
+        secrets = config.get("secrets") or {}
+        if secrets.get("telegram_token"):
+            extra_vars_dict["telegram_token"] = secrets["telegram_token"]
+
+        # Add selected modules if available
+        if config.get("modules"):
+            modules = config["modules"]
+            if isinstance(modules, list):
+                extra_vars_dict["selected_modules"] = ",".join(modules)
+            else:
+                extra_vars_dict["selected_modules"] = modules
+
+        # Convert to JSON for safe passing of special characters in tokens
+        extra_vars_json = json.dumps(extra_vars_dict)
+
+        cmd = [
+            "ansible-playbook",
+            "-i",
+            inventory_path,
+            playbook_path,
+            "--extra-vars",
+            extra_vars_json,
+        ]
 
         logger.info(
             "deployment_start",
@@ -182,17 +261,31 @@ class DevOpsNode(FunctionalNode):
                     port=target_port,
                     deployment_info={
                         "repo_full_name": repo_full_name,
-                        "branch": "main",  # Assumption for now
-                        "deployed_at": "now",  # API handles actual timestamp
+                        "branch": "main",
+                        "project_dir": f"/opt/services/{project_name}",
+                        "compose_files": "infra/compose.base.yml infra/compose.prod.yml",
+                        "modules": extra_vars_dict.get("selected_modules", "backend"),
                     },
                 )
 
+                # Configure GitHub Actions secrets for CI/CD
+                ci_configured = await setup_ci_secrets(
+                    github_client=github_client,
+                    owner=owner,
+                    repo=repo,
+                    server_ip=target_server_ip,
+                    project_name=project_name,
+                )
+
+                ci_status = "CI/CD configured" if ci_configured else "CI/CD setup failed"
+
                 message = f"""✅ Deployment successful!
-            
+
 Project: {project_name}
 URL: {deployed_url}
 Server: {target_server_ip}
 Port: {target_port}
+{ci_status}
 """
                 return {
                     "deployed_url": deployed_url,

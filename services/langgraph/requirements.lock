@@ -22,7 +22,9 @@ certifi==2025.11.12
     #   httpx
     #   requests
 cffi==2.0.0
-    # via cryptography
+    # via
+    #   cryptography
+    #   pynacl
 charset-normalizer==3.4.4
     # via requests
 cryptography==46.0.3
@@ -124,6 +126,8 @@ pydantic-core==2.41.5
 pydantic-settings==2.12.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 pyjwt==2.10.1
+    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
+pynacl==1.6.1
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 python-dotenv==1.2.1
     # via pydantic-settings

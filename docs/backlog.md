@@ -328,6 +328,40 @@ API should be a clean CRUD layer. All background polling/monitoring should be in
 
 ---
 
+### Fix datetime serialization in worker events forwarding
+
+**Status:** TODO
+**Priority:** LOW
+
+Worker events (started, progress, completed, failed) не пересылаются в stream `orchestrator:events` из-за ошибки сериализации datetime.
+
+**Location:** `services/langgraph/src/worker.py:296`
+
+**Root cause:**
+```python
+# Текущий код
+await publish_event(f"worker.{event.event_type}", event.model_dump())
+```
+
+`WorkerEvent` содержит поле `timestamp: datetime`. При вызове `model_dump()` datetime остаётся объектом Python, а `json.dumps()` в `RedisStreamClient.publish()` не умеет его сериализовать.
+
+**Impact:**
+- Worker events не попадают в `orchestrator:events` stream
+- Мониторинг прогресса воркеров через этот stream не работает
+- Основной flow НЕ затронут — воркер работает независимо
+
+**Fix:**
+```python
+# Использовать mode="json" для автоматической конвертации datetime в ISO string
+await publish_event(f"worker.{event.event_type}", event.model_dump(mode="json"))
+```
+
+**Tasks:**
+- [ ] Заменить `event.model_dump()` на `event.model_dump(mode="json")` в `worker.py:296`
+- [ ] Проверить другие места где используется `model_dump()` перед JSON сериализацией
+
+---
+
 ## Done
 
 - **Sysbox Installation** - Installed on dev machine

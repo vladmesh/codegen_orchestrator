@@ -16,6 +16,30 @@ echo "Model: ${MODEL}"
 : "${ORCHESTRATOR_REQUEST_ID:?ORCHESTRATOR_REQUEST_ID is required}"
 : "${ORCHESTRATOR_EVENTS_CHANNEL:?ORCHESTRATOR_EVENTS_CHANNEL is required}"
 
+# Start Docker daemon (requires sysbox runtime)
+echo "=== Starting Docker daemon ==="
+dockerd > /var/log/dockerd.log 2>&1 &
+DOCKERD_PID=$!
+
+# Wait for Docker to be ready
+for i in {1..30}; do
+    if docker info > /dev/null 2>&1; then
+        echo "Docker daemon is ready"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "ERROR: Docker daemon failed to start"
+        cat /var/log/dockerd.log
+        exit 1
+    fi
+    sleep 1
+done
+
+# Initialize Docker Buildx
+echo "=== Initializing Docker Buildx ==="
+docker buildx create --use --name builder --driver docker-container || true
+docker buildx inspect --bootstrap || true
+
 WORKER_TYPE="droid"
 export WORKER_TYPE
 

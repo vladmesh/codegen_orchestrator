@@ -5,11 +5,13 @@ from typing import Annotated
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.types import Send
 from typing_extensions import TypedDict
 
-from .nodes import analyst, devops, product_owner, provisioner, zavhoz
+from .nodes import analyst, devops, intent_parser, product_owner, provisioner, zavhoz
 from .subgraphs.engineering import create_engineering_subgraph
+
+# Maximum iterations for PO agentic loop before forcing END
+MAX_PO_ITERATIONS = 20
 
 
 def _last_value(left: str, right: str) -> str:
@@ -26,6 +28,13 @@ def _merge_errors(left: list[str], right: list[str]) -> list[str]:
             result.append(err)
             seen.add(err)
     return result
+
+
+def _merge_capabilities(left: list[str] | None, right: list[str] | None) -> list[str]:
+    """Reducer that merges capability lists."""
+    left = left or []
+    right = right or []
+    return list(set(left) | set(right))
 
 
 class OrchestratorState(TypedDict):
@@ -61,6 +70,26 @@ class OrchestratorState(TypedDict):
     analyst_task: str | None
 
     # ============================================================
+    # DYNAMIC PO (Phase 2 + 3)
+    # ============================================================
+    # Thread ID for checkpointing and session tracking
+    thread_id: str | None
+    # Active capabilities loaded by intent parser
+    active_capabilities: Annotated[list[str], _merge_capabilities]
+    # Brief task summary from intent parser
+    task_summary: str | None
+    # Flag: skip intent parser (set when continuing session)
+    skip_intent_parser: bool
+    # Telegram chat ID (needed by respond_to_user tool)
+    chat_id: int | None
+    # Correlation ID for distributed tracing
+    correlation_id: str | None
+    # Phase 3: Agentic loop control
+    awaiting_user_response: bool  # Waiting for user input?
+    user_confirmed_complete: bool  # User said done (finish_task called)?
+    po_iterations: int  # Loop counter (max 20)
+
+    # ============================================================
     # ALLOCATED RESOURCES
     # Keys: "server_handle:port" or service name
     # Values: AllocatedResource schema (server_handle, server_ip, port, service_name)
@@ -77,6 +106,20 @@ class OrchestratorState(TypedDict):
     project_complexity: str | None
     # Whether Architect phase is complete
     architect_complete: bool
+
+    # ============================================================
+    # PREPARER STATE (from Architect node)
+    # ============================================================
+    # Modules selected by Architect (e.g., ["backend", "tg_bot"])
+    selected_modules: list[str] | None
+    # Deployment configuration hints from Architect
+    deployment_hints: dict | None
+    # Custom instructions for Developer from Architect
+    custom_task_instructions: str | None
+    # Whether Preparer has run copier and committed
+    repo_prepared: bool
+    # Commit SHA from Preparer
+    preparer_commit_sha: str | None
 
     # ============================================================
     # ENGINEERING SUBGRAPH STATE
@@ -128,17 +171,18 @@ class OrchestratorState(TypedDict):
     deployed_url: str | None
 
 
-# route_after_brainstorm removed
-
-
 def route_after_zavhoz(state: OrchestratorState) -> str:
     """Decide where to go after zavhoz.
 
     Routing logic:
     - If LLM made tool calls -> execute them
-    - If deploy intent AND resources allocated -> DevOps
-    - Otherwise -> END (Engineering runs in parallel)
+    - If resources allocated -> Engineering (for new_project) or DevOps (for deploy)
+    - Otherwise -> END
     """
+    import structlog
+
+    logger = structlog.get_logger()
+
     messages = state.get("messages", [])
     if not messages:
         return END
@@ -149,62 +193,97 @@ def route_after_zavhoz(state: OrchestratorState) -> str:
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "zavhoz_tools"
 
-    # If activation flow (deploy intent) -> proceed to DevOps ONLY if resources allocated
-    if state.get("po_intent") == "deploy":
-        allocated = state.get("allocated_resources", {})
-        if allocated:
-            return "devops"
-        # Resources not allocated - Zavhoz didn't complete allocation
-        # This is likely a miscommunication, log and end
-        # TODO: Could loop back to zavhoz with a more explicit message
-        return END
+    allocated = state.get("allocated_resources", {})
+    po_intent = state.get("po_intent")
 
+    logger.info(
+        "route_after_zavhoz",
+        po_intent=po_intent,
+        allocated_resources_count=len(allocated),
+        has_resources=bool(allocated),
+    )
+
+    # If resources allocated, proceed based on intent
+    if allocated:
+        if po_intent == "deploy":
+            # Direct deploy request -> DevOps
+            return "devops"
+        # New project or other -> Engineering first, then DevOps
+        return "engineering"
+
+    # Resources not allocated - Zavhoz didn't complete allocation
+    # Log warning and end (user will need to retry or check logs)
+    logger.warning(
+        "zavhoz_no_resources_allocated",
+        po_intent=po_intent,
+        hint="Zavhoz did not allocate resources. Check Zavhoz prompt/tools.",
+    )
     return END
+
+
+def route_after_intent_parser(state: OrchestratorState) -> str:
+    """After intent parser, always go to product owner."""
+    return "product_owner"
 
 
 def route_after_product_owner(state: OrchestratorState) -> str:
     """Decide where to go after product owner.
 
-    Routing logic:
-    - If LLM made tool calls -> execute them
-    - If intent is new project -> proceed to Brainstorm
+    Phase 3 agentic loop routing:
+    - If task complete -> END
+    - If awaiting user response -> END (checkpoint saves state)
+    - If max iterations -> END
+    - If has tool calls -> execute them
     - Otherwise -> END
     """
-    messages = state.get("messages", [])
-    if not messages:
+    import structlog
+
+    logger = structlog.get_logger()
+
+    # Task complete?
+    if state.get("user_confirmed_complete"):
+        logger.info("po_routing_task_complete")
         return END
 
-    last_message = messages[-1]
+    # Waiting for user?
+    if state.get("awaiting_user_response"):
+        logger.info("po_routing_awaiting_user")
+        return END
 
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "product_owner_tools"
+    # Max iterations?
+    iterations = state.get("po_iterations", 0)
+    if iterations >= MAX_PO_ITERATIONS:
+        logger.warning("po_routing_max_iterations", iterations=iterations)
+        return END
 
-    if state.get("po_intent") == "new_project":
-        return "analyst"
+    # Has tool calls?
+    messages = state.get("messages", [])
+    if messages:
+        last_message = messages[-1]
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "product_owner_tools"
 
     return END
 
 
 def route_after_product_owner_tools(state: OrchestratorState) -> str:
-    """Decide where to go after product owner tools execution."""
-    po_intent = state.get("po_intent")
+    """Decide where to go after product owner tools execution.
 
-    if po_intent == "new_project":
-        return "analyst"
+    Phase 3 agentic loop:
+    - If task complete -> END
+    - If awaiting user -> END
+    - Otherwise -> back to PO for next iteration
+    """
+    # Task complete?
+    if state.get("user_confirmed_complete"):
+        return END
 
-    if po_intent == "maintenance":
-        # Project update → Engineering directly
-        return "engineering"
+    # Waiting for user?
+    if state.get("awaiting_user_response"):
+        return END
 
-    if po_intent == "deploy":
-        # Discovered project activation → Zavhoz for resource allocation
-        return "zavhoz"
-
-    if po_intent == "delegate_analyst":
-        # New project or requirements change → Analyst
-        return "analyst"
-
-    return END
+    # Continue agentic loop - back to PO
+    return "product_owner"
 
 
 def route_after_engineering(state: OrchestratorState) -> str:
@@ -265,6 +344,13 @@ async def run_engineering_subgraph(state: OrchestratorState) -> dict:
         "repo_info": state.get("repo_info"),
         "project_complexity": state.get("project_complexity"),
         "architect_complete": state.get("architect_complete", False),
+        # Preparer state
+        "selected_modules": state.get("selected_modules"),
+        "deployment_hints": state.get("deployment_hints"),
+        "custom_task_instructions": state.get("custom_task_instructions"),
+        "repo_prepared": state.get("repo_prepared", False),
+        "preparer_commit_sha": state.get("preparer_commit_sha"),
+        # Engineering loop state
         "engineering_status": "working",
         "review_feedback": None,
         "iteration_count": 0,
@@ -283,6 +369,13 @@ async def run_engineering_subgraph(state: OrchestratorState) -> dict:
         "repo_info": result.get("repo_info"),
         "project_complexity": result.get("project_complexity"),
         "architect_complete": result.get("architect_complete", False),
+        # Preparer state
+        "selected_modules": result.get("selected_modules"),
+        "deployment_hints": result.get("deployment_hints"),
+        "custom_task_instructions": result.get("custom_task_instructions"),
+        "repo_prepared": result.get("repo_prepared", False),
+        "preparer_commit_sha": result.get("preparer_commit_sha"),
+        # Engineering loop state
         "engineering_status": result.get("engineering_status", "idle"),
         "review_feedback": result.get("review_feedback"),
         "engineering_iterations": result.get("iteration_count", 0),
@@ -294,12 +387,12 @@ async def run_engineering_subgraph(state: OrchestratorState) -> dict:
     }
 
 
-def route_after_analyst(state: OrchestratorState) -> str | list[Send]:
+def route_after_analyst(state: OrchestratorState) -> str:
     """Decide where to go after analyst.
 
     Routing logic:
     - If LLM made tool calls -> execute them
-    - If project was created -> dispatch Zavhoz + Engineering in parallel
+    - If project was created -> go to Zavhoz for resource allocation
     - Otherwise -> END (waiting for user input)
     """
     import structlog
@@ -316,27 +409,17 @@ def route_after_analyst(state: OrchestratorState) -> str | list[Send]:
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "analyst_tools"
 
-    # If project was created, dispatch resources + engineering in parallel
+    # If project was created, go to Zavhoz first (sequential flow)
+    # Zavhoz allocates resources, then Engineering builds, then DevOps deploys
     if state.get("current_project"):
-        # Debug: log the state before dispatching
         project_spec = state.get("project_spec")
         logger.info(
-            "route_after_analyst_dispatching",
+            "route_after_analyst_to_zavhoz",
             current_project=state.get("current_project"),
             project_spec_exists=project_spec is not None,
-            project_spec_type=type(project_spec).__name__ if project_spec else None,
             project_spec_name=project_spec.get("name") if isinstance(project_spec, dict) else None,
         )
-        # Explicitly pass project_spec to ensure it's available in subgraph
-        # This works around potential state propagation issues with Send()
-        engineering_state = {
-            "project_spec": project_spec,
-            "current_project": state.get("current_project"),
-        }
-        return [
-            Send("zavhoz", {}),
-            Send("engineering", engineering_state),
-        ]
+        return "zavhoz"
 
     # Otherwise END - LLM responded with a question, wait for user
     return END
@@ -345,17 +428,17 @@ def route_after_analyst(state: OrchestratorState) -> str | list[Send]:
 def create_graph() -> StateGraph:
     """Create the orchestrator graph.
 
-    Topology (Phase 3 & 4):
-        START -> product_owner -> brainstorm -> [zavhoz || engineering]
-                                              -> devops -> END
+    Topology (Dynamic PO):
+        START -> intent_parser -> product_owner -> ... -> END
+        START -> product_owner (if skip_intent_parser) -> ... -> END
         START -> provisioner -> END (standalone)
     """
     graph = StateGraph(OrchestratorState)
 
     # Add nodes
+    graph.add_node("intent_parser", intent_parser.run)
     graph.add_node("product_owner", product_owner.run)
     graph.add_node("product_owner_tools", product_owner.execute_tools)
-    # Brainstorm node removed
     graph.add_node("zavhoz", zavhoz.run)
     graph.add_node("zavhoz_tools", zavhoz.execute_tools)
     graph.add_node("engineering", run_engineering_subgraph)
@@ -369,55 +452,65 @@ def create_graph() -> StateGraph:
         """Route from start based on intent."""
         if state.get("server_to_provision"):
             return "provisioner"
-        return "product_owner"
+        # Skip intent parser if continuing existing session
+        if state.get("skip_intent_parser"):
+            return "product_owner"
+        return "intent_parser"
 
     graph.add_conditional_edges(
         START,
         route_start,
         {
+            "intent_parser": "intent_parser",
             "product_owner": "product_owner",
             "provisioner": "provisioner",
         },
     )
 
-    # After product owner: either execute tools, go to analyst, or end
+    # After intent parser: always go to product owner
+    graph.add_edge("intent_parser", "product_owner")
+
+    # After product owner: execute tools or end (Phase 3 agentic loop)
     graph.add_conditional_edges(
         "product_owner",
         route_after_product_owner,
         {
             "product_owner_tools": "product_owner_tools",
-            "analyst": "analyst",
             END: END,
         },
     )
 
-    # After product owner tools: go to analyst, engineering (maintenance), or end
+    # After product owner tools: loop back to PO or end (Phase 3 agentic loop)
     graph.add_conditional_edges(
         "product_owner_tools",
         route_after_product_owner_tools,
         {
-            "zavhoz": "zavhoz",
-            "engineering": "engineering",
-            "analyst": "analyst",
+            "product_owner": "product_owner",
             END: END,
         },
     )
 
-    # After analyst: either execute tools, dispatch parallel, or end
+    # After analyst: either execute tools, go to zavhoz, or end
     graph.add_conditional_edges(
         "analyst",
         route_after_analyst,
+        {
+            "analyst_tools": "analyst_tools",
+            "zavhoz": "zavhoz",
+            END: END,
+        },
     )
 
     # After analyst tools execution: back to analyst to process result
     graph.add_edge("analyst_tools", "analyst")
 
-    # After zavhoz: either execute tools or end
+    # After zavhoz: execute tools, go to engineering (new project), or devops (deploy)
     graph.add_conditional_edges(
         "zavhoz",
         route_after_zavhoz,
         {
             "zavhoz_tools": "zavhoz_tools",
+            "engineering": "engineering",
             "devops": "devops",
             END: END,
         },

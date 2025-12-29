@@ -16,6 +16,9 @@ from .base import BaseAgentNode
 
 logger = structlog.get_logger()
 
+# Max error message length for Telegram display
+MAX_ERROR_MSG_LENGTH = 500
+
 
 class DeveloperNode(BaseAgentNode):
     """Developer agent - spawns Factory.ai workers for code implementation.
@@ -102,7 +105,7 @@ class DeveloperNode(BaseAgentNode):
             task_content = project_spec.get("description") or "Implement business logic."
             if project_spec:
                 task_content += "\n\nProject spec:\n"
-                task_content += json.dumps(project_spec, indent=2, ensure_ascii=True)
+                task_content += json.dumps(project_spec, indent=2, ensure_ascii=False)
 
             task_title = f"Implement business logic for {project_spec.get('name', repo_name)}"
 
@@ -126,7 +129,16 @@ class DeveloperNode(BaseAgentNode):
                     "worker_info": worker_result,
                 }
             else:
-                error_msg = worker_result.error_message or "Unknown error"
+                # Check error_message first, then output, then logs_tail
+                error_msg = (
+                    worker_result.error_message
+                    or worker_result.output
+                    or worker_result.logs_tail
+                    or "Unknown error"
+                )
+                # Truncate long error messages for Telegram
+                if len(error_msg) > MAX_ERROR_MSG_LENGTH:
+                    error_msg = error_msg[:MAX_ERROR_MSG_LENGTH] + "..."
                 return {
                     "messages": [
                         AIMessage(content=f"❌ Failed to spawn developer worker: {error_msg}")

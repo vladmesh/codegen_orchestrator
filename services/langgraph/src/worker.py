@@ -24,6 +24,8 @@ from .clients.api import api_client
 from .config.settings import get_settings
 from .events import publish_event
 from .graph import OrchestratorState, create_graph
+from .session_manager import SessionState, session_manager
+from .thread_manager import get_current_thread_id
 
 logger = structlog.get_logger()
 
@@ -97,18 +99,76 @@ async def _periodic_memory_stats():
         await _log_memory_stats()
 
 
+async def _has_active_session(user_id: int) -> tuple[bool, str | None]:
+    """Check if user has an active session (conversation history exists).
+
+    For now, we just check if there's conversation history for the current thread.
+    In the future, this could check LangGraph checkpointer directly.
+
+    Returns:
+        Tuple of (has_active_session, current_thread_id)
+    """
+    thread_id = await get_current_thread_id(user_id)
+    if thread_id is None:
+        return False, None
+
+    # Check if there's any conversation history for this thread
+    has_history = bool(conversation_history.get(thread_id))
+
+    return has_history, thread_id
+
+
 async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     """Process a single message through the LangGraph.
 
-    Args:
-        redis_client: Redis client for sending responses.
-        data: Message data from Telegram.
+    Flow (Phase 5 with SessionManager):
+    1. Check session lock
+       - If PROCESSING -> reject with "busy" message
+       - If AWAITING -> continue session
+       - If no lock -> start new session
+    2. Run graph
+    3. Update session state based on result
     """
     telegram_user_id = data.get("user_id")  # This is telegram_id from Telegram API
     chat_id = data.get("chat_id")
     text = data.get("text", "")
-    thread_id = data.get("thread_id", f"user_{telegram_user_id}")
     correlation_id = data.get("correlation_id")
+
+    # === Phase 5: Session Lock Check ===
+    is_locked, lock_state = await session_manager.is_locked(telegram_user_id)
+
+    if is_locked:
+        if lock_state == SessionState.PROCESSING:
+            # Reject - system is busy processing previous request
+            await redis_client.publish(
+                RedisStreamClient.OUTGOING_STREAM,
+                {
+                    "user_id": telegram_user_id,
+                    "chat_id": chat_id,
+                    "text": "⏳ Подожди, я ещё обрабатываю предыдущий запрос...",
+                    "correlation_id": correlation_id,
+                },
+            )
+            logger.info("message_rejected_busy", telegram_user_id=telegram_user_id)
+            return
+
+        elif lock_state == SessionState.AWAITING:
+            # Continue existing session
+            thread_id = await session_manager.continue_session(telegram_user_id)
+            skip_intent_parser = True
+            logger.info(
+                "session_continued",
+                telegram_user_id=telegram_user_id,
+                thread_id=thread_id,
+            )
+        else:
+            # Unknown state, treat as new session
+            thread_id = await session_manager.start_new_session(telegram_user_id)
+            skip_intent_parser = False
+    else:
+        # No active session - start new
+        thread_id = await session_manager.start_new_session(telegram_user_id)
+        skip_intent_parser = False
 
     # Resolve internal user_id from telegram_id
     internal_user_id = await _resolve_user_id(telegram_user_id) if telegram_user_id else None
@@ -121,7 +181,12 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         user_id=internal_user_id,
     )
 
-    logger.info("message_received", chat_id=chat_id, message_length=len(text))
+    logger.info(
+        "message_received",
+        chat_id=chat_id,
+        message_length=len(text),
+        skip_intent_parser=skip_intent_parser,
+    )
 
     try:
         # Get existing conversation history
@@ -154,6 +219,17 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
             # User context for multi-tenancy
             "telegram_user_id": telegram_user_id,
             "user_id": internal_user_id,
+            # Dynamic PO Phase 2: control whether to run intent parser
+            "skip_intent_parser": skip_intent_parser,
+            "thread_id": thread_id,
+            "active_capabilities": [],
+            "task_summary": None,
+            # Dynamic PO Phase 3: agentic loop control
+            "chat_id": chat_id,
+            "correlation_id": correlation_id,
+            "awaiting_user_response": False,  # Reset on each new message
+            "user_confirmed_complete": False,
+            "po_iterations": 0,
         }
 
         # LangGraph config with thread_id for checkpointing
@@ -163,6 +239,26 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         start_time = time.time()
         result = await graph.ainvoke(state, config)
         duration = (time.time() - start_time) * 1000
+
+        # === Phase 5: Update Session State Based on Result ===
+        if result.get("user_confirmed_complete"):
+            # Task complete - release lock, clear history
+            await session_manager.release_lock(telegram_user_id)
+            if thread_id in conversation_history:
+                del conversation_history[thread_id]
+            logger.info("session_completed", thread_id=thread_id)
+
+        elif result.get("awaiting_user_response"):
+            # Waiting for user - update state to AWAITING
+            await session_manager.update_state(telegram_user_id, SessionState.AWAITING)
+            logger.info("session_awaiting_user", thread_id=thread_id)
+
+        else:
+            # Graph ended but not complete and not awaiting
+            # This could be max iterations or other end condition
+            # Release lock, user can start fresh
+            await session_manager.release_lock(telegram_user_id)
+            logger.info("session_ended_naturally", thread_id=thread_id)
 
         # Get the last AI message
         messages = result.get("messages", [])
@@ -210,6 +306,9 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
             duration_ms=round(duration, 2),
             exc_info=True,
         )
+
+        # Phase 5: Release lock on error to prevent stuck sessions
+        await session_manager.release_lock(telegram_user_id)
 
         # Clear conversation history to prevent corrupted state from persisting
         if thread_id in conversation_history:
@@ -364,6 +463,17 @@ async def process_provisioning_trigger(data: dict) -> None:
         "architect_complete": False,
         "project_complexity": None,
         "provisioning_result": None,
+        # Dynamic PO Phase 2 fields
+        "skip_intent_parser": True,  # Provisioner skips intent parser
+        "thread_id": None,
+        "active_capabilities": [],
+        "task_summary": None,
+        # Dynamic PO Phase 3 fields
+        "chat_id": None,
+        "correlation_id": None,
+        "awaiting_user_response": False,
+        "user_confirmed_complete": False,
+        "po_iterations": 0,
     }
 
     config = {"configurable": {"thread_id": f"provisioner-{server_handle}"}}

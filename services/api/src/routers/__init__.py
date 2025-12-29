@@ -2,6 +2,7 @@
 
 from . import (
     agent_configs,
+    allocations,
     api_keys,
     available_models,
     cli_agent_configs,
@@ -17,6 +18,7 @@ from . import (
 
 __all__ = [
     "agent_configs",
+    "allocations",
     "api_keys",
     "available_models",
     "cli_agent_configs",

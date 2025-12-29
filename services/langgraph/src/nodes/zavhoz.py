@@ -75,8 +75,15 @@ async def run(state: dict) -> dict:
         context_parts.append(f"Project ID: {current_project}")
     if po_intent:
         context_parts.append(f"Intent: {po_intent}")
-        if po_intent == "deploy":
-            context_parts.append("ACTION REQUIRED: Allocate server resources for deployment!")
+
+    # Trigger resource allocation for both new projects and deploy requests
+    if po_intent in ("new_project", "deploy", "delegate_analyst"):
+        context_parts.append(
+            "ACTION REQUIRED: You MUST allocate server resources for this project!\n"
+            "1. Use find_suitable_server to find a server with enough capacity\n"
+            "2. Use allocate_port to reserve a port for the service\n"
+            "Do NOT skip this step - the project cannot be deployed without allocated resources."
+        )
 
     context = "\n".join(context_parts) if context_parts else "No project context."
 
