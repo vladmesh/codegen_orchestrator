@@ -519,29 +519,29 @@ PO:
 ### Phase 5: Integration & Testing
 
 **5.1. Graph Integration**
-- [ ] Update graph.py with new flow
-- [ ] Handle PO loop within single graph invocation
-- [ ] Proper state propagation between parser and PO
+- [x] Update graph.py with new flow
+- [x] Handle PO loop within single graph invocation
+- [x] Proper state propagation between parser and PO
 
 **5.2. Telegram Integration**
-- [ ] Support multi-message conversations within thread
-- [ ] Handle `awaiting_response` - don't process other messages
-- [ ] Timeout handling for abandoned conversations
+- [x] Support multi-message conversations within thread
+- [x] Handle `awaiting_response` - don't process other messages
+- [x] Timeout handling for abandoned conversations
 
 **5.3. Testing**
-- [ ] Unit tests for intent parser
-- [ ] Unit tests for capability loading
-- [ ] Unit tests for base tools
-- [ ] Integration test: simple question flow
-- [ ] Integration test: deploy flow
-- [ ] Integration test: error handling flow
+- [x] Unit tests for intent parser
+- [x] Unit tests for capability loading
+- [x] Unit tests for base tools
+- [x] Integration test: simple question flow
+- [x] Integration test: deploy flow
+- [x] Integration test: error handling flow
 
 ### Phase 6: RAG Integration
 
 **6.1. Connect search_knowledge to RAG**
-- [ ] Use thread_id for conversation context
-- [ ] Implement scope filtering (docs, code, logs, history)
-- [ ] Add embeddings for project documentation
+- [x] Use thread_id for conversation context
+- [x] Implement scope filtering (docs, code, logs, history)
+- [ ] Add embeddings for project documentation (Moved to Future Work)
 
 ---
 

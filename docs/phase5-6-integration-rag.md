@@ -1359,8 +1359,8 @@ class TestDynamicPOFlow:
 **5.3 Graph Updates**
 - [ ] Verify `product_owner.execute_tools` updates flags correctly
 - [ ] Ensure `awaiting_user_response` is set from `respond_to_user`
-- [ ] Ensure `user_confirmed_complete` is set from `finish_task`
-- [ ] Ensure `active_capabilities` is set from `request_capabilities`
+- [x] Ensure `user_confirmed_complete` is set from `finish_task`
+- [x] Ensure `active_capabilities` is set from `request_capabilities`
 
 **5.4 Base Tools Updates**
 - [ ] Add `InjectedToolArg` pattern for state access
@@ -1376,8 +1376,8 @@ class TestDynamicPOFlow:
 **5.6 Testing**
 - [ ] Unit tests for SessionManager
 - [ ] Unit tests for worker session handling
-- [ ] Integration test: simple question flow
-- [ ] Integration test: deploy flow with confirmation
+- [x] Integration test: simple question flow
+- [x] Integration test: deploy flow with confirmation
 - [ ] Integration test: error handling flow
 - [ ] Integration test: session timeout
 
