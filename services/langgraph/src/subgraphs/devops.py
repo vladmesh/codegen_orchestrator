@@ -298,9 +298,14 @@ class SecretResolverNode(FunctionalNode):
                 resolved[var] = self._compute_secret(var, project_spec, state)
 
             elif var_type == "user":
-                # Check if user provided it
+                # Check if user provided it via:
+                # 1. provided_secrets (passed directly)
+                # 2. project_spec.config.secrets (saved to DB via save_project_secret)
+                config_secrets = project_spec.get("config", {}).get("secrets", {})
                 if var in provided_secrets:
                     resolved[var] = provided_secrets[var]
+                elif var in config_secrets:
+                    resolved[var] = config_secrets[var]
                 else:
                     missing_user.append(var)
 
