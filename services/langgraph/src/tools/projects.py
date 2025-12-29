@@ -1,6 +1,7 @@
 """Project management tools for agents."""
 
 from http import HTTPStatus
+import re
 from typing import Annotated
 import uuid
 
@@ -10,10 +11,47 @@ from langgraph.prebuilt import InjectedState
 from ..schemas.tools import ProjectCreateResult, ProjectInfo, ProjectIntent
 from .base import api_client
 
+# Regex for valid project names: lowercase, starts with letter, only letters/numbers/hyphens
+PROJECT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
+
+
+def validate_project_name(name: str) -> None:
+    """Validate project name format.
+
+    Project name must be:
+    - Lowercase only
+    - Start with a letter
+    - Contain only letters, numbers, and hyphens
+
+    Raises:
+        ValueError: If name doesn't match the required format.
+    """
+    if not name:
+        raise ValueError("Project name cannot be empty")
+
+    if not PROJECT_NAME_PATTERN.match(name):
+        if name[0].isdigit() or name[0] == "-":
+            raise ValueError(
+                f"Invalid project name '{name}': must start with a letter. "
+                "Use lowercase letters, numbers, and hyphens only (e.g., 'my-project')."
+            )
+        if name != name.lower():
+            raise ValueError(
+                f"Invalid project name '{name}': must be lowercase. "
+                "Use lowercase letters, numbers, and hyphens only (e.g., 'my-project')."
+            )
+        raise ValueError(
+            f"Invalid project name '{name}': must contain only letters, numbers, and hyphens. "
+            "Example: 'my-cool-project'."
+        )
+
 
 @tool
 async def create_project(
-    name: Annotated[str, "Project name in snake_case (e.g., 'weather_bot')"],
+    name: Annotated[
+        str,
+        "Project name: lowercase, starts with letter, only a-z/0-9/hyphens",
+    ],
     description: Annotated[str, "Brief project description"],
     modules: Annotated[list[str], "Modules to generate: backend, tg_bot, notifications, frontend"],
     entry_points: Annotated[list[str], "Entry points: telegram, frontend, api"],
@@ -29,6 +67,9 @@ async def create_project(
 
     After creation, the project will be passed to Zavhoz for resource allocation.
     """
+    # Validate project name format before proceeding
+    validate_project_name(name)
+
     project_id = str(uuid.uuid4())[:8]
 
     config_payload = {

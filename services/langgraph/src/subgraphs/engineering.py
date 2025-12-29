@@ -108,15 +108,28 @@ def route_after_preparer(state: EngineeringState) -> str:
     """Route after preparer container finishes.
 
     - If preparation failed → END (blocked)
-    - If simple project → tester (developer implements in one pass)
-    - If complex project → developer
+    - Otherwise → developer (always, regardless of complexity)
+
+    Note: complexity affects iteration limits in tester, not developer skip.
+    Developer must always run to generate code via Factory.ai Droid.
     """
-    if not state.get("repo_prepared"):
+    import structlog
+
+    logger = structlog.get_logger()
+
+    repo_prepared = state.get("repo_prepared")
+
+    logger.info(
+        "route_after_preparer",
+        repo_prepared=repo_prepared,
+        project_complexity=state.get("project_complexity"),
+    )
+
+    if not repo_prepared:
+        logger.warning("route_after_preparer_end_not_prepared")
         return END
 
-    complexity = state.get("project_complexity", "complex")
-    if complexity == "simple":
-        return "tester"
+    logger.info("route_after_preparer_to_developer")
     return "developer"
 
 
@@ -157,6 +170,11 @@ class TesterNode(FunctionalNode):
 
     async def run(self, state: EngineeringState) -> dict:
         """Run tests and update engineering state."""
+        import structlog
+
+        logger = structlog.get_logger()
+        logger.info("tester_node_run_start", iteration_count=state.get("iteration_count", 0))
+
         iteration_count = state.get("iteration_count", 0) + 1
 
         # TODO: Implement actual test running via worker spawner
@@ -263,7 +281,6 @@ def create_engineering_subgraph() -> StateGraph:
         "preparer",
         route_after_preparer,
         {
-            "tester": "tester",
             "developer": "developer",
             END: END,
         },

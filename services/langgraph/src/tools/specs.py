@@ -71,7 +71,10 @@ async def update_project_spec(
 @tool
 async def create_project_spec_yaml(
     repo_full_name: Annotated[str, "Full repository name (org/repo)"],
-    project_name: Annotated[str, "Project name in snake_case"],
+    project_name: Annotated[
+        str,
+        "Project name: lowercase, starts with letter, only a-z/0-9/hyphens",
+    ],
     description: Annotated[str, "Brief project description"],
     modules: Annotated[list[str], "Service template modules (e.g., backend, tg_bot)"],
     entry_points: Annotated[list[dict], "Entry points with type and optional handlers/port"],

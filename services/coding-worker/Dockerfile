@@ -1,5 +1,5 @@
 # Coding Worker Container
-# Simple container with Factory.ai Droid CLI
+# Container with Factory.ai Droid CLI and Docker-in-Docker support
 
 FROM ubuntu:24.04
 
@@ -15,7 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     ca-certificates \
     gnupg \
+    make \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Docker
+RUN curl -fsSL https://get.docker.com | sh
+
+# Install Docker Compose plugin
+RUN mkdir -p /usr/local/lib/docker/cli-plugins \
+    && curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+       -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 # Install Copier, Jinja2, and Redis client
 RUN pip3 install --no-cache-dir --break-system-packages copier jinja2 redis

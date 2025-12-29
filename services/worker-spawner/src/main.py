@@ -132,11 +132,15 @@ async def spawn_container(
     cid_file.close()
     os.unlink(cid_path)  # Remove file - docker will create it
 
+    # Get network name from env (defaults to internal network)
+    docker_network = os.getenv("DOCKER_NETWORK", "codegen_orchestrator_internal")
+
     cmd = [
         "docker",
         "run",
         "--rm",
         "--runtime=sysbox-runc",  # Enable Docker-in-Docker via Sysbox
+        f"--network={docker_network}",
         "--cidfile",
         cid_path,
         "-e",
