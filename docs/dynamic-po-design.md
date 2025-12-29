@@ -490,27 +490,30 @@ PO:
 ### Phase 4: Capability Tools
 
 **4.1. Deploy Capability**
-- [ ] `check_deploy_readiness(project_id)` - checks repo, resources, CI status
-- [ ] `trigger_deploy(project_id)` - starts DevOps node
-- [ ] `get_deploy_status(job_id)` - polls deployment progress
-- [ ] `get_deploy_logs(project_id, lines)` - fetch deployment logs
+- [x] `check_deploy_readiness(project_id)` - checks repo, resources, CI status
+- [x] `trigger_deploy(project_id)` - starts DevOps node
+- [x] `get_deploy_status(job_id)` - polls deployment progress
+- [x] `get_deploy_logs(project_id, lines)` - fetch deployment logs
 
 **4.2. Infrastructure Capability**
-- [ ] Reuse existing: `find_suitable_server`, `allocate_port`
-- [ ] Add `list_allocations(project_id)` - show allocated resources
-- [ ] Add `release_port(allocation_id)` - free resources
+- [x] Reuse existing: `find_suitable_server`, `allocate_port`
+- [x] Add `list_allocations(project_id)` - show allocated resources
+- [x] Add `release_port(allocation_id)` - free up resources
 
-**4.3. Diagnose Capability**
-- [ ] `get_service_logs(service, lines)` - fetch logs from running service
-- [ ] `get_node_logs(node_name, correlation_id)` - fetch graph node logs
-- [ ] `check_service_health(service)` - health check endpoint
-- [ ] `get_error_history(project_id)` - recent errors from logs
+**4.3. Engineering Capability**
+- [x] `trigger_engineering(project_id, task)` - starts Developer/Tester flow
+- [x] `get_engineering_status(job_id)` - polls pipeline progress
+- [x] `view_latest_pr(project_id)` - fetch PR status and URL
 
-**4.4. Admin Capability**
-- [ ] `list_graph_nodes()` - available nodes in graph
-- [ ] `get_node_state(node_name)` - last execution state
-- [ ] `trigger_node_manually(node_name, input)` - force run a node
-- [ ] `clear_project_state(project_id)` - reset project state
+**4.4. Diagnose Capability**
+- [x] `get_service_logs(project_id, lines)` - container logs via SSH
+- [x] `check_service_health(project_id)` - HTTP/Container check via SSH
+- [x] `get_error_history(project_id)` - log analysis for patterns
+
+**4.5. Admin Capability**
+- [x] `list_graph_nodes()` - for manual triggering
+- [x] `trigger_node_manually(node_name, inputs)` - force execution
+- [x] `clear_project_state(project_id)` - reset active tasks
 
 ### Phase 5: Integration & Testing
 

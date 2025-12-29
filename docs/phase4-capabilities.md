@@ -1103,53 +1103,53 @@ services:
 ## Checklist
 
 ### 4.0 Infrastructure
-- [ ] Add `DEPLOY_QUEUE`, `ENGINEERING_QUEUE` constants to redis_client
-- [ ] Create `ensure_consumer_groups()` utility
-- [ ] Add checkpointer access utilities
+- [x] Add `DEPLOY_QUEUE`, `ENGINEERING_QUEUE` constants to redis_client
+- [x] Create `ensure_consumer_groups()` utility
+- [x] Add checkpointer access utilities
 
 ### 4.1 Deploy Capability
-- [ ] Implement `trigger_deploy` tool
-- [ ] Implement `get_deploy_status` tool
-- [ ] Implement `get_deploy_logs` tool
-- [ ] Update `check_deploy_readiness` tool
-- [ ] Create `deploy_worker.py`
-- [ ] Create `devops_subgraph.py`
-- [ ] Add deploy-worker to docker-compose
+- [x] Implement `trigger_deploy` tool
+- [x] Implement `get_deploy_status` tool
+- [x] Implement `get_deploy_logs` tool
+- [x] Update `check_deploy_readiness` tool
+- [x] Create `deploy_worker.py`
+- [x] Create `devops_subgraph.py` (Using devops_node for now)
+- [x] Add deploy-worker to docker-compose
 
 ### 4.2 Infrastructure Capability
-- [ ] Implement `list_allocations` tool
-- [ ] Implement `release_port` tool
-- [ ] Add API endpoints for allocations
+- [x] Implement `list_allocations` tool
+- [x] Implement `release_port` tool
+- [x] Add API endpoints for allocations
 
 ### 4.3 Engineering Capability
-- [ ] Implement `trigger_engineering` tool
-- [ ] Implement `get_engineering_status` tool
-- [ ] Implement `view_latest_pr` tool
-- [ ] Create `engineering_worker.py`
-- [ ] Refactor existing engineering subgraph
+- [x] Implement `trigger_engineering` tool
+- [x] Implement `get_engineering_status` tool
+- [x] Implement `view_latest_pr` tool
+- [x] Create `engineering_worker.py`
+- [ ] Refactor existing engineering subgraph (Worker uses placebo for now)
 
 ### 4.4 Diagnose Capability
-- [ ] Implement `get_service_logs` tool
-- [ ] Implement `check_service_health` tool
-- [ ] Implement `get_error_history` tool
-- [ ] Add infra_client methods for container logs
+- [x] Implement `get_service_logs` tool
+- [x] Implement `check_service_health` tool
+- [x] Implement `get_error_history` tool
+- [x] Add infra_client methods for container logs
 
 ### 4.5 Admin Capability
-- [ ] Implement `list_graph_nodes` tool
-- [ ] Implement `trigger_node_manually` tool
-- [ ] Implement `clear_project_state` tool
-- [ ] Create admin_worker.py (optional)
+- [x] Implement `list_graph_nodes` tool
+- [x] Implement `trigger_node_manually` tool
+- [x] Implement `clear_project_state` tool
+- [x] Create admin_worker.py (Integrated into shared queue logic)
 
 ### 4.6 Integration
-- [ ] Register all tools in CAPABILITY_REGISTRY
-- [ ] Update TOOLS_MAP with new tools
+- [x] Register all tools in CAPABILITY_REGISTRY
+- [x] Update TOOLS_MAP with new tools
 - [ ] Add workers to Makefile
-- [ ] Update docker-compose.yml
+- [x] Update docker-compose.yml
 
 ### 4.7 Testing
-- [ ] Unit tests for each tool
-- [ ] Integration test: trigger_deploy → poll status → success
-- [ ] Integration test: worker crash recovery
+- [x] Unit tests for each tool
+- [x] Integration test: trigger_deploy → poll status → success (Manual smoke test)
+- [x] Integration test: worker crash recovery (Manual verification)
 - [ ] Load test: concurrent deployments
 
 ---
@@ -1159,8 +1159,8 @@ services:
 | Question | Status | Decision |
 |----------|--------|----------|
 | cancel_deploy needed? | Deferred | Not in v1 |
-| Job retention period | **TBD** | 7 days? Auto-cleanup? |
-| Max concurrent deploys per user | **TBD** | 3? Unlimited? |
+| Job retention period | **Done** | 7 days (Redis TTL) |
+| Max concurrent deploys per user | **Done** | 3 (Enforced in tool) |
 | Notification on job complete | **TBD** | Push to Telegram? |
 
 ---
