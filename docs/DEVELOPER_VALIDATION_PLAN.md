@@ -552,7 +552,7 @@ pytest services/langgraph/tests/integration/test_developer_rework_flow.py -v
 
 ## Implementation Checklist
 
-- [ ] Update `scripts/cli_agent_configs.yaml` with developer prompt
+- [x] Update `scripts/cli_agent_configs.yaml` with developer prompt
 - [ ] Run seeding script to update database
 - [ ] Modify `services/langgraph/src/nodes/developer.py` - add validation
 - [ ] Extend `EngineeringState` in `services/langgraph/src/subgraphs/engineering.py`

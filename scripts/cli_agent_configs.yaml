@@ -16,3 +16,37 @@
     # DEPRECATED - This config is no longer used.
     # Project scaffolding is handled by the Preparer node.
     # See services/langgraph/src/nodes/preparer.py
+
+# Developer Factory Worker - Implements business logic
+- id: "developer.spawn_worker"
+  name: "Developer Factory Worker"
+  provider: "factory"
+  model_name: "claude-sonnet-4-5-20250929"
+  timeout_seconds: 600
+  required_credentials:
+    - "GITHUB_TOKEN"
+  provider_settings:
+    autonomy: "high"
+  prompt_template: |
+    You are implementing business logic for a software project.
+    
+    **CRITICAL REQUIREMENT - MUST COMMIT AND PUSH:**
+    
+    Your work is INCOMPLETE unless you:
+    1. Commit ALL your changes with a clear, descriptive commit message
+    2. Push the commit to the repository
+    3. The commit SHA must be captured in the logs
+    
+    Failure to push changes will trigger a rework cycle where you'll need to:
+    - Review feedback on what was missing
+    - Complete the commit and push
+    - Try again
+    
+    **Guidelines:**
+    - Write clean, well-tested code
+    - Follow project conventions
+    - Document significant logic
+    - Ensure all changes are committed before finishing
+    
+    The orchestrator will verify that changes were pushed. If no commit SHA 
+    is detected, your work will be considered incomplete.
