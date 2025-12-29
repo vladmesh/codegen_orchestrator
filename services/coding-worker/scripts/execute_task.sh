@@ -35,6 +35,11 @@ for i in {1..30}; do
     sleep 1
 done
 
+# Initialize Docker Buildx
+echo "=== Initializing Docker Buildx ==="
+docker buildx create --use --name builder --driver docker-container || true
+docker buildx inspect --bootstrap || true
+
 WORKER_TYPE="droid"
 export WORKER_TYPE
 

@@ -7,6 +7,7 @@ from src.graph import (
     create_graph,
     route_after_analyst,
     route_after_engineering,
+    route_after_zavhoz,
 )
 
 
@@ -83,6 +84,51 @@ def test_route_after_engineering_blocked():
     assert route_after_engineering(state) == END
 
 
+def test_route_after_zavhoz_to_engineering():
+    """Test routing to engineering when resources allocated for new project."""
+
+    class MockMessage:
+        tool_calls = None
+
+    # New project with allocated resources → engineering
+    state = {
+        "messages": [MockMessage()],
+        "po_intent": "new_project",
+        "allocated_resources": {"server:8080": {"port": 8080}},
+    }
+    assert route_after_zavhoz(state) == "engineering"
+
+
+def test_route_after_zavhoz_to_devops():
+    """Test routing to devops when resources allocated for deploy intent."""
+
+    class MockMessage:
+        tool_calls = None
+
+    # Deploy intent with allocated resources → devops directly
+    state = {
+        "messages": [MockMessage()],
+        "po_intent": "deploy",
+        "allocated_resources": {"server:8080": {"port": 8080}},
+    }
+    assert route_after_zavhoz(state) == "devops"
+
+
+def test_route_after_zavhoz_no_resources():
+    """Test routing to END when no resources allocated."""
+    from langgraph.graph import END
+
+    class MockMessage:
+        tool_calls = None
+
+    state = {
+        "messages": [MockMessage()],
+        "po_intent": "new_project",
+        "allocated_resources": {},
+    }
+    assert route_after_zavhoz(state) == END
+
+
 def test_route_after_po_tools_deploy_intent():
     """Test routing to zavhoz when deploy intent is set."""
     from src.graph import route_after_product_owner_tools
@@ -100,19 +146,19 @@ def test_route_after_po_tools_delegate_analyst():
 
 
 def test_route_after_analyst_with_project():
-    """Test routing to parallel dispatch when project created by analyst."""
-    from langgraph.types import Send
+    """Test routing to zavhoz when project created by analyst.
+
+    Sequential flow: Analyst → Zavhoz → Engineering → DevOps
+    (Zavhoz allocates resources first, then Engineering builds)
+    """
 
     class MockMessage:
         tool_calls = None
 
     state = {"messages": [MockMessage()], "current_project": "test-project-123"}
     result = route_after_analyst(state)
-    assert isinstance(result, list)
-    # Should dispatch to both zavhoz and engineering in parallel
-    expected_parallel_nodes = 2  # noqa: PLR2004
-    assert len(result) == expected_parallel_nodes
-    assert all(isinstance(r, Send) for r in result)
+    # Should go to zavhoz for resource allocation
+    assert result == "zavhoz"
 
 
 def test_route_after_analyst_no_project():

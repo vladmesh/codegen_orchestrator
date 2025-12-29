@@ -24,6 +24,7 @@ from .clients.api import api_client
 from .config.settings import get_settings
 from .events import publish_event
 from .graph import OrchestratorState, create_graph
+from .thread_manager import get_or_create_thread_id
 
 logger = structlog.get_logger()
 
@@ -107,8 +108,11 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     telegram_user_id = data.get("user_id")  # This is telegram_id from Telegram API
     chat_id = data.get("chat_id")
     text = data.get("text", "")
-    thread_id = data.get("thread_id", f"user_{telegram_user_id}")
     correlation_id = data.get("correlation_id")
+
+    # Get or create thread_id using Redis sequence
+    # This replaces the simple f"user_{telegram_user_id}" format
+    thread_id = await get_or_create_thread_id(telegram_user_id) if telegram_user_id else "unknown"
 
     # Resolve internal user_id from telegram_id
     internal_user_id = await _resolve_user_id(telegram_user_id) if telegram_user_id else None

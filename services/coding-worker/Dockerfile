@@ -27,6 +27,12 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins \
        -o /usr/local/lib/docker/cli-plugins/docker-compose \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
+# Install Docker Buildx plugin
+RUN mkdir -p /usr/lib/docker/cli-plugins \
+    && curl -SL "https://github.com/docker/buildx/releases/latest/download/buildx-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)" \
+       -o /usr/lib/docker/cli-plugins/docker-buildx \
+    && chmod +x /usr/lib/docker/cli-plugins/docker-buildx
+
 # Install Copier, Jinja2, and Redis client
 RUN pip3 install --no-cache-dir --break-system-packages copier jinja2 redis
 

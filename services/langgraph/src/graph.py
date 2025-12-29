@@ -5,7 +5,6 @@ from typing import Annotated
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.types import Send
 from typing_extensions import TypedDict
 
 from .nodes import analyst, devops, product_owner, provisioner, zavhoz
@@ -150,9 +149,13 @@ def route_after_zavhoz(state: OrchestratorState) -> str:
 
     Routing logic:
     - If LLM made tool calls -> execute them
-    - If deploy intent AND resources allocated -> DevOps
-    - Otherwise -> END (Engineering runs in parallel)
+    - If resources allocated -> Engineering (for new_project) or DevOps (for deploy)
+    - Otherwise -> END
     """
+    import structlog
+
+    logger = structlog.get_logger()
+
     messages = state.get("messages", [])
     if not messages:
         return END
@@ -163,16 +166,31 @@ def route_after_zavhoz(state: OrchestratorState) -> str:
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "zavhoz_tools"
 
-    # If activation flow (deploy intent) -> proceed to DevOps ONLY if resources allocated
-    if state.get("po_intent") == "deploy":
-        allocated = state.get("allocated_resources", {})
-        if allocated:
-            return "devops"
-        # Resources not allocated - Zavhoz didn't complete allocation
-        # This is likely a miscommunication, log and end
-        # TODO: Could loop back to zavhoz with a more explicit message
-        return END
+    allocated = state.get("allocated_resources", {})
+    po_intent = state.get("po_intent")
 
+    logger.info(
+        "route_after_zavhoz",
+        po_intent=po_intent,
+        allocated_resources_count=len(allocated),
+        has_resources=bool(allocated),
+    )
+
+    # If resources allocated, proceed based on intent
+    if allocated:
+        if po_intent == "deploy":
+            # Direct deploy request -> DevOps
+            return "devops"
+        # New project or other -> Engineering first, then DevOps
+        return "engineering"
+
+    # Resources not allocated - Zavhoz didn't complete allocation
+    # Log warning and end (user will need to retry or check logs)
+    logger.warning(
+        "zavhoz_no_resources_allocated",
+        po_intent=po_intent,
+        hint="Zavhoz did not allocate resources. Check Zavhoz prompt/tools.",
+    )
     return END
 
 
@@ -322,12 +340,12 @@ async def run_engineering_subgraph(state: OrchestratorState) -> dict:
     }
 
 
-def route_after_analyst(state: OrchestratorState) -> str | list[Send]:
+def route_after_analyst(state: OrchestratorState) -> str:
     """Decide where to go after analyst.
 
     Routing logic:
     - If LLM made tool calls -> execute them
-    - If project was created -> dispatch Zavhoz + Engineering in parallel
+    - If project was created -> go to Zavhoz for resource allocation
     - Otherwise -> END (waiting for user input)
     """
     import structlog
@@ -344,27 +362,17 @@ def route_after_analyst(state: OrchestratorState) -> str | list[Send]:
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "analyst_tools"
 
-    # If project was created, dispatch resources + engineering in parallel
+    # If project was created, go to Zavhoz first (sequential flow)
+    # Zavhoz allocates resources, then Engineering builds, then DevOps deploys
     if state.get("current_project"):
-        # Debug: log the state before dispatching
         project_spec = state.get("project_spec")
         logger.info(
-            "route_after_analyst_dispatching",
+            "route_after_analyst_to_zavhoz",
             current_project=state.get("current_project"),
             project_spec_exists=project_spec is not None,
-            project_spec_type=type(project_spec).__name__ if project_spec else None,
             project_spec_name=project_spec.get("name") if isinstance(project_spec, dict) else None,
         )
-        # Explicitly pass project_spec to ensure it's available in subgraph
-        # This works around potential state propagation issues with Send()
-        engineering_state = {
-            "project_spec": project_spec,
-            "current_project": state.get("current_project"),
-        }
-        return [
-            Send("zavhoz", {}),
-            Send("engineering", engineering_state),
-        ]
+        return "zavhoz"
 
     # Otherwise END - LLM responded with a question, wait for user
     return END
@@ -431,21 +439,27 @@ def create_graph() -> StateGraph:
         },
     )
 
-    # After analyst: either execute tools, dispatch parallel, or end
+    # After analyst: either execute tools, go to zavhoz, or end
     graph.add_conditional_edges(
         "analyst",
         route_after_analyst,
+        {
+            "analyst_tools": "analyst_tools",
+            "zavhoz": "zavhoz",
+            END: END,
+        },
     )
 
     # After analyst tools execution: back to analyst to process result
     graph.add_edge("analyst_tools", "analyst")
 
-    # After zavhoz: either execute tools or end
+    # After zavhoz: execute tools, go to engineering (new project), or devops (deploy)
     graph.add_conditional_edges(
         "zavhoz",
         route_after_zavhoz,
         {
             "zavhoz_tools": "zavhoz_tools",
+            "engineering": "engineering",
             "devops": "devops",
             END: END,
         },

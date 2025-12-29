@@ -105,7 +105,7 @@ class DeveloperNode(BaseAgentNode):
             task_content = project_spec.get("description") or "Implement business logic."
             if project_spec:
                 task_content += "\n\nProject spec:\n"
-                task_content += json.dumps(project_spec, indent=2, ensure_ascii=True)
+                task_content += json.dumps(project_spec, indent=2, ensure_ascii=False)
 
             task_title = f"Implement business logic for {project_spec.get('name', repo_name)}"
 
