@@ -7,7 +7,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from .nodes import analyst, devops, intent_parser, product_owner, provisioner, zavhoz
+from .nodes import analyst, intent_parser, product_owner, provisioner, zavhoz
+from .subgraphs.devops import create_devops_subgraph
 from .subgraphs.engineering import create_engineering_subgraph
 
 # Maximum iterations for PO agentic loop before forcing END
@@ -133,6 +134,17 @@ class OrchestratorState(TypedDict):
     engineering_iterations: int
     # Test results (see shared.schemas.TestResults)
     test_results: dict | None
+
+    # ============================================================
+    # DEVOPS SUBGRAPH STATE (Iteration 2)
+    # Tracks deployment with intelligent secret handling
+    # ============================================================
+    # Secrets provided by user/PO for deployment
+    provided_secrets: dict
+    # Secrets that DevOps needs from user (classified as "user" type)
+    missing_user_secrets: list[str]
+    # Result from DevOps subgraph deployment
+    deployment_result: dict | None
 
     # ============================================================
     # HUMAN-IN-THE-LOOP FLAGS
@@ -426,23 +438,94 @@ def route_after_analyst(state: OrchestratorState) -> str:
 
 
 def route_after_devops(state: OrchestratorState) -> str:
-    """Decide where to go after devops.
+    """Decide where to go after devops subgraph.
 
-    Routing logic:
-    - If LLM made tool calls -> execute them
-    - Otherwise -> END (deployment finished or question asking)
+    DevOps subgraph handles its own internal routing.
+    After subgraph completes, always END (either deployed or missing secrets).
     """
-    messages = state.get("messages", [])
-    if not messages:
-        return END
+    import structlog
 
-    last_message = messages[-1]
+    logger = structlog.get_logger()
 
-    # If LLM wants to call tools (e.g., analyze_env_requirements, run_ansible_deploy)
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "devops_tools"
+    missing = state.get("missing_user_secrets", [])
+    deployed_url = state.get("deployed_url")
+
+    if missing:
+        logger.info(
+            "devops_missing_user_secrets",
+            missing=missing,
+        )
+    elif deployed_url:
+        logger.info(
+            "devops_deployment_complete",
+            deployed_url=deployed_url,
+        )
 
     return END
+
+
+async def run_devops_subgraph(state: OrchestratorState) -> dict:
+    """Run the DevOps subgraph as a single unit.
+
+    This node invokes the compiled devops subgraph and
+    propagates its final state back to the parent graph.
+
+    The subgraph handles:
+    1. Analyzing .env.example and classifying secrets
+    2. Generating infra secrets, computing context-based values
+    3. Checking for missing user secrets
+    4. Running Ansible deployment if all secrets present
+    """
+    import structlog
+
+    logger = structlog.get_logger()
+
+    logger.info(
+        "devops_subgraph_starting",
+        current_project=state.get("current_project"),
+        provided_secrets_count=len(state.get("provided_secrets", {})),
+    )
+
+    devops_graph = create_devops_subgraph()
+
+    # Prepare initial state for the subgraph
+    subgraph_input = {
+        "messages": state.get("messages", []),
+        "project_id": state.get("current_project"),
+        "project_spec": state.get("project_spec"),
+        "allocated_resources": state.get("allocated_resources", {}),
+        "repo_info": state.get("repo_info"),
+        "provided_secrets": state.get("provided_secrets", {}),
+        # Initialize internal state
+        "env_variables": [],
+        "env_analysis": {},
+        "resolved_secrets": {},
+        # Initialize output state
+        "missing_user_secrets": [],
+        "deployment_result": None,
+        "deployed_url": None,
+        "errors": state.get("errors", []),
+    }
+
+    # Run the subgraph
+    result = await devops_graph.ainvoke(subgraph_input)
+
+    logger.info(
+        "devops_subgraph_complete",
+        missing_user_secrets=result.get("missing_user_secrets", []),
+        deployed_url=result.get("deployed_url"),
+        has_errors=bool(result.get("errors")),
+    )
+
+    # Return the merged state
+    return {
+        "messages": result.get("messages", []),
+        "missing_user_secrets": result.get("missing_user_secrets", []),
+        "deployment_result": result.get("deployment_result"),
+        "deployed_url": result.get("deployed_url"),
+        "errors": result.get("errors", []),
+        "current_agent": "devops",
+    }
 
 
 def create_graph() -> StateGraph:
@@ -462,8 +545,7 @@ def create_graph() -> StateGraph:
     graph.add_node("zavhoz", zavhoz.run)
     graph.add_node("zavhoz_tools", zavhoz.execute_tools)
     graph.add_node("engineering", run_engineering_subgraph)
-    graph.add_node("devops", devops.run)
-    graph.add_node("devops_tools", devops.execute_tools)
+    graph.add_node("devops", run_devops_subgraph)  # Now a subgraph wrapper
     graph.add_node("provisioner", provisioner.run)
     graph.add_node("analyst", analyst.run)
     graph.add_node("analyst_tools", analyst.execute_tools)
@@ -550,18 +632,8 @@ def create_graph() -> StateGraph:
         },
     )
 
-    # After devops: execute tools or end
-    graph.add_conditional_edges(
-        "devops",
-        route_after_devops,
-        {
-            "devops_tools": "devops_tools",
-            END: END,
-        },
-    )
-
-    # After devops tools: back to devops
-    graph.add_edge("devops_tools", "devops")
+    # After devops subgraph: always END (deployed or missing secrets)
+    graph.add_edge("devops", END)
 
     # Provisioner: END (standalone operation)
     graph.add_edge("provisioner", END)
