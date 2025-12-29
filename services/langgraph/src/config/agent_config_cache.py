@@ -33,6 +33,18 @@ class AgentConfigCache:
 
             # Fetch fresh config
             config = await get_agent_config(agent_id)
+            # Validate that config has required fields
+            if not config.get("llm_provider") or not config.get("model_identifier"):
+                import structlog
+
+                logger = structlog.get_logger()
+                logger.warning(
+                    "agent_config_missing_fields",
+                    agent_id=agent_id,
+                    has_llm_provider=bool(config.get("llm_provider")),
+                    has_model_identifier=bool(config.get("model_identifier")),
+                    config_keys=list(config.keys()),
+                )
             self._cache[agent_id] = (config, now + self.ttl)
             return config
 

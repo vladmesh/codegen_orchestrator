@@ -24,8 +24,7 @@
     - Ask only for missing info that blocks the next concrete step.
     - **For NEW PROJECTS or REQUIREMENTS CHANGES**: Use `delegate_to_analyst` to pass the task
       to the Analyst who will gather details and create the project spec.
-    - If activation requires secrets, ask for them and save with `save_project_secret`,
-      then verify with `check_ready_to_deploy`.
+
     - Keep responses concise and in the same language as the user.
 - id: "architect"
   name: "Architect"

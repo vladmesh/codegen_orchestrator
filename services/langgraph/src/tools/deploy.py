@@ -56,7 +56,8 @@ async def check_deploy_readiness(
     project_name = project.get("name", project_id)
 
     # 2. Check repository
-    if not project.get("repository_url"):
+    repo_url = project.get("repository_url") or project.get("config", {}).get("repository_url")
+    if not repo_url:
         missing.append("repository")
 
     # 3. Check allocated resources

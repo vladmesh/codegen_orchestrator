@@ -62,10 +62,45 @@ class LLMNode(BaseNode):
         """
         return await agent_config_cache.get(self.agent_id)
 
+    async def get_llm(self):
+        """Get LLM instance configured from API."""
+        config = await self.get_config()
+        # Log config for debugging
+        logger.debug(
+            "get_llm_config_check",
+            agent_id=self.agent_id,
+            has_llm_provider="llm_provider" in config,
+            has_model_identifier="model_identifier" in config,
+            config_keys=list(config.keys()),
+        )
+        # Validate required fields before creating LLM
+        if not config.get("llm_provider"):
+            logger.error(
+                "missing_llm_provider",
+                agent_id=self.agent_id,
+                config_keys=list(config.keys()),
+                config_sample={k: str(v)[:50] for k, v in list(config.items())[:5]},
+            )
+            raise KeyError(
+                f"Agent config '{self.agent_id}' missing llm_provider. "
+                f"Config keys: {list(config.keys())}"
+            )
+        if not config.get("model_identifier"):
+            logger.error(
+                "missing_model_identifier",
+                agent_id=self.agent_id,
+                config_keys=list(config.keys()),
+                config_sample={k: str(v)[:50] for k, v in list(config.items())[:5]},
+            )
+            raise KeyError(
+                f"Agent config '{self.agent_id}' missing model_identifier. "
+                f"Config keys: {list(config.keys())}"
+            )
+        return LLMFactory.create_llm(config)
+
     async def get_llm_with_tools(self):
         """Get LLM with bound tools, configured from API."""
-        config = await self.get_config()
-        llm = LLMFactory.create_llm(config)
+        llm = await self.get_llm()
         return llm.bind_tools(self.tools)
 
     async def get_system_prompt(self) -> str:

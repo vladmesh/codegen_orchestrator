@@ -119,13 +119,14 @@ async def get_project(
 @router.get("/", response_model=list[ProjectRead])
 async def list_projects(
     status: str | None = None,
+    owner_only: bool = False,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> list[Project]:
     """List projects, optionally filtered by status."""
     query = select(Project)
 
-    # Filter by owner if user provided and not admin
+    # Filter by owner if user provided and not admin, or if owner_only requested
     if x_telegram_id is not None:
         user = await _resolve_user(x_telegram_id, db)
         if not user:
@@ -133,8 +134,8 @@ async def list_projects(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"User with telegram_id {x_telegram_id} not found",
             )
-        if not user.is_admin:
-            # Regular user: only their projects
+        if not user.is_admin or owner_only:
+            # Regular user or explict owner_only request: only their projects
             query = query.where(Project.owner_id == user.id)
 
     if status:

@@ -14,6 +14,7 @@ from typing import Any
 from langchain_core.messages import SystemMessage
 import structlog
 
+from ..clients.api import api_client
 from ..tools.architect_tools import (
     customize_task_instructions,
     select_modules,
@@ -178,6 +179,24 @@ async def execute_tools(state: dict) -> dict:
 
     # Execute tools via LLMNode
     result = await _node.execute_tools(state)
+
+    # Side effect: Save repository URL if repo was created
+    repo_info = result.get("repo_info")
+    project_id = state.get("project_id")
+    if repo_info and project_id and isinstance(repo_info, dict):
+        html_url = repo_info.get("html_url")
+        if html_url:
+            try:
+                # Store in config to avoid schema changes
+                # Read-modify-write pattern to preserve existing config
+                project_data = await api_client.get_project(project_id)
+                if project_data:
+                    config = project_data.get("config") or {}
+                    config["repository_url"] = html_url
+                    await api_client.patch(f"projects/{project_id}", json={"config": config})
+                    logger.info("repository_url_saved", project_id=project_id, url=html_url)
+            except Exception as e:
+                logger.error("failed_to_save_repository_url", error=str(e))
 
     # Add custom_task_instructions if it was set
     if custom_instructions:

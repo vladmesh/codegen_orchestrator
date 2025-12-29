@@ -138,7 +138,8 @@ async def run(state: dict) -> dict:
     # Create LLM (cheap, fast model)
     llm = LLMFactory.create_llm(
         {
-            "model_name": PARSER_MODEL,
+            "llm_provider": "openrouter",
+            "model_identifier": PARSER_MODEL,
             "temperature": PARSER_TEMPERATURE,
         }
     )

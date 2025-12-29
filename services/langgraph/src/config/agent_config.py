@@ -79,7 +79,21 @@ class AgentConfigCache:
             from src.clients.api import api_client
 
             config = await api_client.get_agent_config(agent_id)
-            logger.info("config_fetched", agent_id=agent_id)
+            # Validate required fields
+            if not config.get("llm_provider") or not config.get("model_identifier"):
+                logger.error(
+                    "config_missing_required_fields",
+                    agent_id=agent_id,
+                    has_llm_provider=bool(config.get("llm_provider")),
+                    has_model_identifier=bool(config.get("model_identifier")),
+                    config_keys=list(config.keys()),
+                )
+            logger.info(
+                "config_fetched",
+                agent_id=agent_id,
+                has_llm_provider=bool(config.get("llm_provider")),
+                has_model_identifier=bool(config.get("model_identifier")),
+            )
             return config
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == httpx.codes.NOT_FOUND:
