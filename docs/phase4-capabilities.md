@@ -1167,4 +1167,4 @@ services:
 
 ## Next Phase
 
-After Phase 4, proceed to [Phase 5: Integration & Testing](./phase5-integration.md) (to be created).
+After Phase 4, proceed to [Phase 5-6: Integration & RAG](./phase5-6-integration-rag.md).

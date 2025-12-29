@@ -111,29 +111,128 @@ async def search_knowledge(
     Returns:
         {"results": [{"source": "...", "content": "...", "relevance": 0.95}, ...]}
 
-    Note: Full RAG integration coming in Phase 6. Currently uses basic project context search.
+    Phase 6: Full RAG integration with scope filtering.
     """
-    from ..tools.rag import search_project_context
+    from ..clients.api import api_client
 
     state = get_current_state()
     project_id = state.get("current_project")
+    user_id = state.get("user_id")
 
-    # If no project, return empty
-    if not project_id:
-        return {
-            "results": [],
-            "note": "No active project. Use project_management tools to select a project.",
-        }
+    results = []
+    errors = []
 
-    # Use existing RAG tool
-    try:
-        result = await search_project_context.ainvoke(
-            {"project_id": project_id, "query": query, "scope": "public", "limit": 5}
+    # Scope handlers
+    async def search_history():
+        """Search conversation summaries."""
+        if not user_id:
+            return []
+        try:
+            summaries = await api_client.get(f"rag/summaries?user_id={user_id}&limit=5")
+            return [
+                {
+                    "source": "history",
+                    "content": s["summary_text"],
+                    "relevance": s.get("similarity", 0.8),
+                    "metadata": {"created_at": s.get("created_at")},
+                }
+                for s in summaries
+            ]
+        except Exception as e:
+            errors.append(f"history: {e}")
+            return []
+
+    async def search_docs():
+        """Search project documentation."""
+        if not project_id:
+            return []
+        try:
+            # Use existing RAG tool for docs search
+            from ..tools.rag import search_project_context
+
+            result = await search_project_context.ainvoke(
+                {"project_id": project_id, "query": query, "scope": "public", "limit": 5}
+            )
+            docs = result.get("results", []) if isinstance(result, dict) else []
+            return [
+                {
+                    "source": "docs",
+                    "content": d.get("content", d.get("summary", "")),
+                    "relevance": d.get("relevance", 0.8),
+                    "metadata": {"file": d.get("file_path", d.get("source"))},
+                }
+                for d in docs
+            ]
+        except Exception as e:
+            errors.append(f"docs: {e}")
+            return []
+
+    async def search_logs():
+        """Search service logs (recent errors, events)."""
+        if not project_id:
+            return []
+        try:
+            # Try get_error_history if available
+            from ..tools.diagnose import get_error_history
+
+            error_data = await get_error_history.ainvoke({"project_id": project_id, "hours": 24})
+            if error_data.get("errors"):
+                return [
+                    {
+                        "source": "logs",
+                        "content": f"Error ({e['count']}x): {e['message']}",
+                        "relevance": 0.7,
+                        "metadata": {"count": e["count"]},
+                    }
+                    for e in error_data["errors"][:5]
+                ]
+        except Exception as e:
+            errors.append(f"logs: {e}")
+        return []
+
+    async def search_code():
+        """Search source code (basic text search for MVP)."""
+        if not project_id:
+            return []
+        try:
+            # For MVP: return empty, code search requires GitHub API integration
+            # Future: implement GitHub code search or embeddings
+            return []
+        except Exception as e:
+            errors.append(f"code: {e}")
+            return []
+
+    # Execute based on scope
+    if scope == "all":
+        import asyncio
+
+        all_results = await asyncio.gather(
+            search_history(),
+            search_docs(),
+            search_logs(),
+            search_code(),
         )
-        return {"results": result.get("results", []) if isinstance(result, dict) else []}
-    except Exception as e:
-        logger.warning("search_knowledge_failed", error=str(e), query=query)
-        return {"results": [], "error": str(e)}
+        for r in all_results:
+            results.extend(r)
+    elif scope == "history":
+        results = await search_history()
+    elif scope == "docs":
+        results = await search_docs()
+    elif scope == "logs":
+        results = await search_logs()
+    elif scope == "code":
+        results = await search_code()
+    else:
+        return {"error": f"Unknown scope: {scope}. Use: all, history, docs, logs, code"}
+
+    # Sort by relevance
+    results.sort(key=lambda x: x.get("relevance", 0), reverse=True)
+
+    return {
+        "results": results[:10],  # Top 10
+        "total_found": len(results),
+        "errors": errors if errors else None,
+    }
 
 
 @tool

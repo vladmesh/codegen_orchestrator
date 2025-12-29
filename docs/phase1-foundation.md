@@ -704,4 +704,6 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
 
 ## Next Phase
 
-After Phase 1, proceed to [Phase 2: Intent Parser](./phase2-intent-parser.md) (to be created).
+After Phase 1, proceed to:
+- [Phase 4: Capability Tools](./phase4-capabilities.md) — Deploy, Infrastructure, Diagnose, Admin
+- [Phase 5-6: Integration & RAG](./phase5-6-integration-rag.md) — Session Manager, Testing, RAG

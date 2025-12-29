@@ -5,10 +5,9 @@ import os
 # Import models
 import sys
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
-
-from alembic import context
 
 # Add the parent directory to sys.path so we can import src
 sys.path.append(os.getcwd())

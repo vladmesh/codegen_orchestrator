@@ -29,6 +29,8 @@ max-returns = 12
 "tests/**" = ["PLR2004", "S101"]
 "alembic/**" = ["F401"]
 "services/langgraph/src/nodes/product_owner.py" = ["C901", "PLR0912", "PLR0915"]
+"services/langgraph/src/capabilities/base.py" = ["C901"]  # search_knowledge complexity
+"services/langgraph/src/worker.py" = ["PLR0915"]  # process_message statements
 
 [lint.isort]
 combine-as-imports = true
