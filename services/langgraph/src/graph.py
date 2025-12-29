@@ -7,7 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from .nodes import analyst, devops, product_owner, provisioner, zavhoz
+from .nodes import analyst, devops, intent_parser, product_owner, provisioner, zavhoz
 from .subgraphs.engineering import create_engineering_subgraph
 
 
@@ -25,6 +25,13 @@ def _merge_errors(left: list[str], right: list[str]) -> list[str]:
             result.append(err)
             seen.add(err)
     return result
+
+
+def _merge_capabilities(left: list[str] | None, right: list[str] | None) -> list[str]:
+    """Reducer that merges capability lists."""
+    left = left or []
+    right = right or []
+    return list(set(left) | set(right))
 
 
 class OrchestratorState(TypedDict):
@@ -58,6 +65,18 @@ class OrchestratorState(TypedDict):
     po_intent: str | None
     # Task description for Analyst (set by PO when delegating)
     analyst_task: str | None
+
+    # ============================================================
+    # DYNAMIC PO (Phase 2)
+    # ============================================================
+    # Thread ID for checkpointing and session tracking
+    thread_id: str | None
+    # Active capabilities loaded by intent parser
+    active_capabilities: Annotated[list[str], _merge_capabilities]
+    # Brief task summary from intent parser
+    task_summary: str | None
+    # Flag: skip intent parser (set when continuing session)
+    skip_intent_parser: bool
 
     # ============================================================
     # ALLOCATED RESOURCES
@@ -141,9 +160,6 @@ class OrchestratorState(TypedDict):
     deployed_url: str | None
 
 
-# route_after_brainstorm removed
-
-
 def route_after_zavhoz(state: OrchestratorState) -> str:
     """Decide where to go after zavhoz.
 
@@ -192,6 +208,11 @@ def route_after_zavhoz(state: OrchestratorState) -> str:
         hint="Zavhoz did not allocate resources. Check Zavhoz prompt/tools.",
     )
     return END
+
+
+def route_after_intent_parser(state: OrchestratorState) -> str:
+    """After intent parser, always go to product owner."""
+    return "product_owner"
 
 
 def route_after_product_owner(state: OrchestratorState) -> str:
@@ -381,17 +402,17 @@ def route_after_analyst(state: OrchestratorState) -> str:
 def create_graph() -> StateGraph:
     """Create the orchestrator graph.
 
-    Topology (Phase 3 & 4):
-        START -> product_owner -> brainstorm -> [zavhoz || engineering]
-                                              -> devops -> END
+    Topology (Dynamic PO):
+        START -> intent_parser -> product_owner -> ... -> END
+        START -> product_owner (if skip_intent_parser) -> ... -> END
         START -> provisioner -> END (standalone)
     """
     graph = StateGraph(OrchestratorState)
 
     # Add nodes
+    graph.add_node("intent_parser", intent_parser.run)
     graph.add_node("product_owner", product_owner.run)
     graph.add_node("product_owner_tools", product_owner.execute_tools)
-    # Brainstorm node removed
     graph.add_node("zavhoz", zavhoz.run)
     graph.add_node("zavhoz_tools", zavhoz.execute_tools)
     graph.add_node("engineering", run_engineering_subgraph)
@@ -405,16 +426,23 @@ def create_graph() -> StateGraph:
         """Route from start based on intent."""
         if state.get("server_to_provision"):
             return "provisioner"
-        return "product_owner"
+        # Skip intent parser if continuing existing session
+        if state.get("skip_intent_parser"):
+            return "product_owner"
+        return "intent_parser"
 
     graph.add_conditional_edges(
         START,
         route_start,
         {
+            "intent_parser": "intent_parser",
             "product_owner": "product_owner",
             "provisioner": "provisioner",
         },
     )
+
+    # After intent parser: always go to product owner
+    graph.add_edge("intent_parser", "product_owner")
 
     # After product owner: either execute tools, go to analyst, or end
     graph.add_conditional_edges(

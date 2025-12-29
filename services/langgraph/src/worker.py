@@ -24,7 +24,7 @@ from .clients.api import api_client
 from .config.settings import get_settings
 from .events import publish_event
 from .graph import OrchestratorState, create_graph
-from .thread_manager import get_or_create_thread_id
+from .thread_manager import get_current_thread_id, get_or_create_thread_id
 
 logger = structlog.get_logger()
 
@@ -98,21 +98,53 @@ async def _periodic_memory_stats():
         await _log_memory_stats()
 
 
+async def _has_active_session(user_id: int) -> tuple[bool, str | None]:
+    """Check if user has an active session (conversation history exists).
+
+    For now, we just check if there's conversation history for the current thread.
+    In the future, this could check LangGraph checkpointer directly.
+
+    Returns:
+        Tuple of (has_active_session, current_thread_id)
+    """
+    thread_id = await get_current_thread_id(user_id)
+    if thread_id is None:
+        return False, None
+
+    # Check if there's any conversation history for this thread
+    has_history = bool(conversation_history.get(thread_id))
+
+    return has_history, thread_id
+
+
 async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
     """Process a single message through the LangGraph.
 
-    Args:
-        redis_client: Redis client for sending responses.
-        data: Message data from Telegram.
+    Flow:
+    - If user has active session -> skip intent_parser, go directly to PO
+    - If no active session -> intent_parser selects capabilities and creates new thread
     """
     telegram_user_id = data.get("user_id")  # This is telegram_id from Telegram API
     chat_id = data.get("chat_id")
     text = data.get("text", "")
     correlation_id = data.get("correlation_id")
 
-    # Get or create thread_id using Redis sequence
-    # This replaces the simple f"user_{telegram_user_id}" format
-    thread_id = await get_or_create_thread_id(telegram_user_id) if telegram_user_id else "unknown"
+    # Check for active session
+    has_active, current_thread_id = (
+        await _has_active_session(telegram_user_id) if telegram_user_id else (False, None)
+    )
+
+    # Determine if we should skip intent parser
+    # Skip if we have an active session (continuing conversation)
+    skip_intent_parser = has_active
+
+    # Use existing thread_id for continuation, or get_or_create for new session
+    if skip_intent_parser and current_thread_id:
+        thread_id = current_thread_id
+    else:
+        thread_id = (
+            await get_or_create_thread_id(telegram_user_id) if telegram_user_id else "unknown"
+        )
 
     # Resolve internal user_id from telegram_id
     internal_user_id = await _resolve_user_id(telegram_user_id) if telegram_user_id else None
@@ -125,7 +157,12 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         user_id=internal_user_id,
     )
 
-    logger.info("message_received", chat_id=chat_id, message_length=len(text))
+    logger.info(
+        "message_received",
+        chat_id=chat_id,
+        message_length=len(text),
+        skip_intent_parser=skip_intent_parser,
+    )
 
     try:
         # Get existing conversation history
@@ -158,6 +195,11 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
             # User context for multi-tenancy
             "telegram_user_id": telegram_user_id,
             "user_id": internal_user_id,
+            # Dynamic PO: control whether to run intent parser
+            "skip_intent_parser": skip_intent_parser,
+            "thread_id": thread_id,
+            "active_capabilities": [],
+            "task_summary": None,
         }
 
         # LangGraph config with thread_id for checkpointing
@@ -368,6 +410,11 @@ async def process_provisioning_trigger(data: dict) -> None:
         "architect_complete": False,
         "project_complexity": None,
         "provisioning_result": None,
+        # Dynamic PO fields
+        "skip_intent_parser": True,  # Provisioner skips intent parser
+        "thread_id": None,
+        "active_capabilities": [],
+        "task_summary": None,
     }
 
     config = {"configurable": {"thread_id": f"provisioner-{server_handle}"}}
