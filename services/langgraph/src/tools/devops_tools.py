@@ -2,7 +2,6 @@
 
 import json
 import os
-import secrets
 import subprocess
 import tempfile
 from typing import Annotated
@@ -98,124 +97,6 @@ async def _setup_ci_secrets(
             error_type=type(e).__name__,
         )
         return False
-
-
-@tool
-async def analyze_env_requirements(
-    project_id: Annotated[str, "Project ID to analyze"],
-) -> dict:
-    """Analyze .env.example and classify each variable.
-
-    Returns a dictionary with 'variables' list and their raw content.
-    """
-    logger.info("analyzing_env_requirements", project_id=project_id)
-
-    project = await api_client.get_project(project_id)
-    if not project:
-        return {"error": "Project not found"}
-
-    # Get repository info
-    repo_url = project.get("repository_url") or project.get("config", {}).get("repository_url")
-    if not repo_url:
-        return {"error": "No repository URL found for project"}
-
-    # Extract owner/repo from URL (assuming github.com/owner/repo)
-    try:
-        # url format: https://github.com/owner/repo
-        parts = repo_url.rstrip("/").split("/")
-        repo = parts[-1]
-        owner = parts[-2]
-    except Exception:
-        return {"error": f"Invalid repository URL format: {repo_url}"}
-
-    github = GitHubAppClient()
-
-    try:
-        content = await github.get_file_content(owner, repo, ".env.example")
-        if not content:
-            # Fallback to .env.template or just return empty if none
-            content = await github.get_file_content(owner, repo, ".env.template")
-
-        if not content:
-            return {"variables": [], "message": "No .env.example found"}
-
-        # Basic parsing
-        variables = []
-        for line in content.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-
-            # Key=Value
-            if "=" in line:
-                key = line.split("=", 1)[0].strip()
-                variables.append(key)
-
-        return {"variables": variables, "raw_content": content}
-
-    except Exception as e:
-        logger.error("env_analysis_failed", error=str(e))
-        return {"error": f"Failed to analyze env requirements: {e}"}
-
-
-@tool
-async def generate_infra_secret(
-    key: Annotated[str, "Secret key name (e.g. DATABASE_URL)"],
-    project_id: Annotated[str, "Project ID"],
-) -> str:
-    """Generate infrastructure secret value."""
-    project_id = project_id.replace("-", "_").lower()
-
-    # Get allocations to check for server existence
-    # Get allocations to check for server existence (commented out as unused)
-    # allocations = await api_client.get_project_allocations(project_id)
-
-    # server_ip can be used if we need external access
-    # if allocations:
-    #     server_ip = allocations[0].get("server_ip", "127.0.0.1")
-
-    if key == "REDIS_URL":
-        # In our infra, redis is usually shared or local?
-        # Assuming typical pattern: redis://redis:6379/0 or similar
-        return "redis://redis:6379/0"
-
-    elif key == "DATABASE_URL":
-        # postgresql://user:pass@host:5432/db
-        db_pass = secrets.token_urlsafe(16)
-        db_name = f"db_{project_id}"
-        # We assume we are inside docker network or using internal IP
-        return f"postgresql://postgres:{db_pass}@postgres:5432/{db_name}"
-
-    elif "SECRET" in key or "KEY" in key and "API" not in key:
-        # Generic secret key
-        return secrets.token_urlsafe(32)
-
-    elif key == "POSTGRES_USER":
-        return "postgres"
-    elif key == "POSTGRES_PASSWORD":
-        return secrets.token_urlsafe(16)
-    elif key == "POSTGRES_DB":
-        return f"db_{project_id}"
-
-    # Default random for unknowns
-    return secrets.token_urlsafe(32)
-
-
-@tool
-async def get_project_context(
-    project_id: Annotated[str, "Project ID"],
-) -> dict:
-    """Get project context for computed secrets."""
-    project = await api_client.get_project(project_id)
-    if not project:
-        return {"error": "Project not found"}
-
-    return {
-        "project_id": project.get("id"),
-        "name": project.get("name"),
-        "status": project.get("status"),
-        "config": project.get("config"),
-    }
 
 
 @tool

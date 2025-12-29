@@ -5,7 +5,6 @@ from . import (
     analyst,
     architect,
     developer,
-    devops,
     intent_parser,
     preparer,
     product_owner,
@@ -20,6 +19,5 @@ __all__ = [
     "architect",
     "preparer",
     "developer",
-    "devops",
     "provisioner",
 ]
