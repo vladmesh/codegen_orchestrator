@@ -15,26 +15,45 @@ from ..tools import (
     # Ports
     allocate_port,
     check_ready_to_deploy,
+    # Phase 4: Diagnose capability
+    check_service_health,
+    # Phase 4: Admin capability
+    clear_project_state,
     create_project_intent,
     # Delegation
     delegate_to_analyst,
     find_suitable_server,
+    # Phase 4: Deploy capability
+    get_deploy_logs,
+    get_deploy_status,
+    # Phase 4: Engineering capability
+    get_engineering_status,
+    get_error_history,
     get_next_available_port,
     get_project_status,
     get_server_info,
+    get_service_logs,
     inspect_repository,
     # Incidents
     list_active_incidents,
+    # Phase 4: Infrastructure capability
+    list_allocations,
+    list_graph_nodes,
     # Servers
     list_managed_servers,
     # Project management
     list_projects,
     # Resources
     list_resource_inventory,
+    release_port,
     save_project_secret,
     # RAG
     search_project_context,
     set_project_maintenance,
+    trigger_deploy,
+    trigger_engineering,
+    trigger_node_manually,
+    view_latest_pr,
 )
 from .base import BASE_TOOLS
 
@@ -47,7 +66,9 @@ CAPABILITY_REGISTRY: dict[str, dict[str, Any]] = {
             "activate_project",
             "inspect_repository",
             "save_project_secret",
-            # Future: trigger_deploy, get_deploy_status, get_deploy_logs
+            "trigger_deploy",
+            "get_deploy_status",
+            "get_deploy_logs",
         ],
     },
     "infrastructure": {
@@ -59,6 +80,8 @@ CAPABILITY_REGISTRY: dict[str, dict[str, Any]] = {
             "allocate_port",
             "get_next_available_port",
             "list_resource_inventory",
+            "list_allocations",
+            "release_port",
         ],
     },
     "project_management": {
@@ -74,7 +97,9 @@ CAPABILITY_REGISTRY: dict[str, dict[str, Any]] = {
         "description": "Trigger code implementation pipeline",
         "tools": [
             "delegate_to_analyst",
-            # Future: trigger_engineering, get_engineering_status, view_latest_pr
+            "trigger_engineering",
+            "get_engineering_status",
+            "view_latest_pr",
         ],
     },
     "diagnose": {
@@ -82,13 +107,17 @@ CAPABILITY_REGISTRY: dict[str, dict[str, Any]] = {
         "tools": [
             "list_active_incidents",
             "search_project_context",
-            # Future: get_service_logs, get_node_logs, check_service_health
+            "get_service_logs",
+            "check_service_health",
+            "get_error_history",
         ],
     },
     "admin": {
         "description": "System administration and manual control",
         "tools": [
-            # Future: list_graph_nodes, get_node_state, trigger_node_manually
+            "list_graph_nodes",
+            "trigger_node_manually",
+            "clear_project_state",
         ],
     },
 }
@@ -120,6 +149,25 @@ TOOLS_MAP: dict[str, BaseTool] = {
     "delegate_to_analyst": delegate_to_analyst,
     # Incidents
     "list_active_incidents": list_active_incidents,
+    # Phase 4: Deploy
+    "trigger_deploy": trigger_deploy,
+    "get_deploy_status": get_deploy_status,
+    "get_deploy_logs": get_deploy_logs,
+    # Phase 4: Infrastructure
+    "list_allocations": list_allocations,
+    "release_port": release_port,
+    # Phase 4: Engineering
+    "trigger_engineering": trigger_engineering,
+    "get_engineering_status": get_engineering_status,
+    "view_latest_pr": view_latest_pr,
+    # Phase 4: Diagnose
+    "get_service_logs": get_service_logs,
+    "check_service_health": check_service_health,
+    "get_error_history": get_error_history,
+    # Phase 4: Admin
+    "list_graph_nodes": list_graph_nodes,
+    "trigger_node_manually": trigger_node_manually,
+    "clear_project_state": clear_project_state,
 }
 
 

@@ -13,6 +13,9 @@ from .activation import (
     save_project_secret,
 )
 
+# Phase 4: Admin capability
+from .admin import clear_project_state, list_graph_nodes, trigger_node_manually
+
 # Architect tools (module selection, deployment hints)
 from .architect_tools import (
     AVAILABLE_MODULES,
@@ -25,11 +28,28 @@ from .architect_tools import (
 # Delegation tools
 from .delegation import delegate_to_analyst
 
+# Deploy capability (Phase 4)
+from .deploy import (
+    check_deploy_readiness,
+    get_deploy_logs,
+    get_deploy_status,
+    trigger_deploy,
+)
+
+# Phase 4: Diagnose capability
+from .diagnose import check_service_health, get_error_history, get_service_logs
+
+# Phase 4: Engineering capability
+from .engineering import get_engineering_status, trigger_engineering, view_latest_pr
+
 # GitHub tools
 from .github import create_file_in_repo, create_github_repo, get_github_token
 
 # Incident tracking
 from .incidents import create_incident, list_active_incidents
+
+# Phase 4: Infrastructure capability
+from .infrastructure import list_allocations, release_port
 
 # Port allocation
 from .ports import allocate_port, get_next_available_port
@@ -106,4 +126,24 @@ __all__ = [
     "set_deployment_hints",
     "customize_task_instructions",
     "set_project_complexity",
+    # Deploy (Phase 4)
+    "trigger_deploy",
+    "get_deploy_status",
+    "get_deploy_logs",
+    "check_deploy_readiness",
+    # Infrastructure (Phase 4)
+    "list_allocations",
+    "release_port",
+    # Engineering (Phase 4)
+    "trigger_engineering",
+    "get_engineering_status",
+    "view_latest_pr",
+    # Diagnose (Phase 4)
+    "get_service_logs",
+    "check_service_health",
+    "get_error_history",
+    # Admin (Phase 4)
+    "list_graph_nodes",
+    "trigger_node_manually",
+    "clear_project_state",
 ]

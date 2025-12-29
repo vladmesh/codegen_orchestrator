@@ -434,6 +434,7 @@ PO:
 
 > Detailed phase documents:
 > - [Phase 1: Foundation](./phase1-foundation.md) — Thread ID, Capability Registry, Base Tools
+> - [Phase 4: Capability Tools](./phase4-capabilities.md) — Deploy, Infrastructure, Diagnose, Admin (LangGraph + Redis Queue)
 
 ### Phase 1: Foundation
 

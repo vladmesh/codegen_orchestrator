@@ -18,7 +18,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -56,6 +56,57 @@ services:
       - redis
     networks:
       - internal
+
+  # Phase 4 Workers
+  deploy-worker:
+    build:
+      context: .
+      dockerfile: services/langgraph/Dockerfile
+    command: python -m src.workers.deploy_worker
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+    volumes:
+      - ./services/langgraph/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
+      - ./services/infrastructure:/app/services/infrastructure:delegated
+      - ~/.ssh:/root/.ssh:ro
+      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+    depends_on:
+      - api
+      - redis
+    networks:
+      - internal
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+  engineering-worker:
+    build:
+      context: .
+      dockerfile: services/langgraph/Dockerfile
+    command: python -m src.workers.engineering_worker
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+    volumes:
+      - ./services/langgraph/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
+      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+    depends_on:
+      - api
+      - redis
+    networks:
+      - internal
+    restart: unless-stopped
+    deploy:
+      replicas: 1
 
   devops:
     profiles: [ "infra" ]

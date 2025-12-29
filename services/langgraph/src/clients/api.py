@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import Any
 
 import httpx
@@ -131,6 +132,40 @@ class LanggraphAPIClient:
 
     async def update_incident(self, incident_id: int, payload: dict) -> dict:
         return await self._patch_json(f"incidents/{incident_id}", json=payload)
+
+    # --- Phase 4: Project methods ---
+
+    async def get_project(self, project_id: str) -> dict | None:
+        """Get a single project by ID."""
+        try:
+            return await self._get_json(f"projects/{project_id}")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == HTTPStatus.NOT_FOUND:
+                return None
+            raise
+
+    # --- Phase 4: Allocation methods ---
+
+    async def get_project_allocations(self, project_id: str) -> list[dict]:
+        """Get all port allocations for a project."""
+        return await self._get_json("allocations/", params={"project_id": project_id})
+
+    async def get_allocation(self, allocation_id: int) -> dict | None:
+        """Get a single allocation by ID."""
+        try:
+            return await self._get_json(f"allocations/{allocation_id}")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == HTTPStatus.NOT_FOUND:
+                return None
+            raise
+
+    async def release_allocation(self, allocation_id: int) -> bool:
+        """Release a port allocation."""
+        try:
+            await self.delete(f"allocations/{allocation_id}")
+            return True
+        except httpx.HTTPStatusError:
+            return False
 
 
 api_client = LanggraphAPIClient()
