@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.nodes.devops import setup_ci_secrets
+from src.tools.devops_tools import _setup_ci_secrets as setup_ci_secrets
 
 
 class TestSetupCISecrets:
@@ -20,7 +20,7 @@ class TestSetupCISecrets:
         mock_github_client = AsyncMock()
         mock_github_client.set_repository_secrets.return_value = 5  # All 5 secrets set
 
-        with patch("src.nodes.devops.SSH_KEY_PATH", str(ssh_key_file)):
+        with patch("src.tools.devops_tools.SSH_KEY_PATH", str(ssh_key_file)):
             result = await setup_ci_secrets(
                 github_client=mock_github_client,
                 owner="test-org",
@@ -52,7 +52,7 @@ class TestSetupCISecrets:
         """Test that setup_ci_secrets returns False when SSH key is missing."""
         mock_github_client = AsyncMock()
 
-        with patch("src.nodes.devops.SSH_KEY_PATH", "/nonexistent/path/id_ed25519"):
+        with patch("src.tools.devops_tools.SSH_KEY_PATH", "/nonexistent/path/id_ed25519"):
             result = await setup_ci_secrets(
                 github_client=mock_github_client,
                 owner="test-org",
@@ -73,7 +73,7 @@ class TestSetupCISecrets:
         mock_github_client = AsyncMock()
         mock_github_client.set_repository_secrets.return_value = 3  # Only 3 of 5 set
 
-        with patch("src.nodes.devops.SSH_KEY_PATH", str(ssh_key_file)):
+        with patch("src.tools.devops_tools.SSH_KEY_PATH", str(ssh_key_file)):
             result = await setup_ci_secrets(
                 github_client=mock_github_client,
                 owner="test-org",
@@ -93,7 +93,7 @@ class TestSetupCISecrets:
         mock_github_client = AsyncMock()
         mock_github_client.set_repository_secrets.side_effect = Exception("API error")
 
-        with patch("src.nodes.devops.SSH_KEY_PATH", str(ssh_key_file)):
+        with patch("src.tools.devops_tools.SSH_KEY_PATH", str(ssh_key_file)):
             result = await setup_ci_secrets(
                 github_client=mock_github_client,
                 owner="test-org",

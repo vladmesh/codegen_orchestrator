@@ -425,6 +425,26 @@ def route_after_analyst(state: OrchestratorState) -> str:
     return END
 
 
+def route_after_devops(state: OrchestratorState) -> str:
+    """Decide where to go after devops.
+
+    Routing logic:
+    - If LLM made tool calls -> execute them
+    - Otherwise -> END (deployment finished or question asking)
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return END
+
+    last_message = messages[-1]
+
+    # If LLM wants to call tools (e.g., analyze_env_requirements, run_ansible_deploy)
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "devops_tools"
+
+    return END
+
+
 def create_graph() -> StateGraph:
     """Create the orchestrator graph.
 
@@ -443,6 +463,7 @@ def create_graph() -> StateGraph:
     graph.add_node("zavhoz_tools", zavhoz.execute_tools)
     graph.add_node("engineering", run_engineering_subgraph)
     graph.add_node("devops", devops.run)
+    graph.add_node("devops_tools", devops.execute_tools)
     graph.add_node("provisioner", provisioner.run)
     graph.add_node("analyst", analyst.run)
     graph.add_node("analyst_tools", analyst.execute_tools)
@@ -529,8 +550,18 @@ def create_graph() -> StateGraph:
         },
     )
 
-    # After devops: END
-    graph.add_edge("devops", END)
+    # After devops: execute tools or end
+    graph.add_conditional_edges(
+        "devops",
+        route_after_devops,
+        {
+            "devops_tools": "devops_tools",
+            END: END,
+        },
+    )
+
+    # After devops tools: back to devops
+    graph.add_edge("devops_tools", "devops")
 
     # Provisioner: END (standalone operation)
     graph.add_edge("provisioner", END)
