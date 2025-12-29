@@ -8,6 +8,7 @@ dependencies = [
     "pgvector>=0.2.5",
     "redis[hiredis]>=5.0.0",
     "structlog>=25.1.0",
+    "pynacl>=1.5.0",  # For GitHub Actions secrets encryption
 ]
 
 [build-system]
