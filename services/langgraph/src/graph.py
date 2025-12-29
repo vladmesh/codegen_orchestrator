@@ -10,6 +10,9 @@ from typing_extensions import TypedDict
 from .nodes import analyst, devops, intent_parser, product_owner, provisioner, zavhoz
 from .subgraphs.engineering import create_engineering_subgraph
 
+# Maximum iterations for PO agentic loop before forcing END
+MAX_PO_ITERATIONS = 20
+
 
 def _last_value(left: str, right: str) -> str:
     """Reducer that keeps the last (rightmost) value for concurrent updates."""
@@ -67,7 +70,7 @@ class OrchestratorState(TypedDict):
     analyst_task: str | None
 
     # ============================================================
-    # DYNAMIC PO (Phase 2)
+    # DYNAMIC PO (Phase 2 + 3)
     # ============================================================
     # Thread ID for checkpointing and session tracking
     thread_id: str | None
@@ -77,6 +80,14 @@ class OrchestratorState(TypedDict):
     task_summary: str | None
     # Flag: skip intent parser (set when continuing session)
     skip_intent_parser: bool
+    # Telegram chat ID (needed by respond_to_user tool)
+    chat_id: int | None
+    # Correlation ID for distributed tracing
+    correlation_id: str | None
+    # Phase 3: Agentic loop control
+    awaiting_user_response: bool  # Waiting for user input?
+    user_confirmed_complete: bool  # User said done (finish_task called)?
+    po_iterations: int  # Loop counter (max 20)
 
     # ============================================================
     # ALLOCATED RESOURCES
@@ -218,46 +229,61 @@ def route_after_intent_parser(state: OrchestratorState) -> str:
 def route_after_product_owner(state: OrchestratorState) -> str:
     """Decide where to go after product owner.
 
-    Routing logic:
-    - If LLM made tool calls -> execute them
-    - If intent is new project -> proceed to Brainstorm
+    Phase 3 agentic loop routing:
+    - If task complete -> END
+    - If awaiting user response -> END (checkpoint saves state)
+    - If max iterations -> END
+    - If has tool calls -> execute them
     - Otherwise -> END
     """
-    messages = state.get("messages", [])
-    if not messages:
+    import structlog
+
+    logger = structlog.get_logger()
+
+    # Task complete?
+    if state.get("user_confirmed_complete"):
+        logger.info("po_routing_task_complete")
         return END
 
-    last_message = messages[-1]
+    # Waiting for user?
+    if state.get("awaiting_user_response"):
+        logger.info("po_routing_awaiting_user")
+        return END
 
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "product_owner_tools"
+    # Max iterations?
+    iterations = state.get("po_iterations", 0)
+    if iterations >= MAX_PO_ITERATIONS:
+        logger.warning("po_routing_max_iterations", iterations=iterations)
+        return END
 
-    if state.get("po_intent") == "new_project":
-        return "analyst"
+    # Has tool calls?
+    messages = state.get("messages", [])
+    if messages:
+        last_message = messages[-1]
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "product_owner_tools"
 
     return END
 
 
 def route_after_product_owner_tools(state: OrchestratorState) -> str:
-    """Decide where to go after product owner tools execution."""
-    po_intent = state.get("po_intent")
+    """Decide where to go after product owner tools execution.
 
-    if po_intent == "new_project":
-        return "analyst"
+    Phase 3 agentic loop:
+    - If task complete -> END
+    - If awaiting user -> END
+    - Otherwise -> back to PO for next iteration
+    """
+    # Task complete?
+    if state.get("user_confirmed_complete"):
+        return END
 
-    if po_intent == "maintenance":
-        # Project update → Engineering directly
-        return "engineering"
+    # Waiting for user?
+    if state.get("awaiting_user_response"):
+        return END
 
-    if po_intent == "deploy":
-        # Discovered project activation → Zavhoz for resource allocation
-        return "zavhoz"
-
-    if po_intent == "delegate_analyst":
-        # New project or requirements change → Analyst
-        return "analyst"
-
-    return END
+    # Continue agentic loop - back to PO
+    return "product_owner"
 
 
 def route_after_engineering(state: OrchestratorState) -> str:
@@ -444,25 +470,22 @@ def create_graph() -> StateGraph:
     # After intent parser: always go to product owner
     graph.add_edge("intent_parser", "product_owner")
 
-    # After product owner: either execute tools, go to analyst, or end
+    # After product owner: execute tools or end (Phase 3 agentic loop)
     graph.add_conditional_edges(
         "product_owner",
         route_after_product_owner,
         {
             "product_owner_tools": "product_owner_tools",
-            "analyst": "analyst",
             END: END,
         },
     )
 
-    # After product owner tools: go to analyst, engineering (maintenance), or end
+    # After product owner tools: loop back to PO or end (Phase 3 agentic loop)
     graph.add_conditional_edges(
         "product_owner_tools",
         route_after_product_owner_tools,
         {
-            "zavhoz": "zavhoz",
-            "engineering": "engineering",
-            "analyst": "analyst",
+            "product_owner": "product_owner",
             END: END,
         },
     )

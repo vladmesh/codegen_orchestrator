@@ -471,20 +471,20 @@ PO:
 ### Phase 3: Dynamic ProductOwner
 
 **3.1. Refactor PO Node**
-- [ ] Accept capabilities from state
-- [ ] Build tool list dynamically: base + capability tools
-- [ ] Implement agentic loop with tool execution
-- [ ] Handle `awaiting_response` flow (pause, wait for user)
+- [x] Accept capabilities from state
+- [x] Build tool list dynamically: base + capability tools
+- [x] Implement agentic loop with tool execution
+- [x] Handle `awaiting_response` flow (pause, wait for user)
 
 **3.2. User Response Handling**
-- [ ] Detect user confirmation phrases ("спасибо", "готово", "ок")
-- [ ] Allow PO to call finish_task only after user confirms
-- [ ] Clear session state on finish
+- [x] Detect user confirmation phrases ("спасибо", "готово", "ок") — via LLM judgment
+- [x] Allow PO to call finish_task only after user confirms
+- [x] Clear session state on finish — routing to END
 
 **3.3. Tool Result Handling**
-- [ ] Pass tool results back to PO for reasoning
-- [ ] Support intermediate respond_to_user calls
-- [ ] Handle tool errors gracefully
+- [x] Pass tool results back to PO for reasoning
+- [x] Support intermediate respond_to_user calls
+- [x] Handle tool errors gracefully
 
 ### Phase 4: Capability Tools
 

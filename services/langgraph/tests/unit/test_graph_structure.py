@@ -129,20 +129,106 @@ def test_route_after_zavhoz_no_resources():
     assert route_after_zavhoz(state) == END
 
 
-def test_route_after_po_tools_deploy_intent():
-    """Test routing to zavhoz when deploy intent is set."""
+# === Phase 3: route_after_product_owner tests ===
+
+
+def test_route_after_po_with_tool_calls():
+    """Test routing to po_tools when PO has tool calls."""
+    from src.graph import route_after_product_owner
+
+    class MockMessage:
+        tool_calls = [{"name": "respond_to_user", "args": {}}]
+
+    state = {
+        "messages": [MockMessage()],
+        "awaiting_user_response": False,
+        "user_confirmed_complete": False,
+        "po_iterations": 0,
+    }
+    assert route_after_product_owner(state) == "product_owner_tools"
+
+
+def test_route_after_po_task_complete():
+    """Test routing to END when task complete."""
+    from langgraph.graph import END
+
+    from src.graph import route_after_product_owner
+
+    class MockMessage:
+        tool_calls = None
+
+    state = {
+        "messages": [MockMessage()],
+        "user_confirmed_complete": True,
+        "awaiting_user_response": False,
+        "po_iterations": 5,
+    }
+    assert route_after_product_owner(state) == END
+
+
+def test_route_after_po_awaiting_user():
+    """Test routing to END when awaiting user response."""
+    from langgraph.graph import END
+
+    from src.graph import route_after_product_owner
+
+    class MockMessage:
+        tool_calls = None
+
+    state = {
+        "messages": [MockMessage()],
+        "user_confirmed_complete": False,
+        "awaiting_user_response": True,
+        "po_iterations": 3,
+    }
+    assert route_after_product_owner(state) == END
+
+
+def test_route_after_po_max_iterations():
+    """Test routing to END when max iterations reached."""
+    from langgraph.graph import END
+
+    from src.graph import MAX_PO_ITERATIONS, route_after_product_owner
+
+    class MockMessage:
+        tool_calls = [{"name": "some_tool", "args": {}}]  # Has tool calls but hit limit
+
+    state = {
+        "messages": [MockMessage()],
+        "user_confirmed_complete": False,
+        "awaiting_user_response": False,
+        "po_iterations": MAX_PO_ITERATIONS,  # Hit limit
+    }
+    assert route_after_product_owner(state) == END
+
+
+def test_route_after_po_tools_continues_loop():
+    """Test that po_tools routes back to product_owner for agentic loop (Phase 3)."""
     from src.graph import route_after_product_owner_tools
 
-    state = {"po_intent": "deploy", "current_project": "test-123"}
-    assert route_after_product_owner_tools(state) == "zavhoz"
+    # Normal case: continue agentic loop
+    state = {"awaiting_user_response": False, "user_confirmed_complete": False}
+    assert route_after_product_owner_tools(state) == "product_owner"
 
 
-def test_route_after_po_tools_delegate_analyst():
-    """Test routing to analyst when delegate_analyst intent is set."""
+def test_route_after_po_tools_awaiting_user():
+    """Test routing to END when awaiting user response."""
+    from langgraph.graph import END
+
     from src.graph import route_after_product_owner_tools
 
-    state = {"po_intent": "delegate_analyst"}
-    assert route_after_product_owner_tools(state) == "analyst"
+    state = {"awaiting_user_response": True, "user_confirmed_complete": False}
+    assert route_after_product_owner_tools(state) == END
+
+
+def test_route_after_po_tools_task_complete():
+    """Test routing to END when task is confirmed complete."""
+    from langgraph.graph import END
+
+    from src.graph import route_after_product_owner_tools
+
+    state = {"awaiting_user_response": False, "user_confirmed_complete": True}
+    assert route_after_product_owner_tools(state) == END
 
 
 def test_route_after_analyst_with_project():

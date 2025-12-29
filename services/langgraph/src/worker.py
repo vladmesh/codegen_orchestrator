@@ -195,11 +195,17 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
             # User context for multi-tenancy
             "telegram_user_id": telegram_user_id,
             "user_id": internal_user_id,
-            # Dynamic PO: control whether to run intent parser
+            # Dynamic PO Phase 2: control whether to run intent parser
             "skip_intent_parser": skip_intent_parser,
             "thread_id": thread_id,
             "active_capabilities": [],
             "task_summary": None,
+            # Dynamic PO Phase 3: agentic loop control
+            "chat_id": chat_id,
+            "correlation_id": correlation_id,
+            "awaiting_user_response": False,  # Reset on each new message
+            "user_confirmed_complete": False,
+            "po_iterations": 0,
         }
 
         # LangGraph config with thread_id for checkpointing
@@ -410,11 +416,17 @@ async def process_provisioning_trigger(data: dict) -> None:
         "architect_complete": False,
         "project_complexity": None,
         "provisioning_result": None,
-        # Dynamic PO fields
+        # Dynamic PO Phase 2 fields
         "skip_intent_parser": True,  # Provisioner skips intent parser
         "thread_id": None,
         "active_capabilities": [],
         "task_summary": None,
+        # Dynamic PO Phase 3 fields
+        "chat_id": None,
+        "correlation_id": None,
+        "awaiting_user_response": False,
+        "user_confirmed_complete": False,
+        "po_iterations": 0,
     }
 
     config = {"configurable": {"thread_id": f"provisioner-{server_handle}"}}
