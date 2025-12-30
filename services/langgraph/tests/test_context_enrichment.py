@@ -9,14 +9,14 @@ import pytest
 # or modify sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src")))
 
-from src.worker import _get_conversation_context
+from src.worker.message_processor import _get_conversation_context
 
 TEST_USER_ID = 123
 
 
 @pytest.mark.asyncio
 async def test_get_conversation_context_returns_summaries():
-    with patch("src.worker.api_client") as mock_client:
+    with patch("src.worker.message_processor.api_client") as mock_client:
         # api_client.get() returns parsed JSON directly, not a response object
         mock_client.get = AsyncMock(
             return_value=[
@@ -34,7 +34,7 @@ async def test_get_conversation_context_returns_summaries():
 
 @pytest.mark.asyncio
 async def test_get_conversation_context_returns_none_on_error():
-    with patch("src.worker.api_client") as mock_client:
+    with patch("src.worker.message_processor.api_client") as mock_client:
         mock_client.get = AsyncMock(side_effect=Exception("API Error"))
 
         context = await _get_conversation_context(user_id=TEST_USER_ID)

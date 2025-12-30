@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.session_manager import SessionState
-from src.worker import process_message
+from src.worker.message_processor import process_message
 
 
 class TestWorkerSessionHandling:
@@ -19,8 +19,8 @@ class TestWorkerSessionHandling:
         redis_client = AsyncMock()
 
         with (
-            patch("src.worker.session_manager") as mock_sm,
-            patch("src.worker.graph") as mock_graph,
+            patch("src.worker.message_processor.session_manager") as mock_sm,
+            patch("src.worker.message_processor.graph") as mock_graph,
         ):
             mock_sm.is_locked = AsyncMock(return_value=(True, SessionState.PROCESSING))
 
@@ -48,9 +48,9 @@ class TestWorkerSessionHandling:
 
         # Mock API client instead of internal function
         with (
-            patch("src.worker.session_manager") as mock_sm,
-            patch("src.worker.graph") as mock_graph,
-            patch("src.worker.api_client") as mock_api,
+            patch("src.worker.message_processor.session_manager") as mock_sm,
+            patch("src.worker.message_processor.graph") as mock_graph,
+            patch("src.worker.message_processor.api_client") as mock_api,
         ):
             mock_sm.is_locked = AsyncMock(return_value=(True, SessionState.AWAITING))
             mock_sm.continue_session = AsyncMock(return_value="thread_123")
@@ -90,9 +90,9 @@ class TestWorkerSessionHandling:
         redis_client = AsyncMock()
 
         with (
-            patch("src.worker.session_manager") as mock_sm,
-            patch("src.worker.graph") as mock_graph,
-            patch("src.worker.api_client") as mock_api,
+            patch("src.worker.message_processor.session_manager") as mock_sm,
+            patch("src.worker.message_processor.graph") as mock_graph,
+            patch("src.worker.message_processor.api_client") as mock_api,
         ):
             mock_sm.is_locked = AsyncMock(return_value=(False, None))
             mock_sm.start_new_session = AsyncMock(return_value="new_thread_456")
@@ -129,10 +129,10 @@ class TestWorkerSessionHandling:
         redis_client = AsyncMock()
 
         with (
-            patch("src.worker.session_manager") as mock_sm,
-            patch("src.worker.graph") as mock_graph,
-            patch("src.worker.api_client") as mock_api,
-            patch("src.worker.conversation_history"),
+            patch("src.worker.message_processor.session_manager") as mock_sm,
+            patch("src.worker.message_processor.graph") as mock_graph,
+            patch("src.worker.message_processor.api_client") as mock_api,
+            patch("src.worker.message_processor.conversation_history"),
         ):
             mock_sm.is_locked = AsyncMock(return_value=(False, None))
             mock_sm.start_new_session = AsyncMock(return_value="thread_789")
@@ -169,9 +169,9 @@ class TestWorkerSessionHandling:
         redis_client = AsyncMock()
 
         with (
-            patch("src.worker.session_manager") as mock_sm,
-            patch("src.worker.graph") as mock_graph,
-            patch("src.worker.api_client") as mock_api,
+            patch("src.worker.message_processor.session_manager") as mock_sm,
+            patch("src.worker.message_processor.graph") as mock_graph,
+            patch("src.worker.message_processor.api_client") as mock_api,
         ):
             mock_sm.is_locked = AsyncMock(return_value=(False, None))
             mock_sm.start_new_session = AsyncMock(return_value="thread_999")
@@ -207,9 +207,9 @@ class TestWorkerSessionHandling:
         redis_client = AsyncMock()
 
         with (
-            patch("src.worker.session_manager") as mock_sm,
-            patch("src.worker.graph") as mock_graph,
-            patch("src.worker.api_client") as mock_api,
+            patch("src.worker.message_processor.session_manager") as mock_sm,
+            patch("src.worker.message_processor.graph") as mock_graph,
+            patch("src.worker.message_processor.api_client") as mock_api,
         ):
             mock_sm.is_locked = AsyncMock(return_value=(False, None))
             mock_sm.start_new_session = AsyncMock(return_value="thread_error")

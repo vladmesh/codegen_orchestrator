@@ -1,43 +1,24 @@
-"""LangGraph worker - consumes messages from Redis and processes through graph."""
+"""Message processing through LangGraph."""
 
 import asyncio
-from collections import defaultdict
-from datetime import UTC, datetime, timedelta
-import json
 import sys
 import time
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from pydantic import ValidationError
-import redis.asyncio as redis
 import structlog
-
-from shared.logging_config import setup_logging
-from shared.schemas.worker_events import parse_worker_event
 
 # Add shared to path
 sys.path.insert(0, "/app")
 from shared.redis_client import RedisStreamClient
 
-from .clients.api import api_client
-from .config.settings import get_settings
-from .events import publish_event
-from .graph import OrchestratorState, create_graph
-from .session_manager import SessionState, session_manager
-from .thread_manager import get_current_thread_id
+from ..clients.api import api_client
+from ..graph import OrchestratorState, create_graph
+from ..session_manager import SessionState, session_manager
+from ..thread_manager import get_current_thread_id
+from .utils import MAX_HISTORY_SIZE, conversation_history
 
 logger = structlog.get_logger()
-
-# In-memory conversation history cache
-# Key: thread_id, Value: list of messages (last N messages)
-MAX_HISTORY_SIZE = 10
-conversation_history: dict[str, list] = defaultdict(list)
-
-# Avoid duplicate provisioning runs for the same server.
-PROVISIONING_TRIGGER_COOLDOWN_SECONDS = 120
-active_provisioning: set[str] = set()
-provisioning_cooldowns: dict[str, datetime] = {}
 
 # Create graph once at startup (with MemorySaver)
 graph = create_graph()
@@ -79,24 +60,6 @@ async def _get_conversation_context(user_id: int) -> str | None:
     except Exception as e:
         logger.warning("context_enrichment_failed", error=str(e))
     return None
-
-
-async def _log_memory_stats():
-    """Log conversation history memory usage statistics."""
-    total_messages = sum(len(h) for h in conversation_history.values())
-    thread_count = len(conversation_history)
-    logger.info(
-        "memory_stats",
-        thread_count=thread_count,
-        total_messages=total_messages,
-    )
-
-
-async def _periodic_memory_stats():
-    """Periodically log memory statistics."""
-    while True:
-        await asyncio.sleep(300)  # Log every 5 minutes
-        await _log_memory_stats()
 
 
 async def _has_active_session(user_id: int) -> tuple[bool, str | None]:
@@ -326,170 +289,7 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         )
 
 
-PROVISIONER_TRIGGER_CHANNEL = "provisioner:trigger"
-WORKER_EVENTS_ALL_CHANNEL = "worker:events:all"
-
-
-async def listen_provisioner_triggers():
-    """Listen for provisioning triggers from Redis pub/sub."""
-    settings = get_settings()
-    try:
-        client = redis.from_url(settings.redis_url, decode_responses=True)
-        pubsub = client.pubsub()
-        await pubsub.subscribe(PROVISIONER_TRIGGER_CHANNEL)
-
-        logger.info("provisioner_subscribed", channel=PROVISIONER_TRIGGER_CHANNEL)
-
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                try:
-                    data = json.loads(message["data"])
-                    await process_provisioning_trigger(data)
-                except Exception as e:
-                    logger.error(
-                        "provisioner_trigger_processing_failed",
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        exc_info=True,
-                    )
-    except asyncio.CancelledError:
-        logger.info("provisioner_listener_cancelled")
-    except Exception as e:
-        logger.error(
-            "provisioner_listener_failed",
-            error=str(e),
-            error_type=type(e).__name__,
-            exc_info=True,
-        )
-    finally:
-        await client.close()
-
-
-async def listen_worker_events():
-    """Listen for worker progress events and forward them to orchestrator stream."""
-    settings = get_settings()
-    client = redis.from_url(settings.redis_url, decode_responses=True)
-    pubsub = client.pubsub()
-
-    await pubsub.subscribe(WORKER_EVENTS_ALL_CHANNEL)
-    logger.info("worker_events_subscribed", channel=WORKER_EVENTS_ALL_CHANNEL)
-
-    try:
-        async for message in pubsub.listen():
-            if message["type"] != "message":
-                continue
-
-            try:
-                data = json.loads(message["data"])
-            except json.JSONDecodeError:
-                logger.warning("worker_event_invalid_json")
-                continue
-
-            try:
-                event = parse_worker_event(data)
-            except ValidationError as exc:
-                logger.warning("worker_event_validation_failed", errors=exc.errors())
-                continue
-
-            try:
-                await publish_event(f"worker.{event.event_type}", event.model_dump())
-            except Exception as exc:
-                logger.warning(
-                    "worker_event_forward_failed",
-                    error=str(exc),
-                    error_type=type(exc).__name__,
-                )
-    except asyncio.CancelledError:
-        logger.info("worker_events_listener_cancelled")
-    except Exception as e:
-        logger.error(
-            "worker_events_listener_failed",
-            error=str(e),
-            error_type=type(e).__name__,
-            exc_info=True,
-        )
-    finally:
-        await client.close()
-
-
-async def process_provisioning_trigger(data: dict) -> None:
-    """Run the graph for provisioning."""
-    server_handle = data.get("server_handle")
-    is_incident_recovery = data.get("is_incident_recovery", False)
-
-    if not server_handle:
-        logger.warning("provisioner_trigger_missing_handle", payload=data)
-        return
-
-    structlog.contextvars.bind_contextvars(server_handle=server_handle, trigger="provisioner")
-
-    logger.info("provisioner_trigger_received", is_incident_recovery=is_incident_recovery)
-
-    now = datetime.now(UTC)
-    if server_handle in active_provisioning:
-        logger.info("provisioner_trigger_deduped", reason="active")
-        structlog.contextvars.clear_contextvars()
-        return
-
-    last_complete = provisioning_cooldowns.get(server_handle)
-    if last_complete and (now - last_complete) < timedelta(
-        seconds=PROVISIONING_TRIGGER_COOLDOWN_SECONDS
-    ):
-        logger.info(
-            "provisioner_trigger_deduped",
-            reason="cooldown",
-            last_complete_at=last_complete.isoformat(),
-            cooldown_seconds=PROVISIONING_TRIGGER_COOLDOWN_SECONDS,
-        )
-        structlog.contextvars.clear_contextvars()
-        return
-
-    active_provisioning.add(server_handle)
-
-    state = {
-        "messages": [HumanMessage(content=f"Provision server {server_handle}")],
-        "server_to_provision": server_handle,
-        "is_incident_recovery": is_incident_recovery,
-        "current_agent": "provisioner",
-        "errors": [],
-        # Initialize required fields
-        "current_project": None,
-        "project_spec": None,
-        "project_intent": None,
-        "po_intent": None,
-        "allocated_resources": {},
-        "deployed_url": None,
-        "repo_info": None,
-        "architect_complete": False,
-        "project_complexity": None,
-        "provisioning_result": None,
-        # Dynamic PO Phase 2 fields
-        "skip_intent_parser": True,  # Provisioner skips intent parser
-        "thread_id": None,
-        "active_capabilities": [],
-        "task_summary": None,
-        # Dynamic PO Phase 3 fields
-        "chat_id": None,
-        "correlation_id": None,
-        "awaiting_user_response": False,
-        "user_confirmed_complete": False,
-        "po_iterations": 0,
-    }
-
-    config = {"configurable": {"thread_id": f"provisioner-{server_handle}"}, "recursion_limit": 60}
-
-    try:
-        await graph.ainvoke(state, config)
-        logger.info("provisioning_graph_complete")
-    except Exception as e:
-        logger.error("provisioning_graph_failed", error=str(e), exc_info=True)
-    finally:
-        active_provisioning.discard(server_handle)
-        provisioning_cooldowns[server_handle] = datetime.now(UTC)
-        structlog.contextvars.clear_contextvars()
-
-
-async def consume_chat_stream():
+async def consume_chat_stream() -> None:
     """Consume chat messages from Redis stream."""
     redis_client = RedisStreamClient()
     await redis_client.connect()
@@ -509,26 +309,3 @@ async def consume_chat_stream():
         logger.info("Chat consumer shutdown requested")
     finally:
         await redis_client.close()
-
-
-async def run_worker() -> None:
-    """Run the LangGraph worker loop."""
-    logger.info("Starting LangGraph worker services...")
-    await asyncio.gather(
-        consume_chat_stream(),
-        listen_provisioner_triggers(),
-        listen_worker_events(),
-        _periodic_memory_stats(),
-    )
-
-
-def main() -> None:
-    """Entry point for the worker."""
-    setup_logging(service_name="langgraph")
-
-    logger.info("Starting LangGraph worker...")
-    asyncio.run(run_worker())
-
-
-if __name__ == "__main__":
-    main()
