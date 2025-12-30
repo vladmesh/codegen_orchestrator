@@ -53,6 +53,7 @@ from ..tools import (
     trigger_deploy,
     trigger_engineering,
     trigger_node_manually,
+    update_project,
     view_latest_pr,
 )
 from .base import BASE_TOOLS
@@ -91,6 +92,7 @@ CAPABILITY_REGISTRY: dict[str, dict[str, Any]] = {
             "get_project_status",
             "create_project_intent",
             "set_project_maintenance",
+            "update_project",
         ],
     },
     "engineering": {
@@ -129,6 +131,7 @@ TOOLS_MAP: dict[str, BaseTool] = {
     "get_project_status": get_project_status,
     "create_project_intent": create_project_intent,
     "set_project_maintenance": set_project_maintenance,
+    "update_project": update_project,
     # Deploy / Activation
     "check_ready_to_deploy": check_ready_to_deploy,
     "activate_project": activate_project,

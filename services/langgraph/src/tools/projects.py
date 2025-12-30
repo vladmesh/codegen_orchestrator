@@ -202,3 +202,42 @@ async def set_project_maintenance(
         headers=headers or None,
     )
     return ProjectInfo(**updated)
+
+
+@tool
+async def update_project(
+    project_id: Annotated[str, "Project ID to update"],
+    repository_url: Annotated[str | None, "New repository URL"] = None,
+    status: Annotated[str | None, "New project status (e.g. active, maintenance)"] = None,
+    # Injected from graph state - not visible to LLM
+    state: Annotated[dict, InjectedState] = None,
+) -> ProjectInfo:
+    """Update project configuration (e.g. repository URL, status).
+
+    Use this when you need to fix or set specific project fields that couldn't be
+    determined automatically.
+    """
+    # Build headers with user context for ownership check
+    headers = {}
+    if state and state.get("telegram_user_id"):
+        headers["X-Telegram-ID"] = str(state["telegram_user_id"])
+
+    # Prepare update payload
+    payload = {}
+    if repository_url:
+        payload["repository_url"] = repository_url
+    if status:
+        payload["status"] = status
+
+    if not payload:
+        # Nothing to update, just return current state
+        resp = await api_client.get(f"/projects/{project_id}", headers=headers or None)
+        return ProjectInfo(**resp)
+
+    # Perform update
+    resp = await api_client.patch(
+        f"/projects/{project_id}",
+        json=payload,
+        headers=headers or None,
+    )
+    return ProjectInfo(**resp)
