@@ -81,23 +81,16 @@ async def _has_active_session(user_id: int) -> tuple[bool, str | None]:
     return has_history, thread_id
 
 
-async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
-    """Process a single message through the LangGraph.
+async def _handle_session_lock(
+    telegram_user_id: int,
+    chat_id: int,
+    correlation_id: str | None,
+    redis_client: RedisStreamClient,
+) -> tuple[str | None, bool]:
+    """Check session lock. Returns (thread_id, skip_intent_parser).
 
-    Flow (Phase 5 with SessionManager):
-    1. Check session lock
-       - If PROCESSING -> reject with "busy" message
-       - If AWAITING -> continue session
-       - If no lock -> start new session
-    2. Run graph
-    3. Update session state based on result
+    Returns (None, False) if session is locked/busy (and handles rejection).
     """
-    telegram_user_id = data.get("user_id")  # This is telegram_id from Telegram API
-    chat_id = data.get("chat_id")
-    text = data.get("text", "")
-    correlation_id = data.get("correlation_id")
-
-    # === Phase 5: Session Lock Check ===
     is_locked, lock_state = await session_manager.is_locked(telegram_user_id)
 
     if is_locked:
@@ -113,25 +106,116 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
                 },
             )
             logger.info("message_rejected_busy", telegram_user_id=telegram_user_id)
-            return
+            return None, False
 
-        elif lock_state == SessionState.AWAITING:
+        if lock_state == SessionState.AWAITING:
             # Continue existing session
             thread_id = await session_manager.continue_session(telegram_user_id)
-            skip_intent_parser = True
             logger.info(
                 "session_continued",
                 telegram_user_id=telegram_user_id,
                 thread_id=thread_id,
             )
-        else:
-            # Unknown state, treat as new session
-            thread_id = await session_manager.start_new_session(telegram_user_id)
-            skip_intent_parser = False
-    else:
-        # No active session - start new
+            return thread_id, True
+
+        # Unknown state, treat as new session
         thread_id = await session_manager.start_new_session(telegram_user_id)
-        skip_intent_parser = False
+        return thread_id, False
+
+    # No active session - start new
+    thread_id = await session_manager.start_new_session(telegram_user_id)
+    return thread_id, False
+
+
+async def _handle_execution_result(
+    result: dict,
+    telegram_user_id: int,
+    thread_id: str,
+    message_id: int | None,
+    chat_id: int,
+    correlation_id: str | None,
+    history: list,
+    duration: float,
+    redis_client: RedisStreamClient,
+) -> None:
+    """Update session state and send response based on execution result."""
+    # === Update Session State ===
+    if result.get("user_confirmed_complete"):
+        # Task complete - release lock, clear history
+        await session_manager.release_lock(telegram_user_id)
+        if thread_id in conversation_history:
+            del conversation_history[thread_id]
+        logger.info("session_completed", thread_id=thread_id)
+
+    elif result.get("awaiting_user_response"):
+        # Waiting for user - update state to AWAITING
+        await session_manager.update_state(telegram_user_id, SessionState.AWAITING)
+        logger.info("session_awaiting_user", thread_id=thread_id)
+
+    else:
+        # Graph ended but not complete and not awaiting (e.g. max iterations)
+        await session_manager.release_lock(telegram_user_id)
+        logger.info("session_ended_naturally", thread_id=thread_id)
+
+    # === Send Response ===
+    messages = result.get("messages", [])
+    response_text = "Обработка завершена, но нет ответа."
+
+    if messages:
+        last_message = messages[-1]
+        if isinstance(last_message.content, list):
+            # Handle list of blocks (text + image, etc.) - extract text
+            response_text = "".join(
+                block["text"] for block in last_message.content if block.get("type") == "text"
+            )
+        else:
+            response_text = str(last_message.content)
+
+        # Save AI response to history
+        history.append(AIMessage(content=response_text))
+
+        # Trim history to keep only last N messages
+        if len(history) > MAX_HISTORY_SIZE:
+            conversation_history[thread_id] = history[-MAX_HISTORY_SIZE:]
+
+    # Publish response
+    await redis_client.publish(
+        RedisStreamClient.OUTGOING_STREAM,
+        {
+            "user_id": telegram_user_id,
+            "chat_id": chat_id,
+            "reply_to_message_id": message_id,
+            "text": response_text,
+            "correlation_id": correlation_id,
+        },
+    )
+
+    logger.info(
+        "response_sent",
+        duration_ms=round(duration, 2),
+        response_length=len(response_text),
+    )
+
+
+async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
+    """Process a single message through the LangGraph.
+
+    Flow (Phase 5 with SessionManager):
+    1. Check session lock
+    2. Run graph
+    3. Update session state based on result
+    """
+    telegram_user_id = data.get("user_id")  # This is telegram_id from Telegram API
+    chat_id = data.get("chat_id")
+    text = data.get("text", "")
+    correlation_id = data.get("correlation_id")
+
+    # === Phase 5: Session Lock Check ===
+    thread_id, skip_intent_parser = await _handle_session_lock(
+        telegram_user_id, chat_id, correlation_id, redis_client
+    )
+    if thread_id is None:
+        return
 
     # Resolve internal user_id from telegram_id
     internal_user_id = await _resolve_user_id(telegram_user_id) if telegram_user_id else None
@@ -203,61 +287,17 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         result = await graph.ainvoke(state, config)
         duration = (time.time() - start_time) * 1000
 
-        # === Phase 5: Update Session State Based on Result ===
-        if result.get("user_confirmed_complete"):
-            # Task complete - release lock, clear history
-            await session_manager.release_lock(telegram_user_id)
-            if thread_id in conversation_history:
-                del conversation_history[thread_id]
-            logger.info("session_completed", thread_id=thread_id)
-
-        elif result.get("awaiting_user_response"):
-            # Waiting for user - update state to AWAITING
-            await session_manager.update_state(telegram_user_id, SessionState.AWAITING)
-            logger.info("session_awaiting_user", thread_id=thread_id)
-
-        else:
-            # Graph ended but not complete and not awaiting
-            # This could be max iterations or other end condition
-            # Release lock, user can start fresh
-            await session_manager.release_lock(telegram_user_id)
-            logger.info("session_ended_naturally", thread_id=thread_id)
-
-        # Get the last AI message
-        messages = result.get("messages", [])
-        if messages:
-            last_message = messages[-1]
-            if isinstance(last_message.content, list):
-                # Handle list of blocks (text + image, etc.) - extract text
-                response_text = "".join(
-                    block["text"] for block in last_message.content if block.get("type") == "text"
-                )
-            else:
-                response_text = str(last_message.content)
-
-            # Save AI response to history
-            history.append(AIMessage(content=response_text))
-
-            # Trim history to keep only last N messages
-            if len(history) > MAX_HISTORY_SIZE:
-                conversation_history[thread_id] = history[-MAX_HISTORY_SIZE:]
-        else:
-            response_text = "Обработка завершена, но нет ответа."
-
-        # Publish response to outgoing stream
-        await redis_client.publish(
-            RedisStreamClient.OUTGOING_STREAM,
-            {
-                "user_id": telegram_user_id,  # Telegram bot expects telegram_id
-                "chat_id": chat_id,
-                "reply_to_message_id": data.get("message_id"),
-                "text": response_text,
-                "correlation_id": correlation_id,
-            },
-        )
-
-        logger.info(
-            "response_sent", duration_ms=round(duration, 2), response_length=len(response_text)
+        # === Phase 5: Update Session State & Send Response ===
+        await _handle_execution_result(
+            result,
+            telegram_user_id,
+            thread_id,
+            data.get("message_id"),
+            chat_id,
+            correlation_id,
+            history,
+            duration,
+            redis_client,
         )
 
     except Exception as e:
