@@ -1,6 +1,5 @@
 """LangGraph nodes package."""
 
-from .. import provisioner
 from . import (
     analyst,
     architect,
@@ -8,6 +7,7 @@ from . import (
     intent_parser,
     preparer,
     product_owner,
+    provisioner_proxy as provisioner,
     zavhoz,
 )
 
