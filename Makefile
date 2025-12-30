@@ -210,7 +210,12 @@ test-integration: test-api-integration test-langgraph-integration test-scheduler
 test-all: test-api test-langgraph test-scheduler test-telegram
 
 # Legacy test command (now runs all tests)
-test: test-all
+test:
+ifdef SERVICE
+	@$(MAKE) test-$(SERVICE)
+else
+	@$(MAKE) test-all
+endif
 
 # Cleanup test containers and volumes
 test-clean:
