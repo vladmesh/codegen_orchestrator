@@ -40,6 +40,8 @@ Codegen Orchestrator — это мультиагентная система на
 | `scheduler` | Фоновые задачи (github_sync, server_sync, health_checker) | - |
 | `preparer` | Copier runner для scaffolding проектов | - |
 | `deploy-worker` | Консьюмер deploy:queue, запускает DevOps subgraph | - |
+| `infrastructure-worker` | Provisioning серверов, Ansible runner, SSH операции | - |
+| `infrastructure` | Ansible playbooks для настройки серверов | - |
 
 ## Граф (Dynamic PO Architecture)
 

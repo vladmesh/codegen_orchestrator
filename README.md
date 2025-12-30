@@ -34,8 +34,8 @@
 │                                       │                          │
 │                                       ▼                          │
 │                         ┌───────────────────────────────────────┐    │
-│                         │ DevOps Subgraph                       │    │
-│                         │ EnvAnalyzer → SecretResolver → Deployer│    │
+│                         │ DevOps Subgraph                                  │    │
+│                         │ EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer│    │
 │                         └───────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
                     │                    │

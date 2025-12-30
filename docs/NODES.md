@@ -165,6 +165,16 @@
 - После Engineering Subgraph
 - При `trigger_deploy` от PO
 
+**Структура пакета** (`src/subgraphs/devops/`):
+```
+devops/
+├── __init__.py          # Экспорты
+├── state.py             # DevOpsState TypedDict
+├── env_analyzer.py      # EnvAnalyzer + helper функции
+├── nodes.py             # SecretResolver, ReadinessCheck, Deployer
+└── graph.py             # Routing + create_devops_subgraph
+```
+
 **Ноды внутри subgraph**:
 
 1. **EnvAnalyzer (LLM)**: Анализирует .env.example, классифицирует переменные
@@ -172,16 +182,21 @@
    - `computed`: вычисляются из контекста (APP_NAME, APP_ENV)
    - `user`: запрашиваются у пользователя (TELEGRAM_BOT_TOKEN)
 
-2. **SecretResolver (Functional)**: 
+2. **SecretResolver (Functional)**:
    - Генерирует infra секреты
    - Подставляет computed значения
    - Проверяет наличие user секретов
 
-3. **Deployer (Functional)**:
+3. **ReadinessCheck (Functional)**:
+   - Проверяет готовность к деплою
+   - Если есть missing_user_secrets → возврат к PO
+   - Если всё готово → Deployer
+
+4. **Deployer (Functional)**:
    - Ansible playbook для деплоя
    - Устанавливает статус проекта = active
 
-**Выход**: 
+**Выход**:
 - `deployed_url` при успехе
 - `missing_user_secrets` если нужны секреты от пользователя
 
@@ -191,13 +206,16 @@
 
 **Роль**: Настройка серверов, восстановление после инцидентов.
 
+**Реализация**: Выделен в отдельный сервис `infrastructure-worker` для изоляции тяжёлых зависимостей (Ansible, SSH). В langgraph остаётся только `provisioner_proxy.py`, который делегирует работу через Redis.
+
 **Когда вызывается**:
 - При `server_to_provision` в начальном state
 - Standalone операция (не часть основного flow)
 
-**Действия**:
+**Действия** (в infrastructure-worker):
 - Password reset через Time4VPS API
 - OS reinstall при необходимости
+- Ansible playbooks для настройки сервера
 - Редеплой сервисов после восстановления
 
 **Выход**: `provisioning_result` → END
@@ -228,7 +246,7 @@ Product Owner (agentic loop)
      │                     │
      │                     ▼
      │               DevOps Subgraph
-     │               EnvAnalyzer → SecretResolver → Deployer
+     │               EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
      │                                                      │
      └──────────────▶ finish_task ◄─────────────────────────┘
 ```

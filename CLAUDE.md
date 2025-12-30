@@ -48,8 +48,8 @@ Telegram Bot → Intent Parser (gpt-4o-mini) → Product Owner (agentic loop)
                      │                             │             │
                      ▼                             ▼             ▼
              Engineering Subgraph            DevOps Subgraph
-             (Architect → Preparer →         (EnvAnalyzer →
-              Developer → Tester)             SecretResolver → Deployer)
+             (Architect → Preparer →         (EnvAnalyzer → SecretResolver
+              Developer → Tester)             → ReadinessCheck → Deployer)
 ```
 
 **Key Components:**
@@ -66,6 +66,7 @@ Telegram Bot → Intent Parser (gpt-4o-mini) → Product Owner (agentic loop)
 - `coding-worker`: Docker container with Factory.ai Droid CLI
 - `preparer`: Copier runner for project scaffolding
 - `deploy-worker`: Consumes deploy:queue, runs DevOps subgraph
+- `infrastructure-worker`: Provisioning servers, Ansible runner, SSH operations
 - `infrastructure`: Ansible playbooks for server configuration
 
 **Shared** (`shared/`): Logging setup (structlog), shared schemas, models, configuration.
