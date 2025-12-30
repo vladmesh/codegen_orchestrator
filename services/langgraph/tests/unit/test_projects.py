@@ -97,23 +97,6 @@ class TestUpdateProject:
             assert result.repo_url == "new-url"
 
     @pytest.mark.asyncio
-    async def test_update_status(self):
-        """Test updating project status."""
-        with patch("src.tools.projects.api_client") as mock_client:
-            mock_client.patch = AsyncMock(
-                return_value={"id": "p1", "name": "test", "status": "maintenance"}
-            )
-            mock_client.get = AsyncMock()
-
-            from src.tools.projects import update_project
-
-            result = await update_project.ainvoke({"project_id": "p1", "status": "maintenance"})
-
-            mock_client.patch.assert_called_once()
-            assert mock_client.patch.call_args[1]["json"] == {"status": "maintenance"}
-            assert result.status == "maintenance"
-
-    @pytest.mark.asyncio
     async def test_no_update(self):
         """Test no update if no fields provided."""
         with patch("src.tools.projects.api_client") as mock_client:

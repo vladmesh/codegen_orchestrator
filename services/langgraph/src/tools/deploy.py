@@ -131,7 +131,10 @@ async def trigger_deploy(
         # 3. Generate job_id
         job_id = f"deploy_{project_id}_{uuid4().hex[:8]}"
 
-        # 4. Publish to queue
+        # 4. Set status to 'deploying' (system-managed status)
+        await api_client.patch(f"/projects/{project_id}", json={"status": "deploying"})
+
+        # 5. Publish to queue
         await redis.publish(
             DEPLOY_QUEUE,
             {

@@ -1,13 +1,36 @@
 # Backlog
 
-## Urgent Features
-
-- [ ] **Implement `update_project` tool for Product Owner**
-  - **Problem**: Current `activate_project` logic attempts to "guess" the repository URL but fails to save it persistently if the project was created before the fix. This leaves "legacy" projects (like `hello-world-bot`) in a state where deployment is impossible because DevOps subgraph doesn't know where to pull code from. PO sees the issue but has no tool to fix the data.
-  - **Proposed Solution**: Create a dedicated `update_project(project_id, repository_url=None, status=None)` tool in `services/langgraph/src/tools/projects.py`. Add it to `project_management` capability.
-  - **Why**: Allows recovering stuck projects without manual database intervention.
-
 ## Technical Debt
+
+- [ ] **PO does not wait for async deploy completion**
+  - **Problem**: When PO calls `trigger_deploy`, it receives a `job_id` and immediately returns it to the user with "use `get_deploy_status` to check progress". This is bad UX because:
+    1. User receives a technical `job_id` and must manually ask for status
+    2. PO ends the session (`awaiting=True`) instead of waiting for result
+    3. When deploy completes (success or failure), PO is not notified
+  - **Current flow**:
+    ```
+    PO → trigger_deploy → job_id
+    PO → respond_to_user("Task ID: xxx, use get_deploy_status...")
+    PO → session ends (awaiting user input)
+    Deploy worker → completes → nobody notifies user
+    ```
+  - **Desired flow**:
+    ```
+    PO → trigger_deploy → job_id
+    PO → respond_to_user("Deploy started, please wait...")
+    Deploy worker → completes → publishes event
+    LangGraph → receives event → wakes up PO
+    PO → respond_to_user("Deploy successful! URL: ...")
+    ```
+  - **Solution options**:
+    1. **Polling in PO**: PO loops calling `get_deploy_status` every N seconds. Cons: wastes LLM tokens, inefficient.
+    2. **Event-driven wake-up** (recommended): Deploy worker publishes `deploy:complete:{thread_id}` event, LangGraph listens and injects message into PO's thread, PO receives result and responds. Pros: efficient, real-time.
+    3. **Separate notification path**: Deploy worker sends Telegram message directly via bot. Cons: bypasses PO, inconsistent UX.
+  - **Implementation notes**:
+    - `listen_worker_events` in `worker.py` already subscribes to `worker:events:all`
+    - Need to route deploy completion events back to PO's thread
+    - May need new field in state: `pending_deploys: list[str]`
+    - PO prompt should mention: "After trigger_deploy, do NOT end session, wait for deploy_complete event"
 
 - [ ] **Refactor `check_deploy_readiness`**
   - **Context**: Currently `check_deploy_readiness` performs a static check against `project.config.secrets`. This logic is partially redundant with the DevOps subgraph's `env_analyzer` (LLM-based) and `readiness_check`.

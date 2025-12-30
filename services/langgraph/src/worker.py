@@ -233,7 +233,7 @@ async def process_message(redis_client: RedisStreamClient, data: dict) -> None:
         }
 
         # LangGraph config with thread_id for checkpointing
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 60}
 
         # Run the graph
         start_time = time.time()
@@ -476,7 +476,7 @@ async def process_provisioning_trigger(data: dict) -> None:
         "po_iterations": 0,
     }
 
-    config = {"configurable": {"thread_id": f"provisioner-{server_handle}"}}
+    config = {"configurable": {"thread_id": f"provisioner-{server_handle}"}, "recursion_limit": 60}
 
     try:
         await graph.ainvoke(state, config)
