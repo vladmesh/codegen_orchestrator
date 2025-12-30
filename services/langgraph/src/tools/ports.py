@@ -4,6 +4,7 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
+from ..schemas.api_types import AllocationInfo, ServerInfo, get_server_ip
 from ..schemas.tools import PortAllocationResult
 from .base import api_client
 
@@ -30,8 +31,8 @@ async def allocate_port(
 
     # Fetch server info to ensure downstream nodes (DevOps) have the IP
     try:
-        server_info = await api_client.get_server(server_handle)
-        allocation["server_ip"] = server_info.get("public_ip") or server_info.get("host")
+        server_info: ServerInfo = await api_client.get_server(server_handle)
+        allocation["server_ip"] = get_server_ip(server_info)
     except Exception as e:
         # allocate_port MUST return server_ip for DevOps to work
         raise RuntimeError(f"Failed to fetch server IP for {server_handle}: {e}") from e
@@ -48,7 +49,7 @@ async def get_next_available_port(
 
     Searches from start_port upwards to find an unallocated port.
     """
-    ports_data = await api_client.list_server_ports(server_handle)
+    ports_data: list[AllocationInfo] = await api_client.list_server_ports(server_handle)
     allocated = {p["port"] for p in ports_data}
 
     port = start_port

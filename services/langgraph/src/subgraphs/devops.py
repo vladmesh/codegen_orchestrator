@@ -25,6 +25,7 @@ from ..clients.api import api_client
 from ..config.agent_config_cache import agent_config_cache
 from ..llm.factory import LLMFactory
 from ..nodes.base import FunctionalNode
+from ..schemas.api_types import ProjectInfo, get_repo_url
 from ..tools.devops_tools import run_ansible_deploy
 
 logger = structlog.get_logger()
@@ -128,7 +129,7 @@ async def env_analyzer_run(state: DevOpsState) -> dict:
         }
 
     # Get project info
-    project = await api_client.get_project(project_id)
+    project: ProjectInfo | None = await api_client.get_project(project_id)
     if not project:
         return {
             "errors": [f"Project {project_id} not found"],
@@ -136,7 +137,7 @@ async def env_analyzer_run(state: DevOpsState) -> dict:
         }
 
     # Get repository URL
-    repo_url = project.get("repository_url") or project.get("config", {}).get("repository_url")
+    repo_url = get_repo_url(project)
     if not repo_url:
         return {
             "errors": ["No repository URL found for project"],

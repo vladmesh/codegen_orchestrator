@@ -17,6 +17,7 @@ from shared.queues import DEPLOY_QUEUE, WORKER_GROUP, ensure_consumer_groups
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ..schemas.api_types import AllocationInfo, ProjectInfo, ServerInfo, get_server_ip
 from ..subgraphs.devops import create_devops_subgraph
 
 logger = structlog.get_logger(__name__)
@@ -51,7 +52,7 @@ async def process_deploy_job(job_data: dict) -> dict:
 
     try:
         # Fetch project details
-        project = await api_client.get_project(project_id)
+        project: ProjectInfo | None = await api_client.get_project(project_id)
         if not project:
             return {
                 "status": "failed",
@@ -59,7 +60,7 @@ async def process_deploy_job(job_data: dict) -> dict:
             }
 
         # Get allocations for the project
-        allocations = await api_client.get_project_allocations(project_id)
+        allocations: list[AllocationInfo] = await api_client.get_project_allocations(project_id)
         if not allocations:
             return {
                 "status": "failed",
@@ -92,11 +93,11 @@ async def process_deploy_job(job_data: dict) -> dict:
         if not state["allocated_resources"][
             f"{allocation['server_handle']}:{allocation['port']}"
         ].get("server_ip"):
-            server = await api_client.get_server(allocation["server_handle"])
+            server: ServerInfo | None = await api_client.get_server(allocation["server_handle"])
             if server:
                 state["allocated_resources"][f"{allocation['server_handle']}:{allocation['port']}"][
                     "server_ip"
-                ] = server.get("public_ip")
+                ] = get_server_ip(server)
 
         # Run DevOps subgraph
         devops_subgraph = create_devops_subgraph()

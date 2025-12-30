@@ -16,6 +16,7 @@ import structlog
 from shared.queues import DEPLOY_QUEUE, get_user_active_jobs
 from shared.redis_client import RedisStreamClient
 
+from ..schemas.api_types import AllocationInfo, ProjectInfo, get_repo_url
 from ..state.context import get_current_state
 from .base import api_client
 
@@ -49,19 +50,19 @@ async def check_deploy_readiness(
     missing = []
 
     # 1. Get project
-    project = await api_client.get_project(project_id)
+    project: ProjectInfo | None = await api_client.get_project(project_id)
     if not project:
         return {"ready": False, "missing": ["project_not_found"], "error": "Project not found"}
 
     project_name = project.get("name", project_id)
 
     # 2. Check repository
-    repo_url = project.get("repository_url") or project.get("config", {}).get("repository_url")
+    repo_url = get_repo_url(project)
     if not repo_url:
         missing.append("repository")
 
     # 3. Check allocated resources
-    allocations = await api_client.get_project_allocations(project_id)
+    allocations: list[AllocationInfo] = await api_client.get_project_allocations(project_id)
     if not allocations:
         missing.append("allocated_resources")
 

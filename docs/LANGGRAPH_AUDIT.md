@@ -14,7 +14,7 @@
 | 7.4. Выделить ToolExecutor из LLMNode | ✅ Выполнено | 2025-12-30 |
 | 7.5. Устранить циклические импорты | ✅ Выполнено | 2025-12-30 |
 | 7.8. Декомпозировать worker.py | ✅ Выполнено | 2025-12-31 |
-| 7.6. Добавить типизацию | ⏳ Ожидает | - |
+| 7.6. Добавить типизацию | ✅ Выполнено | 2025-12-31 |
 | 7.7. Решить TODO/FIXME | ✅ Выполнено | 2025-12-31 |
 
 ---
@@ -213,13 +213,11 @@ def another_function():
     from .github import get_github_client  # Тоже внутри функции
 ```
 
-### 5.4. Unsafe dict access
+### 5.4. ~~Unsafe dict access~~ ✅ ИСПРАВЛЕНО
 
-```python
-# provisioner/node.py:312-315
-server_ip = server_info.get("public_ip") or server_info.get("host")  # None если оба отсутствуют
-os_template = server_info.get("os_template", "kvm-ubuntu-24.04-gpt-x86_64")  # Hardcoded default
-```
+> **Решено 2025-12-31:** Создан `schemas/api_types.py` с TypedDict схемами
+> (`ServerInfo`, `AllocationInfo`, `ProjectInfo`) и helper-функциями
+> (`get_server_ip()`, `get_repo_url()`). Обновлены 5 файлов с типизацией.
 
 ### 5.5. ~~TODO/FIXME в коде~~ ✅ ИСПРАВЛЕНО
 
@@ -414,23 +412,27 @@ def trigger_deploy(...):
 - Легче тестировать отдельные компоненты
 - Достигнут прогресс к цели: 0 файлов >400 строк
 
-#### 7.6. Добавить типизацию для unsafe dict access
+#### 7.6. ~~Добавить типизацию для unsafe dict access~~ ✅ ВЫПОЛНЕНО (2025-12-31)
 
-```python
-# Было:
-server_ip = server_info.get("public_ip") or server_info.get("host")
+**Реализовано:**
+- Создан `schemas/api_types.py` с TypedDict схемами:
+  - `ServerInfo` — информация о сервере
+  - `AllocationInfo` — информация об аллокации порта
+  - `ProjectInfo` — информация о проекте
+  - `ProjectConfig` — конфигурация проекта
+  - `RepoInfo` — информация о репозитории
+- Добавлены helper-функции: `get_server_ip()`, `get_repo_url()`
+- Обновлены файлы с типизированным доступом:
+  - `tools/ports.py`
+  - `tools/deploy.py`
+  - `tools/devops_tools.py`
+  - `workers/deploy_worker.py`
+  - `subgraphs/devops.py`
 
-# Стало:
-@dataclass
-class ServerInfo:
-    public_ip: str | None
-    host: str | None
-    status: str
-    os_template: str = "kvm-ubuntu-24.04-gpt-x86_64"
-
-server_info = ServerInfo(**raw_dict)
-server_ip = server_info.public_ip or server_info.host
-```
+**Результаты:**
+- ✅ Type hints для API responses
+- ✅ Централизованные helper-функции для fallback логики
+- ✅ Улучшенная IDE поддержка и автодополнение
 
 #### 7.7. ~~Решить TODO/FIXME или удалить~~ ✅ ВЫПОЛНЕНО (2025-12-31)
 

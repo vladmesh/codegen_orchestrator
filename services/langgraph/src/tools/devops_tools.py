@@ -13,6 +13,7 @@ from shared.clients.github import GitHubAppClient
 
 from ..clients.api import api_client
 from ..config.constants import Paths
+from ..schemas.api_types import AllocationInfo, ProjectInfo, get_repo_url
 
 logger = structlog.get_logger()
 
@@ -107,11 +108,11 @@ async def run_ansible_deploy(
 ) -> dict:
     """Execute ansible deployment."""
 
-    project = await api_client.get_project(project_id)
+    project: ProjectInfo | None = await api_client.get_project(project_id)
     if not project:
         return {"status": "failed", "error": "Project not found"}
 
-    repo_url = project.get("repository_url") or project.get("config", {}).get("repository_url")
+    repo_url = get_repo_url(project)
     if not repo_url:
         return {"status": "failed", "error": "No repository URL found"}
 
@@ -125,12 +126,12 @@ async def run_ansible_deploy(
     repo_full_name = f"{owner}/{repo}"
     project_name = project.get("name", "project").replace(" ", "_").lower()
 
-    allocations = await api_client.get_project_allocations(project_id)
+    allocations: list[AllocationInfo] = await api_client.get_project_allocations(project_id)
     if not allocations:
         return {"status": "failed", "error": "No resources allocated"}
 
     # Heuristic for deployment target
-    target_resource = None
+    target_resource: AllocationInfo | None = None
     for alloc in allocations:
         if alloc.get("port") and alloc.get("server_ip"):
             target_resource = alloc
