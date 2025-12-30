@@ -163,6 +163,8 @@ async def update_project(
         project.status = project_in.status
     if project_in.config is not None:
         project.config = project_in.config
+    if project_in.repository_url is not None:
+        project.repository_url = project_in.repository_url
 
     await db.commit()
     await db.refresh(project)
@@ -190,6 +192,8 @@ async def patch_project(
         project.status = project_in.status
     if project_in.config is not None:
         project.config = project_in.config
+    if project_in.repository_url is not None:
+        project.repository_url = project_in.repository_url
 
     await db.commit()
     await db.refresh(project)

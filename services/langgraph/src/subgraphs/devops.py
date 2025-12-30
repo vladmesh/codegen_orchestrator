@@ -157,9 +157,9 @@ async def env_analyzer_run(state: DevOpsState) -> dict:
     # Get .env.example content
     github = GitHubAppClient()
     try:
-        content = await github.get_file_content(owner, repo, ".env.example")
+        content = await github.get_file_contents(owner, repo, ".env.example")
         if not content:
-            content = await github.get_file_content(owner, repo, ".env.template")
+            content = await github.get_file_contents(owner, repo, ".env.template")
 
         if not content:
             logger.info("no_env_file_found", project_id=project_id)
@@ -456,6 +456,11 @@ class DeployerNode(FunctionalNode):
             )
 
             if result.get("status") == "success":
+                # Update project status to 'active' (system-managed)
+                await api_client.patch(
+                    f"/projects/{project_id}",
+                    json={"status": "active"},
+                )
                 return {
                     "deployment_result": result,
                     "deployed_url": result.get("deployed_url"),
@@ -466,6 +471,11 @@ class DeployerNode(FunctionalNode):
                     ],
                 }
 
+            # Deployment failed - update status to 'error'
+            await api_client.patch(
+                f"/projects/{project_id}",
+                json={"status": "error"},
+            )
             return {
                 "deployment_result": result,
                 "errors": [result.get("error", "Deployment failed")],
@@ -474,6 +484,14 @@ class DeployerNode(FunctionalNode):
 
         except Exception as e:
             logger.error("deployer_failed", error=str(e), exc_info=True)
+            # Update status to 'error' on exception
+            try:
+                await api_client.patch(
+                    f"/projects/{project_id}",
+                    json={"status": "error"},
+                )
+            except Exception as status_err:
+                logger.warning("status_update_failed", error=str(status_err))
             return {
                 "deployment_result": {"status": "error", "error": str(e)},
                 "errors": [f"Deployment error: {e}"],

@@ -51,6 +51,9 @@ class Project(Base):
     # GitHub Repo ID is immutable, tracking the source of truth
     github_repo_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Repository URL for deployment (e.g., https://github.com/org/repo)
+    repository_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
     status: Mapped[str] = mapped_column(String(50), default=ProjectStatus.DRAFT.value)
 
     config: Mapped[dict] = mapped_column(JSON, default=dict)
