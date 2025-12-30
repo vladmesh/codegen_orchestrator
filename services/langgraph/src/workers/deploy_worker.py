@@ -69,40 +69,18 @@ async def process_deploy_job(job_data: dict) -> dict:
 
         allocation = allocations[0]
 
-        # Build state for DevOps node
-        # This mirrors what the orchestrator would provide
-        state = {
-            "project_id": project_id,
-            "project_spec": project,
-            "repo_info": {
-                "full_name": project.get("repository_url", "")
-                .replace("https://github.com/", "")
-                .rstrip(".git"),
-            },
-            "allocated_resources": {
-                f"{allocation['server_handle']}:{allocation['port']}": {
-                    "port": allocation["port"],
-                    "server_handle": allocation["server_handle"],
-                    "server_ip": allocation.get("server_ip"),
-                }
-            },
-            "correlation_id": job_data.get("correlation_id"),
-        }
-
         # If server_ip not in allocation, fetch from server
-        if not state["allocated_resources"][
-            f"{allocation['server_handle']}:{allocation['port']}"
-        ].get("server_ip"):
+        resource_key = f"{allocation['server_handle']}:{allocation['port']}"
+        server_ip = allocation.get("server_ip")
+        if not server_ip:
             server: ServerInfo | None = await api_client.get_server(allocation["server_handle"])
             if server:
-                state["allocated_resources"][f"{allocation['server_handle']}:{allocation['port']}"][
-                    "server_ip"
-                ] = get_server_ip(server)
+                server_ip = get_server_ip(server)
 
         # Run DevOps subgraph
         devops_subgraph = create_devops_subgraph()
 
-        # Prepare subgraph input
+        # Prepare subgraph input with enriched server_ip
         subgraph_input = {
             "project_id": project_id,
             "project_spec": project,
@@ -113,10 +91,10 @@ async def process_deploy_job(job_data: dict) -> dict:
                 "html_url": project.get("repository_url"),
             },
             "allocated_resources": {
-                f"{allocation['server_handle']}:{allocation['port']}": {
+                resource_key: {
                     "port": allocation["port"],
                     "server_handle": allocation["server_handle"],
-                    "server_ip": allocation.get("server_ip"),
+                    "server_ip": server_ip,
                 }
             },
             "provided_secrets": job_data.get("provided_secrets", {}),
