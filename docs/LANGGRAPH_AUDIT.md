@@ -11,7 +11,7 @@
 | 7.2. Централизовать константы | ✅ Выполнено | 2024-12-30 |
 | 7.3. Разбить ProvisionerNode.run() | ✅ Выполнено | 2024-12-30 |
 | 7.1. Вынести provisioner в отдельный сервис | ✅ Выполнено | 2025-12-30 |
-| 7.4. Выделить ToolExecutor из LLMNode | ⏳ Ожидает | - |
+| 7.4. Выделить ToolExecutor из LLMNode | ✅ Выполнено | 2025-12-30 |
 | 7.5. Устранить циклические импорты | ⏳ Ожидает | - |
 | 7.6. Добавить типизацию | ⏳ Ожидает | - |
 | 7.7. Решить TODO/FIXME | ⏳ Ожидает | - |
@@ -324,21 +324,30 @@ scheduler → Redis → infrastructure-worker → Ansible
 - `_run_existing_access_path()` — 45 строк
 - `run()` — 50 строк (оркестрация)
 
-#### 7.4. Выделить ToolExecutor из LLMNode
+#### 7.4. ~~Выделить ToolExecutor из LLMNode~~ ✅ ВЫПОЛНЕНО (2025-12-30)
+
+**Реализовано:**
+- Создан `nodes/tool_executor.py` (150 строк)
+- Класс `ToolExecutor` инкапсулирует логику выполнения инструментов  
+- Обновлён `LLMNode` для делегирования
+- Удалено 107 строк из `base.py`
+- Создано 10 unit-тестов
+
+**Результаты:**
+- `LLMNode` фокусируется на конфигурации LLM
+- `ToolExecutor` изолирован и тестируем
+- Все тесты проходят (85/85)
+- Публичный API неизменен
 
 ```python
-# nodes/tool_executor.py
 class ToolExecutor:
-    def __init__(self, tools_map: dict):
-        self.tools_map = tools_map
+    def __init__(self, tools_map, result_handler):
+        ...
+    async def execute_tools(self, tool_calls, state) -> dict: ...
 
-    def execute_tools(self, tool_calls: list) -> list: ...
-    def execute_single_tool(self, tool_call) -> Any: ...
-
-# nodes/base.py
 class LLMNode:
-    def __init__(self):
-        self.tool_executor = ToolExecutor(self.tools_map)
+    def __init__(self, agent_id, tools):
+        self.tool_executor = ToolExecutor(self.tools_map, self.handle_tool_result)
 ```
 
 ### Приоритет: СРЕДНИЙ
