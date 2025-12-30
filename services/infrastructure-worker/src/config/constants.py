@@ -1,0 +1,51 @@
+"""Centralized constants for infrastructure-worker service.
+
+All hardcoded paths, timeouts, and magic numbers should be defined here
+with environment variable overrides where applicable.
+"""
+
+import os
+
+
+class Paths:
+    """File system paths used across the service."""
+
+    SSH_KEY = os.getenv("SSH_KEY_PATH", "/root/.ssh/id_ed25519")
+    # Note: ansible/ is now inside infrastructure-worker
+    ANSIBLE_PLAYBOOKS = os.getenv(
+        "ANSIBLE_PLAYBOOKS_PATH",
+        "/app/ansible/playbooks",
+    )
+
+    @classmethod
+    def playbook(cls, name: str) -> str:
+        """Get full path to an Ansible playbook."""
+        return f"{cls.ANSIBLE_PLAYBOOKS}/{name}"
+
+
+class Timeouts:
+    """Timeout values in seconds."""
+
+    # SSH operations
+    SSH_COMMAND = int(os.getenv("SSH_COMMAND_TIMEOUT", "30"))
+
+    # Provisioning
+    PROVISIONING = int(os.getenv("PROVISIONING_TIMEOUT", "1200"))  # 20 minutes
+    REINSTALL = int(os.getenv("REINSTALL_TIMEOUT", "900"))  # 15 minutes
+    PASSWORD_RESET = int(os.getenv("PASSWORD_RESET_TIMEOUT", "300"))  # 5 minutes
+    ACCESS_PHASE = int(os.getenv("ACCESS_PHASE_TIMEOUT", "180"))  # 3 minutes
+
+
+class Provisioning:
+    """Provisioning-related constants."""
+
+    MAX_RETRIES = int(os.getenv("PROVISIONING_MAX_RETRIES", "3"))
+    PASSWORD_RESET_POLL_INTERVAL = int(os.getenv("PASSWORD_RESET_POLL_INTERVAL", "5"))
+    REINSTALL_POLL_INTERVAL = int(os.getenv("REINSTALL_POLL_INTERVAL", "15"))
+    POST_REINSTALL_BOOT_WAIT = int(os.getenv("POST_REINSTALL_BOOT_WAIT", "60"))
+
+    # Default OS template for reinstall
+    DEFAULT_OS_TEMPLATE = os.getenv(
+        "DEFAULT_OS_TEMPLATE",
+        "kvm-ubuntu-24.04-gpt-x86_64",
+    )

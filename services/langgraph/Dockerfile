@@ -26,27 +26,21 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir --prefix=/install -r requirements.lock
 
 # === Stage 2: Production ===
-# Create minimal runtime image with Ansible runtime dependencies
+# Create minimal runtime image
 FROM python:3.12-slim AS production
 
 WORKDIR /app
 
-# Install runtime dependencies for Ansible (git, ssh client)
+# Install runtime dependencies (git for GitHub operations)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
-    openssh-client \
-    sshpass \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
-# Install required Ansible collections
-RUN ansible-galaxy collection install ansible.posix community.general
-
-# Copy source code and infrastructure
+# Copy source code
 COPY services/langgraph/src ./src
-COPY services/infrastructure ./services/infrastructure
 COPY secrets.yaml ./secrets.yaml
 
 # Run worker

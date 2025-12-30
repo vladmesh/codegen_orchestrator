@@ -10,7 +10,7 @@
 |--------|--------|------|
 | 7.2. Централизовать константы | ✅ Выполнено | 2024-12-30 |
 | 7.3. Разбить ProvisionerNode.run() | ✅ Выполнено | 2024-12-30 |
-| 7.1. Вынести provisioner в отдельный сервис | ⏳ Ожидает | - |
+| 7.1. Вынести provisioner в отдельный сервис | ✅ Выполнено | 2025-12-30 |
 | 7.4. Выделить ToolExecutor из LLMNode | ⏳ Ожидает | - |
 | 7.5. Устранить циклические импорты | ⏳ Ожидает | - |
 | 7.6. Добавить типизацию | ⏳ Ожидает | - |
@@ -260,9 +260,24 @@ os_template = server_info.get("os_template", "kvm-ubuntu-24.04-gpt-x86_64")  # H
 
 ### Приоритет: КРИТИЧЕСКИЙ
 
-#### 7.1. Вынести provisioner в отдельный сервис
+#### 7.1. Вынести provisioner в отдельный сервис ✅
 
-**Что перенести:**
+**Статус**: Выполнено 2025-12-30
+
+**Реализовано:**
+- Создан новый сервис `infrastructure-worker`
+- Перенесён весь код provisioner из langgraph
+- Перемещены Ansible playbooks из `services/infrastructure/ansible`
+- Удалён ansible-core из зависимостей langgraph
+- Создан `provisioner_client.py` для асинхронного взаимодействия через Redis
+- Удалён старый сервис `devops` (спящий контейнер)
+
+**Результаты:**
+- Размер langgraph: 598MB (было ~800MB, **-25%**)
+- Размер infrastructure-worker: 440MB
+- Зависимостей в langgraph: ~140 пакетов (было 185, **-45 пакетов**)
+
+**Что перенесено:**
 ```
 langgraph/src/provisioner/  →  infrastructure-worker/
 langgraph/src/clients/infra_client.py  →  infrastructure-worker/

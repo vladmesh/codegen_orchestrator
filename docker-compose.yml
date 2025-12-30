@@ -48,7 +48,6 @@ services:
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ./services/infrastructure:/app/services/infrastructure:delegated
       - ~/.ssh:/root/.ssh:ro
       - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
@@ -108,19 +107,27 @@ services:
     deploy:
       replicas: 1
 
-  devops:
-    profiles: [ "infra" ]
+  infrastructure-worker:
     build:
       context: .
-      dockerfile: services/infrastructure/Dockerfile
-    volumes:
-      - ./services/infrastructure/ansible:/app/ansible:delegated
+      dockerfile: services/infrastructure-worker/Dockerfile
     env_file:
       - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+    volumes:
+      - ./services/infrastructure-worker/src:/app/src:delegated
+      - ./services/infrastructure-worker/ansible:/app/ansible:delegated
+      - ./shared:/app/shared:delegated
+      - ~/.ssh:/root/.ssh:ro
     depends_on:
       - api
+      - redis
     networks:
       - internal
+    restart: unless-stopped
 
   telegram_bot:
     build:
