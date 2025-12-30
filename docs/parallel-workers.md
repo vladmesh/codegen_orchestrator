@@ -1,32 +1,38 @@
 # Параллельные Workers
 
-Для независимых задач запускаем отдельные контейнеры с coding agents.
+Для кодогенерации используются изолированные Docker-контейнеры с AI coding agents.
 
-## Архитектура
+## Текущая архитектура
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                 LangGraph Orchestrator              │
-│  tasks = [{scope: "frontend"}, {scope: "backend"}] │
+│          (Developer node в Engineering)             │
 └─────────────────────────────────────────────────────┘
                          │
-         ┌───────────────┴───────────────┐
-         ▼                               ▼
-┌──────────────────┐            ┌──────────────────┐
-│  Worker (task_1) │            │  Worker (task_2) │
-│  - git clone     │            │  - git clone     │
-│  - claude/droid  │            │  - claude/droid  │
-│  - docker compose│            │  - docker compose│
-│  - gh pr create  │            │  - gh pr create  │
-└──────────────────┘            └──────────────────┘
-         │                               │
-         └───────────────┬───────────────┘
+                  Redis pub/sub
+                         │
                          ▼
-               ┌──────────────────┐
-               │   Reviewer Agent  │
-               │   gh pr review    │
-               │   gh pr merge     │
-               └──────────────────┘
+┌─────────────────────────────────────────────────────┐
+│              Worker Spawner Service                 │
+│         (слушает worker:spawn channel)              │
+└─────────────────────────────────────────────────────┘
+                         │
+                  Docker API
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────┐
+│              Coding Worker Container                │
+│  - git clone репозитория                           │
+│  - Записывает TASK.md + AGENTS.md                  │
+│  - droid exec --skip-permissions-unsafe            │
+│  - git commit + git push                           │
+└─────────────────────────────────────────────────────┘
+                         │
+                  Redis pub/sub
+                         │
+                         ▼
+              worker:result:{request_id}
 ```
 
 ## Docker-in-Docker с Sysbox
@@ -43,7 +49,7 @@ sudo dpkg -i sysbox-ce_0.6.4-0.linux_amd64.deb
 ```bash
 docker run --runtime=sysbox-runc -it --rm \
     -e GITHUB_TOKEN=... \
-    -e ANTHROPIC_API_KEY=... \
+    -e FACTORY_API_KEY=... \
     coding-worker:latest
 ```
 
@@ -51,14 +57,24 @@ docker run --runtime=sysbox-runc -it --rm \
 - Полноценный Docker daemon
 - `git clone`, `git push`
 - `docker compose up -d`
-- `gh pr create`
+- Factory.ai Droid CLI
 
-## Worker Dockerfile
+## Coding Worker Dockerfile (актуальный)
 
 ```dockerfile
-FROM nestybox/ubuntu-jammy-systemd-docker
+FROM ubuntu:24.04
 
-RUN apt-get update && apt-get install -y git curl python3 python3-pip
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl python3 python3-pip jq ca-certificates gnupg make
+
+# Docker + Docker Compose
+RUN curl -fsSL https://get.docker.com | sh
+RUN mkdir -p /usr/local/lib/docker/cli-plugins \
+    && curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+       -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -67,48 +83,60 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y gh
 
-# Claude Code
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g @anthropic-ai/claude-code
+# Factory.ai Droid CLI
+RUN curl -fsSL https://app.factory.ai/cli | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+COPY scripts/execute_task.sh /scripts/execute_task.sh
+RUN chmod +x /scripts/execute_task.sh
 
 WORKDIR /workspace
+CMD ["/scripts/execute_task.sh"]
 ```
 
-## Запуск параллельных workers
+## Ограничения
 
-```python
-async def parallel_developer_node(state: dict) -> dict:
-    """Run multiple coding tasks in parallel."""
-    tasks = state["pending_tasks"]
-    
-    # Запускаем всех воркеров параллельно
-    results = await asyncio.gather(*[
-        spawn_sysbox_worker(task)
-        for task in tasks
-    ])
-    
-    return {
-        "pending_prs": [parse_pr_url(r) for r in results],
-        "pending_tasks": []
-    }
+| Аспект | Ограничение |
+|--------|-------------|
+| RAM | ~2-4GB на worker (Docker daemon + контейнеры) |
+| Startup | Docker daemon стартует 5-10 сек |
+| Disk | Образы качаются в каждый worker (кэшировать через volumes) |
+| GitHub API | Rate limits — добавить throttling |
 
-async def spawn_sysbox_worker(task: dict) -> str:
-    """Spawn Sysbox container for a task."""
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "run", "--rm",
-        "--runtime=sysbox-runc",
-        "-e", f"TASK={task['description']}",
-        "-e", f"REPO={task['repo']}",
-        "coding-worker:latest",
-        "/scripts/execute_task.sh",
-        stdout=asyncio.subprocess.PIPE
-    )
-    stdout, _ = await proc.communicate()
-    return stdout.decode()
+---
+
+## 🚧 Планируется: Параллельные задачи с Reviewer
+
+> [!NOTE]
+> Следующий раздел описывает **запланированную**, но ещё не реализованную функциональность.
+
+Для параллельной работы над несколькими задачами планируется архитектура с Review Agent:
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 LangGraph Orchestrator              │
+│  tasks = [{scope: "frontend"}, {scope: "backend"}] │
+└─────────────────────────────────────────────────────┘
+                         │
+         ┌───────────────┴───────────────┐
+         ▼                               ▼
+┌──────────────────┐            ┌──────────────────┐
+│  Worker (task_1) │            │  Worker (task_2) │
+│  - git clone     │            │  - git clone     │
+│  - droid exec    │            │  - droid exec    │
+│  - gh pr create  │            │  - gh pr create  │
+└──────────────────┘            └──────────────────┘
+         │                               │
+         └───────────────┬───────────────┘
+                         ▼
+               ┌──────────────────┐
+               │   Reviewer Agent  │
+               │   gh pr review    │
+               │   gh pr merge     │
+               └──────────────────┘
 ```
 
-## Reviewer Agent
+### Reviewer Agent (не реализован)
 
 ```python
 async def reviewer_node(state: dict) -> dict:
@@ -131,12 +159,3 @@ async def reviewer_node(state: dict) -> dict:
     
     return {"messages": [...]}
 ```
-
-## Ограничения
-
-| Аспект | Ограничение |
-|--------|-------------|
-| RAM | ~2-4GB на worker (Docker daemon + контейнеры) |
-| Startup | Docker daemon стартует 5-10 сек |
-| Disk | Образы качаются в каждый worker (кэшировать через volumes) |
-| GitHub API | Rate limits — добавить throttling |

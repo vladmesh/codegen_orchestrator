@@ -2,9 +2,47 @@
 
 Для задач разработки используем production-ready инструменты вместо написания своих агентов.
 
-## Claude Code (Anthropic)
+## Текущая реализация: Factory.ai Droid
 
-CLI-инструмент для agentic coding. Понимает весь codebase, редактирует файлы, запускает команды.
+Автономный coding agent с уровнями автономности. **Это единственный coding agent, используемый в проекте.**
+
+```bash
+# Интерактивный режим
+droid
+
+# Single-shot (для автоматизации)
+droid exec "Implement feature X" --autonomy high
+
+# Из файла (используется в coding-worker)
+droid exec --prompt-file TASK.md --skip-permissions-unsafe
+```
+
+**Autonomy levels:** low (много подтверждений), medium, high (полная автономия).
+
+### Интеграция в проект
+
+Developer node в Engineering Subgraph использует Droid через `coding-worker` контейнер:
+
+1. Worker Spawner создаёт контейнер `coding-worker:latest`
+2. Контейнер клонирует репозиторий
+3. Записывает `TASK.md` и `AGENTS.md` с инструкциями
+4. Запускает `droid exec --skip-permissions-unsafe`
+5. Коммитит и пушит изменения
+
+```python
+# services/coding-worker/scripts/execute_task.sh
+droid exec --prompt-file TASK.md --skip-permissions-unsafe
+git add -A && git commit -m "feat: implement task" && git push
+```
+
+---
+
+## 🚧 Планируется: Claude Code
+
+> [!NOTE]
+> Следующий раздел описывает **запланированную**, но ещё не реализованную функциональность.
+
+Claude Code — CLI-инструмент от Anthropic для agentic coding. Рассматривается как альтернатива/дополнение к Droid.
 
 ```bash
 # Установка
@@ -21,56 +59,15 @@ cat error.log | claude -p "Fix this error"
 
 **Цена:** Pro/Max подписка (~$20-100/мес), дешевле чем API.
 
-## Factory.ai Droid
-
-Автономный coding agent с уровнями автономности.
-
-```bash
-# Интерактивный режим
-droid
-
-# Single-shot (для автоматизации)
-droid exec "Implement feature X" --autonomy high
-
-# Из файла
-droid exec --prompt-file task.md
-```
-
-**Autonomy levels:** low (много подтверждений), medium, high (полная автономия).
+---
 
 ## Маппинг на узлы графа
 
-| Узел | Инструмент | Почему |
+| Узел | Инструмент | Статус |
 |------|------------|--------|
-| **Архитектор** | Claude Code | Понимает codebase, генерит структуру |
-| **Разработчик** | Droid (high autonomy) | Автономная реализация фич |
-| **Тестировщик** | Claude Code / Droid | Пишут и запускают тесты |
-| **DevOps** | Custom (Ansible wrapper) | Специфичная задача |
-| **Завхоз** | LangGraph native | Доступ к секретам |
-
-## Интеграция в LangGraph
-
-```python
-import subprocess
-
-async def developer_node(state: dict) -> dict:
-    """Developer node using external coding agent."""
-    task = state["current_task"]
-    project_path = state["project_path"]
-    
-    # Записываем контекст для агента
-    Path(f"{project_path}/TASK.md").write_text(task["description"])
-    
-    # Вызываем Claude Code
-    result = subprocess.run(
-        ["claude", "-p", "Read TASK.md and implement. Run tests."],
-        cwd=project_path,
-        capture_output=True,
-        text=True
-    )
-    
-    return {
-        "messages": [AIMessage(content=result.stdout)],
-        "current_agent": "developer"
-    }
-```
+| **Architect** | LLM (GPT-4/Claude) + Preparer | ✅ Реализовано |
+| **Preparer** | Copier template | ✅ Реализовано |
+| **Developer** | Factory.ai Droid | ✅ Реализовано |
+| **Tester** | Функциональный узел (запуск тестов) | ✅ Реализовано |
+| **DevOps** | Ansible wrapper | ✅ Реализовано |
+| **Zavhoz** | LangGraph native (LLM + tools) | ✅ Реализовано |

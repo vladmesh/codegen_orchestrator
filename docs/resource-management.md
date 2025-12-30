@@ -30,8 +30,8 @@
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   Encrypted Storage                         │
-│  (SOPS + YAML, позже PostgreSQL)                           │
+│                   Secrets Storage                           │
+│  project.config.secrets (PostgreSQL)                       │
 │                                                             │
 │  telegram_bots:                                            │
 │    handle_abc123:                                          │
@@ -40,51 +40,27 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Пример: деплой использует секреты, но LLM их не видит
+## Текущая реализация: PostgreSQL
+
+Секреты хранятся в поле `config.secrets` модели `Project` и управляются через API:
 
 ```python
-@tool
-def deploy_to_server(server_handle: str, project_path: str):
-    """Deploy project to server. LLM calls this with handle only."""
-    # Python-код читает секреты напрямую, минуя LLM
-    server = secret_storage.get_server(server_handle)
-    
-    subprocess.run(
-        ["ansible-playbook", "playbooks/site.yml"],
-        env={
-            "ANSIBLE_HOST": server.host,        # LLM не видит
-            "ANSIBLE_SSH_KEY": server.ssh_key,  # LLM не видит
-        }
-    )
-    return "Deployed successfully"  # ← только это в контекст
+# Сохранение секрета через API
+await api_client.save_project_secret(project_id, "TELEGRAM_TOKEN", "123456:ABC...")
+
+# DevOps subgraph читает секреты из project_spec.config.secrets
+secrets = project_spec.get("config", {}).get("secrets", {})
 ```
 
-## Хранение секретов (MVP)
+## Типы секретов
 
-SOPS + AGE для шифрования YAML файла:
+DevOps subgraph классифицирует переменные окружения на три типа:
 
-```yaml
-# secrets.yaml (зашифрован SOPS)
-telegram_bots:
-    handle_abc123:
-        name: "@weather_bot"
-        token: ENC[AES256_GCM,data:...,iv:...,tag:...]
-
-servers:
-    prod_vps_1:
-        host: ENC[AES256_GCM,data:...,iv:...,tag:...]
-        ssh_key: ENC[AES256_GCM,data:...,iv:...,tag:...]
-
-api_keys:
-    openai:
-        key: ENC[AES256_GCM,data:...,iv:...,tag:...]
-```
-
-```bash
-# Расшифровка при старте оркестратора
-export SOPS_AGE_KEY_FILE=~/.age/key.txt
-sops -d secrets.yaml > /tmp/secrets.yaml
-```
+| Тип | Описание | Пример |
+|-----|----------|--------|
+| `infra` | Генерируются автоматически | `DATABASE_URL`, `REDIS_URL` |
+| `computed` | Вычисляются из контекста | `APP_NAME`, `PORT` |
+| `user` | Требуются от пользователя | `TELEGRAM_BOT_TOKEN`, `API_KEY` |
 
 ## Что хранит Завхоз
 
@@ -125,6 +101,34 @@ sops -d secrets.yaml > /tmp/secrets.yaml
 **Production:**
 - Secrets записываются на сервер через CI/CD workflow
 - Путь на проде: `/opt/secrets/github_app.pem`
+
+---
+
+## 🚧 Планируется: SOPS + AGE
+
+> [!NOTE]
+> Следующий раздел описывает **запланированную**, но ещё не реализованную функциональность.
+
+Для шифрования секретов в репозитории планируется использовать SOPS + AGE:
+
+```yaml
+# secrets.yaml (зашифрован SOPS)
+telegram_bots:
+    handle_abc123:
+        name: "@weather_bot"
+        token: ENC[AES256_GCM,data:...,iv:...,tag:...]
+
+servers:
+    prod_vps_1:
+        host: ENC[AES256_GCM,data:...,iv:...,tag:...]
+        ssh_key: ENC[AES256_GCM,data:...,iv:...,tag:...]
+```
+
+```bash
+# Расшифровка при старте оркестратора
+export SOPS_AGE_KEY_FILE=~/.age/key.txt
+sops -d secrets.yaml > /tmp/secrets.yaml
+```
 
 ## См. также
 

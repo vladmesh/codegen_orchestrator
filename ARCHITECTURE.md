@@ -77,11 +77,11 @@ Codegen Orchestrator — это мультиагентная система на
 │ └────────┬─────────┘      │           └────────────────────────────────────────────────┘
 │          │                │                                        │
 └──────────┼────────────────┘                                        ▼
-           │                            ┌────────────────────────────────────────────────┐
-           ▼                            │               DevOps Subgraph                  │
-   ┌───────────────┐                    │  EnvAnalyzer (LLM) → SecretResolver → Deployer │
-   │    Zavhoz     │───────────────────▶│                                                │
-   │  (resources)  │                    └────────────────────────────────────────────────┘
+           │                            ┌─────────────────────────────────────────────────────────────┐
+           ▼                            │                      DevOps Subgraph                        │
+   ┌───────────────┐                    │  EnvAnalyzer (LLM) → SecretResolver → ReadinessCheck → Deployer │
+   │    Zavhoz     │───────────────────▶│                                                             │
+   │  (resources)  │                    └─────────────────────────────────────────────────────────────┘
    └───────────────┘
 ```
 
@@ -138,6 +138,7 @@ export LANGCHAIN_API_KEY=...
 
 ### В бэклоге
 
+- **Persistent Checkpointing** — сейчас используется `MemorySaver`, миграция на `PostgresSaver` запланирована
 - Human escalation (backlog: Human Escalation)
 - Cost tracking (backlog: Cost Tracking)
 - RAG с embeddings (backlog: RAG с Embeddings)
