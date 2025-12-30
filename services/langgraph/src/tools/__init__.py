@@ -59,6 +59,7 @@ from .projects import (
     get_project_status,
     list_projects,
     set_project_maintenance,
+    update_project,
 )
 
 # RAG search tools
@@ -86,6 +87,7 @@ __all__ = [
     "get_project_status",
     "create_project_intent",
     "set_project_maintenance",
+    "update_project",
     # Servers
     "list_managed_servers",
     "find_suitable_server",

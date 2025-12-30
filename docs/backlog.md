@@ -1,5 +1,23 @@
 # Backlog
 
+## Urgent Features
+
+- [ ] **Implement `update_project` tool for Product Owner**
+  - **Problem**: Current `activate_project` logic attempts to "guess" the repository URL but fails to save it persistently if the project was created before the fix. This leaves "legacy" projects (like `hello-world-bot`) in a state where deployment is impossible because DevOps subgraph doesn't know where to pull code from. PO sees the issue but has no tool to fix the data.
+  - **Proposed Solution**: Create a dedicated `update_project(project_id, repository_url=None, status=None)` tool in `services/langgraph/src/tools/projects.py`. Add it to `project_management` capability.
+  - **Why**: Allows recovering stuck projects without manual database intervention.
+
+## Technical Debt
+
+- [ ] **Refactor `check_deploy_readiness`**
+  - **Context**: Currently `check_deploy_readiness` performs a static check against `project.config.secrets`. This logic is partially redundant with the DevOps subgraph's `env_analyzer` (LLM-based) and `readiness_check`.
+  - **Goal**: Align validation logic so we don't have two sources of truth for what "ready" means.
+
+## Future Improvements
+
+- [ ] **DevOps: Add Rollback Capability**
+  - Support rolling back to previous successful deployment if current one fails health checks.
+
 ## Фаза 0: Foundation
 
 ### Поднять инфраструктуру
