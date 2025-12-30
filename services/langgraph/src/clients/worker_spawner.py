@@ -15,6 +15,7 @@ import redis.asyncio as redis
 from shared.logging_config import get_logger
 from shared.schemas.worker_events import WorkerEventUnion, parse_worker_event
 
+from ..config.constants import Timeouts
 from ..config.settings import get_settings
 
 logger = get_logger(__name__)
@@ -35,7 +36,7 @@ class SpawnRequest:
     task_title: str = "AI generated changes"
     model: str = "claude-sonnet-4-5-20250929"
     agents_content: str | None = None
-    timeout_seconds: int = 600
+    timeout_seconds: int = Timeouts.WORKER_SPAWN
 
 
 @dataclass
@@ -62,7 +63,7 @@ async def request_spawn(
     task_title: str = "AI generated changes",
     model: str = "claude-sonnet-4-5-20250929",
     agents_content: str | None = None,
-    timeout_seconds: int = 600,
+    timeout_seconds: int = Timeouts.WORKER_SPAWN,
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 

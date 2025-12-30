@@ -15,11 +15,13 @@ import structlog
 if TYPE_CHECKING:
     pass
 
+from ..config.constants import Paths, Timeouts
+
 logger = structlog.get_logger(__name__)
 
-# SSH configuration
-SSH_KEY_PATH = "/root/.ssh/id_ed25519"
-SSH_TIMEOUT = 30
+# SSH configuration - use centralized constants
+SSH_KEY_PATH = Paths.SSH_KEY
+SSH_TIMEOUT = Timeouts.SSH_COMMAND
 
 
 async def run_ssh_command(

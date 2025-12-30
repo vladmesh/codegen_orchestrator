@@ -12,11 +12,12 @@ import structlog
 from shared.clients.github import GitHubAppClient
 
 from ..clients.api import api_client
+from ..config.constants import Paths
 
 logger = structlog.get_logger()
 
-# SSH key path for deployment
-SSH_KEY_PATH = "/root/.ssh/id_ed25519"
+# SSH key path for deployment - use centralized constant
+SSH_KEY_PATH = Paths.SSH_KEY
 
 
 async def _create_service_deployment_record(
@@ -149,7 +150,7 @@ async def run_ansible_deploy(
         return {"status": "failed", "error": f"Failed to get GitHub token: {e}"}
 
     # Prepare Ansible
-    playbook_path = "/app/services/infrastructure/ansible/playbooks/deploy_project.yml"
+    playbook_path = Paths.playbook("deploy_project.yml")
 
     inventory_content = (
         f"{target_server_ip} ansible_user=root "

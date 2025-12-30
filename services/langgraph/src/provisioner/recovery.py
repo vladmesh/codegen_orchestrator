@@ -8,6 +8,7 @@ import structlog
 
 from shared.notifications import notify_admins
 
+from ..config.constants import Paths, Timeouts
 from .api_client import get_services_on_server
 
 logger = structlog.get_logger()
@@ -40,7 +41,7 @@ async def redeploy_service(
     if not port:
         return False, f"Service {service_name} has no port"
 
-    playbook_path = "/app/services/infrastructure/ansible/playbooks/deploy_project.yml"
+    playbook_path = Paths.playbook("deploy_project.yml")
 
     # Construct inventory
     inventory_content = (
@@ -69,7 +70,9 @@ async def redeploy_service(
     )
 
     try:
-        process = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        process = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=Timeouts.SERVICE_DEPLOY
+        )
 
         if process.returncode == 0:
             logger.info(

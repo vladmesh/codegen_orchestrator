@@ -7,13 +7,15 @@ import time
 
 import structlog
 
+from ..config.constants import Paths, Timeouts
+
 logger = structlog.get_logger()
 
 MAX_LOG_LENGTH = 1000
 
-# Configuration from environment
-PROVISIONING_TIMEOUT = int(os.getenv("PROVISIONING_TIMEOUT", "1200"))  # 20 minutes
-REINSTALL_TIMEOUT = int(os.getenv("REINSTALL_TIMEOUT", "900"))  # 15 minutes
+# Configuration from centralized constants
+PROVISIONING_TIMEOUT = Timeouts.PROVISIONING
+REINSTALL_TIMEOUT = Timeouts.REINSTALL
 
 
 def run_ansible_playbook(
@@ -37,7 +39,7 @@ def run_ansible_playbook(
     Returns:
         Tuple of (success: bool, output: str)
     """
-    playbook_path = f"/app/services/infrastructure/ansible/playbooks/{playbook_name}"
+    playbook_path = Paths.playbook(playbook_name)
 
     # Inventory construction
     ssh_args = (

@@ -12,6 +12,7 @@ import redis.asyncio as redis
 
 from shared.logging_config import get_logger
 
+from ..config.constants import Timeouts
 from ..config.settings import get_settings
 
 logger = get_logger(__name__)
@@ -32,7 +33,7 @@ class PreparerRequest:
     task_md: str = ""
     agents_md: str = ""
     service_template_ref: str = "main"
-    timeout_seconds: int = 120
+    timeout_seconds: int = Timeouts.PREPARER_SPAWN
 
 
 @dataclass
@@ -55,7 +56,7 @@ async def request_preparer(
     task_md: str = "",
     agents_md: str = "",
     service_template_ref: str = "main",
-    timeout_seconds: int = 120,
+    timeout_seconds: int = Timeouts.PREPARER_SPAWN,
 ) -> PreparerResult:
     """Request a preparer container spawn and wait for result.
 
