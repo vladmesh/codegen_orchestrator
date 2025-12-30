@@ -1,267 +1,175 @@
 # Backlog
 
-## Technical Debt
+> Актуально на: 2025-12-30
 
-- [ ] **PO does not wait for async deploy completion**
-  - **Problem**: When PO calls `trigger_deploy`, it receives a `job_id` and immediately returns it to the user with "use `get_deploy_status` to check progress". This is bad UX because:
-    1. User receives a technical `job_id` and must manually ask for status
-    2. PO ends the session (`awaiting=True`) instead of waiting for result
-    3. When deploy completes (success or failure), PO is not notified
-  - **Current flow**:
-    ```
-    PO → trigger_deploy → job_id
-    PO → respond_to_user("Task ID: xxx, use get_deploy_status...")
-    PO → session ends (awaiting user input)
-    Deploy worker → completes → nobody notifies user
-    ```
-  - **Desired flow**:
-    ```
-    PO → trigger_deploy → job_id
-    PO → respond_to_user("Deploy started, please wait...")
-    Deploy worker → completes → publishes event
-    LangGraph → receives event → wakes up PO
-    PO → respond_to_user("Deploy successful! URL: ...")
-    ```
-  - **Solution options**:
-    1. **Polling in PO**: PO loops calling `get_deploy_status` every N seconds. Cons: wastes LLM tokens, inefficient.
-    2. **Event-driven wake-up** (recommended): Deploy worker publishes `deploy:complete:{thread_id}` event, LangGraph listens and injects message into PO's thread, PO receives result and responds. Pros: efficient, real-time.
-    3. **Separate notification path**: Deploy worker sends Telegram message directly via bot. Cons: bypasses PO, inconsistent UX.
-  - **Implementation notes**:
-    - `listen_worker_events` in `worker.py` already subscribes to `worker:events:all`
-    - Need to route deploy completion events back to PO's thread
-    - May need new field in state: `pending_deploys: list[str]`
-    - PO prompt should mention: "After trigger_deploy, do NOT end session, wait for deploy_complete event"
+## Technical Debt (Активная работа)
 
-- [ ] **Refactor `check_deploy_readiness`**
-  - **Context**: Currently `check_deploy_readiness` performs a static check against `project.config.secrets`. This logic is partially redundant with the DevOps subgraph's `env_analyzer` (LLM-based) and `readiness_check`.
-  - **Goal**: Align validation logic so we don't have two sources of truth for what "ready" means.
+### PO does not wait for async deploy completion
+
+**Priority:** MEDIUM  
+**Status:** TODO
+
+**Проблема:** Когда PO вызывает `trigger_deploy`, он получает `job_id` и сразу возвращает его пользователю с сообщением "используй `get_deploy_status`". Это плохой UX:
+1. Пользователь получает технический `job_id` и должен вручную спрашивать статус
+2. PO завершает сессию (`awaiting=True`) вместо ожидания результата
+3. Когда деплой завершается, PO не уведомляется
+
+**Текущий flow:**
+```
+PO → trigger_deploy → job_id
+PO → respond_to_user("Task ID: xxx, use get_deploy_status...")
+PO → session ends (awaiting user input)
+Deploy worker → completes → nobody notifies user
+```
+
+**Желаемый flow:**
+```
+PO → trigger_deploy → job_id
+PO → respond_to_user("Deploy started, please wait...")
+Deploy worker → completes → publishes event
+LangGraph → receives event → wakes up PO
+PO → respond_to_user("Deploy successful! URL: ...")
+```
+
+**Решение:** Event-driven wake-up — Deploy worker публикует `deploy:complete:{thread_id}` event, LangGraph слушает и инжектит сообщение в thread PO.
+
+**Что уже есть:**
+- `listen_worker_events` в `worker.py` подписывается на `worker:events:all`
+- Нужно роутить deploy completion events обратно в PO's thread
+- Возможно нужно новое поле в state: `pending_deploys: list[str]`
+
+---
+
+### Fix datetime serialization in worker events forwarding
+
+**Priority:** LOW  
+**Status:** TODO  
+**Location:** `services/langgraph/src/worker.py:395`
+
+Worker events (started, progress, completed, failed) не пересылаются в stream `orchestrator:events` из-за ошибки сериализации datetime.
+
+**Причина:**
+```python
+# Текущий код
+await publish_event(f"worker.{event.event_type}", event.model_dump())
+```
+
+`WorkerEvent` содержит поле `timestamp: datetime`. При вызове `model_dump()` datetime остаётся объектом Python, а `json.dumps()` в `RedisStreamClient.publish()` (строка 79) не умеет его сериализовать.
+
+**Исправление:**
+```python
+await publish_event(f"worker.{event.event_type}", event.model_dump(mode="json"))
+```
+
+---
+
+## Future Improvements (Extracted from archived plans)
+
+### Telegram Bot Pool (Resource Allocation)
+
+**Priority:** MEDIUM  
+**Status:** TODO  
+**Source:** secrets-and-project-filtering-refactor.md (Iteration 3)
+
+Автоматическое выделение Telegram ботов из пула для проектов.
+
+**Задачи:**
+1. API для управления пулом ботов:
+   - `POST /api/telegram-bots` — регистрация бота админом
+   - `GET /api/telegram-bots/available` — список свободных
+   - `POST /api/telegram-bots/{id}/allocate` — привязка к проекту
+2. Расширить Zavhoz инструментами:
+   - `allocate_telegram_bot(project_id)` — выделяет бота из пула
+   - `release_telegram_bot(project_id)` — освобождает при удалении проекта
+3. Интеграция в DevOps flow:
+   - Если проект требует `TELEGRAM_BOT_TOKEN` и нет в secrets — запросить из пула или у пользователя
+
+---
+
+### RAG с Embeddings (Hybrid Search)
+
+**Priority:** MEDIUM  
+**Status:** TODO  
+**Source:** RAG_PLAN.md, phase5-6-integration-rag.md
+
+Полноценная RAG система с embeddings вместо текущего stub'а.
+
+**Задачи:**
+1. Включить pgvector в Postgres
+2. Добавить таблицы: `rag_documents`, `rag_chunks` с embeddings
+3. Реализовать ingestion pipeline:
+   - Индексировать project specs, README, ADRs
+   - Chunking: 512 tokens, 10% overlap
+4. Hybrid search: FTS + vector retrieval
+5. Scopes: `docs`, `code`, `history`, `logs`
+
+**Детали:**
+- Embedding model: OpenAI text-embedding-3-small, 512 dimensions
+- Token budget: top_k=5, max_tokens=2000, min_similarity=0.7
+
+---
+
+### API Authentication Middleware
+
+**Priority:** MEDIUM  
+**Status:** TODO  
+**Source:** mvp_gap_analysis.md
+
+API endpoints не защищены аутентификацией (кроме x-telegram-id header).
+
+**Задачи:**
+1. Добавить authentication middleware в FastAPI
+2. API key validation для внешних сервисов
+3. Rate limiting per API key
+
+---
+
+### Scheduler Distributed Locks
+
+**Priority:** LOW  
+**Status:** TODO  
+**Source:** mvp_gap_analysis.md
+
+Race conditions в scheduler tasks при multiple instances.
+
+**Задачи:**
+1. Redis distributed locks для background tasks
+2. Lock acquisition с timeout
+3. Graceful fallback если lock не получен
+
+---
 
 ## Future Improvements
 
-- [ ] **DevOps: Add Rollback Capability**
-  - Support rolling back to previous successful deployment if current one fails health checks.
+### DevOps: Add Rollback Capability
 
-## Фаза 0: Foundation
-
-### Поднять инфраструктуру
-
-**Status:** TODO
-**Priority:** HIGH
-
-Базовая инфраструктура для разработки оркестратора.
-
-**Tasks:**
-- [ ] `cp .env.example .env` и заполнить переменные
-- [ ] `make build && make up`
-- [ ] `make migrate` — создать таблицы в БД
-- [ ] Проверить что API отвечает на `/health`
-
----
-
-### Установить Sysbox на сервер оркестратора
-
-**Status:** DONE
-**Priority:** HIGH
-
-Для параллельных workers нужен Sysbox runtime.
-
-**Tasks:**
-- [x] Скачать и установить Sysbox CE
-- [x] Проверить `docker info | grep sysbox`
-- [x] Протестировать запуск nested Docker
-
-**Docs:** https://github.com/nestybox/sysbox
-
----
-
-### Настроить SOPS + AGE для секретов
-
-**Status:** TODO
-**Priority:** HIGH
-
-Шифрование secrets.yaml для хранения токенов и ключей.
-
-**Tasks:**
-- [ ] Установить SOPS и AGE
-- [ ] Сгенерировать AGE ключ
-- [ ] Создать secrets.yaml с тестовыми данными
-- [ ] Проверить шифрование/дешифрование
-
----
-
-## Фаза 1: Вертикальный слайс
-
-### Минимальный Telegram → LangGraph flow
-
-**Status:** TODO
-**Priority:** HIGH
-
-Пользователь пишет в Телеграм, получает ответ от LangGraph.
-
-**Tasks:**
-- [ ] Создать Telegram бота через @BotFather
-- [ ] Прописать токен в `.env`
-- [ ] Реализовать передачу сообщений из бота в LangGraph
-- [ ] Реализовать отправку ответа обратно в Телеграм
-
-**Open questions:**
-- Как хранить thread_id для пользователя? (Redis? Postgres?)
-
----
-
-### Brainstorm → Architect flow
-
-**Status:** DONE
-**Priority:** MEDIUM
-
-Брейнсторм создаёт спецификацию, Архитектор генерирует проект.
-
-**Tasks:**
-- [x] Реализовать brainstorm node с LLM
-- [x] Определить формат project_spec
-- [x] Реализовать architect node с Factory.ai
-- [x] GitHub App для создания репозиториев
-
----
-
-### Zavhoz: выдача ресурсов
-
-**Status:** DONE
-**Priority:** MEDIUM
-
-Завхоз выдаёт handles для ресурсов, не раскрывая секреты LLM.
-
-**Tasks:**
-- [x] Модель Resource в API (уже есть базовая)
-- [x] Эндпоинты: allocate, get, list
-- [ ] Интеграция с SOPS для чтения реальных секретов
-- [x] Tool для LangGraph: request_resource
-
----
-
-## Фаза 2: Параллельные Workers
-
-### Worker Docker Image
-
-**Status:** DONE
-**Priority:** MEDIUM
-
-Образ с git, gh CLI, Factory.ai для выполнения coding tasks.
-
-**Tasks:**
-- [x] Dockerfile на базе Ubuntu 22.04
-- [x] Установить git, gh, Factory.ai Droid CLI
-- [x] Скрипт execute_task.sh
-- [x] Протестировать с Sysbox runtime
-
----
-
-### Worker Spawner Microservice
-
-**Status:** DONE
-**Priority:** HIGH
-
-Микросервис для изоляции Docker API от LangGraph.
-
-**Tasks:**
-- [x] Redis pub/sub коммуникация
-- [x] `worker:spawn` / `worker:result:{id}` каналы
-- [x] Docker socket mount
-- [x] Client library для LangGraph
-
----
-
-### Parallel Developer Node
-
-**Status:** TODO
-**Priority:** MEDIUM
-
-Узел графа для параллельного запуска coding workers.
-
-**Tasks:**
-- [ ] spawn_sysbox_worker function
-- [ ] asyncio.gather для параллельного запуска
-- [ ] Парсинг результатов (PR URL, статус)
-- [ ] Обработка ошибок
-
----
-
-### Reviewer Node
-
-**Status:** TODO  
-**Priority:** MEDIUM
-
-Ревью и merge PR через gh CLI.
-
-**Tasks:**
-- [ ] gh pr diff для получения изменений
-- [ ] LLM для code review
-- [ ] gh pr merge или gh pr comment
-- [ ] Логика возврата на доработку
-
----
-
-## Фаза 3: DevOps Integration
-
-### DevOps Node + prod_infra
-
-**Status:** TODO
 **Priority:** LOW
 
-Интеграция с Ansible для деплоя.
-
-**Tasks:**
-- [ ] Wrapper над ansible-playbook
-- [ ] Обновление services.yml
-- [ ] DNS через Cloudflare API
-- [ ] Health check после деплоя
-
-**Open questions:**
-- Как передать SSH ключ агенту? (через Завхоза?)
-- Как обрабатывать ошибки Ansible?
+Поддержка отката к предыдущему успешному деплою если текущий не проходит health checks.
 
 ---
-
-## Ideas / Future
 
 ### OpenTelemetry Integration
 
-**Status:** BACKLOG  
 **Priority:** MEDIUM  
-**Prerequisites:** Structured Logging Implementation
+**Prerequisites:** Structured Logging Implementation (DONE)
 
 Distributed tracing для визуализации flow запросов через все микросервисы.
 
-**Benefits:**
+**Преимущества:**
 - Видеть весь путь запроса через все сервисы с временными метками
 - Автоматическая связь логов через trace_id
 - Flamegraph для поиска bottleneck'ов
-- Метрики latency/error rate из коробки
 
-**Tasks:**
-- [ ] Поднять Grafana Tempo для traces
-- [ ] Добавить `opentelemetry-api` и `opentelemetry-sdk` в зависимости
-- [ ] Создать `shared/telemetry.py` с setup функцией
-- [ ] Auto-instrument FastAPI (одна строка - `FastAPIInstrumentor.instrument_app(app)`)
-- [ ] Добавить manual spans в ключевые LangGraph nodes (Zavhoz, Developer, DevOps)
-- [ ] Настроить Grafana dashboards для traces
-- [ ] Интеграция Tempo с Loki (клик на лог → показать trace)
-
-**Stack:**
-- Grafana Tempo (traces storage)
-- Grafana Loki (logs storage)
-- Prometheus (metrics)
-- Unified Grafana UI
-
-**Docs:** https://opentelemetry.io/docs/
+**Стек:** Grafana Tempo (traces) + Grafana Loki (logs) + Prometheus (metrics)
 
 ---
 
 ### Cost Tracking
 
-Отслеживание расходов на LLM.
+**Priority:** LOW
 
-**Ideas:**
+Отслеживание расходов на LLM:
 - Логировать tokens per request
 - Агрегировать по проектам
 - Алерты при превышении бюджета
@@ -270,33 +178,24 @@ Distributed tracing для визуализации flow запросов чер
 
 ### Human Escalation
 
-Когда просить помощи у человека.
+**Priority:** MEDIUM
 
-**Triggers:**
+Когда просить помощи у человека:
 - Агент застрял > N итераций
 - Ошибка без recovery
 - Финансовые решения (покупка домена, сервера)
 - Merge в main с breaking changes
 
----
-
-### Multi-tenancy
-
-Несколько пользователей / проектов.
-
-**Questions:**
-- Разные Telegram пользователи = разные threads?
-- Изоляция ресурсов между проектами?
-- Квоты на LLM usage?
+**Частично реализовано:** `needs_human_approval` flag в `OrchestratorState` и max iterations в Engineering subgraph.
 
 ---
 
 ### CLI Interface
 
-Альтернативный интерфейс помимо Telegram.
+**Priority:** LOW
 
+Альтернативный интерфейс помимо Telegram:
 ```bash
-# Идея
 orchestrator new "Weather bot with notifications"
 orchestrator status
 orchestrator deploy
@@ -304,112 +203,81 @@ orchestrator deploy
 
 ---
 
----
-
-### Advanced Model Management & Dashboard
-
-**Status:** TODO
-**Priority:** MEDIUM
-
-Support for late 2025 SOTA models (gpt-5.2, Gemini 3 Pro, Claude Opus 4.5) and dynamic runtime configuration.
-
-**Tasks:**
-- [ ] Database schema for storing Model Configs (provider, model_name, api_key_ref, temperature, prompt_templates).
-- [ ] Admin Dashboard (Web UI) for managing these configs at runtime.
-- [ ] Dynamic LLM factory that reads from DB instead of envs.
-- [ ] Support for high-end models: `gpt-5.2`, `google/gemini-3-pro`, `anthropic/claude-opus-4.5`.
-
-### Refactor: Move background tasks out of API
-
-**Status:** DONE
-**Priority:** MEDIUM
-
-API should be a clean CRUD layer. All background polling/monitoring should be in a separate service.
-
-**Tasks:**
-- [x] Create `scheduler` or `worker` service in Docker
-- [x] Move `health_checker`, `server_sync`, `github_sync` from API
-- [x] Remove background task initialization from `api/src/main.py`
-- [x] Configure SSH keys and credentials only for the new service
-
----
-
-### Technical Debt / Optimizations
+## Technical Debt / Optimizations
 
 ### MemorySaver Eviction (LangGraph)
 
-**Status:** TODO
 **Priority:** LOW (Defer until memory becomes an issue)
 
 `MemorySaver` хранит все checkpoints графа в RAM без eviction. При ~2.7KB на checkpoint это ~20MB/неделю при активном использовании.
 
-**Options:**
+**Опции:**
 1. Periodic cleanup task (`graph.checkpointer.storage.clear()`)
 2. Custom TTLMemorySaver wrapper с LRU eviction
 3. Migrate to PostgresSaver (requires direct DB access from langgraph)
-
-**Tasks:**
-- [ ] Добавить memory stats logging для мониторинга
-- [ ] Реализовать периодическую очистку старых threads
-- [ ] Или мигрировать на PostgresSaver если нужен persistent state
 
 ---
 
 ### Singleton HTTP Client (Telegram Bot)
 
-**Status:** TODO
 **Priority:** LOW (Defer until high load)
 
 Использовать Singleton `httpx.AsyncClient` в Telegram Bot для переиспользования SSL-соединений.
 
-**Tasks:**
-- [ ] Вынести `httpx.AsyncClient` в глобальную переменную или Dependency Injection в `services/telegram_bot`
-- [ ] Использовать этот клиент во всех handlers вместо создания нового на каждый запрос
-- [ ] Корректно закрывать клиент при shutdown
+---
+
+## Completed (Reference)
+
+### Infrastructure & Core
+- ✅ **Sysbox Installation** — Installed on dev machine for nested Docker
+- ✅ **Worker Docker Image** — `coding-worker:latest` with Factory.ai Droid CLI
+- ✅ **Worker Spawner** — Redis pub/sub microservice for Docker isolation
+- ✅ **Scheduler Service** — Moved background tasks (github_sync, server_sync, health_checker) out of API
+
+### Dynamic ProductOwner Architecture
+- ✅ **Intent Parser** — gpt-4o-mini for cheap intent classification and capability selection
+- ✅ **Capability Registry** — Dynamic tool loading by capability groups
+- ✅ **PO Agentic Loop** — Iterative tool execution with user confirmation
+- ✅ **Session Management** — Redis-based session locking (PROCESSING/AWAITING states)
+
+### Engineering Pipeline
+- ✅ **Engineering Subgraph** — Analyst → Developer → Tester with rework loop
+- ✅ **Developer Validation** — Commit SHA validation, max iterations guard
+
+### DevOps Pipeline
+- ✅ **DevOps Subgraph** — LLM-based env analysis, secret classification
+- ✅ **Secret Resolution** — Auto-generates infra secrets, requests user secrets
+
+### Multi-tenancy
+- ✅ **User Propagation** — `telegram_user_id` and `user_id` through all graph nodes
+- ✅ **Project Filtering** — `owner_only` filter for project lists
+
+### GitHub Integration
+- ✅ **GitHub App** — Auto-detects org, creates repos with correct permissions
+- ✅ **Architect Node** — Creates repos, saves repository_url to project
 
 ---
 
-### Fix datetime serialization in worker events forwarding
+## Archived (Outdated/Superseded)
 
-**Status:** TODO
-**Priority:** LOW
+<details>
+<summary>Старые задачи из фаз 0-3 (заменены Dynamic PO архитектурой)</summary>
 
-Worker events (started, progress, completed, failed) не пересылаются в stream `orchestrator:events` из-за ошибки сериализации datetime.
+Следующие задачи были частью оригинального фазового плана, но архитектура изменилась:
 
-**Location:** `services/langgraph/src/worker.py:296`
+- **Фаза 0: Поднять инфраструктуру** — Базовые setup инструкции, не backlog item
+- **Фаза 0: SOPS + AGE для секретов** — Не реализовано, секреты хранятся в project.config.secrets через API
+- **Фаза 1: Минимальный Telegram → LangGraph flow** — Реализовано через telegram_bot + langgraph сервисы
+- **Фаза 2: Parallel Developer Node** — Заменено на Engineering subgraph с rework loop
+- **Фаза 2: Reviewer Node** — Не реализовано, review через Engineering subgraph
+- **Фаза 3: DevOps Node + prod_infra** — Заменено на DevOps subgraph с LLM-анализом секретов
+- **Advanced Model Management & Dashboard** — Частично реализовано через LLM factory и agent_configs в БД
 
-**Root cause:**
-```python
-# Текущий код
-await publish_event(f"worker.{event.event_type}", event.model_dump())
-```
+**Архитектурные решения сохранены в commit history (планы удалены при cleanup 2025-12-30):**
+- Dynamic ProductOwner: Intent Parser + Capability Registry + Agentic Loop
+- Engineering Subgraph: Architect → Preparer → Developer → Tester
+- DevOps Subgraph: EnvAnalyzer (LLM) → SecretResolver → Deployer
+- Session Management: Redis-based locks with AWAITING/PROCESSING states
 
-`WorkerEvent` содержит поле `timestamp: datetime`. При вызове `model_dump()` datetime остаётся объектом Python, а `json.dumps()` в `RedisStreamClient.publish()` не умеет его сериализовать.
-
-**Impact:**
-- Worker events не попадают в `orchestrator:events` stream
-- Мониторинг прогресса воркеров через этот stream не работает
-- Основной flow НЕ затронут — воркер работает независимо
-
-**Fix:**
-```python
-# Использовать mode="json" для автоматической конвертации datetime в ISO string
-await publish_event(f"worker.{event.event_type}", event.model_dump(mode="json"))
-```
-
-**Tasks:**
-- [ ] Заменить `event.model_dump()` на `event.model_dump(mode="json")` в `worker.py:296`
-- [ ] Проверить другие места где используется `model_dump()` перед JSON сериализацией
-
----
-
-## Done
-
-- **Sysbox Installation** - Installed on dev machine
-- **Worker Docker Image** - `coding-worker:latest` with Factory.ai
-- **Worker Spawner** - Redis pub/sub microservice
-- **Architect Node** - Creates GitHub repos, spawns Factory workers
-- **GitHub App Integration** - Auto-detects org, creates repos
-- **Brainstorm → Zavhoz → Architect flow** - Tested end-to-end
-- **Scheduler Service** - Moved all background tasks out of API into dedicated service
+</details>
 

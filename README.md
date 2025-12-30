@@ -23,17 +23,20 @@
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                       LangGraph Orchestrator                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐ │
-│  │ Брейн-   │  │Архитек-  │  │ Разра-   │  │   Тестиров-      │ │
-│  │ сторм    │◄─►  тор     │◄─►ботчик   │◄─►    щик            │ │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘ │
-│       ▲              ▲              ▲              ▲            │
-│       │              │              │              │            │
-│       ▼              ▼              ▼              ▼            │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────────────────┐   │
-│  │  Завхоз  │  │  DevOps  │  │      Документатор            │   │
-│  │(ресурсы) │  │ (инфра)  │  │                              │   │
-│  └──────────┘  └──────────┘  └──────────────────────────────┘   │
+│                                                                 │
+│  Intent Parser → Product Owner (agentic loop with capabilities) │
+│         │                      │                                │
+│         ▼                      ▼                                │
+│  ┌───────────────┐   ┌───────────────────────────────────────┐    │
+│  │ Analyst →     │   │ Engineering Subgraph                      │    │
+│  │ Zavhoz        │   │ Architect → Preparer → Developer → Tester │    │
+│  └───────────────┘   └───────────────────────────────────────┘    │
+│                                       │                          │
+│                                       ▼                          │
+│                         ┌───────────────────────────────────────┐    │
+│                         │ DevOps Subgraph                       │    │
+│                         │ EnvAnalyzer → SecretResolver → Deployer│    │
+│                         └───────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
                     │                    │
                     ▼                    ▼
@@ -49,7 +52,6 @@
 |--------|----------|------|
 | **service-template** | Spec-first фреймворк для генерации микросервисов | [GitHub](https://github.com/vladmesh/service-template) |
 | **prod_infra** | Ansible playbooks для настройки серверов | [GitHub](https://github.com/vladmesh/prod_infra) |
-| **Ресурсница** | Хранение и выдача ключей, токенов, доменов | *TODO* |
 
 ## Инфраструктура
 
@@ -134,7 +136,16 @@ logger.info("event_name", user_id=123, duration_ms=45.2)
 
 ## Roadmap
 
-1. **Фаза 0**: Структура проекта, state schema, минимальный граф
-2. **Фаза 1**: Вертикальный слайс (Телеграм → генерация бота → деплой)
-3. **Фаза 2**: Горизонтальное расширение (разработчик, тестировщик, сложные проекты)
-4. **Фаза 3**: Автономная работа с отчётами
+См. [docs/backlog.md](docs/backlog.md) для актуального списка задач.
+
+**Реализовано:**
+- Dynamic ProductOwner (Intent Parser + Capability Registry + Agentic Loop)
+- Engineering Subgraph (Architect → Preparer → Developer → Tester)
+- DevOps Subgraph (LLM-based env analysis, auto-generates infra secrets)
+- Session Management (Redis-based locks)
+- Multi-tenancy (user_id propagation, project filtering)
+
+**В бэклоге:**
+- RAG с embeddings
+- Telegram Bot Pool
+- API Authentication

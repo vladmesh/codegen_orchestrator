@@ -10,6 +10,8 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Техническая архитектура, state schema, граф |
 | [docs/NODES.md](docs/NODES.md) | Описание агентов-узлов LangGraph |
 | [docs/backlog.md](docs/backlog.md) | Бэклог задач и roadmap |
+| [docs/LOGGING.md](docs/LOGGING.md) | Структурированное логирование |
+| [docs/TESTING.md](docs/TESTING.md) | Тестовая инфраструктура |
 
 ## 🛠 Технический стек
 
@@ -17,26 +19,44 @@
 |-----------|------------|
 | Язык | Python 3.12 |
 | Оркестрация | LangGraph |
-| LLM | OpenAI / Anthropic |
+| LLM | OpenAI / Anthropic / OpenRouter |
 | Интерфейс | python-telegram-bot |
-| Хранение состояния | PostgreSQL |
+| Database | PostgreSQL |
+| Cache | Redis |
 
 ## 📂 Структура проекта
 
 ```
 codegen_orchestrator/
 ├── README.md           # Обзор проекта
-├── AGENTS.md          # Этот файл
-├── ARCHITECTURE.md    # Техническая архитектура
-├── docs/
-│   └── NODES.md       # Описание агентов-узлов
-├── src/
-│   ├── graph/         # LangGraph: граф, узлы, рёбра
-│   ├── agents/        # Реализация каждого агента
-│   ├── tools/         # Инструменты для агентов
-│   └── telegram/      # Телеграм бот
-├── tests/
-└── pyproject.toml
+├── AGENTS.md           # Этот файл
+├── ARCHITECTURE.md     # Техническая архитектура
+├── CLAUDE.md           # Инструкции для Claude Code
+├── docs/               # Документация
+│   ├── NODES.md        # Описание агентов
+│   ├── LOGGING.md      # Логирование
+│   ├── TESTING.md      # Тестирование
+│   └── backlog.md      # Бэклог
+├── services/
+│   ├── api/            # FastAPI backend
+│   │   └── src/        # routers, models, services
+│   ├── langgraph/      # LangGraph worker
+│   │   └── src/
+│   │       ├── nodes/          # Agent nodes
+│   │       ├── tools/          # LangChain tools
+│   │       ├── capabilities/   # Capability registry
+│   │       ├── subgraphs/      # Engineering, DevOps
+│   │       └── schemas/        # State schemas
+│   ├── telegram_bot/   # Telegram interface
+│   ├── scheduler/      # Background jobs
+│   ├── worker-spawner/ # Docker container spawner
+│   ├── coding-worker/  # Factory.ai Droid container
+│   ├── preparer/       # Copier runner
+│   └── infrastructure/ # Ansible playbooks
+├── shared/             # Shared code between services
+│   ├── models/         # SQLAlchemy models
+│   └── *.py            # Utilities
+└── tests/              # E2E tests (future)
 ```
 
 ## 🔗 Связанные проекты
@@ -44,7 +64,6 @@ codegen_orchestrator/
 При работе над оркестратором часто нужен контекст из:
 
 - **service-template** (`/home/vlad/projects/service-template`) — фреймворк для генерации проектов
-- **prod_infra** (`/home/vlad/projects/prod_infra`) — Ansible playbooks для инфраструктуры
 
 ## ⚠️ CRITICAL: Правила работы
 
@@ -64,42 +83,52 @@ if not api_key:
 
 ### LangGraph узлы
 
-Каждый агент — функция, принимающая и возвращающая state:
+Каждый агент — async функция, работающая со state:
 
 ```python
-from typing import TypedDict
+from .schemas.orchestrator import OrchestratorState
 
-class OrchestratorState(TypedDict):
-    messages: list
-    current_project: str | None
-    # ...
-
-def architect_agent(state: OrchestratorState) -> OrchestratorState:
+async def my_node(state: OrchestratorState) -> dict:
     # Логика агента
-    return {"messages": [...], ...}
+    return {"messages": [...], "current_agent": "my_node"}
 ```
 
 ### Добавление нового агента
 
-1. Создать файл в `src/agents/<name>.py`
-2. Добавить узел в граф (`src/graph/graph.py`)
-3. Добавить рёбра (входящие и исходящие)
-4. Описать агента в `docs/NODES.md`
-5. Добавить тесты в `tests/agents/test_<name>.py`
+1. Создать файл в `services/langgraph/src/nodes/<name>.py`
+2. Базовый класс: `LLMNode` (agentic) или функция (functional)
+3. Добавить узел в граф (`services/langgraph/src/graph.py`)
+4. Добавить рёбра и routing логику
+5. Если нужны tools — создать в `services/langgraph/src/tools/`
+6. Если нужна capability — добавить в `services/langgraph/src/capabilities/__init__.py`
+7. Описать агента в `docs/NODES.md`
+8. Добавить тесты в `services/langgraph/tests/unit/`
+
+### Добавление новой Capability
+
+1. Добавить группу в `CAPABILITY_REGISTRY` (`services/langgraph/src/capabilities/__init__.py`)
+2. Добавить tools в `TOOLS_MAP`
+3. Обновить Intent Parser prompt если нужно (`agent_configs` в БД)
 
 ## 🔄 Makefile команды
 
 ```bash
-# TODO: Добавить после инициализации проекта
-make lint      # Линтеры
-make test      # Тесты
-make run       # Запуск оркестратора
+make build      # Собрать Docker образы
+make up         # Запустить все сервисы
+make down       # Остановить сервисы
+make logs       # Посмотреть логи
+make format     # Форматирование кода
+make lint       # Линтеры
+make test       # Все тесты
+make test-unit  # Только unit тесты (быстрые)
 ```
 
 ## 🧠 Контекст при работе
 
 При работе над конкретной задачей загружай только релевантные файлы:
 
-- **Новый агент**: `ARCHITECTURE.md`, `docs/NODES.md`, `src/agents/`
-- **Интеграция с service-template**: `/home/vlad/projects/service-template/docs/ARCHITECTURE.md`
-- **Телеграм бот**: `src/telegram/`
+- **Новый агент**: `ARCHITECTURE.md`, `docs/NODES.md`, `services/langgraph/src/nodes/`
+- **Новый tool**: `services/langgraph/src/tools/`, `services/langgraph/src/capabilities/__init__.py`
+- **API endpoint**: `services/api/src/routers/`
+- **Интеграция с service-template**: `/home/vlad/projects/service-template/`
+- **Деплой**: `services/infrastructure/`, `services/langgraph/src/subgraphs/devops.py`

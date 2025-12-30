@@ -40,24 +40,32 @@ make test-clean            # Cleanup test containers
 ## Architecture
 
 ```
-Telegram Bot → LangGraph Orchestrator → External Coding Agents → Deployment
-                     ↓
-    ┌────────────────┼────────────────┐
-    │                │                │
-Brainstorm → Engineering Subgraph → DevOps
-    │        (Architect→Developer→   (Ansible)
-    ↓         Tester, max 3 loops)
-  Zavhoz
-(Resources)
+Telegram Bot → Intent Parser (gpt-4o-mini) → Product Owner (agentic loop)
+                                                     │
+                     ┌─────────────────────────────┬─────────────┼──────────────────┐
+                     ▼                             ▼             ▼                  ▼
+                 Analyst → Zavhoz             trigger_eng    trigger_deploy    finish_task
+                     │                             │             │
+                     ▼                             ▼             ▼
+             Engineering Subgraph            DevOps Subgraph
+             (Architect → Preparer →         (EnvAnalyzer →
+              Developer → Tester)             SecretResolver → Deployer)
 ```
 
+**Key Components:**
+- **Dynamic PO**: Intent Parser → PO with capability-based tool loading
+- **Capabilities**: deploy, infrastructure, project_management, engineering, diagnose, admin
+- **Session Management**: Redis-based locks (PROCESSING/AWAITING states)
+
 **Services** (in `services/`):
-- `api`: FastAPI + SQLAlchemy, stores projects/servers (port 8000, health at `/health`)
-- `langgraph`: LangGraph worker, orchestrates agents
+- `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs (port 8000)
+- `langgraph`: LangGraph worker with Dynamic PO
 - `telegram_bot`: python-telegram-bot interface
 - `scheduler`: Background workers (github_sync, server_sync, health_checker)
 - `worker-spawner`: Spawns Docker containers for coding tasks via Redis pub/sub
 - `coding-worker`: Docker container with Factory.ai Droid CLI
+- `preparer`: Copier runner for project scaffolding
+- `deploy-worker`: Consumes deploy:queue, runs DevOps subgraph
 - `infrastructure`: Ansible playbooks for server configuration
 
 **Shared** (`shared/`): Logging setup (structlog), shared schemas, models, configuration.
@@ -118,11 +126,14 @@ def deploy_to_server(server_handle: str):
 
 ## Adding New Agents
 
-1. Create file in `services/langgraph/src/agents/<name>.py`
-2. Add node to graph in `services/langgraph/src/graph/graph.py`
-3. Define edges (incoming and outgoing)
-4. Document in `docs/NODES.md`
-5. Add tests in `services/langgraph/tests/`
+1. Create file in `services/langgraph/src/nodes/<name>.py`
+2. Use `LLMNode` base class for agentic nodes or plain async function for functional nodes
+3. Add node to graph in `services/langgraph/src/graph.py`
+4. Define edges and routing logic
+5. If needs tools: add to `services/langgraph/src/tools/`
+6. If needs capability: add to `services/langgraph/src/capabilities/__init__.py`
+7. Document in `docs/NODES.md`
+8. Add tests in `services/langgraph/tests/unit/`
 
 ## Key Configuration
 
@@ -138,10 +149,11 @@ def deploy_to_server(server_handle: str):
 | Language | Python 3.12+ |
 | Orchestration | LangGraph |
 | API | FastAPI + SQLAlchemy 2.0+ |
-| Database | PostgreSQL + pgvector |
-| Cache | Redis |
+| Database | PostgreSQL |
+| Cache/Queues | Redis (streams, pub/sub) |
 | Bot | python-telegram-bot |
 | Logging | structlog (JSON in prod, console in dev) |
 | Linting | Ruff |
 | Container Isolation | Sysbox runtime |
-| Secrets | SOPS + AGE |
+| Secrets | project.config.secrets (PostgreSQL) |
+

@@ -9,12 +9,12 @@ Codegen Orchestrator — это мультиагентная система на
 | Компонент | Технология |
 |-----------|------------|
 | Оркестрация | LangGraph |
-| LLM | OpenAI / Anthropic (через Завхоза) |
+| LLM | OpenAI / Anthropic / OpenRouter |
 | Интерфейс | Telegram Bot |
-| Кодогенерация | service-template (Copier) |
+| Кодогенерация | service-template (Copier) + Factory.ai Droid |
 | Инфраструктура | prod_infra (Ansible) |
-| Хранение состояния | PostgreSQL (TBD) |
-| Секреты | SOPS + AGE (MVP) |
+| Хранение состояния | PostgreSQL + Redis |
+| Секреты | project.config.secrets (PostgreSQL) |
 
 ## State Schema
 
@@ -25,43 +25,69 @@ from typing import TypedDict, Annotated
 from langgraph.graph.message import add_messages
 
 class OrchestratorState(TypedDict):
-    # Сообщения (история диалога)
+    # ============ MESSAGES ============
     messages: Annotated[list, add_messages]
-    
-    # Текущий проект
+
+    # ============ PROJECT CONTEXT ============
     current_project: str | None
-    project_spec: dict | None  # ТЗ от Брейнсторма
+    project_spec: dict | None           # From Analyst
     project_intent: dict | None
-    po_intent: str | None
-    
-    # Ресурсы
-    allocated_resources: dict  # {resource_type: resource_id}
-    
-    # Репозиторий (создаётся Архитектором)
-    repo_info: dict | None  # {full_name, html_url, clone_url}
-    project_complexity: str | None  # "simple" | "complex"
+    po_intent: str | None               # "new_project", "deploy", "maintenance", "delegate_analyst"
+    analyst_task: str | None            # Task for Analyst delegation
+
+    # ============ DYNAMIC PO ============
+    thread_id: str | None                         # Session ID
+    active_capabilities: list[str]                # ["deploy", "infrastructure", ...]
+    task_summary: str | None                      # From Intent Parser
+    skip_intent_parser: bool                      # True when continuing session
+    chat_id: int | None                           # Telegram chat ID
+    correlation_id: str | None                    # Distributed tracing
+    awaiting_user_response: bool                  # Paused for user input?
+    user_confirmed_complete: bool                 # finish_task was called?
+    po_iterations: int                            # Loop counter (max 20)
+
+    # ============ RESOURCES ============
+    allocated_resources: dict  # {"service_name": {server_handle, server_ip, port}}
+
+    # ============ REPOSITORY (from Architect) ============
+    repo_info: dict | None              # {full_name, html_url, clone_url}
+    project_complexity: str | None      # "simple" | "complex"
     architect_complete: bool
-    
-    # Engineering Subgraph (Phase 3)
-    engineering_status: str  # "idle" | "working" | "done" | "blocked"
+
+    # ============ PREPARER STATE ============
+    selected_modules: list[str] | None  # ["backend", "tg_bot"]
+    deployment_hints: dict | None
+    custom_task_instructions: str | None
+    repo_prepared: bool
+    preparer_commit_sha: str | None
+
+    # ============ ENGINEERING SUBGRAPH ============
+    engineering_status: str             # "idle" | "working" | "done" | "blocked"
     review_feedback: str | None
     engineering_iterations: int
     test_results: dict | None
-    
-    # Human-in-the-Loop (Phase 4)
+
+    # ============ DEVOPS SUBGRAPH ============
+    provided_secrets: dict              # User-provided secrets
+    missing_user_secrets: list[str]     # Secrets needed from user
+    deployment_result: dict | None
+
+    # ============ HUMAN-IN-THE-LOOP ============
     needs_human_approval: bool
     human_approval_reason: str | None
-    
-    # Provisioning
+
+    # ============ PROVISIONING ============
     server_to_provision: str | None
     is_incident_recovery: bool
     provisioning_result: dict | None
-    
-    # Статус
+
+    # ============ USER CONTEXT ============
+    telegram_user_id: int | None        # Telegram user ID
+    user_id: int | None                 # Internal DB user.id
+
+    # ============ STATUS & RESULTS ============
     current_agent: str
     errors: list[str]
-    
-    # Результаты
     deployed_url: str | None
 ```
 
@@ -71,11 +97,13 @@ class OrchestratorState(TypedDict):
 
 | Сервис | Описание | Порт |
 |--------|----------|------|
-| `api` | FastAPI + SQLAlchemy, хранит проекты/серверы | 8000 |
-| `langgraph` | LangGraph worker, обрабатывает messages | - |
+| `api` | FastAPI + SQLAlchemy, хранит проекты/серверы/agent_configs | 8000 |
+| `langgraph` | LangGraph worker, обрабатывает messages через Dynamic PO | - |
 | `telegram_bot` | Telegram интерфейс | - |
 | `worker-spawner` | Спавнит coding-worker контейнеры | - |
 | `scheduler` | Фоновые задачи (github_sync, server_sync, health_checker) | - |
+| `preparer` | Copier runner для scaffolding проектов | - |
+| `deploy-worker` | Консьюмер deploy:queue, запускает DevOps subgraph | - |
 
 ### Worker Spawner
 
@@ -116,34 +144,56 @@ Docker-контейнер с Factory.ai Droid CLI для кодогенерац�
 docker build -t coding-worker:latest services/coding-worker/
 ```
 
-## Граф (Phase 3 & 4 Architecture)
+## Граф (Dynamic PO Architecture)
 
 ```
-                              ┌─────────────────┐
-                     ┌───────▶│    Zavhoz       │──────▶ END
-                     │        │   (Resources)   │
-┌───────┐   ┌────────┴──┐     └─────────────────┘
-│ START │──▶│ Brainstorm │                              
-└───────┘   └────────┬──┘     ┌─────────────────────────────────────┐
-                     │        │     Engineering Subgraph            │
-                     └───────▶│  ┌────────┐  ┌───────────┐  ┌─────┐│
-                              │  │Architect│─▶│ Developer │─▶│Tester│◀───┐
-                              │  └────────┘  └───────────┘  └──┬──┘│    │
-                              │        │                       │   │ (max 3)
-                              │        └──────────────────────┘   │
-                              └───────────────────────────────────┘
+┌─────────┐     ┌────────────────┐     ┌─────────────────────┐
+│  START  │────▶│ Intent Parser  │────▶│   Product Owner     │◀─────────┐
+└─────────┘     │ (gpt-4o-mini)  │     │ (agentic loop)      │          │
+                │                │     │                     │          │
+                │ • classify     │     │ • respond_to_user   │     (loop back)
+                │ • select caps  │     │ • request_caps      │          │
+                │ • new thread_id│     │ • search_knowledge  │          │
+                └────────────────┘     │ • finish_task       │          │
+                       │               │ • capability tools  │          │
+                       │               └──────────┬──────────┘          │
+             (skip if session            │    │                    │
+              continuation)              │    ▼                    │
+                       │               ┌──────────────────┐        │
+                       └──────────────▶│  PO Tools Node   │────────┘
+                                       └──────────────────┘
                                               │
-                                              ▼
-                                       ┌────────────┐
-                                       │   DevOps   │──── Deploy via Ansible
-                                       └────────────┘
+                                              ▼ (delegation)
+                ┌─────────────────────────────┴─────────────────────────────┐
+                │                                                            │
+                ▼                                                            ▼
+┌───────────────────────────┐                            ┌─────────────────────────┐
+│ Analyst (delegate_analyst)│                            │ Trigger Deploy/Eng      │
+│    │                      │                            │ (via trigger_* tools)   │
+│    ▼                      │                            └─────────────────────────┘
+│ ┌──────────────────┐      │                                       │
+│ │  Analyst Tools   │◀─┐   │                                       ▼
+│ └────────┬─────────┘  │   │           ┌────────────────────────────────────────────────┐
+│          ▼            │   │           │              Engineering Subgraph              │
+│ ┌──────────────────┐  │   │           │  Architect → Preparer → Developer → Tester     │
+│ │  Create Project  │──┘   │           │              (max 3 iterations)                │
+│ └────────┬─────────┘      │           └────────────────────────────────────────────────┘
+│          │                │                                        │
+└──────────┼────────────────┘                                        ▼
+           │                            ┌────────────────────────────────────────────────┐
+           ▼                            │               DevOps Subgraph                  │
+   ┌───────────────┐                    │  EnvAnalyzer (LLM) → SecretResolver → Deployer │
+   │    Zavhoz     │───────────────────▶│                                                │
+   │  (resources)  │                    └────────────────────────────────────────────────┘
+   └───────────────┘
 ```
 
 **Key Features:**
-- **Parallel Dispatch**: After Brainstorm, Zavhoz and Engineering run in parallel
-- **Engineering Loop**: Architect → Developer → Tester, loops up to 3 times on failure
-- **Human-in-the-Loop**: If 3 iterations fail, `needs_human_approval=True` → END
-- **Pre-flight Check**: DevOps only runs if `engineering_status="done"` AND `allocated_resources` exists
+- **Dynamic PO**: Intent Parser → ProductOwner agentic loop with dynamic tool loading
+- **Capabilities**: deploy, infrastructure, project_management, engineering, diagnose, admin
+- **Session Management**: Redis-based locks (PROCESSING/AWAITING states)
+- **Engineering Subgraph**: Architect → Preparer → Developer → Tester (max 3 iterations)
+- **DevOps Subgraph**: LLM-based env analysis, auto-generates infra secrets, requests user secrets
 
 ## Внешние зависимости
 
@@ -613,16 +663,19 @@ logger = structlog.get_logger()
 
 ### Решено
 
-1. ~~**Ресурсница**: отдельный сервис или часть оркестратора?~~ → **Узел LangGraph** с изоляцией секретов
-2. ~~**Хранение секретов**~~ → **SOPS + YAML** (MVP), позже PostgreSQL
-3. ~~**Coding agents**: писать свои или использовать готовые?~~ → **Claude Code / Factory Droid**
+1. ~~**Ресурсница**: отдельный сервис или часть оркестратора?~~ → **Узел LangGraph** (Zavhoz) с изоляцией секретов
+2. ~~**Хранение секретов**~~ → **project.config.secrets** через PostgreSQL API
+3. ~~**Coding agents**: писать свои или использовать готовые?~~ → **Factory.ai Droid**
 4. ~~**Docker-in-Docker для тестов**~~ → **Sysbox** (безопасный nested Docker)
+5. ~~**Формат спеков**: как передавать ТЗ между агентами?~~ → **project_spec dict** в state
+6. ~~**Error handling**: что делать когда агент застрял?~~ → **Max iterations** + `needs_human_approval`
+7. ~~**Session management**~~ → **Redis-based locks** (PROCESSING/AWAITING states)
 
-### В работе
+### В бэклоге
 
-5. **Формат спеков**: как передавать ТЗ между агентами?
-6. **Error handling**: что делать когда агент застрял?
-7. **Human escalation**: когда просить помощи у человека?
-8. **Cost tracking**: как отслеживать расходы на LLM?
-9. **Merge conflicts**: как разрешать при параллельных PR?
-10. **Worker image caching**: как ускорить startup?
+8. **Human escalation**: когда просить помощи у человека? (backlog: Human Escalation)
+9. **Cost tracking**: как отслеживать расходы на LLM? (backlog: Cost Tracking)
+10. **RAG с embeddings**: hybrid search для project context (backlog: RAG с Embeddings)
+11. **Telegram Bot Pool**: автоматическое выделение ботов (backlog: Telegram Bot Pool)
+12. **API Authentication**: middleware для защиты endpoints (backlog: API Authentication)
+
