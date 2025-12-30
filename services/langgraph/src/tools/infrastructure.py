@@ -11,7 +11,7 @@ from typing import Annotated
 from langchain_core.tools import tool
 import structlog
 
-# NOTE: get_current_state imported inside functions to avoid circular import
+from ..state.context import get_current_state
 from .base import api_client
 
 logger = structlog.get_logger(__name__)
@@ -41,8 +41,6 @@ async def list_allocations(
             ]
         }
     """
-    from ..capabilities.base import get_current_state
-
     # Get current state for logging/audit purposes
     _ = get_current_state()
 
@@ -88,8 +86,6 @@ async def release_port(
             "allocation_id": allocation_id,
             "hint": "Use list_allocations first to verify you have the correct allocation.",
         }
-
-    from ..capabilities.base import get_current_state
 
     state = get_current_state()
     user_id = state.get("telegram_user_id")

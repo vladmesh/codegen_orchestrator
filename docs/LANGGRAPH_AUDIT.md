@@ -12,7 +12,7 @@
 | 7.3. Разбить ProvisionerNode.run() | ✅ Выполнено | 2024-12-30 |
 | 7.1. Вынести provisioner в отдельный сервис | ✅ Выполнено | 2025-12-30 |
 | 7.4. Выделить ToolExecutor из LLMNode | ✅ Выполнено | 2025-12-30 |
-| 7.5. Устранить циклические импорты | ⏳ Ожидает | - |
+| 7.5. Устранить циклические импорты | ✅ Выполнено | 2025-12-30 |
 | 7.6. Добавить типизацию | ⏳ Ожидает | - |
 | 7.7. Решить TODO/FIXME | ⏳ Ожидает | - |
 
@@ -352,11 +352,37 @@ class LLMNode:
 
 ### Приоритет: СРЕДНИЙ
 
-#### 7.5. Устранить циклические импорты
+#### 7.5. ~~Устранить циклические импорты~~ ✅ ВЫПОЛНЕНО (2025-12-30)
 
-Перенести `get_current_state()` в отдельный модуль:
-```
-capabilities/base.py  →  state/accessor.py
+**Реализовано:**
+- Создан новый модуль `state/context.py`
+- Функции `get_current_state()` и `set_tool_context()` вынесены из `capabilities/base.py`
+- Обновлены импорты в 7 файлах:
+  - `capabilities/base.py`
+  - `nodes/product_owner.py`
+  - `tools/deploy.py` (1 inline import)
+  - `tools/infrastructure.py` (2 inline импорта)
+  - `tools/admin.py` (2 inline импорта)
+  - `tools/engineering.py` (1 inline import)
+  - 2 тестовых файла
+
+**Результаты:**
+- Убраны все импорты внутри функций (code smell)
+- Улучшена модульность и тестируемость
+- Все 159 unit тестов проходят
+- Lint и format проверки успешны
+
+```python
+# До: импорт внутри функции
+def trigger_deploy(...):
+    from ..capabilities.base import get_current_state  # Циклический импорт
+    state = get_current_state()
+
+# После: чистый импорт сверху
+from ..state.context import get_current_state
+
+def trigger_deploy(...):
+    state = get_current_state()
 ```
 
 ### Приоритет: НИЗКИЙ
@@ -429,7 +455,8 @@ server_ip = server_info.public_ip or server_info.host
 | Файлов >400 строк | 6 | 6 | 0 |
 | Методов >50 строк | 6 | 5 | 0 |
 | Hardcoded путей | 4 | **0** ✅ | 0 |
-| TODO/FIXME | 3+ | 3+ | 0 |
+| Inline импортов | 6 | **0** ✅ | 0 |
+| TODO/FIXME | 3+ | 6 | 0 |
 
 ---
 

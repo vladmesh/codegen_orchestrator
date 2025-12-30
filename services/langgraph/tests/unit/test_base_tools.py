@@ -3,10 +3,9 @@
 from src.capabilities.base import (
     BASE_TOOLS,
     finish_task,
-    get_current_state,
     request_capabilities,
-    set_tool_context,
 )
+from src.state.context import get_current_state, set_tool_context
 
 
 class TestBaseTools:

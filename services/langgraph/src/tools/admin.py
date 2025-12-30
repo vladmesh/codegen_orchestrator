@@ -17,7 +17,7 @@ import structlog
 from shared.queues import ADMIN_QUEUE
 from shared.redis_client import RedisStreamClient
 
-# NOTE: get_current_state imported inside functions to avoid circular import
+from ..state.context import get_current_state
 
 logger = structlog.get_logger(__name__)
 
@@ -103,8 +103,6 @@ async def trigger_node_manually(
     Returns:
         {"job_id": "manual_xxx", "status": "triggered"}
     """
-    from ..capabilities.base import get_current_state
-
     state = get_current_state()
     user_id = state.get("telegram_user_id")
 
@@ -177,8 +175,6 @@ async def clear_project_state(
             "project_id": project_id,
             "warning": "This will delete all in-progress jobs and checkpoints for this project.",
         }
-
-    from ..capabilities.base import get_current_state
 
     state = get_current_state()
     user_id = state.get("telegram_user_id")

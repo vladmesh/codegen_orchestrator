@@ -7,35 +7,18 @@ These tools are loaded for every PO session regardless of capabilities:
 - finish_task: Mark task as complete
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from langchain_core.tools import tool
 import structlog
+
+# Import state context management from dedicated module
+from ..state.context import get_current_state, get_redis_client
 
 if TYPE_CHECKING:
     pass
 
 logger = structlog.get_logger()
-
-
-# State injection - these will be set by the tool executor node
-_current_state: dict[str, Any] = {}
-_redis_client: Any = None
-
-
-def set_tool_context(state: dict[str, Any], redis_client: Any = None) -> None:
-    """Set the current state context for base tools.
-
-    Called by po_tools node before executing tools.
-    """
-    global _current_state, _redis_client
-    _current_state = state
-    _redis_client = redis_client
-
-
-def get_current_state() -> dict[str, Any]:
-    """Get current PO state for tools that need context."""
-    return _current_state
 
 
 @tool
@@ -68,7 +51,7 @@ async def respond_to_user(
     state = get_current_state()
 
     # Use injected redis client or create new one
-    redis = _redis_client
+    redis = get_redis_client()
     if redis is None:
         redis = RedisStreamClient()
         await redis.connect()

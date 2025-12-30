@@ -16,7 +16,7 @@ import structlog
 from shared.queues import DEPLOY_QUEUE, get_user_active_jobs
 from shared.redis_client import RedisStreamClient
 
-# NOTE: get_current_state imported inside functions to avoid circular import
+from ..state.context import get_current_state
 from .base import api_client
 
 logger = structlog.get_logger(__name__)
@@ -102,7 +102,6 @@ async def trigger_deploy(
         {"job_id": "deploy_xxx", "status": "queued"}
         or {"error": "...", "missing": [...]} if not ready
     """
-    from ..capabilities.base import get_current_state
 
     state = get_current_state()
     user_id = state.get("telegram_user_id")

@@ -13,7 +13,7 @@ import structlog
 from shared.redis_client import RedisStreamClient
 
 from ..capabilities import get_tools_for_capabilities
-from ..capabilities.base import set_tool_context
+from ..state.context import set_tool_context
 from .base import LLMNode, log_node_execution
 
 logger = structlog.get_logger()

@@ -5,7 +5,8 @@ Tests RAG search with different scopes.
 
 from unittest.mock import AsyncMock, patch
 
-from src.capabilities.base import search_knowledge, set_tool_context
+from src.capabilities.base import search_knowledge
+from src.state.context import set_tool_context
 
 
 class TestSearchKnowledge:
