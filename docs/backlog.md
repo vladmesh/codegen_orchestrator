@@ -108,6 +108,34 @@ await publish_event(f"worker.{event.event_type}", event.model_dump(mode="json"))
 
 ---
 
+### Engineering Pipeline: TesterNode & Worker Integration
+
+**Priority:** MEDIUM
+**Status:** TODO
+**Location:** `services/langgraph/src/subgraphs/engineering.py`, `services/langgraph/src/workers/engineering_worker.py`
+
+**Проблема:** TesterNode и engineering_worker — заглушки. Тесты не запускаются реально.
+
+**Текущее состояние:**
+- `TesterNode.run()` всегда возвращает `passed=True` без запуска тестов
+- `engineering_worker` не интегрирован с `engineering_subgraph`
+
+**Задачи:**
+1. Интегрировать `engineering_worker` с `create_engineering_subgraph()`:
+   - Вызывать скомпилированный граф с правильным state
+   - Пробрасывать результаты обратно в Redis
+2. Реализовать запуск тестов в `TesterNode`:
+   - Использовать `worker_spawner` для запуска тестов в контейнере
+   - Парсить результаты pytest/unittest
+   - Извлекать ошибки для передачи в Developer на retry
+3. Добавить test configuration в project spec (test command, coverage threshold)
+
+**Связанные файлы:**
+- `services/langgraph/src/clients/worker_spawner.py` — существующий spawner
+- `services/langgraph/src/nodes/developer.py` — пример использования spawner
+
+---
+
 ## Future Improvements (Extracted from archived plans)
 
 ### Telegram Bot Pool (Resource Allocation)

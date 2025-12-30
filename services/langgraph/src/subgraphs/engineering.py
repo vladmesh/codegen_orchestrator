@@ -177,8 +177,8 @@ class TesterNode(FunctionalNode):
 
         iteration_count = state.get("iteration_count", 0) + 1
 
-        # TODO: Implement actual test running via worker spawner
-        # For now, assume tests pass after the first implementation
+        # Stub: actual test running tracked in docs/backlog.md
+        # "Engineering Pipeline: TesterNode & Worker Integration"
         test_passed = True
 
         if test_passed:

@@ -1,7 +1,7 @@
 # Аудит сервиса LangGraph
 
-**Дата:** 2025-12-30  
-**Обновлено:** 2025-12-30  
+**Дата:** 2025-12-30
+**Обновлено:** 2025-12-31
 **Статус:** В процессе рефакторинга
 
 ## Прогресс
@@ -15,7 +15,7 @@
 | 7.5. Устранить циклические импорты | ✅ Выполнено | 2025-12-30 |
 | 7.8. Декомпозировать worker.py | ✅ Выполнено | 2025-12-31 |
 | 7.6. Добавить типизацию | ⏳ Ожидает | - |
-| 7.7. Решить TODO/FIXME | ⏳ Ожидает | - |
+| 7.7. Решить TODO/FIXME | ✅ Выполнено | 2025-12-31 |
 
 ---
 
@@ -221,15 +221,12 @@ server_ip = server_info.get("public_ip") or server_info.get("host")  # None ес
 os_template = server_info.get("os_template", "kvm-ubuntu-24.04-gpt-x86_64")  # Hardcoded default
 ```
 
-### 5.5. TODO/FIXME в коде
+### 5.5. ~~TODO/FIXME в коде~~ ✅ ИСПРАВЛЕНО
 
-```python
-# tools/deploy.py:184
-# TODO: Read from LangGraph checkpointer when devops_subgraph is implemented
-
-# tools/infrastructure.py:102
-# TODO: Check ownership via project's user_id
-```
+> **Решено 2025-12-31:** Все TODO удалены или решены:
+> - `deploy.py` — удалены неактуальные TODO
+> - `infrastructure.py` — реализована проверка ownership
+> - `engineering.py`, `engineering_worker.py` — перенесены в backlog
 
 ---
 
@@ -435,11 +432,17 @@ server_info = ServerInfo(**raw_dict)
 server_ip = server_info.public_ip or server_info.host
 ```
 
-#### 7.7. Решить TODO/FIXME или удалить
+#### 7.7. ~~Решить TODO/FIXME или удалить~~ ✅ ВЫПОЛНЕНО (2025-12-31)
 
-Создать issues в backlog для:
-- `tools/deploy.py:184` — интеграция с devops_subgraph
-- `tools/infrastructure.py:102` — проверка ownership
+**Реализовано:**
+- `tools/deploy.py:183,229` — удалены неактуальные TODO (devops_subgraph уже реализован, Redis stream используется корректно)
+- `tools/infrastructure.py:98` — **реализована проверка ownership** перед release_port
+- `subgraphs/engineering.py:180` + `workers/engineering_worker.py:40,55` — перенесено в `docs/backlog.md` ("Engineering Pipeline: TesterNode & Worker Integration")
+
+**Результаты:**
+- ✅ 0 TODO/FIXME в коде langgraph
+- ✅ Добавлена security проверка ownership в release_port
+- ✅ Большие задачи задокументированы в backlog
 
 ---
 
@@ -486,7 +489,7 @@ server_ip = server_info.public_ip or server_info.host
 | Методов >50 строк | 6 | 4 | 0 | 🔄 |
 | Hardcoded путей | 4 | **0** | 0 | ✅ |
 | Inline импортов | 6 | **0** | 0 | ✅ |
-| TODO/FIXME | 3+ | 6 | 0 | ⏳ |
+| TODO/FIXME | 3+ | **0** | 0 | ✅ |
 
 ---
 

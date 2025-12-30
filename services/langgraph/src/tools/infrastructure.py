@@ -95,8 +95,20 @@ async def release_port(
     if not allocation:
         return {"error": f"Allocation {allocation_id} not found"}
 
-    # TODO: Check ownership via project's user_id
-    # For now, we trust the caller
+    # Check ownership via project's user_id
+    project_id = allocation.get("project_id")
+    if project_id:
+        project = await api_client.get_project(project_id)
+        if project:
+            project_user_id = project.get("user_id")
+            if project_user_id and str(project_user_id) != str(user_id):
+                logger.warning(
+                    "release_port_unauthorized",
+                    allocation_id=allocation_id,
+                    project_user_id=project_user_id,
+                    requesting_user_id=user_id,
+                )
+                return {"error": "You don't have permission to release this allocation"}
 
     # Release the allocation
     success = await api_client.release_allocation(allocation_id)

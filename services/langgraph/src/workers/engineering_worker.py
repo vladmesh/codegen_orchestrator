@@ -37,8 +37,8 @@ def handle_shutdown(signum, frame):
 async def process_engineering_job(job_data: dict) -> dict:
     """Process a single engineering job.
 
-    TODO: Integrate with actual engineering subgraph when ready.
-    For now, this is a placeholder that logs the job.
+    Stub: integration tracked in docs/backlog.md
+    "Engineering Pipeline: TesterNode & Worker Integration"
     """
     job_id = job_data.get("job_id", "unknown")
     project_id = job_data.get("project_id")
@@ -52,8 +52,7 @@ async def process_engineering_job(job_data: dict) -> dict:
     )
 
     try:
-        # TODO: Run engineering subgraph
-        # For now, just log and return placeholder
+        # Stub: subgraph integration pending (see docs/backlog.md)
         # result = await engineering_subgraph.ainvoke(state, config)
 
         # Placeholder - in production this would run the full pipeline

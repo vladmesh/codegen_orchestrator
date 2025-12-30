@@ -180,8 +180,7 @@ async def get_deploy_status(
             "error": "...",                 # if failed
         }
     """
-    # TODO: Read from LangGraph checkpointer when devops_subgraph is implemented
-    # For now, check Redis for job data
+    # Job status is stored in Redis stream entries
 
     redis = RedisStreamClient()
     await redis.connect()
@@ -226,7 +225,6 @@ async def get_deploy_logs(
     """
     lines = min(lines, 1000)
 
-    # TODO: Read from LangGraph checkpointer when devops_subgraph is implemented
     status = await get_deploy_status.ainvoke({"job_id": job_id})
 
     if status.get("status") == "not_found":
