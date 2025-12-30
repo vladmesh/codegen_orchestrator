@@ -40,6 +40,51 @@ PO → respond_to_user("Deploy successful! URL: ...")
 
 ---
 
+### Separate tooling into dedicated compose file
+
+**Priority:** HIGH  
+**Status:** TODO  
+**Location:** `docker-compose.yml`, `Makefile`
+
+**Проблема:** Tooling (`ruff format`, `ruff check`) находится в основном `docker-compose.yml` с профилем `dev`. При запуске `make format` или `make lint` команда `docker compose --profile dev down --remove-orphans` **убивает весь рабочий стек** (api, langgraph, db, redis...).
+
+**Причина:** Docker Compose с профилями + `--remove-orphans` работает агрессивно:
+1. `--profile dev` заставляет compose "видеть" только сервисы с этим профилем (tooling)
+2. `--remove-orphans` удаляет контейнеры проекта, которых нет в текущем "view"
+3. Все остальные сервисы (api, langgraph, etc.) считаются orphans и удаляются
+
+**Воспроизведение:**
+```bash
+make up                                              # Поднять стек
+docker compose --profile dev down --remove-orphans --dry-run  # Увидеть что ВСЁ будет убито
+```
+
+**Решение:** Вынести tooling в отдельный compose файл:
+
+```
+docker-compose.yml          # Основной стек (api, langgraph, db, redis...)
+docker-compose.test.yml     # Тесты (уже есть, с -p для изоляции)
+docker-compose.tools.yml    # Tooling (ruff, uv lock) — НОВЫЙ
+```
+
+**Изменения в Makefile:**
+```makefile
+DOCKER_COMPOSE_TOOLS := docker compose -f docker-compose.tools.yml
+
+format:
+    @$(DOCKER_COMPOSE_TOOLS) run --rm tooling ruff format ...
+    # Никаких down, никаких --remove-orphans
+    # --rm уже удалит контейнер после завершения
+```
+
+**Преимущества:**
+1. Изоляция — невозможно случайно убить рабочий стек при линтинге
+2. Ясность — основной compose = продакшн/дев стек, tools = инструменты разработки
+3. Проще Makefile — не нужны хаки с профилями
+4. Разные жизненные циклы — стек живёт долго, tooling запускается на секунды
+
+---
+
 ### Fix datetime serialization in worker events forwarding
 
 **Priority:** LOW  
