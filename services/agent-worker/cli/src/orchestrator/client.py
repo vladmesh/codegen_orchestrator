@@ -19,6 +19,7 @@ class APIClient:
             base_url=self.base_url,
             headers={"X-User-ID": self.user_id or "anonymous", "Content-Type": "application/json"},
             timeout=30.0,
+            follow_redirects=True,
         )
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:

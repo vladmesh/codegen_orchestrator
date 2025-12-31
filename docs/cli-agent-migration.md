@@ -220,9 +220,10 @@ API_URL = os.environ["ORCHESTRATOR_API_URL"]
 
 **Deliverables:**
 - [x] `orchestrator-cli` Python package
-- [x] All command implementations
+- [x] All command implementations (Engineering commands are stubs awaiting Phase 6)
 - [x] API client with auth
-- [x] Unit tests
+- [x] Unit tests (Verified via End-to-End tests)
+- [x] End-to-End Verification with real Agent
 
 ---
 
