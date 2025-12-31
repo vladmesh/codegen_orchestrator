@@ -1,6 +1,7 @@
 """Telegram Bot - Main entry point."""
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -121,17 +122,18 @@ async def handle_message(update: Update, context) -> None:
     )
 
     try:
-        # Publish to Redis Stream for LangGraph to process
-        await redis_client.publish(
-            RedisStreamClient.INCOMING_STREAM,
-            {
-                "user_id": user_id,
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "text": text,
-                "thread_id": f"user_{user_id}",  # For LangGraph checkpointing
-                "correlation_id": correlation_id,
-            },
+        # Publish to agent-spawner via PubSub
+        await redis_client.redis.publish(
+            "agent:incoming",
+            json.dumps(
+                {
+                    "user_id": str(user_id),
+                    "message": text,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "correlation_id": correlation_id,
+                }
+            ),
         )
 
         await _post_rag_message(
@@ -144,20 +146,20 @@ async def handle_message(update: Update, context) -> None:
             }
         )
 
-        logger.info("message_published", stream=RedisStreamClient.INCOMING_STREAM)
+        logger.info("message_published", channel="agent:incoming")
     finally:
         if bind_keys:
             structlog.contextvars.unbind_contextvars(*bind_keys)
 
 
 async def outgoing_consumer(bot: Bot) -> None:
-    """Consume outgoing messages from Redis and send to Telegram."""
+    """Consume outgoing messages from agent-spawner and send to Telegram."""
     await redis_client.connect()
 
-    logger.info("Starting outgoing message consumer...")
+    logger.info("Starting outgoing message consumer for agent responses...")
 
     async for message in redis_client.consume(
-        stream=RedisStreamClient.OUTGOING_STREAM,
+        stream="agent:outgoing",
         group="telegram_bot",
         consumer="bot_sender",
     ):

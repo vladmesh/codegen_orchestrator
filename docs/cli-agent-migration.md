@@ -467,10 +467,17 @@ class SessionManager:
 ```
 
 **Deliverables:**
-- [ ] Message bridge service
-- [ ] Session persistence
-- [ ] Container lifecycle automation
-- [ ] Telegram bot integration
+- [x] Message bridge service (agent-spawner handles incoming/outgoing via Redis)
+- [x] Session persistence (Claude session IDs in Redis, 7-day TTL)
+- [x] Container lifecycle automation (ephemeral containers via `docker run --rm`)
+- [x] Telegram bot integration (direct routing to agent:incoming/outgoing channels)
+
+**Implementation Notes:**
+- Uses PubSub for incoming messages (`agent:incoming`)
+- Uses Streams for outgoing messages (`agent:outgoing`)
+- RedisStreamClient compatibility: data wrapped in `{"data": json.dumps({...})}`
+- Telegram UI (buttons, commands) preserved locally, only text messages go to agent
+- Full message flow tested end-to-end: Telegram → agent-spawner → Claude → Telegram
 
 ---
 

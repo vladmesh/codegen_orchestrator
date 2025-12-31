@@ -22,7 +22,7 @@ logger = structlog.get_logger()
 
 # Redis channels
 INCOMING_CHANNEL = "agent:incoming"  # PubSub for incoming messages
-OUTGOING_PREFIX = "agent:outgoing:"  # Stream for outgoing messages
+OUTGOING_STREAM = "agent:outgoing"  # Stream for outgoing messages
 
 
 class AgentSpawner:
@@ -95,19 +95,27 @@ async def handle_request(
 
         response = await spawner.handle_message(request.user_id, request.message)
 
-        # Publish response to user's outgoing stream
+        # Publish response to user's outgoing stream in Telegram-compatible format
+        response_data = {
+            "chat_id": request.chat_id,
+            "text": response,
+            "reply_to_message_id": request.message_id,
+            "user_id": request.user_id,
+            "correlation_id": request.correlation_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+
+        # Wrap in "data" field as JSON string (expected by RedisStreamClient consumer)
         await redis_client.xadd(
-            f"{OUTGOING_PREFIX}{request.user_id}",
-            {
-                "response": response,
-                "timestamp": datetime.now(UTC).isoformat(),
-            },
+            OUTGOING_STREAM,
+            {"data": json.dumps(response_data)},
         )
 
         logger.info(
             "response_published",
             user_id=request.user_id,
             response_length=len(response),
+            correlation_id=request.correlation_id,
         )
 
     except Exception as e:

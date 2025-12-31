@@ -9,6 +9,9 @@ class MessageRequest:
 
     user_id: str
     message: str
+    chat_id: int | None = None
+    message_id: int | None = None
+    correlation_id: str | None = None
     session_id: str | None = None
 
 
