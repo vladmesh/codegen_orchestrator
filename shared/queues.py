@@ -14,10 +14,10 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Queue stream names
-DEPLOY_QUEUE = "jobs:deploy"
-ENGINEERING_QUEUE = "jobs:engineering"
-ADMIN_QUEUE = "jobs:admin"
+# Queue stream names (Phase 6: CLI-triggered queues)
+DEPLOY_QUEUE = "deploy:queue"
+ENGINEERING_QUEUE = "engineering:queue"
+ADMIN_QUEUE = "admin:queue"
 
 # Consumer group name (shared across all workers)
 WORKER_GROUP = "capability-workers"

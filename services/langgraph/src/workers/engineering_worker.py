@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+import json
 import os
 import signal
 
@@ -34,48 +35,200 @@ def handle_shutdown(signum, frame):
     _shutdown = True
 
 
-async def process_engineering_job(job_data: dict) -> dict:
-    """Process a single engineering job.
+async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> dict:
+    """Process a single engineering job by running Engineering Subgraph.
 
-    Stub: integration tracked in docs/backlog.md
-    "Engineering Pipeline: TesterNode & Worker Integration"
+    Args:
+        job_data: Job data from Redis queue (task_id, project_id, user_id, callback_stream)
+        redis: Redis client for publishing events
+
+    Returns:
+        Result dict with status and details
     """
-    job_id = job_data.get("job_id", "unknown")
-    project_id = job_data.get("project_id")
-    task_description = job_data.get("task_description")
+    from ..subgraphs.engineering import create_engineering_subgraph
 
-    logger.info(
-        "engineering_job_started",
-        job_id=job_id,
-        project_id=project_id,
-        task_description=task_description[:100] if task_description else None,
-    )
+    task_id = job_data.get("task_id", "unknown")
+    project_id = job_data.get("project_id")
+    callback_stream = job_data.get("callback_stream")
+
+    logger.info("engineering_job_started", task_id=task_id, project_id=project_id)
 
     try:
-        # Stub: subgraph integration pending (see docs/backlog.md)
-        # result = await engineering_subgraph.ainvoke(state, config)
+        # Update task status to running
+        await api_client.patch(f"tasks/{task_id}", json={"status": "running"})
 
-        # Placeholder - in production this would run the full pipeline
-        logger.warning(
-            "engineering_job_placeholder",
-            job_id=job_id,
-            message="Engineering worker not yet integrated with subgraph",
-        )
+        # Publish progress event
+        if callback_stream:
+            await redis.xadd(
+                callback_stream,
+                {
+                    "data": json.dumps(
+                        {
+                            "type": "progress",
+                            "task_id": task_id,
+                            "message": "Engineering task started",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        }
+                    )
+                },
+            )
 
-        return {
-            "status": "pending_implementation",
-            "message": "Engineering worker placeholder - subgraph integration pending",
-            "finished_at": datetime.now(UTC).isoformat(),
+        # Fetch project details
+        project = await api_client.get_project(project_id)
+        if not project:
+            error_msg = f"Project {project_id} not found"
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={"status": "failed", "error_message": error_msg},
+            )
+            return {"status": "failed", "error": error_msg}
+
+        # Prepare EngineeringState
+        subgraph_input = {
+            "messages": [],
+            "current_project": project_id,
+            "project_spec": project,
+            "allocated_resources": {},
+            "repo_info": {
+                "full_name": project.get("repository_url", "")
+                .replace("https://github.com/", "")
+                .rstrip(".git"),
+                "html_url": project.get("repository_url"),
+            },
+            "project_complexity": None,
+            "architect_complete": False,
+            "selected_modules": None,
+            "deployment_hints": None,
+            "custom_task_instructions": None,
+            "repo_prepared": False,
+            "preparer_commit_sha": None,
+            "engineering_status": "idle",
+            "review_feedback": None,
+            "iteration_count": 0,
+            "test_results": None,
+            "needs_human_approval": False,
+            "human_approval_reason": None,
+            "errors": [],
         }
+
+        # Create and run engineering subgraph
+        engineering_subgraph = create_engineering_subgraph()
+        result = await engineering_subgraph.ainvoke(subgraph_input)
+
+        # Check result status
+        if result.get("engineering_status") == "done":
+            logger.info(
+                "engineering_job_success",
+                task_id=task_id,
+                commit_sha=result.get("preparer_commit_sha"),
+            )
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={
+                    "status": "completed",
+                    "result": {
+                        "engineering_status": result["engineering_status"],
+                        "commit_sha": result.get("preparer_commit_sha"),
+                        "selected_modules": result.get("selected_modules"),
+                        "test_results": result.get("test_results"),
+                    },
+                },
+            )
+
+            if callback_stream:
+                await redis.xadd(
+                    callback_stream,
+                    {
+                        "data": json.dumps(
+                            {
+                                "type": "completed",
+                                "task_id": task_id,
+                                "message": "Engineering task completed successfully",
+                                "timestamp": datetime.now(UTC).isoformat(),
+                            }
+                        )
+                    },
+                )
+
+            return {
+                "status": "success",
+                "commit_sha": result.get("preparer_commit_sha"),
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
+
+        elif result.get("engineering_status") == "blocked" or result.get("needs_human_approval"):
+            logger.info("engineering_job_blocked", task_id=task_id, errors=result.get("errors"))
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={
+                    "status": "failed",
+                    "error_message": "; ".join(result.get("errors", ["Task blocked"])),
+                },
+            )
+
+            if callback_stream:
+                await redis.xadd(
+                    callback_stream,
+                    {
+                        "data": json.dumps(
+                            {
+                                "type": "failed",
+                                "task_id": task_id,
+                                "message": "Engineering task blocked or needs approval",
+                                "timestamp": datetime.now(UTC).isoformat(),
+                            }
+                        )
+                    },
+                )
+
+            return {
+                "status": "failed",
+                "error": "; ".join(result.get("errors", ["Task blocked"])),
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
+
+        else:
+            # Unknown status
+            errors = result.get("errors", ["Unknown engineering status"])
+            logger.error("engineering_job_unknown_status", task_id=task_id, errors=errors)
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={"status": "failed", "error_message": "; ".join(errors)},
+            )
+            return {
+                "status": "failed",
+                "error": "; ".join(errors),
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
 
     except Exception as e:
         logger.error(
             "engineering_job_exception",
-            job_id=job_id,
+            task_id=task_id,
             error=str(e),
             error_type=type(e).__name__,
             exc_info=True,
         )
+        await api_client.patch(
+            f"tasks/{task_id}",
+            json={"status": "failed", "error_message": str(e), "error_traceback": str(e)},
+        )
+
+        if callback_stream:
+            await redis.xadd(
+                callback_stream,
+                {
+                    "data": json.dumps(
+                        {
+                            "type": "failed",
+                            "task_id": task_id,
+                            "message": f"Engineering task failed: {e!s}",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        }
+                    )
+                },
+            )
+
         return {
             "status": "failed",
             "error": str(e),
@@ -113,14 +266,12 @@ async def run_worker():
                 for _stream_name, entries in messages:
                     for entry_id, raw_data in entries:
                         try:
-                            import json
-
                             if "data" in raw_data:
                                 job_data = json.loads(raw_data["data"])
                             else:
                                 job_data = raw_data
 
-                            result = await process_engineering_job(job_data)
+                            result = await process_engineering_job(job_data, redis)
                             job_data.update(result)
 
                             await redis.redis.xack(ENGINEERING_QUEUE, WORKER_GROUP, entry_id)

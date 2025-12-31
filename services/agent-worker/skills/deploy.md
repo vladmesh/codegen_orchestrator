@@ -25,7 +25,42 @@ Starts deployment pipeline. Returns task_id for tracking.
 ```bash
 orchestrator deploy status <task_id>
 ```
-Returns: current step, logs, errors.
+Checks status of an asynchronous deployment task.
+
+**Output includes:**
+- Task status (queued, running, completed, failed)
+- Project ID
+- Creation timestamp
+- Start/completion timestamps (if applicable)
+- Error message (if failed)
+- Result data (if completed): deployed URL, deployment result
+
+**Example:**
+```bash
+$ orchestrator deploy status deploy-xyz456
+┌───────────────────────────────────────────────────┐
+│ Task deploy-xyz456                                │
+├──────────┬────────────────────────────────────────┤
+│ Type     │ deploy                                 │
+│ Status   │ completed                              │
+│ Project  │ proj-abc123                            │
+│ Created  │ 2025-12-31 11:20:15                    │
+│ Started  │ 2025-12-31 11:20:17                    │
+│ Completed│ 2025-12-31 11:22:30                    │
+└──────────┴────────────────────────────────────────┘
+
+Result:
+{
+  "deployed_url": "https://myapp.example.com",
+  "deployment_result": {...}
+}
+```
+
+### Monitor with Follow Mode (TODO)
+```bash
+orchestrator deploy status <task_id> --follow
+```
+Stream live progress events (not yet implemented).
 
 ### View Deployment Logs
 ```bash
@@ -36,9 +71,9 @@ orchestrator deploy logs <project_id> [--lines=100]
 
 1. First check readiness with `deploy check`
 2. If missing user secrets, ask user to provide them
-3. Trigger deployment with `deploy trigger`
-4. Monitor with `deploy status` until complete
-5. Report deployed URL to user
+3. Trigger deployment with `deploy trigger <project_id>`
+4. Monitor with `deploy status <task_id>` until status is completed or failed
+5. Report deployed URL to user from the task result
 
 ## Common Issues
 

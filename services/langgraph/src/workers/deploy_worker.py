@@ -36,36 +36,63 @@ def handle_shutdown(signum, frame):
     _shutdown = True
 
 
-async def process_deploy_job(job_data: dict) -> dict:
-    """Process a single deploy job by running DevOps node.
+async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
+    """Process a single deploy job by running DevOps Subgraph.
 
     Args:
-        job_data: Job data from Redis queue
+        job_data: Job data from Redis queue (task_id, project_id, user_id, callback_stream)
+        redis: Redis client for publishing events
 
     Returns:
         Result dict with status and details
     """
-    job_id = job_data.get("job_id", "unknown")
-    project_id = job_data.get("project_id")
+    import json
 
-    logger.info("deploy_job_started", job_id=job_id, project_id=project_id)
+    task_id = job_data.get("task_id", "unknown")
+    project_id = job_data.get("project_id")
+    callback_stream = job_data.get("callback_stream")
+
+    logger.info("deploy_job_started", task_id=task_id, project_id=project_id)
 
     try:
+        # Update task status to running
+        await api_client.patch(f"tasks/{task_id}", json={"status": "running"})
+
+        # Publish progress event
+        if callback_stream:
+            await redis.xadd(
+                callback_stream,
+                {
+                    "data": json.dumps(
+                        {
+                            "type": "progress",
+                            "task_id": task_id,
+                            "message": "Deploy task started",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        }
+                    )
+                },
+            )
+
         # Fetch project details
         project: ProjectInfo | None = await api_client.get_project(project_id)
         if not project:
-            return {
-                "status": "failed",
-                "error": f"Project {project_id} not found",
-            }
+            error_msg = f"Project {project_id} not found"
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={"status": "failed", "error_message": error_msg},
+            )
+            return {"status": "failed", "error": error_msg}
 
         # Get allocations for the project
         allocations: list[AllocationInfo] = await api_client.get_project_allocations(project_id)
         if not allocations:
-            return {
-                "status": "failed",
-                "error": "No resources allocated for project",
-            }
+            error_msg = "No resources allocated for project"
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={"status": "failed", "error_message": error_msg},
+            )
+            return {"status": "failed", "error": error_msg}
 
         allocation = allocations[0]
 
@@ -114,9 +141,35 @@ async def process_deploy_job(job_data: dict) -> dict:
         if result.get("deployed_url"):
             logger.info(
                 "deploy_job_success",
-                job_id=job_id,
+                task_id=task_id,
                 deployed_url=result["deployed_url"],
             )
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={
+                    "status": "completed",
+                    "result": {
+                        "deployed_url": result["deployed_url"],
+                        "deployment_result": result.get("deployment_result"),
+                    },
+                },
+            )
+
+            if callback_stream:
+                await redis.xadd(
+                    callback_stream,
+                    {
+                        "data": json.dumps(
+                            {
+                                "type": "completed",
+                                "task_id": task_id,
+                                "message": f"Deploy completed: {result['deployed_url']}",
+                                "timestamp": datetime.now(UTC).isoformat(),
+                            }
+                        )
+                    },
+                )
+
             return {
                 "status": "success",
                 "deployed_url": result["deployed_url"],
@@ -124,30 +177,92 @@ async def process_deploy_job(job_data: dict) -> dict:
             }
         elif result.get("missing_user_secrets"):
             missing = result.get("missing_user_secrets")
-            logger.info("deploy_job_missing_secrets", job_id=job_id, missing=missing)
+            logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing)
+            error_msg = f"Missing secrets: {', '.join(missing)}"
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={"status": "failed", "error_message": error_msg},
+            )
+
+            if callback_stream:
+                await redis.xadd(
+                    callback_stream,
+                    {
+                        "data": json.dumps(
+                            {
+                                "type": "failed",
+                                "task_id": task_id,
+                                "message": error_msg,
+                                "timestamp": datetime.now(UTC).isoformat(),
+                            }
+                        )
+                    },
+                )
+
             return {
                 "status": "failed",
-                "error": f"Missing secrets: {', '.join(missing)}",
+                "error": error_msg,
                 "missing_secrets": missing,
                 "finished_at": datetime.now(UTC).isoformat(),
             }
         else:
             errors = result.get("errors", ["Unknown deployment error"])
-            logger.error("deploy_job_failed", job_id=job_id, errors=errors)
+            logger.error("deploy_job_failed", task_id=task_id, errors=errors)
+            error_msg = "; ".join(errors)
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={"status": "failed", "error_message": error_msg},
+            )
+
+            if callback_stream:
+                await redis.xadd(
+                    callback_stream,
+                    {
+                        "data": json.dumps(
+                            {
+                                "type": "failed",
+                                "task_id": task_id,
+                                "message": error_msg,
+                                "timestamp": datetime.now(UTC).isoformat(),
+                            }
+                        )
+                    },
+                )
+
             return {
                 "status": "failed",
-                "error": "; ".join(errors),
+                "error": error_msg,
                 "finished_at": datetime.now(UTC).isoformat(),
             }
 
     except Exception as e:
         logger.error(
             "deploy_job_exception",
-            job_id=job_id,
+            task_id=task_id,
             error=str(e),
             error_type=type(e).__name__,
             exc_info=True,
         )
+        await api_client.patch(
+            f"tasks/{task_id}",
+            json={"status": "failed", "error_message": str(e), "error_traceback": str(e)},
+        )
+
+        if callback_stream:
+            await redis.xadd(
+                callback_stream,
+                {
+                    "data": json.dumps(
+                        {
+                            "type": "failed",
+                            "task_id": task_id,
+                            "message": f"Deploy task failed: {e!s}",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        }
+                    )
+                },
+            )
+
         return {
             "status": "failed",
             "error": str(e),
@@ -194,7 +309,7 @@ async def run_worker():
                                 job_data = raw_data
 
                             # Process the job
-                            result = await process_deploy_job(job_data)
+                            result = await process_deploy_job(job_data, redis)
 
                             # Update job status in stream (for polling)
                             # Note: In production, we'd update checkpointer
