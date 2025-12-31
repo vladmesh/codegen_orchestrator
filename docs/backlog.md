@@ -1,6 +1,6 @@
 # Backlog
 
-> Актуально на: 2025-12-30
+> Актуально на: 2025-12-31
 
 ## Technical Debt (Активная работа)
 
@@ -137,6 +137,89 @@ await publish_event(f"worker.{event.event_type}", event.model_dump(mode="json"))
 ---
 
 ## Future Improvements (Extracted from archived plans)
+
+### Caddy Reverse Proxy Integration (убрать Port Management)
+
+**Priority:** MEDIUM  
+**Status:** TODO  
+**Location:** `services/infrastructure-worker/ansible/roles/caddy/`, `services/api/`, `services/langgraph/src/tools/devops_tools.py`
+
+**Проблема:** Сейчас каждый проект деплоится на уникальный порт (8080, 8081, ...). Zavhoz выделяет порты, Ansible открывает их в UFW. Это создаёт:
+1. Сложность управления — таблица `allocations` с портами
+2. Ugly URLs — `http://server:8080` вместо `https://project.example.com`
+3. Ручное управление firewall
+
+**Что уже есть:**
+- Caddy установлен на VPS (`ansible/roles/caddy/`)
+- Caddyfile генерируется из `services.yml` шаблоном Jinja2
+- Автоматический HTTPS через Let's Encrypt
+
+**Что улучшится:**
+1. ✅ **Нет port management** — все проекты на 80/443, роутинг по домену
+2. ✅ **Автоматический HTTPS** — Caddy получает сертификаты автоматически
+3. ✅ **Проще firewall** — только 22/80/443 открыты
+4. ✅ **Красивые URL** — `https://myproject.example.com`
+5. ✅ **Проще восстановление** — конфиг генерится из БД
+
+**Варианты реализации:**
+
+#### Вариант A: API + Regenerate Caddyfile (рекомендуется)
+
+Source of truth — БД оркестратора. При деплое:
+1. Регистрируем сервис в API (`POST /servers/{handle}/services`)
+2. SSH на сервер → скрипт тянет конфиг из API → генерирует Caddyfile → `caddy reload`
+
+```python
+# Новые API endpoints
+GET  /servers/{handle}/services  # список сервисов на сервере
+POST /servers/{handle}/services  # регистрация сервиса {project_id, domain, port}
+DELETE /servers/{handle}/services/{id}  # удаление при undeploy
+
+# Скрипт на VPS: /opt/caddy/regenerate.sh
+curl -s http://orchestrator-api/servers/$(hostname)/services | \
+  python3 /opt/caddy/generate_caddyfile.py > /opt/caddy/Caddyfile && \
+  docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+**Плюсы:** Простота, source of truth в БД, восстановление после reinstall.
+**Минусы:** Нужен вызов после каждого деплоя.
+
+#### Вариант B: Caddy Admin API (on-the-fly)
+
+Добавлять роуты напрямую через Caddy Admin API без перегенерации файла:
+
+```bash
+curl -X POST "http://localhost:2019/config/apps/http/servers/srv0/routes" \
+  -d '{"@id": "project-abc", "match": [{"host": ["abc.example.com"]}], ...}'
+```
+
+**Плюсы:** Мгновенное применение, нет файлов.
+**Минусы:** State теряется при рестарте Caddy (нужен persistent config).
+
+#### Вариант C: Traefik вместо Caddy
+
+Traefik читает Docker labels автоматически — не нужно ничего вызывать:
+
+```yaml
+# В docker-compose проекта
+labels:
+  - "traefik.http.routers.myproject.rule=Host(`myproject.example.com`)"
+```
+
+**Плюсы:** Полная автоматика, zero config при деплое.
+**Минусы:** Нужно менять provisioning, service-template, переучиваться.
+
+**Рекомендация:** Вариант A — минимальные изменения, Caddy уже установлен.
+
+**Задачи:**
+1. Добавить модель `ServiceDeployment` в API (или расширить существующую)
+2. Добавить endpoints для управления сервисами на сервере
+3. Создать скрипт генерации Caddyfile из API на VPS
+4. Модифицировать `deploy_project.yml` — вызывать regenerate после compose up
+5. Убрать port allocation из Zavhoz (или сделать optional)
+6. Добавить `domain` в project config (или генерировать из project_name)
+
+---
 
 ### Telegram Bot Pool (Resource Allocation)
 

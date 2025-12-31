@@ -34,10 +34,14 @@ WORKDIR /app
 # Install runtime dependencies (git for GitHub operations)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
+
+# Install Ansible collections for deployment
+RUN ansible-galaxy collection install community.general
 
 # Copy source code
 COPY services/langgraph/src ./src

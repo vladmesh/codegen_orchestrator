@@ -133,26 +133,37 @@
     # ========================================
     # 6. Pull and Start Services
     # ========================================
-    - name: Pull Docker images
+    # Try to pull pre-built images from registry (for CI/CD deployments)
+    - name: Pull Docker images from registry
       shell: |
         cd {{ project_dir }}
-        docker compose -f infra/compose.base.yml -f infra/compose.prod.yml pull
+        docker compose -f infra/compose.base.yml -f infra/compose.prod.yml pull 2>&1
       register: pull_result
       ignore_errors: yes
 
     - name: Show pull result
       debug:
-        msg: "Docker pull {{ 'succeeded' if pull_result.rc == 0 else 'failed (images may not exist yet)' }}"
+        msg: "Docker pull {{ 'succeeded' if pull_result.rc == 0 else 'failed - will build locally' }}"
 
-    - name: Start services with Docker Compose
+    # If pull succeeded, start with prod config (pre-built images)
+    - name: Start services with pre-built images
       shell: |
         cd {{ project_dir }}
         docker compose -f infra/compose.base.yml -f infra/compose.prod.yml up -d --remove-orphans
       register: compose_result
+      when: pull_result.rc == 0
+
+    # If pull failed, build and start locally (initial deployment)
+    - name: Build and start services locally
+      shell: |
+        cd {{ project_dir }}
+        docker compose -f infra/compose.base.yml -f infra/compose.dev.yml up -d --build --remove-orphans
+      register: compose_result
+      when: pull_result.rc != 0
 
     - name: Show compose result
       debug:
-        msg: "Docker Compose result: {{ compose_result.stdout_lines[-5:] | default(['Started']) }}"
+        msg: "Docker Compose {{ 'started with pre-built images' if pull_result.rc == 0 else 'built and started locally' }}"
 
     # ========================================
     # 7. Cleanup

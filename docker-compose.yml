@@ -71,7 +71,7 @@ services:
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ./services/infrastructure:/app/services/infrastructure:delegated
+      - ./services/infrastructure-worker/ansible:/app/services/infrastructure/ansible:delegated
       - ~/.ssh:/root/.ssh:ro
       - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:

@@ -13,7 +13,7 @@ from shared.clients.github import GitHubAppClient
 
 from ..clients.api import api_client
 from ..config.constants import Paths
-from ..schemas.api_types import AllocationInfo, ProjectInfo, get_repo_url
+from ..schemas.api_types import AllocationInfo, ProjectInfo, ServerInfo, get_repo_url, get_server_ip
 
 logger = structlog.get_logger()
 
@@ -102,7 +102,7 @@ async def _setup_ci_secrets(
 
 
 @tool
-async def run_ansible_deploy(
+async def run_ansible_deploy(  # noqa: C901, PLR0912
     project_id: Annotated[str, "Project ID"],
     secrets: Annotated[dict, "Secrets to inject into deployment"],
 ) -> dict:
@@ -130,18 +130,29 @@ async def run_ansible_deploy(
     if not allocations:
         return {"status": "failed", "error": "No resources allocated"}
 
-    # Heuristic for deployment target
-    target_resource: AllocationInfo | None = None
+    # Find allocation with port (server_ip will be fetched if missing)
+    target_alloc: AllocationInfo | None = None
     for alloc in allocations:
-        if alloc.get("port") and alloc.get("server_ip"):
-            target_resource = alloc
+        if alloc.get("port"):
+            target_alloc = alloc
             break
 
-    if not target_resource:
-        return {"status": "failed", "error": "No suitable allocation found (need port and IP)"}
+    if not target_alloc:
+        return {"status": "failed", "error": "No suitable allocation found (need port)"}
 
-    target_server_ip = target_resource.get("server_ip")
-    target_port = target_resource.get("port")
+    target_port = target_alloc.get("port")
+
+    # Get server_ip from allocation or fetch from server API
+    target_server_ip = target_alloc.get("server_ip")
+    if not target_server_ip:
+        server_handle = target_alloc.get("server_handle")
+        if server_handle:
+            server: ServerInfo | None = await api_client.get_server(server_handle)
+            if server:
+                target_server_ip = get_server_ip(server)
+
+    if not target_server_ip:
+        return {"status": "failed", "error": "Could not determine server IP"}
 
     # Get GitHub token
     github_client = GitHubAppClient()
@@ -222,7 +233,7 @@ async def run_ansible_deploy(
             await _create_service_deployment_record(
                 project_id=project_id,
                 service_name=project_name,
-                server_handle=target_resource.get("server_handle"),
+                server_handle=target_alloc.get("server_handle"),
                 port=target_port,
                 deployment_info={
                     "repo_full_name": repo_full_name,
@@ -248,6 +259,12 @@ async def run_ansible_deploy(
                 "port": target_port,
             }
         else:
+            logger.error(
+                "ansible_failed",
+                exit_code=process.returncode,
+                stdout=process.stdout[:2000] if process.stdout else None,
+                stderr=process.stderr[:2000] if process.stderr else None,
+            )
             return {
                 "status": "failed",
                 "error": "Ansible playbook failed",
