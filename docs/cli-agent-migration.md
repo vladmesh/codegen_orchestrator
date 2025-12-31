@@ -151,10 +151,10 @@ class AgentSpawner:
 ```
 
 **Deliverables:**
-- [ ] `services/agent-worker/Dockerfile`
-- [ ] `services/agent-spawner/` service
-- [ ] Docker compose integration
-- [ ] Basic health checks
+- [x] `services/agent-worker/Dockerfile`
+- [x] `services/agent-spawner/` service
+- [x] Docker compose integration
+- [x] Basic health checks
 
 ---
 

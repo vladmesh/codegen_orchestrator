@@ -166,6 +166,25 @@ services:
     networks:
       - internal
 
+  agent-spawner:
+    build:
+      context: .
+      dockerfile: services/agent-spawner/Dockerfile
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./services/agent-spawner/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
+      - ~/.claude:/home/node/.claude:ro # Dev: share Claude session
+    depends_on:
+      - redis
+    networks:
+      - internal
+
   scheduler:
     build:
       context: .
