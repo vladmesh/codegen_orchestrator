@@ -16,6 +16,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
+# Install Python for orchestrator-cli
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+
 # Setup workspace
 WORKDIR /workspace
 ENV HOME=/home/node
@@ -25,8 +33,19 @@ ENV DISABLE_TELEMETRY=1
 ENV DISABLE_ERROR_REPORTING=1
 ENV DISABLE_AUTOUPDATER=1
 
+# Add local bin to PATH
+ENV PATH="/home/node/.local/bin:${PATH}"
+
+
 # Switch to non-root user (node user already exists in node image)
 USER node
+
+# Copy CLI code
+COPY --chown=node:node cli /home/node/cli
+
+# Install CLI
+RUN pip3 install --no-cache-dir --break-system-packages /home/node/cli
+
 
 # Default entrypoint - Claude CLI
 ENTRYPOINT ["claude"]
