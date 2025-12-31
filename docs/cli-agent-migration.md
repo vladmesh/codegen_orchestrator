@@ -314,9 +314,9 @@ Skills загружаются по необходимости:
 - User: "create new project" → `project.md` + `engineering.md` loaded
 
 **Deliverables:**
-- [ ] All skill markdown files
-- [ ] Skills testing in container
-- [ ] Documentation for skill authoring
+- [x] All skill markdown files
+- [x] Skills testing in container
+- [x] Documentation for skill authoring
 
 ---
 
@@ -375,9 +375,9 @@ Use `/skill-name` to activate specialized workflows:
 ```
 
 **Deliverables:**
-- [ ] `CLAUDE.md` template
-- [ ] Per-project customization logic
-- [ ] Testing with real conversations
+- [x] `CLAUDE.md` template
+- [x] Per-project customization logic
+- [x] Testing with real conversations
 
 ---
 

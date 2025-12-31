@@ -46,6 +46,12 @@ COPY --chown=node:node cli /home/node/cli
 # Install CLI
 RUN pip3 install --no-cache-dir --break-system-packages /home/node/cli
 
+# Copy Skills
+COPY --chown=node:node skills /home/node/.claude/skills
+
+# Copy System Prompt
+COPY --chown=node:node CLAUDE.md /home/node/.claude/CLAUDE.md
+
 
 # Default entrypoint - Claude CLI
 ENTRYPOINT ["claude"]
