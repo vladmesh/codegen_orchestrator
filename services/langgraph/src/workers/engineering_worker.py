@@ -59,7 +59,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
         # Publish progress event
         if callback_stream:
-            await redis.xadd(
+            await redis.redis.xadd(
                 callback_stream,
                 {
                     "data": json.dumps(
@@ -136,7 +136,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             )
 
             if callback_stream:
-                await redis.xadd(
+                await redis.redis.xadd(
                     callback_stream,
                     {
                         "data": json.dumps(
@@ -167,7 +167,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             )
 
             if callback_stream:
-                await redis.xadd(
+                await redis.redis.xadd(
                     callback_stream,
                     {
                         "data": json.dumps(
@@ -215,7 +215,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         )
 
         if callback_stream:
-            await redis.xadd(
+            await redis.redis.xadd(
                 callback_stream,
                 {
                     "data": json.dumps(
