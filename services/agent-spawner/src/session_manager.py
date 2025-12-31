@@ -1,12 +1,13 @@
-"""Session management for agent containers."""
+"""Session management for agent conversations.
 
-from datetime import datetime
-import json
+Simplified: only tracks Claude session IDs for conversation continuity.
+Containers are ephemeral (created per request).
+"""
+
+from datetime import UTC, datetime
 
 import redis.asyncio as redis
 import structlog
-
-from .models import AgentSession, ContainerStatus
 
 logger = structlog.get_logger()
 
@@ -16,7 +17,7 @@ SESSION_TTL_SECONDS = 86400 * 7  # 7 days
 
 
 class SessionManager:
-    """Manages agent sessions in Redis."""
+    """Manages Claude session IDs in Redis for conversation continuity."""
 
     def __init__(self, redis_client: redis.Redis) -> None:
         self.redis = redis_client
@@ -25,51 +26,40 @@ class SessionManager:
         """Generate Redis key for user session."""
         return f"{SESSION_KEY_PREFIX}{user_id}"
 
-    async def get_session(self, user_id: str) -> AgentSession | None:
-        """Get session for user.
+    async def get_session_id(self, user_id: str) -> str | None:
+        """Get Claude session ID for user.
 
         Args:
             user_id: User identifier
 
         Returns:
-            AgentSession if exists, None otherwise
+            Claude session ID if exists, None otherwise
         """
         key = self._session_key(user_id)
-        data = await self.redis.get(key)
+        data = await self.redis.hget(key, "claude_session_id")
+        return data.decode() if data else None
 
-        if not data:
-            return None
-
-        try:
-            parsed = json.loads(data)
-            return AgentSession.from_dict(parsed)
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning(
-                "session_parse_failed",
-                user_id=user_id,
-                error=str(e),
-            )
-            return None
-
-    async def save_session(self, session: AgentSession) -> None:
-        """Save session to Redis.
+    async def save_session_id(self, user_id: str, session_id: str) -> None:
+        """Save Claude session ID for user.
 
         Args:
-            session: Session to save
+            user_id: User identifier
+            session_id: Claude session ID
         """
-        key = self._session_key(session.user_id)
-        data = json.dumps(session.to_dict())
-
-        await self.redis.setex(
+        key = self._session_key(user_id)
+        await self.redis.hset(
             key,
-            SESSION_TTL_SECONDS,
-            data,
+            mapping={
+                "claude_session_id": session_id,
+                "last_activity_at": datetime.now(UTC).isoformat(),
+            },
         )
+        await self.redis.expire(key, SESSION_TTL_SECONDS)
 
         logger.debug(
             "session_saved",
-            user_id=session.user_id,
-            status=session.status.value,
+            user_id=user_id,
+            session_id=session_id[:12] if session_id else None,
         )
 
     async def update_activity(self, user_id: str) -> None:
@@ -78,35 +68,11 @@ class SessionManager:
         Args:
             user_id: User identifier
         """
-        session = await self.get_session(user_id)
-        if session:
-            session.last_activity_at = datetime.utcnow()
-            await self.save_session(session)
-
-    async def update_session_id(self, user_id: str, session_id: str) -> None:
-        """Update Claude session ID for user.
-
-        Args:
-            user_id: User identifier
-            session_id: New Claude session ID
-        """
-        session = await self.get_session(user_id)
-        if session:
-            session.claude_session_id = session_id
-            session.last_activity_at = datetime.utcnow()
-            await self.save_session(session)
-
-    async def update_status(self, user_id: str, status: ContainerStatus) -> None:
-        """Update container status for user.
-
-        Args:
-            user_id: User identifier
-            status: New container status
-        """
-        session = await self.get_session(user_id)
-        if session:
-            session.status = status
-            await self.save_session(session)
+        key = self._session_key(user_id)
+        exists = await self.redis.exists(key)
+        if exists:
+            await self.redis.hset(key, "last_activity_at", datetime.now(UTC).isoformat())
+            await self.redis.expire(key, SESSION_TTL_SECONDS)
 
     async def delete_session(self, user_id: str) -> None:
         """Delete session for user.
@@ -117,35 +83,3 @@ class SessionManager:
         key = self._session_key(user_id)
         await self.redis.delete(key)
         logger.info("session_deleted", user_id=user_id)
-
-    async def get_idle_sessions(self, idle_seconds: int) -> list[AgentSession]:
-        """Get sessions that have been idle for specified time.
-
-        Args:
-            idle_seconds: Minimum idle time in seconds
-
-        Returns:
-            List of idle sessions
-        """
-        idle_sessions = []
-        cutoff = datetime.utcnow()
-
-        # Scan for all session keys
-        async for key in self.redis.scan_iter(f"{SESSION_KEY_PREFIX}*"):
-            data = await self.redis.get(key)
-            if not data:
-                continue
-
-            try:
-                parsed = json.loads(data)
-                session = AgentSession.from_dict(parsed)
-
-                # Check if idle
-                idle_time = (cutoff - session.last_activity_at).total_seconds()
-                if idle_time >= idle_seconds:
-                    idle_sessions.append(session)
-
-            except (json.JSONDecodeError, KeyError):
-                continue
-
-        return idle_sessions

@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     container_destroy_timeout_sec: int = 86400  # 24h → destroy
     container_network: str = "codegen_orchestrator_internal"
 
+    # Host path to Claude session directory (for volume mounting)
+    # This MUST be the host path, not the container path
+    host_claude_dir: str | None = None
+
     # Execution settings
     default_timeout_sec: int = 120
 

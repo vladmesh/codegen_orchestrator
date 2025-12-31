@@ -70,25 +70,24 @@
 ```dockerfile
 FROM node:20-slim
 
-# Install Claude Code
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates curl && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
-
-# Install orchestrator CLI (будет создан позже)
-COPY orchestrator-cli /usr/local/bin/
-RUN chmod +x /usr/local/bin/orchestrator-cli
-
-# Create agent user
-RUN useradd -m -u 1000 agent
-USER agent
 
 # Workspace
 WORKDIR /workspace
-ENV HOME=/home/agent
+ENV HOME=/home/node
 
 # Disable telemetry
 ENV DISABLE_TELEMETRY=1
 ENV DISABLE_ERROR_REPORTING=1
 ENV DISABLE_AUTOUPDATER=1
+
+# Use existing node user (uid=1000)
+USER node
 
 ENTRYPOINT ["claude"]
 ```
@@ -97,58 +96,55 @@ ENTRYPOINT ["claude"]
 
 Для разработки (подписка):
 ```bash
-# Прокинуть сессию через volume mount
-docker run \
-  -v ~/.claude:/home/agent/.claude:ro \
-  agent-worker -p "test"
+# Прокинуть сессию через volume mount (read-write для session persistence)
+docker run --rm \
+  -v ~/.claude:/home/node/.claude \
+  agent-worker --dangerously-skip-permissions -p "test" --output-format json
 ```
 
 Для прода (API key):
 ```bash
-docker run \
+docker run --rm \
   -e ANTHROPIC_API_KEY="$API_KEY" \
-  agent-worker -p "test"
+  agent-worker --dangerously-skip-permissions -p "test" --output-format json
 ```
+
+> **Note:** `--dangerously-skip-permissions` обязателен для non-interactive режима.
 
 ### 1.3 Container Orchestration Service
 
-Создать `services/agent-spawner/`:
+Создать `services/agent-spawner/` с ephemeral container подходом:
 
 ```python
-# services/agent-spawner/src/main.py
+# services/agent-spawner/src/container_manager.py
 
-class AgentSpawner:
-    """Manages per-user agent containers."""
+class ContainerManager:
+    """Manages ephemeral Docker containers for CLI agents.
+    
+    Uses docker run --rm for each execution.
+    Session continuity maintained via Claude's --resume flag.
+    """
 
-    async def get_or_create_container(self, user_id: str) -> str:
-        """Get existing container or create new one."""
-        container_id = await self.redis.get(f"agent:container:{user_id}")
-        if container_id:
-            return container_id
-        return await self._create_container(user_id)
-
-    async def send_message(self, user_id: str, message: str) -> str:
-        """Send message to user's agent container."""
-        container_id = await self.get_or_create_container(user_id)
-        result = await self._execute_in_container(
-            container_id,
-            prompt=message,
-            output_format="json"
-        )
-        return result
-
-    async def pause_container(self, user_id: str):
-        """Pause container to save resources."""
-        container_id = await self.redis.get(f"agent:container:{user_id}")
-        if container_id:
-            await self.docker.pause(container_id)
-
-    async def resume_container(self, user_id: str):
-        """Resume paused container."""
-        container_id = await self.redis.get(f"agent:container:{user_id}")
-        if container_id:
-            await self.docker.unpause(container_id)
+    async def execute(self, user_id: str, prompt: str, session_id: str | None = None):
+        """Execute prompt in ephemeral container."""
+        cmd = [
+            "docker", "run", "--rm",
+            f"--network={self.settings.container_network}",
+            "-v", f"{self.settings.host_claude_dir}:/home/node/.claude",
+            self.settings.agent_image,
+            "--dangerously-skip-permissions",
+            "-p", prompt,
+            "--output-format", "json",
+        ]
+        if session_id:
+            cmd.extend(["--resume", session_id])
+        
+        # Execute and parse JSON response
+        result = await asyncio.create_subprocess_exec(*cmd, ...)
+        return ExecutionResult(output=parsed["result"], session_id=parsed["session_id"])
 ```
+
+> **Архитектурное решение:** Используем ephemeral containers (`docker run --rm`) вместо persistent containers, потому что Claude CLI без аргументов сразу завершается. Session persistence обеспечивается через `--resume` флаг.
 
 **Deliverables:**
 - [x] `services/agent-worker/Dockerfile`
