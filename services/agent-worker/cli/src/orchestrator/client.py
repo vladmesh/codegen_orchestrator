@@ -37,6 +37,11 @@ class APIClient:
         response.raise_for_status()
         return response.json()
 
+    def patch(self, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
+        response = self.client.patch(path, json=json)
+        response.raise_for_status()
+        return response.json()
+
     def delete(self, path: str) -> dict[str, Any]:
         response = self.client.delete(path)
         response.raise_for_status()

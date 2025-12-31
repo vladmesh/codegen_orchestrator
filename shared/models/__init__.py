@@ -12,6 +12,7 @@ from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGMessage, RAGS
 from .resource import Resource
 from .server import Server, ServerStatus
 from .service_deployment import ServiceDeployment
+from .task import Task, TaskStatus, TaskType
 from .telegram_bot import TelegramBot
 from .user import User
 
@@ -29,6 +30,9 @@ __all__ = [
     "Server",
     "ServerStatus",
     "PortAllocation",
+    "Task",
+    "TaskStatus",
+    "TaskType",
     "TelegramBot",
     "Domain",
     "APIKey",

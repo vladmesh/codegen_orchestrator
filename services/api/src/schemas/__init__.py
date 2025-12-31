@@ -12,6 +12,7 @@ from .service_deployment import (
     ServiceDeploymentRead,
     ServiceDeploymentUpdate,
 )
+from .task import TaskCreate, TaskRead, TaskUpdate
 from .user import UserCreate, UserRead, UserUpdate, UserUpsert
 
 __all__ = [
@@ -40,5 +41,8 @@ __all__ = [
     "ServiceDeploymentCreate",
     "ServiceDeploymentRead",
     "ServiceDeploymentUpdate",
+    "TaskCreate",
+    "TaskRead",
+    "TaskUpdate",
     "UserUpsert",
 ]

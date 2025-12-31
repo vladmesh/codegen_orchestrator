@@ -1,4 +1,9 @@
+import json
+import os
+import uuid
+
 from rich.console import Console
+from rich.table import Table
 import typer
 
 from orchestrator.client import APIClient
@@ -8,21 +13,86 @@ console = Console()
 client = APIClient()
 
 
-@app.command()
-def trigger(project_id: int, description: str):
-    """Trigger an engineering task."""
-    # Engineering subgraph triggering via API is not yet implemented in Phase 2.
-    # It requires Phase 6 (Graph Triggers).
-    console.print(f"Triggering engineering task for project {project_id}: {description}")
-    console.print(
-        "[yellow]Warning: Engineering API endpoint not yet implemented (Phase 6)[/yellow]"
-    )
+def _get_redis():
+    """Get Redis client (lazy import to avoid dependency issues)."""
+    import redis
+
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+    return redis.from_url(redis_url, decode_responses=True)
 
 
 @app.command()
-def status(task_id: str):
+def trigger(project_id: str):
+    """Trigger engineering task for project."""
+    try:
+        user_id = os.getenv("ORCHESTRATOR_USER_ID", "unknown")
+        task_id = f"eng-{uuid.uuid4().hex[:12]}"
+        callback_stream = f"agent:events:{user_id}"
+
+        # Create task via API
+        task_data = {
+            "id": task_id,
+            "type": "engineering",
+            "project_id": project_id,
+            "task_metadata": {"triggered_by": "cli"},
+            "callback_stream": callback_stream,
+        }
+
+        client.post("/api/tasks/", json=task_data)
+
+        # Publish to engineering queue
+        r = _get_redis()
+        queue_message = {
+            "task_id": task_id,
+            "project_id": project_id,
+            "user_id": user_id,
+            "callback_stream": callback_stream,
+        }
+        r.xadd("engineering:queue", {"data": json.dumps(queue_message)})
+
+        console.print("[green]✓[/green] Engineering task triggered")
+        console.print(f"Task ID: [cyan]{task_id}[/cyan]")
+        console.print(f"Project ID: [cyan]{project_id}[/cyan]")
+        console.print(f"\nMonitor with: [yellow]orchestrator engineering status {task_id}[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1) from e
+
+
+@app.command()
+def status(task_id: str, follow: bool = False):
     """Check engineering task status."""
-    console.print(f"Checking status for task {task_id}")
-    console.print(
-        "[yellow]Warning: Engineering API endpoint not yet implemented (Phase 6)[/yellow]"
-    )
+    try:
+        task = client.get(f"/api/tasks/{task_id}")
+
+        table = Table(title=f"Task {task_id}")
+        table.add_column("Field", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Type", task["type"])
+        table.add_row("Status", task["status"])
+        table.add_row("Project ID", task.get("project_id") or "N/A")
+        table.add_row("Created", task["created_at"])
+
+        if task.get("started_at"):
+            table.add_row("Started", task["started_at"])
+        if task.get("completed_at"):
+            table.add_row("Completed", task["completed_at"])
+        if task.get("error_message"):
+            table.add_row("Error", task["error_message"])
+
+        console.print(table)
+
+        # Show result if completed
+        if task["status"] == "completed" and task.get("result"):
+            console.print("\n[bold]Result:[/bold]")
+            console.print_json(data=task["result"])
+
+        # TODO: Implement --follow mode to stream events from Redis
+        if follow:
+            console.print("\n[yellow]Note: --follow mode not yet implemented[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1) from e

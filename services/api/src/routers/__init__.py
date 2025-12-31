@@ -13,6 +13,7 @@ from . import (
     resources,
     servers,
     service_deployments,
+    tasks,
     users,
 )
 
@@ -29,5 +30,6 @@ __all__ = [
     "resources",
     "servers",
     "service_deployments",
+    "tasks",
     "users",
 ]
