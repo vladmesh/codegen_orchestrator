@@ -25,11 +25,15 @@ if [ -n "$ENV_VARS" ]; then
     done
 fi
 
-# Run the agent command or fall back to shell
+# For persistent containers: don't run agent command directly
+# Instead, keep container alive and wait for commands via docker exec
 if [ -n "$AGENT_COMMAND" ]; then
-    echo "[entrypoint] Starting agent: $AGENT_COMMAND"
-    exec $AGENT_COMMAND "$@"
+    echo "[entrypoint] Agent configured: $AGENT_COMMAND"
+    echo "[entrypoint] Container ready to receive commands via 'docker exec'"
 else
-    echo "[entrypoint] No AGENT_COMMAND set, starting shell"
-    exec /bin/bash
+    echo "[entrypoint] No AGENT_COMMAND set"
 fi
+
+# Keep container running (acts as daemon)
+echo "[entrypoint] Starting daemon mode..."
+exec tail -f /dev/null

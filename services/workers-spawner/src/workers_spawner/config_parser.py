@@ -148,17 +148,15 @@ class ConfigParser:
     def validate(self) -> list[str]:
         """Validate the configuration.
 
+        Note: Required env vars are NOT validated here because they can be
+        auto-injected from spawner's environment at container creation time.
+
         Returns:
             List of validation errors (empty if valid).
         """
         errors: list[str] = []
 
-        # Check required env vars are provided
-        required = set(self.get_required_env_vars())
-        provided = set(self.config.env_vars.keys())
-        missing = required - provided
-
-        for var in missing:
-            errors.append(f"Missing required environment variable: {var}")
+        # Future validation rules can be added here
+        # For now, config structure is validated by Pydantic models
 
         return errors

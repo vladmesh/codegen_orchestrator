@@ -3,6 +3,7 @@
 import asyncio
 from datetime import UTC, datetime
 import json
+import os
 import uuid
 
 import structlog
@@ -66,8 +67,57 @@ class ContainerService:
             f"--network={self.settings.container_network}",
         ]
 
+        # Add Sysbox runtime if Docker capability is enabled (Docker-in-Docker)
+        from workers_spawner.models import CapabilityType
+
+        if CapabilityType.DOCKER in config.capabilities:
+            cmd.append("--runtime=sysbox-runc")
+            logger.info(
+                "enabling_docker_in_docker",
+                agent_id=agent_id,
+                runtime="sysbox-runc",
+            )
+
         # Add environment variables
         env_vars = parser.get_env_vars()
+
+        # Auto-inject required env vars from spawner's environment if not provided
+        # This allows secrets like ANTHROPIC_API_KEY to be set in spawner's .env
+        # without clients needing to know about them
+        #
+        # EXCEPTION: Don't inject ANTHROPIC_API_KEY when using session volume mount,
+        # as Claude Code will use the OAuth session from ~/.claude/.credentials.json
+        required_vars = parser.get_required_env_vars()
+        missing_vars = []
+        for required_var in required_vars:
+            if required_var not in env_vars:
+                # Skip ANTHROPIC_API_KEY if mounting session (OAuth takes precedence)
+                if required_var == "ANTHROPIC_API_KEY" and config.mount_session_volume:
+                    logger.info(
+                        "skipping_api_key_for_session",
+                        agent_id=agent_id,
+                        reason="Using OAuth session from mounted volume",
+                    )
+                    continue
+
+                value_from_env = os.environ.get(required_var)
+                if value_from_env:
+                    env_vars[required_var] = value_from_env
+                    logger.debug(
+                        "auto_injected_env_var",
+                        agent_id=agent_id,
+                        var_name=required_var,
+                    )
+                else:
+                    missing_vars.append(required_var)
+
+        # Validate all required vars are present
+        if missing_vars:
+            raise ValueError(
+                f"Missing required environment variables: {', '.join(missing_vars)}. "
+                "Set them in spawner's .env or pass in config.env_vars"
+            )
+
         for key, value in env_vars.items():
             cmd.extend(["-e", f"{key}={value}"])
 
@@ -85,10 +135,8 @@ class ContainerService:
         agent_command = parser.get_agent_command()
         cmd.extend(["-e", f"AGENT_COMMAND={agent_command}"])
 
-        # Add image
-        cmd.append(self.settings.worker_image)
-
         # Mount session volume if requested and configured
+        # IMPORTANT: Must be before image name in docker run command
         if config.mount_session_volume:
             if self.settings.host_claude_dir:
                 # Mount to /home/worker/.claude (non-root user home)
@@ -104,6 +152,9 @@ class ContainerService:
                     agent_id=agent_id,
                     reason="HOST_CLAUDE_DIR not set",
                 )
+
+        # Add image (must be last before entrypoint args)
+        cmd.append(self.settings.worker_image)
 
         logger.info(
             "creating_container",

@@ -51,9 +51,9 @@ async def spawn_coding_worker(
     Returns:
         WorkerResult with execution details
     """
-    factory_api_key = os.getenv("FACTORY_AI_API_KEY")
+    factory_api_key = os.getenv("FACTORY_API_KEY")
     if not factory_api_key:
-        raise RuntimeError("FACTORY_AI_API_KEY environment variable is not set")
+        raise RuntimeError("FACTORY_API_KEY environment variable is not set")
 
     # Load default AGENTS.md template if not provided
     if agents_content is None and AGENTS_TEMPLATE_PATH.exists():

@@ -1,4 +1,4 @@
-"""Factory.ai Droid agent factory (stub)."""
+"""Factory.ai Droid agent factory."""
 
 from workers_spawner.factories.base import AgentFactory
 from workers_spawner.factories.registry import register_agent
@@ -7,31 +7,21 @@ from workers_spawner.models import AgentType
 
 @register_agent(AgentType.FACTORY_DROID)
 class FactoryDroidAgent(AgentFactory):
-    """Factory for Factory.ai Droid CLI agent.
-
-    This is a stub implementation. Update when Factory.ai integration is needed.
-    """
+    """Factory for Factory.ai Droid CLI agent."""
 
     def get_install_commands(self) -> list[str]:
-        """Install Factory Droid CLI.
-
-        TODO: Update with actual install command when available.
-        """
+        """Install Factory Droid CLI from official installer."""
         return [
-            "# Factory Droid installation (placeholder)",
-            "# pip install factory-droid-cli",
+            "curl -fsSL https://app.factory.ai/cli | sh",
         ]
 
     def get_agent_command(self) -> str:
-        """Start Factory Droid agent.
+        """Start Factory Droid in interactive mode.
 
-        TODO: Update with actual command when available.
+        Note: Droid is installed to ~/.local/bin by default.
         """
-        return "factory-droid --interactive"
+        return "/home/worker/.local/bin/droid"
 
     def get_required_env_vars(self) -> list[str]:
-        """Factory Droid required env vars.
-
-        TODO: Update when API key requirements are known.
-        """
+        """Factory Droid requires FACTORY_API_KEY."""
         return ["FACTORY_API_KEY"]

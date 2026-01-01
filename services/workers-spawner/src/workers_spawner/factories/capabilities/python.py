@@ -14,9 +14,13 @@ class PythonCapability(CapabilityFactory):
         return ["python3", "python3-pip", "python3-venv"]
 
     def get_install_commands(self) -> list[str]:
-        """Upgrade pip to latest version."""
+        """Upgrade pip to latest version.
+
+        Note: Uses --break-system-packages for Debian 12+ compatibility (PEP 668).
+        This is safe in a container environment.
+        """
         return [
-            "python3 -m pip install --upgrade pip",
+            "python3 -m pip install --upgrade pip --break-system-packages",
         ]
 
     def get_env_vars(self) -> dict[str, str]:

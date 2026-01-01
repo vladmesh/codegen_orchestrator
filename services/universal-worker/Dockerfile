@@ -26,11 +26,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN useradd -m -s /bin/bash worker
+# Ubuntu 24.04 comes with ubuntu:ubuntu (1000:1000), rename it to worker
+RUN usermod -l worker ubuntu && \
+    groupmod -n worker ubuntu && \
+    usermod -d /home/worker -m worker
 ENV HOME=/home/worker
 
 # Add local bin to PATH
 ENV PATH="/home/worker/.local/bin:${PATH}"
+
+# Allow worker to install global npm packages
+RUN mkdir -p /usr/local/lib/node_modules && \
+    chown -R worker:worker /usr/local/lib/node_modules /usr/local/bin
 
 # Copy and install orchestrator-cli
 COPY shared/cli /opt/orchestrator-cli

@@ -115,14 +115,14 @@ async def spawn_container(
     events_channel: str,
 ) -> SpawnResult:
     """Spawn a Docker container to run the coding task."""
-    factory_api_key = os.getenv("FACTORY_AI_API_KEY")
+    factory_api_key = os.getenv("FACTORY_API_KEY")
     if not factory_api_key:
-        logger.error("factory_ai_api_key_missing", request_id=request.request_id)
+        logger.error("factory_api_key_missing", request_id=request.request_id)
         return SpawnResult(
             request_id=request.request_id,
             success=False,
             exit_code=-1,
-            output="FACTORY_AI_API_KEY not set",
+            output="FACTORY_API_KEY not set",
         )
 
     # Build docker run command
