@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     command_channel: str = "cli-agent:commands"
     events_prefix: str = "agents"
 
+    # Host path to Claude session directory (for volume mounting)
+    # This MUST be the host path, not the container path
+    host_claude_dir: str | None = None
+
     class Config:
         env_prefix = ""
 

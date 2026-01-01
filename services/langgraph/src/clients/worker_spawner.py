@@ -1,42 +1,26 @@
-"""Worker Spawner Client.
+"""Worker Spawner Client for LangGraph.
 
-Client for requesting coding worker spawns via Redis pub/sub.
+Client for requesting coding worker spawns via Redis Stream (workers-spawner service).
 Used by LangGraph nodes to trigger container spawning.
 """
 
-from collections.abc import AsyncIterator
+import asyncio
 from dataclasses import dataclass
 import json
 import uuid
 
-from pydantic import ValidationError
 import redis.asyncio as redis
 
 from shared.logging_config import get_logger
-from shared.schemas.worker_events import WorkerEventUnion, parse_worker_event
 
 from ..config.constants import Timeouts
 from ..config.settings import get_settings
 
 logger = get_logger(__name__)
 
-SPAWN_CHANNEL = "worker:spawn"
-RESULT_CHANNEL = "worker:result"
-EVENTS_CHANNEL_PREFIX = "worker:events"
-
-
-@dataclass
-class SpawnRequest:
-    """Request to spawn a coding worker."""
-
-    request_id: str
-    repo: str
-    github_token: str
-    task_content: str
-    task_title: str = "AI generated changes"
-    model: str = "claude-sonnet-4-5-20250929"
-    agents_content: str | None = None
-    timeout_seconds: int = Timeouts.WORKER_SPAWN
+COMMAND_STREAM = "cli-agent:commands"
+RESPONSE_STREAM = "cli-agent:responses"
+CREATION_TIMEOUT = 60
 
 
 @dataclass
@@ -50,10 +34,41 @@ class SpawnResult:
     commit_sha: str | None = None
     branch: str | None = None
     files_changed: list[str] | None = None
-    summary: str | None = None
-    error_type: str | None = None
     error_message: str | None = None
     logs_tail: str | None = None
+
+
+async def _wait_for_response(
+    redis_client: redis.Redis,
+    group_name: str,
+    consumer_id: str,
+    request_id: str,
+    timeout_s: float,
+) -> dict | None:
+    """Wait for a specific response in the stream."""
+    start_time = asyncio.get_running_loop().time()
+
+    while (asyncio.get_running_loop().time() - start_time) < timeout_s:
+        messages = await redis_client.xreadgroup(
+            groupname=group_name,
+            consumername=consumer_id,
+            streams={RESPONSE_STREAM: ">"},
+            count=1,
+            block=1000,
+        )
+
+        if messages:
+            for _, stream_msgs in messages:
+                for msg_id, msg_data in stream_msgs:
+                    data_str = msg_data[b"data"] if b"data" in msg_data else msg_data["data"]
+                    try:
+                        resp = json.loads(data_str)
+                        if resp.get("request_id") == request_id:
+                            await redis_client.xack(RESPONSE_STREAM, group_name, msg_id)
+                            return resp
+                    except json.JSONDecodeError:
+                        continue
+    return None
 
 
 async def request_spawn(
@@ -61,126 +76,135 @@ async def request_spawn(
     github_token: str,
     task_content: str,
     task_title: str = "AI generated changes",
-    model: str = "claude-sonnet-4-5-20250929",
+    model: str = "claude-sonnet-4-5-20250929",  # Used to select agent model if configurable
     agents_content: str | None = None,
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 
-    Publishes spawn request to Redis and waits for result.
-
-    Args:
-        repo: Repository in org/name format
-        github_token: GitHub token for clone/push
-        task_content: Task description for the AI agent
-        task_title: Commit message title
-        model: Factory.ai model to use
-        agents_content: Custom AGENTS.md content
-        timeout_seconds: Maximum wait time
-
-    Returns:
-        SpawnResult with execution details
+    Uses 'factory-droid' agent type via workers-spawner service.
     """
     request_id = str(uuid.uuid4())
-
-    request = SpawnRequest(
-        request_id=request_id,
-        repo=repo,
-        github_token=github_token,
-        task_content=task_content,
-        task_title=task_title,
-        model=model,
-        agents_content=agents_content,
-        timeout_seconds=timeout_seconds,
-    )
-
     settings = get_settings()
-    redis_client = redis.from_url(settings.redis_url)
-    pubsub = redis_client.pubsub()
 
-    # Subscribe to result channel before publishing request
-    result_channel = f"{RESULT_CHANNEL}:{request_id}"
-    await pubsub.subscribe(result_channel)
+    # Construct WorkerConfig
+    # Use 'claude-code' agent directly for now as factory-droid is a stub.
+    config = {
+        "name": f"Dev {repo.split('/')[-1]}",
+        "agent": "claude-code",
+        "capabilities": ["git", "node", "python"],
+        "allowed_tools": ["project"],
+        "env_vars": {
+            "GITHUB_TOKEN": github_token,
+            "REPO_NAME": repo,
+            # Task content is sent via file to avoid shell quoting issues with large prompts
+        },
+        "mount_session_volume": False,  # Always ephemeral for factory workers
+    }
+
+    redis_client = redis.from_url(settings.redis_url)
+
+    # Unique consumer ID for this request listener
+    consumer_id = f"langgraph-{request_id[:8]}"
+    group_name = f"langgraph-client-{request_id[:8]}"
 
     try:
-        # Publish spawn request
-        request_data = {
-            "request_id": request.request_id,
-            "repo": request.repo,
-            "github_token": request.github_token,
-            "task_content": request.task_content,
-            "task_title": request.task_title,
-            "model": request.model,
-            "agents_content": request.agents_content,
-            "timeout_seconds": request.timeout_seconds,
+        # 1. Publish Create Command
+        create_payload = {
+            "command": "create",
+            "request_id": request_id,
+            "config": config,
+            "context": {"source": "langgraph"},
         }
 
-        await redis_client.publish(SPAWN_CHANNEL, json.dumps(request_data))
-        logger.info("worker_spawn_published", request_id=request_id, repo=repo)
+        await redis_client.xgroup_create(RESPONSE_STREAM, group_name, id="$", mkstream=True)
+        await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(create_payload)})
+        logger.info("worker_spawn_requested", request_id=request_id, repo=repo)
 
-        # Wait for result (timeout handled by spawner service)
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                data = json.loads(message["data"])
-                return SpawnResult(**data)
-
-        # Should not reach here
-        return SpawnResult(
-            request_id=request_id,
-            success=False,
-            exit_code=-1,
-            output="No result received",
+        # 2. Wait for Creation Response
+        create_resp = await _wait_for_response(
+            redis_client, group_name, consumer_id, request_id, CREATION_TIMEOUT
         )
 
-    except TimeoutError:
-        return SpawnResult(
-            request_id=request_id,
-            success=False,
-            exit_code=-1,
-            output=f"Timeout waiting for result after {timeout_seconds}s",
+        if not create_resp:
+            return SpawnResult(request_id, False, -1, "Timeout waiting for container creation")
+
+        if not create_resp.get("success"):
+            return SpawnResult(
+                request_id, False, -1, f"Creation failed: {create_resp.get('error')}"
+            )
+
+        agent_id = create_resp.get("agent_id")
+
+        # 3. Send Task Content as File
+        task_file_path = "/home/worker/task.txt"
+        file_payload = {
+            "command": "send_file",
+            "request_id": f"{request_id}-file",
+            "agent_id": agent_id,
+            "path": task_file_path,
+            "content": task_content,
+        }
+        await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(file_payload)})
+
+        if agents_content:
+            agents_file_payload = {
+                "command": "send_file",
+                "request_id": f"{request_id}-agents",
+                "agent_id": agent_id,
+                "path": "/home/worker/AGENTS.md",
+                "content": agents_content,
+            }
+            await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(agents_file_payload)})
+
+        # 4. Execute Claude Command
+        # Use cat to read the task file to avoid argument length limits/quoting issues
+        claude_cmd = f'claude --dangerously-skip-permissions -p "$(cat {task_file_path})"'
+
+        # NOTE: protocol change - using shell_command
+        cmd_payload = {
+            "command": "send_command",
+            "request_id": f"{request_id}-exec",
+            "agent_id": agent_id,
+            "shell_command": claude_cmd,
+            "timeout": timeout_seconds,
+        }
+
+        await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(cmd_payload)})
+
+        # 5. Wait for Execution Response
+        exec_result = await _wait_for_response(
+            redis_client, group_name, consumer_id, f"{request_id}-exec", float(timeout_seconds)
         )
-    finally:
-        await pubsub.unsubscribe(result_channel)
-        await redis_client.aclose()
 
-
-async def subscribe_worker_events(
-    request_id: str,
-    stop_on_terminal: bool = False,
-) -> AsyncIterator[WorkerEventUnion]:
-    """Subscribe to worker events for a specific request."""
-
-    settings = get_settings()
-    redis_client = redis.from_url(settings.redis_url)
-    pubsub = redis_client.pubsub()
-    channel = f"{EVENTS_CHANNEL_PREFIX}:{request_id}"
-    await pubsub.subscribe(channel)
-
-    try:
-        async for message in pubsub.listen():
-            if message["type"] != "message":
-                continue
-
-            try:
-                data = json.loads(message["data"])
-            except json.JSONDecodeError:
-                logger.warning("worker_event_invalid_json", request_id=request_id)
-                continue
-
-            try:
-                event = parse_worker_event(data)
-            except ValidationError as exc:
-                logger.warning(
-                    "worker_event_validation_failed",
-                    request_id=request_id,
-                    errors=exc.errors(),
+        # DELETE container
+        await redis_client.xadd(
+            COMMAND_STREAM,
+            {
+                "data": json.dumps(
+                    {"command": "delete", "request_id": f"{request_id}-del", "agent_id": agent_id}
                 )
-                continue
+            },
+        )
 
-            yield event
+        if exec_result:
+            return SpawnResult(
+                request_id=request_id,
+                success=exec_result.get("exit_code") == 0,
+                exit_code=exec_result.get("exit_code"),
+                output=exec_result.get("output"),
+                error_message=exec_result.get("error"),
+            )
+        else:
+            return SpawnResult(request_id, False, -1, "Timeout waiting for execution")
 
-            if stop_on_terminal and event.event_type in ("completed", "failed"):
-                return
+    except Exception as e:
+        logger.error("spawn_failed", error=str(e))
+        return SpawnResult(request_id, False, -1, str(e))
     finally:
-        await pubsub.unsubscribe(channel)
+        # Cleanup consumer group
+        try:
+            await redis_client.xgroup_destroy(RESPONSE_STREAM, group_name)
+        except Exception as e:
+            logger.warning("cleanup_failed", error=str(e))
         await redis_client.aclose()

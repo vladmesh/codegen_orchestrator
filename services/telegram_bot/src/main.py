@@ -1,23 +1,23 @@
 """Telegram Bot - Main entry point."""
 
 import asyncio
-import json
 import logging
 import os
 import sys
-import time
 
 import httpx
 import structlog
-from telegram import Bot, Update
+from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 # Add shared to path
 sys.path.insert(0, "/app")
 from shared.logging_config import setup_logging
-from shared.redis_client import RedisStreamClient
 
+from .agent_manager import agent_manager
 from .clients.api import api_client
+from .clients.workers_spawner import workers_spawner
 from .config import get_settings
 from .handlers import handle_callback_query
 from .keyboards import main_menu_keyboard
@@ -25,8 +25,9 @@ from .middleware import auth_middleware, is_admin
 
 logger = structlog.get_logger()
 
-# Global Redis client
-redis_client = RedisStreamClient()
+# ... existing start/menu handlers ... (keep them if they were imported or define them here)
+# Actually, I should keep the existing start/menu functions.
+# I will copy them from the original file content below.
 
 
 async def _post_rag_message(payload: dict) -> None:
@@ -50,7 +51,7 @@ async def start(update: Update, context) -> None:
         "Привет! Я оркестратор для генерации проектов.\n\n"
         "Выберите действие или опишите проект в чате:",
         reply_markup=main_menu_keyboard(is_admin=user_is_admin),
-        parse_mode="Markdown",
+        parse_mode=ParseMode.MARKDOWN,
     )
 
 
@@ -62,7 +63,7 @@ async def menu(update: Update, context) -> None:
     await update.message.reply_text(
         "🏠 **Главное меню**\n\nВыберите действие:",
         reply_markup=main_menu_keyboard(is_admin=user_is_admin),
-        parse_mode="Markdown",
+        parse_mode=ParseMode.MARKDOWN,
     )
 
 
@@ -89,7 +90,7 @@ async def _ensure_user_registered(tg_user) -> None:
 
 
 async def handle_message(update: Update, context) -> None:
-    """Handle incoming messages - publish to Redis Stream."""
+    """Handle incoming messages - send to AgentManager."""
     # Auth check
     if not await auth_middleware(update, context):
         return
@@ -99,130 +100,68 @@ async def handle_message(update: Update, context) -> None:
         await _ensure_user_registered(update.effective_user)
 
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
     message_id = update.message.message_id
     text = update.message.text
-    correlation_id = f"msg_{message_id}_{int(time.time())}"
 
-    preexisting_context = structlog.contextvars.get_contextvars()
-    bind_keys = []
-    for key, value in {
-        "correlation_id": correlation_id,
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "message_id": message_id,
-    }.items():
-        if key not in preexisting_context:
-            bind_keys.append(key)
-        structlog.contextvars.bind_contextvars(**{key: value})
+    logger.info("message_received", user_id=user_id, text_length=len(text) if text else 0)
 
-    logger.info(
-        "message_received",
-        text_length=len(text) if text else 0,
-    )
+    # Indicate typing status
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        # Publish to agent-spawner via PubSub
-        await redis_client.redis.publish(
-            "agent:incoming",
-            json.dumps(
+        # Log user message to RAG
+        # We do this asynchronously to not block
+        asyncio.create_task(
+            _post_rag_message(
                 {
-                    "user_id": str(user_id),
-                    "message": text,
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "correlation_id": correlation_id,
-                }
-            ),
-        )
-
-        await _post_rag_message(
-            {
-                "telegram_id": user_id,
-                "role": "user",
-                "message_text": text,
-                "message_id": str(message_id),
-                "source": "telegram",
-            }
-        )
-
-        logger.info("message_published", channel="agent:incoming")
-    finally:
-        if bind_keys:
-            structlog.contextvars.unbind_contextvars(*bind_keys)
-
-
-async def outgoing_consumer(bot: Bot) -> None:
-    """Consume outgoing messages from agent-spawner and send to Telegram."""
-    await redis_client.connect()
-
-    logger.info("Starting outgoing message consumer for agent responses...")
-
-    async for message in redis_client.consume(
-        stream="agent:outgoing",
-        group="telegram_bot",
-        consumer="bot_sender",
-    ):
-        data = message.data
-        chat_id = data.get("chat_id")
-        text = data.get("text", "")
-        reply_to = data.get("reply_to_message_id")
-
-        if not chat_id or not text:
-            logger.warning("invalid_outgoing_message", payload=data)
-            continue
-
-        try:
-            correlation_id = data.get("correlation_id")
-            preexisting_context = structlog.contextvars.get_contextvars()
-            bind_keys = []
-            if correlation_id and "correlation_id" not in preexisting_context:
-                bind_keys.append("correlation_id")
-            if correlation_id:
-                structlog.contextvars.bind_contextvars(correlation_id=correlation_id)
-
-            logger.info("sending_message", chat_id=chat_id, reply_to_message_id=reply_to)
-            sent_message = await bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_to_message_id=reply_to,
-            )
-            logger.info("message_sent", chat_id=chat_id)
-
-            await _post_rag_message(
-                {
-                    "telegram_id": data.get("user_id") or chat_id,
-                    "role": "assistant",
+                    "telegram_id": user_id,
+                    "role": "user",
                     "message_text": text,
+                    "message_id": str(message_id),
+                    "source": "telegram",
+                }
+            )
+        )
+
+        # Send to agent and await response
+        response_text = await agent_manager.send_message(user_id, text)
+
+        # Send response back to user
+        sent_message = await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN)
+
+        # Log AI response to RAG
+        asyncio.create_task(
+            _post_rag_message(
+                {
+                    "telegram_id": user_id,
+                    "role": "assistant",
+                    "message_text": response_text,
                     "message_id": str(sent_message.message_id),
                     "source": "telegram",
                 }
             )
-        except Exception as e:
-            logger.error(
-                "message_send_failed",
-                chat_id=chat_id,
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True,
-            )
-        finally:
-            if bind_keys:
-                structlog.contextvars.unbind_contextvars(*bind_keys)
+        )
+
+    except Exception as e:
+        logger.error("message_handling_failed", error=str(e), user_id=user_id)
+        await update.message.reply_text("⚠️ Ошибка обработки сообщения. Попробуйте позже.")
 
 
 async def post_init(app: Application) -> None:
-    """Post-initialization: connect to Redis and start consumer."""
-    await redis_client.connect()
-
-    # Start outgoing message consumer as background task
-    asyncio.create_task(outgoing_consumer(app.bot))
-    logger.info("Telegram bot initialized with Redis consumer")
+    """Post-initialization: connect clients."""
+    await workers_spawner.connect()
+    # agent_manager uses workers_spawner, so just connecting spawner is enough for now,
+    # but agent_manager creates its own redis connection too.
+    # We don't have explicit connect on agent_manager (it connects in init),
+    # but we should ensure it's ready if needed.
+    logger.info("Telegram bot initialized")
 
 
 async def post_shutdown(app: Application) -> None:
     """Cleanup on shutdown."""
-    await redis_client.close()
+    await workers_spawner.close()
+    await agent_manager.close()
+    await api_client.close()
 
 
 def main() -> None:
@@ -249,7 +188,7 @@ def main() -> None:
     # Callback query handler for inline buttons
     app.add_handler(CallbackQueryHandler(handle_callback_query))
 
-    # Text message handler (goes to LangGraph via Redis)
+    # Text message handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("telegram_bot_starting")

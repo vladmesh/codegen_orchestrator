@@ -88,6 +88,23 @@ class ContainerService:
         # Add image
         cmd.append(self.settings.worker_image)
 
+        # Mount session volume if requested and configured
+        if config.mount_session_volume:
+            if self.settings.host_claude_dir:
+                # Mount to /home/worker/.claude (non-root user home)
+                cmd.extend(["-v", f"{self.settings.host_claude_dir}:/home/worker/.claude"])
+                logger.info(
+                    "mounting_session_volume",
+                    agent_id=agent_id,
+                    host_path=self.settings.host_claude_dir,
+                )
+            else:
+                logger.warning(
+                    "session_volume_mount_skipped",
+                    agent_id=agent_id,
+                    reason="HOST_CLAUDE_DIR not set",
+                )
+
         logger.info(
             "creating_container",
             agent_id=agent_id,

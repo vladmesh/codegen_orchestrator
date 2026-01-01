@@ -57,6 +57,10 @@ class WorkerConfig(BaseModel):
         default=10,
         description="Command execution timeout in minutes",
     )
+    mount_session_volume: bool = Field(
+        default=False,
+        description="Whether to mount host Claude session dir (dev only)",
+    )
 
 
 class CreateAgentRequest(BaseModel):

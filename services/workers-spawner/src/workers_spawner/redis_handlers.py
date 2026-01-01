@@ -100,17 +100,17 @@ class CommandHandler:
 
         Expected fields:
         - agent_id: str
-        - command: str
+        - shell_command: str
         - timeout: optional int
         """
         agent_id = message.get("agent_id")
-        command = message.get("command")
+        shell_command = message.get("shell_command")
         timeout = message.get("timeout")
 
-        if not agent_id or not command:
-            raise ValueError("Missing 'agent_id' or 'command' field")
+        if not agent_id or not shell_command:
+            raise ValueError("Missing 'agent_id' or 'shell_command' field")
 
-        result = await self.containers.send_command(agent_id, command, timeout)
+        result = await self.containers.send_command(agent_id, shell_command, timeout)
 
         # Publish command exit event
         await self.events.publish_command_exit(agent_id, result.exit_code, result.output)

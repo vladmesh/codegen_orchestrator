@@ -48,13 +48,11 @@ def test_spawn_result_error_message_attribute():
         success=False,
         exit_code=1,
         output="Failed",
-        error_type="TimeoutError",
         error_message="Worker timed out after 600s",
     )
 
     # Should access error_message attribute
     assert result.error_message == "Worker timed out after 600s"
-    assert result.error_type == "TimeoutError"
 
 
 def test_spawn_result_commit_and_branch_attributes():
@@ -87,10 +85,10 @@ def test_spawn_result_optional_fields_none():
     )
 
     # Optional fields should be None
+    # Optional fields should be None
     assert result.commit_sha is None
     assert result.branch is None
     assert result.files_changed is None
-    assert result.summary is None
     assert result.error_message is None
 
 
