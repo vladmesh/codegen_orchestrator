@@ -109,28 +109,7 @@ PO → respond_to_user("Deploy successful! URL: ...")
 
 ---
 
-### Fix datetime serialization in worker events forwarding
 
-**Priority:** LOW  
-**Status:** TODO  
-**Location:** `services/langgraph/src/worker.py:395`
-
-Worker events (started, progress, completed, failed) не пересылаются в stream `orchestrator:events` из-за ошибки сериализации datetime.
-
-**Причина:**
-```python
-# Текущий код
-await publish_event(f"worker.{event.event_type}", event.model_dump())
-```
-
-`WorkerEvent` содержит поле `timestamp: datetime`. При вызове `model_dump()` datetime остаётся объектом Python, а `json.dumps()` в `RedisStreamClient.publish()` (строка 79) не умеет его сериализовать.
-
-**Исправление:**
-```python
-await publish_event(f"worker.{event.event_type}", event.model_dump(mode="json"))
-```
-
----
 
 ### Engineering Pipeline: TesterNode & Worker Integration
 
