@@ -1,0 +1,17 @@
+# Isolated tooling compose file
+# This file is separate from the main docker-compose.yml to prevent
+# `make format` and `make lint` from killing the running stack.
+#
+# See: docs/backlog.md "Separate tooling into dedicated compose file"
+
+services:
+  tooling:
+    build:
+      context: .
+      dockerfile: tooling/Dockerfile
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:delegated
+    env_file:
+      - .env

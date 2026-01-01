@@ -13,7 +13,8 @@ export
 
 DOCKER_COMPOSE ?= docker compose
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
-TOOLING := $(COMPOSE_ENV) $(DOCKER_COMPOSE) run --rm  tooling
+DOCKER_COMPOSE_TOOLS := $(COMPOSE_ENV) $(DOCKER_COMPOSE) -f docker-compose.tools.yml
+TOOLING := $(DOCKER_COMPOSE_TOOLS) run --rm tooling
 
 # Test Project Name for Isolation
 TEST_PROJECT := codegen_orchestrator_test
@@ -50,7 +51,7 @@ help:
 
 # === Dependency Lock Files ===
 
-TOOLING_UV := $(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev run --rm  -e XDG_CACHE_HOME=/workspace/.cache tooling
+TOOLING_UV := $(DOCKER_COMPOSE_TOOLS) run --rm -e XDG_CACHE_HOME=/workspace/.cache tooling
 
 lock-deps:
 	@echo "🔒 Generating requirements.lock files with uv..."
@@ -83,18 +84,10 @@ build-preparer:
 # === Quality ===
 
 lint:
-	@$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev down tooling --remove-orphans 2>/dev/null || true
-	@$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev run --rm tooling ruff check .; \
-	EXIT_CODE=$$?; \
-	$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev down --remove-orphans; \
-	exit $$EXIT_CODE
+	@$(DOCKER_COMPOSE_TOOLS) run --rm tooling ruff check .
 
 format:
-	@$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev down tooling --remove-orphans 2>/dev/null || true
-	@$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev run --rm tooling sh -c "ruff format $(if $(FILES),$(FILES),.) && ruff check --fix $(if $(FILES),$(FILES),.)"; \
-	EXIT_CODE=$$?; \
-	$(COMPOSE_ENV) $(DOCKER_COMPOSE) --profile dev down --remove-orphans; \
-	exit $$EXIT_CODE
+	@$(DOCKER_COMPOSE_TOOLS) run --rm tooling sh -c "ruff format $(if $(FILES),$(FILES),.) && ruff check --fix $(if $(FILES),$(FILES),.)"
 
 # === Git Hooks ===
 
