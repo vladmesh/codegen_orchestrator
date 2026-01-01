@@ -20,6 +20,8 @@ jobs:
       langgraph: ${{ steps.filter.outputs.langgraph }}
       scheduler: ${{ steps.filter.outputs.scheduler }}
       telegram: ${{ steps.filter.outputs.telegram }}
+      workers-spawner: ${{ steps.filter.outputs.workers-spawner }}
+      cli: ${{ steps.filter.outputs.cli }}
       shared: ${{ steps.filter.outputs.shared }}
     steps:
       - name: Checkout code
@@ -38,6 +40,10 @@ jobs:
               - 'services/scheduler/**'
             telegram:
               - 'services/telegram_bot/**'
+            workers-spawner:
+              - 'services/workers-spawner/**'
+            cli:
+              - 'shared/cli/**'
             shared:
               - 'shared/**'
 
@@ -81,6 +87,10 @@ jobs:
             changed: needs.detect-changes.outputs.scheduler
           - service: telegram
             changed: needs.detect-changes.outputs.telegram
+          - service: workers-spawner
+            changed: needs.detect-changes.outputs.workers-spawner
+          - service: orchestrator-cli
+            changed: needs.detect-changes.outputs.cli
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

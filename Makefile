@@ -58,6 +58,8 @@ lock-deps:
 	$(TOOLING_UV) uv pip compile services/api/pyproject.toml -o services/api/requirements.lock
 	$(TOOLING_UV) uv pip compile services/scheduler/pyproject.toml -o services/scheduler/requirements.lock
 	$(TOOLING_UV) uv pip compile services/telegram_bot/pyproject.toml -o services/telegram_bot/requirements.lock
+	$(TOOLING_UV) uv pip compile services/workers-spawner/pyproject.toml -o services/workers-spawner/requirements.lock
+	$(TOOLING_UV) uv pip compile services/infrastructure-worker/pyproject.toml -o services/infrastructure-worker/requirements.lock
 	@echo "✅ All lock files updated!"
 
 # === Docker ===
