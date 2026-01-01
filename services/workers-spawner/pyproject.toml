@@ -5,7 +5,7 @@ description = "Unified service for managing CLI agents in Docker containers"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
-    "docker>=7.0",
+    "pydantic-settings>=2.0",
     "redis>=5.0",
     "structlog>=24.0",
 ]

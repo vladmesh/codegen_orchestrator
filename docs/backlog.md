@@ -363,6 +363,25 @@ Race conditions в scheduler tasks при multiple instances.
 
 ## Future Improvements
 
+### Docker Python SDK Migration
+
+**Priority:** LOW  
+**Status:** TODO  
+**Location:** `services/workers-spawner/`
+
+**Текущее состояние:** Workers-spawner использует subprocess (`docker run`, `docker exec`, etc.) для управления контейнерами.
+
+**Зачем мигрировать на Python Docker SDK:**
+1. **Real-time log streaming** — `container.logs(stream=True)` вместо polling
+2. **Docker events subscription** — слушать `container.start`, `container.die` для instant status updates
+3. **Типизированные объекты** — `Container`, `Image` вместо json parsing
+4. **Встроенная обработка ошибок** — `docker.errors.NotFound`, `docker.errors.APIError`
+5. **Проще работа с volumes/networks** — SDK абстрагирует сложные mount конфиги
+
+**Не нужно для MVP:** Subprocess достаточно для run → exec → rm цикла.
+
+---
+
 ### DevOps: Add Rollback Capability
 
 **Priority:** LOW

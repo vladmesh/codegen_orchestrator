@@ -40,8 +40,8 @@ ENV PATH="/home/node/.local/bin:${PATH}"
 # Switch to non-root user (node user already exists in node image)
 USER node
 
-# Copy CLI code
-COPY --chown=node:node cli /home/node/cli
+# Copy CLI code from shared location
+COPY --chown=node:node shared/cli /home/node/cli
 
 # Install CLI
 RUN pip3 install --no-cache-dir --break-system-packages /home/node/cli

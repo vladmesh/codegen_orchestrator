@@ -148,10 +148,10 @@ services:
     networks:
       - internal
 
-  worker-spawner:
+  workers-spawner:
     build:
       context: .
-      dockerfile: services/worker-spawner/Dockerfile
+      dockerfile: services/workers-spawner/Dockerfile
     env_file:
       - .env
     environment:
@@ -159,32 +159,20 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./services/worker-spawner/src:/app/src:delegated
+      - ./services/workers-spawner/src:/app/src:delegated
       - ./shared:/app/shared:delegated
     depends_on:
       - redis
     networks:
       - internal
 
-  agent-spawner:
+  # Universal base image for all CLI agents (build-only target)
+  universal-worker:
     build:
       context: .
-      dockerfile: services/agent-spawner/Dockerfile
-    env_file:
-      - .env
-    environment:
-      REDIS_URL: redis://redis:6379
-      PYTHONPYCACHEPREFIX: /tmp/pycache
-      HOST_CLAUDE_DIR: ${HOME}/.claude # Host path for volume mounting in child containers
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./services/agent-spawner/src:/app/src:delegated
-      - ./shared:/app/shared:delegated
-      - ~/.claude:/home/node/.claude # Dev: share Claude session (read-write for session persistence)
-    depends_on:
-      - redis
-    networks:
-      - internal
+      dockerfile: services/universal-worker/Dockerfile
+    image: universal-worker:latest
+    profiles: [ "build" ] # Never runs as service, just builds the image
 
   scheduler:
     build:

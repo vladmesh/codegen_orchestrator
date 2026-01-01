@@ -9,7 +9,7 @@
 **Цель:** Подготовить универсальный инструмент для агентов с поддержкой прав доступа.
 
 **Реализовано:**
-- CLI находится в `services/agent-worker/cli/`
+- CLI перемещён в `shared/cli/`
 - `PermissionManager` читает `ORCHESTRATOR_ALLOWED_TOOLS` env var
 - Декоратор `@require_permission("tool_name")` на всех командах
 - Все команды поддерживают `--json` output
@@ -33,52 +33,35 @@
 
 ---
 
-## Phase 3: Base Image
+## Phase 3: Base Image ✅
 
-**Статус:** Не начато
+**Статус:** Завершено (2026-01-01)
 
 **Цель:** Универсальный Docker-образ для всех агентов.
 
-1. **Create `services/universal-worker/`:**
-    - `Dockerfile` — Ubuntu + Python + Node.js + базовые утилиты.
-    - Pre-install `orchestrator-cli`.
-
-2. **Entrypoint:**
-    - Принимает install_commands и agent_command через ENV.
-    - Выполняет установку при старте.
-    - Запускает shell в интерактивном режиме.
-
-3. **Build & Push:**
-    - Добавить в `docker-compose.yml` для локального использования.
-    - Image tag: `universal-worker:latest`.
+**Реализовано:**
+- `services/universal-worker/Dockerfile` — Ubuntu 24.04 + Python 3.12 + Node.js
+- Pre-installed `orchestrator-cli` из `shared/cli/`
+- `entrypoint.sh` — динамическая настройка через ENV
+- Build target в docker-compose: `docker compose build universal-worker`
+- Image tag: `universal-worker:latest`
 
 ---
 
-## Phase 4: Workers-Spawner Service
+## Phase 4: Workers-Spawner Service ✅
 
-**Статус:** Не начато (структура сервиса создана в Phase 2)
+**Статус:** Завершено (2026-01-01)
 
-**Цель:** Создать Redis API для управления контейнерами.
+**Цель:** Redis API для управления контейнерами.
 
-1. **Redis API Handlers:**
-    - `cli-agent.create` → собрать container config через factories → docker run
-    - `cli-agent.send_command` → docker exec / stdin
-    - `cli-agent.send_file` → docker exec echo/cat или cp
-    - `cli-agent.status` → docker inspect
-    - `cli-agent.logs` → docker logs
-    - `cli-agent.delete` → docker rm
-
-2. **Container Lifecycle:**
-    - `docker pause` / `unpause` для idle containers.
-    - TTL tracking и auto-cleanup.
-    - Health checks.
-    - Валидация входящего JSON конфига (JSON Schema).
-
-3. **Events:**
-    - PubSub publish:
-        - `agents:{id}:response` — от orchestrator respond
-        - `agents:{id}:command_exit` — завершение команды
-        - `agents:{id}:status` — изменение state
+**Реализовано:**
+- `container_service.py` — Docker subprocess management (create, exec, logs, delete, pause/unpause)
+- `redis_handlers.py` — Command routing (create, send_command, send_file, status, logs, delete)
+- `lifecycle_manager.py` — TTL tracking, auto-pause idle containers
+- `events.py` — PubSub publishing (response, command_exit, status)
+- `main.py` — Redis stream consumer
+- Dockerfile и docker-compose.yml настроены
+- 23 unit теста (`make test-workers-spawner`)
 
 ---
 
@@ -116,8 +99,8 @@
 |-------|--------|--------|
 | 1. Orchestrator CLI | 0.5 day | ✅ Done |
 | 2. Factories | 1 day | ✅ Done |
-| 3. Base Image | 0.5 day | |
-| 4. Spawner Service | 2 days | |
+| 3. Base Image | 0.5 day | ✅ Done |
+| 4. Spawner Service | 2 days | ✅ Done |
 | 5. Migration | 1-2 days | |
 | 6. Cleanup | 0.5 day | |
 | **Total** | **~1 week** | |
