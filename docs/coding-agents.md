@@ -21,28 +21,19 @@ droid exec --prompt-file TASK.md --skip-permissions-unsafe
 
 ### Интеграция в проект
 
-Developer node в Engineering Subgraph использует Droid через `coding-worker` контейнер:
+Developer node в Engineering Subgraph использует coding agents через `workers-spawner` сервис:
 
-1. Worker Spawner создаёт контейнер `coding-worker:latest`
+1. Workers-spawner создаёт контейнер из `universal-worker:latest`
 2. Контейнер клонирует репозиторий
 3. Записывает `TASK.md` и `AGENTS.md` с инструкциями
-4. Запускает `droid exec --skip-permissions-unsafe`
+4. Запускает coding agent (Droid или Claude Code)
 5. Коммитит и пушит изменения
-
-```python
-# services/coding-worker/scripts/execute_task.sh
-droid exec --prompt-file TASK.md --skip-permissions-unsafe
-git add -A && git commit -m "feat: implement task" && git push
-```
 
 ---
 
-## 🚧 Планируется: Claude Code
+## Claude Code
 
-> [!NOTE]
-> Следующий раздел описывает **запланированную**, но ещё не реализованную функциональность.
-
-Claude Code — CLI-инструмент от Anthropic для agentic coding. Рассматривается как альтернатива/дополнение к Droid.
+Claude Code — CLI-инструмент от Anthropic для agentic coding. Реализован наравне с Droid.
 
 ```bash
 # Установка

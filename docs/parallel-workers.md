@@ -10,29 +10,31 @@
 │          (Developer node в Engineering)             │
 └─────────────────────────────────────────────────────┘
                          │
-                  Redis pub/sub
+                  Redis streams
+          (cli-agent:commands / cli-agent:responses)
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│              Worker Spawner Service                 │
-│         (слушает worker:spawn channel)              │
+│              workers-spawner Service                │
+│    (слушает cli-agent:commands Redis stream)        │
 └─────────────────────────────────────────────────────┘
                          │
                   Docker API
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│              Coding Worker Container                │
+│        universal-worker Container (ephemeral)       │
+│  - Базовый образ: Ubuntu 24.04 + Python + Node.js  │
+│  - Устанавливает нужный agent (Droid / Claude)     │
 │  - git clone репозитория                           │
-│  - Записывает TASK.md + AGENTS.md                  │
-│  - droid exec --skip-permissions-unsafe            │
+│  - Выполняет coding task                           │
 │  - git commit + git push                           │
 └─────────────────────────────────────────────────────┘
                          │
-                  Redis pub/sub
+                  Redis streams
                          │
                          ▼
-              worker:result:{request_id}
+              cli-agent:responses:{request_id}
 ```
 
 ## Docker-in-Docker с Sysbox
@@ -45,54 +47,29 @@ wget https://downloads.nestybox.com/sysbox/releases/v0.6.4/sysbox-ce_0.6.4-0.lin
 sudo dpkg -i sysbox-ce_0.6.4-0.linux_amd64.deb
 ```
 
-**Запуск worker контейнера:**
+**Запуск worker контейнера с Docker capability:**
 ```bash
 docker run --runtime=sysbox-runc -it --rm \
-    -e GITHUB_TOKEN=... \
     -e FACTORY_API_KEY=... \
-    coding-worker:latest
+    universal-worker:latest
 ```
 
 **Внутри контейнера доступно:**
-- Полноценный Docker daemon
+- Полноценный Docker daemon (при Docker capability)
 - `git clone`, `git push`
 - `docker compose up -d`
-- Factory.ai Droid CLI
+- Factory.ai Droid CLI или Claude Code CLI
 
-## Coding Worker Dockerfile (актуальный)
+## Universal Worker Dockerfile
 
-```dockerfile
-FROM ubuntu:24.04
+Актуальный Dockerfile находится в `services/universal-worker/Dockerfile`.
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl python3 python3-pip jq ca-certificates gnupg make
-
-# Docker + Docker Compose
-RUN curl -fsSL https://get.docker.com | sh
-RUN mkdir -p /usr/local/lib/docker/cli-plugins \
-    && curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
-       -o /usr/local/lib/docker/cli-plugins/docker-compose \
-    && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-
-# GitHub CLI
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    | dd of=/usr/share/keyrings/githubcli.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
-    > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update && apt-get install -y gh
-
-# Factory.ai Droid CLI
-RUN curl -fsSL https://app.factory.ai/cli | sh
-ENV PATH="/root/.local/bin:$PATH"
-
-COPY scripts/execute_task.sh /scripts/execute_task.sh
-RUN chmod +x /scripts/execute_task.sh
-
-WORKDIR /workspace
-CMD ["/scripts/execute_task.sh"]
-```
+Основные характеристики:
+- Ubuntu 24.04 + Python 3.12 + Node.js
+- Non-root user `worker` (uid 1000)
+- Pre-installed `orchestrator-cli`
+- Динамическая настройка через ENV (`INSTALL_COMMANDS`, `AGENT_COMMAND`)
+- Daemon mode для persistent containers
 
 ## Ограничения
 

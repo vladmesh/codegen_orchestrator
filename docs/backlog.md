@@ -8,7 +8,7 @@
 
 **Priority:** LOW  
 **Status:** TODO  
-**Location:** `services/agent-worker/cli/src/orchestrator/commands/engineering.py:92-94`, `deploy.py:92-94`
+**Location:** `shared/cli/src/orchestrator/commands/engineering.py:92-94`, `deploy.py:92-94`
 
 **Проблема:** Команды `orchestrator engineering status <task_id>` и `orchestrator deploy status <task_id>` поддерживают флаг `--follow`, но он не реализован — выводится заглушка "Note: --follow mode not yet implemented".
 

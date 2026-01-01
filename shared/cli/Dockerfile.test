@@ -8,7 +8,7 @@ WORKDIR /app
 FROM base AS test-deps
 
 # Copy only dependency files first (for caching)
-COPY services/agent-worker/cli/pyproject.toml ./
+COPY shared/cli/pyproject.toml ./
 
 # Install runtime + test dependencies
 RUN pip install --no-cache-dir . && \
@@ -18,9 +18,9 @@ RUN pip install --no-cache-dir . && \
 FROM test-deps AS test
 
 # Copy source code
-COPY services/agent-worker/cli/src ./src
-COPY services/agent-worker/cli/tests ./tests
-COPY services/agent-worker/cli/pyproject.toml ./
+COPY shared/cli/src ./src
+COPY shared/cli/tests ./tests
+COPY shared/cli/pyproject.toml ./
 
 # Install package in editable mode so imports work  
 RUN pip install --no-cache-dir -e .

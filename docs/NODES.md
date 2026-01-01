@@ -130,7 +130,7 @@
 - После Preparer
 - При rework от Tester (до 3 итераций)
 
-**Реализация**: Спавнит coding-worker контейнер через Worker Spawner.
+**Реализация**: Спавнит контейнер через `workers-spawner` сервис (Factory Droid или Claude Code).
 
 **Валидация**: Проверяет наличие commit SHA в результате.
 
