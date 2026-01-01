@@ -2,86 +2,132 @@
 
 План реализации унифицированного сервиса управления агентами.
 
-## Phase 1: Orchestrator CLI Refactoring
+## Phase 1: Orchestrator CLI Refactoring ✅
+
+**Статус:** Завершено (2026-01-01)
+
 **Цель:** Подготовить универсальный инструмент для агентов с поддержкой прав доступа.
 
-1.  **Extract Service:**
-    *   Move `services/agent-worker/cli` -> `services/orchestrator-cli`.
-    *   Update `pyproject.toml` and structure.
+**Реализовано:**
+- CLI находится в `services/agent-worker/cli/`
+- `PermissionManager` читает `ORCHESTRATOR_ALLOWED_TOOLS` env var
+- Декоратор `@require_permission("tool_name")` на всех командах
+- Все команды поддерживают `--json` output
+- 22 unit теста (`make test-orchestrator-cli`)
 
-2.  **Permission System:**
-    *   Implement `PermissionManager` in CLI.
-    *   Read `ORCHESTRATOR_ALLOWED_TOOLS` env var.
-    *   Decorate commands to check permissions before execution.
+---
 
-3.  **Refine Commands:**
-    *   Ensure all necessary tools (Project, Deploy, Respond) are implemented.
-    *   Add `--json` output support for all commands (critical for robotic agents).
+## Phase 2: Agent & Capability Factories ✅
 
-## Phase 2: Workers-Spawner Service
-**Цель:** Создать сервис-оркестратор контейнеров.
+**Статус:** Завершено (2026-01-01)
 
-1.  **Service Skeleton:**
-    *   Create `services/workers-spawner` structure.
-    *   Implement Redis Stream listener (`workers:spawn`).
+**Цель:** Создать фабрики для преобразования декларативных конфигов в действия.
 
-2.  **Configuration & Factory:**
-    *   Implement `WorkerConfig` usage (JSON loading).
-    *   Implement `SkillGenerator`:
-        *   Takes list of `allowed_tools`.
-        *   Reads markdown templates (`deploy.md`, `project.md`...).
-        *   Generates `CLAUDE.md`.
+**Реализовано:**
+- Сервис `services/workers-spawner/`
+- Models: `WorkerConfig`, `AgentType`, `CapabilityType`
+- Agent Factories: `ClaudeCodeAgent`, `FactoryDroidAgent` (stub)
+- Capability Factories: `GitCapability`, `CurlCapability`, `NodeCapability`, `PythonCapability`
+- `ConfigParser` для преобразования конфига в Docker команды
+- 23 unit теста (`make test-workers-spawner`)
 
-3.  **Docker Integration:**
-    *   Implement `ContainerManager`.
-    *   Logic for `docker run`:
-        *   Env vars injection (`ORCHESTRATOR_ALLOWED_TOOLS`).
-        *   Volume mounting for skills/config.
-        *   Bootstrap command generation.
+---
 
-4.  **Discovery:**
-    *   Define default presets (`presets.json` instead of Python code).
-    *   Supported presets: `po_claude`, `developer_droid`, `developer_claude`.
+## Phase 3: Base Image
 
-## Phase 3: Universal Worker Image
-**Цель:** Единый Docker-образ.
+**Статус:** Не начато
 
-1.  **Dockerfile:**
-    *   Base: Ubuntu + Python + Node.
-    *   Pre-install `orchestrator-cli`.
-    *   Include `bootstrap.sh`.
+**Цель:** Универсальный Docker-образ для всех агентов.
 
-2.  **Bootstrap Script:**
-    *   Logic to install extra packages at runtime.
-    *   Logic to setup Agent-specific configs (Claude vs Droid).
+1. **Create `services/universal-worker/`:**
+    - `Dockerfile` — Ubuntu + Python + Node.js + базовые утилиты.
+    - Pre-install `orchestrator-cli`.
 
-## Phase 4: Migration
+2. **Entrypoint:**
+    - Принимает install_commands и agent_command через ENV.
+    - Выполняет установку при старте.
+    - Запускает shell в интерактивном режиме.
 
-1.  **Migrate Developer Droid:**
-    *   Switch `langgraph` node "Developer" to publish to `workers:spawn`.
-    *   Verify Droid works via new spawner.
+3. **Build & Push:**
+    - Добавить в `docker-compose.yml` для локального использования.
+    - Image tag: `universal-worker:latest`.
 
-2.  **Migrate Product Owner:**
-    *   Switch Telegram Bot to publish to `workers:spawn`.
-    *   Verify PO works via new spawner.
+---
 
-3.  **Enable Developer Claude:**
-    *   Add `developer_claude` preset.
-    *   Test engineering task with Claude Agent.
+## Phase 4: Workers-Spawner Service
 
-## Phase 5: Cleanup
+**Статус:** Не начато (структура сервиса создана в Phase 2)
 
-1.  Remove `services/agent-spawner`.
-2.  Remove `services/worker-spawner`.
-3.  Remove legacy `Tool` classes in LangGraph (if any remain).
+**Цель:** Создать Redis API для управления контейнерами.
+
+1. **Redis API Handlers:**
+    - `cli-agent.create` → собрать container config через factories → docker run
+    - `cli-agent.send_command` → docker exec / stdin
+    - `cli-agent.send_file` → docker exec echo/cat или cp
+    - `cli-agent.status` → docker inspect
+    - `cli-agent.logs` → docker logs
+    - `cli-agent.delete` → docker rm
+
+2. **Container Lifecycle:**
+    - `docker pause` / `unpause` для idle containers.
+    - TTL tracking и auto-cleanup.
+    - Health checks.
+    - Валидация входящего JSON конфига (JSON Schema).
+
+3. **Events:**
+    - PubSub publish:
+        - `agents:{id}:response` — от orchestrator respond
+        - `agents:{id}:command_exit` — завершение команды
+        - `agents:{id}:status` — изменение state
+
+---
+
+## Phase 5: Migration
+
+**Статус:** Не начато
+
+**Цель:** Переключить существующие системы на новый spawner.
+
+1. **Migrate Product Owner:**
+    - Telegram Bot → `cli-agent.create` с JSON конфигом.
+    - Входящие сообщения → `cli-agent.send_command`.
+    - Подписка на `agents:{id}:response` для ответов.
+
+2. **Migrate Developer Node:**
+    - LangGraph Developer node → `cli-agent.create`.
+    - Контекст проекта → `cli-agent.send_file` (AGENTS.md, TASK.md).
+    - Запуск задачи → `cli-agent.send_command`.
+
+---
+
+## Phase 6: Cleanup
+
+**Статус:** Не начато
+
+1. Remove `services/agent-spawner`.
+2. Remove `services/worker-spawner`.
+3. Update documentation.
+
+---
 
 ## Timeline Estimate
 
-| Phase | Effort |
-|-------|--------|
-| 1. Orchestrator CLI | 1 day |
-| 2. Spawner Service | 2 days |
-| 3. Universal Image | 0.5 day |
-| 4. Migration | 1-2 days |
-| 5. Cleanup | 0.5 day |
-| **Total** | **~1 week** |
+| Phase | Effort | Status |
+|-------|--------|--------|
+| 1. Orchestrator CLI | 0.5 day | ✅ Done |
+| 2. Factories | 1 day | ✅ Done |
+| 3. Base Image | 0.5 day | |
+| 4. Spawner Service | 2 days | |
+| 5. Migration | 1-2 days | |
+| 6. Cleanup | 0.5 day | |
+| **Total** | **~1 week** | |
+
+---
+
+## Open Questions
+
+1. **Image caching** — На MVP один base image. Потом можно кэшировать pre-built layers для популярных комбинаций.
+
+2. **New agents/capabilities** — Добавление нового агента = новый класс-фабрика + регистрация в enum. Минимально инвазивно.
+
+3. **Claude skills** — Генерация `~/.claude/skills/` для Claude — специфика ClaudeCodeAgent фабрики.

@@ -10,185 +10,270 @@
 - Админу/PO сложно создать экспериментального воркера без правки кода сервиса.
 
 **Решение:**
-- **Легковесный Spawner:** Занимается только жизненным циклом контейнеров (Spawn, TTL, Kill).
+- **Легковесный Spawner:** Управляет жизненным циклом контейнеров (Create, Pause, Resume, Delete).
 - **Умный CLI:** Вся логика инструментов внутри `orchestrator-cli` в контейнере.
-- **Декларативность:** Конфиг воркера — это JSON. Права — это список разрешенных команд.
-- **Динамические навыки:** Spawner генерирует документацию (`CLAUDE.md`, `/skills`) под конкретного агента, фильтруя лишнее.
+- **Декларативность:** Конфиг отвечает на вопрос "ЧТО нужно", а не "КАК это сделать".
+- **Интерактивность:** Контейнеры persistent, общение через stdin.
 
 ## Архитектура
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Workers Spawner                             │
-│                                                                  │
-│  ┌──────────────────────┐   ┌──────────────────────────────┐    │
-│  │ Redis Stream Listener│   │      Config Registry         │    │
-│  │ (workers:spawn)      │◄──┤ (JSON presets / DB)          │    │
-│  └──────────┬───────────┘   └──────────────────────────────┘    │
-│             │                                                    │
-│             ▼                                                    │
-│  ┌──────────────────────┐                                        │
-│  │   Worker Factory     │                                        │
-│  │ 1. Load attributes   │                                        │
-│  │ 2. Generate skills   │                                        │
-│  │ 3. Docker Run        │                                        │
-│  └──────────┬───────────┘                                        │
-│             │                                                    │
-└─────────────┼────────────────────────────────────────────────────┘
-              │ Manage Lifecycle (TTL)
-              ▼
-┌─────────────────────────────────────────────────┐
-│ Worker Container                                │
-│                                                 │
-│  ┌───────────────┐  Read   ┌─────────────────┐  │
-│  │  CLI Agent    │ ──────► │ ~/.claude/      │  │
-│  │ (Claude/Droid)│         │   skills/       │  │
-│  └──────┬────────┘         │   CLAUDE.md     │  │
-│         │ Exec             └─────────────────┘  │
-│         ▼                                       │
-│  ┌───────────────┐ Enforce ┌─────────────────┐  │
-│  │OrchestratorCLI│ ──────► │ Env Vars:       │  │
-│  │(tools logic)  │         │ ALLOWED_TOOLS=..│  │
-│  └──────┬────────┘         └─────────────────┘  │
-│         │ API / Redis                           │
-│         ▼                                       │
-│    Orchestrator Backend                         │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Workers Spawner                               │
+│                                                                      │
+│  ┌────────────────────┐     ┌─────────────────────────────────────┐  │
+│  │ (cli-agent.*)      │                                             │
+│  └─────────┬──────────┘                                             │
+│            │                                                         │
+│            ▼                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐ │
+│  │                    Container Manager                             │ │
+│  │  • create(config) → agent_id                                     │ │
+│  │  • send_command(agent_id, stdin_input)                           │ │
+│  │  • send_file(agent_id, path, content)                            │ │
+│  │  • status(agent_id) → state                                      │ │
+│  │  • logs(agent_id) → output                                       │ │
+│  │  • delete(agent_id)                                              │ │
+│  └─────────┬───────────────────────────────────────────────────────┘ │
+│            │                                                         │
+│            ▼                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐ │
+│  │                 Agent/Capability Factories                       │ │
+│  │  • AgentFactory: claude-code, factory-droid, codex, gemini-cli   │ │
+│  │  • CapabilityFactory: git, curl, node, python, etc.              │ │
+│  │  (Знают КАК установить и настроить каждый компонент)             │ │
+│  └─────────┬───────────────────────────────────────────────────────┘ │
+│            │ Docker API                                              │
+└────────────┼─────────────────────────────────────────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Agent Container                                 │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Worker Configuration Model
+## Spawner API
 
-Конфигурация — это JSON-схема. Нет жестких Python Enums, блокирующих рантайм-создание.
+Взаимодействие через Redis streams.
 
-### Schema
+### Commands (Request → Response)
 
-```json
-{
-  "id": "po_claude_v1",
-  "name": "Product Owner (Claude)",
-  
-  // Base environment
-  "image": "universal-worker-base:latest",
-  "system_packages": [
-    "git", 
-    "curl", 
-    "npm", 
-    "python3-pip"
-  ],
-  "bootstrap_commands": [
-    "npm install -g @anthropic-ai/claude-code",
-    "pip install orchestrator-cli" 
-  ],
+| Command | Description |
+|---------|-------------|
+| `cli-agent.create` | Создать новый контейнер по конфигу |
+| `cli-agent.send_command` | Отправить stdin в контейнер |
+| `cli-agent.send_file` | Записать файл в контейнер |
+| `cli-agent.status` | Получить статус контейнера |
+| `cli-agent.logs` | Получить логи контейнера |
+| `cli-agent.delete` | Удалить контейнер |
 
-  // Agent Runtime
-  "agent": {
-    "type": "claude-code", // affects CLAUDE.md generation style
-    "command": ["claude", "--dangerously-skip-permissions", "-p", "{prompt}"]
-  },
+### Request Payloads
 
-  // Security & Tools
-  "allowed_tools": [
-    "project",      // Allow 'orchestrator project *'
-    "deploy",       // Allow 'orchestrator deploy *'
-    "respond"       // Allow 'orchestrator respond'
-  ],
-  
-  // Access Control
-  "network": "codegen_orchestrator_internal",
-  "has_internet": true,
-  
-  // Resources
-  "limits": {
-    "cpu": 2.0,
-    "memory": "4g",
-    "timeout_sec": 600,
-    "ttl_sec": 7200
-  }
-}
-```
-
-### Принцип работы Allowed Tools
-
-Поле `allowed_tools` управляет двумя вещами:
-
-1.  **Генерация документации (Context Management):**
-    Spawner копирует в контейнер только соответствующие Markdown-файлы.
-    *   `"deploy"` -> копирует `skills/deploy.md`
-    *   `"admin"` -> копирует `skills/admin.md`
-    *   `CLAUDE.md` генерируется со списком только доступных команд.
-
-2.  **Enforcement (Security):**
-    Spawner устанавливает ENV переменную `ORCHESTRATOR_ALLOWED_TOOLS=project,deploy`.
-    `orchestrator-cli` при запуске проверяет этот список. Попытка выполнить `orchestrator admin nuke` упадет с ошибкой "Permission denied", даже если агент "угадал" команду.
-
-## Orchestrator CLI (`services/orchestrator-cli`)
-
-Единая точка входа для всех инструментов. Переезжает из `agent-worker` в отдельный пакет.
-
-### Структура команд
-*   `orchestrator project [list|get|create]`
-*   `orchestrator deploy [trigger|status|logs]`
-*   `orchestrator engineering [trigger|status]`
-*   `orchestrator infra [allocate|list]`
-*   `orchestrator respond "[message]"`
-
-### Обязанности
-1.  Аутентификация (через `ORCHESTRATOR_USER_ID`, `ORCHESTRATOR_API_KEY`).
-2.  Авторизация команд (через `ORCHESTRATOR_ALLOWED_TOOLS`).
-3.  Форматирование вывода (JSON/Human readable).
-
-## Container Base Image
-
-Используем один универсальный образ, который донастраивается при старте (или пре-билдится для скорости).
-
-```dockerfile
-# services/universal-worker/Dockerfile
-FROM ubuntu:24.04
-
-# Common basics
-RUN apt-get update && apt-get install -y \
-    python3 python3-pip python3-venv \
-    nodejs npm \
-    curl git jq \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Orchestrator CLI (pre-installed for speed)
-COPY services/orchestrator-cli /opt/orchestrator-cli
-RUN pip3 install /opt/orchestrator-cli
-
-# Entrypoint
-COPY bootstrap.sh /bootstrap.sh
-ENTRYPOINT ["/bootstrap.sh"]
-```
-
-**bootstrap.sh:**
-1.  Читает `SYSTEM_PACKAGES` env var -> `apt-get install`
-2.  Читает `BOOTSTRAP_COMMANDS` env var -> `eval`
-3.  Генерирует `~/.claude/config.json` и файлы навыков.
-4.  Запускает агента.
-
-## Redis Protocol
-
-Стандартный протокол для общения с внешним миром.
-
-| Channel | Type | Purpose |
-|---------|------|---------|
-| `workers:spawn` | PubSub/Stream | Incoming spawn requests |
-| `workers:result` | Stream | Task completion results |
-| `workers:events`| Stream | Live updates from agent |
-
-### Spawn Request Payload
+**cli-agent.create:**
 ```json
 {
   "request_id": "req_123",
-  "worker_config_id": "po_claude_v1", 
-  // OR inline config for extreme flexibility
-  "worker_config_override": { ... }, 
-  
-  "task": {
+  "config": {
+    "name": "Developer (Claude Code)",
+    "agent": "claude-code",
+    "capabilities": ["git", "curl"],
+    "allowed_tools": ["project", "engineering"],
+    "env_vars": {
+        "OPENAI_API_KEY": "sk-..."
+    }
+  },
+  "context": {
     "user_id": "user_1",
-    "prompt": "Check project status",
-    "session_id": "sess_abc"
+    "project_id": "proj_abc"
   }
 }
 ```
+
+**cli-agent.send_command:**
+```json
+{
+  "request_id": "req_124",
+  "agent_id": "agent_xyz",
+  "command": "Read TASK.md and implement it"
+}
+```
+
+**cli-agent.send_file:**
+```json
+{
+  "request_id": "req_125",
+  "agent_id": "agent_xyz",
+  "path": "/workspace/TASK.md",
+  "content": "# Task\n\nImplement feature X..."
+}
+```
+
+### Events (PubSub)
+
+| Channel | Event | Description |
+|---------|-------|-------------|
+| `agents:{agent_id}:response` | Agent output | `orchestrator respond` вызовы |
+| `agents:{agent_id}:command_exit` | Command finished | Exit code команды |
+| `agents:{agent_id}:status` | State change | idle → running → idle |
+
+## Container Lifecycle
+
+```
+create ──► [running: init] ──► [idle: paused] ◄──┐
+                                    │            │
+                          send_command           │
+                                    │            │
+                                    ▼            │
+                              [running: busy] ───┘
+                                    │      command_exit
+                                    │
+                              TTL expired / delete
+                                    │
+                                    ▼
+                                 [deleted]
+```
+
+**Паузинг контейнеров:**
+- Используем `docker pause` / `docker unpause` для экономии ресурсов.
+- Контейнер в состоянии `paused` не потребляет CPU, но сохраняет state.
+- **Внимание:** При удалении контейнера (`delete` или TTL) все локальные данные теряются. Агент должен вывести важные данные (через `respond` или артефакты) перед завершением. Контейнеры эфемерильны.
+
+## Worker Configuration
+
+Конфиг отвечает на вопрос **"ЧТО нужно"**, не "как это сделать".
+
+### Пример конфига
+
+```json
+{
+  "id": "developer_claude",
+  "name": "Developer (Claude Code)",
+  
+  "agent": "claude-code",
+  
+  "capabilities": ["git", "curl"],
+  
+  "allowed_tools": ["project", "engineering", "respond"],
+  
+  "has_internet": true,
+  
+  "ttl_hours": 2,
+  "timeout_minutes": 10
+}
+```
+
+### Поля
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | ✓ | Уникальный идентификатор конфига |
+| `name` | ✓ | Человекочитаемое имя |
+| `agent` | ✓ | Тип агента (enum) |
+| `capabilities` | | Дополнительные возможности (enum list) |
+| `allowed_tools` | ✓ | Разрешенные команды orchestrator-cli |
+| `has_internet` | | Доступ к интернету (default: true для MVP) |
+| `ttl_hours` | | Время жизни контейнера (default: 2) |
+| `timeout_minutes` | | Таймаут на одну команду (default: 10) |
+
+### Agent Types (enum)
+
+Сервис **знает как** настроить каждый тип агента:
+
+| Agent | Description |
+|-------|-------------|
+| `claude-code` | Anthropic Claude Code CLI |
+| `factory-droid` | Factory.ai Droid |
+| `codex` | OpenAI Codex CLI |
+| `gemini-cli` | Google Gemini CLI |
+
+### Capabilities (enum)
+
+Сервис **знает как** установить каждую capability:
+
+| Capability | Description |
+|------------|-------------|
+| `git` | Version control |
+| `curl` | HTTP requests |
+| `node` | Node.js runtime |
+| `python` | Python 3 runtime |
+| `docker` | Docker CLI (for special agents) |
+
+### Allowed Tools
+
+Список разрешенных команд `orchestrator-cli`:
+
+| Tool | Commands |
+|------|----------|
+| `project` | `orchestrator project list/get/create/update` |
+| `deploy` | `orchestrator deploy trigger/status/logs` |
+| `engineering` | `orchestrator engineering trigger/status` |
+| `infra` | `orchestrator infra allocate/list` |
+| `respond` | `orchestrator respond "message"` |
+| `admin` | `orchestrator admin ...` (dangerous) |
+
+## Internal: Factories
+
+Spawner использует фабрики для преобразования декларативного конфига в конкретные действия.
+
+```python
+class AgentFactory(ABC):
+    @abstractmethod
+    def get_install_commands(self) -> list[str]: ...
+    
+    @abstractmethod
+    def get_agent_command(self) -> str: ...
+
+class ClaudeCodeAgent(AgentFactory):
+    def get_install_commands(self):
+        return [
+            "npm install -g @anthropic-ai/claude-code"
+        ]
+    
+    def get_agent_command(self):
+        return "claude --dangerously-skip-permissions"
+
+class CapabilityFactory(ABC):
+    @abstractmethod
+    def get_packages(self) -> list[str]: ...
+
+class GitCapability(CapabilityFactory):
+    def get_packages(self):
+        return ["git"]
+```
+
+## Status Response
+
+```json
+{
+  "agent_id": "agent_xyz",
+  "state": "idle",
+  "created_at": "2026-01-01T16:00:00Z",
+  "last_activity": "2026-01-01T16:05:00Z",
+  "ttl_remaining_sec": 3600,
+  "metrics": {
+      "memory_mb": 128
+  }
+}
+```
+
+**States:**
+- `initializing` — контейнер запускается
+- `idle` — ready, ожидает команду (paused)
+- `running` — выполняет команду
+- `error` — initialization failed или crash
+- `deleted` — контейнер удалён
+
+**Client-Side Presets:**
+Пресеты (например `developer_claude`, `po_claude`) хранятся на стороне клиента (или вызывающего сервиса), а не в Spawner. Spawner получает только итоговый JSON.
+
+```json
+/* Пример того, что отправляет клиент */
+{
+    "name": "Product Owner",
+    "agent": "claude-code",
+    "capabilities": ["git"],
+    // ...
+}
+```
+
+**Переключение Developer агента — одна строка:** `"agent": "claude-code"` → `"agent": "factory-droid"`.

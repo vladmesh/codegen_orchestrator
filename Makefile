@@ -3,6 +3,7 @@
 	test-langgraph test-langgraph-unit test-langgraph-integration \
 	test-scheduler test-scheduler-unit test-scheduler-integration \
 	test-telegram test-telegram-unit \
+	test-workers-spawner test-orchestrator-cli \
 	build up down logs help nuke seed migrate makemigrations shell \
 	setup-hooks lock-deps
 
@@ -200,6 +201,22 @@ test-telegram:
 	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
+test-workers-spawner:
+	@echo "🧪 Running Workers Spawner tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from workers-spawner-test workers-spawner-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
+	exit $$EXIT_CODE
+
+test-orchestrator-cli:
+	@echo "🧪 Running Orchestrator CLI tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from orchestrator-cli-test orchestrator-cli-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
+	exit $$EXIT_CODE
+
 # Run all unit tests (fast)
 test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit
 
@@ -207,7 +224,7 @@ test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-u
 test-integration: test-api-integration test-langgraph-integration test-scheduler-integration
 
 # Run ALL tests
-test-all: test-api test-langgraph test-scheduler test-telegram
+test-all: test-api test-langgraph test-scheduler test-telegram test-workers-spawner test-orchestrator-cli
 
 # Legacy test command (now runs all tests)
 test:

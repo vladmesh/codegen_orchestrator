@@ -1,0 +1,29 @@
+# Multi-stage Dockerfile optimized for testing
+
+FROM python:3.12-slim AS base
+
+WORKDIR /app
+
+# === Test Dependencies Stage ===
+FROM base AS test-deps
+
+# Copy only dependency files first (for caching)
+COPY services/workers-spawner/pyproject.toml ./
+
+# Install runtime + test dependencies
+RUN pip install --no-cache-dir . && \
+    pip install --no-cache-dir pytest pytest-asyncio pytest-cov
+
+# === Test Stage ===
+FROM test-deps AS test
+
+# Copy source code and install editable
+COPY services/workers-spawner/src ./src
+COPY services/workers-spawner/tests ./tests
+COPY services/workers-spawner/pyproject.toml ./
+
+# Install package in editable mode so imports work
+RUN pip install --no-cache-dir -e .
+
+# Run tests
+CMD ["pytest", "-v"]

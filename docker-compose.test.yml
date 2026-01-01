@@ -115,6 +115,33 @@ services:
       - ./services/telegram_bot/tests:/app/tests:ro
       - ./shared:/app/shared:ro
 
+  workers-spawner-test:
+    build:
+      context: .
+      dockerfile: services/workers-spawner/Dockerfile.test
+      target: test
+    environment:
+      PYTHONPATH: /app/src
+    networks:
+      - test-network
+    volumes:
+      - ./services/workers-spawner/src:/app/src:ro
+      - ./services/workers-spawner/tests:/app/tests:ro
+
+  orchestrator-cli-test:
+    build:
+      context: .
+      dockerfile: services/agent-worker/cli/Dockerfile.test
+      target: test
+    environment:
+      PYTHONPATH: /app/src
+      API_BASE_URL: http://mock-api:8000
+    networks:
+      - test-network
+    volumes:
+      - ./services/agent-worker/cli/src:/app/src:ro
+      - ./services/agent-worker/cli/tests:/app/tests:ro
+
 networks:
   test-network:
     driver: bridge

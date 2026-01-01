@@ -1,4 +1,4 @@
-import json
+import json as json_lib
 import os
 import uuid
 
@@ -7,6 +7,7 @@ from rich.table import Table
 import typer
 
 from orchestrator.client import APIClient
+from orchestrator.permissions import require_permission
 
 app = typer.Typer()
 console = Console()
@@ -22,7 +23,11 @@ def _get_redis():
 
 
 @app.command()
-def trigger(project_id: str):
+@require_permission("engineering")
+def trigger(
+    project_id: str,
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
     """Trigger engineering task for project."""
     try:
         user_id = os.getenv("ORCHESTRATOR_USER_ID", "unknown")
@@ -48,7 +53,16 @@ def trigger(project_id: str):
             "user_id": user_id,
             "callback_stream": callback_stream,
         }
-        r.xadd("engineering:queue", {"data": json.dumps(queue_message)})
+        r.xadd("engineering:queue", {"data": json_lib.dumps(queue_message)})
+
+        if json_output:
+            typer.echo(
+                json_lib.dumps(
+                    {"task_id": task_id, "project_id": project_id, "status": "queued"},
+                    indent=2,
+                )
+            )
+            return
 
         console.print("[green]✓[/green] Engineering task triggered")
         console.print(f"Task ID: [cyan]{task_id}[/cyan]")
@@ -61,10 +75,19 @@ def trigger(project_id: str):
 
 
 @app.command()
-def status(task_id: str, follow: bool = False):
+@require_permission("engineering")
+def status(
+    task_id: str,
+    follow: bool = False,
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
     """Check engineering task status."""
     try:
         task = client.get(f"/api/tasks/{task_id}")
+
+        if json_output:
+            typer.echo(json_lib.dumps(task, indent=2))
+            return
 
         table = Table(title=f"Task {task_id}")
         table.add_column("Field", style="cyan")

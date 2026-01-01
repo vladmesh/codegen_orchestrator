@@ -2,6 +2,7 @@ from rich.console import Console
 import typer
 
 from orchestrator.commands import deploy, diagnose, engineering, infra, project
+from orchestrator.permissions import require_permission
 
 app = typer.Typer(
     name="orchestrator",
@@ -19,6 +20,7 @@ app.add_typer(diagnose.app, name="diagnose", help="System diagnosis")
 
 
 @app.command()
+@require_permission("respond")
 def respond(message: str):
     """Send a response back to the user."""
     # This is a bit unique. In the agent architecture, the "response"

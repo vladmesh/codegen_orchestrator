@@ -1,9 +1,11 @@
 import http
+import json as json_lib
 
 from rich.console import Console
 import typer
 
 from orchestrator.client import APIClient
+from orchestrator.permissions import require_permission
 
 app = typer.Typer()
 console = Console()
@@ -11,6 +13,7 @@ client = APIClient()
 
 
 @app.command()
+@require_permission("diagnose")
 def logs(service: str):
     """View service logs."""
     # This might need a specific endpoint or integration with Loki/etc.
@@ -19,34 +22,49 @@ def logs(service: str):
 
 
 @app.command()
-def health():
+@require_permission("diagnose")
+def health(json_output: bool = typer.Option(False, "--json", help="Output as JSON")):
     """Check system health."""
     try:
-        # Assuming there is a general health endpoint, usually at root or /health
-        # The client base URL is /api/v1 usually, but health might be at /health
-        # Let's try /health relative to base URL if configured, or just skip if not standard.
-        # But wait, main.py usually has a health check.
-        # Checking main.py: app.get("/health")
-        # Client base_url is http://api:8000
         res = client.client.get(f"{client.base_url}/health")
         if res.status_code == http.HTTPStatus.OK:
+            data = res.json()
+            if json_output:
+                typer.echo(json_lib.dumps(data, indent=2))
+                return
             console.print("[green]System is healthy.[/green]")
-            console.print(res.json())
+            console.print(data)
         else:
+            if json_output:
+                typer.echo(
+                    json_lib.dumps({"status": "unhealthy", "code": res.status_code}, indent=2)
+                )
+                return
             console.print(f"[red]System health check failed: {res.status_code}[/red]")
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {str(e)}")
 
 
 @app.command()
-def incidents(active_only: bool = True):
+@require_permission("diagnose")
+def incidents(
+    active_only: bool = True,
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
     """List incidents."""
     try:
         endpoint = "/api/incidents/active" if active_only else "/api/incidents"
-        incidents = client.get(endpoint)
-        if not incidents:
+        incidents_list = client.get(endpoint)
+
+        if json_output:
+            typer.echo(json_lib.dumps(incidents_list, indent=2))
+            return
+
+        if not incidents_list:
             console.print("No incidents found.")
-        for inc in incidents:
+            return
+
+        for inc in incidents_list:
             console.print(
                 f"[{inc['status']}] {inc['incident_type']} on "
                 f"{inc['server_handle']}: {inc['details']}"
