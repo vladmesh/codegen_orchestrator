@@ -4,6 +4,72 @@
 
 ## Technical Debt (Активная работа)
 
+### CLI Status --follow Mode (Real-time Event Streaming)
+
+**Priority:** LOW  
+**Status:** TODO  
+**Location:** `services/agent-worker/cli/src/orchestrator/commands/engineering.py:92-94`, `deploy.py:92-94`
+
+**Проблема:** Команды `orchestrator engineering status <task_id>` и `orchestrator deploy status <task_id>` поддерживают флаг `--follow`, но он не реализован — выводится заглушка "Note: --follow mode not yet implemented".
+
+**Что должен делать --follow:**
+Стримить события из Redis в реальном времени пока задача выполняется:
+```bash
+$ orchestrator engineering status eng-abc123 --follow
+⏳ Engineering task started
+📦 Architect: analyzing requirements...
+🔨 Developer: implementing feature X...
+✅ Task completed successfully
+```
+
+**Варианты реализации:**
+
+#### Вариант A: Redis XREAD blocking (рекомендуется)
+```python
+@app.command()
+def status(task_id: str, follow: bool = False):
+    if follow:
+        r = _get_redis()
+        user_id = os.getenv("ORCHESTRATOR_USER_ID")
+        stream = f"agent:events:{user_id}"
+        last_id = "0"
+        
+        while True:
+            events = r.xread({stream: last_id}, block=5000, count=10)
+            for stream_name, entries in events:
+                for entry_id, data in entries:
+                    event = json.loads(data["data"])
+                    if event.get("task_id") == task_id:
+                        console.print(format_event(event))
+                        if event["type"] in ("completed", "failed"):
+                            return
+                    last_id = entry_id
+```
+
+**Плюсы:** Простая реализация, использует существующий `callback_stream`.
+**Минусы:** Фильтрация на клиенте (читаем все события user'а).
+
+#### Вариант B: Dedicated task stream
+Создавать отдельный stream для каждой задачи: `task:{task_id}:events`.
+
+**Плюсы:** Точный таргетинг, нет лишнего трафика.
+**Минусы:** Нужно менять workers, больше streams в Redis.
+
+#### Вариант C: SSE через API
+Добавить endpoint `GET /api/tasks/{task_id}/events` с Server-Sent Events.
+
+**Плюсы:** Работает через HTTP, можно использовать из браузера.
+**Минусы:** Дополнительный endpoint, сложнее из CLI.
+
+**Рекомендация:** Вариант A — минимальные изменения, workers уже публикуют в `callback_stream`.
+
+**Связанные файлы:**
+- `services/langgraph/src/workers/engineering_worker.py` — публикует события
+- `services/langgraph/src/workers/deploy_worker.py` — публикует события
+- `shared/queues.py` — константы очередей
+
+---
+
 ### PO does not wait for async deploy completion
 
 **Priority:** MEDIUM  

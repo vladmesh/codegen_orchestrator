@@ -1,19 +1,19 @@
-"""LangGraph nodes package."""
+"""LangGraph nodes package.
+
+After CLI Agent migration (Phase 8), only subgraph nodes remain.
+Product Owner and Intent Parser are replaced by agent-spawner + Claude CLI.
+"""
 
 from . import (
     analyst,
     architect,
     developer,
-    intent_parser,
     preparer,
-    product_owner,
     provisioner_proxy as provisioner,
     zavhoz,
 )
 
 __all__ = [
-    "intent_parser",
-    "product_owner",
     "analyst",
     "zavhoz",
     "architect",

@@ -1,22 +1,25 @@
-"""LangGraph worker main orchestration."""
+"""LangGraph worker main orchestration.
+
+After CLI Agent migration (Phase 8), this worker handles:
+- Provisioner triggers (server provisioning)
+- Worker events (engineering/deploy queue triggers)
+
+User messages are handled by agent-spawner, not this worker.
+"""
 
 import asyncio
 
 from shared.logging_config import setup_logging
 
 from .events import listen_worker_events
-from .message_processor import consume_chat_stream
 from .provisioner import listen_provisioner_triggers
-from .utils import periodic_memory_stats
 
 
 async def run_worker() -> None:
     """Run the LangGraph worker loop."""
     await asyncio.gather(
-        consume_chat_stream(),
         listen_provisioner_triggers(),
         listen_worker_events(),
-        periodic_memory_stats(),
     )
 
 

@@ -531,9 +531,9 @@ def status(task_id: str, follow: bool = False):
 ```
 
 **Deliverables:**
-- [ ] Queue-based subgraph triggers
-- [ ] Event streaming to containers
-- [ ] Status polling commands
+- [x] Queue-based subgraph triggers (`engineering:queue`, `deploy:queue` in `shared/queues.py`)
+- [x] Event streaming to containers (`callback_stream` в workers)
+- [x] Status polling commands (`orchestrator engineering/deploy status <task_id>`)
 
 ---
 
@@ -639,11 +639,12 @@ def get_agent() -> BaseAgent:
 ### 8.2 Deprecation
 
 После стабилизации:
-- [ ] Remove `services/langgraph/src/nodes/product_owner.py`
-- [ ] Remove `services/langgraph/src/nodes/intent_parser.py`
-- [ ] Remove `services/langgraph/src/capabilities/`
-- [ ] Remove most tools (keep subgraph triggers)
-- [ ] Update documentation
+- [x] Remove `services/langgraph/src/nodes/product_owner.py`
+- [x] Remove `services/langgraph/src/nodes/intent_parser.py`
+- [x] Remove `services/langgraph/src/capabilities/`
+- [x] Remove most tools (keep subgraph triggers)
+- [x] Update documentation
+
 
 ### 8.3 Keep
 
