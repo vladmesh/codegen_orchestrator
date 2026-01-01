@@ -131,7 +131,7 @@ services:
   orchestrator-cli-test:
     build:
       context: .
-      dockerfile: services/agent-worker/cli/Dockerfile.test
+      dockerfile: shared/cli/Dockerfile.test
       target: test
     environment:
       PYTHONPATH: /app/src
@@ -139,8 +139,8 @@ services:
     networks:
       - test-network
     volumes:
-      - ./services/agent-worker/cli/src:/app/src:ro
-      - ./services/agent-worker/cli/tests:/app/tests:ro
+      - ./shared/cli/src:/app/src:ro
+      - ./shared/cli/tests:/app/tests:ro
 
 networks:
   test-network:

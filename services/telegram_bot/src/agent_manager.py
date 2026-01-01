@@ -110,7 +110,7 @@ class AgentManager:
         # So providing NO session ID to `claude` might default to last session?
         # No, Claude CLI usually needs explicit session management or it creates new one.
         # But if we mount `.claude`, maybe we don't need `--resume` if we just want "a session"?
-        # Actually, `agent-spawner` logic used `--resume {session_id}`.
+        # Actually, original agent logic used `--resume {session_id}`.
         # `workers-spawner` manages containers. The container persists.
         # So we can just keep using the SAME container.
         # Does executing `claude` repeatedly in the SAME container maintain context?

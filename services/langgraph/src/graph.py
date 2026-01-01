@@ -5,7 +5,7 @@ After CLI Agent Migration (Phase 8), this graph contains only:
 - DevOps Subgraph (triggered via Redis queue)
 - Provisioner (standalone server provisioning)
 
-User messages are handled by agent-spawner + Claude CLI, not this graph.
+User messages are handled by workers-spawner + Claude CLI, not this graph.
 """
 
 from typing import Annotated

@@ -36,7 +36,7 @@ Codegen Orchestrator — это мультиагентная система на
 | `api` | FastAPI + SQLAlchemy, хранит проекты/серверы/agent_configs | 8000 |
 | `langgraph` | LangGraph worker, обрабатывает messages через Dynamic PO | - |
 | `telegram_bot` | Telegram интерфейс | - |
-| `worker-spawner` | Спавнит coding-worker контейнеры через Redis pub/sub | - |
+| `workers-spawner` | Спавнит agent контейнеры через Redis API | - |
 | `scheduler` | Фоновые задачи (github_sync, server_sync, health_checker) | - |
 | `preparer` | Copier runner для scaffolding проектов | - |
 | `deploy-worker` | Консьюмер deploy:queue, запускает DevOps subgraph | - |

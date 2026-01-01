@@ -49,8 +49,8 @@ codegen_orchestrator/
 │   │       └── schemas/        # State schemas
 │   ├── telegram_bot/   # Telegram interface
 │   ├── scheduler/      # Background jobs
-│   ├── worker-spawner/ # Docker container spawner
-│   ├── coding-worker/  # Factory.ai Droid container
+│   ├── workers-spawner/ # CLI agent container spawner
+│   ├── universal-worker/ # Base image for CLI agents
 │   ├── preparer/       # Copier runner
 │   └── infrastructure/ # Ansible playbooks
 ├── shared/             # Shared code between services

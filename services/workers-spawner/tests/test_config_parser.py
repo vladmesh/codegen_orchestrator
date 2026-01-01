@@ -94,18 +94,22 @@ class TestConfigParser:
         assert "apt-get install" in script
 
     def test_validate_missing_env_vars(self):
-        """Validation catches missing required env vars."""
+        """Validation returns no errors - env vars are auto-injected at runtime.
+
+        Note: Required env vars are NOT validated at config time because they
+        can be auto-injected from spawner's environment at container creation.
+        """
         config = WorkerConfig(
             name="Test Agent",
             agent=AgentType.CLAUDE_CODE,
             allowed_tools=["project"],
-            # No ANTHROPIC_API_KEY provided
+            # No ANTHROPIC_API_KEY provided - but that's OK
         )
         parser = ConfigParser(config)
         errors = parser.validate()
 
-        assert len(errors) == 1
-        assert "ANTHROPIC_API_KEY" in errors[0]
+        # No validation errors for missing env vars (auto-injected at runtime)
+        assert len(errors) == 0
 
     def test_validate_with_env_vars(self):
         """Validation passes when required env vars provided."""

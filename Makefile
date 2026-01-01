@@ -73,11 +73,7 @@ logs:
 
 build:
 	$(DOCKER_COMPOSE) build
-	docker build -t coding-worker:latest services/coding-worker/
 	docker build -t preparer:latest services/preparer/
-
-build-coding-worker:
-	docker build -t coding-worker:latest services/coding-worker/
 
 build-preparer:
 	docker build -t preparer:latest services/preparer/

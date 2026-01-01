@@ -16,11 +16,13 @@ class FactoryDroidAgent(AgentFactory):
         ]
 
     def get_agent_command(self) -> str:
-        """Start Factory Droid in interactive mode.
+        """Start Factory Droid in non-interactive mode.
 
-        Note: Droid is installed to ~/.local/bin by default.
+        Note: 'droid exec' is required for automation/scripting.
+        Plain 'droid' requires TTY (ink-based React CLI).
+        Caller should append the prompt as an argument.
         """
-        return "/home/worker/.local/bin/droid"
+        return "/home/worker/.local/bin/droid exec"
 
     def get_required_env_vars(self) -> list[str]:
         """Factory Droid requires FACTORY_API_KEY."""

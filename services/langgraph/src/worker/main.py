@@ -4,7 +4,7 @@ After CLI Agent migration (Phase 8), this worker handles:
 - Provisioner triggers (server provisioning)
 - Worker events (engineering/deploy queue triggers)
 
-User messages are handled by agent-spawner, not this worker.
+User messages are handled by workers-spawner, not this worker.
 """
 
 import asyncio

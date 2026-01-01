@@ -101,14 +101,18 @@
 
 ---
 
-## Phase 6: Cleanup
+## Phase 6: Cleanup ✅
 
-**Статус:** Не начато
+**Статус:** Завершено (2026-01-02)
 
-**Задачи:**
-1. Remove `services/agent-spawner`
-2. Remove `services/worker-spawner`
-3. Update documentation
+**Задачи выполнены:**
+1. ✅ Remove `services/agent-spawner`
+2. ✅ Remove `services/worker-spawner`
+3. ✅ Remove `services/agent-worker`
+4. ✅ Remove `services/coding-worker`
+5. ✅ Remove dead code (`coding_worker.py`, `test_agent_bridge.py`)
+6. ✅ Update documentation (CLAUDE.md, ARCHITECTURE.md, AGENTS.md)
+7. ✅ Update build files (Makefile, docker-compose.test.yml)
 
 ---
 

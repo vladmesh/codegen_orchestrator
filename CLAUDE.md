@@ -14,8 +14,7 @@ Multi-agent orchestrator using LangGraph for automated code generation and deplo
 # Development
 make up                    # Start all services
 make down                  # Stop services
-make build                 # Build all Docker images (including coding-worker)
-make build-coding-worker   # Build only coding-worker image
+make build                 # Build all Docker images
 make migrate               # Run database migrations
 make makemigrations MSG='description'  # Create new migration
 make seed                  # Seed database with API keys
@@ -62,8 +61,8 @@ Telegram Bot → Intent Parser (gpt-4o-mini) → Product Owner (agentic loop)
 - `langgraph`: LangGraph worker with Dynamic PO
 - `telegram_bot`: python-telegram-bot interface
 - `scheduler`: Background workers (github_sync, server_sync, health_checker)
-- `worker-spawner`: Spawns Docker containers for coding tasks via Redis pub/sub
-- `coding-worker`: Docker container with Factory.ai Droid CLI
+- `workers-spawner`: Spawns agent containers via Redis pub/sub
+- `universal-worker`: Base Docker image for CLI agents (Claude, Factory.ai)
 - `preparer`: Copier runner for project scaffolding
 - `deploy-worker`: Consumes deploy:queue, runs DevOps subgraph
 - `infrastructure-worker`: Provisioning servers, Ansible runner, SSH operations

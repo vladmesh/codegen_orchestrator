@@ -60,10 +60,12 @@ class TestCapabilityRegistry:
         factory = get_capability_factory(CapabilityType.PYTHON)
         assert isinstance(factory, PythonCapability)
 
-    def test_unknown_capability_raises(self):
-        """Unknown capability type raises ValueError."""
-        with pytest.raises(ValueError, match="Unknown capability type"):
-            get_capability_factory(CapabilityType.DOCKER)  # Not registered yet
+    def test_get_docker_capability(self):
+        """Docker capability is registered."""
+        from workers_spawner.factories.capabilities.docker import DockerCapability
+
+        factory = get_capability_factory(CapabilityType.DOCKER)
+        assert isinstance(factory, DockerCapability)
 
 
 class TestClaudeCodeAgent:
