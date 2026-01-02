@@ -3,6 +3,11 @@
 > Дата: 2025-12-30
 > Статус: Проектирование
 
+> **⚠️ UPDATE 2026-01-02**: Часть архитектуры изменилась после рефакторинга Deploy Worker.
+> - `run_ansible_deploy` удален, deployment теперь делегируется в `infrastructure-worker`
+> - Ansible выполнение изолировано в отдельный сервис через Redis queue
+> - См. `docs/refactoring/deploy-worker-refactor-2026-01-02.md`
+
 ## Содержание
 
 1. [Проблема](#проблема)

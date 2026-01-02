@@ -18,8 +18,8 @@ from .architect_tools import (
     set_project_complexity,
 )
 
-# DevOps tools (deployment)
-from .devops_tools import run_ansible_deploy
+# DevOps tools (deployment) - moved to devops_delegation
+from .devops_delegation import delegate_ansible_deploy
 
 # GitHub tools
 from .github import create_file_in_repo, create_github_repo, get_github_token
@@ -82,5 +82,5 @@ __all__ = [
     "customize_task_instructions",
     "set_project_complexity",
     # DevOps tools
-    "run_ansible_deploy",
+    "delegate_ansible_deploy",
 ]

@@ -193,8 +193,23 @@ devops/
    - Если всё готово → Deployer
 
 4. **Deployer (Functional)**:
-   - Ansible playbook для деплоя
-   - Устанавливает статус проекта = active
+   - Делегирует выполнение Ansible playbook в `infrastructure-worker` через Redis
+   - Polling результата из `deploy:result:{request_id}`
+   - Post-deployment операции:
+     * Создает service deployment record в БД
+     * Настраивает GitHub Actions CI secrets
+     * Устанавливает статус проекта = active
+
+**Архитектура**:
+```
+Deployer → delegate_ansible_deploy → Redis: ansible:deploy:queue
+                                           ↓
+                                    infrastructure-worker
+                                           ↓
+                                    Ansible Execution
+                                           ↓
+                                    Result in Redis
+```
 
 **Выход**:
 - `deployed_url` при успехе
@@ -202,23 +217,35 @@ devops/
 
 ---
 
-## 🚧 Provisioner
+## 🚧 Infrastructure Worker
 
-**Роль**: Настройка серверов, восстановление после инцидентов.
+**Роль**: Изолированный сервис для выполнения Ansible операций (provisioning и deployment).
 
-**Реализация**: Выделен в отдельный сервис `infrastructure-worker` для изоляции тяжёлых зависимостей (Ansible, SSH). В langgraph остаётся только `provisioner_proxy.py`, который делегирует работу через Redis.
+**Реализация**: Отдельный сервис `infrastructure-worker` для изоляции тяжёлых зависимостей (Ansible, SSH).
 
-**Когда вызывается**:
-- При `server_to_provision` в начальном state
-- Standalone операция (не часть основного flow)
+**Типы jobs**:
+1. **Provisioning** (`provisioner:queue`):
+   - Password reset через Time4VPS API
+   - OS reinstall при необходимости
+   - Ansible playbooks для настройки сервера
+   - Редеплой сервисов после восстановления
 
-**Действия** (в infrastructure-worker):
-- Password reset через Time4VPS API
-- OS reinstall при необходимости
-- Ansible playbooks для настройки сервера
-- Редеплой сервисов после восстановления
+2. **Deployment** (`ansible:deploy:queue`):
+   - Выполнение Ansible playbook для деплоя проектов
+   - Делегируется из DeployerNode (langgraph)
+   - Результаты возвращаются через Redis: `deploy:result:{request_id}`
 
-**Выход**: `provisioning_result` → END
+**Архитектура**:
+```
+infrastructure-worker
+  ├── Listen: provisioner:queue + ansible:deploy:queue
+  ├── Handlers:
+  │   ├── process_provisioner_job() → ansible_runner.py
+  │   └── process_deployment_job() → deployment_executor.py
+  └── Publish: {provisioner|deploy}:result:{request_id}
+```
+
+**Выход**: Результаты в Redis с TTL 1 час
 
 ---
 

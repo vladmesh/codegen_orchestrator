@@ -3,17 +3,25 @@
 Contains functional nodes for secret resolution, readiness check, and deployment.
 """
 
+import os
 import secrets as secrets_module
 
 from langchain_core.messages import AIMessage
 import structlog
 
+from shared.clients.github import GitHubAppClient
+
 from ...clients.api import api_client
+from ...config.constants import Paths
 from ...nodes.base import FunctionalNode
-from ...tools.devops_tools import run_ansible_deploy
+from ...schemas.api_types import AllocationInfo, get_repo_url
+from ...tools.devops_delegation import delegate_ansible_deploy
 from .state import DevOpsState
 
 logger = structlog.get_logger()
+
+# SSH key path for CI secrets
+SSH_KEY_PATH = Paths.SSH_KEY
 
 
 class SecretResolverNode(FunctionalNode):
@@ -150,18 +158,99 @@ class ReadinessCheckNode(FunctionalNode):
         return {}
 
 
+async def _create_service_deployment_record(
+    project_id: str,
+    service_name: str,
+    server_handle: str,
+    port: int,
+    deployment_info: dict,
+) -> bool:
+    """Create a service deployment record via API."""
+    payload = {
+        "project_id": project_id,
+        "service_name": service_name,
+        "server_handle": server_handle,
+        "port": port,
+        "status": "running",
+        "deployment_info": deployment_info,
+    }
+
+    try:
+        await api_client.create_service_deployment(payload)
+        logger.info("service_deployment_record_created", service_name=service_name)
+        return True
+    except Exception as e:
+        logger.error(
+            "service_deployment_record_error",
+            service_name=service_name,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        return False
+
+
+async def _setup_ci_secrets(
+    github_client: GitHubAppClient,
+    owner: str,
+    repo: str,
+    server_ip: str,
+    project_name: str,
+) -> bool:
+    """Configure GitHub Actions secrets for CI/CD deployment."""
+    # Read SSH private key from mounted volume
+    if not os.path.exists(SSH_KEY_PATH):
+        logger.warning("ssh_key_not_found", path=SSH_KEY_PATH)
+        return False
+
+    try:
+        with open(SSH_KEY_PATH) as f:
+            ssh_key = f.read()
+    except Exception as e:
+        logger.error("ssh_key_read_failed", error=str(e))
+        return False
+
+    secrets_map = {
+        "DEPLOY_HOST": server_ip,
+        "DEPLOY_USER": "root",
+        "DEPLOY_SSH_KEY": ssh_key,
+        "DEPLOY_PROJECT_PATH": f"/opt/services/{project_name}",
+        "DEPLOY_COMPOSE_FILES": "infra/compose.base.yml infra/compose.prod.yml",
+    }
+
+    try:
+        count = await github_client.set_repository_secrets(owner, repo, secrets_map)
+        logger.info(
+            "ci_secrets_configured",
+            owner=owner,
+            repo=repo,
+            secrets_count=count,
+            total=len(secrets_map),
+        )
+        return count == len(secrets_map)
+    except Exception as e:
+        logger.error(
+            "ci_secrets_setup_failed",
+            owner=owner,
+            repo=repo,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        return False
+
+
 class DeployerNode(FunctionalNode):
-    """Execute Ansible deployment."""
+    """Execute Ansible deployment via delegation to infrastructure-worker."""
 
     def __init__(self):
         super().__init__(node_id="deployer")
 
     async def run(self, state: DevOpsState) -> dict:
-        """Execute deployment with resolved secrets."""
+        """Execute deployment by delegating to infrastructure-worker."""
         project_id = state.get("project_id")
         logger.info("deployer_start", project_id=project_id)
 
         resolved_secrets = state.get("resolved_secrets", {})
+        project_spec = state.get("project_spec") or {}
 
         if not project_id:
             return {
@@ -170,7 +259,8 @@ class DeployerNode(FunctionalNode):
             }
 
         try:
-            result = await run_ansible_deploy.ainvoke(
+            # Delegate deployment to infrastructure-worker
+            result = await delegate_ansible_deploy.ainvoke(
                 {
                     "project_id": project_id,
                     "secrets": resolved_secrets,
@@ -185,18 +275,70 @@ class DeployerNode(FunctionalNode):
             )
 
             if result.get("status") == "success":
+                # Post-deployment operations (kept in langgraph)
+                deployed_url = result.get("deployed_url")
+                server_ip = result.get("server_ip")
+                port = result.get("port")
+
+                # Get allocation and repo info for post-deployment
+                allocations: list[AllocationInfo] = await api_client.get_project_allocations(
+                    project_id
+                )
+                target_alloc = allocations[0] if allocations else None
+
+                repo_url = get_repo_url(project_spec)
+                if repo_url:
+                    parts = repo_url.rstrip("/").split("/")
+                    repo = parts[-1] if len(parts) > 0 else "repo"
+                    owner = parts[-2] if len(parts) > 1 else "owner"
+                    repo_full_name = f"{owner}/{repo}"
+                else:
+                    repo_full_name = "unknown/unknown"
+                    owner = "unknown"
+                    repo = "unknown"
+
+                project_name = project_spec.get("name", "project").replace(" ", "_").lower()
+                config = project_spec.get("config") or {}
+                modules = config.get("modules", "backend")
+                if isinstance(modules, list):
+                    modules = ",".join(modules)
+
+                # Create service deployment record
+                if target_alloc:
+                    await _create_service_deployment_record(
+                        project_id=project_id,
+                        service_name=project_name,
+                        server_handle=target_alloc.get("server_handle"),
+                        port=port,
+                        deployment_info={
+                            "repo_full_name": repo_full_name,
+                            "branch": "main",
+                            "project_dir": f"/opt/services/{project_name}",
+                            "compose_files": "infra/compose.base.yml infra/compose.prod.yml",
+                            "modules": modules,
+                        },
+                    )
+
+                # Setup CI secrets
+                github_client = GitHubAppClient()
+                await _setup_ci_secrets(
+                    github_client=github_client,
+                    owner=owner,
+                    repo=repo,
+                    server_ip=server_ip,
+                    project_name=project_name,
+                )
+
+                # Update project status
                 await api_client.patch(
                     f"/projects/{project_id}",
                     json={"status": "active"},
                 )
+
                 return {
                     "deployment_result": result,
-                    "deployed_url": result.get("deployed_url"),
-                    "messages": [
-                        AIMessage(
-                            content=f"Deployment successful! URL: {result.get('deployed_url')}"
-                        )
-                    ],
+                    "deployed_url": deployed_url,
+                    "messages": [AIMessage(content=f"Deployment successful! URL: {deployed_url}")],
                 }
 
             # Deployment failed

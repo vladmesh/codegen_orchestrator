@@ -65,7 +65,10 @@ Telegram Bot → Intent Parser (gpt-4o-mini) → Product Owner (agentic loop)
 - `universal-worker`: Base Docker image for CLI agents (Claude, Factory.ai)
 - `preparer`: Copier runner for project scaffolding
 - `deploy-worker`: Consumes deploy:queue, runs DevOps subgraph
-- `infrastructure-worker`: Provisioning servers, Ansible runner, SSH operations
+- `infrastructure-worker`: Ansible execution service for provisioning AND deployment
+  - Handles `provisioner:queue` (server setup, OS reinstall, recovery)
+  - Handles `ansible:deploy:queue` (project deployment delegated from DeployerNode)
+  - Returns results via Redis: `{provisioner|deploy}:result:{request_id}` (TTL 1 hour)
 - `infrastructure`: Ansible playbooks for server configuration
 
 **Shared** (`shared/`): Logging setup (structlog), shared schemas, models, configuration.

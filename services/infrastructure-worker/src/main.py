@@ -13,8 +13,10 @@ import signal
 import structlog
 
 from shared.logging_config import setup_logging
+from shared.queues import ANSIBLE_DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
+from .provisioner.deployment_executor import run_deployment_playbook
 from .provisioner.node import ProvisionerNode
 
 logger = structlog.get_logger(__name__)
@@ -35,19 +37,81 @@ def handle_shutdown(signum, frame):
     _shutdown = True
 
 
-async def ensure_consumer_group(redis_client) -> None:
-    """Ensure Redis consumer group exists."""
+async def ensure_consumer_groups(redis_client) -> None:
+    """Ensure Redis consumer groups exist for both queues."""
+    queues = [PROVISIONER_QUEUE, ANSIBLE_DEPLOY_QUEUE]
+
+    for queue in queues:
+        try:
+            await redis_client.xgroup_create(queue, PROVISIONER_GROUP, id="0", mkstream=True)
+            logger.info("consumer_group_created", queue=queue, group=PROVISIONER_GROUP)
+        except Exception as e:
+            # Group already exists
+            if "BUSYGROUP" in str(e):
+                logger.debug("consumer_group_exists", queue=queue, group=PROVISIONER_GROUP)
+            else:
+                raise
+
+
+async def process_deployment_job(job_data: dict) -> dict:
+    """Process a deployment job from ansible:deploy:queue.
+
+    Args:
+        job_data: Deployment job data matching DeploymentJobRequest schema
+
+    Returns:
+        Result dict matching DeploymentJobResult schema
+    """
+    request_id = job_data.get("request_id", "unknown")
+    project_name = job_data.get("project_name", "unknown")
+    repo_full_name = job_data.get("repo_full_name", "unknown/unknown")
+
+    logger.info(
+        "deployment_job_started",
+        request_id=request_id,
+        project_name=project_name,
+        repo=repo_full_name,
+    )
+
     try:
-        await redis_client.xgroup_create(
-            PROVISIONER_QUEUE, PROVISIONER_GROUP, id="0", mkstream=True
+        # Execute deployment playbook
+        result = run_deployment_playbook(
+            project_name=job_data["project_name"],
+            repo_full_name=job_data["repo_full_name"],
+            github_token=job_data["github_token"],
+            server_ip=job_data["server_ip"],
+            service_port=job_data["port"],
+            secrets=job_data.get("secrets", {}),
+            modules=job_data.get("modules"),
         )
-        logger.info("consumer_group_created", group=PROVISIONER_GROUP)
-    except Exception as e:
-        # Group already exists
-        if "BUSYGROUP" in str(e):
-            logger.debug("consumer_group_exists", group=PROVISIONER_GROUP)
+
+        if result.get("status") == "success":
+            logger.info(
+                "deployment_job_success",
+                request_id=request_id,
+                deployed_url=result.get("deployed_url"),
+            )
         else:
-            raise
+            logger.error(
+                "deployment_job_failed",
+                request_id=request_id,
+                error=result.get("error"),
+            )
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            "deployment_job_exception",
+            request_id=request_id,
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "error": str(e),
+        }
 
 
 async def process_provisioner_job(job_data: dict) -> dict:
@@ -128,25 +192,25 @@ async def process_provisioner_job(job_data: dict) -> dict:
 
 
 async def run_worker():
-    """Main worker loop."""
+    """Main worker loop handling both provisioning and deployment queues."""
     setup_logging(service_name="infrastructure-worker")
 
     redis = RedisStreamClient()
     await redis.connect()
 
-    # Ensure consumer group exists
-    await ensure_consumer_group(redis.redis)
+    # Ensure consumer groups exist
+    await ensure_consumer_groups(redis.redis)
 
     logger.info("infrastructure_worker_started", consumer=CONSUMER_NAME)
 
     try:
         while not _shutdown:
             try:
-                # Read from consumer group
+                # Read from both queues
                 messages = await redis.redis.xreadgroup(
                     groupname=PROVISIONER_GROUP,
                     consumername=CONSUMER_NAME,
-                    streams={PROVISIONER_QUEUE: ">"},
+                    streams={PROVISIONER_QUEUE: ">", ANSIBLE_DEPLOY_QUEUE: ">"},
                     count=1,
                     block=5000,  # 5 second block
                 )
@@ -154,7 +218,7 @@ async def run_worker():
                 if not messages:
                     continue
 
-                for _stream_name, entries in messages:
+                for stream_name, entries in messages:
                     for entry_id, raw_data in entries:
                         try:
                             # Parse JSON data
@@ -163,13 +227,21 @@ async def run_worker():
                             else:
                                 job_data = raw_data
 
-                            # Process the job
-                            result = await process_provisioner_job(job_data)
+                            # Route to appropriate handler based on queue
+                            if stream_name == PROVISIONER_QUEUE.encode():
+                                result = await process_provisioner_job(job_data)
+                                result_prefix = "provisioner"
+                            elif stream_name == ANSIBLE_DEPLOY_QUEUE.encode():
+                                result = await process_deployment_job(job_data)
+                                result_prefix = "deploy"
+                            else:
+                                logger.warning("unknown_queue", stream=stream_name)
+                                continue
 
                             # Publish result if request_id provided
                             request_id = job_data.get("request_id")
                             if request_id:
-                                result_key = f"provisioner:result:{request_id}"
+                                result_key = f"{result_prefix}:result:{request_id}"
                                 await redis.redis.set(
                                     result_key,
                                     json.dumps(result),
@@ -177,12 +249,19 @@ async def run_worker():
                                 )
 
                             # ACK the message
-                            await redis.redis.xack(PROVISIONER_QUEUE, PROVISIONER_GROUP, entry_id)
-                            logger.debug("provisioner_job_acked", entry_id=entry_id)
+                            await redis.redis.xack(
+                                stream_name.decode()
+                                if isinstance(stream_name, bytes)
+                                else stream_name,
+                                PROVISIONER_GROUP,
+                                entry_id,
+                            )
+                            logger.debug("job_acked", stream=stream_name, entry_id=entry_id)
 
                         except Exception as e:
                             logger.error(
-                                "provisioner_job_processing_error",
+                                "job_processing_error",
+                                stream=stream_name,
                                 entry_id=entry_id,
                                 error=str(e),
                             )

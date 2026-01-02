@@ -19,6 +19,9 @@ DEPLOY_QUEUE = "deploy:queue"
 ENGINEERING_QUEUE = "engineering:queue"
 ADMIN_QUEUE = "admin:queue"
 
+# Infrastructure worker queues
+ANSIBLE_DEPLOY_QUEUE = "ansible:deploy:queue"  # For delegated Ansible deployments
+
 # Consumer group name (shared across all workers)
 WORKER_GROUP = "capability-workers"
 

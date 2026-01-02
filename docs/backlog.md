@@ -4,6 +4,47 @@
 
 ## Technical Debt (Активная работа)
 
+### ~~Refactor Deploy Worker (Architectural Debt)~~ ✅ COMPLETED
+
+**Priority:** HIGH
+**Status:** DONE (2026-01-02)
+**Location:** `services/infrastructure-worker/`, `services/langgraph/src/subgraphs/devops/`
+
+**Problem (RESOLVED):**
+`deploy_worker` was executing `ansible-playbook` locally via `subprocess`, violating microservice architecture. The LangGraph container contained Ansible installation which belonged in infrastructure-worker.
+
+**Solution Implemented:**
+1. ✅ Created deployment job schemas in `shared/schemas/deployment_jobs.py`
+2. ✅ Extended infrastructure-worker to handle both provisioning and deployment jobs via `ansible:deploy:queue`
+3. ✅ Created `deployment_executor.py` in infrastructure-worker for Ansible execution
+4. ✅ Created `delegate_ansible_deploy` tool in langgraph for delegation pattern
+5. ✅ Refactored `DeployerNode` to delegate to infrastructure-worker, keeping post-deployment logic (service records, CI secrets)
+6. ✅ Removed Ansible from langgraph Dockerfile
+7. ✅ Deleted `devops_tools.py` containing `run_ansible_deploy`
+8. ✅ Removed ansible volume mount from docker-compose.yml
+9. ✅ Cleaned up unused `Paths.ANSIBLE_PLAYBOOKS` constant
+
+**Architecture After Refactoring:**
+```
+DeployerNode (langgraph)
+  ├─> delegate_ansible_deploy tool
+  │   └─> Redis: ansible:deploy:queue
+  │       └─> infrastructure-worker
+  │           └─> run_deployment_playbook (Ansible execution)
+  └─> Post-deployment operations (kept in langgraph):
+      ├─> _create_service_deployment_record (DB write)
+      └─> _setup_ci_secrets (GitHub API)
+```
+
+**Benefits:**
+- ✅ Clean separation: langgraph = orchestration, infrastructure-worker = execution
+- ✅ No Ansible in langgraph container (smaller image, faster builds)
+- ✅ Reusable infrastructure-worker for both provisioning and deployment
+- ✅ Better error isolation and retry capabilities
+- ✅ All tests pass (85 passed)
+
+---
+
 ### PO does not wait for async deploy completion
 
 **Priority:** MEDIUM  
@@ -77,9 +118,9 @@ PO → respond_to_user("Deploy successful! URL: ...")
 
 ### Caddy Reverse Proxy Integration (убрать Port Management)
 
-**Priority:** MEDIUM  
-**Status:** TODO  
-**Location:** `services/infrastructure-worker/ansible/roles/caddy/`, `services/api/`, `services/langgraph/src/tools/devops_tools.py`
+**Priority:** MEDIUM
+**Status:** TODO
+**Location:** `services/infrastructure-worker/ansible/roles/caddy/`, `services/api/`, `services/langgraph/src/tools/devops_delegation.py`
 
 **Проблема:** Сейчас каждый проект деплоится на уникальный порт (8080, 8081, ...). Zavhoz выделяет порты, Ansible открывает их в UFW. Это создаёт:
 1. Сложность управления — таблица `allocations` с портами

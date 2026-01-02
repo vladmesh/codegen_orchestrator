@@ -11,15 +11,6 @@ class Paths:
     """File system paths used across the service."""
 
     SSH_KEY = os.getenv("SSH_KEY_PATH", "/root/.ssh/id_ed25519")
-    ANSIBLE_PLAYBOOKS = os.getenv(
-        "ANSIBLE_PLAYBOOKS_PATH",
-        "/app/services/infrastructure/ansible/playbooks",
-    )
-
-    @classmethod
-    def playbook(cls, name: str) -> str:
-        """Get full path to an Ansible playbook."""
-        return f"{cls.ANSIBLE_PLAYBOOKS}/{name}"
 
 
 class Timeouts:
