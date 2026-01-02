@@ -179,28 +179,7 @@ labels:
 
 ---
 
-### RAG с Embeddings (Hybrid Search)
 
-**Priority:** MEDIUM  
-**Status:** TODO  
-**Source:** RAG_PLAN.md, phase5-6-integration-rag.md
-
-Полноценная RAG система с embeddings вместо текущего stub'а.
-
-**Задачи:**
-1. Включить pgvector в Postgres
-2. Добавить таблицы: `rag_documents`, `rag_chunks` с embeddings
-3. Реализовать ingestion pipeline:
-   - Индексировать project specs, README, ADRs
-   - Chunking: 512 tokens, 10% overlap
-4. Hybrid search: FTS + vector retrieval
-5. Scopes: `docs`, `code`, `history`, `logs`
-
-**Детали:**
-- Embedding model: OpenAI text-embedding-3-small, 512 dimensions
-- Token budget: top_k=5, max_tokens=2000, min_similarity=0.7
-
----
 
 ### API Authentication Middleware
 
@@ -330,13 +309,7 @@ orchestrator deploy
 
 ---
 
-### Singleton HTTP Client (Telegram Bot)
 
-**Priority:** LOW (Defer until high load)
-
-Использовать Singleton `httpx.AsyncClient` в Telegram Bot для переиспользования SSL-соединений.
-
----
 
 ## Completed (Reference)
 
