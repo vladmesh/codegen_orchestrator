@@ -112,10 +112,76 @@ def status(
             console.print("\n[bold]Result:[/bold]")
             console.print_json(data=task["result"])
 
-        # TODO: Implement --follow mode to stream events from Redis
+        # Enable follow mode to stream events from Redis
         if follow:
-            console.print("\n[yellow]Note: --follow mode not yet implemented[/yellow]")
+            _stream_events(task_id)
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1) from e
+
+
+def _stream_events(task_id: str):
+    """Stream events for a task from Redis."""
+    r = _get_redis()
+    user_id = os.getenv("ORCHESTRATOR_USER_ID", "unknown")
+    stream = f"agent:events:{user_id}"
+
+    # "0" means from beginning of time (see backlog recommendation)
+    last_id = "0"
+
+    console.print(f"\n[yellow]⏳ Watching for events in stream: {stream}[/yellow]")
+
+    try:
+        while True:
+            # Block for 1 second waiting for new events
+            events = r.xread({stream: last_id}, block=1000, count=10)
+
+            for _, entries in events:
+                for entry_id, data in entries:
+                    last_id = entry_id
+
+                    if _process_event(data, task_id):
+                        return
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopped following.[/yellow]")
+
+
+def _process_event(data: dict, task_id: str) -> bool:
+    """Process a single event. Returns True if following should stop."""
+    # Parse event data
+    raw_data = data.get("data")
+    if not raw_data:
+        return False
+
+    try:
+        event = json_lib.loads(raw_data)
+    except json_lib.JSONDecodeError:
+        return False
+
+    # Filter by task_id
+    if event.get("task_id") != task_id:
+        return False
+
+    # Display event
+    event_type = event.get("type", "unknown")
+    content = event.get("content", "")
+
+    if event_type == "started":
+        console.print("[green]▶ Task started[/green]")
+    elif event_type == "completed":
+        console.print("[bold green]✓ Task completed successfully[/bold green]")
+        if event.get("result"):
+            console.print_json(data=event["result"])
+        return True
+    elif event_type == "failed":
+        error_msg = event.get("error", "Unknown error")
+        console.print(f"[bold red]✗ Task failed:[/bold red] {error_msg}")
+        return True
+    elif event_type == "progress":
+        console.print(f"[cyan]ℹ[/cyan] {content}")
+    else:
+        console.print(f"[dim]{event_type}: {content}[/dim]")
+
+    return False
