@@ -196,6 +196,9 @@ class ContainerService:
                 "ttl_hours": config.ttl_hours,
             }
 
+            # Wait for container to be ready (entrypoint to complete)
+            await self._wait_for_container_ready(agent_id)
+
             # Create setup files (CLAUDE.md, AGENTS.md, etc.)
             setup_files = parser.get_setup_files()
             for file_path, content in setup_files.items():
@@ -485,3 +488,68 @@ class ContainerService:
         except Exception as e:
             logger.error("unpause_error", agent_id=agent_id, error=str(e))
             return False
+
+    async def _wait_for_container_ready(
+        self, agent_id: str, max_attempts: int = 30, retry_delay: float = 0.5
+    ) -> None:
+        """Wait for container to be ready (entrypoint to complete).
+
+        Tests readiness by executing a simple command.
+        Retries until success or max attempts reached.
+
+        Args:
+            agent_id: Container ID
+            max_attempts: Maximum number of retry attempts (default: 30)
+            retry_delay: Delay between retries in seconds (default: 0.5s)
+
+        Raises:
+            RuntimeError: If container not ready after max attempts
+        """
+        logger.info("waiting_for_container_ready", agent_id=agent_id)
+
+        for attempt in range(1, max_attempts + 1):
+            # Simple readiness check: execute echo command
+            cmd = ["docker", "exec", agent_id, "/bin/bash", "-c", "echo ready"]
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+
+                if proc.returncode == 0:
+                    logger.info(
+                        "container_ready",
+                        agent_id=agent_id,
+                        attempts=attempt,
+                        elapsed_sec=attempt * retry_delay,
+                    )
+                    return
+
+                # Non-zero exit code, container not ready yet
+                logger.debug(
+                    "container_not_ready_yet",
+                    agent_id=agent_id,
+                    attempt=attempt,
+                    exit_code=proc.returncode,
+                )
+
+            except Exception as e:
+                logger.debug(
+                    "readiness_check_failed",
+                    agent_id=agent_id,
+                    attempt=attempt,
+                    error=str(e),
+                )
+
+            # Wait before next attempt
+            if attempt < max_attempts:
+                await asyncio.sleep(retry_delay)
+
+        # Max attempts reached
+        raise RuntimeError(
+            f"Container {agent_id} not ready after {max_attempts} attempts "
+            f"({max_attempts * retry_delay}s)"
+        )
