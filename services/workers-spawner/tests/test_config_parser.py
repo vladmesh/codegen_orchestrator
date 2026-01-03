@@ -3,6 +3,8 @@
 from workers_spawner.config_parser import ConfigParser
 from workers_spawner.models import AgentType, CapabilityType, WorkerConfig
 
+from shared.schemas import ToolGroup
+
 
 class TestConfigParser:
     """Tests for ConfigParser class."""
@@ -12,7 +14,7 @@ class TestConfigParser:
         config = WorkerConfig(
             name="Test Agent",
             agent=AgentType.CLAUDE_CODE,
-            allowed_tools=["project", "respond"],
+            allowed_tools=[ToolGroup.PROJECT, ToolGroup.RESPOND],
         )
         parser = ConfigParser(config)
 
@@ -25,7 +27,7 @@ class TestConfigParser:
             name="Test Agent",
             agent=AgentType.CLAUDE_CODE,
             capabilities=[CapabilityType.GIT, CapabilityType.CURL],
-            allowed_tools=["project"],
+            allowed_tools=[ToolGroup.PROJECT],
         )
         parser = ConfigParser(config)
         packages = parser.get_apt_packages()
@@ -41,7 +43,7 @@ class TestConfigParser:
             name="Test Agent",
             agent=AgentType.CLAUDE_CODE,
             capabilities=[CapabilityType.GIT],
-            allowed_tools=["project"],
+            allowed_tools=[ToolGroup.PROJECT],
         )
         parser = ConfigParser(config)
         commands = parser.get_install_commands()
@@ -56,7 +58,7 @@ class TestConfigParser:
         config = WorkerConfig(
             name="Test Agent",
             agent=AgentType.CLAUDE_CODE,
-            allowed_tools=["project", "deploy", "respond"],
+            allowed_tools=[ToolGroup.PROJECT, ToolGroup.DEPLOY, ToolGroup.RESPOND],
         )
         parser = ConfigParser(config)
         env = parser.get_env_vars()
@@ -70,7 +72,7 @@ class TestConfigParser:
             name="Test Agent",
             agent=AgentType.CLAUDE_CODE,
             capabilities=[CapabilityType.NODE],
-            allowed_tools=["project"],
+            allowed_tools=[ToolGroup.PROJECT],
             env_vars={"NPM_CONFIG_PREFIX": "/custom/path"},
         )
         parser = ConfigParser(config)
@@ -84,7 +86,7 @@ class TestConfigParser:
             name="Test Agent",
             agent=AgentType.CLAUDE_CODE,
             capabilities=[CapabilityType.GIT],
-            allowed_tools=["project"],
+            allowed_tools=[ToolGroup.PROJECT],
         )
         parser = ConfigParser(config)
         script = parser.get_install_script()
@@ -102,7 +104,7 @@ class TestConfigParser:
         config = WorkerConfig(
             name="Test Agent",
             agent=AgentType.CLAUDE_CODE,
-            allowed_tools=["project"],
+            allowed_tools=[ToolGroup.PROJECT],
             # No ANTHROPIC_API_KEY provided - but that's OK
         )
         parser = ConfigParser(config)
@@ -116,10 +118,31 @@ class TestConfigParser:
         config = WorkerConfig(
             name="Test Agent",
             agent=AgentType.CLAUDE_CODE,
-            allowed_tools=["project"],
+            allowed_tools=[ToolGroup.PROJECT],
             env_vars={"ANTHROPIC_API_KEY": "sk-xxx"},
         )
         parser = ConfigParser(config)
         errors = parser.validate()
 
         assert len(errors) == 0
+
+    def test_get_setup_files_includes_instructions(self):
+        """Setup files include generated instruction file."""
+        config = WorkerConfig(
+            name="Test Agent",
+            agent=AgentType.CLAUDE_CODE,
+            allowed_tools=[ToolGroup.PROJECT, ToolGroup.DEPLOY],
+        )
+        parser = ConfigParser(config)
+        files = parser.get_setup_files()
+
+        # Claude Code should generate CLAUDE.md
+        assert "/workspace/CLAUDE.md" in files
+        content = files["/workspace/CLAUDE.md"]
+
+        # Content should include allowed tools documentation
+        assert "orchestrator project" in content
+        assert "orchestrator deploy" in content
+
+        # Content should NOT include non-allowed tools
+        assert "orchestrator engineering" not in content

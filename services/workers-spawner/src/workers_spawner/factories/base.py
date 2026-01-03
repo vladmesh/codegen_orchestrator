@@ -2,6 +2,8 @@
 
 from abc import ABC, abstractmethod
 
+from shared.schemas import ToolGroup
+
 
 class AgentFactory(ABC):
     """Abstract factory for CLI agents.
@@ -32,6 +34,17 @@ class AgentFactory(ABC):
 
         Returns:
             List of env var names that must be provided.
+        """
+
+    @abstractmethod
+    def generate_instructions(self, allowed_tools: list[ToolGroup]) -> dict[str, str]:
+        """Generate instruction files for this agent type.
+
+        Args:
+            allowed_tools: List of tool groups the agent is allowed to use.
+
+        Returns:
+            Dict of file path -> file content.
         """
 
     def get_optional_env_vars(self) -> dict[str, str]:

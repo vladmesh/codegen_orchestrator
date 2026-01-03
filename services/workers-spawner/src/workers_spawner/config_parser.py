@@ -78,9 +78,11 @@ class ConfigParser:
         # Config-specified env vars (override)
         env_vars.update(self.config.env_vars)
 
-        # Add ORCHESTRATOR_ALLOWED_TOOLS
+        # Add ORCHESTRATOR_ALLOWED_TOOLS (serialize enum values)
         if self.config.allowed_tools:
-            env_vars["ORCHESTRATOR_ALLOWED_TOOLS"] = ",".join(self.config.allowed_tools)
+            env_vars["ORCHESTRATOR_ALLOWED_TOOLS"] = ",".join(
+                tool.value for tool in self.config.allowed_tools
+            )
 
         return env_vars
 
@@ -103,10 +105,19 @@ class ConfigParser:
     def get_setup_files(self) -> dict[str, str]:
         """Get files to create during setup.
 
+        Includes instruction files generated based on allowed_tools.
+
         Returns:
             Dict of file path -> file content.
         """
-        return self._agent_factory.get_setup_files()
+        # Start with agent-specific setup files
+        files = self._agent_factory.get_setup_files()
+
+        # Add instruction files based on allowed_tools
+        instruction_files = self._agent_factory.generate_instructions(self.config.allowed_tools)
+        files.update(instruction_files)
+
+        return files
 
     def get_install_script(self) -> str:
         """Generate a complete install script.

@@ -15,6 +15,8 @@ from workers_spawner.factories.capabilities.node import NodeCapability
 from workers_spawner.factories.capabilities.python import PythonCapability
 from workers_spawner.models import AgentType, CapabilityType
 
+from shared.schemas import ToolGroup
+
 
 class TestAgentRegistry:
     """Tests for agent factory registry."""
@@ -91,6 +93,40 @@ class TestClaudeCodeAgent:
         required = factory.get_required_env_vars()
         assert "ANTHROPIC_API_KEY" in required
 
+    def test_generate_instructions_returns_claude_md(self):
+        """Generate instructions returns CLAUDE.md file."""
+        factory = ClaudeCodeAgent()
+        files = factory.generate_instructions([ToolGroup.PROJECT, ToolGroup.DEPLOY])
+
+        assert "/workspace/CLAUDE.md" in files
+        content = files["/workspace/CLAUDE.md"]
+        assert "orchestrator project" in content.lower()
+        assert "orchestrator deploy" in content.lower()
+
+    def test_generate_instructions_filters_tools(self):
+        """Only allowed tools are included in instructions."""
+        factory = ClaudeCodeAgent()
+        files = factory.generate_instructions([ToolGroup.PROJECT])
+
+        content = files["/workspace/CLAUDE.md"]
+        assert "orchestrator project" in content.lower()
+        # Deploy should NOT be included
+        assert "deploy trigger" not in content.lower()
+
+
+class TestFactoryDroidAgent:
+    """Tests for Factory Droid agent factory."""
+
+    def test_generate_instructions_returns_agents_md(self):
+        """Generate instructions returns AGENTS.md file."""
+        factory = FactoryDroidAgent()
+        files = factory.generate_instructions([ToolGroup.PROJECT, ToolGroup.DEPLOY])
+
+        assert "/workspace/AGENTS.md" in files
+        content = files["/workspace/AGENTS.md"]
+        assert "orchestrator project" in content.lower()
+        assert "orchestrator deploy" in content.lower()
+
 
 class TestGitCapability:
     """Tests for Git capability factory."""
@@ -112,10 +148,10 @@ class TestNodeCapability:
     """Tests for Node capability factory."""
 
     def test_install_commands(self):
-        """Installs nodejs."""
+        """Sets up npm-global directory (Node.js is pre-installed in base image)."""
         factory = NodeCapability()
         commands = factory.get_install_commands()
-        assert any("nodejs" in cmd for cmd in commands)
+        assert any("npm-global" in cmd for cmd in commands)
 
     def test_env_vars(self):
         """Sets NPM config prefix."""

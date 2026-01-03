@@ -14,14 +14,28 @@ class NodeCapability(CapabilityFactory):
         return ["curl", "ca-certificates"]
 
     def get_install_commands(self) -> list[str]:
-        """Install Node.js via nodesource (LTS version)."""
+        """Node.js is pre-installed in universal-worker base image.
+
+        Create symlink to npm global bin in .local/bin (which is already in PATH).
+        """
         return [
-            "curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -",
-            "apt-get install -y nodejs",
+            "mkdir -p /home/worker/.npm-global/bin",
+            "mkdir -p /home/worker/.local/bin",
         ]
 
     def get_env_vars(self) -> dict[str, str]:
-        """Set npm global directory."""
+        """Set npm global directory and add to PATH."""
+        path_dirs = [
+            "/home/worker/.npm-global/bin",
+            "/home/worker/.local/bin",
+            "/usr/local/sbin",
+            "/usr/local/bin",
+            "/usr/sbin",
+            "/usr/bin",
+            "/sbin",
+            "/bin",
+        ]
         return {
-            "NPM_CONFIG_PREFIX": "/home/node/.npm-global",
+            "NPM_CONFIG_PREFIX": "/home/worker/.npm-global",
+            "PATH": ":".join(path_dirs),
         }

@@ -17,6 +17,10 @@ RUN pip install --no-cache-dir . && \
 # === Test Stage ===
 FROM test-deps AS test
 
+# Copy shared module first and install it
+COPY shared /shared
+RUN pip install --no-cache-dir -e /shared
+
 # Copy source code and install editable
 COPY services/workers-spawner/src ./src
 COPY services/workers-spawner/tests ./tests
@@ -25,5 +29,5 @@ COPY services/workers-spawner/pyproject.toml ./
 # Install package in editable mode so imports work
 RUN pip install --no-cache-dir -e .
 
-# Run tests
-CMD ["pytest", "-v"]
+# Run tests - explicitly specify tests/ to avoid discovering shared/cli/tests/
+CMD ["pytest", "tests/", "-v"]

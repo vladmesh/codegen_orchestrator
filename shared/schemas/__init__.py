@@ -26,6 +26,11 @@ from .time4vps import (
     Time4VPSServerDetails,
     Time4VPSTask,
 )
+from .tool_groups import (
+    TOOL_DOCS,
+    ToolGroup,
+    get_instructions_content,
+)
 from .worker_events import (
     WorkerCompleted,
     WorkerEvent,
@@ -57,6 +62,10 @@ __all__ = [
     "WorkerCompleted",
     "WorkerFailed",
     "parse_worker_event",
+    # Tool Groups
+    "ToolGroup",
+    "TOOL_DOCS",
+    "get_instructions_content",
     # Orchestrator State is local to LangGraph
     # Tools Results are local to LangGraph
 ]

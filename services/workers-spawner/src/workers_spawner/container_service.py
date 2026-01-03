@@ -185,6 +185,17 @@ class ContainerService:
                 "ttl_hours": config.ttl_hours,
             }
 
+            # Create setup files (CLAUDE.md, AGENTS.md, etc.)
+            setup_files = parser.get_setup_files()
+            for file_path, content in setup_files.items():
+                success = await self.send_file(agent_id, file_path, content)
+                if not success:
+                    logger.warning(
+                        "setup_file_failed",
+                        agent_id=agent_id,
+                        file_path=file_path,
+                    )
+
             logger.info("container_created", agent_id=agent_id)
             return agent_id
 
@@ -203,12 +214,14 @@ class ContainerService:
         """Execute a command in the container.
 
         Uses docker exec to run the command in the agent's shell.
+        Uses -i flag to inherit ENV vars from container.
         """
         timeout = timeout or self.settings.default_timeout_sec
 
         cmd = [
             "docker",
             "exec",
+            "-i",  # Interactive mode inherits ENV vars
             agent_id,
             "/bin/bash",
             "-c",

@@ -4,6 +4,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from shared.schemas import ToolGroup
+
 
 class AgentType(str, Enum):
     """Supported agent types."""
@@ -37,7 +39,7 @@ class WorkerConfig(BaseModel):
         default_factory=list,
         description="Additional capabilities to install",
     )
-    allowed_tools: list[str] = Field(
+    allowed_tools: list[ToolGroup] = Field(
         ...,
         description="List of orchestrator-cli tool groups this agent can use",
     )

@@ -47,7 +47,7 @@ DeployerNode (langgraph)
 
 ### PO does not wait for async deploy completion
 
-**Priority:** MEDIUM  
+**Priority:** MEDIUM
 **Status:** TODO
 
 **Проблема:** Когда PO вызывает `trigger_deploy`, он получает `job_id` и сразу возвращает его пользователю с сообщением "используй `get_deploy_status`". Это плохой UX:
@@ -360,11 +360,11 @@ orchestrator deploy
 - ✅ **Worker Spawner** — Redis pub/sub microservice for Docker isolation
 - ✅ **Scheduler Service** — Moved background tasks (github_sync, server_sync, health_checker) out of API
 
-### Dynamic ProductOwner Architecture
-- ✅ **Intent Parser** — gpt-4o-mini for cheap intent classification and capability selection
-- ✅ **Capability Registry** — Dynamic tool loading by capability groups
-- ✅ **PO Agentic Loop** — Iterative tool execution with user confirmation
+### Product Owner Architecture (CLI Agent Migration)
+- ✅ **CLI Agent** — Replaced Dynamic PO + Intent Parser with pluggable CLI workers via workers-spawner
+- ✅ **Tool System** — All API tools exposed via OpenAPI, native tool calling
 - ✅ **Session Management** — Redis-based session locking (PROCESSING/AWAITING states)
+- ⛔ **Deprecated**: Intent Parser, Capability Registry (replaced by CLI agent)
 
 ### Engineering Pipeline
 - ✅ **Engineering Subgraph** — Analyst → Developer → Tester with rework loop
@@ -400,7 +400,7 @@ orchestrator deploy
 - **Advanced Model Management & Dashboard** — Частично реализовано через LLM factory и agent_configs в БД
 
 **Архитектурные решения сохранены в commit history (планы удалены при cleanup 2025-12-30):**
-- Dynamic ProductOwner: Intent Parser + Capability Registry + Agentic Loop
+- Product Owner: Migrated from Dynamic PO (Intent Parser + Capability Registry) → CLI Agent (pluggable)
 - Engineering Subgraph: Architect → Preparer → Developer → Tester
 - DevOps Subgraph: EnvAnalyzer (LLM) → SecretResolver → Deployer
 - Session Management: Redis-based locks with AWAITING/PROCESSING states
