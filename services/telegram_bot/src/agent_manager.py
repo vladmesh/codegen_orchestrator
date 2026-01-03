@@ -135,14 +135,15 @@ class AgentManager:
         session_key = f"telegram:user_session_id:{user_id}"
         session_id = await self.redis.get(session_key)
 
-        # Improve message safely
-        safe_message = message.replace('"', '\\"')
+        # Use single quotes for shell safety - escape any single quotes in message
+        # Single quote escaping: replace ' with '\''  (end quote, escaped quote, start quote)
+        safe_message = message.replace("'", "'\\''")
 
         cmd_parts = [
             "claude",
             "--dangerously-skip-permissions",
             "-p",
-            f'"{safe_message}"',
+            f"'{safe_message}'",
             "--output-format",
             "json",
         ]

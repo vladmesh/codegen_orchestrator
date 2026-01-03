@@ -49,6 +49,7 @@ RUN chmod +x /entrypoint.sh
 
 # Setup workspace
 WORKDIR /workspace
+RUN chown worker:worker /workspace
 
 # Switch to non-root user
 USER worker
