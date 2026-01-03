@@ -40,11 +40,12 @@ def register_capability(capability_type: CapabilityType):
     return decorator
 
 
-def get_agent_factory(agent_type: AgentType) -> AgentFactory:
+def get_agent_factory(agent_type: AgentType, container_service) -> AgentFactory:
     """Get an agent factory instance by type.
 
     Args:
         agent_type: The type of agent to get factory for.
+        container_service: ContainerService instance for dependency injection.
 
     Returns:
         Instance of the appropriate AgentFactory.
@@ -55,7 +56,7 @@ def get_agent_factory(agent_type: AgentType) -> AgentFactory:
     if agent_type not in _AGENT_REGISTRY:
         available = list(_AGENT_REGISTRY.keys())
         raise ValueError(f"Unknown agent type: {agent_type}. Available: {available}")
-    return _AGENT_REGISTRY[agent_type]()
+    return _AGENT_REGISTRY[agent_type](container_service)
 
 
 def get_capability_factory(capability_type: CapabilityType) -> CapabilityFactory:

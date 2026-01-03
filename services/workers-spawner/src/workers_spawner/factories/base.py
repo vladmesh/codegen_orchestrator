@@ -1,8 +1,12 @@
 """Base abstract classes for agent and capability factories."""
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from shared.schemas import ToolGroup
+
+if TYPE_CHECKING:
+    from workers_spawner.container_service import ContainerService
 
 
 class AgentFactory(ABC):
@@ -11,6 +15,14 @@ class AgentFactory(ABC):
     Each agent type (Claude Code, Factory Droid, etc.) has its own
     factory that knows how to install and configure that agent.
     """
+
+    def __init__(self, container_service: "ContainerService"):
+        """Initialize factory with container service dependency.
+
+        Args:
+            container_service: ContainerService instance for executing commands.
+        """
+        self.container_service = container_service
 
     @abstractmethod
     def get_install_commands(self) -> list[str]:
@@ -45,6 +57,28 @@ class AgentFactory(ABC):
 
         Returns:
             Dict of file path -> file content.
+        """
+
+    @abstractmethod
+    async def send_message(
+        self,
+        agent_id: str,
+        message: str,
+        session_context: dict | None = None,
+    ) -> dict:
+        """Send text message to agent, get structured response.
+
+        Args:
+            agent_id: Container ID
+            message: User message text
+            session_context: Optional session state (agent-specific)
+
+        Returns:
+            {
+                "response": str,  # Agent's response text
+                "session_context": dict | None,  # Updated session state
+                "metadata": dict  # Agent-specific metadata
+            }
         """
 
     def get_optional_env_vars(self) -> dict[str, str]:

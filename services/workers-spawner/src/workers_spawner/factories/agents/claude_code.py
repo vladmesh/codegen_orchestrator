@@ -41,3 +41,56 @@ class ClaudeCodeAgent(AgentFactory):
             # Example: Claude skills could be added here
             # "/home/node/.claude/settings.json": json.dumps({...})
         }
+
+    async def send_message(
+        self,
+        agent_id: str,
+        message: str,
+        session_context: dict | None = None,
+    ) -> dict:
+        """Send message to Claude CLI and parse response."""
+        import json
+
+        session_id = session_context.get("session_id") if session_context else None
+
+        # Escape single quotes for shell safety
+        safe_message = message.replace("'", "'\\''")
+
+        cmd_parts = [
+            "claude",
+            "--dangerously-skip-permissions",
+            "-p",
+            f"'{safe_message}'",
+            "--output-format",
+            "json",
+        ]
+
+        if session_id:
+            cmd_parts.extend(["--resume", session_id])
+
+        full_command = " ".join(cmd_parts)
+
+        # Execute using injected container service
+        result = await self.container_service.send_command(agent_id, full_command, timeout=120)
+
+        # Parse response
+        try:
+            data = json.loads(result.output)
+            response_text = data.get("result", "")
+            new_session_id = data.get("session_id")
+
+            return {
+                "response": response_text,
+                "session_context": {"session_id": new_session_id} if new_session_id else None,
+                "metadata": {
+                    "exit_code": result.exit_code,
+                    "success": result.success,
+                },
+            }
+        except json.JSONDecodeError:
+            # Fallback for non-JSON output (errors etc)
+            return {
+                "response": result.output,
+                "session_context": session_context,
+                "metadata": {"parse_error": True, "success": result.success},
+            }

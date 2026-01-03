@@ -14,6 +14,9 @@ from workers_spawner.models import AgentStatus, WorkerConfig
 
 logger = structlog.get_logger()
 
+# Command preview length for logging
+COMMAND_PREVIEW_LENGTH = 200
+
 
 class ExecutionResult:
     """Result of command execution in container."""
@@ -38,6 +41,14 @@ class ContainerService:
         self.settings = get_settings()
         self._containers: dict[str, dict] = {}  # agent_id -> metadata
 
+        # Initialize session manager
+        import redis.asyncio as redis
+
+        from workers_spawner.session_manager import AgentSessionManager
+
+        self.redis = redis.from_url(self.settings.redis_url, decode_responses=True)
+        self.session_manager = AgentSessionManager(self.redis)
+
     async def create_container(
         self, config: WorkerConfig, context: dict[str, str] | None = None
     ) -> str:
@@ -51,7 +62,7 @@ class ContainerService:
             agent_id: Unique identifier for the container
         """
         agent_id = f"agent-{uuid.uuid4().hex[:12]}"
-        parser = ConfigParser(config)
+        parser = ConfigParser(config, self)
 
         # Validate config
         errors = parser.validate()
@@ -224,6 +235,7 @@ class ContainerService:
             "-i",  # Interactive mode inherits ENV vars
             agent_id,
             "/bin/bash",
+            "-l",  # Login shell to load .profile/.bashrc (PATH with npm global)
             "-c",
             command,
         ]
@@ -232,6 +244,9 @@ class ContainerService:
             "executing_command",
             agent_id=agent_id,
             command_length=len(command),
+            command_preview=command[:COMMAND_PREVIEW_LENGTH]
+            if len(command) > COMMAND_PREVIEW_LENGTH
+            else command,
         )
 
         try:
@@ -395,6 +410,9 @@ class ContainerService:
 
     async def delete(self, agent_id: str) -> bool:
         """Stop and remove container."""
+        # Clean up session context
+        await self.session_manager.delete_session_context(agent_id)
+
         cmd = ["docker", "rm", "-f", agent_id]
 
         try:

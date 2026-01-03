@@ -36,3 +36,15 @@ class FactoryDroidAgent(AgentFactory):
         """
         content = get_instructions_content(allowed_tools)
         return {"/workspace/AGENTS.md": content}
+
+    async def send_message(
+        self,
+        agent_id: str,
+        message: str,
+        session_context: dict | None = None,
+    ) -> dict:
+        """Send message to Factory Droid CLI.
+
+        TODO: Implement after studying Factory Droid protocol.
+        """
+        raise NotImplementedError("Factory Droid send_message not yet implemented.")

@@ -1,5 +1,7 @@
 """Config parser - transforms WorkerConfig into Docker commands."""
 
+from typing import TYPE_CHECKING
+
 # Import to trigger registration
 from workers_spawner.factories import (
     agents as _agents,  # noqa: F401
@@ -8,6 +10,9 @@ from workers_spawner.factories import (
 from workers_spawner.factories.base import AgentFactory, CapabilityFactory
 from workers_spawner.factories.registry import get_agent_factory, get_capability_factory
 from workers_spawner.models import WorkerConfig
+
+if TYPE_CHECKING:
+    from workers_spawner.container_service import ContainerService
 
 
 class ConfigParser:
@@ -20,14 +25,15 @@ class ConfigParser:
     - Agent entrypoint command
     """
 
-    def __init__(self, config: WorkerConfig):
-        """Initialize parser with config.
+    def __init__(self, config: WorkerConfig, container_service: "ContainerService"):
+        """Initialize parser with config and container service.
 
         Args:
             config: The worker configuration to parse.
+            container_service: ContainerService instance for dependency injection.
         """
         self.config = config
-        self._agent_factory: AgentFactory = get_agent_factory(config.agent)
+        self._agent_factory: AgentFactory = get_agent_factory(config.agent, container_service)
         self._capability_factories: list[CapabilityFactory] = [
             get_capability_factory(cap) for cap in config.capabilities
         ]
