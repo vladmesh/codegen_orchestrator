@@ -31,6 +31,7 @@ class CommandHandler:
         self._handlers = {
             "create": self._handle_create,
             "send_command": self._handle_send_command,
+            "send_message": self._handle_send_message,
             "send_file": self._handle_send_file,
             "status": self._handle_status,
             "logs": self._handle_logs,
@@ -119,6 +120,65 @@ class CommandHandler:
             "output": result.output,
             "exit_code": result.exit_code,
             "error": result.error,
+        }
+
+    async def _handle_send_message(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Handle send_message command - high-level API for agent communication.
+
+        Expected fields:
+        - agent_id: str
+        - message: str (user message text)
+
+        Returns:
+        - response: str (agent response text)
+        - metadata: dict (optional agent metadata)
+        """
+        agent_id = message.get("agent_id")
+        user_message = message.get("message")
+
+        if not agent_id or not user_message:
+            raise ValueError("Missing 'agent_id' or 'message' field")
+
+        # Get container metadata to determine agent type
+        metadata = self.containers._containers.get(agent_id)
+        if not metadata:
+            raise ValueError(f"Agent {agent_id} not found")
+
+        config: WorkerConfig = metadata["config"]
+
+        # Get factory for this agent type
+        from workers_spawner.factories.registry import get_agent_factory
+
+        factory = get_agent_factory(config.agent, self.containers)
+
+        # Get session context from Redis
+        session_context = await self.containers.session_manager.get_session_context(agent_id)
+
+        # Send message through factory
+        result = await factory.send_message(
+            agent_id=agent_id,
+            message=user_message,
+            session_context=session_context,
+        )
+
+        # Save updated session context
+        new_context = result.get("session_context")
+        if new_context:
+            ttl = config.ttl_hours * 3600
+            await self.containers.session_manager.save_session_context(
+                agent_id, new_context, ttl_seconds=ttl
+            )
+
+        # Publish message event for logging/analytics
+        await self.events.publish_message(
+            agent_id=agent_id,
+            role="assistant",
+            content=result["response"],
+        )
+
+        return {
+            "response": result["response"],
+            "metadata": result.get("metadata", {}),
         }
 
     async def _handle_send_file(self, message: dict[str, Any]) -> dict[str, Any]:

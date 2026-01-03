@@ -44,6 +44,21 @@ class EventPublisher:
         channel = f"{self.settings.events_prefix}:{agent_id}:status"
         await self._publish(channel, {"type": "status", "state": state})
 
+    async def publish_message(self, agent_id: str, role: str, content: str) -> None:
+        """Publish agent message event.
+
+        Used for logging, analytics, and debugging agent conversations.
+
+        Channel: agents:{agent_id}:message
+
+        Args:
+            agent_id: Agent container ID
+            role: Message role ("user" or "assistant")
+            content: Message content
+        """
+        channel = f"{self.settings.events_prefix}:{agent_id}:message"
+        await self._publish(channel, {"type": "message", "role": role, "content": content})
+
     async def _publish(self, channel: str, data: dict[str, Any]) -> None:
         """Publish data to channel."""
         try:
