@@ -111,7 +111,6 @@ async def process_provisioning_trigger(data: dict) -> None:
         "project_complexity": None,
         "provisioning_result": None,
         # Dynamic PO Phase 2 fields
-        "skip_intent_parser": True,  # Provisioner skips intent parser
         "thread_id": None,
         "active_capabilities": [],
         "task_summary": None,

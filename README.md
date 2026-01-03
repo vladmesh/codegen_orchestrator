@@ -24,9 +24,9 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                       LangGraph Orchestrator                    │
 │                                                                 │
-│  Intent Parser → Product Owner (agentic loop with capabilities) │
-│         │                      │                                │
-│         ▼                      ▼                                │
+│  CLI Agent (Product Owner)                                      │
+│         │                                                       │
+│         ▼                                                       │
 │  ┌───────────────┐   ┌───────────────────────────────────────┐    │
 │  │ Analyst →     │   │ Engineering Subgraph                      │    │
 │  │ Zavhoz        │   │ Architect → Preparer → Developer → Tester │    │
@@ -139,7 +139,7 @@ logger.info("event_name", user_id=123, duration_ms=45.2)
 См. [docs/backlog.md](docs/backlog.md) для актуального списка задач.
 
 **Реализовано:**
-- Dynamic ProductOwner (Intent Parser + Capability Registry + Agentic Loop)
+- CLI Agent as Product Owner (pluggable: Claude Code, Factory.ai, custom)
 - Engineering Subgraph (Architect → Preparer → Developer → Tester)
 - DevOps Subgraph (LLM-based env analysis, auto-generates infra secrets)
 - Session Management (Redis-based locks)

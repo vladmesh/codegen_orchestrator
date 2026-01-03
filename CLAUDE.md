@@ -39,26 +39,25 @@ make test-clean            # Cleanup test containers
 ## Architecture
 
 ```
-Telegram Bot → Intent Parser (gpt-4o-mini) → Product Owner (agentic loop)
-                                                     │
-                     ┌─────────────────────────────┬─────────────┼──────────────────┐
-                     ▼                             ▼             ▼                  ▼
-                 Analyst → Zavhoz             trigger_eng    trigger_deploy    finish_task
-                     │                             │             │
-                     ▼                             ▼             ▼
-             Engineering Subgraph            DevOps Subgraph
-             (Architect → Preparer →         (EnvAnalyzer → SecretResolver
-              Developer → Tester)             → ReadinessCheck → Deployer)
+Telegram Bot → CLI Agent (Product Owner)
+                        │
+        ┌───────────────┴────────────────┐
+        ▼                                ▼
+    Analyst → Zavhoz          Engineering/DevOps Subgraphs
+        │
+        ▼
+    Engineering: Architect → Preparer → Developer → Tester
+    DevOps: EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
 ```
 
 **Key Components:**
-- **Dynamic PO**: Intent Parser → PO with capability-based tool loading
-- **Capabilities**: deploy, infrastructure, project_management, engineering, diagnose, admin
+- **CLI Agent**: Pluggable Product Owner (Claude Code, Factory.ai, custom) via workers-spawner
+- **Tool System**: All API endpoints exposed via OpenAPI, native tool calling
 - **Session Management**: Redis-based locks (PROCESSING/AWAITING states)
 
 **Services** (in `services/`):
 - `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs (port 8000)
-- `langgraph`: LangGraph worker with Dynamic PO
+- `langgraph`: LangGraph subgraph workers (Engineering, DevOps)
 - `telegram_bot`: python-telegram-bot interface
 - `scheduler`: Background workers (github_sync, server_sync, health_checker)
 - `workers-spawner`: Spawns agent containers via Redis pub/sub

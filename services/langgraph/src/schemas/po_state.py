@@ -51,7 +51,7 @@ class POSessionState(TypedDict):
     messages: Annotated[list, add_messages]  # LangChain message history
 
     # === Task Context ===
-    task_summary: str | None  # From intent parser
+    task_summary: str | None  # Task summary
     current_project: str | None  # Active project ID
 
     # === Dynamic Capabilities ===
@@ -64,7 +64,6 @@ class POSessionState(TypedDict):
 
     # === Routing ===
     is_continuation: bool  # Continuing previous session?
-    skip_intent_parser: bool  # Skip parser on continuation
 
     # === Errors ===
     errors: Annotated[list[str], _merge_lists]

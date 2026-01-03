@@ -104,11 +104,11 @@ async def my_node(state: OrchestratorState) -> dict:
 7. Описать агента в `docs/NODES.md`
 8. Добавить тесты в `services/langgraph/tests/unit/`
 
-### Добавление новой Capability
+### Добавление новых Tools (CLI Agent)
 
-1. Добавить группу в `CAPABILITY_REGISTRY` (`services/langgraph/src/capabilities/__init__.py`)
-2. Добавить tools в `TOOLS_MAP`
-3. Обновить Intent Parser prompt если нужно (`agent_configs` в БД)
+1. Создать API endpoint в `services/api/src/routers/`
+2. Зарегистрировать tool в OpenAPI schema (автоматически через FastAPI)
+3. Claude Code CLI автоматически получит доступ к новому tool через API discovery
 
 ## 🔄 Makefile команды
 

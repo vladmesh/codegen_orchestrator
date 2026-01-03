@@ -1,7 +1,7 @@
 """LangGraph nodes package.
 
 After CLI Agent migration (Phase 8), only subgraph nodes remain.
-Product Owner and Intent Parser are replaced by workers-spawner + Claude CLI.
+Product Owner is replaced by workers-spawner + CLI Agent (pluggable).
 """
 
 from . import (

@@ -4,51 +4,22 @@
 
 ---
 
-## 🎯 Intent Parser
+## 🧭 Product Owner (CLI Agent)
 
-**Роль**: Классифицирует намерение пользователя и выбирает capabilities для Dynamic PO.
+**Роль**: Центральный координатор на базе CLI-агента. Управляет всем жизненным циклом проекта через API tools.
 
-**Когда вызывается**:
-- При каждом новом сообщении (новая сессия)
-- Пропускается при продолжении существующей сессии (`skip_intent_parser=True`)
+**Реализация**: workers-spawner создаёт Docker-контейнер с CLI агентом (Claude Code, Factory.ai или custom), который работает как Product Owner.
 
-**Модель**: `gpt-4o-mini` (дешёвая классификация)
+**Инструменты**: Все инструменты из API предоставляются через OpenAPI и native tool calling:
+- `delegate_to_analyst`: делегирование анализа запроса
+- `trigger_engineering`: запуск Engineering Subgraph
+- `trigger_deploy`: запуск DevOps Subgraph
+- `list_projects`, `get_project_status`: управление проектами
+- `list_managed_servers`, `allocate_port`: управление инфраструктурой
+- `save_project_secret`: сохранение секретов
+- И другие...
 
-**Инструменты**: Нет (pure LLM classification)
-
-**Выход**:
-- `active_capabilities`: список capabilities для PO
-- `task_summary`: краткое описание задачи
-- `thread_id`: новый ID сессии
-
----
-
-## 🧭 Product Owner (PO)
-
-**Роль**: Центральный координатор с agentic loop. Динамически загружает инструменты на основе capabilities.
-
-**Когда вызывается**:
-- После Intent Parser
-- В цикле после выполнения tools (до 20 итераций)
-
-**Capabilities → Tools**:
-
-| Capability | Tools |
-|------------|-------|
-| `deploy` | trigger_deploy, get_deploy_status, check_ready_to_deploy, save_project_secret |
-| `infrastructure` | list_managed_servers, find_suitable_server, allocate_port, list_allocations |
-| `project_management` | list_projects, get_project_status, create_project_intent, update_project |
-| `engineering` | delegate_to_analyst, trigger_engineering, get_engineering_status, view_latest_pr |
-| `diagnose` | list_active_incidents, get_service_logs, check_service_health, get_error_history |
-| `admin` | list_graph_nodes, trigger_node_manually, clear_project_state |
-
-**Base Tools** (всегда доступны):
-- `respond_to_user`: отправить сообщение пользователю
-- `request_capabilities`: запросить дополнительные capabilities
-- `search_knowledge`: поиск в RAG (stub)
-- `finish_task`: завершить сессию
-
-**Выход**: Действия через tools или ответ пользователю
+**Выход**: Действия через tools, сообщения пользователю через Telegram
 
 ---
 
@@ -249,18 +220,18 @@ infrastructure-worker
 
 ---
 
-## 🔄 Взаимодействие (Dynamic PO Flow)
+## 🔄 Взаимодействие (CLI Agent Flow)
 
 ```
 Пользователь (Telegram)
      │
      ▼
-Intent Parser (gpt-4o-mini)
-     │ capabilities, thread_id
+Telegram Bot → workers-spawner
+     │
      ▼
-Product Owner (agentic loop)
-     │ tool calls
-     ├──────────────▶ respond_to_user ──▶ Пользователь
+CLI Agent (Product Owner)
+     │ tool calls via OpenAPI
+     ├──────────────▶ respond (via Redis) ──▶ Пользователь
      ├──────────────▶ delegate_to_analyst ──▶ Analyst ──▶ Zavhoz
      │                                                      │
      ├──────────────▶ trigger_engineering ◄─────────────────┘
@@ -275,7 +246,7 @@ Product Owner (agentic loop)
      │               DevOps Subgraph
      │               EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
      │                                                      │
-     └──────────────▶ finish_task ◄─────────────────────────┘
+     └──────────────▶ (завершение) ◄─────────────────────────┘
 ```
 
-**Важно**: PO координирует весь flow через tools. Subgraphs (Engineering, DevOps) работают асинхронно и возвращают результаты через state.
+**Важно**: CLI Agent координирует весь flow через API tools. Subgraphs (Engineering, DevOps) работают асинхронно через Redis queues.

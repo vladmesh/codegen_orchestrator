@@ -43,56 +43,51 @@ Codegen Orchestrator — это мультиагентная система на
 | `infrastructure-worker` | Provisioning серверов, Ansible runner, SSH операции | - |
 | `infrastructure` | Ansible playbooks для настройки серверов | - |
 
-## Граф (Dynamic PO Architecture)
+## Граф (CLI Agent Architecture)
 
 ```
-┌─────────┐     ┌────────────────┐     ┌─────────────────────┐
-│  START  │────▶│ Intent Parser  │────▶│   Product Owner     │◀─────────┐
-└─────────┘     │ (gpt-4o-mini)  │     │ (agentic loop)      │          │
-                │                │     │                     │          │
-                │ • classify     │     │ • respond_to_user   │     (loop back)
-                │ • select caps  │     │ • request_caps      │          │
-                │ • new thread_id│     │ • search_knowledge  │          │
-                └────────────────┘     │ • finish_task       │          │
-                       │               │ • capability tools  │          │
-                       │               └──────────┬──────────┘          │
-             (skip if session            │    │                    │
-              continuation)              │    ▼                    │
-                       │               ┌──────────────────┐        │
-                       └──────────────▶│  PO Tools Node   │────────┘
-                                       └──────────────────┘
-                                              │
-                                              ▼ (delegation)
-                ┌─────────────────────────────┴─────────────────────────────┐
-                │                                                            │
-                ▼                                                            ▼
-┌───────────────────────────┐                            ┌─────────────────────────┐
-│ Analyst (delegate_analyst)│                            │ Trigger Deploy/Eng      │
-│    │                      │                            │ (via trigger_* tools)   │
-│    ▼                      │                            └─────────────────────────┘
-│ ┌──────────────────┐      │                                       │
-│ │  Analyst Tools   │◀─┐   │                                       ▼
-│ └────────┬─────────┘  │   │           ┌────────────────────────────────────────────────┐
-│          ▼            │   │           │              Engineering Subgraph              │
-│ ┌──────────────────┐  │   │           │  Architect → Preparer → Developer → Tester     │
-│ │  Create Project  │──┘   │           │              (max 3 iterations)                │
-│ └────────┬─────────┘      │           └────────────────────────────────────────────────┘
-│          │                │                                        │
-└──────────┼────────────────┘                                        ▼
-           │                            ┌─────────────────────────────────────────────────────────────┐
-           ▼                            │                      DevOps Subgraph                        │
-   ┌───────────────┐                    │  EnvAnalyzer (LLM) → SecretResolver → ReadinessCheck → Deployer │
-   │    Zavhoz     │───────────────────▶│                                                             │
-   │  (resources)  │                    └─────────────────────────────────────────────────────────────┘
+┌─────────┐     ┌──────────────────────┐     ┌─────────────────────────────┐
+│  START  │────▶│ Telegram Bot         │────▶│  workers-spawner            │
+└─────────┘     │                      │     │  (Docker isolation)         │
+                └──────────────────────┘     └──────────┬──────────────────┘
+                                                        │
+                                                        ▼
+                                             ┌────────────────────────────┐
+                                             │ CLI Agent (Product Owner)  │
+                                             │ (Claude/Factory/custom)    │
+                                             │                            │
+                                             │ • All API tools available  │
+                                             │ • Native tool calling      │
+                                             │ • Session via Redis        │
+                                             └──────────┬─────────────────┘
+                                                        │
+                                                        ▼ (tool calls)
+                ┌───────────────────────────────────────┴────────────────────────────┐
+                │                                       │                            │
+                ▼                                       ▼                            ▼
+┌───────────────────────────┐         ┌─────────────────────────┐   ┌──────────────────────┐
+│ Analyst (delegate_analyst)│         │ Engineering Subgraph    │   │ DevOps Subgraph      │
+│    │                      │         │ (trigger_engineering)   │   │ (trigger_deploy)     │
+│    ▼                      │         └──────────┬──────────────┘   └──────────┬───────────┘
+│ ┌──────────────────┐      │                    │                             │
+│ │  Create Project  │      │                    ▼                             ▼
+│ └────────┬─────────┘      │    ┌────────────────────────────┐  ┌──────────────────────────┐
+│          │                │    │ Architect → Preparer →     │  │ EnvAnalyzer → Deployer   │
+└──────────┼────────────────┘    │ Developer → Tester         │  │ (Ansible via infra-worker)│
+           │                     │ (max 3 iterations)         │  └──────────────────────────┘
+           ▼                     └────────────────────────────┘
+   ┌───────────────┐
+   │    Zavhoz     │
+   │  (resources)  │
    └───────────────┘
 ```
 
 **Key Features:**
-- **Dynamic PO**: Intent Parser → ProductOwner agentic loop with dynamic tool loading
-- **Capabilities**: deploy, infrastructure, project_management, engineering, diagnose, admin
+- **CLI Agent**: Product Owner as pluggable CLI worker (Claude Code, Factory.ai, custom)
+- **Native Tools**: All API endpoints exposed as tools via OpenAPI
 - **Session Management**: Redis-based locks (PROCESSING/AWAITING states)
 - **Engineering Subgraph**: Architect → Preparer → Developer → Tester (max 3 iterations)
-- **DevOps Subgraph**: LLM-based env analysis, auto-generates infra secrets, requests user secrets
+- **DevOps Subgraph**: LLM-based env analysis, Ansible deployment via infrastructure-worker
 
 ## Внешние зависимости
 
