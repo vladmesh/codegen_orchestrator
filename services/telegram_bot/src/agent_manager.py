@@ -1,11 +1,9 @@
 """Agent Manager for Telegram Bot.
 
 Manages the mapping between Telegram users and their Worker containers.
-Responsible for ensuring a valid container exists for a user and handling
-session persistence.
+Provides a simple interface for sending messages to agents without
+knowledge of agent-specific implementation details.
 """
-
-import json
 
 import redis.asyncio as redis
 import structlog
@@ -84,117 +82,40 @@ class AgentManager:
             logger.error("agent_creation_failed", user_id=user_id, error=str(e))
             raise
 
-    async def send_message(self, user_id: int, message: str) -> None:
+    async def send_message(self, user_id: int, message: str) -> str:
         """Send a message to the user's agent.
+
+        This is a high-level interface that abstracts away agent-specific details.
+        Session management, CLI commands, and response parsing are handled by
+        workers-spawner and agent factories.
 
         Args:
             user_id: Telegram user ID
-            message: Text message
+            message: User message text
+
+        Returns:
+            Agent's response text
         """
         agent_id = await self.get_or_create_agent(user_id)
 
-        # Use orchestrator response tool command
-        # This is what the agent receives.
-        # Wait, the spawner sends the command TO the agent.
-        # If we send "Hi", we want the agent to process it.
-        # But `cli-agent.send_command` executes a SHELL command in the container.
-        # If we want to talk to Claude, we run: `claude -p "message"`
-        # So we should construct the CLI command here!
+        logger.info("sending_message_to_agent", user_id=user_id, agent_id=agent_id)
 
-        # NOTE: Using --resume logic inside the container?
-        # The universal worker has `orchestrator-cli`.
-        # Logic:
-        # We want to run: 'claude -p "message"'
-        # BUT we need to handle session persistence per user inside the container too?
-        # If we mount volume, ~/.claude is preserved.
-        # So providing NO session ID to `claude` might default to last session?
-        # No, Claude CLI usually needs explicit session management or it creates new one.
-        # But if we mount `.claude`, maybe we don't need `--resume` if we just want "a session"?
-        # Actually, original agent logic used `--resume {session_id}`.
-        # `workers-spawner` manages containers. The container persists.
-        # So we can just keep using the SAME container.
-        # Does executing `claude` repeatedly in the SAME container maintain context?
-        # NO. `claude` CLI is a process that runs and exits.
-        # Unless we use `claude` in REPL mode via `expect`? No.
-        # We run `claude -p "..."`.
-        # To maintain context, we MUST use `--resume {session_id}`.
-        # Where do we get `session_id`?
-        # The container is persistent now (for 2 hours).
-        # We can store `session_id` in Redis `telegram:user_session:{user_id}`.
-        # OR we can assume `claude` stores it in the mounted volume if we use it?
-        # Claude CLI outputs `session_id` in JSON.
-
-        # So:
-        # 1. Get current session_id from Redis.
-        # 2. Run `claude -p "msg" --resume {session_id}`
-        # 3. Parse output, update session_id.
-
-        # Wait, if we use `mount_session_volume`, all sessions are in the volume.
-        # We still need the ID to pick the right one.
-
-        session_key = f"telegram:user_session_id:{user_id}"
-        session_id = await self.redis.get(session_key)
-
-        # Use single quotes for shell safety - escape any single quotes in message
-        # Single quote escaping: replace ' with '\''  (end quote, escaped quote, start quote)
-        safe_message = message.replace("'", "'\\''")
-
-        cmd_parts = [
-            "claude",
-            "--dangerously-skip-permissions",
-            "-p",
-            f"'{safe_message}'",
-            "--output-format",
-            "json",
-        ]
-
-        # If we have a session ID, try to resume it
-        if session_id:
-            cmd_parts.extend(["--resume", session_id])
-
-        full_command = " ".join(cmd_parts)
-
-        logger.info(
-            "sending_agent_command",
-            user_id=user_id,
-            agent_id=agent_id,
-            has_session=bool(session_id),
-        )
-
-        # Execute (long timeout for LLM)
         try:
-            result = await workers_spawner.send_command(agent_id, full_command, timeout=120)
+            result = await workers_spawner.send_message(agent_id, message, timeout=120)
+            response = result["response"]
+
+            logger.info(
+                "agent_response_received",
+                user_id=user_id,
+                agent_id=agent_id,
+                response_length=len(response),
+            )
+
+            return response
+
         except Exception as e:
-            # If command fails (e.g. session not found), we might want to retry without session?
-            # Claude CLI usually handles invalid session by erroring?
-            # For now, propagate error
-            raise e
-
-        # Parse output
-        output = result.get("output", "")
-        # Output is from stdout.
-        # We expect JSON: { "result": "...", "session_id": "..." }
-
-        try:
-            data = json.loads(output)
-            response_text = data.get("result", "")
-            new_session_id = data.get("session_id")
-
-            if new_session_id:
-                await self.redis.set(session_key, new_session_id)
-
-            # We need to send this response BACK to the user!
-            # The `main.py` outgoing consumer listened to `agent:outgoing` in legacy.
-            # Here we are in direct control. We should return the text or send it?
-            # `AgentManager.send_message` serves `handle_message`.
-            # If we return it, `handle_message` can reply.
-
-            return response_text
-
-        except json.JSONDecodeError:
-            logger.warning("invalid_agent_json_output", output=output)
-            # Fallback
-            return output
+            logger.error("send_message_failed", user_id=user_id, agent_id=agent_id, error=str(e))
+            raise
 
 
 # Singleton
