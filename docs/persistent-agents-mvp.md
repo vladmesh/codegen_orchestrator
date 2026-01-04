@@ -1,10 +1,11 @@
 # Persistent Agents MVP Implementation Plan
 
-**Цель**: Реализовать минимальную работающую версию оркестратора с persistent CLI-агентами, tool-based communication и proper session management.
+**Цель**: Реализовать универсальную систему persistent CLI-агентов с tool-based communication, поддерживающую любые типы агентов (Claude, Codex, Factory.ai, Gemini CLI и др.) через абстракцию и полиморфизм.
 
 **Статус**: Planning
 
 **Дата создания**: 2026-01-04
+**Последнее обновление**: 2026-01-04
 
 ---
 
@@ -13,12 +14,12 @@
 ### ❌ Что не так сейчас:
 
 1. **Ephemeral процессы**
-   - Каждое сообщение = новый `claude -p "message"` процесс
+   - Каждое сообщение = новый `agent -p "message"` процесс
    - Процесс умирает после ответа
    - История теряется между запусками
 
 2. **Output-based communication**
-   - Парсим JSON вывод Claude: `{"result": "...", "session_id": "..."}`
+   - Парсим JSON вывод агента: `{"result": "...", "session_id": "..."}`
    - stdout агента = бизнес-логика (неправильно!)
    - Нет разделения между логами и ответами
 
@@ -32,15 +33,20 @@
    - Команда отправляется до завершения entrypoint
    - Exit code 127 "command not found"
 
+5. **Отсутствие абстракции**
+   - Код завязан на конкретный CLI агент (Claude)
+   - Нет полиморфизма для поддержки разных агентов
+   - Детали реализации не инкапсулированы
+
 ### ✅ Целевая архитектура MVP:
 
 1. **Persistent процессы**
-   - Один процесс Claude на весь TTL контейнера (2 часа)
+   - Один процесс агента на весь TTL контейнера (2 часа)
    - История сохраняется автоматически
    - Пишем в stdin, читаем stdout/stderr как логи
 
 2. **Tool-based communication**
-   - Агент отвечает через `orchestrator answer "текст"`
+   - Агент отвечает через tool calls: `orchestrator answer "текст"`
    - Workers-spawner перехватывает tool calls
    - stdout/stderr = логи для аналитики
 
@@ -52,19 +58,28 @@
    - Все логи агента собираются
    - Доступны для PO через API
 
+5. **Agent abstraction через фабрики**
+   - Базовый интерфейс `AgentFactory`
+   - Конкретные реализации: `ClaudeCodeAgent`, `FactoryDroidAgent`, `CodexAgent`, `GeminiCLIAgent`
+   - Полиморфизм: `ProcessManager` работает с любым агентом
+   - Инкапсуляция: детали реализации скрыты за интерфейсом
+
 ---
 
 ## MVP Scope
 
 ### Что делаем:
 
-- ✅ Persistent процесс Claude в контейнере
+- ✅ **Agent abstraction** - универсальный интерфейс для всех CLI агентов
+- ✅ **Factory pattern** - полиморфное создание агентов разных типов
+- ✅ Persistent процесс агента в контейнере
 - ✅ Stdin/stdout communication
 - ✅ Tool `orchestrator answer` для ответов
 - ✅ Tool `orchestrator ask` для вопросов (эскалация)
 - ✅ Логирование stdout/stderr в Redis
-- ✅ Один PO агент (Telegram → Claude)
+- ✅ Один PO агент (Telegram → любой CLI агент)
 - ✅ Graceful shutdown при TTL expiry
+- ✅ Поддержка минимум 2 агентов из коробки: Claude Code и Factory Droid
 
 ### Что НЕ делаем в MVP:
 
@@ -73,21 +88,42 @@
 - ❌ Agent-to-agent communication
 - ❌ Streaming logs UI
 - ❌ Context compaction
-- ❌ Multiple agent types (только Claude пока)
+- ❌ Поддержка всех возможных агентов (только 2-3 в MVP)
 
 ---
 
 ## Архитектура MVP
 
+### Ключевой принцип: Абстракция через фабрики
+
+Пользователь (Telegram Bot, API клиент) просто вызывает:
+```python
+await spawner.send_message(agent_id, "Hello")
+```
+
+Внутри workers-spawner:
+```python
+# Получаем фабрику для конкретного агента
+factory = get_agent_factory(agent_type, container_service)
+
+# ProcessManager работает с любым агентом через единый интерфейс
+process_manager.write_to_stdin(agent_id, message)
+
+# ToolCallListener настроен под конкретный агент
+listener.pattern = factory.get_tool_call_pattern()
+```
+
+Детали реализации (как именно запускается Claude vs Factory vs Codex) скрыты за интерфейсом `AgentFactory`.
+
 ### Компоненты:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ Telegram Bot                                        │
+│ Telegram Bot / API Client                          │
 │ ┌─────────────────────────────────────────────────┐ │
 │ │ agent_manager.py                                │ │
-│ │ • get_or_create_agent(user_id)                  │ │
-│ │ • send_message(user_id, text)                   │ │
+│ │ • get_or_create_agent(user_id, agent_type)      │ │
+│ │ • send_message(user_id, text)  ← ЕДИНЫЙ МЕТОД   │ │
 │ │ • get_logs(user_id)  [NEW]                      │ │
 │ └─────────────────────────────────────────────────┘ │
 └──────────────────┬──────────────────────────────────┘
@@ -99,201 +135,366 @@
 │ │ CommandHandler                                  │ │
 │ │ • create → launch persistent process            │ │
 │ │ • send_message → write to stdin                 │ │
-│ │ • get_logs → read from Redis                    │ │
-│ └──────────────────┬──────────────────────────────┘ │
-│                    ▼                                │
+│ │ • delete → graceful shutdown                    │ │
+│ └─────────────────────────────────────────────────┘ │
 │ ┌─────────────────────────────────────────────────┐ │
-│ │ ProcessManager  [NEW]                           │ │
-│ │ • start_persistent_process(agent_id)            │ │
+│ │ AgentFactory Registry (ПОЛИМОРФИЗМ)             │ │
+│ │ ┌─────────────────────────────────────────────┐ │ │
+│ │ │ AgentFactory (Abstract Base)                │ │ │
+│ │ │ • start_persistent_process()                │ │ │
+│ │ │ • write_to_stdin()                          │ │ │
+│ │ │ • get_tool_call_pattern()                   │ │ │
+│ │ │ • parse_tool_call()                         │ │ │
+│ │ │ • generate_instructions()                   │ │ │
+│ │ └─────────────────────────────────────────────┘ │ │
+│ │ ┌─────────────────────────────────────────────┐ │ │
+│ │ │ ClaudeCodeAgent extends AgentFactory        │ │ │
+│ │ └─────────────────────────────────────────────┘ │ │
+│ │ ┌─────────────────────────────────────────────┐ │ │
+│ │ │ FactoryDroidAgent extends AgentFactory      │ │ │
+│ │ └─────────────────────────────────────────────┘ │ │
+│ │ ┌─────────────────────────────────────────────┐ │ │
+│ │ │ CodexAgent extends AgentFactory             │ │ │
+│ │ └─────────────────────────────────────────────┘ │ │
+│ │ ┌─────────────────────────────────────────────┐ │ │
+│ │ │ GeminiCLIAgent extends AgentFactory         │ │ │
+│ │ └─────────────────────────────────────────────┘ │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ ProcessManager (GENERIC)                        │ │
+│ │ • start_process(agent_id, factory)              │ │
 │ │ • write_to_stdin(agent_id, message)             │ │
 │ │ • read_stdout_stream(agent_id)                  │ │
-│ │ • monitor_health(agent_id)                      │ │
-│ └──────────────────┬──────────────────────────────┘ │
-│                    ▼                                │
+│ │ • stop_process(agent_id, graceful=True)         │ │
+│ │ • _processes: {agent_id → {proc, factory}}      │ │
+│ └─────────────────────────────────────────────────┘ │
 │ ┌─────────────────────────────────────────────────┐ │
-│ │ ToolCallListener  [NEW]                         │ │
-│ │ • listen_for_tool_calls(stdout)                 │ │
+│ │ ToolCallListener (AGENT-AWARE)                  │ │
+│ │ • listen(agent_id, factory)  ← uses pattern     │ │
+│ │ • parse_tool_call(line, factory)                │ │
 │ │ • execute_tool(tool_name, args)                 │ │
-│ │ • return_result_to_stdin(result)                │ │
+│ │ • return_result_to_stdin(agent_id, result)      │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ LogCollector                                    │ │
+│ │ • collect_stdout(agent_id, line)                │ │
+│ │ • collect_stderr(agent_id, line)                │ │
+│ │ • store_to_redis(agent_id, log_entry)           │ │
 │ └─────────────────────────────────────────────────┘ │
 └──────────────────┬──────────────────────────────────┘
-                   │
+                   │ Docker exec / Process spawn
                    ▼
 ┌─────────────────────────────────────────────────────┐
 │ Docker Container (universal-worker)                 │
 │ ┌─────────────────────────────────────────────────┐ │
-│ │ Persistent Process:                             │ │
-│ │   claude --dangerously-skip-permissions         │ │
+│ │ Persistent Agent Process                        │ │
+│ │ • Claude Code CLI (if agent_type=claude-code)   │ │
+│ │ • Factory Droid (if agent_type=factory-droid)   │ │
+│ │ • Codex CLI (if agent_type=codex)               │ │
+│ │ • Gemini CLI (if agent_type=gemini-cli)         │ │
 │ │                                                 │ │
-│ │ stdin  ← messages from ProcessManager          │ │
-│ │ stdout → logs + tool calls to ToolCallListener │ │
+│ │ stdin ←─ messages from ProcessManager           │ │
+│ │ stdout → logs + tool calls                      │ │
 │ │ stderr → error logs                             │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ Orchestrator CLI Tools (Bash wrappers)          │ │
+│ │ • orchestrator answer "text"                    │ │
+│ │ • orchestrator ask "question"                   │ │
+│ │ • orchestrator project                          │ │
+│ │ • orchestrator deploy                           │ │
+│ │ • orchestrator engineering                      │ │
+│ │ • orchestrator infra                            │ │
+│ │                                                 │ │
+│ │ Each outputs: __TOOL_CALL__:{"tool":"..."}      │ │
 │ └─────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────┘
 ```
 
-### Data Flow:
+### Tool Call Protocol
+
+Все агенты должны использовать единый формат tool calls в stdout:
 
 ```
-1. User sends "Создай проект X" via Telegram
-   ↓
-2. Telegram bot → Workers-Spawner: send_message(agent_id, "Создай проект X")
-   ↓
-3. ProcessManager.write_to_stdin(agent_id, "Создай проект X\n")
-   ↓
-4. Claude процесс получает в stdin, думает...
-   ↓
-5. Claude вызывает tool: orchestrator answer "Проект X создан!"
-   ↓
-6. ToolCallListener перехватывает из stdout
-   ↓
-7. Публикует в Redis: agent:{agent_id}:response → "Проект X создан!"
-   ↓
-8. Telegram bot получает через PubSub → отправляет юзеру
+__TOOL_CALL__:{"tool": "answer", "args": {"message": "Hello user!"}}
+__TOOL_CALL__:{"tool": "ask", "args": {"question": "Which database?"}}
+__TOOL_CALL__:{"tool": "project", "args": {"method": "create", "name": "myapp"}}
 ```
+
+**Важно**: Формат единый, но способ генерации различается:
+- **Claude Code**: использует bash wrappers `orchestrator answer "..."`
+- **Factory Droid**: может использовать другие wrappers или напрямую выводить JSON
+- **Codex/Gemini**: свои способы генерации tool calls
+
+Фабрика каждого агента знает:
+1. Какой паттерн искать в stdout (`get_tool_call_pattern()`)
+2. Как парсить найденный tool call (`parse_tool_call()`)
 
 ---
 
-## Фаза 0: Подготовка и дизайн
+## Детальный дизайн компонентов
 
-**Цель**: Спроектировать интерфейсы и структуры данных.
+### 1. AgentFactory (Расширение базового класса)
 
-### Задачи:
+**Новые методы для persistent процессов:**
 
-- [x] Анализ текущей архитектуры
-- [x] Определение MVP scope
-- [ ] Дизайн ProcessManager API
-- [ ] Дизайн ToolCallListener протокола
-- [ ] Дизайн логирования
-- [ ] Review плана с командой
+```python
+class AgentFactory(ABC):
+    """Abstract factory for CLI agents."""
 
-### Deliverables:
+    # === Existing methods ===
+    @abstractmethod
+    def get_install_commands(self) -> list[str]:
+        """Install commands for agent."""
 
-- Этот документ
-- API спецификации (см. ниже)
+    @abstractmethod
+    def get_agent_command(self) -> str:
+        """Command to start agent (ephemeral)."""
 
----
+    @abstractmethod
+    def get_required_env_vars(self) -> list[str]:
+        """Required environment variables."""
 
-## Фаза 1: ProcessManager - Persistent Process Lifecycle
+    @abstractmethod
+    def generate_instructions(self, allowed_tools: list[ToolGroup]) -> dict[str, str]:
+        """Generate instruction files (CLAUDE.md, AGENTS.md, etc.)."""
 
-**Цель**: Создать компонент для управления persistent процессами в контейнерах.
+    # === NEW: Persistent process support ===
 
-### Шаг 1.1: Создать ProcessManager
+    @abstractmethod
+    def get_persistent_command(self) -> str:
+        """Get command to start agent in persistent interactive mode.
 
-**Файл**: `services/workers-spawner/src/workers_spawner/process_manager.py` (новый)
+        Examples:
+            Claude: "claude --dangerously-skip-permissions"
+            Factory: "droid --interactive"
+            Codex: "codex --stdin"
+            Gemini: "gemini-cli --chat-mode"
 
-**API:**
+        Returns:
+            Command string for persistent process.
+        """
+
+    @abstractmethod
+    def get_tool_call_pattern(self) -> str:
+        """Get regex pattern for detecting tool calls in stdout.
+
+        Returns:
+            Regex pattern string. Must have named group 'payload' for JSON.
+
+        Example:
+            r'__TOOL_CALL__:(?P<payload>\{.*\})'
+        """
+
+    @abstractmethod
+    def parse_tool_call(self, match: re.Match) -> dict:
+        """Parse matched tool call into structured format.
+
+        Args:
+            match: Regex match object from get_tool_call_pattern()
+
+        Returns:
+            {
+                "tool": str,      # Tool name (answer, ask, project, etc.)
+                "args": dict,     # Tool arguments
+                "raw": str        # Raw matched string for debugging
+            }
+        """
+
+    @abstractmethod
+    def format_message_for_stdin(self, message: str) -> str:
+        """Format user message for writing to agent's stdin.
+
+        Some agents may need special formatting (e.g., JSON envelope).
+
+        Args:
+            message: Raw user message text
+
+        Returns:
+            Formatted message ready for stdin (with \n if needed)
+        """
+
+    def get_startup_timeout(self) -> int:
+        """Timeout for agent startup in seconds.
+
+        Override if agent needs longer startup time.
+
+        Returns:
+            Timeout in seconds (default: 30)
+        """
+        return 30
+
+    def get_readiness_check(self) -> str | None:
+        """Command to check if agent is ready.
+
+        Returns None if no special check needed (default behavior).
+
+        Returns:
+            Command string to execute, or None
+        """
+        return None
+```
+
+### 2. Конкретные реализации фабрик
+
+#### ClaudeCodeAgent
+
+```python
+@register_agent(AgentType.CLAUDE_CODE)
+class ClaudeCodeAgent(AgentFactory):
+    """Factory for Anthropic Claude Code CLI agent."""
+
+    def get_persistent_command(self) -> str:
+        """Claude в interactive режиме."""
+        return "claude --dangerously-skip-permissions"
+
+    def get_tool_call_pattern(self) -> str:
+        """Claude uses bash wrappers that output __TOOL_CALL__:."""
+        return r'__TOOL_CALL__:(?P<payload>\{.*\})'
+
+    def parse_tool_call(self, match: re.Match) -> dict:
+        """Parse JSON payload from Claude's tool calls."""
+        import json
+        payload = match.group('payload')
+        data = json.loads(payload)
+        return {
+            "tool": data["tool"],
+            "args": data["args"],
+            "raw": match.group(0)
+        }
+
+    def format_message_for_stdin(self, message: str) -> str:
+        """Claude expects plain text with newline."""
+        return f"{message}\n"
+
+    def generate_instructions(self, allowed_tools: list[ToolGroup]) -> dict[str, str]:
+        """Generate CLAUDE.md with tool instructions."""
+        content = get_instructions_content(allowed_tools)
+        return {"/workspace/CLAUDE.md": content}
+```
+
+#### FactoryDroidAgent
+
+```python
+@register_agent(AgentType.FACTORY_DROID)
+class FactoryDroidAgent(AgentFactory):
+    """Factory for Factory.ai Droid CLI agent."""
+
+    def get_persistent_command(self) -> str:
+        """Factory Droid в interactive режиме."""
+        return "droid --interactive --unsafe-permissions"
+
+    def get_tool_call_pattern(self) -> str:
+        """Factory может использовать другой формат или тот же."""
+        return r'__TOOL_CALL__:(?P<payload>\{.*\})'
+
+    def parse_tool_call(self, match: re.Match) -> dict:
+        """Same JSON parsing as Claude."""
+        import json
+        payload = match.group('payload')
+        data = json.loads(payload)
+        return {
+            "tool": data["tool"],
+            "args": data["args"],
+            "raw": match.group(0)
+        }
+
+    def format_message_for_stdin(self, message: str) -> str:
+        """Factory expects plain text."""
+        return f"{message}\n"
+
+    def generate_instructions(self, allowed_tools: list[ToolGroup]) -> dict[str, str]:
+        """Generate AGENTS.md for Factory Droid."""
+        content = get_instructions_content(allowed_tools)
+        return {"/workspace/AGENTS.md": content}
+
+    def get_startup_timeout(self) -> int:
+        """Factory может стартовать дольше."""
+        return 45
+```
+
+#### CodexAgent (будущая реализация)
+
+```python
+@register_agent(AgentType.CODEX)
+class CodexAgent(AgentFactory):
+    """Factory for OpenAI Codex CLI agent."""
+
+    def get_persistent_command(self) -> str:
+        return "codex --stdin --format json"
+
+    def get_tool_call_pattern(self) -> str:
+        """Codex может использовать другой паттерн."""
+        return r'TOOL:(?P<payload>\{.*\})'  # Different pattern!
+
+    def parse_tool_call(self, match: re.Match) -> dict:
+        import json
+        payload = match.group('payload')
+        data = json.loads(payload)
+        return {
+            "tool": data["action"],  # Different key name
+            "args": data["parameters"],  # Different key name
+            "raw": match.group(0)
+        }
+
+    def format_message_for_stdin(self, message: str) -> str:
+        """Codex может требовать JSON envelope."""
+        import json
+        envelope = {"type": "user_message", "content": message}
+        return json.dumps(envelope) + "\n"
+
+    def generate_instructions(self, allowed_tools: list[ToolGroup]) -> dict[str, str]:
+        """Codex использует свой формат инструкций."""
+        content = get_instructions_content(allowed_tools)
+        return {"/workspace/.codex/instructions.txt": content}
+```
+
+### 3. ProcessManager (Generic)
+
+**Отвечает за lifecycle persistent процессов.**
 
 ```python
 class ProcessManager:
-    """Manages persistent agent processes in containers."""
+    """Manages persistent agent processes in containers.
 
-    def __init__(self):
-        self._processes: dict[str, ProcessInfo] = {}  # agent_id → ProcessInfo
+    Generic implementation that works with any AgentFactory.
+    """
+
+    def __init__(self, container_service: ContainerService):
+        self.container_service = container_service
+        self._processes: dict[str, ProcessInfo] = {}
+        # ProcessInfo = {
+        #     "proc": asyncio.subprocess.Process,
+        #     "factory": AgentFactory,
+        #     "stdin": StreamWriter,
+        #     "stdout": StreamReader,
+        #     "stderr": StreamReader,
+        #     "started_at": datetime,
+        # }
 
     async def start_process(
         self,
         agent_id: str,
-        command: list[str],
-        env: dict[str, str],
+        factory: AgentFactory
     ) -> None:
-        """Start persistent process in container.
+        """Start persistent agent process using factory config.
 
         Args:
             agent_id: Container ID
-            command: Command to run (e.g., ["claude", "--dangerously-skip-permissions"])
-            env: Environment variables
+            factory: Agent-specific factory instance
 
         Raises:
             RuntimeError: If process fails to start
         """
+        # 1. Get command from factory (polymorphism!)
+        command = factory.get_persistent_command()
 
-    async def write_to_stdin(
-        self,
-        agent_id: str,
-        message: str,
-    ) -> None:
-        """Write message to process stdin.
-
-        Args:
-            agent_id: Container ID
-            message: Text to send (will add newline)
-        """
-
-    async def read_stdout_line(
-        self,
-        agent_id: str,
-        timeout: float = None,
-    ) -> str | None:
-        """Read one line from stdout (non-blocking).
-
-        Returns:
-            Line of text or None if no data available
-        """
-
-    async def get_process_status(
-        self,
-        agent_id: str,
-    ) -> ProcessStatus:
-        """Get process status.
-
-        Returns:
-            ProcessStatus with state, uptime, etc.
-        """
-
-    async def stop_process(
-        self,
-        agent_id: str,
-        graceful: bool = True,
-    ) -> None:
-        """Stop persistent process.
-
-        Args:
-            graceful: If True, send SIGTERM then SIGKILL
-        """
-
-@dataclass
-class ProcessInfo:
-    """Information about running process."""
-    agent_id: str
-    container_id: str
-    command: list[str]
-    started_at: datetime
-    stdin_pipe: asyncio.StreamWriter
-    stdout_pipe: asyncio.StreamReader
-    stderr_pipe: asyncio.StreamReader
-    returncode: int | None = None
-```
-
-**Реализация:**
-
-```python
-import asyncio
-from datetime import datetime, UTC
-
-class ProcessManager:
-    def __init__(self):
-        self._processes: dict[str, ProcessInfo] = {}
-
-    async def start_process(self, agent_id: str, command: list[str], env: dict[str, str]) -> None:
-        """Start persistent process via docker exec."""
-
-        # Build docker exec command
+        # 2. Start process in container
         docker_cmd = [
-            "docker", "exec",
-            "-i",  # Interactive (keep stdin open)
-            agent_id,
-            "/bin/bash", "-c",
-            # Запускаем процесс в фоне, перенаправляем IO
-            f"exec {' '.join(command)}",
+            "docker", "exec", "-i", agent_id,
+            "/bin/bash", "-l", "-c", command
         ]
 
-        # Добавляем env vars
-        env_str = " ".join([f"{k}={v}" for k, v in env.items()])
-        if env_str:
-            docker_cmd[-1] = f"{env_str} {docker_cmd[-1]}"
-
-        # Запускаем процесс
         proc = await asyncio.create_subprocess_exec(
             *docker_cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -301,181 +502,402 @@ class ProcessManager:
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Сохраняем информацию
-        self._processes[agent_id] = ProcessInfo(
-            agent_id=agent_id,
-            container_id=agent_id,
-            command=command,
-            started_at=datetime.now(UTC),
-            stdin_pipe=proc.stdin,
-            stdout_pipe=proc.stdout,
-            stderr_pipe=proc.stderr,
-        )
+        # 3. Wait for readiness (factory-specific check)
+        timeout = factory.get_startup_timeout()
+        readiness_check = factory.get_readiness_check()
+
+        if readiness_check:
+            await self._wait_for_ready(agent_id, readiness_check, timeout)
+        else:
+            # Default: wait for first stdout line
+            await asyncio.wait_for(
+                proc.stdout.readline(),
+                timeout=timeout
+            )
+
+        # 4. Store process info
+        self._processes[agent_id] = {
+            "proc": proc,
+            "factory": factory,
+            "stdin": proc.stdin,
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "started_at": datetime.now(UTC),
+        }
 
         logger.info(
             "persistent_process_started",
             agent_id=agent_id,
-            command=" ".join(command),
+            agent_type=type(factory).__name__,
+            command=command
         )
 
     async def write_to_stdin(self, agent_id: str, message: str) -> None:
-        """Write to stdin."""
-        process = self._processes.get(agent_id)
-        if not process:
-            raise ValueError(f"Process {agent_id} not found")
+        """Write message to agent's stdin.
 
-        # Добавляем newline если нет
-        if not message.endswith("\n"):
-            message += "\n"
+        Uses factory to format message correctly.
 
-        process.stdin_pipe.write(message.encode())
-        await process.stdin_pipe.drain()
+        Args:
+            agent_id: Container ID
+            message: User message text
 
-        logger.debug(
-            "wrote_to_stdin",
+        Raises:
+            ValueError: If process not found
+        """
+        if agent_id not in self._processes:
+            raise ValueError(f"No process found for agent {agent_id}")
+
+        process_info = self._processes[agent_id]
+        factory = process_info["factory"]
+        stdin = process_info["stdin"]
+
+        # Format message using factory (polymorphism!)
+        formatted = factory.format_message_for_stdin(message)
+
+        # Write to stdin
+        stdin.write(formatted.encode())
+        await stdin.drain()
+
+        logger.info(
+            "message_written_to_stdin",
             agent_id=agent_id,
-            message_length=len(message),
+            message_length=len(message)
         )
+
+    async def read_stdout_line(self, agent_id: str, timeout: float = 30.0) -> str | None:
+        """Read one line from agent's stdout.
+
+        Args:
+            agent_id: Container ID
+            timeout: Read timeout in seconds
+
+        Returns:
+            Line string or None if timeout/EOF
+        """
+        if agent_id not in self._processes:
+            return None
+
+        stdout = self._processes[agent_id]["stdout"]
+
+        try:
+            line_bytes = await asyncio.wait_for(
+                stdout.readline(),
+                timeout=timeout
+            )
+            return line_bytes.decode().rstrip('\n')
+        except asyncio.TimeoutError:
+            return None
+
+    async def stop_process(self, agent_id: str, graceful: bool = True) -> None:
+        """Stop persistent agent process.
+
+        Args:
+            agent_id: Container ID
+            graceful: If True, send Ctrl+C, else SIGKILL
+        """
+        if agent_id not in self._processes:
+            return
+
+        proc = self._processes[agent_id]["proc"]
+
+        if graceful:
+            # Send Ctrl+C to stdin
+            try:
+                proc.stdin.write(b'\x03')
+                await proc.stdin.drain()
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+        else:
+            proc.kill()
+
+        await proc.wait()
+        del self._processes[agent_id]
+
+        logger.info("persistent_process_stopped", agent_id=agent_id, graceful=graceful)
 ```
 
-**Тесты**: `services/workers-spawner/tests/unit/test_process_manager.py`
+### 4. ToolCallListener (Agent-Aware)
 
-- Mock docker exec
-- Test start/stop/write
-- Test process crash handling
-
-**Критерий завершения**: ProcessManager запускает и управляет persistent процессом
-
----
-
-### Шаг 1.2: Интегрировать ProcessManager в ContainerService
-
-**Файл**: `services/workers-spawner/src/workers_spawner/container_service.py`
-
-**Изменения:**
+**Отвечает за обнаружение и выполнение tool calls.**
 
 ```python
-from workers_spawner.process_manager import ProcessManager
+class ToolCallListener:
+    """Listens to agent stdout and intercepts tool calls.
 
-class ContainerService:
-    def __init__(self):
-        # ... existing code ...
-        self.process_manager = ProcessManager()
+    Agent-aware: uses factory to parse tool calls correctly.
+    """
 
-    async def create_container(self, config: WorkerConfig, context: dict) -> str:
-        """Create container AND start persistent process."""
+    def __init__(
+        self,
+        process_manager: ProcessManager,
+        tool_executor: ToolExecutor,
+        log_collector: LogCollector
+    ):
+        self.process_manager = process_manager
+        self.tool_executor = tool_executor
+        self.log_collector = log_collector
+        self._listening: dict[str, bool] = {}
 
-        # ... existing container creation code ...
+    async def start_listening(self, agent_id: str, factory: AgentFactory) -> None:
+        """Start listening to agent's stdout for tool calls.
 
-        # Wait for container ready
-        await self._wait_for_container_ready(agent_id)
+        Args:
+            agent_id: Container ID
+            factory: Agent factory (provides pattern & parser)
+        """
+        self._listening[agent_id] = True
 
-        # Create setup files
-        # ... existing code ...
+        # Get pattern from factory (polymorphism!)
+        pattern = factory.get_tool_call_pattern()
+        regex = re.compile(pattern)
 
-        # NEW: Start persistent process
-        agent_command = parser.get_agent_command()
-        env_vars = parser.get_env_vars()
-
-        await self.process_manager.start_process(
+        logger.info(
+            "started_listening_for_tool_calls",
             agent_id=agent_id,
-            command=[agent_command, "--dangerously-skip-permissions"],
-            env=env_vars,
+            pattern=pattern
         )
 
-        logger.info("container_created_with_process", agent_id=agent_id)
-        return agent_id
+        while self._listening.get(agent_id):
+            # Read line from stdout
+            line = await self.process_manager.read_stdout_line(agent_id, timeout=1.0)
 
-    async def delete(self, agent_id: str) -> bool:
-        """Stop process and delete container."""
+            if line is None:
+                continue
 
-        # NEW: Stop persistent process gracefully
+            # Check for tool call
+            match = regex.search(line)
+
+            if match:
+                # Parse using factory (polymorphism!)
+                tool_call = factory.parse_tool_call(match)
+
+                logger.info(
+                    "tool_call_detected",
+                    agent_id=agent_id,
+                    tool=tool_call["tool"],
+                    args=tool_call["args"]
+                )
+
+                # Execute tool
+                await self._handle_tool_call(agent_id, tool_call)
+            else:
+                # Regular log line
+                await self.log_collector.collect_stdout(agent_id, line)
+
+    async def _handle_tool_call(self, agent_id: str, tool_call: dict) -> None:
+        """Execute tool and return result to agent.
+
+        Args:
+            agent_id: Container ID
+            tool_call: Parsed tool call dict
+        """
+        tool_name = tool_call["tool"]
+        args = tool_call["args"]
+
         try:
-            await self.process_manager.stop_process(agent_id, graceful=True)
+            # Execute tool
+            result = await self.tool_executor.execute(tool_name, args, agent_id)
+
+            # Return result to agent via stdin
+            if tool_name == "answer":
+                # Special case: answer to user, no result to agent
+                await self._send_answer_to_user(agent_id, args["message"])
+            elif tool_name == "ask":
+                # Escalation: wait for user input, return to agent
+                user_response = await self._ask_user(agent_id, args["question"])
+                await self.process_manager.write_to_stdin(
+                    agent_id,
+                    f"User answered: {user_response}"
+                )
+            else:
+                # Other tools: return result
+                result_text = f"Tool {tool_name} result: {result}"
+                await self.process_manager.write_to_stdin(agent_id, result_text)
+
         except Exception as e:
-            logger.warning("process_stop_failed", agent_id=agent_id, error=str(e))
+            error_msg = f"Tool {tool_name} failed: {e}"
+            await self.process_manager.write_to_stdin(agent_id, error_msg)
+            logger.error(
+                "tool_execution_failed",
+                agent_id=agent_id,
+                tool=tool_name,
+                error=str(e)
+            )
 
-        # ... existing deletion code ...
+    async def stop_listening(self, agent_id: str) -> None:
+        """Stop listening to agent's stdout."""
+        self._listening[agent_id] = False
 ```
 
-**Критерий завершения**: При создании контейнера запускается persistent процесс
+### 5. ToolExecutor
 
----
+**Отвечает за выполнение инструментов.**
 
-## Фаза 2: ToolCallListener - Перехват и выполнение тулзов
+```python
+class ToolExecutor:
+    """Executes orchestrator tools (answer, ask, project, deploy, etc.)."""
 
-**Цель**: Слушать stdout процесса, перехватывать tool calls, выполнять их.
+    def __init__(self, redis_client, api_client):
+        self.redis = redis_client
+        self.api = api_client
 
-### Шаг 2.1: Определить протокол tool calls
+    async def execute(self, tool_name: str, args: dict, agent_id: str) -> dict:
+        """Execute a tool and return result.
 
-**Формат вывода Claude Code:**
+        Args:
+            tool_name: Tool name (answer, ask, project, deploy, etc.)
+            args: Tool arguments
+            agent_id: Agent container ID
 
+        Returns:
+            Tool execution result
+        """
+        if tool_name == "answer":
+            return await self._execute_answer(args, agent_id)
+        elif tool_name == "ask":
+            return await self._execute_ask(args, agent_id)
+        elif tool_name == "project":
+            return await self._execute_project(args, agent_id)
+        elif tool_name == "deploy":
+            return await self._execute_deploy(args, agent_id)
+        elif tool_name == "engineering":
+            return await self._execute_engineering(args, agent_id)
+        elif tool_name == "infra":
+            return await self._execute_infra(args, agent_id)
+        else:
+            raise ValueError(f"Unknown tool: {tool_name}")
+
+    async def _execute_answer(self, args: dict, agent_id: str) -> dict:
+        """Send answer to user via Redis."""
+        message = args["message"]
+
+        # Publish to response stream
+        await self.redis.xadd(
+            "cli-agent:responses",
+            {
+                "agent_id": agent_id,
+                "type": "answer",
+                "message": message,
+                "timestamp": datetime.now(UTC).isoformat()
+            }
+        )
+
+        return {"success": True}
+
+    async def _execute_ask(self, args: dict, agent_id: str) -> dict:
+        """Escalate question to user."""
+        question = args["question"]
+
+        # Publish question to response stream
+        await self.redis.xadd(
+            "cli-agent:responses",
+            {
+                "agent_id": agent_id,
+                "type": "question",
+                "question": question,
+                "timestamp": datetime.now(UTC).isoformat()
+            }
+        )
+
+        # Block waiting for user answer
+        # (Implementation depends on how we handle user responses)
+        # For MVP, could use a Redis key: cli-agent:answer:{agent_id}
+
+        return {"success": True, "waiting_for_answer": True}
+
+    async def _execute_project(self, args: dict, agent_id: str) -> dict:
+        """Call project API endpoint."""
+        method = args.get("method")
+
+        if method == "create":
+            response = await self.api.post("/projects", json=args)
+        elif method == "get":
+            project_id = args["id"]
+            response = await self.api.get(f"/projects/{project_id}")
+        # ... etc
+
+        return response.json()
+
+    # Similar implementations for deploy, engineering, infra...
 ```
-[Agent думает, выводит в stdout]
-Thinking about the task...
-Analyzing requirements...
 
-<function_calls>
-<invoke name="orchestrator">
-<parameter name="command">answer</parameter>
-<parameter name="message">Проект создан успешно!</parameter>
-</invoke>
-</function_calls>
+### 6. LogCollector
 
-[Ждёт результата]
+**Отвечает за сбор логов.**
+
+```python
+class LogCollector:
+    """Collects and stores agent logs to Redis."""
+
+    def __init__(self, redis_client):
+        self.redis = redis_client
+
+    async def collect_stdout(self, agent_id: str, line: str) -> None:
+        """Collect stdout line."""
+        await self._store_log(agent_id, "stdout", line)
+
+    async def collect_stderr(self, agent_id: str, line: str) -> None:
+        """Collect stderr line."""
+        await self._store_log(agent_id, "stderr", line)
+
+    async def _store_log(self, agent_id: str, stream: str, line: str) -> None:
+        """Store log line to Redis stream."""
+        await self.redis.xadd(
+            f"agent:logs:{agent_id}",
+            {
+                "stream": stream,
+                "line": line,
+                "timestamp": datetime.now(UTC).isoformat()
+            },
+            maxlen=1000,  # Keep last 1000 lines
+            approximate=True
+        )
 ```
 
-**Или через bash wrapper:**
+### 7. Orchestrator CLI Tools (Bash Wrappers)
 
-```bash
-# В контейнере агента устанавливаем orchestrator CLI
-orchestrator answer "Проект создан!"
+**Устанавливаются в контейнере, доступны агенту.**
 
-# Который выводит в stdout:
-__TOOL_CALL__:{"tool":"answer","args":{"message":"Проект создан!"}}
-```
-
-**Выбираем вариант 2** - bash wrapper проще парсить.
-
----
-
-### Шаг 2.2: Создать orchestrator CLI tool
-
-**Файл**: `services/universal-worker/orchestrator-cli/orchestrator` (bash скрипт)
+**`/usr/local/bin/orchestrator`:**
 
 ```bash
 #!/bin/bash
-# Orchestrator CLI tool for agents
+# Orchestrator CLI tool wrapper
+# Usage: orchestrator <command> [args...]
 
-set -e
-
-COMMAND=$1
+COMMAND="$1"
 shift
 
 case "$COMMAND" in
     answer)
+        # orchestrator answer "message"
         MESSAGE="$1"
         echo "__TOOL_CALL__:{\"tool\":\"answer\",\"args\":{\"message\":\"$MESSAGE\"}}"
-        # Ждём ответа от Workers-Spawner
-        read -r RESULT
-        echo "$RESULT"
         ;;
 
     ask)
-        MESSAGE="$1"
-        TO="${2:-$PARENT_AGENT_ID}"
-        echo "__TOOL_CALL__:{\"tool\":\"ask\",\"args\":{\"message\":\"$MESSAGE\",\"to\":\"$TO\"}}"
-        read -r RESULT
-        echo "$RESULT"
+        # orchestrator ask "question"
+        QUESTION="$1"
+        echo "__TOOL_CALL__:{\"tool\":\"ask\",\"args\":{\"question\":\"$QUESTION\"}}"
         ;;
 
     project)
-        SUBCOMMAND="$1"
-        shift
-        ARGS=$(jq -n --arg cmd "$SUBCOMMAND" --args '$ARGS' "$@")
-        echo "__TOOL_CALL__:{\"tool\":\"project\",\"args\":$ARGS}"
-        read -r RESULT
-        echo "$RESULT"
+        # orchestrator project create --name myapp
+        # Parse args and build JSON
+        echo "__TOOL_CALL__:{\"tool\":\"project\",\"args\":{...}}"
+        ;;
+
+    deploy)
+        echo "__TOOL_CALL__:{\"tool\":\"deploy\",\"args\":{...}}"
+        ;;
+
+    engineering)
+        echo "__TOOL_CALL__:{\"tool\":\"engineering\",\"args\":{...}}"
+        ;;
+
+    infra)
+        echo "__TOOL_CALL__:{\"tool\":\"infra\",\"args\":{...}}"
         ;;
 
     *)
@@ -485,866 +907,821 @@ case "$COMMAND" in
 esac
 ```
 
-**Установка в контейнере:**
-
-```dockerfile
-# services/universal-worker/Dockerfile
-COPY orchestrator-cli/orchestrator /usr/local/bin/orchestrator
-RUN chmod +x /usr/local/bin/orchestrator
-```
-
-**Критерий завершения**: Агент может вызвать `orchestrator answer "текст"`
+**Примечание**: Для Factory Droid и других агентов можно создать алиасы или wrapper с другим именем, но выходной формат остаётся единым.
 
 ---
 
-### Шаг 2.3: Создать ToolCallListener
+## Пример работы (полиморфизм в действии)
 
-**Файл**: `services/workers-spawner/src/workers_spawner/tool_call_listener.py` (новый)
+### Пользователь отправляет сообщение:
 
 ```python
-import asyncio
-import json
-import re
-from typing import Callable, Awaitable
-
-TOOL_CALL_PATTERN = re.compile(r'__TOOL_CALL__:({.*})')
-
-class ToolCallListener:
-    """Listens to process stdout for tool calls and executes them."""
-
-    def __init__(
-        self,
-        process_manager: ProcessManager,
-        tool_executor: Callable[[str, dict], Awaitable[dict]],
-    ):
-        self.process_manager = process_manager
-        self.tool_executor = tool_executor
-        self._listeners: dict[str, asyncio.Task] = {}
-
-    async def start_listening(self, agent_id: str) -> None:
-        """Start listening to agent's stdout for tool calls."""
-        task = asyncio.create_task(self._listen_loop(agent_id))
-        self._listeners[agent_id] = task
-
-    async def stop_listening(self, agent_id: str) -> None:
-        """Stop listening."""
-        task = self._listeners.pop(agent_id, None)
-        if task:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    async def _listen_loop(self, agent_id: str) -> None:
-        """Main listening loop."""
-        logger.info("tool_call_listener_started", agent_id=agent_id)
-
-        try:
-            while True:
-                # Read line from stdout
-                line = await self.process_manager.read_stdout_line(agent_id, timeout=1.0)
-
-                if not line:
-                    await asyncio.sleep(0.1)
-                    continue
-
-                # Log to Redis (для аналитики)
-                await self._log_stdout(agent_id, line)
-
-                # Check for tool call
-                match = TOOL_CALL_PATTERN.search(line)
-                if match:
-                    tool_call_json = match.group(1)
-                    await self._handle_tool_call(agent_id, tool_call_json)
-
-        except asyncio.CancelledError:
-            logger.info("tool_call_listener_stopped", agent_id=agent_id)
-            raise
-        except Exception as e:
-            logger.error("tool_call_listener_error", agent_id=agent_id, error=str(e))
-
-    async def _handle_tool_call(self, agent_id: str, tool_call_json: str) -> None:
-        """Parse and execute tool call."""
-        try:
-            tool_call = json.loads(tool_call_json)
-            tool_name = tool_call["tool"]
-            tool_args = tool_call["args"]
-
-            logger.info(
-                "tool_call_received",
-                agent_id=agent_id,
-                tool=tool_name,
-                args=tool_args,
-            )
-
-            # Execute tool
-            result = await self.tool_executor(tool_name, tool_args)
-
-            # Return result to agent's stdin
-            result_json = json.dumps(result)
-            await self.process_manager.write_to_stdin(agent_id, result_json)
-
-            logger.info(
-                "tool_call_executed",
-                agent_id=agent_id,
-                tool=tool_name,
-                success=result.get("success", False),
-            )
-
-        except Exception as e:
-            logger.error(
-                "tool_call_execution_failed",
-                agent_id=agent_id,
-                error=str(e),
-            )
-            # Return error to agent
-            error_result = json.dumps({"success": False, "error": str(e)})
-            await self.process_manager.write_to_stdin(agent_id, error_result)
-
-    async def _log_stdout(self, agent_id: str, line: str) -> None:
-        """Log stdout line to Redis."""
-        # TODO: Implement in Phase 3
-        pass
+# Telegram Bot
+await agent_manager.send_message(user_id=123, text="Create project myapp")
 ```
 
-**Критерий завершения**: ToolCallListener перехватывает и выполняет tool calls
-
----
-
-### Шаг 2.4: Создать ToolExecutor
-
-**Файл**: `services/workers-spawner/src/workers_spawner/tool_executor.py` (новый)
+### Workers-Spawner обрабатывает:
 
 ```python
-class ToolExecutor:
-    """Executes tools called by agents."""
+# CommandHandler
+async def handle_send_message(request):
+    agent_id = request["agent_id"]
+    message = request["message"]
 
-    def __init__(
-        self,
-        event_publisher: EventPublisher,
-        api_client: OrchestratorAPIClient,  # NEW
-    ):
-        self.events = event_publisher
-        self.api = api_client
+    # 1. Get agent metadata
+    agent_meta = await container_service.get_metadata(agent_id)
+    agent_type = agent_meta["agent_type"]  # e.g., CLAUDE_CODE or FACTORY_DROID
 
-        # Tool handlers
-        self._handlers = {
-            "answer": self._handle_answer,
-            "ask": self._handle_ask,
-            "project": self._handle_project,
-            "deploy": self._handle_deploy,
-            # ... more tools
-        }
+    # 2. Get factory (ПОЛИМОРФИЗМ!)
+    factory = get_agent_factory(agent_type, container_service)
 
-    async def execute(self, tool_name: str, args: dict) -> dict:
-        """Execute tool and return result."""
-        handler = self._handlers.get(tool_name)
-        if not handler:
-            return {
-                "success": False,
-                "error": f"Unknown tool: {tool_name}",
-            }
+    # 3. Write to stdin (generic method)
+    await process_manager.write_to_stdin(agent_id, message)
 
-        try:
-            return await handler(args)
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-            }
-
-    async def _handle_answer(self, args: dict) -> dict:
-        """Handle 'orchestrator answer' tool.
-
-        Publishes answer to response channel for Telegram bot.
-        """
-        message = args.get("message")
-        agent_id = args.get("agent_id")  # Injected by ToolCallListener
-
-        if not message:
-            return {"success": False, "error": "Missing message"}
-
-        # Publish to Redis for Telegram bot
-        await self.events.publish_response(agent_id, message)
-
-        logger.info("answer_published", agent_id=agent_id, message_length=len(message))
-
-        return {
-            "success": True,
-            "message": "Answer published",
-        }
-
-    async def _handle_project(self, args: dict) -> dict:
-        """Handle 'orchestrator project' tool.
-
-        Proxies to Orchestrator API.
-        """
-        subcommand = args.get("subcommand")
-
-        if subcommand == "create":
-            result = await self.api.create_project(
-                name=args.get("name"),
-                description=args.get("description"),
-            )
-            return {
-                "success": True,
-                "project_id": result["id"],
-                "message": f"Project created: {result['id']}",
-            }
-
-        elif subcommand == "list":
-            projects = await self.api.list_projects()
-            return {
-                "success": True,
-                "projects": projects,
-            }
-
-        # ... more subcommands
+    # Factory handles formatting internally!
+    # - ClaudeCodeAgent: "Create project myapp\n"
+    # - FactoryDroidAgent: "Create project myapp\n"
+    # - CodexAgent: "{\"type\":\"user_message\",\"content\":\"Create project myapp\"}\n"
 ```
 
-**Критерий завершения**: Tool executor выполняет базовые тулзы
+### Agent обрабатывает и отвечает:
 
----
+```
+# Claude stdout:
+I'll create the project for you.
+__TOOL_CALL__:{"tool":"project","args":{"method":"create","name":"myapp"}}
+Project created successfully!
+__TOOL_CALL__:{"tool":"answer","args":{"message":"Done! Project 'myapp' created."}}
+```
 
-## Фаза 3: Logging - Сбор и хранение логов агентов
-
-**Цель**: Собирать все логи агентов (stdout/stderr) для аналитики и debugging.
-
-### Шаг 3.1: Определить формат хранения
-
-**Опции:**
-1. Redis Streams (retention last 1000 lines)
-2. PostgreSQL (structured logs)
-3. File storage (S3/MinIO)
-
-**Выбираем**: Redis Streams для MVP (простота + скорость)
-
-**Schema:**
+### ToolCallListener перехватывает:
 
 ```python
-# Redis Stream: agent:{agent_id}:logs
-{
-    "timestamp": "2026-01-04T12:34:56.789Z",
-    "level": "info",  # info, error, debug
-    "source": "stdout",  # stdout, stderr, system
-    "message": "Processing request...",
-    "agent_id": "agent-abc123",
-}
+# Listening loop
+while True:
+    line = await process_manager.read_stdout_line(agent_id)
+
+    # Get pattern from factory (ПОЛИМОРФИЗМ!)
+    pattern = factory.get_tool_call_pattern()
+    match = re.search(pattern, line)
+
+    if match:
+        # Parse using factory (ПОЛИМОРФИЗМ!)
+        tool_call = factory.parse_tool_call(match)
+        # {"tool": "project", "args": {"method": "create", "name": "myapp"}}
+
+        # Execute tool
+        await tool_executor.execute(tool_call["tool"], tool_call["args"], agent_id)
 ```
 
----
-
-### Шаг 3.2: Реализовать LogCollector
-
-**Файл**: `services/workers-spawner/src/workers_spawner/log_collector.py` (новый)
+### Пользователь получает ответ:
 
 ```python
-import asyncio
-from datetime import datetime, UTC
-import redis.asyncio as redis
+# Telegram Bot reads from Redis stream
+message = await redis.xread({"cli-agent:responses": last_id})
+# {"type": "answer", "message": "Done! Project 'myapp' created."}
 
-class LogCollector:
-    """Collects and stores agent logs."""
-
-    def __init__(self, redis_client: redis.Redis):
-        self.redis = redis_client
-        self._collectors: dict[str, asyncio.Task] = {}
-
-    async def start_collecting(
-        self,
-        agent_id: str,
-        process_manager: ProcessManager,
-    ) -> None:
-        """Start collecting logs from agent."""
-        # Start stdout collector
-        stdout_task = asyncio.create_task(
-            self._collect_stream(agent_id, process_manager, "stdout")
-        )
-        # Start stderr collector
-        stderr_task = asyncio.create_task(
-            self._collect_stream(agent_id, process_manager, "stderr")
-        )
-
-        self._collectors[agent_id] = asyncio.gather(stdout_task, stderr_task)
-
-    async def stop_collecting(self, agent_id: str) -> None:
-        """Stop collecting logs."""
-        task = self._collectors.pop(agent_id, None)
-        if task:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    async def _collect_stream(
-        self,
-        agent_id: str,
-        process_manager: ProcessManager,
-        stream_type: str,  # "stdout" or "stderr"
-    ) -> None:
-        """Collect lines from stdout or stderr."""
-        logger.info("log_collector_started", agent_id=agent_id, stream=stream_type)
-
-        try:
-            while True:
-                # Read line
-                if stream_type == "stdout":
-                    line = await process_manager.read_stdout_line(agent_id, timeout=1.0)
-                else:
-                    line = await process_manager.read_stderr_line(agent_id, timeout=1.0)
-
-                if not line:
-                    await asyncio.sleep(0.1)
-                    continue
-
-                # Store in Redis
-                await self._store_log(agent_id, stream_type, line)
-
-        except asyncio.CancelledError:
-            logger.info("log_collector_stopped", agent_id=agent_id, stream=stream_type)
-            raise
-        except Exception as e:
-            logger.error("log_collector_error", agent_id=agent_id, error=str(e))
-
-    async def _store_log(
-        self,
-        agent_id: str,
-        source: str,
-        message: str,
-    ) -> None:
-        """Store log entry in Redis Stream."""
-        stream_name = f"agent:{agent_id}:logs"
-
-        entry = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "level": "error" if source == "stderr" else "info",
-            "source": source,
-            "message": message,
-            "agent_id": agent_id,
-        }
-
-        await self.redis.xadd(
-            stream_name,
-            entry,
-            maxlen=1000,  # Keep last 1000 entries
-        )
-
-    async def get_logs(
-        self,
-        agent_id: str,
-        limit: int = 100,
-    ) -> list[dict]:
-        """Get recent logs for agent."""
-        stream_name = f"agent:{agent_id}:logs"
-
-        messages = await self.redis.xrevrange(
-            stream_name,
-            count=limit,
-        )
-
-        logs = []
-        for msg_id, data in messages:
-            logs.append({
-                "id": msg_id,
-                **data,
-            })
-
-        return logs
+await bot.send_message(user_id, message["message"])
 ```
 
-**Критерий завершения**: Логи агентов собираются в Redis
+---
+
+## Фазы реализации MVP
+
+### Phase 0: Design & Interfaces (2-3 дня)
+
+**Цель**: Спроектировать интерфейсы и контракты.
+
+**Задачи**:
+1. ✅ Расширить `AgentFactory` abstract class новыми методами:
+   - `get_persistent_command()`
+   - `get_tool_call_pattern()`
+   - `parse_tool_call()`
+   - `format_message_for_stdin()`
+   - `get_startup_timeout()`
+   - `get_readiness_check()`
+
+2. ✅ Определить tool call protocol:
+   - Формат: `__TOOL_CALL__:{"tool":"name","args":{...}}`
+   - Список tools: answer, ask, project, deploy, engineering, infra
+   - JSON schema для каждого tool
+
+3. ✅ Спроектировать ProcessManager API:
+   - `start_process(agent_id, factory)`
+   - `write_to_stdin(agent_id, message)`
+   - `read_stdout_line(agent_id, timeout)`
+   - `stop_process(agent_id, graceful)`
+
+4. ✅ Спроектировать ToolCallListener API:
+   - `start_listening(agent_id, factory)`
+   - `stop_listening(agent_id)`
+
+5. ✅ Спроектировать ToolExecutor API:
+   - `execute(tool_name, args, agent_id)`
+
+6. ✅ Написать спецификации в `docs/persistent-agents-mvp.md`
+
+**Критерии готовности**:
+- [ ] Все интерфейсы определены и задокументированы
+- [ ] Tool call protocol полностью описан
+- [ ] Написаны примеры для Claude Code и Factory Droid
 
 ---
 
-### Шаг 3.3: Добавить get_logs endpoint
+### Phase 1: AgentFactory Extensions (2-3 дня)
 
-**Файл**: `services/workers-spawner/src/workers_spawner/redis_handlers.py`
+**Цель**: Расширить существующие фабрики для persistent режима.
 
-```python
-class CommandHandler:
-    def __init__(self, ..., log_collector: LogCollector):
-        # ... existing code ...
-        self.log_collector = log_collector
+**Задачи**:
 
-        self._handlers["get_logs"] = self._handle_get_logs
+1. **Обновить базовый класс `AgentFactory`**:
+   - Добавить новые abstract методы
+   - Добавить default implementations где возможно
+   - `services/workers-spawner/src/workers_spawner/factories/base.py`
 
-    async def _handle_get_logs(self, message: dict) -> dict:
-        """Handle get_logs command.
+2. **Реализовать ClaudeCodeAgent persistent методы**:
+   ```python
+   # services/workers-spawner/src/workers_spawner/factories/agents/claude_code.py
 
-        Expected fields:
-        - agent_id: str
-        - limit: optional int (default 100)
-        """
-        agent_id = message.get("agent_id")
-        limit = message.get("limit", 100)
+   def get_persistent_command(self) -> str:
+       return "claude --dangerously-skip-permissions"
 
-        if not agent_id:
-            raise ValueError("Missing 'agent_id' field")
+   def get_tool_call_pattern(self) -> str:
+       return r'__TOOL_CALL__:(?P<payload>\{.*\})'
 
-        logs = await self.log_collector.get_logs(agent_id, limit)
+   def parse_tool_call(self, match: re.Match) -> dict:
+       import json
+       payload = match.group('payload')
+       data = json.loads(payload)
+       return {"tool": data["tool"], "args": data["args"], "raw": match.group(0)}
 
-        return {
-            "logs": logs,
-            "count": len(logs),
-        }
-```
+   def format_message_for_stdin(self, message: str) -> str:
+       return f"{message}\n"
+   ```
 
-**Критерий завершения**: Можно получить логи агента через API
+3. **Реализовать FactoryDroidAgent persistent методы**:
+   ```python
+   # services/workers-spawner/src/workers_spawner/factories/agents/factory_droid.py
 
----
+   def get_persistent_command(self) -> str:
+       return "droid --interactive --unsafe-permissions"
 
-## Фаза 4: Integration - Связываем всё вместе
+   # ... аналогично Claude, но может отличаться
+   ```
 
-**Цель**: Интегрировать ProcessManager, ToolCallListener, LogCollector в единую систему.
+4. **Создать CodexAgent заглушку** (для демонстрации полиморфизма):
+   ```python
+   # services/workers-spawner/src/workers_spawner/factories/agents/codex.py
 
-### Шаг 4.1: Обновить container_service.py
+   @register_agent(AgentType.CODEX)
+   class CodexAgent(AgentFactory):
+       """Stub implementation for future Codex support."""
 
-**Файл**: `services/workers-spawner/src/workers_spawner/container_service.py`
+       def get_persistent_command(self) -> str:
+           return "codex --stdin --format json"
 
-```python
-from workers_spawner.process_manager import ProcessManager
-from workers_spawner.tool_call_listener import ToolCallListener
-from workers_spawner.log_collector import LogCollector
-from workers_spawner.tool_executor import ToolExecutor
+       # ... stub implementations
+   ```
 
-class ContainerService:
-    def __init__(self):
-        # ... existing code ...
+5. **Написать unit тесты**:
+   - `services/workers-spawner/tests/unit/test_agent_factories_persistent.py`
+   - Тесты для каждого метода каждой фабрики
+   - Проверка полиморфизма
 
-        # NEW components
-        self.process_manager = ProcessManager()
-        self.log_collector = LogCollector(self.redis)
-        self.tool_executor = ToolExecutor(
-            event_publisher=EventPublisher(self.redis),
-            api_client=OrchestratorAPIClient(),
-        )
-        self.tool_listener = ToolCallListener(
-            process_manager=self.process_manager,
-            tool_executor=self.tool_executor.execute,
-        )
-
-    async def create_container(self, config: WorkerConfig, context: dict) -> str:
-        """Create container with persistent process."""
-
-        # 1. Create Docker container
-        agent_id = await self._create_docker_container(config, context)
-
-        # 2. Wait for ready
-        await self._wait_for_container_ready(agent_id)
-
-        # 3. Setup files
-        await self._setup_files(agent_id, config)
-
-        # 4. Start persistent process
-        await self.process_manager.start_process(
-            agent_id=agent_id,
-            command=["claude", "--dangerously-skip-permissions"],
-            env=self._get_env_vars(config),
-        )
-
-        # 5. Start tool call listener
-        await self.tool_listener.start_listening(agent_id)
-
-        # 6. Start log collector
-        await self.log_collector.start_collecting(agent_id, self.process_manager)
-
-        logger.info("agent_fully_initialized", agent_id=agent_id)
-        return agent_id
-
-    async def delete(self, agent_id: str) -> bool:
-        """Gracefully shutdown agent."""
-
-        # 1. Stop log collector
-        await self.log_collector.stop_collecting(agent_id)
-
-        # 2. Stop tool listener
-        await self.tool_listener.stop_listening(agent_id)
-
-        # 3. Stop process
-        await self.process_manager.stop_process(agent_id, graceful=True)
-
-        # 4. Delete container
-        await self._delete_docker_container(agent_id)
-
-        # 5. Cleanup session
-        await self.session_manager.delete_session_context(agent_id)
-
-        logger.info("agent_deleted", agent_id=agent_id)
-        return True
-```
-
-**Критерий завершения**: Полный lifecycle агента работает
+**Критерии готовности**:
+- [ ] `AgentFactory` расширен новыми методами
+- [ ] `ClaudeCodeAgent` реализует все persistent методы
+- [ ] `FactoryDroidAgent` реализует все persistent методы
+- [ ] `CodexAgent` stub создан
+- [ ] Unit тесты покрывают >90% кода
+- [ ] `make test-workers-spawner-unit` проходит
 
 ---
 
-### Шаг 4.2: Обновить send_message handler
+### Phase 2: ProcessManager Implementation (3-4 дня)
 
-**Файл**: `services/workers-spawner/src/workers_spawner/redis_handlers.py`
+**Цель**: Реализовать управление persistent процессами.
 
-```python
-async def _handle_send_message(self, message: dict) -> dict:
-    """Handle send_message - simplified for persistent agents.
+**Задачи**:
 
-    Expected fields:
-    - agent_id: str
-    - message: str
+1. **Создать ProcessManager**:
+   ```python
+   # services/workers-spawner/src/workers_spawner/process_manager.py
 
-    Returns:
-    - immediate acknowledgment
-    - actual response comes via tool call (orchestrator answer)
-    """
-    agent_id = message.get("agent_id")
-    user_message = message.get("message")
+   class ProcessManager:
+       """Manages persistent agent processes in containers."""
 
-    if not agent_id or not user_message:
-        raise ValueError("Missing required fields")
+       def __init__(self, container_service: ContainerService):
+           self.container_service = container_service
+           self._processes: dict[str, ProcessInfo] = {}
 
-    # Write to stdin
-    await self.containers.process_manager.write_to_stdin(
-        agent_id,
-        user_message,
-    )
+       async def start_process(self, agent_id: str, factory: AgentFactory) -> None:
+           """Start persistent agent process using factory config."""
+           # Implementation as described above
 
-    logger.info(
-        "message_sent_to_agent",
-        agent_id=agent_id,
-        message_length=len(user_message),
-    )
+       async def write_to_stdin(self, agent_id: str, message: str) -> None:
+           """Write message to agent's stdin."""
+           # Implementation as described above
 
-    # Return immediately (response will come via tool call)
-    return {
-        "status": "sent",
-        "message": "Message sent to agent, response will arrive via tool call",
-    }
-```
+       async def read_stdout_line(self, agent_id: str, timeout: float) -> str | None:
+           """Read one line from stdout."""
+           # Implementation as described above
 
-**ВАЖНО**: Теперь `send_message` не возвращает ответ сразу!
+       async def stop_process(self, agent_id: str, graceful: bool = True) -> None:
+           """Stop process gracefully or forcefully."""
+           # Implementation as described above
+   ```
 
-Ответ приходит через tool call:
-```
-Agent получает message в stdin
-  ↓
-Думает...
-  ↓
-Вызывает: orchestrator answer "Ответ"
-  ↓
-ToolCallListener перехватывает
-  ↓
-ToolExecutor.execute("answer", {...})
-  ↓
-Публикует в agents:{agent_id}:response
-  ↓
-Telegram bot получает через PubSub
-```
+2. **Интеграция с ContainerService**:
+   - Модифицировать `create_container()` для запуска persistent процесса
+   - Добавить вызов `process_manager.start_process()` после создания контейнера
+   - `services/workers-spawner/src/workers_spawner/container_service.py`
 
-**Критерий завершения**: Сообщения пишутся в stdin, ответы через tool calls
+3. **Обработка ошибок**:
+   - Retry logic для старта процесса
+   - Graceful degradation если процесс умер
+   - Auto-restart опция (опционально для MVP)
 
----
+4. **Написать unit тесты**:
+   - Mock ContainerService
+   - Mock subprocess для тестирования
+   - `services/workers-spawner/tests/unit/test_process_manager.py`
 
-### Шаг 4.3: Обновить Telegram bot
+5. **Написать integration тесты**:
+   - Реальный Docker контейнер
+   - Запуск/остановка процесса
+   - Запись в stdin, чтение из stdout
+   - `services/workers-spawner/tests/integration/test_process_manager.py`
 
-**Файл**: `services/telegram_bot/src/agent_manager.py`
-
-Нужно подписаться на `agents:{agent_id}:response` PubSub:
-
-```python
-class AgentManager:
-    def __init__(self):
-        # ... existing code ...
-        self._response_listeners: dict[int, asyncio.Task] = {}
-
-    async def start_response_listener(self, user_id: int, agent_id: str) -> None:
-        """Start listening for responses from agent."""
-        async def listen():
-            pubsub = self.redis.pubsub()
-            await pubsub.subscribe(f"agents:{agent_id}:response")
-
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    response_text = message["data"]
-                    # Send to user via Telegram
-                    await self._send_to_telegram(user_id, response_text)
-
-        task = asyncio.create_task(listen())
-        self._response_listeners[user_id] = task
-
-    async def send_message(self, user_id: int, message: str) -> None:
-        """Send message to agent (fire and forget)."""
-        agent_id = await self.get_or_create_agent(user_id)
-
-        # Start listener if not running
-        if user_id not in self._response_listeners:
-            await self.start_response_listener(user_id, agent_id)
-
-        # Send message
-        await workers_spawner.send_message(agent_id, message)
-
-        logger.info("message_sent_to_agent", user_id=user_id, agent_id=agent_id)
-```
-
-**Альтернатива**: Использовать существующий EventPublisher.publish_response
-
-**Критерий завершения**: Telegram bot получает ответы через PubSub
+**Критерии готовности**:
+- [ ] `ProcessManager` полностью реализован
+- [ ] Интеграция с `ContainerService` работает
+- [ ] Unit тесты покрывают >90% кода
+- [ ] Integration тесты проходят с реальным контейнером
+- [ ] Graceful shutdown работает корректно
 
 ---
 
-## Фаза 5: Testing & Stabilization
+### Phase 3: ToolCallListener & ToolExecutor (3-4 дня)
 
-**Цель**: Протестировать MVP end-to-end и исправить баги.
+**Цель**: Реализовать обнаружение и выполнение tool calls.
 
-### Шаг 5.1: Написать интеграционные тесты
+**Задачи**:
 
-**Файл**: `services/workers-spawner/tests/integration/test_persistent_agents.py`
+1. **Создать ToolExecutor**:
+   ```python
+   # services/workers-spawner/src/workers_spawner/tool_executor.py
 
-```python
-@pytest.mark.asyncio
-async def test_persistent_agent_lifecycle():
-    """Test full lifecycle: create → send message → get response → delete."""
+   class ToolExecutor:
+       """Executes orchestrator tools."""
 
-    # 1. Create agent
-    agent_id = await container_service.create_container(
-        config=WorkerConfig(agent="claude-code", ...),
-        context={"user_id": "test_user"},
-    )
+       def __init__(self, redis_client, api_client):
+           self.redis = redis_client
+           self.api = api_client
 
-    # 2. Wait for initialization
-    await asyncio.sleep(5)
+       async def execute(self, tool_name: str, args: dict, agent_id: str) -> dict:
+           """Execute a tool and return result."""
+           # Routing to specific tool handlers
 
-    # 3. Send message
-    await process_manager.write_to_stdin(agent_id, "Hello, what tools do I have?")
+       async def _execute_answer(self, args, agent_id) -> dict:
+           """Publish answer to Redis response stream."""
 
-    # 4. Wait for tool call
-    await asyncio.sleep(10)
+       async def _execute_ask(self, args, agent_id) -> dict:
+           """Escalate question to user."""
 
-    # 5. Check logs
-    logs = await log_collector.get_logs(agent_id)
-    assert len(logs) > 0
+       async def _execute_project(self, args, agent_id) -> dict:
+           """Call project API."""
 
-    # 6. Delete
-    await container_service.delete(agent_id)
+       # ... etc for all tools
+   ```
 
-    # 7. Verify cleanup
-    assert agent_id not in process_manager._processes
+2. **Создать ToolCallListener**:
+   ```python
+   # services/workers-spawner/src/workers_spawner/tool_call_listener.py
 
+   class ToolCallListener:
+       """Listens to stdout and intercepts tool calls."""
 
-@pytest.mark.asyncio
-async def test_tool_call_answer():
-    """Test that 'orchestrator answer' tool publishes response."""
+       def __init__(self, process_manager, tool_executor, log_collector):
+           self.process_manager = process_manager
+           self.tool_executor = tool_executor
+           self.log_collector = log_collector
+           self._listening: dict[str, bool] = {}
 
-    # Setup
-    agent_id = "test-agent"
+       async def start_listening(self, agent_id: str, factory: AgentFactory) -> None:
+           """Start listening loop for agent."""
+           # Implementation as described above
 
-    # Execute tool
-    result = await tool_executor.execute("answer", {
-        "agent_id": agent_id,
-        "message": "Test response",
-    })
+       async def stop_listening(self, agent_id: str) -> None:
+           """Stop listening."""
+           self._listening[agent_id] = False
+   ```
 
-    assert result["success"] is True
+3. **Создать LogCollector**:
+   ```python
+   # services/workers-spawner/src/workers_spawner/log_collector.py
 
-    # Verify published to Redis
-    # ... check Redis PubSub
-```
+   class LogCollector:
+       """Collects agent logs to Redis."""
 
-**Критерий завершения**: Интеграционные тесты проходят
+       def __init__(self, redis_client):
+           self.redis = redis_client
 
----
+       async def collect_stdout(self, agent_id: str, line: str) -> None:
+           """Store stdout line to Redis stream."""
 
-### Шаг 5.2: Manual testing через Telegram
+       async def collect_stderr(self, agent_id: str, line: str) -> None:
+           """Store stderr line to Redis stream."""
+   ```
 
-**Тест-кейсы:**
+4. **Написать orchestrator CLI wrapper**:
+   ```bash
+   # services/universal-worker/orchestrator-cli/orchestrator
 
-1. **Создание агента**
-   - User: `/start`
-   - Ожидаем: Контейнер создаётся, процесс запускается
+   #!/bin/bash
+   # Wrapper for orchestrator tools
+   # Outputs __TOOL_CALL__:{...} to stdout
+   ```
 
-2. **Простой вопрос**
-   - User: "Привет!"
-   - Ожидаем: Агент отвечает через `orchestrator answer`
+5. **Обновить Dockerfile universal-worker**:
+   - Копировать orchestrator script в `/usr/local/bin/`
+   - Сделать executable
+   - `services/universal-worker/Dockerfile`
 
-3. **Tool usage**
-   - User: "Создай проект TestProject"
-   - Ожидаем: Агент вызывает `orchestrator project create`, получает project_id, отвечает
+6. **Написать unit тесты**:
+   - Mock ProcessManager для ToolCallListener
+   - Mock Redis для ToolExecutor
+   - Тесты для каждого tool
 
-4. **Логи**
-   - Admin: Запросить логи через API
-   - Ожидаем: Видим stdout агента
+7. **Написать integration тесты**:
+   - Запуск контейнера с Claude
+   - Отправка сообщения "use orchestrator answer 'test'"
+   - Проверка что tool call перехвачен и выполнен
 
-5. **TTL expiry**
-   - Подождать 2 часа
-   - Ожидаем: Контейнер удаляется gracefully
-
-6. **Multiple messages**
-   - User: "Вопрос 1", "Вопрос 2", "Вопрос 3"
-   - Ожидаем: История сохраняется, агент помнит контекст
-
-**Критерий завершения**: Все тест-кейсы проходят
-
----
-
-### Шаг 5.3: Performance & monitoring
-
-**Метрики для мониторинга:**
-
-1. **Process health**
-   - Процесс жив?
-   - Uptime
-   - Memory usage
-
-2. **Response time**
-   - Время от send_message до answer
-   - P50, P95, P99
-
-3. **Tool call success rate**
-   - Сколько tool calls успешных vs failed
-
-4. **Log volume**
-   - Сколько логов пишется в секунду
-   - Нужно ли ротировать?
-
-**Реализация:**
-
-```python
-# services/workers-spawner/src/workers_spawner/metrics.py
-
-from prometheus_client import Counter, Histogram, Gauge
-
-TOOL_CALLS_TOTAL = Counter(
-    "agent_tool_calls_total",
-    "Total tool calls by agents",
-    ["tool_name", "status"],
-)
-
-RESPONSE_TIME = Histogram(
-    "agent_response_time_seconds",
-    "Time from message to answer",
-)
-
-ACTIVE_PROCESSES = Gauge(
-    "agent_active_processes",
-    "Number of active agent processes",
-)
-```
-
-**Критерий завершения**: Метрики собираются, дашборды настроены
+**Критерии готовности**:
+- [ ] `ToolExecutor` реализован для всех tools
+- [ ] `ToolCallListener` корректно парсит tool calls для разных агентов
+- [ ] `LogCollector` сохраняет логи в Redis
+- [ ] Orchestrator CLI wrapper работает
+- [ ] Unit тесты покрывают >90%
+- [ ] Integration тест end-to-end проходит
 
 ---
 
-## Фаза 6: Documentation & Rollout
+### Phase 4: Integration & Redis Handlers (2-3 дня)
 
-**Цель**: Задокументировать архитектуру и развернуть MVP.
+**Цель**: Интегрировать всё в Redis command handlers.
 
-### Шаг 6.1: Обновить документацию
+**Задачи**:
 
-**Файлы:**
+1. **Обновить CommandHandler**:
+   ```python
+   # services/workers-spawner/src/workers_spawner/redis_handlers.py
 
-1. `README.md` - добавить секцию про persistent agents
-2. `ARCHITECTURE.md` - обновить диаграммы
-3. `docs/TOOLS.md` - документировать orchestrator CLI tools
-4. `docs/PERSISTENT_AGENTS.md` - гайд для разработчиков
+   async def handle_create(request: dict) -> dict:
+       """Create agent container and start persistent process."""
+       # 1. Create container (existing logic)
+       agent_id = await container_service.create_container(config, context)
 
-**Критерий завершения**: Документация актуальна
+       # 2. Get factory
+       factory = get_agent_factory(config.agent, container_service)
+
+       # 3. Start persistent process
+       await process_manager.start_process(agent_id, factory)
+
+       # 4. Start tool call listener
+       asyncio.create_task(
+           tool_call_listener.start_listening(agent_id, factory)
+       )
+
+       return {"agent_id": agent_id, "status": "running"}
+
+   async def handle_send_message(request: dict) -> dict:
+       """Send message to persistent process."""
+       agent_id = request["agent_id"]
+       message = request["message"]
+
+       # Write to stdin (ProcessManager handles formatting via factory)
+       await process_manager.write_to_stdin(agent_id, message)
+
+       return {"success": True}
+
+   async def handle_delete(request: dict) -> dict:
+       """Stop persistent process and delete container."""
+       agent_id = request["agent_id"]
+
+       # 1. Stop listener
+       await tool_call_listener.stop_listening(agent_id)
+
+       # 2. Stop process
+       await process_manager.stop_process(agent_id, graceful=True)
+
+       # 3. Delete container (existing logic)
+       await container_service.delete(agent_id)
+
+       return {"success": True}
+   ```
+
+2. **Обновить session_manager**:
+   - Удалить логику с session_id (больше не нужна)
+   - Оставить только metadata контейнера
+   - `services/workers-spawner/src/workers_spawner/session_manager.py`
+
+3. **Создать dependency injection setup**:
+   ```python
+   # services/workers-spawner/src/workers_spawner/dependencies.py
+
+   def setup_dependencies(redis_url: str, api_base_url: str):
+       """Setup all dependencies with proper injection."""
+       redis = redis.from_url(redis_url)
+       api_client = httpx.AsyncClient(base_url=api_base_url)
+
+       container_service = ContainerService()
+       process_manager = ProcessManager(container_service)
+       log_collector = LogCollector(redis)
+       tool_executor = ToolExecutor(redis, api_client)
+       tool_call_listener = ToolCallListener(
+           process_manager,
+           tool_executor,
+           log_collector
+       )
+
+       return {
+           "container_service": container_service,
+           "process_manager": process_manager,
+           "tool_call_listener": tool_call_listener,
+           "tool_executor": tool_executor,
+           "log_collector": log_collector,
+       }
+   ```
+
+4. **Обновить main.py**:
+   - Использовать новый dependency injection
+   - `services/workers-spawner/src/main.py`
+
+5. **Написать integration тесты**:
+   - End-to-end: create → send_message → получить answer
+   - Test с Claude Code
+   - Test с Factory Droid
+   - `services/workers-spawner/tests/integration/test_e2e_persistent.py`
+
+**Критерии готовности**:
+- [ ] Redis handlers обновлены
+- [ ] Dependency injection настроен
+- [ ] Integration тесты end-to-end проходят
+- [ ] Claude Code и Factory Droid работают одинаково (полиморфизм!)
 
 ---
 
-### Шаг 6.2: Deploy MVP
+### Phase 5: Logging & Observability (1-2 дня)
 
-**Чеклист:**
+**Цель**: Добавить proper logging и мониторинг.
 
-- [ ] Пересобрать образы (workers-spawner, universal-worker)
-- [ ] Обновить переменные окружения
-- [ ] Миграция существующих агентов (если есть)
-- [ ] Запуск в production
-- [ ] Мониторинг первые 24 часа
+**Задачи**:
 
-**Rollback plan:**
+1. **API endpoint для получения логов**:
+   ```python
+   # services/api/src/routers/agents.py
 
-- Если критические баги → откатиться на предыдущую версию
-- Persistent контейнеры удалить вручную
+   @router.get("/agents/{agent_id}/logs")
+   async def get_agent_logs(
+       agent_id: str,
+       limit: int = 100,
+       offset: int = 0
+   ):
+       """Get agent logs from Redis."""
+       logs = await redis.xrange(
+           f"agent:logs:{agent_id}",
+           count=limit,
+           start=offset
+       )
+       return {"logs": logs}
+   ```
 
-**Критерий завершения**: MVP работает в production
+2. **Добавить structured logging во все компоненты**:
+   - ProcessManager: process_started, message_written, process_stopped
+   - ToolCallListener: tool_call_detected, tool_executed
+   - ToolExecutor: tool_answer, tool_ask, tool_project, etc.
+
+3. **Metrics (опционально для MVP)**:
+   - Количество активных процессов
+   - Latency tool execution
+   - Tool call distribution
+
+4. **Health check endpoint**:
+   ```python
+   # services/workers-spawner/src/main.py
+
+   @app.get("/health")
+   async def health():
+       return {
+           "status": "healthy",
+           "active_processes": len(process_manager._processes),
+           "listening_agents": len(tool_call_listener._listening)
+       }
+   ```
+
+**Критерии готовности**:
+- [ ] API endpoint `/agents/{agent_id}/logs` работает
+- [ ] Structured logging во всех компонентах
+- [ ] Health check endpoint отвечает
+- [ ] Логи содержат agent_id, tool, timestamp
 
 ---
 
-## Success Criteria MVP
+### Phase 6: Testing & Stabilization (2-3 дня)
 
-Считаем MVP успешным если:
+**Цель**: Полное тестирование и баг фиксы.
 
-1. ✅ Persistent процесс Claude работает 2+ часа без падений
-2. ✅ Tool `orchestrator answer` публикует ответы в Telegram
-3. ✅ История сохраняется между сообщениями
-4. ✅ Логи агентов доступны через API
-5. ✅ Нет race conditions при создании контейнера
-6. ✅ Graceful shutdown работает
-7. ✅ Response time < 30 секунд (P95)
-8. ✅ Uptime > 99% за неделю
+**Задачи**:
+
+1. **End-to-end тестирование**:
+   - Создать агента через Telegram Bot
+   - Отправить сообщение "Create project test-app"
+   - Проверить что tool calls выполнились
+   - Проверить что ответ пришёл в Telegram
+   - Повторить с Factory Droid
+
+2. **Stress тестирование**:
+   - 10 одновременных агентов
+   - Отправка 100 сообщений подряд
+   - Проверка memory leaks
+
+3. **Error scenario тестирование**:
+   - Процесс упал (SIGSEGV)
+   - Контейнер перезапустился
+   - Redis недоступен
+   - Tool execution timeout
+
+4. **Документация**:
+   - Обновить README с инструкциями
+   - Обновить ARCHITECTURE.md
+   - Примеры использования
+   - Troubleshooting guide
+
+5. **Баг фиксы**:
+   - Исправление найденных багов
+   - Performance оптимизации
+
+**Критерии готовности**:
+- [ ] E2E тест проходит для Claude и Factory
+- [ ] Stress тест выдержан (10+ агентов)
+- [ ] Error scenarios обработаны gracefully
+- [ ] Документация обновлена
+- [ ] Нет critical багов
 
 ---
 
-## Risks & Mitigation
+### Phase 7: Rollout (1 день)
 
-### Risk 1: Процесс Claude падает
+**Цель**: Деплой на production.
 
-**Mitigation:**
-- Health check каждые 30 секунд
-- Auto-restart при падении
-- Сохранение snapshot контекста каждые 5 минут
+**Задачи**:
 
-### Risk 2: Context window exhaustion
+1. **Создать Docker образы**:
+   ```bash
+   make build
+   docker tag workers-spawner:latest workers-spawner:persistent-mvp
+   ```
 
-**Mitigation:**
-- Мониторинг token usage
-- Alert при 150k tokens
-- Manual `/compact` через orchestrator tool (в roadmap)
+2. **Deploy на staging**:
+   - Тестирование на staging окружении
+   - Smoke тесты
 
-### Risk 3: stdout parsing проблемы
+3. **Deploy на production**:
+   - Blue-green deployment
+   - Мониторинг метрик
 
-**Mitigation:**
-- Использовать чёткий протокол `__TOOL_CALL__:{...}`
-- Fallback на raw parsing если протокол сломан
-- Тесты на различные форматы вывода
+4. **Announcement**:
+   - Объявление о новой фиче
+   - Migration guide для существующих пользователей
 
-### Risk 4: Redis перегрузка логами
-
-**Mitigation:**
-- MAXLEN 1000 в streams
-- TTL на log streams (24 часа)
-- Опциональная архивация в S3 (roadmap)
+**Критерии готовности**:
+- [ ] Docker образы собраны
+- [ ] Staging deployment успешен
+- [ ] Production deployment успешен
+- [ ] Мониторинг показывает healthy статус
 
 ---
 
 ## Timeline Estimate
 
-| Фаза | Задачи | Время | Критичность |
-|------|--------|-------|-------------|
-| 0    | Design & Planning | 1 день | High |
-| 1    | ProcessManager | 2-3 дня | Critical |
-| 2    | ToolCallListener | 2-3 дня | Critical |
-| 3    | Logging | 1-2 дня | Medium |
-| 4    | Integration | 2-3 дня | Critical |
-| 5    | Testing | 2-3 дня | High |
-| 6    | Documentation & Rollout | 1 день | Medium |
+| Phase | Duration | Dependencies |
+|-------|----------|--------------|
+| 0. Design & Interfaces | 2-3 дня | None |
+| 1. AgentFactory Extensions | 2-3 дня | Phase 0 |
+| 2. ProcessManager | 3-4 дня | Phase 1 |
+| 3. ToolCallListener & ToolExecutor | 3-4 дня | Phase 2 |
+| 4. Integration & Redis Handlers | 2-3 дня | Phase 3 |
+| 5. Logging & Observability | 1-2 дня | Phase 4 |
+| 6. Testing & Stabilization | 2-3 дня | Phase 5 |
+| 7. Rollout | 1 день | Phase 6 |
 
-**Total**: 11-16 дней
+**Total**: 16-23 дня (3-4 недели)
 
-**Оптимизация**: Фазы 1-2 можно делать параллельно → 8-12 дней
-
----
-
-## Next Steps
-
-После завершения MVP:
-
-1. См. `docs/bmad-roadmap.md` для дальнейшего развития
-2. Собрать feedback от пользователей
-3. Оптимизация производительности
-4. Добавление новых tools
-5. Расширение до BMAD-структуры
+С учётом параллельной работы и overlap между фазами: **~3 недели реального времени**.
 
 ---
 
-**Документ обновлён**: 2026-01-04
-**Автор**: Claude Sonnet 4.5
-**Статус**: Ready for Implementation
+## Success Criteria
+
+### Functional Requirements
+
+- [ ] **Agent abstraction**: Любой CLI агент работает через единый интерфейс
+- [ ] **Полиморфизм**: Можно добавить новый агент, реализовав AgentFactory
+- [ ] **Persistent процессы**: Один процесс живёт 2+ часа
+- [ ] **Tool-based communication**: Ответы приходят через tool calls
+- [ ] **Logging**: Все логи собираются и доступны через API
+- [ ] **No session_id**: Сессия = persistent процесс
+- [ ] **Graceful shutdown**: Процессы останавливаются корректно
+
+### Non-Functional Requirements
+
+- [ ] **Performance**: Response time <30 секунд
+- [ ] **Reliability**: Uptime >99% для persistent процессов
+- [ ] **Scalability**: Поддержка 10+ одновременных агентов на одном workers-spawner
+- [ ] **Maintainability**: Code coverage >90% для unit тестов
+- [ ] **Extensibility**: Добавление нового агента <1 дня работы
+
+### Business Requirements
+
+- [ ] **Демонстрация полиморфизма**: Claude и Factory работают одинаково с точки зрения пользователя
+- [ ] **Документация**: Новый разработчик может добавить агента за 1 день
+- [ ] **Пользовательский опыт**: Пользователь не замечает разницы между агентами
+
+---
+
+## Risks & Mitigation
+
+### Risk 1: Process stability
+
+**Проблема**: Persistent процесс может упасть (SIGSEGV, OOM).
+
+**Mitigation**:
+- Мониторинг process health
+- Auto-restart при падении
+- Graceful degradation (fallback на ephemeral)
+
+### Risk 2: Agent-specific quirks
+
+**Проблема**: Разные CLI агенты могут иметь несовместимые форматы.
+
+**Mitigation**:
+- Чёткое определение tool call protocol
+- Фабрики инкапсулируют agent-specific логику
+- Тестирование с 2+ агентами в MVP
+
+### Risk 3: Memory leaks
+
+**Проблема**: Persistent процессы могут накапливать память.
+
+**Mitigation**:
+- TTL для контейнеров (2 часа)
+- Monitoring memory usage
+- Graceful restart при threshold
+
+### Risk 4: Tool execution timeout
+
+**Проблема**: Tool может выполняться долго (deploy, engineering).
+
+**Mitigation**:
+- Async tool execution
+- Status updates через Redis
+- Timeout handling с retry
+
+---
+
+## Future Enhancements (Post-MVP)
+
+### 1. Context Window Management
+
+**Проблема**: Persistent процесс может упереться в context limit.
+
+**Решение**:
+- Context compaction
+- Summary generation
+- Rolling window
+
+### 2. Multi-Agent Communication
+
+**Проблема**: Agent-to-agent routing (Analyst → Engineer).
+
+**Решение**:
+- Tool `orchestrator route_to_agent`
+- Agent registry в Redis
+- Message queue между агентами
+
+### 3. Streaming Logs UI
+
+**Проблема**: Логи нужно смотреть в реальном времени.
+
+**Решение**:
+- WebSocket endpoint
+- Redis pubsub для логов
+- React component для UI
+
+### 4. Advanced Observability
+
+**Проблема**: Нужна детальная аналитика.
+
+**Решение**:
+- Prometheus metrics
+- Grafana dashboards
+- Distributed tracing (Jaeger)
+
+### 5. Scale-Adaptive Intelligence
+
+**Проблема**: Для простых задач нужен 1 агент, для сложных — команда.
+
+**Решение**:
+- Complexity estimator
+- Dynamic team composition
+- Hierarchical routing (из BMAD roadmap)
+
+---
+
+## Appendix
+
+### A. Tool Call Protocol Specification
+
+**Format**: `__TOOL_CALL__:{"tool": "<name>", "args": {<args>}}`
+
+**Tools**:
+
+1. **answer** - Отправить ответ пользователю
+   ```json
+   {"tool": "answer", "args": {"message": "Hello user!"}}
+   ```
+
+2. **ask** - Задать вопрос пользователю (эскалация)
+   ```json
+   {"tool": "ask", "args": {"question": "Which database to use?"}}
+   ```
+
+3. **project** - CRUD операции с проектами
+   ```json
+   {"tool": "project", "args": {"method": "create", "name": "myapp", "template": "fastapi"}}
+   {"tool": "project", "args": {"method": "get", "id": "proj_123"}}
+   {"tool": "project", "args": {"method": "update", "id": "proj_123", "status": "deployed"}}
+   ```
+
+4. **deploy** - Запуск деплоя
+   ```json
+   {"tool": "deploy", "args": {"project_id": "proj_123", "server_id": "srv_456"}}
+   ```
+
+5. **engineering** - Запуск Engineering субграфа
+   ```json
+   {"tool": "engineering", "args": {"task": "implement feature X", "project_id": "proj_123"}}
+   ```
+
+6. **infra** - Запуск Infrastructure субграфа
+   ```json
+   {"tool": "infra", "args": {"task": "setup server", "server_id": "srv_456"}}
+   ```
+
+### B. AgentFactory Interface Full Spec
+
+См. секцию "Детальный дизайн компонентов" выше.
+
+### C. ProcessManager State Machine
+
+```
+[INIT] → start_process() → [STARTING] → readiness check → [RUNNING]
+                                 ↓
+                              [FAILED] → retry or error
+
+[RUNNING] → write_to_stdin() → [RUNNING]
+         → read_stdout_line() → [RUNNING]
+         → stop_process(graceful=True) → [STOPPING] → [STOPPED]
+         → stop_process(graceful=False) → [KILLED]
+         → process died → [CRASHED]
+```
+
+### D. Comparison: Ephemeral vs Persistent
+
+| Aspect | Ephemeral (Current) | Persistent (MVP) |
+|--------|---------------------|------------------|
+| Process lifecycle | 1 process per message | 1 process per container lifetime (2h) |
+| History | Lost between calls | Preserved in process memory |
+| Session management | Redis session_id | No session_id needed |
+| Communication | Output parsing | Tool calls + logs |
+| Latency | ~5-10s per call | <1s (stdin write) |
+| Complexity | Medium | Low (simpler!) |
+| Agent support | Claude-specific | Any CLI agent (polymorphic) |
+
+---
+
+## Conclusion
+
+Этот MVP план фокусируется на создании универсальной системы persistent CLI-агентов с правильной абстракцией через фабрики и полиморфизм.
+
+**Ключевые отличия от предыдущего плана**:
+1. ✅ Фокус на абстракции и полиморфизме
+2. ✅ AgentFactory как центральный интерфейс
+3. ✅ ProcessManager generic (работает с любым агентом)
+4. ✅ ToolCallListener agent-aware (использует фабрику)
+5. ✅ Поддержка минимум 2 агентов в MVP (Claude + Factory)
+6. ✅ Пользователь использует единый API (send_message), детали скрыты
+
+**Результат**: Система, в которую можно легко добавить новый CLI агент (Codex, Gemini, custom), просто реализовав AgentFactory интерфейс.
