@@ -2,7 +2,7 @@ from rich.console import Console
 import typer
 
 from orchestrator.commands import deploy, diagnose, engineering, infra, project
-from orchestrator.permissions import require_permission
+from orchestrator.commands.answer import respond
 
 app = typer.Typer(
     name="orchestrator",
@@ -18,15 +18,8 @@ app.add_typer(infra.app, name="infra", help="Manage infrastructure")
 app.add_typer(engineering.app, name="engineering", help="Engineering tasks")
 app.add_typer(diagnose.app, name="diagnose", help="System diagnosis")
 
-
-@app.command()
-@require_permission("respond")
-def respond(message: str):
-    """Send a response back to the user."""
-    # This is a bit unique. In the agent architecture, the "response"
-    # is usually just the output of the CLI command.
-    # But if LLM wants to explicitly talk to user, it can use this.
-    console.print(f"[green]Response sent:[/green] {message}")
+# Register respond command (agent-to-user communication)
+app.command()(respond)
 
 
 @app.command()

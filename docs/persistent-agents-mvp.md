@@ -2,7 +2,7 @@
 
 **Цель**: Реализовать универсальную систему persistent CLI-агентов с tool-based communication через **единый bash скрипт `orchestrator`**, поддерживающий любые типы агентов (Claude, Codex, Factory.ai, Gemini CLI).
 
-**Статус**: Planning
+**Статус**: In Progress
 **Дата создания**: 2026-01-04
 **Последнее обновление**: 2026-01-04
 
@@ -10,7 +10,7 @@
 
 ## Ключевая идея
 
-**Все CLI агенты имеют bash** → все вызывают `orchestrator answer "text"` → скрипт сам пишет в Redis/HTTP → **полиморфизм на уровне shell команд!**
+**Все CLI агенты имеют bash** → все вызывают `orchestrator respond "text"` → скрипт сам пишет в Redis/HTTP → **полиморфизм на уровне shell команд!****
 
 **Никакого парсинга stdout для tool calls!** Агент просто выводит логи, а tool calls делает через bash команды.
 
@@ -304,18 +304,18 @@ await bot.send_message(user_id, message["message"])
 - [ ] Claude и Factory реализованы
 - [ ] Тесты покрывают >90%
 
-### Phase 2: Orchestrator CLI Script (2 дня)
+### Phase 2: Orchestrator CLI Commands ✅ DONE
 
 **Задачи:**
-1. Написать bash скрипт с командами: answer, ask, project, deploy, engineering, infra
-2. Добавить телеметрию, retry, validation
-3. Обновить Dockerfile universal-worker (установить redis-cli, jq)
-4. Integration тесты скрипта
+1. ~~Написать bash скрипт с командами: answer, ask~~ → Реализовано как `orchestrator respond --expect-reply`
+2. ~~Добавить телеметрию~~ → Timestamps добавлены
+3. Обновить Dockerfile universal-worker (уже есть redis)
+4. ~~Integration тесты~~ → 27 тестов проходят
 
 **Критерии:**
-- [ ] Скрипт реализован
-- [ ] Dockerfile обновлён
-- [ ] Integration тесты проходят
+- [x] `respond` команда реализована (`shared/cli/src/orchestrator/commands/answer.py`)
+- [x] TOOL_DOCS обновлён (`shared/schemas/tool_groups.py`)
+- [x] Тесты проходят (`shared/cli/tests/test_respond.py`)
 
 ### Phase 3: ProcessManager (2-3 дня)
 

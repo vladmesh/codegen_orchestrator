@@ -80,14 +80,21 @@ class TestProjectCommands:
 class TestRespondCommand:
     """Tests for respond command."""
 
-    def test_respond_allowed(self):
+    @patch("orchestrator.commands.answer._get_redis")
+    def test_respond_allowed(self, mock_get_redis):
         """respond works when allowed."""
-        with patch.dict("os.environ", {"ORCHESTRATOR_ALLOWED_TOOLS": "respond"}, clear=False):
+        mock_redis = MagicMock()
+        mock_get_redis.return_value = mock_redis
+
+        with patch.dict(
+            "os.environ",
+            {"ORCHESTRATOR_ALLOWED_TOOLS": "respond", "ORCHESTRATOR_AGENT_ID": "test-agent"},
+            clear=False,
+        ):
             result = runner.invoke(app, ["respond", "Hello user"])
 
         assert result.exit_code == 0
-        assert "Response sent" in result.output
-        assert "Hello user" in result.output
+        assert "Answer sent" in result.output
 
     def test_respond_denied(self):
         """respond fails when not allowed."""
