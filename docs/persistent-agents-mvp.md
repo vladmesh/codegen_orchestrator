@@ -351,6 +351,199 @@ await bot.send_message(user_id, message["message"])
 - [ ] E2E тесты проходят
 - [ ] Claude и Factory работают одинаково!
 
+---
+
+### ⚠️ Phase 5.5: Telegram Bot Migration to Persistent Mode 🔴 HIGH PRIORITY
+
+> [!CAUTION]
+> **Критическая проблема:** Telegram Bot всё ещё использует **ephemeral mode** (`factory.send_message()`), 
+> хотя persistent infrastructure полностью готова! Без этой миграции MVP не завершён.
+
+**Текущее состояние (проблема):**
+
+```
+Telegram Bot → workers_spawner.send_message() → factory.send_message()
+                                                    ↓
+                                              КАЖДЫЙ РАЗ новый процесс claude
+                                                    ↓
+                                              JSON parsed из stdout (сложно, ненадёжно)
+```
+
+**Целевое состояние (persistent):**
+
+```
+Telegram Bot → workers_spawner.create_agent(persistent=True)
+                                    ↓
+               ProcessManager.start_process() (один раз)
+                                    ↓
+Telegram Bot → workers_spawner.send_message_persistent()
+                                    ↓
+               ProcessManager.write_to_stdin()
+                                    ↓
+               Agent вызывает: orchestrator respond "Done!"
+                                    ↓
+               Redis stream: cli-agent:responses
+                                    ↓
+Telegram Bot ← слушает stream ← отправляет ответ пользователю
+```
+
+**Задачи:**
+
+#### 5.5.1 Обновить workers_spawner клиент в Telegram Bot
+
+**Файл:** `services/telegram_bot/src/clients/workers_spawner.py`
+
+```python
+async def send_message_persistent(
+    self,
+    agent_id: str,
+    message: str,
+) -> dict:
+    """Send message to persistent agent via stdin."""
+    return await self._send_command(
+        "send_message_persistent",
+        agent_id=agent_id,
+        message=message,
+    )
+
+async def create_agent(
+    self, 
+    user_id: str, 
+    mount_session_volume: bool = False,
+    persistent: bool = True,  # NEW: default to persistent
+) -> str:
+    """Create agent in persistent mode by default."""
+    ...
+```
+
+#### 5.5.2 Добавить Response Listener в Telegram Bot
+
+**Файл:** `services/telegram_bot/src/response_listener.py` (NEW)
+
+```python
+class ResponseListener:
+    """Listens to cli-agent:responses stream and sends to users."""
+    
+    RESPONSE_STREAM = "cli-agent:responses"
+    
+    async def start(self):
+        """Start listening for agent responses."""
+        last_id = "$"  # Only new messages
+        
+        while True:
+            messages = await self.redis.xread(
+                {self.RESPONSE_STREAM: last_id},
+                block=5000,  # 5 sec timeout
+            )
+            
+            for stream_name, entries in messages:
+                for entry_id, fields in entries:
+                    await self._handle_response(fields)
+                    last_id = entry_id
+    
+    async def _handle_response(self, fields: dict):
+        """Route response to correct user."""
+        agent_id = fields["agent_id"]
+        msg_type = fields["type"]  # "answer" or "question"
+        
+        # Find user_id by agent_id (reverse lookup)
+        user_id = await self._get_user_by_agent(agent_id)
+        
+        if msg_type == "answer":
+            await bot.send_message(user_id, fields["message"])
+        elif msg_type == "question":
+            await bot.send_message(user_id, f"❓ {fields['question']}")
+```
+
+#### 5.5.3 Обновить AgentManager
+
+**Файл:** `services/telegram_bot/src/agent_manager.py`
+
+```python
+async def send_message(self, user_id: int, message: str) -> None:
+    """Send message to persistent agent (fire-and-forget).
+    
+    Response will come via ResponseListener → cli-agent:responses stream.
+    """
+    agent_id = await self.get_or_create_agent(user_id)
+    
+    # Fire-and-forget: response comes via stream
+    await workers_spawner.send_message_persistent(agent_id, message)
+    
+    # Optional: send "typing..." indicator
+    # No return value - response comes async via ResponseListener
+```
+
+#### 5.5.4 Обновить main.py
+
+**Файл:** `services/telegram_bot/src/main.py`
+
+```python
+from src.response_listener import response_listener
+
+async def on_startup():
+    # Start response listener as background task
+    asyncio.create_task(response_listener.start())
+
+@router.message()
+async def handle_message(message: Message):
+    user_id = message.from_user.id
+    text = message.text
+    
+    # Send "typing..." indicator
+    await message.answer("⏳ Обрабатываю...")
+    
+    # Fire-and-forget - response comes via ResponseListener
+    await agent_manager.send_message(user_id, text)
+    
+    # DON'T wait for response here!
+    # ResponseListener will send it when ready
+```
+
+#### 5.5.5 Добавить reverse lookup user_id ↔ agent_id
+
+**Файл:** `services/telegram_bot/src/agent_manager.py`
+
+```python
+# Bidirectional mapping
+USER_AGENT_KEY = "telegram:user_agent:{user_id}"
+AGENT_USER_KEY = "telegram:agent_user:{agent_id}"  # NEW
+
+async def get_or_create_agent(self, user_id: int) -> str:
+    # ... existing code ...
+    
+    # Save reverse mapping
+    await self.redis.set(f"telegram:agent_user:{agent_id}", str(user_id))
+    
+    return agent_id
+
+async def get_user_by_agent(self, agent_id: str) -> int | None:
+    """Reverse lookup: agent_id → user_id."""
+    user_id_str = await self.redis.get(f"telegram:agent_user:{agent_id}")
+    return int(user_id_str) if user_id_str else None
+```
+
+#### 5.5.6 Удалить Legacy Code
+
+После успешной миграции удалить:
+
+- [ ] `AgentFactory.send_message()` — абстрактный метод
+- [ ] `ClaudeCodeAgent.send_message()` — ephemeral implementation
+- [ ] `FactoryDroidAgent.send_message()` — stub
+- [ ] `_handle_send_message()` в redis_handlers.py — ephemeral handler
+- [ ] Связанные тесты ephemeral mode
+
+**Критерии:**
+- [ ] Telegram Bot создаёт агентов в persistent mode
+- [ ] Telegram Bot отправляет сообщения через `send_message_persistent`
+- [ ] ResponseListener получает ответы из `cli-agent:responses`
+- [ ] User получает ответ в Telegram
+- [ ] Legacy `send_message()` удалён
+
+**Оценка времени:** 2-3 дня
+
+---
+
 ### Phase 6: API & Observability (1-2 дня)
 
 **Задачи:**
@@ -389,21 +582,22 @@ await bot.send_message(user_id, message["message"])
 
 ## Timeline
 
-| Phase | Duration |
-|-------|----------|
-| 0. Design | 1-2 дня |
-| 1. AgentFactory | 1-2 дня |
-| 2. Orchestrator CLI | 2 дня |
-| 3. ProcessManager | 2-3 дня |
-| 4. LogCollector | 1 день |
-| 5. Integration | 2 дня |
-| 6. API & Observability | 1-2 дня |
-| 7. Testing | 2-3 дня |
-| 8. Rollout | 1 день |
+| Phase | Duration | Status |
+|-------|----------|--------|
+| 0. Design | 1-2 дня | ✅ DONE |
+| 1. AgentFactory | 1-2 дня | ✅ DONE |
+| 2. Orchestrator CLI | 2 дня | ✅ DONE |
+| 3. ProcessManager | 2-3 дня | ✅ DONE |
+| 4. LogCollector | 1 день | ✅ DONE |
+| 5. Integration | 2 дня | ✅ DONE |
+| **5.5. Telegram Bot Migration** | **2-3 дня** | **🔴 HIGH PRIORITY** |
+| 6. API & Observability | 1-2 дня | TODO |
+| 7. Testing | 2-3 дня | TODO |
+| 8. Rollout | 1 день | TODO |
 
-**Total**: 13-18 дней (~2.5-3.5 недели)
+**Total**: 15-21 дней (~3-4 недели)
 
-С учётом параллельной работы: **~2.5 недели**.
+**Remaining**: Phase 5.5 + 6 + 7 + 8 = ~6-9 дней
 
 ---
 
