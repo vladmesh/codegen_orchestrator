@@ -37,6 +37,21 @@ class FactoryDroidAgent(AgentFactory):
         content = get_instructions_content(allowed_tools)
         return {"/workspace/AGENTS.md": content}
 
+    def get_persistent_command(self) -> str:
+        """Get command for persistent interactive mode.
+
+        Factory Droid in persistent mode - using exec with stdin.
+        Note: May need adjustment based on actual droid behavior.
+        """
+        return "/home/worker/.local/bin/droid"
+
+    def format_message_for_stdin(self, message: str) -> str:
+        """Format message for stdin input.
+
+        Factory Droid expects messages followed by newline.
+        """
+        return f"{message}\n"
+
     async def send_message(
         self,
         agent_id: str,

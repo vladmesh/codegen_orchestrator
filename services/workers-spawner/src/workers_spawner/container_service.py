@@ -137,6 +137,12 @@ class ContainerService:
             for key, value in context.items():
                 cmd.extend(["-e", f"ORCHESTRATOR_{key.upper()}={value}"])
 
+        # Add orchestrator env vars for CLI communication
+        # These are required for `orchestrator respond` CLI to work inside containers
+        cmd.extend(["-e", f"ORCHESTRATOR_AGENT_ID={agent_id}"])
+        cmd.extend(["-e", f"ORCHESTRATOR_REDIS_URL={self.settings.redis_url}"])
+        cmd.extend(["-e", f"ORCHESTRATOR_API_URL={self.settings.api_url}"])
+
         # Add install commands as JSON env var
         install_commands = parser.get_install_commands()
         if install_commands:

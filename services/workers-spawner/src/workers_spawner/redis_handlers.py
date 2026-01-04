@@ -8,7 +8,9 @@ import structlog
 from workers_spawner.config import get_settings
 from workers_spawner.container_service import ContainerService
 from workers_spawner.events import EventPublisher
+from workers_spawner.log_collector import LogCollector
 from workers_spawner.models import WorkerConfig
+from workers_spawner.process_manager import ProcessManager
 
 logger = structlog.get_logger()
 
@@ -21,17 +23,22 @@ class CommandHandler:
         redis_client: redis.Redis,
         container_service: ContainerService,
         event_publisher: EventPublisher,
+        process_manager: ProcessManager | None = None,
+        log_collector: LogCollector | None = None,
     ):
         self.redis = redis_client
         self.containers = container_service
         self.events = event_publisher
         self.settings = get_settings()
+        self.process_manager = process_manager
+        self.log_collector = log_collector
 
         # Command handlers map
         self._handlers = {
             "create": self._handle_create,
             "send_command": self._handle_send_command,
             "send_message": self._handle_send_message,
+            "send_message_persistent": self._handle_send_message_persistent,
             "send_file": self._handle_send_file,
             "status": self._handle_status,
             "logs": self._handle_logs,
@@ -81,6 +88,7 @@ class CommandHandler:
         Expected fields:
         - config: WorkerConfig dict
         - context: optional dict with user_id, project_id, etc.
+        - persistent: optional bool (default: False) - use persistent mode
         """
         config_data = message.get("config")
         if not config_data:
@@ -88,8 +96,27 @@ class CommandHandler:
 
         config = WorkerConfig(**config_data)
         context = message.get("context", {})
+        use_persistent = message.get("persistent", False)
 
         agent_id = await self.containers.create_container(config, context)
+
+        # Start persistent process if requested and ProcessManager available
+        if use_persistent and self.process_manager:
+            from workers_spawner.factories.registry import get_agent_factory
+
+            factory = get_agent_factory(config.agent, self.containers)
+
+            # Store factory in metadata for later use
+            if agent_id in self.containers._containers:
+                self.containers._containers[agent_id]["factory"] = factory
+
+            await self.process_manager.start_process(agent_id, factory)
+
+            # Start log collector if available
+            if self.log_collector:
+                await self.log_collector.start_collecting(agent_id, self.process_manager)
+
+            logger.info("persistent_process_started", agent_id=agent_id)
 
         # Publish status change
         await self.events.publish_status(agent_id, "created")
@@ -181,6 +208,44 @@ class CommandHandler:
             "metadata": result.get("metadata", {}),
         }
 
+    async def _handle_send_message_persistent(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Handle send_message for persistent agents.
+
+        Writes message to agent's stdin. Agent responds via `orchestrator respond` CLI
+        which writes directly to Redis. This method returns immediately.
+
+        Expected fields:
+        - agent_id: str
+        - message: str (user message text)
+
+        Returns:
+        - sent: bool (True if message was written to stdin)
+        """
+        agent_id = message.get("agent_id")
+        user_message = message.get("message")
+
+        if not agent_id or not user_message:
+            raise ValueError("Missing 'agent_id' or 'message' field")
+
+        if not self.process_manager:
+            raise RuntimeError("ProcessManager not configured")
+
+        if not self.process_manager.is_running(agent_id):
+            raise RuntimeError(f"No persistent process for agent {agent_id}")
+
+        # Write message to stdin
+        await self.process_manager.write_to_stdin(agent_id, user_message)
+
+        logger.info(
+            "message_sent_to_persistent_agent",
+            agent_id=agent_id,
+            message_length=len(user_message),
+        )
+
+        # Agent will respond via `orchestrator respond` CLI → Redis
+        # Don't wait for response here
+        return {"sent": True}
+
     async def _handle_send_file(self, message: dict[str, Any]) -> dict[str, Any]:
         """Handle cli-agent.send_file.
 
@@ -243,6 +308,15 @@ class CommandHandler:
         agent_id = message.get("agent_id")
         if not agent_id:
             raise ValueError("Missing 'agent_id' field")
+
+        # Stop persistent process if running
+        if self.process_manager and self.process_manager.is_running(agent_id):
+            await self.process_manager.stop_process(agent_id)
+            logger.info("persistent_process_stopped", agent_id=agent_id)
+
+        # Stop log collector
+        if self.log_collector:
+            await self.log_collector.stop_collecting(agent_id)
 
         success = await self.containers.delete(agent_id)
 

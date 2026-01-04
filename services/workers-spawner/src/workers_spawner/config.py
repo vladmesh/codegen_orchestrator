@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # This MUST be the host path, not the container path
     host_claude_dir: str | None = None
 
+    # API URL for orchestrator CLI to call (passed to containers)
+    api_url: str = "http://api:8000"
+
     class Config:
         env_prefix = ""
 

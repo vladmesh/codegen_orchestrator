@@ -42,6 +42,20 @@ class ClaudeCodeAgent(AgentFactory):
             # "/home/node/.claude/settings.json": json.dumps({...})
         }
 
+    def get_persistent_command(self) -> str:
+        """Get command for persistent interactive mode.
+
+        Claude Code in persistent mode accepts input via stdin.
+        """
+        return "claude --dangerously-skip-permissions"
+
+    def format_message_for_stdin(self, message: str) -> str:
+        """Format message for stdin input.
+
+        Claude expects messages followed by newline.
+        """
+        return f"{message}\n"
+
     async def send_message(
         self,
         agent_id: str,

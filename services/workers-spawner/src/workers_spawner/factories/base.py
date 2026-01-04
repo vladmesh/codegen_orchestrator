@@ -74,11 +74,36 @@ class AgentFactory(ABC):
             session_context: Optional session state (agent-specific)
 
         Returns:
-            {
-                "response": str,  # Agent's response text
+            {\n                "response": str,  # Agent's response text
                 "session_context": dict | None,  # Updated session state
                 "metadata": dict  # Agent-specific metadata
             }
+        """
+
+    @abstractmethod
+    def get_persistent_command(self) -> str:
+        """Get command for persistent interactive mode.
+
+        This command should start the agent in a mode that accepts
+        input via stdin and outputs logs to stdout/stderr.
+        The agent communicates responses via `orchestrator respond` CLI.
+
+        Returns:
+            Command string for persistent mode.
+        """
+
+    @abstractmethod
+    def format_message_for_stdin(self, message: str) -> str:
+        """Format message for stdin input.
+
+        This prepares a user message to be written to the agent's stdin.
+        Typically adds a newline at the end.
+
+        Args:
+            message: Raw user message text
+
+        Returns:
+            Formatted string ready for stdin.write()
         """
 
     def get_optional_env_vars(self) -> dict[str, str]:

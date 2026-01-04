@@ -317,37 +317,37 @@ await bot.send_message(user_id, message["message"])
 - [x] TOOL_DOCS обновлён (`shared/schemas/tool_groups.py`)
 - [x] Тесты проходят (`shared/cli/tests/test_respond.py`)
 
-### Phase 3: ProcessManager (2-3 дня)
+### Phase 3: ProcessManager ✅ DONE
 
 **Задачи:**
-1. Создать ProcessManager (без изменений от дизайна)
-2. Интеграция с ContainerService (установить env vars)
-3. Unit/integration тесты
+1. ~~Создать ProcessManager~~ → `process_manager.py` реализован
+2. ~~Интеграция с ContainerService~~ → `ORCHESTRATOR_*` env vars добавлены
+3. ~~Unit/integration тесты~~ → 16 тестов ProcessManager
 
 **Критерии:**
-- [ ] ProcessManager работает
-- [ ] Env vars правильно установлены
-- [ ] Тесты проходят
+- [x] ProcessManager работает (`workers_spawner/process_manager.py`)
+- [x] Env vars правильно установлены (`container_service.py`)
+- [x] Тесты проходят (52 теста)
 
-### Phase 4: LogCollector (1 день)
+### Phase 4: LogCollector ✅ DONE
 
 **Задачи:**
-1. Создать упрощённый LogCollector (только логи!)
-2. Unit/integration тесты
+1. ~~Создать упрощённый LogCollector~~ → `log_collector.py`
+2. ~~Unit/integration тесты~~ → Интегрирован в Phase 3
 
 **Критерии:**
-- [ ] LogCollector собирает логи
-- [ ] Тесты проходят
+- [x] LogCollector собирает логи (`workers_spawner/log_collector.py`)
+- [x] Тесты проходят
 
-### Phase 5: Integration (2 дня)
+### Phase 5: Integration ✅ DONE
 
 **Задачи:**
-1. Обновить Redis handlers (create, send_message, delete)
-2. Dependency injection
-3. E2E тесты (Claude + Factory)
+1. ~~Обновить Redis handlers~~ → `_handle_create`, `_handle_send_message_persistent`, `_handle_delete`
+2. ~~Dependency injection~~ → ProcessManager и LogCollector инжектятся в CommandHandler
+3. E2E тесты (Claude + Factory) → TODO
 
 **Критерии:**
-- [ ] Redis handlers обновлены
+- [x] Redis handlers обновлены
 - [ ] E2E тесты проходят
 - [ ] Claude и Factory работают одинаково!
 
