@@ -50,6 +50,7 @@ class FactoryDroidAgent(AgentFactory):
         agent_id: str,
         message: str,
         session_context: dict | None = None,
+        timeout: int = 120,
     ) -> dict[str, Any]:
         """Send message to Factory Droid using headless exec mode.
 
@@ -60,6 +61,7 @@ class FactoryDroidAgent(AgentFactory):
             agent_id: Container ID
             message: User message text
             session_context: Optional session state (preserved as-is)
+            timeout: Command timeout in seconds (default 120)
 
         Returns:
             {
@@ -74,9 +76,10 @@ class FactoryDroidAgent(AgentFactory):
             "sending_headless_message_droid",
             agent_id=agent_id,
             message_length=len(message),
+            timeout=timeout,
         )
 
-        result = await self.container_service.send_command(agent_id, cmd, timeout=120)
+        result = await self.container_service.send_command(agent_id, cmd, timeout=timeout)
 
         if result.exit_code != 0:
             logger.error(

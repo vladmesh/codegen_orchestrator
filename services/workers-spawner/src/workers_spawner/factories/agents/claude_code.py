@@ -55,6 +55,7 @@ class ClaudeCodeAgent(AgentFactory):
         agent_id: str,
         message: str,
         session_context: dict | None = None,
+        timeout: int = 120,
     ) -> dict[str, Any]:
         """Send message using headless mode with clean JSON output.
 
@@ -65,6 +66,7 @@ class ClaudeCodeAgent(AgentFactory):
             agent_id: Container ID
             message: User message text
             session_context: Optional session state (contains session_id)
+            timeout: Command timeout in seconds (default 120)
 
         Returns:
             {
@@ -96,10 +98,11 @@ class ClaudeCodeAgent(AgentFactory):
             agent_id=agent_id,
             has_session=bool(session_id),
             message_length=len(message),
+            timeout=timeout,
         )
 
         # Execute via ContainerService.send_command
-        result = await self.container_service.send_command(agent_id, full_command, timeout=120)
+        result = await self.container_service.send_command(agent_id, full_command, timeout=timeout)
 
         # Parse JSON response (Claude returns JSON even on errors)
         try:

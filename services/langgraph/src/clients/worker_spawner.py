@@ -136,43 +136,39 @@ async def request_spawn(
 
         agent_id = create_resp.get("agent_id")
 
-        # 3. Send Task Content as File
-        task_file_path = "/home/worker/task.txt"
-        file_payload = {
-            "command": "send_file",
-            "request_id": f"{request_id}-file",
-            "agent_id": agent_id,
-            "path": task_file_path,
-            "content": task_content,
-        }
-        await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(file_payload)})
-
+        # 3. Send Task Content as File (for AGENTS.md only, message goes direct now)
         if agents_content:
             agents_file_payload = {
                 "command": "send_file",
                 "request_id": f"{request_id}-agents",
                 "agent_id": agent_id,
-                "path": "/home/worker/AGENTS.md",
+                "path": "/workspace/AGENTS.md",
                 "content": agents_content,
             }
             await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(agents_file_payload)})
 
-        # 4. Execute Claude Command
-        # Use cat to read the task file to avoid argument length limits/quoting issues
-        claude_cmd = f'claude --dangerously-skip-permissions -p "$(cat {task_file_path})"'
+        # 4. Build task message with context
+        task_message = f"""{task_title}
 
-        # NOTE: protocol change - using shell_command
-        cmd_payload = {
-            "command": "send_command",
+{task_content}
+
+After completing the task:
+1. Commit all changes with descriptive message
+2. Push to the repository
+"""
+
+        # 5. Send message via headless protocol (no shell escaping needed)
+        msg_payload = {
+            "command": "send_message",
             "request_id": f"{request_id}-exec",
             "agent_id": agent_id,
-            "shell_command": claude_cmd,
+            "message": task_message,
             "timeout": timeout_seconds,
         }
 
-        await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(cmd_payload)})
+        await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(msg_payload)})
 
-        # 5. Wait for Execution Response
+        # 6. Wait for Execution Response
         exec_result = await _wait_for_response(
             redis_client, group_name, consumer_id, f"{request_id}-exec", float(timeout_seconds)
         )
@@ -188,11 +184,12 @@ async def request_spawn(
         )
 
         if exec_result:
+            # send_message returns 'response' not 'output'
             return SpawnResult(
                 request_id=request_id,
-                success=exec_result.get("exit_code") == 0,
-                exit_code=exec_result.get("exit_code"),
-                output=exec_result.get("output"),
+                success=exec_result.get("success", False),
+                exit_code=0 if exec_result.get("success") else 1,
+                output=exec_result.get("response", ""),
                 error_message=exec_result.get("error"),
             )
         else:

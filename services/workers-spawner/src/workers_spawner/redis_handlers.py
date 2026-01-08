@@ -33,6 +33,7 @@ class CommandHandler:
             "send_command": self._handle_send_command,
             "send_message": self._handle_send_message,
             "send_file": self._handle_send_file,
+            "start_ralph_loop": self._handle_start_ralph_loop,
             "status": self._handle_status,
             "logs": self._handle_logs,
             "delete": self._handle_delete,
@@ -130,6 +131,7 @@ class CommandHandler:
         Expected fields:
         - agent_id: str
         - message: str (user message text)
+        - timeout: int (optional, default 120)
 
         Returns:
         - response: str (agent response text)
@@ -137,6 +139,7 @@ class CommandHandler:
         """
         agent_id = message.get("agent_id")
         user_message = message.get("message")
+        timeout = message.get("timeout", 120)
 
         if not agent_id or not user_message:
             raise ValueError("Missing 'agent_id' or 'message' field")
@@ -161,6 +164,7 @@ class CommandHandler:
             agent_id=agent_id,
             agent_type=config.agent.value,
             has_session=bool(session_context),
+            timeout=timeout,
         )
 
         # Send message via factory's headless method
@@ -168,6 +172,7 @@ class CommandHandler:
             agent_id=agent_id,
             message=user_message,
             session_context=session_context,
+            timeout=timeout,
         )
 
         # Save updated session context
@@ -253,3 +258,29 @@ class CommandHandler:
             await self.events.publish_status(agent_id, "deleted")
 
         return {"deleted": success}
+
+    async def _handle_start_ralph_loop(self, message: dict[str, Any]) -> dict[str, Any]:
+        """Handle start_ralph_loop for long-running autonomous tasks.
+
+        Expected fields:
+        - agent_id: str
+        - prompt: str (initial prompt/context for the task)
+        - completion_promise: str (optional, default 'TASK_COMPLETE')
+        - max_iterations: int (optional, default 50)
+        """
+        agent_id = message.get("agent_id")
+        prompt = message.get("prompt")
+        completion_promise = message.get("completion_promise", "TASK_COMPLETE")
+        max_iterations = message.get("max_iterations", 50)
+
+        if not agent_id or not prompt:
+            raise ValueError("Missing 'agent_id' or 'prompt' field")
+
+        success = await self.containers.start_ralph_loop(
+            agent_id=agent_id,
+            prompt=prompt,
+            completion_promise=completion_promise,
+            max_iterations=max_iterations,
+        )
+
+        return {"ralph_loop_started": success}

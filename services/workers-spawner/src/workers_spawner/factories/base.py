@@ -65,6 +65,7 @@ class AgentFactory(ABC):
         agent_id: str,
         message: str,
         session_context: dict | None = None,
+        timeout: int = 120,
     ) -> dict[str, Any]:
         """Send message to agent in headless mode.
 
@@ -75,6 +76,7 @@ class AgentFactory(ABC):
             agent_id: Container ID
             message: User message text
             session_context: Optional agent-specific session state
+            timeout: Command timeout in seconds (default 120)
 
         Returns:
             {
