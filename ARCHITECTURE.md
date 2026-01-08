@@ -1,47 +1,49 @@
 # Архитектура
 
+> **Актуально на**: 2026-01-09
+
 ## Обзор
 
-Codegen Orchestrator — это мультиагентная система на базе LangGraph, где каждый агент является узлом графа со своими инструментами. Агенты могут вызывать друг друга нелинейно для решения сложных задач.
+Codegen Orchestrator — мультиагентная система для автоматической генерации и деплоя проектов. Пользователь описывает что хочет в Telegram → система создаёт, тестирует и деплоит.
 
 ## Технический стек
 
 | Компонент | Технология |
 |-----------|------------|
-| Оркестрация | LangGraph |
-| LLM | OpenAI / Anthropic / OpenRouter |
-| Интерфейс | Telegram Bot |
-| Кодогенерация | service-template (Copier) + Factory.ai Droid |
-| Инфраструктура | prod_infra (Ansible) |
-| Хранение состояния | PostgreSQL + Redis |
-| Секреты | project.config.secrets (PostgreSQL) |
+| **CLI Agents** | Claude Code, Factory.ai Droid |
+| **Agent Orchestration** | workers-spawner (Docker + Redis) |
+| **Backend Orchestration** | LangGraph (subgraphs) |
+| **LLM** | Anthropic Claude (via CLI or API) |
+| **Интерфейс** | Telegram Bot |
+| **Кодогенерация** | service-template (Copier) |
+| **Инфраструктура** | `services/infrastructure-worker/ansible` |
+| **Хранение** | PostgreSQL + Redis |
 
-## State Schema
+## Ключевые концепции
 
-Глобальное состояние графа определено в [graph.py](services/langgraph/src/graph.py) как `OrchestratorState(TypedDict)`.
+### Headless Mode
+CLI агенты работают в headless режиме — чистый JSON ввод/вывод без TUI. Это обеспечивает надёжный парсинг и session continuity.
 
-**Основные группы полей:**
-- **Messages** — история сообщений
-- **Project Context** — `current_project`, `project_spec`, `po_intent`
-- **Dynamic PO** — `thread_id`, `active_capabilities`, `awaiting_user_response`
-- **Repository** — `repo_info`, `project_complexity`, `architect_complete`
-- **Engineering Subgraph** — `engineering_status`, `test_results`, `engineering_iterations`
-- **DevOps Subgraph** — `provided_secrets`, `missing_user_secrets`, `deployment_result`
-- **User Context** — `telegram_user_id`, `user_id`
+### Capabilities
+Возможности агента конфигурируются через `WorkerConfig.capabilities`:
+- `git`, `github` — работа с репозиториями
+- `python`, `node` — runtime environments
+- `docker` — Docker-in-Docker через Sysbox
+
+### Session Management
+Redis-based sessions с `--resume session_id` для сохранения контекста между сообщениями.
 
 ## Сервисы
 
-| Сервис | Описание | Порт |
-|--------|----------|------|
-| `api` | FastAPI + SQLAlchemy, хранит проекты/серверы/agent_configs | 8000 |
-| `langgraph` | LangGraph worker, обрабатывает messages через Dynamic PO | - |
-| `telegram_bot` | Telegram интерфейс | - |
-| `workers-spawner` | Спавнит agent контейнеры через Redis API | - |
-| `scheduler` | Фоновые задачи (github_sync, server_sync, health_checker) | - |
-| `preparer` | Copier runner для scaffolding проектов | - |
-| `deploy-worker` | Консьюмер deploy:queue, запускает DevOps subgraph | - |
-| `infrastructure-worker` | Provisioning серверов, Ansible runner, SSH операции | - |
-| `infrastructure` | Ansible playbooks для настройки серверов | - |
+| Сервис | Описание |
+|--------|----------|
+| `api` | FastAPI + SQLAlchemy — проекты, серверы, users, configs |
+| `telegram_bot` | Telegram интерфейс → workers-spawner |
+| `workers-spawner` | Docker контейнеры с CLI агентами |
+| `langgraph` | Engineering/DevOps subgraphs |
+| `scheduler` | Background tasks (sync, health checks) |
+| `preparer` | Copier runner для scaffolding |
+| `infrastructure-worker` | Ansible runner, SSH операции |
 
 ## Граф (CLI Agent Architecture)
 
@@ -94,7 +96,7 @@ Codegen Orchestrator — это мультиагентная система на
 | Репозиторий | Использование |
 |-------------|---------------|
 | [service-template](https://github.com/vladmesh/service-template) | Copier шаблон для генерации проектов |
-| [prod_infra](https://github.com/vladmesh/prod_infra) | Ansible playbooks для деплоя |
+| `infrastructure-worker` | Ansible runner для деплоя |
 
 ## Документация
 
