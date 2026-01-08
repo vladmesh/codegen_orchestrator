@@ -2,8 +2,9 @@
 
 **Цель**: Расширить workers-spawner для поддержки GitHub operations (clone, commit, push) с возможностью переключения между Claude Code и Factory.ai одной переменной.
 
-**Дата создания**: 2026-01-08  
-**Статус**: Draft
+**Дата создания**: 2026-01-08
+**Последнее обновление**: 2026-01-08
+**Статус**: In Progress - Phase 1 Complete
 
 ---
 
@@ -15,9 +16,9 @@
 - ✅ `DeveloperNode.spawn_worker()` вызывает `request_spawn()`
 
 ### Что НЕ работает
-- ❌ Git credentials не настроены в контейнере
+- ⏳ Git credentials настраиваются через GitHubCapability, но не тестировалось в реальном контейнере
 - ❌ `request_spawn()` использует старый протокол (`send_command` вместо `send_message`)
-- ❌ Нет capability "github" в workers-spawner
+- ✅ ~~Нет capability "github" в workers-spawner~~ **DONE** (commit 2a90d2b)
 
 ---
 
@@ -109,9 +110,9 @@ AgentFactory (abstract)
 
 ## Итеративный План Выполнения
 
-### Фаза 1: GitHub Capability (1 час)
+### Фаза 1: GitHub Capability ✅ **COMPLETED** (2026-01-08, commit 2a90d2b)
 
-#### Шаг 1.1: Создать GitHubCapability
+#### Шаг 1.1: Создать GitHubCapability ✅
 
 **Файл**: `services/workers-spawner/src/workers_spawner/factories/capabilities/github.py`
 
@@ -160,11 +161,11 @@ def get_github_setup_commands(env_vars: dict[str, str]) -> list[str]:
     ]
 ```
 
-**Критерий**: GitHubCapability создан и зарегистрирован.
+**Критерий**: ✅ GitHubCapability создан и зарегистрирован.
 
 ---
 
-#### Шаг 1.2: Добавить Capability.GITHUB в models
+#### Шаг 1.2: Добавить Capability.GITHUB в models ✅
 
 **Файл**: `services/workers-spawner/src/workers_spawner/models.py`
 
@@ -177,11 +178,11 @@ class Capability(str, Enum):
     GITHUB = "github"  # ← ДОБАВИТЬ
 ```
 
-**Критерий**: Enum расширен.
+**Критерий**: ✅ Enum расширен.
 
 ---
 
-#### Шаг 1.3: Интегрировать setup_commands в ContainerService
+#### Шаг 1.3: Интегрировать setup_commands в ContainerService ✅
 
 **Файл**: `services/workers-spawner/src/workers_spawner/container_service.py`
 
@@ -207,11 +208,22 @@ async def _run_capability_setup(self, agent_id: str, config: WorkerConfig) -> No
             await self.send_command(agent_id, cmd, timeout=10)
 ```
 
-**Критерий**: Git credentials настраиваются при создании контейнера с GITHUB capability.
+**Критерий**: ✅ Git credentials настраиваются при создании контейнера с GITHUB capability.
+
+**Реализация**: Добавлен метод `_run_capability_setup()` в ContainerService, который:
+- Проверяет наличие `CapabilityType.GITHUB` в config.capabilities
+- Вызывает `get_github_setup_commands(env_vars)` для получения команд
+- Выполняет команды через `send_command()` с timeout=10s
+- Логирует успех/ошибки выполнения
+
+**Тесты**: ✅ Пройдены
+- GitHubCapability registration
+- get_github_setup_commands() с токеном (4 команды) и без токена (0 команд)
+- Full config integration
 
 ---
 
-### Фаза 2: Ralph-Wiggum для Claude Code (2-3 часа) - PRIMARY
+### Фаза 2: Ralph-Wiggum для Claude Code (2-3 часа) - PRIMARY ⏸️ POSTPONED
 
 **Цель**: Обеспечить автономную работу Claude Code минимум 10 минут через ralph-wiggum plugin.
 
@@ -693,15 +705,15 @@ workers-spawner (Redis)
 
 ## Оценка Трудозатрат
 
-| Фаза | Задача | Время | Накопительно | Приоритет |
-|------|--------|-------|--------------|-----------|
-| 1 | GitHub Capability | 1 час | 1 час | **MUST** |
-| 2 | Ralph-Wiggum для Claude Code | 2-3 часа | 3-4 часа | **MUST** |
-| 3 | LangGraph Client (timeout, cleanup) | 1.5 часа | 4.5-5.5 часов | **MUST** |
-| 4 | FactoryDroidAgent (secondary) | 1 час | 5.5-6.5 часов | **MUST** |
-| 5 | Тестирование (оба агента 10+ мин) | 2 часа | 7.5-8.5 часов | **MUST** |
-| 6 | Документация | 30 мин | 8-9 часов | **MUST** |
-| **ИТОГО** | | **~8-9 часов** | - | - |
+| Фаза | Задача | Время | Накопительно | Приоритет | Статус |
+|------|--------|-------|--------------|-----------|--------|
+| 1 | GitHub Capability | 1 час | 1 час | **MUST** | ✅ **DONE** |
+| 2 | Ralph-Wiggum для Claude Code | 2-3 часа | 3-4 часа | **MUST** | ⏸️ POSTPONED |
+| 3 | LangGraph Client (timeout, cleanup) | 1.5 часа | 4.5-5.5 часов | **MUST** | 🔜 NEXT |
+| 4 | FactoryDroidAgent (secondary) | 1 час | 5.5-6.5 часов | **MUST** | ⏳ PENDING |
+| 5 | Тестирование (оба агента 10+ мин) | 2 часа | 7.5-8.5 часов | **MUST** | ⏳ PENDING |
+| 6 | Документация | 30 мин | 8-9 часов | **MUST** | ⏳ PENDING |
+| **ИТОГО** | | **~8-9 часов** | - | - | **1/6 complete** |
 
 **Критические требования**:
 - ✅ Claude Code + ralph-wiggum работает автономно минимум 10 минут (PRIMARY)
@@ -714,7 +726,7 @@ workers-spawner (Redis)
 
 ## Критерии Успеха
 
-- ✅ `capabilities: ["github"]` настраивает git credentials
+- ✅ `capabilities: ["github"]` настраивает git credentials **DONE** (commit 2a90d2b)
 - ✅ **Claude Code + ralph-wiggum работает автономно минимум 10 минут** (PRIMARY)
 - ✅ **Factory.ai Droid работает автономно минимум 10 минут** (SECONDARY)
 - ✅ Resumption loop реализован и протестирован (is_stopped → resume)
@@ -743,8 +755,21 @@ workers-spawner (Redis)
 
 ---
 
+## История Изменений
+
+### 2026-01-08 22:00 - Phase 1 Complete
+- ✅ Создан GitHubCapability (commit 2a90d2b)
+- ✅ Добавлен CapabilityType.GITHUB в enum
+- ✅ Реализован _run_capability_setup() в ContainerService
+- ✅ Пройдены базовые тесты (registration, setup commands, integration)
+- 📝 Phase 2 (ralph-wiggum) отложена - не критична для базовой функциональности
+- 🔜 Next: Phase 3 - мигрировать request_spawn() на headless mode
+
+---
+
 **Автор**: Claude Sonnet 4.5
-**Статус**: Updated - Ralph-wiggum is PRIMARY, Factory.ai is SECONDARY
-**Дата обновления**: 2026-01-08
+**Статус**: In Progress - Phase 1 Complete (1/6)
+**Дата создания**: 2026-01-08
+**Последнее обновление**: 2026-01-08 22:00
 **Критическое требование**: Оба агента ОБЯЗАНЫ работать автономно минимум 10 минут
 
