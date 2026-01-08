@@ -219,6 +219,11 @@ async def run_worker():
                     continue
 
                 for stream_name, entries in messages:
+                    # Normalize stream_name to string (Redis may return bytes or str)
+                    stream_name_str = (
+                        stream_name.decode() if isinstance(stream_name, bytes) else stream_name
+                    )
+
                     for entry_id, raw_data in entries:
                         try:
                             # Parse JSON data
@@ -228,14 +233,14 @@ async def run_worker():
                                 job_data = raw_data
 
                             # Route to appropriate handler based on queue
-                            if stream_name == PROVISIONER_QUEUE.encode():
+                            if stream_name_str == PROVISIONER_QUEUE:
                                 result = await process_provisioner_job(job_data)
                                 result_prefix = "provisioner"
-                            elif stream_name == ANSIBLE_DEPLOY_QUEUE.encode():
+                            elif stream_name_str == ANSIBLE_DEPLOY_QUEUE:
                                 result = await process_deployment_job(job_data)
                                 result_prefix = "deploy"
                             else:
-                                logger.warning("unknown_queue", stream=stream_name)
+                                logger.warning("unknown_queue", stream=stream_name_str)
                                 continue
 
                             # Publish result if request_id provided
@@ -250,9 +255,7 @@ async def run_worker():
 
                             # ACK the message
                             await redis.redis.xack(
-                                stream_name.decode()
-                                if isinstance(stream_name, bytes)
-                                else stream_name,
+                                stream_name_str,
                                 PROVISIONER_GROUP,
                                 entry_id,
                             )

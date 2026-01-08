@@ -72,7 +72,11 @@ def run_deployment_playbook(
 
         # Add modules if specified
         if modules:
-            extra_vars_dict["selected_modules"] = modules
+            # Ensure backend is included if tg_bot is present (dependency)
+            module_list = [m.strip() for m in modules.split(",")]
+            if "tg_bot" in module_list and "backend" not in module_list:
+                module_list.insert(0, "backend")
+            extra_vars_dict["selected_modules"] = ",".join(module_list)
 
         extra_vars_json = json.dumps(extra_vars_dict)
 

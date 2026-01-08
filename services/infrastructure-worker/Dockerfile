@@ -11,7 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy and install dependencies
 COPY services/infrastructure-worker/pyproject.toml .
-RUN pip install --no-cache-dir .
+COPY services/infrastructure-worker/ansible/requirements.yml /app/ansible/requirements.yml
+RUN pip install --no-cache-dir . && \
+    ansible-galaxy collection install -r /app/ansible/requirements.yml
 
 # Copy source code
 COPY services/infrastructure-worker/src /app/src
