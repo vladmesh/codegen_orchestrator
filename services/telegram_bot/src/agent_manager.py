@@ -13,8 +13,9 @@ from src.config import get_settings
 
 logger = structlog.get_logger(__name__)
 
-# Redis key prefix for user->agent mapping
+# Redis key prefixes for bidirectional mapping
 USER_AGENT_KEY_PREFIX = "telegram:user_agent:"
+AGENT_USER_KEY_PREFIX = "telegram:agent_user:"
 
 
 class AgentManager:
@@ -58,9 +59,8 @@ class AgentManager:
                 logger.warning("agent_status_check_failed", agent_id=agent_id, error=str(e))
                 # Fall through to create new one
 
-        # 3. Create new agent
+        # 3. Create new agent in persistent mode
         # For MVP/Dev: Always mount session volume to save cost/context
-        # In production this might be conditional based on user tier
         mount_volume = True
 
         logger.info("creating_new_agent", user_id=user_id, mount_volume=mount_volume)
@@ -70,10 +70,9 @@ class AgentManager:
                 str(user_id), mount_session_volume=mount_volume
             )
 
-            # Save mapping (assume worker TTL matches logical expiry)
-            # Worker default TTL is 2 hours. We keep mapping for longer?
-            # If worker deletes itself, status check above will catch it.
-            await self.redis.set(key, agent_id)
+            # Save bidirectional mappings
+            await self.redis.set(f"{USER_AGENT_KEY_PREFIX}{user_id}", agent_id)
+            await self.redis.set(f"{AGENT_USER_KEY_PREFIX}{agent_id}", str(user_id))
 
             logger.info("new_agent_created", user_id=user_id, agent_id=agent_id)
             return agent_id
@@ -82,12 +81,27 @@ class AgentManager:
             logger.error("agent_creation_failed", user_id=user_id, error=str(e))
             raise
 
-    async def send_message(self, user_id: int, message: str) -> str:
-        """Send a message to the user's agent.
+    async def get_user_by_agent(self, agent_id: str) -> int | None:
+        """Reverse lookup: get Telegram user ID for an agent.
 
-        This is a high-level interface that abstracts away agent-specific details.
-        Session management, CLI commands, and response parsing are handled by
-        workers-spawner and agent factories.
+        Args:
+            agent_id: Agent container ID
+
+        Returns:
+            Telegram user ID or None if not found
+        """
+        key = f"{AGENT_USER_KEY_PREFIX}{agent_id}"
+        user_id_str = await self.redis.get(key)
+        return int(user_id_str) if user_id_str else None
+
+    async def send_message(self, user_id: int, message: str) -> str:
+        """Send a message to the user's agent and return response.
+
+        This is now synchronous - response is returned directly,
+        not via Redis stream (headless mode).
+
+        If agent is not found (e.g. workers-spawner restarted), it will
+        automatically clear the old mapping and create a new agent.
 
         Args:
             user_id: Telegram user ID
@@ -98,20 +112,42 @@ class AgentManager:
         """
         agent_id = await self.get_or_create_agent(user_id)
 
-        logger.info("sending_message_to_agent", user_id=user_id, agent_id=agent_id)
+        logger.info("sending_message_headless", user_id=user_id, agent_id=agent_id)
 
         try:
             result = await workers_spawner.send_message(agent_id, message, timeout=120)
-            response = result["response"]
 
             logger.info(
-                "agent_response_received",
+                "message_sent_and_received",
                 user_id=user_id,
                 agent_id=agent_id,
-                response_length=len(response),
+                response_length=len(result["response"]),
             )
 
-            return response
+            return result["response"]
+
+        except RuntimeError as e:
+            # Handle case when agent exists in Docker but not in workers-spawner memory
+            # (happens after workers-spawner restart)
+            if "not found" in str(e).lower():
+                logger.warning(
+                    "agent_not_in_spawner_memory",
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    error=str(e),
+                )
+
+                # Clear old mapping and retry with new agent
+                await self.redis.delete(f"{USER_AGENT_KEY_PREFIX}{user_id}")
+                await self.redis.delete(f"{AGENT_USER_KEY_PREFIX}{agent_id}")
+
+                new_agent_id = await self.get_or_create_agent(user_id)
+                logger.info("retry_with_new_agent", user_id=user_id, new_agent_id=new_agent_id)
+
+                result = await workers_spawner.send_message(new_agent_id, message, timeout=120)
+                return result["response"]
+
+            raise
 
         except Exception as e:
             logger.error("send_message_failed", user_id=user_id, agent_id=agent_id, error=str(e))

@@ -514,8 +514,9 @@ class ContainerService:
         logger.info("waiting_for_container_ready", agent_id=agent_id)
 
         for attempt in range(1, max_attempts + 1):
-            # Simple readiness check: execute echo command
-            cmd = ["docker", "exec", agent_id, "/bin/bash", "-c", "echo ready"]
+            # Readiness check: verify agent command is available
+            # This ensures npm install has completed
+            cmd = ["docker", "exec", agent_id, "/bin/bash", "-c", "which claude || echo waiting"]
 
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -526,13 +527,16 @@ class ContainerService:
                 stdout, stderr = await proc.communicate()
 
                 if proc.returncode == 0:
-                    logger.info(
-                        "container_ready",
-                        agent_id=agent_id,
-                        attempts=attempt,
-                        elapsed_sec=attempt * retry_delay,
-                    )
-                    return
+                    output = stdout.decode().strip()
+                    # Check if we got actual claude path, not just "waiting"
+                    if output and "claude" in output and output != "waiting":
+                        logger.info(
+                            "container_ready",
+                            agent_id=agent_id,
+                            attempts=attempt,
+                            elapsed_sec=attempt * retry_delay,
+                        )
+                        return
 
                 # Non-zero exit code, container not ready yet
                 logger.debug(

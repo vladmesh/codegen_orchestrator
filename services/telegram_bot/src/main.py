@@ -90,7 +90,7 @@ async def _ensure_user_registered(tg_user) -> None:
 
 
 async def handle_message(update: Update, context) -> None:
-    """Handle incoming messages - send to AgentManager."""
+    """Handle incoming messages - send to AgentManager and reply with response."""
     # Auth check
     if not await auth_middleware(update, context):
         return
@@ -123,24 +123,18 @@ async def handle_message(update: Update, context) -> None:
             )
         )
 
-        # Send to agent and await response
+        # Send to agent and wait for response (headless mode)
         response_text = await agent_manager.send_message(user_id, text)
 
-        # Send response back to user
-        sent_message = await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN)
-
-        # Log AI response to RAG
-        asyncio.create_task(
-            _post_rag_message(
-                {
-                    "telegram_id": user_id,
-                    "role": "assistant",
-                    "message_text": response_text,
-                    "message_id": str(sent_message.message_id),
-                    "source": "telegram",
-                }
+        # Send response to user
+        try:
+            await update.message.reply_text(
+                response_text,
+                parse_mode=ParseMode.MARKDOWN,
             )
-        )
+        except Exception:
+            # Fallback to plain text if markdown fails
+            await update.message.reply_text(response_text)
 
     except Exception as e:
         logger.error("message_handling_failed", error=str(e), user_id=user_id)
@@ -150,10 +144,6 @@ async def handle_message(update: Update, context) -> None:
 async def post_init(app: Application) -> None:
     """Post-initialization: connect clients."""
     await workers_spawner.connect()
-    # agent_manager uses workers_spawner, so just connecting spawner is enough for now,
-    # but agent_manager creates its own redis connection too.
-    # We don't have explicit connect on agent_manager (it connects in init),
-    # but we should ensure it's ready if needed.
     logger.info("Telegram bot initialized")
 
 

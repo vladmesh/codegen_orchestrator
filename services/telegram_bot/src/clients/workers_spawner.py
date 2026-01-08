@@ -152,6 +152,42 @@ class WorkersSpawnerClient:
 
         return response["agent_id"]
 
+    async def send_message(
+        self,
+        agent_id: str,
+        message: str,
+        timeout: int = 120,
+    ) -> dict[str, Any]:
+        """Send text message to agent (headless mode).
+
+        High-level API for agent communication.
+        Returns response synchronously (not via Redis stream).
+
+        Args:
+            agent_id: Agent container ID
+            message: User message text
+            timeout: Request timeout in seconds
+
+        Returns:
+            {
+                "response": str,  # Agent's response
+                "metadata": dict,  # Optional metadata
+            }
+        """
+        response = await self._request(
+            "send_message",
+            {"agent_id": agent_id, "message": message},
+            timeout=float(timeout + 5),
+        )
+
+        if not response.get("success", False):
+            raise RuntimeError(f"send_message failed: {response.get('error')}")
+
+        return {
+            "response": response["response"],
+            "metadata": response.get("metadata", {}),
+        }
+
     async def send_command(
         self,
         agent_id: str,
@@ -171,33 +207,6 @@ class WorkersSpawnerClient:
 
         if not response.get("success", False):
             raise RuntimeError(f"Command failed: {response.get('error')}")
-
-        return response
-
-    async def send_message(
-        self,
-        agent_id: str,
-        message: str,
-        timeout: int = 120,
-    ) -> dict[str, Any]:
-        """Send text message to agent (high-level API).
-
-        Args:
-            agent_id: Agent container ID
-            message: User message text
-            timeout: Timeout in seconds
-
-        Returns:
-            Dict with response and metadata
-        """
-        response = await self._request(
-            "send_message",
-            {"agent_id": agent_id, "message": message},
-            timeout=float(timeout + 5),
-        )
-
-        if not response.get("success", False):
-            raise RuntimeError(f"Send message failed: {response.get('error')}")
 
         return response
 

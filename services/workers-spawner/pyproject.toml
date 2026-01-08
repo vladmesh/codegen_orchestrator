@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
+    "pexpect>=4.9",
     "redis>=5.0",
     "structlog>=24.0",
 ]

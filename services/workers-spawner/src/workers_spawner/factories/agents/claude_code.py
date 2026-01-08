@@ -101,19 +101,22 @@ class ClaudeCodeAgent(AgentFactory):
         # Execute via ContainerService.send_command
         result = await self.container_service.send_command(agent_id, full_command, timeout=120)
 
-        if result.exit_code != 0:
-            logger.error(
-                "headless_command_failed",
-                agent_id=agent_id,
-                exit_code=result.exit_code,
-                error=result.error,
-            )
-            raise RuntimeError(f"Claude CLI failed: {result.error}")
-
-        # Parse JSON response
+        # Parse JSON response (Claude returns JSON even on errors)
         try:
             data = json.loads(result.output)
 
+            # Check if Claude returned an error in the JSON
+            if data.get("is_error", False):
+                error_msg = data.get("result", "Unknown Claude error")
+                logger.error(
+                    "claude_returned_error",
+                    agent_id=agent_id,
+                    error=error_msg,
+                    exit_code=result.exit_code,
+                )
+                raise RuntimeError(f"Claude error: {error_msg}")
+
+            # Success case
             return {
                 "response": data["result"],
                 "session_context": {"session_id": data["session_id"]},
@@ -122,11 +125,16 @@ class ClaudeCodeAgent(AgentFactory):
                     "model": data.get("model"),
                 },
             }
+
         except json.JSONDecodeError as e:
+            # Non-JSON output means something went really wrong
             logger.error(
                 "failed_to_parse_json",
                 agent_id=agent_id,
+                exit_code=result.exit_code,
                 output_preview=result.output[:500],
                 error=str(e),
             )
-            raise RuntimeError(f"Failed to parse Claude response: {e}") from e
+            # Use output as error message if not JSON
+            error_detail = result.output[:200] if result.output else result.error or "Unknown error"
+            raise RuntimeError(f"Claude CLI failed: {error_detail}") from e
