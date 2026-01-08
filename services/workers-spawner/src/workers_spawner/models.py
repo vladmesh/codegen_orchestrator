@@ -20,6 +20,7 @@ class CapabilityType(str, Enum):
     """Supported capabilities that can be added to agents."""
 
     GIT = "git"
+    GITHUB = "github"
     CURL = "curl"
     NODE = "node"
     PYTHON = "python"

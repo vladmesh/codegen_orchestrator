@@ -216,6 +216,9 @@ class ContainerService:
                         file_path=file_path,
                     )
 
+            # Run capability-specific setup commands
+            await self._run_capability_setup(agent_id, config, env_vars)
+
             logger.info("container_created", agent_id=agent_id)
             return agent_id
 
@@ -563,3 +566,47 @@ class ContainerService:
             f"Container {agent_id} not ready after {max_attempts} attempts "
             f"({max_attempts * retry_delay}s)"
         )
+
+    async def _run_capability_setup(
+        self, agent_id: str, config: WorkerConfig, env_vars: dict[str, str]
+    ) -> None:
+        """Run post-creation setup for capabilities.
+
+        Some capabilities need to run commands after container creation
+        (e.g., GitHub needs to setup git credentials).
+
+        Args:
+            agent_id: Container ID
+            config: Worker configuration
+            env_vars: Environment variables dict
+        """
+        from workers_spawner.models import CapabilityType
+
+        # GitHub capability: setup git credentials
+        if CapabilityType.GITHUB in config.capabilities:
+            from workers_spawner.factories.capabilities.github import get_github_setup_commands
+
+            commands = get_github_setup_commands(env_vars)
+            if commands:
+                logger.info(
+                    "running_github_setup",
+                    agent_id=agent_id,
+                    num_commands=len(commands),
+                )
+                for cmd in commands:
+                    try:
+                        result = await self.send_command(agent_id, cmd, timeout=10)
+                        if not result.success:
+                            logger.warning(
+                                "github_setup_command_failed",
+                                agent_id=agent_id,
+                                command=cmd[:50],
+                                error=result.error,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "github_setup_exception",
+                            agent_id=agent_id,
+                            command=cmd[:50],
+                            error=str(e),
+                        )
