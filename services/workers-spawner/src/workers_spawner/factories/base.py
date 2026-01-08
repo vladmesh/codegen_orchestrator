@@ -1,7 +1,7 @@
 """Base abstract classes for agent and capability factories."""
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from shared.schemas import ToolGroup
 
@@ -60,50 +60,28 @@ class AgentFactory(ABC):
         """
 
     @abstractmethod
-    async def send_message(
+    async def send_message_headless(
         self,
         agent_id: str,
         message: str,
         session_context: dict | None = None,
-    ) -> dict:
-        """Send text message to agent, get structured response.
+    ) -> dict[str, Any]:
+        """Send message to agent in headless mode.
+
+        This is the universal interface for all CLI agents.
+        Each agent implements its own protocol (claude -p, droid exec, etc.)
 
         Args:
             agent_id: Container ID
             message: User message text
-            session_context: Optional session state (agent-specific)
+            session_context: Optional agent-specific session state
 
         Returns:
-            {\n                "response": str,  # Agent's response text
+            {
+                "response": str,  # Agent's text response
                 "session_context": dict | None,  # Updated session state
-                "metadata": dict  # Agent-specific metadata
+                "metadata": dict,  # Agent-specific metadata
             }
-        """
-
-    @abstractmethod
-    def get_persistent_command(self) -> str:
-        """Get command for persistent interactive mode.
-
-        This command should start the agent in a mode that accepts
-        input via stdin and outputs logs to stdout/stderr.
-        The agent communicates responses via `orchestrator respond` CLI.
-
-        Returns:
-            Command string for persistent mode.
-        """
-
-    @abstractmethod
-    def format_message_for_stdin(self, message: str) -> str:
-        """Format message for stdin input.
-
-        This prepares a user message to be written to the agent's stdin.
-        Typically adds a newline at the end.
-
-        Args:
-            message: Raw user message text
-
-        Returns:
-            Formatted string ready for stdin.write()
         """
 
     def get_optional_env_vars(self) -> dict[str, str]:

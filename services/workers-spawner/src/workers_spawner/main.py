@@ -11,8 +11,6 @@ from workers_spawner.config import get_settings
 from workers_spawner.container_service import ContainerService
 from workers_spawner.events import EventPublisher
 from workers_spawner.lifecycle_manager import LifecycleManager
-from workers_spawner.log_collector import LogCollector
-from workers_spawner.process_manager import ProcessManager
 from workers_spawner.redis_handlers import CommandHandler
 
 logger = structlog.get_logger()
@@ -118,17 +116,11 @@ async def main() -> None:
     event_publisher = EventPublisher(redis_client)
     lifecycle_manager = LifecycleManager(container_service, event_publisher)
 
-    # Initialize persistent process management
-    process_manager = ProcessManager()
-    log_collector = LogCollector(redis_client)
-
-    # Initialize command handler with all dependencies
+    # Initialize command handler
     command_handler = CommandHandler(
         redis_client,
         container_service,
         event_publisher,
-        process_manager=process_manager,
-        log_collector=log_collector,
     )
 
     # Ensure stream group exists

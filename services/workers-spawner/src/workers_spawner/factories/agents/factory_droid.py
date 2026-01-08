@@ -1,9 +1,17 @@
 """Factory.ai Droid agent factory."""
 
+import json
+import shlex
+from typing import Any
+
+import structlog
+
 from shared.schemas import ToolGroup, get_instructions_content
 from workers_spawner.factories.base import AgentFactory
 from workers_spawner.factories.registry import register_agent
 from workers_spawner.models import AgentType
+
+logger = structlog.get_logger()
 
 
 @register_agent(AgentType.FACTORY_DROID)
@@ -37,29 +45,61 @@ class FactoryDroidAgent(AgentFactory):
         content = get_instructions_content(allowed_tools)
         return {"/workspace/AGENTS.md": content}
 
-    def get_persistent_command(self) -> str:
-        """Get command for persistent interactive mode.
-
-        Factory Droid in persistent mode - using exec with stdin.
-        Note: May need adjustment based on actual droid behavior.
-        """
-        return "/home/worker/.local/bin/droid"
-
-    def format_message_for_stdin(self, message: str) -> str:
-        """Format message for stdin input.
-
-        Factory Droid expects messages followed by newline.
-        """
-        return f"{message}\n"
-
-    async def send_message(
+    async def send_message_headless(
         self,
         agent_id: str,
         message: str,
         session_context: dict | None = None,
-    ) -> dict:
-        """Send message to Factory Droid CLI.
+    ) -> dict[str, Any]:
+        """Send message to Factory Droid using headless exec mode.
 
-        TODO: Implement after studying Factory Droid protocol.
+        Note: Factory Droid has different session management.
+        Context is handled via workspace state, not session_id.
+
+        Args:
+            agent_id: Container ID
+            message: User message text
+            session_context: Optional session state (preserved as-is)
+
+        Returns:
+            {
+                "response": str,  # Agent's text response
+                "session_context": dict | None,  # Preserved session state
+                "metadata": dict,  # Agent-specific metadata
+            }
         """
-        raise NotImplementedError("Factory Droid send_message not yet implemented.")
+        cmd = f"/home/worker/.local/bin/droid exec -o json {shlex.quote(message)}"
+
+        logger.info(
+            "sending_headless_message_droid",
+            agent_id=agent_id,
+            message_length=len(message),
+        )
+
+        result = await self.container_service.send_command(agent_id, cmd, timeout=120)
+
+        if result.exit_code != 0:
+            logger.error(
+                "droid_exec_failed",
+                agent_id=agent_id,
+                exit_code=result.exit_code,
+                error=result.error,
+            )
+            raise RuntimeError(f"Droid exec failed: {result.error}")
+
+        # Parse output (droid exec format may vary)
+        try:
+            data = json.loads(result.output)
+            return {
+                "response": data.get("result", result.output),
+                "session_context": session_context,  # Preserve as-is
+                "metadata": {},
+            }
+        except json.JSONDecodeError:
+            # Fallback: treat output as plain text
+            logger.warning(
+                "droid_output_not_json",
+                agent_id=agent_id,
+                output_preview=result.output[:500],
+            )
+            return {"response": result.output, "session_context": session_context, "metadata": {}}

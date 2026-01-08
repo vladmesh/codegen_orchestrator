@@ -1,9 +1,17 @@
 """Claude Code agent factory."""
 
+import json
+import shlex
+from typing import Any
+
+import structlog
+
 from shared.schemas import ToolGroup, get_instructions_content
 from workers_spawner.factories.base import AgentFactory
 from workers_spawner.factories.registry import register_agent
 from workers_spawner.models import AgentType
+
+logger = structlog.get_logger()
 
 
 @register_agent(AgentType.CLAUDE_CODE)
@@ -42,41 +50,40 @@ class ClaudeCodeAgent(AgentFactory):
             # "/home/node/.claude/settings.json": json.dumps({...})
         }
 
-    def get_persistent_command(self) -> str:
-        """Get command for persistent interactive mode.
-
-        Claude Code in persistent mode accepts input via stdin.
-        """
-        return "claude --dangerously-skip-permissions"
-
-    def format_message_for_stdin(self, message: str) -> str:
-        """Format message for stdin input.
-
-        Claude expects messages followed by newline.
-        """
-        return f"{message}\n"
-
-    async def send_message(
+    async def send_message_headless(
         self,
         agent_id: str,
         message: str,
         session_context: dict | None = None,
-    ) -> dict:
-        """Send message to Claude CLI and parse response."""
-        import json
+    ) -> dict[str, Any]:
+        """Send message using headless mode with clean JSON output.
 
+        Uses claude -p with --output-format json for structured response.
+        Session continuity via --resume session_id.
+
+        Args:
+            agent_id: Container ID
+            message: User message text
+            session_context: Optional session state (contains session_id)
+
+        Returns:
+            {
+                "response": str,  # Agent's text response
+                "session_context": dict,  # Updated session (session_id)
+                "metadata": dict,  # Usage stats, model info
+            }
+        """
         session_id = session_context.get("session_id") if session_context else None
 
-        # Escape single quotes for shell safety
-        safe_message = message.replace("'", "'\\''")
-
+        # Build command with proper escaping
+        # Use shlex.quote for safety
         cmd_parts = [
             "claude",
-            "--dangerously-skip-permissions",
             "-p",
-            f"'{safe_message}'",
+            shlex.quote(message),
             "--output-format",
             "json",
+            "--dangerously-skip-permissions",
         ]
 
         if session_id:
@@ -84,27 +91,42 @@ class ClaudeCodeAgent(AgentFactory):
 
         full_command = " ".join(cmd_parts)
 
-        # Execute using injected container service
+        logger.info(
+            "sending_headless_message",
+            agent_id=agent_id,
+            has_session=bool(session_id),
+            message_length=len(message),
+        )
+
+        # Execute via ContainerService.send_command
         result = await self.container_service.send_command(agent_id, full_command, timeout=120)
 
-        # Parse response
+        if result.exit_code != 0:
+            logger.error(
+                "headless_command_failed",
+                agent_id=agent_id,
+                exit_code=result.exit_code,
+                error=result.error,
+            )
+            raise RuntimeError(f"Claude CLI failed: {result.error}")
+
+        # Parse JSON response
         try:
             data = json.loads(result.output)
-            response_text = data.get("result", "")
-            new_session_id = data.get("session_id")
 
             return {
-                "response": response_text,
-                "session_context": {"session_id": new_session_id} if new_session_id else None,
+                "response": data["result"],
+                "session_context": {"session_id": data["session_id"]},
                 "metadata": {
-                    "exit_code": result.exit_code,
-                    "success": result.success,
+                    "usage": data.get("usage", {}),
+                    "model": data.get("model"),
                 },
             }
-        except json.JSONDecodeError:
-            # Fallback for non-JSON output (errors etc)
-            return {
-                "response": result.output,
-                "session_context": session_context,
-                "metadata": {"parse_error": True, "success": result.success},
-            }
+        except json.JSONDecodeError as e:
+            logger.error(
+                "failed_to_parse_json",
+                agent_id=agent_id,
+                output_preview=result.output[:500],
+                error=str(e),
+            )
+            raise RuntimeError(f"Failed to parse Claude response: {e}") from e
