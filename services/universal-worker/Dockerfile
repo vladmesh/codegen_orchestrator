@@ -54,5 +54,16 @@ RUN chown worker:worker /workspace
 # Switch to non-root user
 USER worker
 
+# Install ralph-wiggum plugin for long-running autonomous tasks
+# This plugin intercepts Claude's exit attempts and continues iteration
+# until completion promise is met or max iterations reached
+RUN mkdir -p ~/.claude/plugins && \
+    git clone --depth 1 --filter=blob:none --sparse \
+        https://github.com/anthropics/claude-code.git /tmp/claude-code && \
+    cd /tmp/claude-code && \
+    git sparse-checkout set plugins/ralph-wiggum && \
+    cp -r plugins/ralph-wiggum ~/.claude/plugins/ && \
+    rm -rf /tmp/claude-code
+
 # Default entrypoint
 ENTRYPOINT ["/entrypoint.sh"]

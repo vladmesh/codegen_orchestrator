@@ -4,7 +4,7 @@
 
 **Дата создания**: 2026-01-08
 **Последнее обновление**: 2026-01-08
-**Статус**: In Progress - Phase 1 Complete
+**Статус**: In Progress - Phase 1 & Phase 2 Complete
 
 ---
 
@@ -223,196 +223,91 @@ async def _run_capability_setup(self, agent_id: str, config: WorkerConfig) -> No
 
 ---
 
-### Фаза 2: Ralph-Wiggum для Claude Code (2-3 часа) - PRIMARY ⏸️ POSTPONED
+### Фаза 2: Ralph-Wiggum для Claude Code ✅ **COMPLETED** (2026-01-08)
 
 **Цель**: Обеспечить автономную работу Claude Code минимум 10 минут через ralph-wiggum plugin.
 
-#### Шаг 2.1: Добавить ralph-wiggum в universal-worker
+**Реализация**:
+- ✅ Добавлен official ralph-wiggum plugin в `universal-worker/Dockerfile` через sparse checkout
+- ✅ Добавлен метод `ContainerService.start_ralph_loop()` для создания state file
+- ✅ Stop-hook перехватывает exit и продолжает работу до completion promise
+
+#### Шаг 2.1: Добавить ralph-wiggum в universal-worker ✅
 
 **Файл**: `services/universal-worker/Dockerfile`
 
 ```dockerfile
-# Install ralph-wiggum plugin for long-running Claude tasks
-RUN npm install -g @anthropic-ai/ralph-wiggum
+# Install ralph-wiggum plugin for long-running autonomous tasks
+RUN mkdir -p ~/.claude/plugins && \
+    git clone --depth 1 --filter=blob:none --sparse \
+        https://github.com/anthropics/claude-code.git /tmp/claude-code && \
+    cd /tmp/claude-code && \
+    git sparse-checkout set plugins/ralph-wiggum && \
+    cp -r plugins/ralph-wiggum ~/.claude/plugins/ && \
+    rm -rf /tmp/claude-code
 ```
 
-**Критерий**: Плагин установлен в контейнере.
+**Критерий**: ✅ Плагин установлен в контейнере.
 
 ---
 
-#### Шаг 2.2: Обновить ClaudeCodeAgent для stop-hook pattern
+#### Шаг 2.2: Добавить start_ralph_loop() в ContainerService ✅
 
-**Файл**: `services/workers-spawner/src/workers_spawner/factories/agents/claude_code.py`
+**Файл**: `services/workers-spawner/src/workers_spawner/container_service.py`
 
-**Критическое требование**: Реализовать resumption loop для автономной работы 10+ минут.
+**Реализация**: Вместо изменения `send_message_headless()`, добавлен отдельный метод для создания state file:
 
 ```python
-async def send_message_headless(
+async def start_ralph_loop(
     self,
     agent_id: str,
-    message: str,
-    session_context: dict | None = None,
-    timeout: int = 120,
-) -> dict[str, Any]:
-    """Send message using headless mode with ralph-wiggum for long tasks.
+    prompt: str,
+    completion_promise: str = "TASK_COMPLETE",
+    max_iterations: int = 50,
+) -> bool:
+    """Start ralph-wiggum autonomous loop for long-running tasks.
 
-    Ralph-wiggum enables multi-step autonomous work through stop-hook pattern:
-    1. Agent works until reaches stopping point
-    2. Returns JSON with is_stopped=true
-    3. We automatically resume with --resume
-    4. Repeat until task complete or timeout
+    Creates state file that stop-hook reads:
+    - .claude/ralph-loop.local.md
+    
+    Hook intercepts exit and continues iteration
+    until completion promise detected or max iterations reached.
     """
-    session_id = session_context.get("session_id") if session_context else None
-
-    start_time = time.time()
-    accumulated_response = []
-
-    while True:
-        elapsed = time.time() - start_time
-        remaining_timeout = timeout - int(elapsed)
-
-        if remaining_timeout <= 0:
-            raise RuntimeError(f"Task timeout after {timeout} seconds")
-
-        cmd_parts = [
-            "claude",
-            "-p", shlex.quote(message) if not session_id else '""',  # Empty prompt on resume
-            "--output-format", "json",
-            "--dangerously-skip-permissions",
-        ]
-
-        if session_id:
-            cmd_parts.extend(["--resume", session_id])
-
-        full_command = " ".join(cmd_parts)
-
-        logger.info(
-            "claude_headless_step",
-            agent_id=agent_id,
-            has_session=bool(session_id),
-            elapsed_seconds=int(elapsed),
-            remaining_timeout=remaining_timeout,
-        )
-
-        # Execute with remaining timeout
-        result = await self.container_service.send_command(
-            agent_id, full_command, timeout=remaining_timeout
-        )
-
-        # Parse JSON response
-        try:
-            data = json.loads(result.output)
-
-            # Check for error
-            if data.get("is_error", False):
-                error_msg = data.get("result", "Unknown Claude error")
-                raise RuntimeError(f"Claude error: {error_msg}")
-
-            # Accumulate response
-            response_text = data.get("result", "")
-            if response_text:
-                accumulated_response.append(response_text)
-
-            # Update session for next iteration
-            session_id = data.get("session_id")
-
-            # Check if stopped (ralph-wiggum stop-hook)
-            is_stopped = data.get("is_stopped", False)
-
-            if is_stopped:
-                logger.info(
-                    "claude_stopped_resuming",
-                    agent_id=agent_id,
-                    session_id=session_id,
-                    steps_completed=len(accumulated_response),
-                )
-                # Continue loop to resume
-                continue
-            else:
-                # Task complete
-                logger.info(
-                    "claude_task_complete",
-                    agent_id=agent_id,
-                    total_steps=len(accumulated_response),
-                    total_time=int(elapsed),
-                )
-
-                return {
-                    "response": "\n\n".join(accumulated_response),
-                    "session_context": {"session_id": session_id},
-                    "metadata": {
-                        "usage": data.get("usage", {}),
-                        "model": data.get("model"),
-                        "steps": len(accumulated_response),
-                        "elapsed_seconds": int(elapsed),
-                    },
-                }
-
-        except json.JSONDecodeError as e:
-            logger.error(
-                "failed_to_parse_json",
-                agent_id=agent_id,
-                exit_code=result.exit_code,
-                output_preview=result.output[:500],
-                error=str(e),
-            )
-            error_detail = result.output[:200] if result.output else result.error or "Unknown error"
-            raise RuntimeError(f"Claude CLI failed: {error_detail}") from e
+    state_content = f'''---
+iteration: 1
+max_iterations: {max_iterations}
+completion_promise: "{completion_promise}"
+---
+{prompt}
+'''
+    return await self.send_file(agent_id, ".claude/ralph-loop.local.md", state_content)
 ```
 
-**Критерий**: Claude Code может работать 10+ минут автономно через resumption loop.
-
----
-
-#### Шаг 2.3: Добавить timeout parameter в базовый класс
-
-**Файл**: `services/workers-spawner/src/workers_spawner/factories/base.py`
-
+**Использование**:
 ```python
-@abstractmethod
-async def send_message_headless(
-    self,
-    agent_id: str,
-    message: str,
-    session_context: dict | None = None,
-    timeout: int = 120,  # ← NEW: configurable timeout
-) -> dict[str, Any]:
-    """Send message to agent in headless mode.
+# Before sending task:
+await container_service.start_ralph_loop(
+    agent_id=agent_id,
+    prompt="Clone repo, implement feature, run tests, commit, push",
+    completion_promise="TASK_COMPLETE",
+)
 
-    Args:
-        timeout: Max execution time in seconds (default 2 minutes)
-    """
+# Then run Claude:
+# claude -p "..." --dangerously-skip-permissions
 ```
 
-**Критерий**: Timeout настраивается для длительных задач.
+**Критерий**: ✅ Claude Code продолжает работу пока не выведет `<promise>TASK_COMPLETE</promise>`.
 
 ---
 
-#### Шаг 2.4: Обновить redis_handlers.py для timeout
+#### Шаг 2.3: timeout параметры ⏸️ SKIPPED
 
-**Файл**: `services/workers-spawner/src/workers_spawner/redis_handlers.py`
+Не требуется изменять `send_message_headless()` — ralph-wiggum stop-hook управляет циклом автономно на уровне Claude CLI.
 
-```python
-async def _handle_send_message(self, message: dict[str, Any]) -> dict[str, Any]:
-    """Handle send_message command using headless mode."""
-    agent_id = message.get("agent_id")
-    user_message = message.get("message")
-    timeout = message.get("timeout", 120)  # ← NEW: accept timeout from caller
-
-    # ... existing code ...
-
-    # Send message via factory's headless method
-    result = await factory.send_message_headless(
-        agent_id=agent_id,
-        message=user_message,
-        session_context=session_context,
-        timeout=timeout,  # ← Pass timeout to factory
-    )
-```
-
-**Критерий**: Timeout передаётся из LangGraph через Redis в factory.
+Timeout задаётся через `max_iterations` в state file (default: 50 итераций).
 
 ---
+
 
 ### Фаза 3: Обновить LangGraph worker_spawner Client (1.5 часа)
 

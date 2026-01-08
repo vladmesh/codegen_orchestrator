@@ -610,3 +610,47 @@ class ContainerService:
                             command=cmd[:50],
                             error=str(e),
                         )
+
+    async def start_ralph_loop(
+        self,
+        agent_id: str,
+        prompt: str,
+        completion_promise: str = "TASK_COMPLETE",
+        max_iterations: int = 50,
+    ) -> bool:
+        """Start ralph-wiggum autonomous loop for long-running tasks.
+
+        Creates the state file that ralph-wiggum stop-hook reads.
+        The hook intercepts Claude's exit attempts and continues iteration
+        until completion promise is detected or max iterations reached.
+
+        Args:
+            agent_id: Container ID
+            prompt: The task prompt to execute
+            completion_promise: Text Claude must output to signal completion
+            max_iterations: Safety limit for max loop iterations
+
+        Returns:
+            True if state file was created successfully
+        """
+        state_content = f'''---
+iteration: 1
+max_iterations: {max_iterations}
+completion_promise: "{completion_promise}"
+---
+{prompt}
+'''
+
+        logger.info(
+            "starting_ralph_loop",
+            agent_id=agent_id,
+            max_iterations=max_iterations,
+            completion_promise=completion_promise,
+            prompt_length=len(prompt),
+        )
+
+        return await self.send_file(
+            agent_id,
+            ".claude/ralph-loop.local.md",
+            state_content,
+        )
