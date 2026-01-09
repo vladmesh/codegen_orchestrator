@@ -45,7 +45,8 @@ help:
 	@echo "  make makemigrations MSG='...' - Create new migration"
 	@echo ""
 	@echo "  make shell       - Open shell in tooling container"
-	@echo "  make nuke           - Full reset: remove volumes, rebuild, migrate"
+	@echo "  make nuke           - Full reset (smart build): remove volumes, incremental rebuild"
+	@echo "  make nuke-hard      - Full reset (hard build): remove volumes, NO-CACHE rebuild"
 	@echo "  make seed           - Seed database with API keys from env"
 	@echo "  make lock-deps      - Regenerate all requirements.lock files"
 	@echo "  make cleanup-agents - Remove all agent-* containers"
@@ -250,10 +251,16 @@ shell:
 
 # === Nuclear Option ===
 
-nuke:
-	@echo "🔥 Nuking everything..."
+nuke: BUILD_OPTS=
+nuke: .nuke-common
+
+nuke-hard: BUILD_OPTS=--no-cache
+nuke-hard: .nuke-common
+
+.nuke-common:
+	@echo "🔥 Nuking everything (Build mode: $(if $(filter --no-cache,$(BUILD_OPTS)),hard reset,smart incremental))..."
 	$(DOCKER_COMPOSE) down -v
-	$(DOCKER_COMPOSE) --profile build build --no-cache
+	$(DOCKER_COMPOSE) --profile build build $(BUILD_OPTS)
 	$(DOCKER_COMPOSE) up -d
 	@echo "⏳ Waiting for DB to be healthy..."
 	@timeout=60; \
