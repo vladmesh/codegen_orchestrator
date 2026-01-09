@@ -7,7 +7,9 @@ from rich.table import Table
 import typer
 
 from orchestrator.client import APIClient
+from orchestrator.models.deploy import DeployStart
 from orchestrator.permissions import require_permission
+from orchestrator.validation import validate
 
 app = typer.Typer()
 console = Console()
@@ -24,8 +26,9 @@ def _get_redis():
 
 @app.command()
 @require_permission("deploy")
+@validate(DeployStart)
 def trigger(
-    project_id: str,
+    project_id: str = typer.Option(..., "--project-id", "-p", help="Project ID to deploy"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Trigger deploy task for project."""

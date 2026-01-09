@@ -1,11 +1,14 @@
 import json as json_lib
+import uuid
 
 from rich.console import Console
 from rich.table import Table
 import typer
 
 from orchestrator.client import APIClient
+from orchestrator.models.project import ProjectCreate, SecretSet
 from orchestrator.permissions import require_permission
+from orchestrator.validation import validate
 
 app = typer.Typer()
 console = Console()
@@ -39,7 +42,7 @@ def list(json_output: bool = typer.Option(False, "--json", help="Output as JSON"
 @app.command()
 @require_permission("project")
 def get(
-    project_id: int,
+    project_id: str,
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Get details of a specific project."""
@@ -61,26 +64,85 @@ def get(
 
 @app.command()
 @require_permission("project")
+@validate(ProjectCreate)
 def create(
-    name: str,
-    id: int,
+    name: str = typer.Option(..., "--name", "-n", help="Project name"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Create a new project.
 
+    The project ID is automatically generated as a UUID.
+
     Args:
         name: Name of the project
-        id: Unique integer ID for the project
     """
     try:
-        payload = {"id": id, "name": name, "status": "created", "config": {}}
+        # Auto-generate UUID for project ID
+        project_id = str(uuid.uuid4())
+
+        payload = {
+            "id": project_id,
+            "name": name,
+            "status": "created",
+            "config": {},
+        }
         response = client.post("/api/projects/", json=payload)
 
         if json_output:
             typer.echo(json_lib.dumps(response, indent=2))
             return
 
-        console.print("[bold green]Project created successfully![/bold green]")
-        console.print(f"ID: {response['id']}")
+        console.print("[bold green]✓ Project created successfully![/bold green]")
+        console.print(f"ID: [cyan]{response['id']}[/cyan]")
+        console.print(f"Name: [magenta]{response['name']}[/magenta]")
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {str(e)}")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+@require_permission("project")
+@validate(SecretSet)
+def set_secret(
+    project_id: str = typer.Option(..., "--project-id", "-p", help="Project ID"),
+    key: str = typer.Option(
+        ..., "--key", "-k", help="Secret key (uppercase, e.g., TELEGRAM_TOKEN)"
+    ),
+    value: str = typer.Option(..., "--value", "-v", help="Secret value"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Set a secret for a project.
+
+    Secrets are stored in project.config.secrets and synced to GitHub Actions.
+
+    Args:
+        project_id: Project ID (UUID)
+        key: Secret key (must be uppercase with underscores, e.g., TELEGRAM_TOKEN)
+        value: Secret value
+    """
+    try:
+        # Get current project
+        project = client.get(f"/api/projects/{project_id}")
+
+        # Update config.secrets
+        config = project.get("config", {})
+        secrets = config.get("secrets", {})
+        secrets[key] = value
+        config["secrets"] = secrets
+
+        # PATCH project with updated config
+        response = client.patch(
+            f"/api/projects/{project_id}",
+            json={"config": config},
+        )
+
+        if json_output:
+            typer.echo(json_lib.dumps(response, indent=2))
+            return
+
+        console.print("[bold green]✓ Secret set successfully![/bold green]")
+        console.print(f"Project: [cyan]{project_id}[/cyan]")
+        console.print(f"Key: [yellow]{key}[/yellow]")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {str(e)}")
+        raise typer.Exit(1) from e

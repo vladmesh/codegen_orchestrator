@@ -18,7 +18,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   Claude Agent                       │
+│                   CLI Agent (Claude, Factory)       │
 │  (ТОЛЬКО orchestrator CLI, никаких curl/redis)      │
 └─────────────────────┬───────────────────────────────┘
                       │
@@ -141,7 +141,7 @@ orchestrator project set-secret PROJECT_ID KEY VALUE
 
 **Команды**:
 ```bash
-orchestrator engineering start PROJECT_ID --task "Create hello world bot"
+orchestrator engineering trigger PROJECT_ID --task "Create hello world bot"
 orchestrator engineering status TASK_ID [--follow]
 orchestrator engineering logs TASK_ID
 ```
@@ -169,7 +169,7 @@ orchestrator engineering logs TASK_ID
 
 **Команды**:
 ```bash
-orchestrator deploy start PROJECT_ID [--server SERVER_ID]
+orchestrator deploy trigger PROJECT_ID [--server SERVER_ID]
 orchestrator deploy status JOB_ID
 orchestrator deploy logs JOB_ID
 ```

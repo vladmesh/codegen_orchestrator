@@ -63,18 +63,136 @@ class TestProjectCommands:
         data = json.loads(result.output)
         assert data["name"] == "myproject"
 
+    @patch("orchestrator.commands.project.uuid")
     @patch("orchestrator.commands.project.client")
-    def test_project_create_json(self, mock_client):
-        """project create --json returns JSON output."""
-        mock_client.post.return_value = {"id": 5, "name": "newproj", "status": "created"}
+    def test_project_create_json(self, mock_client, mock_uuid):
+        """project create --json returns JSON output with auto-generated UUID."""
+        mock_uuid.uuid4.return_value.hex = "abc123"
+        mock_client.post.return_value = {
+            "id": "abc123",
+            "name": "newproj",
+            "status": "created",
+        }
 
         with patch.dict("os.environ", {"ORCHESTRATOR_ALLOWED_TOOLS": ""}, clear=False):
-            # create uses positional args: name, id
-            result = runner.invoke(app, ["project", "create", "newproj", "5", "--json"])
+            # create now only requires name - id is auto-generated
+            result = runner.invoke(app, ["project", "create", "--name", "newproj", "--json"])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert data["id"] == EXPECTED_PROJECT_ID
+        assert data["name"] == "newproj"
+        assert "id" in data
+
+    @patch("orchestrator.commands.project.client")
+    def test_project_create_validation_error_empty_name(self, mock_client):
+        """project create with empty name fails validation."""
+        with patch.dict("os.environ", {"ORCHESTRATOR_ALLOWED_TOOLS": ""}, clear=False):
+            result = runner.invoke(app, ["project", "create", "--name", ""])
+
+        assert result.exit_code == 1
+        assert "✗ name:" in result.output
+        assert "at least 1 character" in result.output.lower()
+
+    @patch("orchestrator.commands.project.client")
+    def test_project_set_secret_json(self, mock_client):
+        """project set-secret --json returns JSON output."""
+        mock_client.get.return_value = {
+            "id": "proj-123",
+            "name": "my-project",
+            "status": "active",
+            "config": {},
+        }
+        mock_client.patch.return_value = {
+            "id": "proj-123",
+            "name": "my-project",
+            "status": "active",
+            "config": {"secrets": {"TELEGRAM_TOKEN": "secret-value"}},
+        }
+
+        with patch.dict("os.environ", {"ORCHESTRATOR_ALLOWED_TOOLS": ""}, clear=False):
+            result = runner.invoke(
+                app,
+                [
+                    "project",
+                    "set-secret",
+                    "--project-id",
+                    "proj-123",
+                    "--key",
+                    "TELEGRAM_TOKEN",
+                    "--value",
+                    "secret-value",
+                    "--json",
+                ],
+            )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["config"]["secrets"]["TELEGRAM_TOKEN"] == "secret-value"  # noqa: S105
+
+    @patch("orchestrator.commands.project.client")
+    def test_project_set_secret_validation_error_lowercase_key(self, mock_client):
+        """project set-secret with lowercase key fails validation."""
+        with patch.dict("os.environ", {"ORCHESTRATOR_ALLOWED_TOOLS": ""}, clear=False):
+            result = runner.invoke(
+                app,
+                [
+                    "project",
+                    "set-secret",
+                    "--project-id",
+                    "proj-123",
+                    "--key",
+                    "telegram_token",  # lowercase - should fail
+                    "--value",
+                    "secret",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "✗ key:" in result.output
+        assert "should match pattern" in result.output.lower()
+
+    @patch("orchestrator.commands.project.client")
+    def test_project_set_secret_preserves_existing_secrets(self, mock_client):
+        """project set-secret preserves existing secrets in config."""
+        mock_client.get.return_value = {
+            "id": "proj-123",
+            "name": "my-project",
+            "status": "active",
+            "config": {"secrets": {"EXISTING_SECRET": "existing-value"}},
+        }
+        mock_client.patch.return_value = {
+            "id": "proj-123",
+            "name": "my-project",
+            "status": "active",
+            "config": {
+                "secrets": {
+                    "EXISTING_SECRET": "existing-value",
+                    "NEW_SECRET": "new-value",
+                }
+            },
+        }
+
+        with patch.dict("os.environ", {"ORCHESTRATOR_ALLOWED_TOOLS": ""}, clear=False):
+            result = runner.invoke(
+                app,
+                [
+                    "project",
+                    "set-secret",
+                    "--project-id",
+                    "proj-123",
+                    "--key",
+                    "NEW_SECRET",
+                    "--value",
+                    "new-value",
+                ],
+            )
+
+        assert result.exit_code == 0
+        # Verify PATCH was called with both secrets
+        patch_call = mock_client.patch.call_args
+        config = patch_call[1]["json"]["config"]
+        assert "EXISTING_SECRET" in config["secrets"]
+        assert "NEW_SECRET" in config["secrets"]
 
 
 class TestRespondCommand:
@@ -121,7 +239,7 @@ class TestDeployCommands:
             {"ORCHESTRATOR_ALLOWED_TOOLS": "", "ORCHESTRATOR_USER_ID": "test_user"},
             clear=False,
         ):
-            result = runner.invoke(app, ["deploy", "trigger", "123", "--json"])
+            result = runner.invoke(app, ["deploy", "trigger", "--project-id", "123", "--json"])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -145,3 +263,73 @@ class TestDeployCommands:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["status"] == "running"
+
+
+class TestEngineeringCommands:
+    """Tests for engineering commands."""
+
+    @patch("orchestrator.commands.engineering._get_redis")
+    @patch("orchestrator.commands.engineering.client")
+    def test_engineering_trigger_json(self, mock_client, mock_redis):
+        """engineering trigger --json returns JSON output."""
+        mock_client.post.return_value = {}
+        mock_redis_instance = MagicMock()
+        mock_redis.return_value = mock_redis_instance
+
+        with patch.dict(
+            "os.environ",
+            {"ORCHESTRATOR_ALLOWED_TOOLS": "", "ORCHESTRATOR_USER_ID": "test_user"},
+            clear=False,
+        ):
+            result = runner.invoke(
+                app, ["engineering", "trigger", "--project-id", "proj-123", "--json"]
+            )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["project_id"] == "proj-123"
+        assert data["status"] == "queued"
+        assert "task_id" in data
+
+    @patch("orchestrator.commands.engineering._get_redis")
+    @patch("orchestrator.commands.engineering.client")
+    def test_engineering_trigger_validation_error_empty_project_id(self, mock_client, mock_redis):
+        """engineering trigger with empty project_id fails validation."""
+        with patch.dict("os.environ", {"ORCHESTRATOR_ALLOWED_TOOLS": ""}, clear=False):
+            result = runner.invoke(app, ["engineering", "trigger", "--project-id", ""])
+
+        assert result.exit_code == 1
+        assert "✗ project_id:" in result.output
+        assert "at least 1 character" in result.output.lower()
+
+    @patch("orchestrator.commands.engineering.client")
+    def test_engineering_status_json(self, mock_client):
+        """engineering status --json returns JSON output."""
+        mock_client.get.return_value = {
+            "type": "engineering",
+            "status": "running",
+            "project_id": "proj-123",
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+
+        with patch.dict("os.environ", {"ORCHESTRATOR_ALLOWED_TOOLS": ""}, clear=False):
+            result = runner.invoke(app, ["engineering", "status", "task-123", "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["status"] == "running"
+
+
+class TestDeployValidation:
+    """Tests for deploy command validation."""
+
+    @patch("orchestrator.commands.deploy._get_redis")
+    @patch("orchestrator.commands.deploy.client")
+    def test_deploy_trigger_validation_error_empty_project_id(self, mock_client, mock_redis):
+        """deploy trigger with empty project_id fails validation."""
+        with patch.dict("os.environ", {"ORCHESTRATOR_ALLOWED_TOOLS": ""}, clear=False):
+            result = runner.invoke(app, ["deploy", "trigger", "--project-id", ""])
+
+        assert result.exit_code == 1
+        assert "✗ project_id:" in result.output
+        assert "at least 1 character" in result.output.lower()

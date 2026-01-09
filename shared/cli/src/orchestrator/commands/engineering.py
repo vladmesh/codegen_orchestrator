@@ -7,7 +7,9 @@ from rich.table import Table
 import typer
 
 from orchestrator.client import APIClient
+from orchestrator.models.engineering import EngineeringTask
 from orchestrator.permissions import require_permission
+from orchestrator.validation import validate
 
 app = typer.Typer()
 console = Console()
@@ -24,8 +26,11 @@ def _get_redis():
 
 @app.command()
 @require_permission("engineering")
+@validate(EngineeringTask)
 def trigger(
-    project_id: str,
+    project_id: str = typer.Option(
+        ..., "--project-id", "-p", help="Project ID to run engineering task for"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Trigger engineering task for project."""
