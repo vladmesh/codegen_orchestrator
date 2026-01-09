@@ -122,6 +122,8 @@ class AgentManager:
                 user_id=user_id,
                 agent_id=agent_id,
                 response_length=len(result["response"]),
+                result_keys=list(result.keys()),
+                full_response_preview=str(result)[:200],  # Inspect what we got
             )
 
             return result["response"]

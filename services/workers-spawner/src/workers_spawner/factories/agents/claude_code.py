@@ -119,6 +119,14 @@ class ClaudeCodeAgent(AgentFactory):
                 )
                 raise RuntimeError(f"Claude error: {error_msg}")
 
+            logger.info(
+                "claude_json_parsed",
+                agent_id=agent_id,
+                keys=list(data.keys()),
+                result_length=len(data.get("result", "")),
+                result_preview=str(data.get("result", ""))[:200],
+            )
+
             # Success case
             return {
                 "response": data["result"],

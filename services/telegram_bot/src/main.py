@@ -126,6 +126,9 @@ async def handle_message(update: Update, context) -> None:
         # Send to agent and wait for response (headless mode)
         response_text = await agent_manager.send_message(user_id, text)
 
+        if not response_text:
+            response_text = "⚠️ Агент вернул пустой ответ (без текста). Проверьте логи."
+
         # Send response to user
         try:
             await update.message.reply_text(
@@ -138,7 +141,7 @@ async def handle_message(update: Update, context) -> None:
 
     except Exception as e:
         logger.error("message_handling_failed", error=str(e), user_id=user_id)
-        await update.message.reply_text("⚠️ Ошибка обработки сообщения. Попробуйте позже.")
+        await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
 
 
 async def post_init(app: Application) -> None:

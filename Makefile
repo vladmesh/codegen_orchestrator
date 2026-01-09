@@ -253,7 +253,13 @@ nuke:
 	$(DOCKER_COMPOSE) build --no-cache
 	$(DOCKER_COMPOSE) up -d
 	@echo "⏳ Waiting for DB to be healthy..."
-	@sleep 5
+	@timeout=60; \
+	while ! curl -s "http://localhost:8000/health" > /dev/null; do \
+		if [ $$timeout -le 0 ]; then echo "❌ API failed to start"; exit 1; fi; \
+		echo "  Still waiting... ($$timeout s)"; \
+		sleep 2; \
+		timeout=$$((timeout-2)); \
+	done
 	$(DOCKER_COMPOSE) exec api alembic upgrade head
 	@$(MAKE) seed
 	@echo "✅ Fresh environment ready!"
@@ -263,7 +269,7 @@ nuke:
 seed:
 	@echo "🌱 Seeding database..."
 	@if [ -n "$$TIME4VPS_LOGIN" ] && [ -n "$$TIME4VPS_PASSWORD" ]; then \
-		curl -s -X POST "http://localhost:8000/api/api-keys/" \
+		curl -fsS -X POST "http://localhost:8000/api/api-keys/" \
 			-H "Content-Type: application/json" \
 			-d "{\"service\": \"time4vps\", \"type\": \"credentials\", \"value\": {\"username\": \"$$TIME4VPS_LOGIN\", \"password\": \"$$TIME4VPS_PASSWORD\"}}" > /dev/null && \
 		echo "  ✅ Time4VPS credentials added"; \
@@ -272,11 +278,11 @@ seed:
 	fi
 	@if [ -n "$$TELEGRAM_ID_ADMIN" ]; then \
 		status=$$(curl -s -o /dev/null -w "%{http_code}" \
-			"http://localhost:8000/users/by-telegram/$$TELEGRAM_ID_ADMIN"); \
+			"http://localhost:8000/api/users/by-telegram/$$TELEGRAM_ID_ADMIN"); \
 		if [ "$$status" = "200" ]; then \
 			echo "  ⏭️  Admin user ($$TELEGRAM_ID_ADMIN) already exists, skipping"; \
 		else \
-			curl -s -X POST "http://localhost:8000/users/" \
+			curl -fsS -X POST "http://localhost:8000/api/users/" \
 				-H "Content-Type: application/json" \
 				-d "{\"telegram_id\": $$TELEGRAM_ID_ADMIN, \"username\": \"admin\", \"first_name\": \"Admin\", \"is_admin\": true}" > /dev/null && \
 			echo "  ✅ Admin user ($$TELEGRAM_ID_ADMIN) created"; \
