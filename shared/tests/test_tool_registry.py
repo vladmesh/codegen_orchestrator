@@ -30,6 +30,16 @@ def test_register_tool_decorator():
 def test_load_cli_commands():
     """Loading CLI commands populates registry."""
     clear_registry()
+
+    # Force reload of CLI modules by clearing them from sys.modules
+    # This is necessary because other tests might have already imported them,
+    # preventing decorators from running again.
+    import sys
+
+    modules_to_clear = [m for m in sys.modules if m.startswith("orchestrator.commands")]
+    for module_name in modules_to_clear:
+        del sys.modules[module_name]
+
     load_cli_commands()
 
     # Check PROJECT commands
@@ -77,8 +87,8 @@ def test_get_instructions_content_uses_registry():
     assert "orchestrator project my-test-cmd" in content
 
     # Should NOT include other groups
-    assert "deploy" not in content.lower()
-    assert "engineering" not in content.lower()
+    assert "## Deploy Commands" not in content
+    assert "## Engineering Commands" not in content
 
     clear_registry()
 

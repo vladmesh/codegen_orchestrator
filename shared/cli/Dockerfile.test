@@ -7,7 +7,17 @@ WORKDIR /app
 # === Test Dependencies Stage ===
 FROM base AS test-deps
 
-# Copy only dependency files first (for caching)
+# Copy entire shared module (needed for pip install and tests)
+COPY shared ./shared
+
+# Explicitly copy tests (sometimes .dockerignore can be tricky)
+# This ensures we definitely have shared/tests even if .dockerignore acts weird
+COPY shared/tests ./shared/tests
+
+# Install shared module (provides pyyaml, pydantic-settings, etc.)
+RUN pip install --no-cache-dir ./shared
+
+# Copy CLI dependency files
 COPY shared/cli/pyproject.toml ./
 
 # Install runtime + test dependencies
@@ -17,13 +27,12 @@ RUN pip install --no-cache-dir . && \
 # === Test Stage ===
 FROM test-deps AS test
 
-# Copy source code
-COPY shared/cli/src ./src
-COPY shared/cli/tests ./tests
-COPY shared/cli/pyproject.toml ./
+#Note: shared/ is already copied in test-deps stage, which includes shared/cli/src and shared/cli/tests
 
-# Install package in editable mode so imports work  
+# Install CLI package in editable mode from shared/cli directory
+WORKDIR /app/shared/cli
 RUN pip install --no-cache-dir -e .
 
-# Run tests
-CMD ["pytest", "-v"]
+# Run tests from shared/cli and shared/tests directories
+WORKDIR /app
+CMD ["pytest", "shared/cli/tests", "shared/tests", "-v"]

@@ -48,6 +48,9 @@ docs/
 # Test files (not needed in production images)
 tests/
 */tests/
+# Except allow these for test Docker builds
+!shared/tests/
+!shared/cli/tests/
 
 # Environment
 .env

@@ -98,6 +98,7 @@ def load_cli_commands():
         # Import will trigger @register_tool decorators
         # pylint: disable=import-outside-toplevel,unused-import
         from orchestrator.commands import deploy, engineering, project  # noqa: F401
-    except ImportError:
+    except ImportError as e:
         # CLI not available (e.g., in other contexts)
+        print(f"Warning: Failed to load CLI commands: {e}")
         pass

@@ -142,10 +142,9 @@ services:
       API_BASE_URL: http://mock-api:8000
     networks:
       - test-network
-    volumes:
-      - ./shared/cli/src:/app/src:ro
-      - ./shared/cli/tests:/app/tests:ro
-      - ./shared:/app/shared:ro
+    # Note: No volumes mounted - all code is copied into image during build
+    # This prevents module duplication and file path conflicts
+    command: [ "pytest", "/app/shared/cli/tests", "/app/shared/tests", "-v", "-s" ]
 
 networks:
   test-network:
