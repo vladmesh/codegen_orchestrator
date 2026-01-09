@@ -13,6 +13,7 @@ logger = structlog.get_logger()
 
 # Constants
 IDLE_PAUSE_MINUTES = 30  # Auto-pause containers idle for this long
+AGENT_CONTAINER_PREFIX = "agent-"
 
 
 class LifecycleManager:
@@ -30,13 +31,19 @@ class LifecycleManager:
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
-        """Start the lifecycle management background task."""
+        """Start the lifecycle management background task.
+
+        Also cleans up any orphaned agent containers from previous runs.
+        """
+        # Cleanup orphaned containers first
+        await self._cleanup_orphaned_containers()
+
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
         logger.info("lifecycle_manager_started")
 
     async def stop(self) -> None:
-        """Stop the lifecycle management task."""
+        """Stop the lifecycle management task and cleanup all agent containers."""
         self._running = False
         if self._task:
             self._task.cancel()
@@ -44,7 +51,102 @@ class LifecycleManager:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+        # Cleanup all agent containers on shutdown
+        await self._cleanup_all_containers()
         logger.info("lifecycle_manager_stopped")
+
+    async def _cleanup_orphaned_containers(self) -> None:
+        """Find and remove agent containers from previous runs.
+
+        These are containers that match agent-* pattern but aren't tracked
+        in our in-memory state (e.g., from a previous spawner instance).
+        """
+        try:
+            container_ids = await self._list_agent_containers()
+            tracked_ids = set(self.containers._containers.keys())
+            orphaned = [c for c in container_ids if c not in tracked_ids]
+
+            if orphaned:
+                logger.info(
+                    "cleaning_orphaned_containers",
+                    count=len(orphaned),
+                    containers=orphaned,
+                )
+                for container_id in orphaned:
+                    await self._force_remove_container(container_id)
+
+        except Exception as e:
+            logger.error("orphan_cleanup_error", error=str(e))
+
+    async def _cleanup_all_containers(self) -> None:
+        """Remove all agent containers (tracked and untracked).
+
+        Called during graceful shutdown.
+        """
+        try:
+            container_ids = await self._list_agent_containers()
+
+            if container_ids:
+                logger.info(
+                    "shutdown_cleanup",
+                    count=len(container_ids),
+                    containers=container_ids,
+                )
+                for container_id in container_ids:
+                    await self._force_remove_container(container_id)
+
+            # Clear tracked state
+            self.containers._containers.clear()
+
+        except Exception as e:
+            logger.error("shutdown_cleanup_error", error=str(e))
+
+    async def _list_agent_containers(self) -> list[str]:
+        """List all containers matching agent-* pattern."""
+        cmd = [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"name={AGENT_CONTAINER_PREFIX}",
+            "--format",
+            "{{.Names}}",
+        ]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+
+        if proc.returncode != 0:
+            return []
+
+        names = stdout.decode().strip().split("\n")
+        return [n for n in names if n]  # Filter empty strings
+
+    async def _force_remove_container(self, container_id: str) -> bool:
+        """Force remove a container (stop + rm)."""
+        cmd = ["docker", "rm", "-f", container_id]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+
+            if proc.returncode == 0:
+                logger.info("container_force_removed", container_id=container_id)
+                return True
+            return False
+
+        except Exception as e:
+            logger.error("force_remove_error", container_id=container_id, error=str(e))
+            return False
 
     async def _run_loop(self) -> None:
         """Main lifecycle check loop."""

@@ -31,6 +31,11 @@ from .tool_groups import (
     ToolGroup,
     get_instructions_content,
 )
+from .tool_registry import (
+    TOOL_REGISTRY,
+    get_registered_commands,
+    register_tool,
+)
 from .worker_events import (
     WorkerCompleted,
     WorkerEvent,
@@ -66,6 +71,10 @@ __all__ = [
     "ToolGroup",
     "TOOL_DOCS",
     "get_instructions_content",
+    # Tool Registry
+    "TOOL_REGISTRY",
+    "get_registered_commands",
+    "register_tool",
     # Orchestrator State is local to LangGraph
     # Tools Results are local to LangGraph
 ]

@@ -32,12 +32,20 @@ TOOL_DOCS: dict[ToolGroup, str] = {
 Manage projects in the orchestrator system.
 
 ```bash
+# Create a new project
+orchestrator project create --name <project_name> [--type telegram-bot] [--description <desc>]
+
 # List all projects
 orchestrator project list
 
 # Get project details by ID
 orchestrator project get <project_id>
+
+# Set a secret for a project (e.g., API tokens)
+orchestrator project set-secret <project_id> <KEY> <value>
 ```
+
+**Important**: Always create a project before triggering engineering or deploy tasks.
 """,
     ToolGroup.DEPLOY: """## Deploy Commands
 
@@ -128,6 +136,11 @@ def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
     Returns:
         Markdown content with documentation for allowed tools.
     """
+    from .tool_registry import get_registered_commands, load_cli_commands
+
+    # Import CLI commands to trigger @register_tool decorators
+    load_cli_commands()
+
     sections: list[str] = []
 
     # Load and add PO system prompt
@@ -155,9 +168,25 @@ def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
     )
     sections.append("")
 
+    # Generate documentation from registered commands
     for tool in allowed_tools:
-        if tool in TOOL_DOCS:
-            sections.append(TOOL_DOCS[tool])
+        commands = get_registered_commands(tool)
+        if not commands:
+            # Fallback to hardcoded docs if no commands registered
+            if tool in TOOL_DOCS:
+                sections.append(TOOL_DOCS[tool])
+            continue
+
+        # Generate docs from registry
+        sections.append(f"## {tool.value.title()} Commands")
+        sections.append("")
+        sections.append("```bash")
+        for cmd in commands:
+            sections.append(f"# {cmd['description']}")
+            sections.append(f"orchestrator {tool.value} {cmd['name']} ...")
+            sections.append("")
+        sections.append("```")
+        sections.append("")
 
     sections.append("---")
     sections.append("")

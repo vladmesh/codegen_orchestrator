@@ -5,7 +5,7 @@
 	test-telegram test-telegram-unit \
 	test-workers-spawner test-orchestrator-cli \
 	build up down logs help nuke seed migrate makemigrations shell \
-	setup-hooks lock-deps
+	setup-hooks lock-deps cleanup-agents
 
 # Load .env file
 -include .env
@@ -45,9 +45,10 @@ help:
 	@echo "  make makemigrations MSG='...' - Create new migration"
 	@echo ""
 	@echo "  make shell       - Open shell in tooling container"
-	@echo "  make nuke        - Full reset: remove volumes, rebuild, migrate"
-	@echo "  make seed        - Seed database with API keys from env"
-	@echo "  make lock-deps   - Regenerate all requirements.lock files"
+	@echo "  make nuke           - Full reset: remove volumes, rebuild, migrate"
+	@echo "  make seed           - Seed database with API keys from env"
+	@echo "  make lock-deps      - Regenerate all requirements.lock files"
+	@echo "  make cleanup-agents - Remove all agent-* containers"
 
 # === Dependency Lock Files ===
 
@@ -75,11 +76,17 @@ logs:
 	$(DOCKER_COMPOSE) logs -f
 
 build:
-	$(DOCKER_COMPOSE) build
+	$(DOCKER_COMPOSE) --profile build build
 	docker build -t preparer:latest services/preparer/
 
 build-preparer:
 	docker build -t preparer:latest services/preparer/
+
+# Cleanup orphaned agent containers (manual cleanup)
+cleanup-agents:
+	@echo "🧹 Cleaning up agent containers..."
+	@docker ps -a --filter "name=agent-" --format "{{.Names}}" | xargs -r docker rm -f 2>/dev/null || true
+	@echo "✅ Agent containers cleaned up"
 
 # === Quality ===
 
@@ -250,7 +257,7 @@ shell:
 nuke:
 	@echo "🔥 Nuking everything..."
 	$(DOCKER_COMPOSE) down -v
-	$(DOCKER_COMPOSE) build --no-cache
+	$(DOCKER_COMPOSE) --profile build build --no-cache
 	$(DOCKER_COMPOSE) up -d
 	@echo "⏳ Waiting for DB to be healthy..."
 	@timeout=60; \

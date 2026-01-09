@@ -6,6 +6,8 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 import structlog
 
 from shared.logging_config import setup_logging
@@ -30,6 +32,32 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors with full request details for debugging."""
+    logger = structlog.get_logger()
+
+    try:
+        body = await request.body()
+        body_str = body.decode("utf-8") if body else "empty"
+    except Exception:
+        body_str = "unable to read"
+
+    logger.error(
+        "validation_error",
+        path=request.url.path,
+        method=request.method,
+        errors=exc.errors(),
+        request_body=body_str,
+        headers=dict(request.headers),
+    )
+
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": exc.body},
+    )
 
 
 @app.middleware("http")

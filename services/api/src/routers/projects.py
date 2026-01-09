@@ -1,6 +1,6 @@
 """Projects router."""
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -57,48 +57,76 @@ async def _check_project_access(
 
 @router.post("/", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 async def create_project(
+    request: Request,
     project_in: ProjectCreate,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> Project:
     """Create a new project."""
-    logger.info("creating_project", project_id=project_in.id, name=project_in.name)
-
-    # Check if ID exists
-    if await db.get(Project, project_in.id):
-        logger.warning("project_creation_failed_duplicate", project_id=project_in.id)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Project with this ID already exists",
+    try:
+        logger.info(
+            "creating_project",
+            project_id=project_in.id,
+            name=project_in.name,
+            status=project_in.status,
+            config=project_in.config,
+            telegram_id=x_telegram_id,
         )
 
-    # Resolve owner
-    owner_id = None
-    if x_telegram_id:
-        user = await _resolve_user(x_telegram_id, db)
-        if user:
-            owner_id = user.id
+        # Check if ID exists
+        if await db.get(Project, project_in.id):
+            logger.warning("project_creation_failed_duplicate", project_id=project_in.id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Project with this ID already exists",
+            )
 
-    project = Project(
-        id=project_in.id,
-        name=project_in.name,
-        status=project_in.status,
-        config=project_in.config,
-        owner_id=owner_id,
-    )
-    db.add(project)
-    await db.commit()
-    await db.refresh(project)
+        # Resolve owner
+        owner_id = None
+        if x_telegram_id:
+            user = await _resolve_user(x_telegram_id, db)
+            if user:
+                owner_id = user.id
 
-    logger.info(
-        "project_created",
-        project_id=project.id,
-        status=project.status,
-        owner_id=owner_id,
-        config_keys=list(project.config.keys()) if project.config else [],
-    )
+        project = Project(
+            id=project_in.id,
+            name=project_in.name,
+            status=project_in.status,
+            config=project_in.config,
+            owner_id=owner_id,
+        )
+        db.add(project)
+        await db.commit()
+        await db.refresh(project)
 
-    return project
+        logger.info(
+            "project_created",
+            project_id=project.id,
+            status=project.status,
+            owner_id=owner_id,
+            config_keys=list(project.config.keys()) if project.config else [],
+        )
+
+        return project
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Log validation or other errors with full request details
+        try:
+            body = await request.body()
+            body_str = body.decode("utf-8") if body else "empty"
+        except Exception:
+            body_str = "unable to read"
+
+        logger.error(
+            "project_creation_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            request_body=body_str,
+            telegram_id=x_telegram_id,
+        )
+        raise
 
 
 @router.get("/{project_id}", response_model=ProjectRead)

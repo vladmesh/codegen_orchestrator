@@ -104,26 +104,39 @@ Codegen Orchestrator — мультиагентная система для ав
 - ⚠️ Требует пул токенов
 
 
-**Статус**: 🔶 ~60% готово
-- ⚠️ Секреты можно передать через API
-- ❌ Flow не протестирован
-
 ---
 
 ## Roadmap
 
-### Phase 0: Документация 📝 ← **СЕЙЧАС**
-- [ ] Создать `STATUS.md` (этот файл)
-- [ ] Удалить/архивировать устаревшие планы
-- [ ] Консолидировать актуальную информацию
+### Phase 1: Работающий MVP 🚀 ← **СЕЙЧАС**
+**Цель**: US1 работает от начала до конца
 
-### Phase 1: Работающий MVP 🚀
-**Цель**: US1 + US2 работают от начала до конца
+#### 1.1 Worker Lifecycle (блокер)
+> План: [worker-lifecycle.md](./tasks/worker-lifecycle.md)
 
-- [ ] Отладить PO → Engineering → Deploy flow
-- [ ] Исправить известные баги в headless mode
+- [ ] Модель коммуникации: JSON=остановился, API=продолжаю
+- [ ] Pause/unpause контейнеров по timeout
+- [ ] Cleanup при shutdown (решает проблему зависания)
+- [ ] Token tracking из JSON output
+
+#### 1.2 CLI Pydantic (агент ↔ система)
+> План: [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md)
+
+- [ ] Единый интерфейс: только orchestrator CLI
+- [ ] Pydantic валидация с понятными ошибками
+- [ ] Убрать curl/API из промптов
+
+#### 1.3 Secrets (US1 requirement)
+> План: [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md)
+
+- [ ] GitHub Secrets как source of truth
+- [ ] Метаданные в БД, значения в GitHub
+- [ ] LLM не видит секреты
+
+#### 1.4 E2E Integration
 - [x] E2E тест: создание проекта через Telegram
 - [x] E2E тест: деплой проекта (✅ 2026-01-09)
+- [ ] E2E тест: US1 полный flow (токен → бот работает)
 
 ### Phase 2: Админка 🖥️
 **Цель**: Вынести всё hardcoded, добавить мониторинг
@@ -165,18 +178,21 @@ Codegen Orchestrator — мультиагентная система для ав
 ### Active Tasks & Plans 📋
 | Feature | Plan | Status |
 |---------|------|--------|
-| **GitHub Integration** | [github-worker-integration.md](./tasks/github-worker-integration.md) | Phase 1-3 done |
+| **Worker Lifecycle** | [worker-lifecycle.md](./tasks/worker-lifecycle.md) | **Planning** |
+| **CLI Pydantic** | [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md) | Planning |
 | **Secrets Vault** | [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) | Design Ready |
+| **GitHub Integration** | [github-worker-integration.md](./tasks/github-worker-integration.md) | Phase 1-3 done |
 
 
 ---
 
 ## Известные баги
 
-1. **TesterNode заглушка** — всегда возвращает `passed=True`
-2. **Timeout handling** — не везде корректно пробрасывается
-3. **Error propagation** — ошибки CLI агента не всегда доходят до пользователя
-4. ~~**Unknown queue in infrastructure-worker**~~ -> ✅ FIXED (2026-01-09)
+1. **Agent containers не чистятся** — накапливаются при `docker compose down` → система виснет
+2. **TesterNode заглушка** — всегда возвращает `passed=True`
+3. **Timeout handling** — не везде корректно пробрасывается
+4. **Error propagation** — ошибки CLI агента не всегда доходят до пользователя
+5. ~~**Unknown queue in infrastructure-worker**~~ → ✅ FIXED (2026-01-09)
 
 ---
 

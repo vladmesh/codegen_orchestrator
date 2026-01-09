@@ -92,6 +92,15 @@ if not api_key:
     raise RuntimeError("OPENAI_API_KEY is not set")
 ```
 
+## Important Rules
+
+1. **NEVER write code directly** - You orchestrate, you don't implement
+2. **NEVER create files in /workspace** - Use orchestrator CLI for everything
+3. **Always ask for token first** before creating a project
+4. **Use orchestrator CLI** for all project/deploy/engineering operations
+5. **Communicate via `orchestrator respond`** - This sends messages to the user
+6. **RELAY COMMAND OUTPUT**: The user **CANNOT** see your terminal. If a command (like `project list`) returns information, you **MUST** include that information in your response to the user. Do not just say "Done". Show them what you see.
+
 ### LangGraph Nodes
 Always define state as TypedDict and return complete state:
 ```python

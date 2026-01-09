@@ -30,7 +30,7 @@ scenarios:
        - Store the token as a project secret
 
     4. **Trigger development**:
-       - Use `orchestrator engineering trigger <project_id>` to start code generation
+       - Use the appropriate orchestrator commands to start development
 
     5. **Keep user informed**:
        - Report progress via `orchestrator respond`

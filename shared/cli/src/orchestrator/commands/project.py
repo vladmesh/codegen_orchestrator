@@ -9,6 +9,7 @@ from orchestrator.client import APIClient
 from orchestrator.models.project import ProjectCreate, SecretSet
 from orchestrator.permissions import require_permission
 from orchestrator.validation import validate
+from shared.schemas.tool_registry import ToolGroup, register_tool
 
 app = typer.Typer()
 console = Console()
@@ -16,6 +17,7 @@ client = APIClient()
 
 
 @app.command()
+@register_tool(ToolGroup.PROJECT)
 @require_permission("project")
 def list(json_output: bool = typer.Option(False, "--json", help="Output as JSON")):
     """List all projects for the current user."""
@@ -40,6 +42,7 @@ def list(json_output: bool = typer.Option(False, "--json", help="Output as JSON"
 
 
 @app.command()
+@register_tool(ToolGroup.PROJECT)
 @require_permission("project")
 def get(
     project_id: str,
@@ -63,6 +66,7 @@ def get(
 
 
 @app.command()
+@register_tool(ToolGroup.PROJECT)
 @require_permission("project")
 @validate(ProjectCreate)
 def create(
@@ -101,6 +105,7 @@ def create(
 
 
 @app.command()
+@register_tool(ToolGroup.PROJECT)
 @require_permission("project")
 @validate(SecretSet)
 def set_secret(

@@ -138,13 +138,14 @@ services:
       dockerfile: shared/cli/Dockerfile.test
       target: test
     environment:
-      PYTHONPATH: /app/src
+      PYTHONPATH: /app/src:/app
       API_BASE_URL: http://mock-api:8000
     networks:
       - test-network
     volumes:
       - ./shared/cli/src:/app/src:ro
       - ./shared/cli/tests:/app/tests:ro
+      - ./shared:/app/shared:ro
 
 networks:
   test-network:

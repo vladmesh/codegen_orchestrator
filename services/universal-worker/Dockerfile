@@ -39,6 +39,12 @@ ENV PATH="/home/worker/.local/bin:${PATH}"
 RUN mkdir -p /usr/local/lib/node_modules && \
     chown -R worker:worker /usr/local/lib/node_modules /usr/local/bin
 
+# Copy shared modules (schemas needed by CLI)
+# Create minimal shared package (avoid importing redis_client which is not needed for CLI)
+COPY shared/schemas /opt/shared/schemas
+RUN echo '"""Shared schemas for CLI."""' > /opt/shared/__init__.py
+ENV PYTHONPATH="/opt:${PYTHONPATH}"
+
 # Copy and install orchestrator-cli
 COPY shared/cli /opt/orchestrator-cli
 RUN pip3 install --no-cache-dir --break-system-packages /opt/orchestrator-cli
@@ -59,7 +65,7 @@ USER worker
 # until completion promise is met or max iterations reached
 RUN mkdir -p ~/.claude/plugins && \
     git clone --depth 1 --filter=blob:none --sparse \
-        https://github.com/anthropics/claude-code.git /tmp/claude-code && \
+    https://github.com/anthropics/claude-code.git /tmp/claude-code && \
     cd /tmp/claude-code && \
     git sparse-checkout set plugins/ralph-wiggum && \
     cp -r plugins/ralph-wiggum ~/.claude/plugins/ && \

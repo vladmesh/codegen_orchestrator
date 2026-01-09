@@ -10,6 +10,7 @@ from orchestrator.client import APIClient
 from orchestrator.models.engineering import EngineeringTask
 from orchestrator.permissions import require_permission
 from orchestrator.validation import validate
+from shared.schemas.tool_registry import ToolGroup, register_tool
 
 app = typer.Typer()
 console = Console()
@@ -25,6 +26,7 @@ def _get_redis():
 
 
 @app.command()
+@register_tool(ToolGroup.ENGINEERING)
 @require_permission("engineering")
 @validate(EngineeringTask)
 def trigger(
@@ -80,6 +82,7 @@ def trigger(
 
 
 @app.command()
+@register_tool(ToolGroup.ENGINEERING)
 @require_permission("engineering")
 def status(
     task_id: str,

@@ -10,6 +10,12 @@ dependencies = [
     "redis>=5.0",
     "structlog>=24.0",
     "pyyaml>=6.0",  # For loading prompt templates via shared
+    
+    # CLI dependencies (required for doc generation via import)
+    "typer[all]>=0.9.0",
+    "httpx>=0.27.0",
+    "rich>=13.7.0",
+    "makefun>=1.15.0",
 ]
 
 [project.optional-dependencies]

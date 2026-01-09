@@ -10,6 +10,7 @@ from orchestrator.client import APIClient
 from orchestrator.models.deploy import DeployStart
 from orchestrator.permissions import require_permission
 from orchestrator.validation import validate
+from shared.schemas.tool_registry import ToolGroup, register_tool
 
 app = typer.Typer()
 console = Console()
@@ -25,6 +26,7 @@ def _get_redis():
 
 
 @app.command()
+@register_tool(ToolGroup.DEPLOY)
 @require_permission("deploy")
 @validate(DeployStart)
 def trigger(
@@ -78,6 +80,7 @@ def trigger(
 
 
 @app.command()
+@register_tool(ToolGroup.DEPLOY)
 @require_permission("deploy")
 def status(
     task_id: str,
