@@ -25,6 +25,7 @@ class CapabilityType(str, Enum):
     NODE = "node"
     PYTHON = "python"
     DOCKER = "docker"
+    COPIER = "copier"
 
 
 class WorkerConfig(BaseModel):

@@ -351,7 +351,7 @@ class EngineeringState(TypedDict):
 
 ## Порядок выполнения
 
-1. [ ] Phase 1: COPIER capability (30 min)
+1. [x] Phase 1: COPIER capability (30 min)
 2. [ ] Phase 2: Simplified subgraph (1-2 hours)
 3. [ ] Phase 3: Remove preparer (10 min)
 4. [ ] Phase 4: Testing (30 min)

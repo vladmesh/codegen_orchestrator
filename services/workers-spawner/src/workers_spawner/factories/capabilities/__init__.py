@@ -1,5 +1,6 @@
 """Capability factories package."""
 
+from workers_spawner.factories.capabilities.copier import CopierCapability
 from workers_spawner.factories.capabilities.curl import CurlCapability
 from workers_spawner.factories.capabilities.docker import DockerCapability
 from workers_spawner.factories.capabilities.git import GitCapability
@@ -14,4 +15,5 @@ __all__ = [
     "NodeCapability",
     "PythonCapability",
     "DockerCapability",
+    "CopierCapability",
 ]
