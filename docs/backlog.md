@@ -6,12 +6,38 @@
 
 | Feature | Plan | Status |
 |---------|------|--------|
+| **Orchestrator CLI Pydantic** | [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md) | **Planning** |
 | **Secrets Vault** | [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) | Design Ready |
 | **GitHub Integration** | [github-worker-integration.md](./tasks/github-worker-integration.md) | Phase 1-3 Done |
 
 
+### Agent Communication: Унификация каналов общения
+**Приоритет**: HIGH
+**Статус**: TODO → Включено в [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md) (Phase 5)
+
+Сейчас два канала общения с пользователем:
+1. `orchestrator respond` — через Redis stream (не работает/не используется)
+2. JSON output от Claude CLI — telegram_bot читает `response` из JSON
+
+Решение: Phase 5 плана Orchestrator CLI.
+
+---
+
+### Agent Containers: Cleanup при остановке стека
+**Приоритет**: HIGH
+**Статус**: TODO
+
+Agent контейнеры (`agent-*`) не удаляются при `docker compose down`. Накапливаются и висят.
+
+**Решение:**
+- Добавить cleanup hook в workers-spawner при shutdown
+- Или добавить agent containers в docker-compose с `depends_on`
+- Или periodic cleanup job в scheduler
+
+---
+
 ### TesterNode: Реальный запуск тестов
-**Приоритет**: HIGH  
+**Приоритет**: HIGH
 **Статус**: TODO
 
 TesterNode сейчас заглушка — всегда возвращает `passed=True`.

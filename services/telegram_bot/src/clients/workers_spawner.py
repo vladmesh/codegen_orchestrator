@@ -176,7 +176,7 @@ class WorkersSpawnerClient:
         """
         response = await self._request(
             "send_message",
-            {"agent_id": agent_id, "message": message},
+            {"agent_id": agent_id, "message": message, "timeout": timeout},
             timeout=float(timeout + 5),
         )
 

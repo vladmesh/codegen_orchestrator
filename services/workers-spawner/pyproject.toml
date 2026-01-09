@@ -9,6 +9,7 @@ dependencies = [
     "pexpect>=4.9",
     "redis>=5.0",
     "structlog>=24.0",
+    "pyyaml>=6.0",  # For loading prompt templates via shared
 ]
 
 [project.optional-dependencies]

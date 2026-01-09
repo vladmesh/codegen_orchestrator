@@ -5,6 +5,9 @@ Used by workers-spawner to generate AGENTS.md/CLAUDE.md files.
 """
 
 from enum import Enum
+from pathlib import Path
+
+import yaml
 
 
 class ToolGroup(str, Enum):
@@ -98,6 +101,24 @@ orchestrator respond "<question>" --expect-reply
 }
 
 
+# Path to prompts directory (relative to this file)
+PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+
+
+def _load_po_prompt() -> dict:
+    """Load PO agent prompt from YAML file.
+
+    Returns:
+        Dict with role, scenarios, rules sections.
+    """
+    prompt_file = PROMPTS_DIR / "po_agent.yml"
+    if not prompt_file.exists():
+        return {}
+
+    with open(prompt_file) as f:
+        return yaml.safe_load(f) or {}
+
+
 def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
     """Generate instruction file content for given tool groups.
 
@@ -107,13 +128,32 @@ def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
     Returns:
         Markdown content with documentation for allowed tools.
     """
-    sections = [
-        "# Orchestrator CLI",
-        "",
+    sections: list[str] = []
+
+    # Load and add PO system prompt
+    po_prompt = _load_po_prompt()
+    if po_prompt:
+        if role := po_prompt.get("role"):
+            sections.append(role)
+            sections.append("")
+
+        if scenarios := po_prompt.get("scenarios"):
+            for scenario_content in scenarios.values():
+                sections.append(scenario_content)
+                sections.append("")
+
+        if rules := po_prompt.get("rules"):
+            sections.append(rules)
+            sections.append("")
+
+    # Add CLI documentation
+    sections.append("# Orchestrator CLI Reference")
+    sections.append("")
+    sections.append(
         "You have access to the `orchestrator` CLI tool. "
-        "Use it to interact with the orchestrator system.",
-        "",
-    ]
+        "Use it to interact with the orchestrator system."
+    )
+    sections.append("")
 
     for tool in allowed_tools:
         if tool in TOOL_DOCS:

@@ -115,7 +115,7 @@ class AgentManager:
         logger.info("sending_message_headless", user_id=user_id, agent_id=agent_id)
 
         try:
-            result = await workers_spawner.send_message(agent_id, message, timeout=120)
+            result = await workers_spawner.send_message(agent_id, message, timeout=300)
 
             logger.info(
                 "message_sent_and_received",
@@ -146,7 +146,7 @@ class AgentManager:
                 new_agent_id = await self.get_or_create_agent(user_id)
                 logger.info("retry_with_new_agent", user_id=user_id, new_agent_id=new_agent_id)
 
-                result = await workers_spawner.send_message(new_agent_id, message, timeout=120)
+                result = await workers_spawner.send_message(new_agent_id, message, timeout=300)
                 return result["response"]
 
             raise

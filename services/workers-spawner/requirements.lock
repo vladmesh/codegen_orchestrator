@@ -2,6 +2,10 @@
 #    uv pip compile services/workers-spawner/pyproject.toml -o services/workers-spawner/requirements.lock
 annotated-types==0.7.0
     # via pydantic
+pexpect==4.9.0
+    # via workers-spawner (services/workers-spawner/pyproject.toml)
+ptyprocess==0.7.0
+    # via pexpect
 pydantic==2.12.5
     # via
     #   workers-spawner (services/workers-spawner/pyproject.toml)
@@ -12,6 +16,8 @@ pydantic-settings==2.12.0
     # via workers-spawner (services/workers-spawner/pyproject.toml)
 python-dotenv==1.2.1
     # via pydantic-settings
+pyyaml==6.0.3
+    # via workers-spawner (services/workers-spawner/pyproject.toml)
 redis==7.1.0
     # via workers-spawner (services/workers-spawner/pyproject.toml)
 structlog==25.5.0
