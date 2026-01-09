@@ -77,10 +77,6 @@ logs:
 
 build:
 	$(DOCKER_COMPOSE) --profile build build
-	docker build -t preparer:latest services/preparer/
-
-build-preparer:
-	docker build -t preparer:latest services/preparer/
 
 # Cleanup orphaned agent containers (manual cleanup)
 cleanup-agents:

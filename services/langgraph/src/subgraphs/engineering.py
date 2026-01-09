@@ -1,13 +1,9 @@
-"""Engineering Subgraph.
+"""Simplified Engineering Subgraph.
 
-Encapsulates the Architect → Preparer → Developer → Tester loop with review cycles.
-This subgraph is exposed as a single node to the Product Owner.
+Unified Developer node handles architecture, scaffolding, and coding.
+Tester is a stub that always passes (for now).
 
-New architecture (post-refactor):
-- Architect (LLM): Selects modules, sets deployment hints, complexity
-- Preparer (FunctionalNode): Runs copier, writes TASK.md/AGENTS.md, commits
-- Developer (FactoryNode): Implements business logic using Factory.ai
-- Tester (FunctionalNode): Runs tests, loops back if needed
+Flow: START → Developer → Tester → Done/Blocked → END
 """
 
 from typing import Annotated
@@ -16,7 +12,6 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
-from ..nodes import architect, preparer
 from ..nodes.base import FunctionalNode
 from ..nodes.developer import developer_node
 
@@ -37,7 +32,7 @@ MAX_ITERATIONS = 3
 
 
 class EngineeringState(TypedDict):
-    """State for the engineering subgraph."""
+    """Simplified state for the engineering subgraph."""
 
     # Messages (conversation history)
     messages: Annotated[list, add_messages]
@@ -47,21 +42,11 @@ class EngineeringState(TypedDict):
     project_spec: dict | None
     allocated_resources: dict
 
-    # Repository info
-    repo_info: dict | None
-    project_complexity: str | None
-    architect_complete: bool
+    # Engineering result
+    engineering_status: str  # "idle" | "working" | "done" | "blocked"
+    commit_sha: str | None
 
-    # Preparer state (new)
-    selected_modules: list[str] | None  # Modules selected by Architect
-    deployment_hints: dict | None  # Deployment config from Architect
-    custom_task_instructions: str | None  # Custom instructions from Architect
-    repo_prepared: bool  # True after Preparer runs copier
-    preparer_commit_sha: str | None  # Commit SHA from Preparer
-
-    # Engineering loop tracking
-    engineering_status: str  # "idle" | "working" | "reviewing" | "testing" | "done" | "blocked"
-    review_feedback: str | None
+    # Loop tracking
     iteration_count: int
     test_results: dict | None
 
@@ -71,76 +56,6 @@ class EngineeringState(TypedDict):
 
     # Errors (merges without duplicates)
     errors: Annotated[list[str], _merge_errors]
-
-
-def route_after_architect(state: EngineeringState) -> str:
-    """Route after architect node.
-
-    - If tool calls pending → architect_tools
-    - If repo created AND modules selected → preparer
-    - Otherwise → END (blocked)
-    """
-    messages = state.get("messages", [])
-    if not messages:
-        return END
-
-    last_message = messages[-1]
-
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "architect_tools"
-
-    # After repo created and modules selected, proceed to Preparer
-    if state.get("repo_info") and state.get("selected_modules"):
-        return "preparer"
-
-    return END
-
-
-def route_after_architect_tools(state: EngineeringState) -> str:
-    """Route after architect tools execution."""
-    # If repo exists and modules selected, proceed to preparer
-    if state.get("repo_info") and state.get("selected_modules"):
-        return "preparer"
-    return "architect"
-
-
-def route_after_preparer(state: EngineeringState) -> str:
-    """Route after preparer container finishes.
-
-    - If preparation failed → END (blocked)
-    - Otherwise → developer (always, regardless of complexity)
-
-    Note: complexity affects iteration limits in tester, not developer skip.
-    Developer must always run to generate code via Factory.ai Droid.
-    """
-    import structlog
-
-    logger = structlog.get_logger()
-
-    repo_prepared = state.get("repo_prepared")
-
-    logger.info(
-        "route_after_preparer",
-        repo_prepared=repo_prepared,
-        project_complexity=state.get("project_complexity"),
-    )
-
-    if not repo_prepared:
-        logger.warning("route_after_preparer_end_not_prepared")
-        return END
-
-    logger.info("route_after_preparer_to_developer")
-    return "developer"
-
-
-def route_after_developer(state: EngineeringState) -> str:
-    """Route after developer node."""
-    return "developer_spawn_worker"
-
-
-def route_after_developer_spawn(state: EngineeringState) -> str:
-    """Route after developer spawns worker → testing."""
-    return "tester"
 
 
 def route_after_tester(state: EngineeringState) -> str:
@@ -163,7 +78,7 @@ def route_after_tester(state: EngineeringState) -> str:
 
 
 class TesterNode(FunctionalNode):
-    """Tester node - runs tests and reports results."""
+    """Tester node - stub that always passes for MVP."""
 
     def __init__(self):
         super().__init__(node_id="tester")
@@ -177,8 +92,8 @@ class TesterNode(FunctionalNode):
 
         iteration_count = state.get("iteration_count", 0) + 1
 
-        # Stub: actual test running tracked in docs/backlog.md
-        # "Engineering Pipeline: TesterNode & Worker Integration"
+        # Stub: always pass for MVP
+        # Real testing tracked in docs/backlog.md
         test_passed = True
 
         if test_passed:
@@ -190,7 +105,6 @@ class TesterNode(FunctionalNode):
         return {
             "test_results": {"passed": False, "output": "Tests failed"},
             "iteration_count": iteration_count,
-            "review_feedback": "Tests failed, please fix",
             "engineering_status": "reviewing",
         }
 
@@ -230,71 +144,29 @@ blocked_node = BlockedNode()
 
 
 def create_engineering_subgraph() -> StateGraph:
-    """Create the engineering subgraph.
+    """Create the simplified engineering subgraph.
 
-    Topology (post-refactor):
-        START → architect → architect_tools (loop) → preparer
-              → developer → developer_spawn_worker → tester
+    Topology:
+        START → developer → tester
               → (if fail) developer (loop up to MAX_ITERATIONS)
               → done | blocked → END
 
     Changes from old architecture:
-    - Removed architect_spawn_worker (Factory.ai for scaffolding)
-    - Added preparer (lightweight copier + TASK.md/AGENTS.md)
-    - Developer now receives ready project structure
+    - Removed architect, architect_tools, preparer nodes
+    - Developer is now unified (architecture + scaffolding + coding)
+    - Tester is a stub (always passes)
     """
     graph = StateGraph(EngineeringState)
 
     # Add nodes
-    graph.add_node("architect", architect.run)
-    graph.add_node("architect_tools", architect.execute_tools)
-    graph.add_node("preparer", preparer.run)  # New: lightweight copier node
     graph.add_node("developer", developer_node.run)
-    graph.add_node("developer_spawn_worker", developer_node.spawn_worker)
     graph.add_node("tester", tester_node.run)
     graph.add_node("done", done_node.run)
     graph.add_node("blocked", blocked_node.run)
 
     # Edges
-    graph.add_edge(START, "architect")
-
-    graph.add_conditional_edges(
-        "architect",
-        route_after_architect,
-        {
-            "architect_tools": "architect_tools",
-            "preparer": "preparer",
-            END: END,
-        },
-    )
-
-    graph.add_conditional_edges(
-        "architect_tools",
-        route_after_architect_tools,
-        {
-            "preparer": "preparer",
-            "architect": "architect",
-        },
-    )
-
-    graph.add_conditional_edges(
-        "preparer",
-        route_after_preparer,
-        {
-            "developer": "developer",
-            END: END,
-        },
-    )
-
-    graph.add_conditional_edges(
-        "developer",
-        route_after_developer,
-        {
-            "developer_spawn_worker": "developer_spawn_worker",
-        },
-    )
-
-    graph.add_edge("developer_spawn_worker", "tester")
+    graph.add_edge(START, "developer")
+    graph.add_edge("developer", "tester")
 
     graph.add_conditional_edges(
         "tester",

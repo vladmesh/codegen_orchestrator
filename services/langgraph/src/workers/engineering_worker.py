@@ -89,21 +89,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "current_project": project_id,
             "project_spec": project,
             "allocated_resources": {},
-            "repo_info": {
-                "full_name": (project.get("repository_url") or "")
-                .replace("https://github.com/", "")
-                .rstrip(".git"),
-                "html_url": project.get("repository_url"),
-            },
-            "project_complexity": None,
-            "architect_complete": False,
-            "selected_modules": None,
-            "deployment_hints": None,
-            "custom_task_instructions": None,
-            "repo_prepared": False,
-            "preparer_commit_sha": None,
+            "commit_sha": None,
             "engineering_status": "idle",
-            "review_feedback": None,
             "iteration_count": 0,
             "test_results": None,
             "needs_human_approval": False,
@@ -120,7 +107,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             logger.info(
                 "engineering_job_success",
                 task_id=task_id,
-                commit_sha=result.get("preparer_commit_sha"),
+                commit_sha=result.get("commit_sha"),
             )
             await api_client.patch(
                 f"tasks/{task_id}",
@@ -128,7 +115,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     "status": "completed",
                     "result": {
                         "engineering_status": result["engineering_status"],
-                        "commit_sha": result.get("preparer_commit_sha"),
+                        "commit_sha": result.get("commit_sha"),
                         "selected_modules": result.get("selected_modules"),
                         "test_results": result.get("test_results"),
                     },
@@ -152,7 +139,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
             return {
                 "status": "success",
-                "commit_sha": result.get("preparer_commit_sha"),
+                "commit_sha": result.get("commit_sha"),
                 "finished_at": datetime.now(UTC).isoformat(),
             }
 

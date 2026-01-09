@@ -1,14 +1,12 @@
 """LangGraph nodes package.
 
-After CLI Agent migration (Phase 8), only subgraph nodes remain.
-Product Owner is replaced by workers-spawner + CLI Agent (pluggable).
+After engineering simplification, architect and preparer nodes have been removed.
+Developer node now handles all engineering work (architecture, scaffolding, coding).
 """
 
 from . import (
     analyst,
-    architect,
     developer,
-    preparer,
     provisioner_proxy as provisioner,
     zavhoz,
 )
@@ -16,8 +14,6 @@ from . import (
 __all__ = [
     "analyst",
     "zavhoz",
-    "architect",
-    "preparer",
     "developer",
     "provisioner",
 ]

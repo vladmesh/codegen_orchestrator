@@ -92,7 +92,7 @@ async def request_spawn(
     config = {
         "name": f"Dev {repo.split('/')[-1]}",
         "agent": "claude-code",
-        "capabilities": ["git", "node", "python"],
+        "capabilities": ["git", "github", "copier", "node", "python"],
         "allowed_tools": ["project"],
         "env_vars": {
             "GITHUB_TOKEN": github_token,

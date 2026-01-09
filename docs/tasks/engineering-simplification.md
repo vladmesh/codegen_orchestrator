@@ -1,7 +1,8 @@
 # Упрощение Engineering Subgraph для MVP
 
-> **Статус**: Planning
+> **Статус**: Complete ✅
 > **Создано**: 2026-01-09
+> **Завершено**: 2026-01-09
 
 ## Проблема
 
@@ -351,9 +352,10 @@ class EngineeringState(TypedDict):
 
 ## Порядок выполнения
 
-1. [x] Phase 1: COPIER capability (30 min)
-2. [ ] Phase 2: Simplified subgraph (1-2 hours)
-3. [ ] Phase 3: Remove preparer (10 min)
-4. [ ] Phase 4: Testing (30 min)
+1. [x] Phase 1: COPIER capability (30 min) ✅
+2. [x] Phase 2: Simplified subgraph (1-2 hours) ✅
+3. [x] Phase 3: Remove preparer (10 min) ✅
+4. [x] Phase 4: Testing (30 min) ✅
 
-**Общее время**: ~3 часа
+**Результат**: Все фазы завершены и проверены. Engineering subgraph упрощен с 9 до 4 нод.
+

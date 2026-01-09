@@ -1,22 +1,13 @@
 """Tools for LangGraph subgraphs.
 
-After CLI Agent migration (Phase 8), only tools used by:
-- Engineering subgraph (Architect, Preparer, Developer)
+After engineering simplification:
+- Engineering subgraph uses unified Developer node (no Architect/Preparer)
 - DevOps subgraph (Deployer)
 - Analyst node
 - Zavhoz node (resource allocation)
 
 PO capability tools are replaced by orchestrator-cli commands.
 """
-
-# Architect tools (module selection, deployment hints)
-from .architect_tools import (
-    AVAILABLE_MODULES,
-    customize_task_instructions,
-    select_modules,
-    set_deployment_hints,
-    set_project_complexity,
-)
 
 # DevOps tools (deployment) - moved to devops_delegation
 from .devops_delegation import delegate_ansible_deploy
@@ -75,12 +66,6 @@ __all__ = [
     "update_project_spec",
     "create_project_spec_yaml",
     "create_spec_md",
-    # Architect tools
-    "AVAILABLE_MODULES",
-    "select_modules",
-    "set_deployment_hints",
-    "customize_task_instructions",
-    "set_project_complexity",
     # DevOps tools
     "delegate_ansible_deploy",
 ]
