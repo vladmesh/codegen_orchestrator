@@ -90,7 +90,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "project_spec": project,
             "allocated_resources": {},
             "repo_info": {
-                "full_name": project.get("repository_url", "")
+                "full_name": (project.get("repository_url") or "")
                 .replace("https://github.com/", "")
                 .rstrip(".git"),
                 "html_url": project.get("repository_url"),
