@@ -3,7 +3,9 @@
 Unified Developer node handles architecture, scaffolding, and coding.
 Tester is a stub that always passes (for now).
 
-Flow: START → Developer → Tester → Done/Blocked → END
+Flow:
+    START → Developer ─┬─ (error) → Blocked → END
+                       └─ (ok) → Tester → Done/Blocked → END
 """
 
 from typing import Annotated
@@ -56,6 +58,25 @@ class EngineeringState(TypedDict):
 
     # Errors (merges without duplicates)
     errors: Annotated[list[str], _merge_errors]
+
+
+def route_after_developer(state: EngineeringState) -> str:
+    """Route after developer node.
+
+    If developer returned 'blocked' (error/exception), skip tester and go to blocked.
+    Otherwise proceed to tester for validation.
+    """
+    status = state.get("engineering_status", "idle")
+
+    if status == "blocked":
+        return "blocked"
+
+    # Also check for errors list
+    errors = state.get("errors", [])
+    if errors:
+        return "blocked"
+
+    return "tester"
 
 
 def route_after_tester(state: EngineeringState) -> str:
@@ -147,14 +168,16 @@ def create_engineering_subgraph() -> StateGraph:
     """Create the simplified engineering subgraph.
 
     Topology:
-        START → developer → tester
-              → (if fail) developer (loop up to MAX_ITERATIONS)
-              → done | blocked → END
+        START → developer ─┬─ (blocked) → blocked → END
+                           └─ (ok) → tester ─┬─ (pass) → done → END
+                                             ├─ (fail, retries left) → developer
+                                             └─ (fail, max retries) → blocked → END
 
     Changes from old architecture:
     - Removed architect, architect_tools, preparer nodes
     - Developer is now unified (architecture + scaffolding + coding)
     - Tester is a stub (always passes)
+    - Developer errors skip tester and go directly to blocked
     """
     graph = StateGraph(EngineeringState)
 
@@ -166,8 +189,18 @@ def create_engineering_subgraph() -> StateGraph:
 
     # Edges
     graph.add_edge(START, "developer")
-    graph.add_edge("developer", "tester")
 
+    # Developer → tester OR blocked (if developer failed)
+    graph.add_conditional_edges(
+        "developer",
+        route_after_developer,
+        {
+            "tester": "tester",
+            "blocked": "blocked",
+        },
+    )
+
+    # Tester → done, blocked, or back to developer
     graph.add_conditional_edges(
         "tester",
         route_after_tester,

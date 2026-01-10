@@ -1,6 +1,6 @@
 # Project Status
 
-> **Актуально на**: 2026-01-09
+> **Актуально на**: 2026-01-10
 
 ## Обзор
 
@@ -111,7 +111,20 @@ Codegen Orchestrator — мультиагентная система для ав
 ### Phase 1: Работающий MVP 🚀 ← **СЕЙЧАС**
 **Цель**: US1 работает от начала до конца
 
-#### 1.1 Worker Lifecycle (блокер)
+#### 1.0 Critical Fixes (БЛОКЕРЫ) 🔴
+> Без этих фиксов MVP не работает
+
+- [x] **Engineering Error Handling** — [план](./tasks/engineering-error-handling.md) ✅ 2026-01-10
+  - DeveloperNode падает → TesterNode перезаписывает на "done"
+  - Добавлен conditional edge после developer
+- [ ] **Resource Allocator** — [план](./tasks/resource-allocator-node.md)
+  - Deploy падает "No resources allocated"
+  - Добавить ResourceAllocator в DevOps subgraph
+- [ ] **Project UUID** — [план](./tasks/project-uuid-migration.md)
+  - Scheduler создаёт `id=repo_name`
+  - Унифицировать на UUID везде
+
+#### 1.1 Worker Lifecycle
 > План: [worker-lifecycle.md](./tasks/worker-lifecycle.md)
 
 - [ ] Модель коммуникации: JSON=остановился, API=продолжаю
@@ -122,8 +135,8 @@ Codegen Orchestrator — мультиагентная система для ав
 #### 1.2 CLI Pydantic (агент ↔ система)
 > План: [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md)
 
-- [ ] Единый интерфейс: только orchestrator CLI
-- [ ] Pydantic валидация с понятными ошибками
+- [x] Единый интерфейс: только orchestrator CLI
+- [x] Pydantic валидация с понятными ошибками (✅ 2026-01-09)
 - [ ] Убрать curl/API из промптов
 
 #### 1.3 Secrets (US1 requirement)
@@ -176,9 +189,18 @@ Codegen Orchestrator — мультиагентная система для ав
 | [LOGGING.md](./LOGGING.md) | Структура логов |
 
 ### Active Tasks & Plans 📋
+
+#### Критические (блокируют MVP)
 | Feature | Plan | Status |
 |---------|------|--------|
-| **Worker Lifecycle** | [worker-lifecycle.md](./tasks/worker-lifecycle.md) | **Planning** |
+| **Engineering Error Handling** | [engineering-error-handling.md](./tasks/engineering-error-handling.md) | ✅ Done |
+| **Resource Allocator Node** | [resource-allocator-node.md](./tasks/resource-allocator-node.md) | **TODO** |
+| **Project UUID Migration** | [project-uuid-migration.md](./tasks/project-uuid-migration.md) | **TODO** |
+
+#### В процессе
+| Feature | Plan | Status |
+|---------|------|--------|
+| **Worker Lifecycle** | [worker-lifecycle.md](./tasks/worker-lifecycle.md) | Planning |
 | **CLI Pydantic** | [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md) | Planning |
 | **Secrets Vault** | [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) | Design Ready |
 | **GitHub Integration** | [github-worker-integration.md](./tasks/github-worker-integration.md) | Phase 1-3 done |
@@ -188,11 +210,26 @@ Codegen Orchestrator — мультиагентная система для ав
 
 ## Известные баги
 
-1. **Agent containers не чистятся** — накапливаются при `docker compose down` → система виснет
-2. **TesterNode заглушка** — всегда возвращает `passed=True`
-3. **Timeout handling** — не везде корректно пробрасывается
-4. **Error propagation** — ошибки CLI агента не всегда доходят до пользователя
-5. ~~**Unknown queue in infrastructure-worker**~~ → ✅ FIXED (2026-01-09)
+### Критические (блокируют US1)
+
+1. **Engineering success на ошибках** — DeveloperNode падает, но TesterNode перезаписывает статус на "done"
+   - План: [engineering-error-handling.md](./tasks/engineering-error-handling.md)
+2. **Deploy: "No resources allocated"** — DevOps subgraph не получает allocations, Zavhoz пропускается
+   - План: [resource-allocator-node.md](./tasks/resource-allocator-node.md)
+3. **Project ID: UUID vs repo_name** — scheduler создаёт проекты с `id=repo_name`, путаница
+   - План: [project-uuid-migration.md](./tasks/project-uuid-migration.md)
+
+### Средние
+
+4. **Agent containers не чистятся** — накапливаются при `docker compose down` → система виснет
+5. **TesterNode заглушка** — всегда возвращает `passed=True` (Phase 3)
+6. **Timeout handling** — не везде корректно пробрасывается
+7. **Error propagation** — ошибки CLI агента не всегда доходят до пользователя
+
+### Исправлено
+
+- ~~**Unknown queue in infrastructure-worker**~~ → ✅ FIXED (2026-01-09)
+- ~~**workers-spawner синхронный**~~ → ✅ FIXED (2026-01-09) — добавлен parallel processing
 
 ---
 
