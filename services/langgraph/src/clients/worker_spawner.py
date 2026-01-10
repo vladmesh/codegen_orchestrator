@@ -60,6 +60,11 @@ async def _wait_for_response(
         if messages:
             for _, stream_msgs in messages:
                 for msg_id, msg_data in stream_msgs:
+                    # Skip messages without 'data' field (wrong format)
+                    if b"data" not in msg_data and "data" not in msg_data:
+                        await redis_client.xack(RESPONSE_STREAM, group_name, msg_id)
+                        continue
+
                     data_str = msg_data[b"data"] if b"data" in msg_data else msg_data["data"]
                     try:
                         resp = json.loads(data_str)

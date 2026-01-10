@@ -28,7 +28,8 @@ def _get_agent_id() -> str:
     return agent_id
 
 
-RESPONSE_STREAM = "cli-agent:responses"
+# Separate stream for user-facing messages (not RPC responses)
+USER_MESSAGE_STREAM = "cli-agent:user-messages"
 
 
 @require_permission("respond")
@@ -57,7 +58,7 @@ def respond(
     field_name = "question" if expect_reply else "message"
 
     r.xadd(
-        RESPONSE_STREAM,
+        USER_MESSAGE_STREAM,
         {
             "agent_id": agent_id,
             "type": msg_type,

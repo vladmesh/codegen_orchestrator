@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     command_channel: str = "cli-agent:commands"
     events_prefix: str = "agents"
 
+    # Concurrency settings
+    max_concurrent_handlers: int = 5  # Max parallel message handlers
+
     # Host path to Claude session directory (for volume mounting)
     # This MUST be the host path, not the container path
     host_claude_dir: str | None = None
