@@ -200,6 +200,7 @@ Codegen Orchestrator — мультиагентная система для ав
 #### В процессе
 | Feature | Plan | Status |
 |---------|------|--------|
+| **Project Scaffolding Service** ⭐ | [project-scaffolding-service.md](./tasks/project-scaffolding-service.md) | Ready — NEXT |
 | **Worker Lifecycle** | [worker-lifecycle.md](./tasks/worker-lifecycle.md) | Planning |
 | **CLI Pydantic** | [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md) | Planning |
 | **Secrets Vault** | [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) | Design Ready |

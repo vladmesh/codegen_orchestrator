@@ -200,6 +200,28 @@ services:
     networks:
       - internal
 
+  scaffolder:
+    build:
+      context: ./services/scaffolder
+    env_file:
+      - .env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      API_URL: http://api:8000
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
+    volumes:
+      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
   # === Infrastructure ===
 
   db:

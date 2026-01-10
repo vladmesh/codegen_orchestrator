@@ -2,7 +2,9 @@
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from shared.schemas.modules import ServiceModule
 
 
 class ProjectBase(BaseModel):
@@ -18,7 +20,15 @@ class ProjectBase(BaseModel):
 class ProjectCreate(ProjectBase):
     """Schema for creating a project."""
 
-    pass
+    modules: list[ServiceModule] = [ServiceModule.BACKEND]
+
+    @field_validator("modules")
+    @classmethod
+    def validate_backend_required(cls, v: list[ServiceModule]) -> list[ServiceModule]:
+        """Ensure backend module is always included."""
+        if ServiceModule.BACKEND not in v:
+            v = [ServiceModule.BACKEND, *v]
+        return v
 
 
 class ProjectRead(ProjectBase):
