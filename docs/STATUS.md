@@ -238,6 +238,9 @@ Codegen Orchestrator — мультиагентная система для ав
 - ~~**Deploy: "No resources allocated"**~~ → ✅ FIXED (2026-01-10) — ResourceAllocator node added
 - ~~**Invalid API Key (Claude)**~~ → ✅ FIXED (2026-01-10) — added session volume mounting
 - ~~**Provisioning Race Condition**~~ → ✅ FIXED (2026-01-10) — added scheduler retry logic
+- ~~**Copier capability in worker**~~ → ✅ FIXED (2026-01-10) — removed from DeveloperNode, scaffolding by service
+- ~~**Project name validation**~~ → ✅ FIXED (2026-01-10) — scaffolder sanitizes names (underscores→hyphens)
+- ~~**Scaffolder API retry**~~ → ✅ FIXED (2026-01-10) — added exponential backoff for status updates
 
 
 ---

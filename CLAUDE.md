@@ -43,10 +43,10 @@ Telegram Bot → CLI Agent (Product Owner)
                         │
         ┌───────────────┴────────────────┐
         ▼                                ▼
-    Analyst → Zavhoz          Engineering/DevOps Subgraphs
-        │
-        ▼
-    Engineering: Architect → Preparer → Developer → Tester
+    [Analyst → Zavhoz]      Engineering/DevOps Subgraphs
+    (⚠️ не используется)
+        
+    Engineering: Developer → Tester (scaffolding done by scaffolder service)
     DevOps: EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
 ```
 
@@ -62,7 +62,7 @@ Telegram Bot → CLI Agent (Product Owner)
 - `scheduler`: Background workers (github_sync, server_sync, health_checker)
 - `workers-spawner`: Spawns agent containers via Redis pub/sub
 - `universal-worker`: Base Docker image for CLI agents (Claude, Factory.ai)
-- `preparer`: Copier runner for project scaffolding
+- `scaffolder`: Runs copier for project scaffolding (async, before developer work)
 - `deploy-worker`: Consumes deploy:queue, runs DevOps subgraph
 - `infrastructure-worker`: Ansible execution service for provisioning AND deployment
   - Handles `provisioner:queue` (server setup, OS reinstall, recovery)
