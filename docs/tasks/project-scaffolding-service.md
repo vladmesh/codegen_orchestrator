@@ -178,11 +178,14 @@ async def process_scaffolding(job: dict):
 
 ---
 
-### 5. workers-spawner: Убрать copier capability
+### 5. workers-spawner: Убрать copier capability ✅
 
-**Файл**: `services/workers-spawner/.../capabilities/copier.py`
+**Удалено**:
+- `services/workers-spawner/.../capabilities/copier.py`
+- `COPIER` из `CapabilityType` enum
+- Тесты `TestCopierCapability`
 
-> Удаляем, не плодим легаси
+> Scaffolding теперь обрабатывается отдельным scaffolder сервисом
 
 ---
 
@@ -217,17 +220,17 @@ scaffolder:
 - [x] Написать main.py с Redis Stream consumer
 - [x] Добавить в docker-compose.yml
 
-### Итерация 3: Интеграция (30 min)
+### Итерация 3: Интеграция (30 min) ✅
 
-- [ ] API → Scaffolder: отправка задания после provision (fire-and-forget)
-- [ ] Scaffolder → API: обновление `project.status = "scaffolded"` после успеха
-- [ ] DeveloperNode: добавить проверку `project.status == "scaffolded"` перед началом
-- [ ] Retry/timeout если scaffolding не завершился за N минут
+- [x] API → Scaffolder: отправка задания после provision (fire-and-forget)
+- [x] Scaffolder → API: обновление `project.status = "scaffolded"` после успеха
+- [x] DeveloperNode: добавить проверку `project.status == "scaffolded"` перед началом
+- [x] Retry/timeout если scaffolding не завершился за N минут (5 min timeout)
 
-### Итерация 4: DeveloperNode (15 min)
+### Итерация 4: DeveloperNode (15 min) ✅
 
-- [ ] Обновить промпт — убрать copier инструкции
-- [ ] Агент получает готовый scaffolded проект
+- [x] Обновить промпт — убрать copier инструкции
+- [x] Агент получает готовый scaffolded проект
 
 ### Итерация 5: Тестирование (30 min)
 

@@ -4,11 +4,14 @@ Handles architecture, scaffolding with copier, and coding in a single execution.
 Spawns a Claude Code worker with copier capability and sends comprehensive task.
 """
 
+import asyncio
+
 from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
 
+from ..clients.api import api_client
 from ..clients.worker_spawner import request_spawn
 from ..config.constants import Timeouts
 from .base import FunctionalNode
@@ -60,6 +63,37 @@ class DeveloperNode(FunctionalNode):
             project_name=project_name,
             modules=modules,
         )
+
+        # Wait for scaffolding to complete (max 5 min, poll every 10s)
+        project_id = project_spec.get("id")
+        if project_id:
+            logger.info("waiting_for_scaffolding", project_id=project_id)
+            for attempt in range(30):  # 30 * 10s = 5 min
+                project = await api_client.get_project(project_id)
+                if project:
+                    status = project.get("status")
+                    if status == "scaffolded":
+                        logger.info("scaffolding_complete", project_id=project_id)
+                        break
+                    if status == "scaffold_failed":
+                        logger.error("scaffolding_failed", project_id=project_id)
+                        return {
+                            "messages": [AIMessage(content="❌ Project scaffolding failed.")],
+                            "engineering_status": "blocked",
+                            "errors": state.get("errors", []) + ["Scaffolding failed"],
+                        }
+                if attempt > 0 and attempt % 6 == 0:  # Log every 60s
+                    logger.info(
+                        "waiting_for_scaffolding_progress", project_id=project_id, attempt=attempt
+                    )
+                await asyncio.sleep(10)
+            else:
+                logger.error("scaffolding_timeout", project_id=project_id)
+                return {
+                    "messages": [AIMessage(content="❌ Scaffolding timeout (5 min).")],
+                    "engineering_status": "blocked",
+                    "errors": state.get("errors", []) + ["Scaffolding timeout"],
+                }
 
         try:
             # Get GitHub App token for the project's organization
@@ -153,10 +187,8 @@ class DeveloperNode(FunctionalNode):
         """Build comprehensive task message for Claude.
 
         This message instructs Claude to:
-        - Create GitHub repo if needed
-        - Clone the repository
-        - Run copier with service-template
-        - Implement business logic
+        - Clone the repository (already scaffolded)
+        - Implement business logic based on TASK.md
         - Commit and push
         """
         modules_str = ",".join(modules)
@@ -176,32 +208,32 @@ class DeveloperNode(FunctionalNode):
 
 ### 1. Setup Repository
 
-Repository {repo_full_name} is already created. Clone to your workspace:
+Repository {repo_full_name} is already created and scaffolded. Clone to your workspace:
 ```bash
 git clone https://github.com/{repo_full_name}
 cd {repo_full_name.split("/")[-1]}
 ```
 
-### 2. Scaffold Project Structure
+### 2. Project Structure (already scaffolded)
 
-Use copier to create project structure from service-template:
+The project was scaffolded with `copier` from `service-template`.
+You'll find:
+- `services/{modules_str.split(",")[0]}/` - main service directory
+- `shared/spec/models.yaml` - domain models definition
+- `shared/spec/events.yaml` - events definition
+- `TASK.md` - detailed requirements
+- `AGENTS.md` - code structure patterns
+- `Makefile` - build commands
 
-```bash
-copier copy gh:vladmesh/service-template . \\
-  --data project_name={project_name} \\
-  --data modules={modules_str} \\
-  --trust \\
-  --defaults
-```
-
-This will create the basic structure with selected modules ({modules_str}).
+Run `make generate` after modifying spec files to regenerate code.
 
 ### 3. Write Business Logic
 
 Implement the business logic according to the specification:
-- Read the generated TASK.md for detailed requirements
+- Read TASK.md for detailed requirements
 - Follow patterns in AGENTS.md for code structure
 - Implement all required functionality
+- Use existing generated code as foundation
 
 ### 4. Commit and Push
 
@@ -221,7 +253,7 @@ After completing all steps, provide a summary including:
 
 ## Important Notes
 
-- Use copier version 9.4.1 (should be pre-installed)
+- Project is already scaffolded - focus on business logic
 - Follow the project structure conventions from service-template
 - Ensure all code is properly formatted and tested
 - Make descriptive commit messages

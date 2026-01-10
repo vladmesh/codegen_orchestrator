@@ -77,13 +77,6 @@ class TestCapabilityRegistry:
         factory = get_capability_factory(CapabilityType.DOCKER)
         assert isinstance(factory, DockerCapability)
 
-    def test_get_copier_capability(self):
-        """Copier capability is registered."""
-        from workers_spawner.factories.capabilities.copier import CopierCapability
-
-        factory = get_capability_factory(CapabilityType.COPIER)
-        assert isinstance(factory, CopierCapability)
-
 
 class TestClaudeCodeAgent:
     """Tests for Claude Code agent factory."""
@@ -173,17 +166,3 @@ class TestNodeCapability:
         factory = NodeCapability()
         env = factory.get_env_vars()
         assert "NPM_CONFIG_PREFIX" in env
-
-
-class TestCopierCapability:
-    """Tests for Copier capability factory."""
-
-    def test_install_commands(self):
-        """Installs copier via pip."""
-        from workers_spawner.factories.capabilities.copier import CopierCapability
-
-        factory = CopierCapability()
-        commands = factory.get_install_commands()
-        assert len(commands) == 1
-        assert "pip3 install" in commands[0]
-        assert "copier" in commands[0]

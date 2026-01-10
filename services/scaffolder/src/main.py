@@ -279,7 +279,14 @@ async def main() -> None:
             for _stream, stream_messages in messages:
                 for message_id, data in stream_messages:
                     try:
-                        await process_job(data)
+                        # Handle RedisStreamClient JSON wrapper format
+                        if "data" in data and isinstance(data["data"], str):
+                            import json as json_lib
+
+                            job_data = json_lib.loads(data["data"])
+                        else:
+                            job_data = data
+                        await process_job(job_data)
                         # Acknowledge message
                         await redis_client.xack(QUEUE_NAME, CONSUMER_GROUP, message_id)
                     except Exception as e:

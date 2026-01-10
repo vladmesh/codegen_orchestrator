@@ -123,6 +123,10 @@ Codegen Orchestrator — мультиагентная система для ав
 - [x] **Project UUID** — [план](./tasks/project-uuid-migration.md) ✅ 2026-01-10
   - Scheduler создаёт `id=repo_name`
   - Унифицировать на UUID везде
+- [x] **Project Scaffolding** — [план](./tasks/project-scaffolding-service.md) ✅ 2026-01-10
+  - API автоматически запускает scaffolder (fire-and-forget)
+  - DeveloperNode ждёт готовности проекта
+  - Scaffolder service использует copier (legacy code removed)
 
 #### 1.1 Worker Lifecycle
 > План: [worker-lifecycle.md](./tasks/worker-lifecycle.md)
@@ -196,11 +200,11 @@ Codegen Orchestrator — мультиагентная система для ав
 | **Engineering Error Handling** | [engineering-error-handling.md](./tasks/engineering-error-handling.md) | ✅ Done |
 | **Resource Allocator Node** | [resource-allocator-node.md](./tasks/resource-allocator-node.md) | ✅ Done |
 | **Project UUID Migration** | [project-uuid-migration.md](./tasks/project-uuid-migration.md) | ✅ Done |
+| **Project Scaffolding Service** | [project-scaffolding-service.md](./tasks/project-scaffolding-service.md) | ✅ Done |
 
 #### В процессе
 | Feature | Plan | Status |
 |---------|------|--------|
-| **Project Scaffolding Service** ⭐ | [project-scaffolding-service.md](./tasks/project-scaffolding-service.md) | Ready — NEXT |
 | **Worker Lifecycle** | [worker-lifecycle.md](./tasks/worker-lifecycle.md) | Planning |
 | **CLI Pydantic** | [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md) | Planning |
 | **Secrets Vault** | [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) | Design Ready |

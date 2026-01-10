@@ -9,6 +9,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.models import Project, User
+from shared.redis_client import RedisStreamClient
 
 from ..database import get_async_session
 from ..schemas import ProjectCreate, ProjectRead, ProjectUpdate
@@ -125,6 +126,29 @@ async def create_project(
             new_config = dict(project.config) if project.config else {}
             new_config["github_repo_id"] = repo.id
             project.config = new_config
+
+            # Fire-and-forget: send scaffolding job to scaffolder service
+            try:
+                redis_client = RedisStreamClient()
+                await redis_client.connect()
+                await redis_client.publish(
+                    "scaffolder:queue",
+                    {
+                        "repo_full_name": repo.full_name,
+                        "project_name": project_in.name,
+                        "project_id": project_in.id,
+                        "modules": ",".join(m.value for m in project_in.modules),
+                    },
+                )
+                await redis_client.close()
+                logger.info(
+                    "scaffolding_job_queued",
+                    project_id=project.id,
+                    repo=repo.full_name,
+                    modules=[m.value for m in project_in.modules],
+                )
+            except Exception as e:
+                logger.warning("scaffolding_job_queue_failed", error=str(e))
 
         except Exception as e:
             logger.error("github_repo_creation_failed", error=str(e), project_name=project.name)
