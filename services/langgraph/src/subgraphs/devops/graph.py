@@ -15,6 +15,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 import structlog
 
+from ...nodes.resource_allocator import resource_allocator_node
 from .env_analyzer import env_analyzer_run
 from .nodes import deployer_node, readiness_check_node, secret_resolver_node
 from .state import DevOpsState
@@ -64,13 +65,16 @@ def create_devops_subgraph() -> Any:
     graph = StateGraph(DevOpsState)
 
     # Add nodes
+    # Add nodes
+    graph.add_node("resource_allocator", resource_allocator_node.run)
     graph.add_node("env_analyzer", env_analyzer_run)
     graph.add_node("secret_resolver", secret_resolver_node.run)
     graph.add_node("readiness_check", readiness_check_node.run)
     graph.add_node("deployer", deployer_node.run)
 
     # Edges
-    graph.add_edge(START, "env_analyzer")
+    graph.add_edge(START, "resource_allocator")
+    graph.add_edge("resource_allocator", "env_analyzer")
 
     graph.add_conditional_edges(
         "env_analyzer",

@@ -104,7 +104,7 @@ async def request_spawn(
             "REPO_NAME": repo,
             # Task content is sent via file to avoid shell quoting issues with large prompts
         },
-        "mount_session_volume": False,  # Always ephemeral for factory workers
+        "mount_session_volume": settings.mount_claude_session,
     }
 
     redis_client = redis.from_url(settings.redis_url)

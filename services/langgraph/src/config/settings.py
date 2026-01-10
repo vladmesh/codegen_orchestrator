@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     redis_url: str = redis_url_field(required=True)
     api_base_url: str = api_base_url_field(required=True)
 
+    # Optional: Mount host Claude session for dev agents (avoids API key need)
+    mount_claude_session: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

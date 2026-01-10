@@ -1,12 +1,12 @@
-"""Provisioner trigger worker - listens for provisioning requests and triggers LangGraph.
+"""Provisioner trigger utilities.
 
-Uses Redis pub/sub to receive trigger events from health_checker and server_sync workers.
+Provides functions to publish provisioning triggers to Redis.
+LangGraph service listens for these triggers and executes provisioning.
 """
 
-import asyncio
 import json
-import os
 
+import httpx
 import redis.asyncio as redis
 import structlog
 
@@ -17,194 +17,17 @@ logger = structlog.get_logger()
 # Configuration from service settings
 _settings = get_settings()
 REDIS_URL = _settings.redis_url
-LANGGRAPH_API_URL = os.getenv("LANGGRAPH_API_URL", "http://langgraph:8001")
+API_BASE_URL = _settings.api_base_url
 
 # Redis channel for provisioning triggers
 PROVISIONER_TRIGGER_CHANNEL = "provisioner:trigger"
-
-
-async def trigger_provisioner(server_handle: str, is_incident_recovery: bool = False) -> bool:
-    """Trigger LangGraph Provisioner node via HTTP API.
-
-    Args:
-        server_handle: Server handle to provision
-        is_incident_recovery: True if this is incident recovery, False for new setup
-
-    Returns:
-        True if triggered successfully
-    """
-    # Prepare LangGraph invocation payload
-    payload = {
-        "input": {
-            "messages": [{"role": "system", "content": f"Provision server {server_handle}"}],
-            "server_to_provision": server_handle,
-            "is_incident_recovery": is_incident_recovery,
-        },
-        "config": {"configurable": {"thread_id": f"provisioner-{server_handle}"}},
-    }
-
-    try:
-        # TODO: Update this URL once LangGraph API is set up
-        # For now, just log the intent
-        logger.info(
-            "provisioner_trigger_requested",
-            server_handle=server_handle,
-            is_incident_recovery=is_incident_recovery,
-        )
-        logger.debug("provisioner_trigger_payload", payload=payload)
-
-        # In production, this would call:
-        # async with session.post(
-        #     f"{LANGGRAPH_API_URL}/invoke",
-        #     json=payload,
-        #     timeout=aiohttp.ClientTimeout(total=30)
-        # ) as resp:
-        #     if resp.status == 200:
-        #         logger.info(f"Provisioner triggered for {server_handle}")
-        #         return True
-        #     else:
-        #         logger.error(f"Failed to trigger provisioner: {resp.status}")
-        #         return False
-
-        # For MVP: assume success
-        return True
-
-    except Exception as e:
-        logger.error(
-            "provisioner_trigger_failed",
-            server_handle=server_handle,
-            is_incident_recovery=is_incident_recovery,
-            error=str(e),
-            error_type=type(e).__name__,
-            exc_info=True,
-        )
-        return False
-
-
-async def provisioner_trigger_worker():
-    """Background worker that listens for provisioning trigger events via Redis pub/sub."""
-    logger.info(
-        "provisioner_trigger_worker_started",
-        channel=PROVISIONER_TRIGGER_CHANNEL,
-    )
-
-    redis_client = None
-    pubsub = None
-
-    try:
-        # Connect to Redis
-        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-
-        # Subscribe to provisioner trigger channel
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe(PROVISIONER_TRIGGER_CHANNEL)
-
-        logger.info("redis_channel_subscribed", channel=PROVISIONER_TRIGGER_CHANNEL)
-
-        # Listen for messages using while loop
-        while True:
-            try:
-                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-
-                if message is None:
-                    await asyncio.sleep(0.1)
-                    continue
-
-                if message["type"] != "message":
-                    continue
-
-                try:
-                    # Parse trigger event
-                    data = json.loads(message["data"])
-                    server_handle = data.get("server_handle")
-                    is_incident_recovery = data.get("is_incident_recovery", False)
-
-                    if not server_handle:
-                        logger.warning("provisioner_trigger_missing_handle", payload=data)
-                        continue
-
-                    logger.info(
-                        "provisioner_trigger_received",
-                        server_handle=server_handle,
-                        is_incident_recovery=is_incident_recovery,
-                    )
-
-                    # Trigger provisioner
-                    success = await trigger_provisioner(server_handle, is_incident_recovery)
-
-                    if success:
-                        logger.info(
-                            "provisioner_trigger_succeeded",
-                            server_handle=server_handle,
-                        )
-                    else:
-                        logger.error(
-                            "provisioner_trigger_failed",
-                            server_handle=server_handle,
-                        )
-
-                except json.JSONDecodeError as e:
-                    logger.error(
-                        "provisioner_trigger_parse_failed",
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        raw_message=message.get("data"),
-                    )
-                except Exception as e:
-                    logger.error(
-                        "provisioner_trigger_processing_error",
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        exc_info=True,
-                    )
-
-            except asyncio.CancelledError:
-                logger.info("provisioner_trigger_worker_cancelled")
-                break
-            except Exception as e:
-                logger.error(
-                    "provisioner_trigger_worker_loop_error",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    exc_info=True,
-                )
-                await asyncio.sleep(1)
-
-    except Exception as e:
-        logger.error(
-            "provisioner_trigger_worker_error",
-            error=str(e),
-            error_type=type(e).__name__,
-            exc_info=True,
-        )
-
-    finally:
-        if pubsub:
-            try:
-                await pubsub.unsubscribe(PROVISIONER_TRIGGER_CHANNEL)
-                await pubsub.close()
-            except Exception as e:
-                logger.error(
-                    "redis_pubsub_close_failed",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                )
-        if redis_client:
-            try:
-                await redis_client.close()
-            except Exception as e:
-                logger.error(
-                    "redis_client_close_failed",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                )
-        logger.info("provisioner_trigger_worker_stopped")
 
 
 async def publish_provisioner_trigger(server_handle: str, is_incident_recovery: bool = False):
     """Publish a provisioning trigger event to Redis.
 
     This is called by health_checker and server_sync workers.
+    LangGraph's provisioner worker listens for these events.
 
     Args:
         server_handle: Server handle to provision
@@ -237,3 +60,41 @@ async def publish_provisioner_trigger(server_handle: str, is_incident_recovery: 
         )
     finally:
         await redis_client.close()
+
+
+async def retry_pending_servers():
+    """Re-publish provisioning triggers for servers stuck in pending_setup.
+
+    Called at scheduler startup to handle race conditions where triggers
+    were published before LangGraph subscribed to the channel.
+    """
+    logger.info("retry_pending_servers_start")
+
+    try:
+        async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=30) as client:
+            # Fetch servers with pending_setup status
+            resp = await client.get("/api/servers/", params={"status": "pending_setup"})
+            resp.raise_for_status()
+            servers = resp.json()
+
+            if not servers:
+                logger.info("retry_pending_servers_none_found")
+                return
+
+            logger.info("retry_pending_servers_found", count=len(servers))
+
+            for server in servers:
+                server_handle = server.get("handle")
+                if server_handle:
+                    await publish_provisioner_trigger(server_handle, is_incident_recovery=False)
+                    logger.info("retry_pending_server_triggered", server_handle=server_handle)
+
+            logger.info("retry_pending_servers_complete", triggered=len(servers))
+
+    except Exception as e:
+        logger.error(
+            "retry_pending_servers_failed",
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True,
+        )

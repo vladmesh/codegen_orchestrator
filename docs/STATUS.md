@@ -117,9 +117,9 @@ Codegen Orchestrator — мультиагентная система для ав
 - [x] **Engineering Error Handling** — [план](./tasks/engineering-error-handling.md) ✅ 2026-01-10
   - DeveloperNode падает → TesterNode перезаписывает на "done"
   - Добавлен conditional edge после developer
-- [ ] **Resource Allocator** — [план](./tasks/resource-allocator-node.md)
+- [x] **Resource Allocator** — [план](./tasks/resource-allocator-node.md) ✅ 2026-01-10
   - Deploy падает "No resources allocated"
-  - Добавить ResourceAllocator в DevOps subgraph
+  - Добавлен ResourceAllocator в DevOps subgraph
 - [x] **Project UUID** — [план](./tasks/project-uuid-migration.md) ✅ 2026-01-10
   - Scheduler создаёт `id=repo_name`
   - Унифицировать на UUID везде
@@ -194,7 +194,7 @@ Codegen Orchestrator — мультиагентная система для ав
 | Feature | Plan | Status |
 |---------|------|--------|
 | **Engineering Error Handling** | [engineering-error-handling.md](./tasks/engineering-error-handling.md) | ✅ Done |
-| **Resource Allocator Node** | [resource-allocator-node.md](./tasks/resource-allocator-node.md) | **TODO** |
+| **Resource Allocator Node** | [resource-allocator-node.md](./tasks/resource-allocator-node.md) | ✅ Done |
 | **Project UUID Migration** | [project-uuid-migration.md](./tasks/project-uuid-migration.md) | ✅ Done |
 
 #### В процессе
@@ -214,7 +214,7 @@ Codegen Orchestrator — мультиагентная система для ав
 
 1. **Engineering success на ошибках** — DeveloperNode падает, но TesterNode перезаписывает статус на "done"
    - План: [engineering-error-handling.md](./tasks/engineering-error-handling.md)
-2. **Deploy: "No resources allocated"** — DevOps subgraph не получает allocations, Zavhoz пропускается
+2. ~~**Deploy: "No resources allocated"**~~ → ✅ FIXED (2026-01-10)
    - План: [resource-allocator-node.md](./tasks/resource-allocator-node.md)
 
 
@@ -230,6 +230,10 @@ Codegen Orchestrator — мультиагентная система для ав
 - ~~**Unknown queue in infrastructure-worker**~~ → ✅ FIXED (2026-01-09)
 - ~~**workers-spawner синхронный**~~ → ✅ FIXED (2026-01-09) — добавлен parallel processing
 - ~~**Project ID: UUID vs repo_name**~~ → ✅ FIXED (2026-01-10) — scheduler now uses UUID
+- ~~**Deploy: "No resources allocated"**~~ → ✅ FIXED (2026-01-10) — ResourceAllocator node added
+- ~~**Invalid API Key (Claude)**~~ → ✅ FIXED (2026-01-10) — added session volume mounting
+- ~~**Provisioning Race Condition**~~ → ✅ FIXED (2026-01-10) — added scheduler retry logic
+
 
 ---
 
