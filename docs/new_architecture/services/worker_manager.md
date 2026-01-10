@@ -31,8 +31,9 @@ The manager listens to `worker:commands`.
     *   Injected into the container at startup.
 *   `allowed_commands` (List[String]):
     *   List of CLI commands the worker is permitted to execute.
-    *   *Mechanism*: Generates a rigid system prompt appended to instructions.
-    *   *Post-MVP*: Enforced by a proxy or wrapper shim.
+    *   Format: `["project.get", "project.list", "engineering.*"]` (wildcards supported).
+    *   *Mechanism*: Passed as `ALLOWED_COMMANDS` env var. CLI validates before execution.
+    *   See [cli_orchestrator.md](../tools/cli_orchestrator.md#4-permission-model) for details.
 *   `modules` (List[Enum]):
     *   `GIT`
     *   `GITHUB_CLI`
