@@ -1,0 +1,107 @@
+# Service: API
+
+**Service Name:** `api`
+**Responsibility:** Database Access Layer (CRUD).
+
+## 1. Philosophy: The "Thin" Layer
+
+The `api` service is the **single source of truth** for persistent data. It provides REST endpoints for all CRUD operations but does **NOT** contain any business logic.
+
+> **Rule #1:** API never triggers external processes (no Redis publish, no GitHub calls, no scaffolding).
+> **Rule #2:** API only reads from DB or writes to DB. Nothing else.
+> **Rule #3:** All business logic lives in Consumers/LangGraph. API is a dumb data store.
+
+## 2. Responsibilities
+
+1.  **CRUD Operations**: Create, Read, Update, Delete for all entities.
+2.  **Schema Validation**: Pydantic schemas for request/response validation.
+3.  **Access Control**: Basic authorization via `X-Telegram-ID` header.
+4.  **Database Migrations**: Alembic migrations for schema evolution.
+
+## 3. Entities (Routers)
+
+| Router | Entity | Purpose |
+|--------|--------|---------|
+| `/api/projects` | Project | Project registry |
+| `/api/tasks` | Task | Task lifecycle tracking |
+| `/api/servers` | Server | VPS server inventory |
+| `/api/allocations` | PortAllocation | Port assignments on servers |
+| `/api/users` | User | Telegram users |
+| `/api/incidents` | Incident | Server incidents |
+| `/api/service_deployments` | ServiceDeployment | Deployed services |
+| `/api/agent_configs` | AgentConfig | LLM agent configurations |
+| `/api/cli_agent_configs` | CLIAgentConfig | CLI agent configurations |
+| `/api/api_keys` | APIKey | Access keys |
+| `/api/available_models` | AvailableModel | LLM model registry |
+| `/api/rag` | RAG | Vector search indices |
+
+## 4. What API Does NOT Do
+
+Previously, `create_project` contained:
+- GitHub repo creation
+- Secrets injection
+- Publishing to `scaffolder:queue`
+
+**All of this is removed.** API only:
+1. Validates input.
+2. Creates `Project` row in DB with `status = "created"`.
+3. Returns the created entity.
+
+The **caller** (CLI, Telegram Bot, or another service) is responsible for triggering workflows:
+```
+CLI → POST /api/projects → creates row → returns Project
+CLI → POST /api/tasks (type=scaffolding) → creates Task row
+CLI → XADD scaffolder:queue → triggers Scaffolder
+```
+
+## 5. Dependencies
+
+**Allowed:**
+*   `fastapi`, `uvicorn`
+*   `sqlalchemy`, `asyncpg`
+*   `alembic`
+*   `pydantic`
+*   `structlog`
+
+**BANNED:**
+*   `redis` (no queue publishing)
+*   `github` / `PyGithub` (no external API calls)
+*   `copier`, `git` (no business logic)
+*   Any LangChain/LangGraph dependencies
+
+## 6. Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                          API                            │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│   main.py           FastAPI app + middleware            │
+│   routers/          CRUD endpoints                      │
+│   schemas/          Pydantic models (HTTP layer)        │
+│   dependencies.py   DI (session, auth)                  │
+│   database.py       SQLAlchemy engine                   │
+│   migrations/       Alembic migrations                  │
+│                                                         │
+└───────────────────────────┬─────────────────────────────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │  PostgreSQL   │
+                    │   (shared)    │
+                    └───────────────┘
+```
+
+## 7. Refactoring Notes
+
+### 7.1 Remove from `routers/projects.py`:
+- GitHub repo creation (`github_client.create_repo`)
+- Secrets injection (`github_client.set_secrets`)
+- Redis publish (`redis_client.xadd("scaffolder:queue", ...)`)
+
+### 7.2 Extract common auth logic:
+- `_resolve_user()` duplicated in every router → move to `dependencies.py`
+
+### 7.3 Simplify schemas:
+- `ProjectCreate` should not have `modules` — that's for Scaffolder
+- API stores what it received, business decisions happen elsewhere

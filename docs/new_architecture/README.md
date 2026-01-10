@@ -44,20 +44,19 @@
 │                      SERVICES                           │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  api                  FastAPI, source of truth          │
-│  telegram-bot         User interface                    │
-│  langgraph            Orchestration logic               │
-│  scheduler            Background tasks                  │
+│  api                  FastAPI, source of truth (CRUD)   │
+│  telegram-bot         User interface + PO sessions      │
+│  langgraph            Orchestration (engineering/deploy)│
+│  scheduler            Background tasks (sync, health)   │
 │                                                         │
 ├─────────────────────────────────────────────────────────┤
 │                      CONSUMERS                          │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  engineering-consumer   engineering:queue               │
-│  deploy-consumer        deploy:queue                    │
-│  infra-consumer         provisioner + ansible:deploy    │
-│  scaffolder             scaffolder:queue                │
-│  worker-manager         worker:commands                 │
+│  langgraph            engineering:queue, deploy:queue   │
+│  infra-service        provisioner:queue, ansible:deploy │
+│  scaffolder           scaffolder:queue                  │
+│  worker-manager       worker:commands                   │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
