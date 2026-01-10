@@ -67,20 +67,58 @@ async def get_github_token(org: str) -> str:
         return resp.json()["token"]
 
 
-async def update_project_status(project_id: str, status: str) -> None:
-    """Update project status via API."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.patch(
-            f"{API_URL}/api/projects/{project_id}",
-            json={"status": status},
-        )
-        if not resp.is_success:
+async def update_project_status(project_id: str, status: str, max_retries: int = 3) -> bool:
+    """Update project status via API with retry logic.
+
+    Args:
+        project_id: Project ID to update
+        status: New status value
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        True if update succeeded, False otherwise
+    """
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.patch(
+                    f"{API_URL}/api/projects/{project_id}",
+                    json={"status": status},
+                )
+                if resp.is_success:
+                    logger.info(
+                        "project_status_updated",
+                        project_id=project_id,
+                        status=status,
+                    )
+                    return True
+                logger.warning(
+                    "failed_to_update_project_status",
+                    project_id=project_id,
+                    status=status,
+                    response=resp.text,
+                    attempt=attempt + 1,
+                )
+        except Exception as e:
             logger.warning(
-                "failed_to_update_project_status",
+                "update_project_status_error",
                 project_id=project_id,
                 status=status,
-                response=resp.text,
+                error=str(e),
+                attempt=attempt + 1,
             )
+
+        if attempt < max_retries - 1:
+            wait_time = 2**attempt  # Exponential backoff: 1s, 2s, 4s
+            await asyncio.sleep(wait_time)
+
+    logger.error(
+        "update_project_status_failed_all_retries",
+        project_id=project_id,
+        status=status,
+        max_retries=max_retries,
+    )
+    return False
 
 
 def _run_git(
@@ -139,7 +177,18 @@ async def scaffold_project(
                 return False
 
             # 2. Run copier
-            logger.info("running_copier", project_name=project_name, modules=modules)
+            # Sanitize project_name: lowercase, hyphens only, no underscores/spaces
+            import re
+
+            sanitized_name = project_name.lower().replace("_", "-").replace(" ", "-")
+            sanitized_name = re.sub(r"[^a-z0-9-]", "", sanitized_name)  # Remove invalid chars
+            sanitized_name = re.sub(r"-+", "-", sanitized_name).strip(
+                "-"
+            )  # Collapse multiple hyphens
+            if not sanitized_name or not sanitized_name[0].isalpha():
+                sanitized_name = "project-" + sanitized_name  # Ensure starts with letter
+
+            logger.info("running_copier", project_name=sanitized_name, modules=modules)
 
             import shutil
 
@@ -154,7 +203,7 @@ async def scaffold_project(
                 SERVICE_TEMPLATE_REPO,
                 str(repo_dir),
                 "--data",
-                f"project_name={project_name}",
+                f"project_name={sanitized_name}",
                 "--data",
                 f"modules={modules}",
                 "--trust",

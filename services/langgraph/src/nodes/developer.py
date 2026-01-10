@@ -1,7 +1,7 @@
 """Unified Developer node.
 
-Handles architecture, scaffolding with copier, and coding in a single execution.
-Spawns a Claude Code worker with copier capability and sends comprehensive task.
+Waits for scaffolding completion, then spawns a Claude Code worker to implement
+business logic. Scaffolding is handled by the separate scaffolder service.
 """
 
 import asyncio
@@ -23,12 +23,12 @@ MAX_ERROR_MSG_LENGTH = 500
 
 
 class DeveloperNode(FunctionalNode):
-    """Unified Developer node - handles architecture, scaffolding, and coding.
+    """Developer node - waits for scaffolding, then implements business logic.
 
-    Spawns a Claude Code worker with copier capability to:
-    1. Create/clone GitHub repository
-    2. Run copier to scaffold project structure
-    3. Implement business logic
+    Flow:
+    1. Wait for project status == 'scaffolded' (done by scaffolder service)
+    2. Spawn Claude Code worker to clone scaffolded repo
+    3. Implement business logic according to TASK.md
     4. Commit and push changes
     """
 
@@ -118,7 +118,7 @@ class DeveloperNode(FunctionalNode):
                 project_spec=project_spec,
             )
 
-            # Spawn worker with copier capability
+            # Spawn worker to implement business logic (scaffolding already done)
             worker_result = await request_spawn(
                 repo=repo_full_name,
                 github_token=access_token,
