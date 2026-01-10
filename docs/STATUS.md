@@ -120,7 +120,7 @@ Codegen Orchestrator — мультиагентная система для ав
 - [ ] **Resource Allocator** — [план](./tasks/resource-allocator-node.md)
   - Deploy падает "No resources allocated"
   - Добавить ResourceAllocator в DevOps subgraph
-- [ ] **Project UUID** — [план](./tasks/project-uuid-migration.md)
+- [x] **Project UUID** — [план](./tasks/project-uuid-migration.md) ✅ 2026-01-10
   - Scheduler создаёт `id=repo_name`
   - Унифицировать на UUID везде
 
@@ -195,7 +195,7 @@ Codegen Orchestrator — мультиагентная система для ав
 |---------|------|--------|
 | **Engineering Error Handling** | [engineering-error-handling.md](./tasks/engineering-error-handling.md) | ✅ Done |
 | **Resource Allocator Node** | [resource-allocator-node.md](./tasks/resource-allocator-node.md) | **TODO** |
-| **Project UUID Migration** | [project-uuid-migration.md](./tasks/project-uuid-migration.md) | **TODO** |
+| **Project UUID Migration** | [project-uuid-migration.md](./tasks/project-uuid-migration.md) | ✅ Done |
 
 #### В процессе
 | Feature | Plan | Status |
@@ -216,8 +216,7 @@ Codegen Orchestrator — мультиагентная система для ав
    - План: [engineering-error-handling.md](./tasks/engineering-error-handling.md)
 2. **Deploy: "No resources allocated"** — DevOps subgraph не получает allocations, Zavhoz пропускается
    - План: [resource-allocator-node.md](./tasks/resource-allocator-node.md)
-3. **Project ID: UUID vs repo_name** — scheduler создаёт проекты с `id=repo_name`, путаница
-   - План: [project-uuid-migration.md](./tasks/project-uuid-migration.md)
+
 
 ### Средние
 
@@ -230,6 +229,7 @@ Codegen Orchestrator — мультиагентная система для ав
 
 - ~~**Unknown queue in infrastructure-worker**~~ → ✅ FIXED (2026-01-09)
 - ~~**workers-spawner синхронный**~~ → ✅ FIXED (2026-01-09) — добавлен parallel processing
+- ~~**Project ID: UUID vs repo_name**~~ → ✅ FIXED (2026-01-10) — scheduler now uses UUID
 
 ---
 

@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import time
+import uuid
 
 import httpx
 from pydantic import ValidationError
@@ -232,7 +233,7 @@ async def _sync_single_repo(
                 github_repo_id=repo_id,
             )
             project = Project(
-                id=repo_name,
+                id=str(uuid.uuid4())[:8],
                 name=repo_name,
                 github_repo_id=repo_id,
                 status=ProjectStatus.DISCOVERED.value,
