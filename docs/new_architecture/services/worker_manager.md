@@ -1,6 +1,7 @@
 # Service: Worker Manager
 
 **Service Name:** `worker-manager`
+**Current Name:** `workers-spawner` (requires rename)
 **Responsibility:** Lifecycle Management of ephemeral Worker containers.
 
 ## 1. Responsibilities
@@ -15,7 +16,7 @@ It acts as the **Control Plane** for Workers. It does NOT handle the heavy lifti
 
 ## 2. API (Redis Commands)
 
-The manager listens to `worker:manager:commands`.
+The manager listens to `worker:commands`.
 
 ### 2.1 Spawn Worker (`create`)
 

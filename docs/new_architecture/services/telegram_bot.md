@@ -1,6 +1,7 @@
 # Service: Telegram Bot
 
 **Service Name:** `telegram-bot`
+**Current Name:** `telegram_bot` (requires rename)
 **Responsibility:** User Interface + PO Session Management.
 
 ## 1. Philosophy

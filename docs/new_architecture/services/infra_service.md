@@ -6,7 +6,7 @@
 
 ## 1. Responsibilities
 
-The `infrastructure-worker` is the "Hands" of the DevOps Subgraph. It isolates heavy dependencies (Ansible, SSH, cryptography) and executes potentially dangerous operations.
+The `infra-service` is the "Hands" of the DevOps Subgraph. It isolates heavy dependencies (Ansible, SSH, cryptography) and executes potentially dangerous operations.
 
 1.  **Server Provisioning**: preparing a fresh VPS (User/Setup management, Docker install, Security hardening).
 2.  **Application Deployment**: deploying the Docker Compose stack of a Project to a target Server.
@@ -57,7 +57,7 @@ The service acts as a consumer for two main queues.
 ### 3.1 Why a separate service?
 *   **Dependencies**: Ansible requires Python with system packages, SSH agents, and complex dependencies that shouldn't pollute the `langgraph` or `api` images.
 *   **Security**: This service handles raw SSH private keys and root access to servers. It should be strictly isolated.
-*   **Concurrency**: Ansible plays are blocking and IO-bound. We can scale `infra-consumer` instances horizontally to handle multiple parallel deployments.
+*   **Concurrency**: Ansible plays are blocking and IO-bound. We can scale `infra-service` instances horizontally to handle multiple parallel deployments.
 
 ### 3.2 Ansible Structure
 The service wraps the `ansible/` directory.

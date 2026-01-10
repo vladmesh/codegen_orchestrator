@@ -67,7 +67,7 @@ The service requires **GitHub App Credentials** to perform actions on behalf of 
 *   **Copier Error**: Log output -> Mark project as `failed` -> Notify user via event stream.
 *   **Cleanup**: Always remove the temporary directory (`/tmp/project_xyz`) after push, regardless of success/failure.
 
-## 5. Implementation Notes
+## 6. Implementation Notes
 
 *   **Atomic Operation**: The entire process (Create -> Clone -> Copy -> Push) should be treated as one atomic task.
 *   **Performance**: Since this involves network I/O (GitHub), concurrency can be handled by multiple `scaffolder` instances or a thread pool within one service. Given the volume, one instance is likely sufficient for MVP.

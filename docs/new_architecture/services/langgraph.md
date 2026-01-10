@@ -15,7 +15,7 @@ The `langgraph` service is the "brain" that coordinates high-level processes, bu
 
 1.  **State Management**: Holding the specific state of long-running workflows (Checkpoints).
 2.  **Routing**: Deciding "What happens next?" based on results (Conditional Edges).
-3.  **Delegation**: Sending commands to specialized actors (`worker-manager`, `infrastructure-worker`).
+3.  **Delegation**: Sending commands to specialized actors (`worker-manager`, `infra-service`).
 4.  **Abstraction**: Exposing complex processes (like "Engineering") as single callable Subgraphs.
 
 ## 3. Architecture
@@ -82,7 +82,7 @@ This architecture is **Event-Driven and Stateless** (in terms of memory).
 *   `docker` CLI or SDK
 *   Heavy ML libraries (numpy, pandas) - moved to Analyzers/Workers if needed.
 
-## 5. API (Redis Interfaces)
+## 6. API (Redis Interfaces)
 
 ### 5.1 Triggers (Inputs)
 
@@ -96,5 +96,5 @@ The service acts as a Consumer Group listening to high-level intent queues:
 Nodes within the graphs primarily publish to:
 
 *   `worker:commands` (Target: `worker-manager`)
-*   `ansible:deploy:queue` (Target: `infrastructure-worker`)
-*   `provisioner:queue` (Target: `infrastructure-worker`)
+*   `ansible:deploy:queue` (Target: `infra-service`)
+*   `provisioner:queue` (Target: `infra-service`)
