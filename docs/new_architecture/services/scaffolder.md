@@ -44,7 +44,7 @@ The service listens to `scaffolder:queue`.
     *   `copier` (Python lib/CLI)
 *   **Libraries**:
     *   `redis`
-    *   `sqlalchemy` / `asyncpg` (for DB access)
+    *   `aiohttp` (API client for DB access via API)
     *   `github` (PyGithub or AIOHTTP client)
 
 ## 4. Authentication & Configuration

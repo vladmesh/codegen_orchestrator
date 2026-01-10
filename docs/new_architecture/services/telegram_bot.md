@@ -67,9 +67,10 @@ Buttons/commands that bypass PO to save tokens:
 - Session = mapping `user_id → worker_id` (stored in Redis)
 - On first real message:
   1. Check Redis for existing `session:{user_id}`
-  2. If exists → verify worker is alive (`worker:status`)
-  3. If not exists or dead → `worker:commands` → `create` PO Worker
-  4. Store `session:{user_id} = worker_id` (TTL: 24h)
+  2. If exists → check `HGET worker:status:{id} status` (sync lookup)
+  3. If status is `RUNNING` → reuse worker
+  4. If status is `STOPPED`/`FAILED` or not exists → create new PO Worker via `worker:commands`
+  5. Store `session:{user_id} = worker_id` (TTL: 24h)
 
 ### 4.4 Message Relay
 - User → Bot: `XADD worker:{id}:input`

@@ -81,7 +81,7 @@ The `scheduler` maintains the "world state" in the database. It runs background 
 
 **Allowed:**
 *   `asyncio`, `aiohttp`
-*   `sqlalchemy`, `asyncpg` (or via API client)
+*   `aiohttp` (API client for DB access via API)
 *   `redis` (for publishing to queues)
 *   `paramiko` / `asyncssh` (for health checks)
 *   `structlog`

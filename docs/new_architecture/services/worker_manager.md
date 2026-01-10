@@ -110,3 +110,48 @@ Inside the container, there is a **Python Wrapper** (part of `worker-base`) that
 *   **Spawner**: Creates the "Body" (Container + Env Vars + Config Files).
 *   **Worker**: Has a "Brain" (Wrapper) that listens to the "Nervous System" (Redis).
 *   **Verdict**: Spawner does NOT proxy all messages. It sets up the channel, then steps back. This prevents Spawner from becoming a bottleneck and SPOF for active sessions.
+
+## 5. Worker Status Monitoring
+
+Worker-manager maintains worker status for sync lookup by other services (Telegram Bot).
+
+### 5.1 Status Storage
+
+Redis hash per worker:
+```
+worker:status:{id} = {
+    "status": "STARTING|RUNNING|COMPLETED|FAILED|STOPPED",
+    "started_at": "2026-01-10T12:00:00Z",
+    "updated_at": "2026-01-10T12:05:00Z",
+    "exit_code": 0,
+    "error": null
+}
+```
+
+### 5.2 Detection Mechanisms (Hybrid)
+
+1.  **Docker Events API** (passive, reliable):
+    *   Worker-manager subscribes to Docker daemon events.
+    *   Catches: `start`, `die`, `oom`, `stop`.
+    *   Guarantees detection even on SIGKILL.
+
+2.  **Explicit Exit Events** (active, rich context):
+    *   Wrapper inside worker publishes to `worker:lifecycle` stream before exit:
+        ```json
+        {"worker_id": "...", "event": "completed", "result": {...}}
+        {"worker_id": "...", "event": "failed", "error": "..."}
+        ```
+    *   Provides task result and error details.
+
+3.  **Heartbeat** (optional, for long-running workers):
+    *   Wrapper sets `SETEX worker:heartbeat:{id} 30 "alive"`.
+    *   Missing key = worker is dead.
+
+### 5.3 Consumer Usage
+
+Telegram Bot checks status synchronously:
+```python
+status = redis.hgetall(f"worker:status:{worker_id}")
+if status["status"] in ("STOPPED", "FAILED"):
+    # Create new worker
+```
