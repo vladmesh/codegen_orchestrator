@@ -1,15 +1,149 @@
-# Queue Contracts / Контракты очередей
+# Contracts / Контракты
 
-Типизированные схемы для всех Redis очередей.
+Типизированные схемы для REST API и Redis очередей.
 
 ## Design Principles
 
 1. **Schema-first** — все сообщения валидируются Pydantic схемами
-2. **Versioned** — каждое сообщение содержит версию для backwards compatibility
-3. **Traceable** — correlation_id для сквозной трассировки
-4. **No secrets in plaintext** — токены передаются по ссылке, не напрямую
+2. **1:1 Queues** — одна очередь = один Writer → один Consumer (+ optional observers)
+3. **Logical Actors** — указываем роль (PO-Worker, langgraph), не техническую прослойку
+4. **Traceable** — `correlation_id` для сквозной трассировки
 
 ---
+
+## Queue Overview
+
+| Queue | DTO | Writer | Consumer | Purpose |
+|-------|-----|--------|----------|---------|
+| `engineering:queue` | EngineeringMessage | PO-Worker | langgraph | Start development task |
+| `deploy:queue` | DeployMessage | PO-Worker | langgraph | Start deploy task |
+| `scaffolder:queue` | ScaffolderMessage | langgraph | scaffolder | Init project structure |
+| `worker:commands` | WorkerCommand | langgraph | worker-manager | Spawn/kill workers |
+| `worker:responses` | WorkerResponse | worker-manager | langgraph | Worker lifecycle events |
+| `worker:{id}:input` | WorkerInputMessage | telegram-bot | worker-wrapper | User message to agent |
+| `worker:{id}:output` | WorkerOutputMessage | worker-wrapper | telegram-bot | Agent reply to user |
+| `provisioner:queue` | ProvisionerMessage | scheduler | infra-service | Setup server |
+| `ansible:deploy:queue` | AnsibleDeployMessage | langgraph | infra-service | Run ansible deploy |
+
+### Actor Roles
+
+| Actor | Type | Description |
+|-------|------|-------------|
+| **PO-Worker** | Worker | Product Owner agent, talks to user |
+| **Developer-Worker** | Worker | Developer agent (inside engineering flow) |
+| **langgraph** | Service | Workflow orchestrator |
+| **worker-manager** | Service | Container lifecycle manager |
+| **worker-wrapper** | Process | Agent bridge inside container |
+| **telegram-bot** | Service | User interface |
+| **scaffolder** | Service | Project initialization |
+| **infra-service** | Service | Ansible/provisioning |
+| **scheduler** | Service | Background tasks |
+
+---
+
+# Part 1: REST DTO
+
+## ProjectDTO
+
+```python
+# shared/contracts/dto/project.py
+
+from enum import Enum
+from pydantic import BaseModel, ConfigDict
+
+class ProjectStatus(str, Enum):
+    DRAFT = "draft"
+    SCAFFOLDING = "scaffolding"
+    SCAFFOLDED = "scaffolded"
+    DEVELOPING = "developing"
+    TESTING = "testing"
+    DEPLOYING = "deploying"
+    ACTIVE = "active"
+    FAILED = "failed"
+    ARCHIVED = "archived"
+
+
+class ProjectCreate(BaseModel):
+    """Create project request."""
+    name: str
+    description: str | None = None
+
+
+class ProjectDTO(BaseModel):
+    """Project response."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: str
+    name: str
+    description: str | None = None
+    status: ProjectStatus
+    repository_url: str | None = None
+    owner_id: int | None = None
+```
+
+## TaskDTO
+
+```python
+# shared/contracts/dto/task.py
+
+from enum import Enum
+from datetime import datetime
+from pydantic import BaseModel, ConfigDict
+
+class TaskStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskType(str, Enum):
+    ENGINEERING = "engineering"
+    DEPLOY = "deploy"
+    SCAFFOLDING = "scaffolding"
+
+
+class TaskCreate(BaseModel):
+    """Create task request."""
+    project_id: str
+    type: TaskType
+    spec: str | None = None
+
+
+class TaskDTO(BaseModel):
+    """Task response."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: str
+    project_id: str
+    type: TaskType
+    status: TaskStatus
+    spec: str | None = None
+    result: dict | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+```
+
+## UserDTO
+
+```python
+# shared/contracts/dto/user.py
+
+from pydantic import BaseModel, ConfigDict
+
+class UserDTO(BaseModel):
+    """User response."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: int
+    telegram_id: int
+    is_admin: bool = False
+```
+
+---
+
+# Part 2: Queue Messages
 
 ## Base Types
 
@@ -23,23 +157,20 @@ import uuid
 
 
 class QueueMeta(BaseModel):
-    """Metadata для всех queue messages."""
-
+    """Metadata for all queue messages."""
     version: Literal["1"] = "1"
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
 class BaseMessage(QueueMeta):
-    """Базовый класс для сообщений в очередях."""
-
+    """Base class for queue messages."""
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     callback_stream: str | None = None
 
 
 class BaseResult(BaseModel):
-    """Базовый результат выполнения."""
-
+    """Base result for async operations."""
     request_id: str
     status: Literal["success", "failed", "error"]
     error: str | None = None
@@ -48,33 +179,24 @@ class BaseResult(BaseModel):
 
 ---
 
-## Queue: `engineering:queue`
+## EngineeringMessage
 
-**Producer:** CLI, Telegram Bot (через API)
-**Consumer:** `engineering-consumer`
-**Purpose:** Запуск Engineering Subgraph
-
-### Message
+**Queue:** `engineering:queue`  
+**Writer:** PO-Worker  
+**Consumer:** langgraph
 
 ```python
 # shared/contracts/queues/engineering.py
 
 class EngineeringMessage(BaseMessage):
-    """Сообщение в engineering:queue."""
+    """Start engineering task."""
+    task_id: str
+    project_id: str
+    user_id: int
 
-    task_id: str          # ID Task в БД
-    project_id: str       # ID Project
-    user_id: int          # Telegram user ID
-```
 
-### Result
-
-Результат сохраняется в `Task.result`:
-
-```python
 class EngineeringResult(BaseResult):
-    """Результат engineering задачи."""
-
+    """Engineering task result."""
     files_changed: list[str] | None = None
     commit_sha: str | None = None
     branch: str | None = None
@@ -82,33 +204,24 @@ class EngineeringResult(BaseResult):
 
 ---
 
-## Queue: `deploy:queue`
+## DeployMessage
 
-**Producer:** CLI, Telegram Bot
-**Consumer:** `deploy-consumer`
-**Purpose:** Запуск DevOps Subgraph
-
-### Message
+**Queue:** `deploy:queue`  
+**Writer:** PO-Worker  
+**Consumer:** langgraph
 
 ```python
 # shared/contracts/queues/deploy.py
 
 class DeployMessage(BaseMessage):
-    """Сообщение в deploy:queue."""
-
+    """Start deploy task."""
     task_id: str
     project_id: str
     user_id: int
-```
 
-### Result
 
-Результат сохраняется в `Task.result`:
-
-```python
 class DeployResult(BaseResult):
-    """Результат deploy задачи."""
-
+    """Deploy task result."""
     deployed_url: str | None = None
     server_ip: str | None = None
     port: int | None = None
@@ -116,140 +229,49 @@ class DeployResult(BaseResult):
 
 ---
 
-## Queue: `scaffolder:queue`
+## ScaffolderMessage
 
-**Producer:** LangGraph Tools
-**Consumer:** `scaffolder`
-**Purpose:** Scaffolding проекта через Copier
-
-### Message
+**Queue:** `scaffolder:queue`  
+**Writer:** langgraph  
+**Consumer:** scaffolder
 
 ```python
 # shared/contracts/queues/scaffolder.py
 
 class ScaffolderMessage(BaseMessage):
-    """Сообщение в scaffolder:queue."""
-
+    """Initialize project structure."""
     project_id: str
     repo_full_name: str      # "org/repo"
-    project_name: str        # Human-readable name
+    project_name: str
     modules: list[str]       # ["backend", "telegram"]
 ```
 
-### Result
-
-Результат — обновление статуса Project через API:
-- Success: `status = "scaffolded"`
-- Failure: `status = "scaffold_failed"`
-
 ---
 
-## Queue: `provisioner:queue`
+## WorkerCommand / WorkerResponse
 
-**Producer:** Scheduler, LangGraph
-**Consumer:** `infra-consumer`
-**Purpose:** Провизия серверов (Ansible)
+**Queue (commands):** `worker:commands`  
+**Writer:** langgraph  
+**Consumer:** worker-manager
 
-### Message
-
-```python
-# shared/contracts/queues/provisioner.py
-
-class ProvisionerMessage(BaseMessage):
-    """Сообщение в provisioner:queue."""
-
-    server_handle: str
-    force_reinstall: bool = False
-    is_recovery: bool = False
-```
-
-### Result
-
-Результат записывается в Redis key `provisioner:result:{request_id}` (TTL 1 hour):
-
-```python
-class ProvisionerResult(BaseResult):
-    """Результат провизии сервера."""
-
-    server_handle: str
-    server_ip: str | None = None
-    services_redeployed: int = 0
-    errors: list[str] | None = None
-```
-
----
-
-## Queue: `ansible:deploy:queue`
-
-**Producer:** DevOps Subgraph (DeployerNode)
-**Consumer:** `infra-consumer`
-**Purpose:** Делегированный Ansible деплой
-
-### Message
-
-```python
-# shared/contracts/queues/ansible_deploy.py
-
-class AnsibleDeployMessage(BaseMessage):
-    """Сообщение в ansible:deploy:queue."""
-
-    job_type: Literal["deploy"] = "deploy"
-    project_id: str
-    project_name: str              # snake_case
-    repo_full_name: str            # "owner/repo"
-    server_ip: str
-    port: int
-    modules: list[str] | None = None
-
-    # Secrets passed by reference, not value
-    github_token_ref: str          # Reference to secret storage
-    secrets_ref: str               # Reference to project secrets
-```
-
-### Result
-
-Результат записывается в Redis key `deploy:result:{request_id}` (TTL 1 hour):
-
-```python
-class AnsibleDeployResult(BaseResult):
-    """Результат Ansible деплоя."""
-
-    deployed_url: str | None = None
-    server_ip: str | None = None
-    port: int | None = None
-
-    # Debug info (only on failure)
-    stdout: str | None = None
-    stderr: str | None = None
-    exit_code: int | None = None
-```
-
----
-
-## Queue: `worker:commands`
-
-**Producer:** LangGraph Nodes
-**Consumer:** `worker-manager`
-**Purpose:** Управление Worker контейнерами
-
-### Commands
+**Queue (responses):** `worker:responses`  
+**Writer:** worker-manager  
+**Consumer:** langgraph
 
 ```python
 # shared/contracts/queues/worker.py
 
 class WorkerConfig(BaseModel):
-    """Конфигурация Worker."""
-
+    """Worker container configuration."""
     name: str
     agent: Literal["claude-code", "factory-droid"]
-    capabilities: list[str]        # ["git", "github", "python", "node"]
+    capabilities: list[str]        # ["git", "github", "python"]
     env_vars: dict[str, str]
     mount_session_volume: bool = False
 
 
 class CreateWorkerCommand(QueueMeta):
-    """Создать новый Worker."""
-
+    """Create new worker."""
     command: Literal["create"] = "create"
     request_id: str
     config: WorkerConfig
@@ -257,53 +279,26 @@ class CreateWorkerCommand(QueueMeta):
 
 
 class SendMessageCommand(QueueMeta):
-    """Отправить сообщение в Worker."""
-
+    """Send message to worker."""
     command: Literal["send_message"] = "send_message"
     request_id: str
-    worker_id: str                 # ID созданного worker
-    message: str
-    timeout: int = 1800            # seconds
-
-
-class SendFileCommand(QueueMeta):
-    """Отправить файл в Worker."""
-
-    command: Literal["send_file"] = "send_file"
-    request_id: str
     worker_id: str
-    path: str                      # Path inside container
-    content: str
+    message: str
+    timeout: int = 1800
 
 
 class DeleteWorkerCommand(QueueMeta):
-    """Удалить Worker."""
-
+    """Delete worker."""
     command: Literal["delete"] = "delete"
     request_id: str
     worker_id: str
 
 
-# Union type для всех команд
-WorkerCommand = CreateWorkerCommand | SendMessageCommand | SendFileCommand | DeleteWorkerCommand
-```
+WorkerCommand = CreateWorkerCommand | SendMessageCommand | DeleteWorkerCommand
 
----
-
-## Queue: `worker:responses`
-
-**Producer:** `worker-manager`
-**Consumer:** LangGraph Nodes (per-request consumer groups)
-**Purpose:** Ответы от Worker Manager
-
-### Responses
-
-```python
-# shared/contracts/queues/worker.py
 
 class CreateWorkerResponse(BaseModel):
-    """Ответ на create команду."""
-
+    """Response to create command."""
     request_id: str
     success: bool
     worker_id: str | None = None
@@ -311,17 +306,15 @@ class CreateWorkerResponse(BaseModel):
 
 
 class SendMessageResponse(BaseModel):
-    """Ответ на send_message команду."""
-
+    """Response to send_message command."""
     request_id: str
     success: bool
-    response: str | None = None    # CLI-Agent response
+    response: str | None = None
     error: str | None = None
 
 
 class DeleteWorkerResponse(BaseModel):
-    """Ответ на delete команду."""
-
+    """Response to delete command."""
     request_id: str
     success: bool
     error: str | None = None
@@ -332,33 +325,116 @@ WorkerResponse = CreateWorkerResponse | SendMessageResponse | DeleteWorkerRespon
 
 ---
 
-## Events: `callback_stream`
+## WorkerInputMessage / WorkerOutputMessage
 
-**Producer:** All Consumers
-**Consumer:** Telegram Bot
-**Purpose:** Real-time progress updates
+**Queue (input):** `worker:{id}:input`  
+**Writer:** telegram-bot  
+**Consumer:** worker-wrapper
 
-### Event Schema
+**Queue (output):** `worker:{id}:output`  
+**Writer:** worker-wrapper  
+**Consumer:** telegram-bot
+
+```python
+# shared/contracts/queues/worker_io.py
+
+class WorkerInputMessage(BaseModel):
+    """Message to worker agent."""
+    request_id: str
+    prompt: str
+    timeout: int = 1800
+
+
+class WorkerOutputMessage(BaseModel):
+    """Response from worker agent."""
+    request_id: str
+    status: Literal["success", "error", "timeout"]
+    response: str | None = None
+    error: str | None = None
+    duration_ms: int
+```
+
+---
+
+## ProvisionerMessage
+
+**Queue:** `provisioner:queue`  
+**Writer:** scheduler  
+**Consumer:** infra-service
+
+```python
+# shared/contracts/queues/provisioner.py
+
+class ProvisionerMessage(BaseMessage):
+    """Provision server."""
+    server_handle: str
+    force_reinstall: bool = False
+    is_recovery: bool = False
+
+
+class ProvisionerResult(BaseResult):
+    """Provisioning result."""
+    server_handle: str
+    server_ip: str | None = None
+    services_redeployed: int = 0
+    errors: list[str] | None = None
+```
+
+---
+
+## AnsibleDeployMessage
+
+**Queue:** `ansible:deploy:queue`  
+**Writer:** langgraph  
+**Consumer:** infra-service
+
+```python
+# shared/contracts/queues/ansible_deploy.py
+
+class AnsibleDeployMessage(BaseMessage):
+    """Run ansible deploy."""
+    job_type: Literal["deploy"] = "deploy"
+    project_id: str
+    project_name: str
+    repo_full_name: str
+    server_ip: str
+    port: int
+    modules: list[str] | None = None
+    github_token_ref: str
+    secrets_ref: str
+
+
+class AnsibleDeployResult(BaseResult):
+    """Ansible deploy result."""
+    deployed_url: str | None = None
+    server_ip: str | None = None
+    port: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    exit_code: int | None = None
+```
+
+---
+
+## ProgressEvent
+
+**Stream:** `task_progress:{task_id}`  
+**Writer:** All consumers  
+**Consumer:** telegram-bot
 
 ```python
 # shared/contracts/events.py
 
 class ProgressEvent(BaseModel):
-    """Событие прогресса выполнения Task."""
-
+    """Task progress notification."""
     type: Literal["started", "progress", "completed", "failed"]
     request_id: str
     task_id: str | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-    # Progress details
     message: str | None = None
-    progress_pct: int | None = None    # 0-100
+    progress_pct: int | None = None
     current_step: str | None = None
-
-    # Error details (for failed)
     error: str | None = None
-    error_type: str | None = None
 ```
 
 ---
@@ -366,88 +442,22 @@ class ProgressEvent(BaseModel):
 ## File Structure
 
 ```
-shared/
-├── contracts/
-│   ├── __init__.py              # Re-exports all contracts
-│   ├── base.py                  # QueueMeta, BaseMessage, BaseResult
-│   ├── events.py                # ProgressEvent
-│   └── queues/
-│       ├── __init__.py
-│       ├── engineering.py       # EngineeringMessage, EngineeringResult
-│       ├── deploy.py            # DeployMessage, DeployResult
-│       ├── scaffolder.py        # ScaffolderMessage
-│       ├── provisioner.py       # ProvisionerMessage, ProvisionerResult
-│       ├── ansible_deploy.py    # AnsibleDeployMessage, AnsibleDeployResult
-│       └── worker.py            # WorkerCommand, WorkerResponse
-```
-
----
-
-## Usage Example
-
-### Publishing
-
-```python
-from shared.contracts.queues.engineering import EngineeringMessage
-from shared.queue_client import publish_message
-
-message = EngineeringMessage(
-    task_id="task_abc123",
-    project_id="proj_xyz",
-    user_id=12345,
-    callback_stream="task_progress:task_abc123",
-)
-
-await publish_message("engineering:queue", message)
-```
-
-### Consuming
-
-```python
-from shared.contracts.queues.engineering import EngineeringMessage
-from shared.queue_client import consume_messages
-
-async for raw_message in consume_messages("engineering:queue", "engineering-consumer"):
-    message = EngineeringMessage.model_validate(raw_message)
-    await process_engineering_task(message)
-```
-
----
-
-## Migration Notes
-
-### Breaking Changes from Current Format
-
-1. **Wrapper removal**: Currently messages are wrapped as `{"data": json.dumps(...)}`. New format is direct JSON.
-
-2. **Field renames**:
-   - `agent_id` → `worker_id` (in worker commands)
-   - `cli-agent:*` → `worker:*` (queue names)
-
-3. **New required fields**:
-   - `version` — for schema versioning
-   - `correlation_id` — for distributed tracing
-   - `timestamp` — for debugging
-
-4. **Secrets by reference**:
-   - `github_token` → `github_token_ref`
-   - `secrets` → `secrets_ref`
-
-### Backwards Compatibility Strategy
-
-During migration, consumers should accept both formats:
-
-```python
-def parse_message(raw: dict) -> EngineeringMessage:
-    # Handle legacy wrapper format
-    if "data" in raw and isinstance(raw["data"], str):
-        raw = json.loads(raw["data"])
-
-    # Handle missing version (legacy)
-    if "version" not in raw:
-        raw["version"] = "1"
-        raw["correlation_id"] = raw.get("correlation_id", str(uuid.uuid4()))
-        raw["timestamp"] = raw.get("timestamp", datetime.utcnow().isoformat())
-
-    return EngineeringMessage.model_validate(raw)
+shared/contracts/
+├── __init__.py
+├── base.py                  # QueueMeta, BaseMessage, BaseResult
+├── events.py                # ProgressEvent
+├── dto/
+│   ├── __init__.py
+│   ├── project.py           # ProjectDTO, ProjectCreate
+│   ├── task.py              # TaskDTO, TaskCreate
+│   └── user.py              # UserDTO
+└── queues/
+    ├── __init__.py
+    ├── engineering.py
+    ├── deploy.py
+    ├── scaffolder.py
+    ├── provisioner.py
+    ├── ansible_deploy.py
+    ├── worker.py
+    └── worker_io.py
 ```

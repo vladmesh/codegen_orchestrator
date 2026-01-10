@@ -156,3 +156,126 @@ status = redis.hgetall(f"worker:status:{worker_id}")
 if status["status"] in ("STOPPED", "FAILED"):
     # Create new worker
 ```
+
+---
+
+## 6. Worker Container Specification
+
+### 6.1 Base Image (`worker-base`)
+
+The base image is **minimal** — it contains only what's needed for orchestration:
+
+```dockerfile
+# docker/Dockerfile.worker-base
+FROM python:3.12-slim
+
+# System deps for orchestrator-cli
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install orchestrator-cli (the ONLY pre-installed tool)
+COPY packages/orchestrator-cli /app/orchestrator-cli
+RUN pip install --no-cache-dir /app/orchestrator-cli
+
+# Wrapper that listens to Redis and manages agent lifecycle
+COPY packages/worker-wrapper /app/worker-wrapper
+RUN pip install --no-cache-dir /app/worker-wrapper
+
+# Entry point
+ENTRYPOINT ["worker-wrapper"]
+```
+
+**What's included:**
+- `python:3.12-slim` base
+- `orchestrator-cli` — agent-to-system interface
+- `worker-wrapper` — Redis listener + agent lifecycle manager
+- `curl` — for health checks
+
+**What's NOT included (added via capabilities):**
+- `git` — added by `GIT` capability
+- `copier` — added by `COPIER` capability
+- `gh` (GitHub CLI) — added by `GITHUB_CLI` capability
+- `docker` — added by `DOCKER` capability (dind mount)
+
+### 6.2 Capabilities & Layer Caching
+
+Capabilities are installed on top of base image. Docker layer caching ensures fast builds:
+
+```
+worker-base (200MB)
+    └── + GIT capability → worker:abc123 (210MB, cached)
+    └── + GIT + COPIER   → worker:def456 (215MB, cached)
+    └── + GIT + DOCKER   → worker:ghi789 (250MB, cached)
+```
+
+Each unique combination of capabilities produces a deterministic image hash:
+```python
+def compute_image_hash(capabilities: list[str]) -> str:
+    sorted_caps = sorted(set(capabilities))
+    return hashlib.sha256(",".join(sorted_caps).encode()).hexdigest()[:12]
+```
+
+### 6.3 Wrapper Architecture
+
+The **worker-wrapper** is a Python process that:
+
+1. **Startup**: Reads config from environment variables
+2. **Listen**: Subscribes to `worker:{id}:input` Redis stream
+3. **Process**: Forwards messages to CLI-Agent (Claude Code / Factory Droid)
+4. **Capture**: Collects agent output (stdout/stderr)
+5. **Publish**: Sends output to `worker:{id}:output` stream
+6. **Exit**: Reports completion/failure to `worker:lifecycle`
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   WORKER CONTAINER                      │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │              worker-wrapper (PID 1)             │   │
+│   │                                                 │   │
+│   │  - Reads WORKER_ID, API_URL, ALLOWED_COMMANDS   │   │
+│   │  - Subscribes to worker:{id}:input              │   │
+│   │  - Spawns CLI-Agent subprocess                  │   │
+│   │  - Captures output → worker:{id}:output         │   │
+│   └─────────────────────────────────────────────────┘   │
+│                           │                             │
+│                           ▼                             │
+│   ┌─────────────────────────────────────────────────┐   │
+│   │            CLI-Agent (subprocess)               │   │
+│   │                                                 │   │
+│   │  Claude Code / Factory Droid                    │   │
+│   │  Uses: orchestrator-cli, git, copier, etc.      │   │
+│   └─────────────────────────────────────────────────┘   │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 6.4 Environment Variables
+
+| Variable | Source | Purpose |
+|----------|--------|---------|
+| `WORKER_ID` | worker-manager | Unique container identifier |
+| `API_URL` | worker-manager | Base URL for orchestrator-cli |
+| `REDIS_URL` | worker-manager | Redis connection string |
+| `ALLOWED_COMMANDS` | worker-manager | Permission list for CLI |
+| `USER_ID` | worker-manager | Telegram user ID (for context) |
+| `ANTHROPIC_API_KEY` | secrets | Claude API key (if Claude agent) |
+| `OPENAI_API_KEY` | secrets | OpenAI key (if Factory agent) |
+
+### 6.5 Lifecycle States
+
+```
+STARTING → RUNNING → COMPLETED
+                  ↘ FAILED
+                  ↘ STOPPED (manual kill)
+```
+
+Wrapper reports state changes to `worker:lifecycle` stream:
+```json
+{"worker_id": "abc123", "event": "started", "timestamp": "..."}
+{"worker_id": "abc123", "event": "completed", "result": {...}}
+{"worker_id": "abc123", "event": "failed", "error": "..."}
+```

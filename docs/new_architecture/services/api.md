@@ -35,7 +35,41 @@ The `api` service is the **single source of truth** for persistent data. It prov
 | `/api/available_models` | AvailableModel | LLM model registry |
 | `/api/rag` | RAG | Vector search indices |
 
-## 4. What API Does NOT Do
+## 4. ORM Ownership
+
+The `api` service is the **ONLY** service that owns ORM models.
+
+### Location
+
+```
+api/src/models/
+├── base.py           # SQLAlchemy Base
+├── project.py        # Project model
+├── task.py           # Task model
+├── server.py         # Server model
+├── user.py           # User model
+└── ...               # All other DB entities
+```
+
+### Why API owns ORM?
+
+1. **Single Source of Truth**: Only one service can modify DB schema
+2. **No SQLAlchemy in other services**: LangGraph, Scheduler, etc. use REST API
+3. **Clean migrations**: Alembic migrations live in API, no conflicts
+4. **Testability**: Other services mock API calls, not DB
+
+### Other services use DTO
+
+```python
+# LangGraph, Scheduler, Telegram — use DTOs from shared/contracts/
+from shared.contracts import ProjectDTO, TaskDTO
+
+# API internally: ORM for DB, converts to DTO for responses
+from src.models import Project  # ORM
+from shared.contracts import ProjectDTO  # DTO for response
+```
+
+## 5. What API Does NOT Do
 
 Previously, `create_project` contained:
 - GitHub repo creation
@@ -54,7 +88,7 @@ CLI → POST /api/tasks (type=scaffolding) → creates Task row
 CLI → XADD scaffolder:queue → triggers Scaffolder
 ```
 
-## 5. Dependencies
+## 6. Dependencies
 
 **Allowed:**
 *   `fastapi`, `uvicorn`
@@ -69,7 +103,7 @@ CLI → XADD scaffolder:queue → triggers Scaffolder
 *   `copier`, `git` (no business logic)
 *   Any LangChain/LangGraph dependencies
 
-## 6. Architecture
+## 7. Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -92,7 +126,7 @@ CLI → XADD scaffolder:queue → triggers Scaffolder
                     └───────────────┘
 ```
 
-## 7. Refactoring Notes
+## 8. Refactoring Notes
 
 ### 7.1 Remove from `routers/projects.py`:
 - GitHub repo creation (`github_client.create_repo`)

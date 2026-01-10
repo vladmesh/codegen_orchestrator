@@ -41,24 +41,61 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                      SERVICES                           │
+│                       SERVICES                          │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  api                  FastAPI, source of truth (CRUD)   │
-│  telegram-bot         User interface + PO sessions      │
-│  langgraph            Orchestration (engineering/deploy)│
-│  scheduler            Background tasks (sync, health)   │
-│                                                         │
-├─────────────────────────────────────────────────────────┤
-│                      CONSUMERS                          │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  langgraph            engineering:queue, deploy:queue   │
-│  infra-service        provisioner:queue, ansible:deploy │
-│  scaffolder           scaffolder:queue                  │
-│  worker-manager       worker:commands                   │
+│  api              FastAPI, source of truth (CRUD)       │
+│  telegram-bot     User interface + PO sessions          │
+│  langgraph        Orchestration + queue consumers       │
+│  scheduler        Background tasks (sync, health)       │
+│  scaffolder       Project scaffolding (Copier)          │
+│  worker-manager   Worker container lifecycle            │
+│  infra-service    Ansible provisioning/deployment       │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
+```
+
+## Data Layer Architecture
+
+### ORM vs DTO
+
+| Layer | Location | Purpose |
+|-------|----------|---------|
+| **ORM Models** | `api/src/models/` only | SQLAlchemy models mapped to DB tables |
+| **DTO (Contracts)** | `shared/contracts/` | Pydantic schemas for data transfer |
+
+> **Rule:** ORM lives ONLY in `api` service. All other services use DTO.
+
+### Why?
+
+1. **Single Source of Truth**: Only API touches the database
+2. **Decoupling**: Other services don't need SQLAlchemy dependency
+3. **Clear Boundaries**: DB schema changes are isolated to API
+4. **Testability**: Services can be tested with mock DTOs, no DB needed
+
+### Data Flow
+
+```
+┌──────────────┐     DTO      ┌──────────────┐     ORM      ┌──────────────┐
+│  LangGraph   │ ──────────►  │     API      │ ──────────►  │  PostgreSQL  │
+│  Scheduler   │ ◄──────────  │   Service    │ ◄──────────  │              │
+│  Telegram    │     DTO      │              │     ORM      │              │
+└──────────────┘              └──────────────┘              └──────────────┘
+```
+
+### shared/ Structure (Target)
+
+```
+shared/
+├── contracts/        # Pydantic DTO schemas for queues/API
+│   ├── project.py      # ProjectDTO, ProjectCreate, ProjectResponse
+│   ├── task.py         # TaskDTO
+│   └── ...
+├── config.py         # BaseSettings
+├── logging_config.py # Structlog setup
+└── redis_client.py   # Redis wrapper
+
+# NO models/ here! ORM is in api/src/models/
 ```
 
 ## MVP: Product Owner Flow
