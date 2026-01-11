@@ -469,22 +469,32 @@ class ScaffolderResult(BaseResult):
 
 ---
 
-##### 3. Worker Communication (Two-Listener Pattern)
-The Orchestrator (LangGraph) listens to **two** streams to manage worker tasks:
+##### 3. Worker Communication (Single-Listener Pattern)
+The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 
 | Stream | Initiator | Consumer | Purpose |
 |--------|-----------|----------|---------|
-| `worker:developer:output` | worker-wrapper | LangGraph | Successful results or logical errors (compiler fails). |
-| `worker:lifecycle` | worker-manager, worker-wrapper | LangGraph | System events: Container Started/Failed/Deleted, Wrapper Ready. |
+| `worker:developer:output` | worker-wrapper, worker-manager | LangGraph | All results: success, logical errors, AND crash failures. |
+| `worker:lifecycle` | worker-wrapper | worker-manager | System events: Container Started/Ready/Failed. NOT consumed by LangGraph. |
 
-> **Why two streams?**
-> - `output` gives the task result (code, answer).
-> - `lifecycle` catches early crashes (Docker fail, OOM) where `output` might never be sent.
+> **Why Single-Listener?**
+> - Simpler architecture: LangGraph has one entry point for all outcomes
+> - `worker-manager` handles crashes and publishes failure results to `output`:
+>   ```python
+>   # When worker-manager detects crash via lifecycle event:
+>   DeveloperWorkerOutput(
+>       status="failed",
+>       error="Worker crashed: OOM killed",
+>       task_id=...,
+>       request_id=...
+>   )
+>   ```
+> - LangGraph treats all failures uniformly (retry logic in one place)
 
 | Queue | Initiator | Consumer | Purpose |
 |-------|-----------|----------|---------|
 | `worker:commands` | LangGraph, TelegramBot | worker-manager | Command to Create/Delete worker container. |
-| `worker:responses` | worker-manager | LangGraph | **Responses to Commands** (e.g. "Container created"). Distinct from Lifecycle events. |
+| `worker:responses` | worker-manager | LangGraph | **Responses to Commands** (e.g. "Container created"). Distinct from task results. |
 
 ## WorkerCommand / WorkerResponse
 

@@ -46,16 +46,60 @@ We model business domains as **Subgraphs**. External agents (like the Product Ow
 
 Since LangGraph nodes are Python functions, we cannot simple `await` for hours. We use the **"Interrupt & Resume"** pattern supported by LangGraph's checkpointer.
 *   **Interrupt & Resume**: Graph execution is paused while waiting for external events.
-*   **Two-Listener Pattern**: Nodes listen to BOTH task results (`worker:developer:output`) AND system health (`worker:lifecycle`) to handle crashes gracefully.
+*   **Single-Listener Pattern**: Nodes listen **only** to task results (`worker:developer:output`). System health events (`worker:lifecycle`) are handled by `worker-manager`.
+
+> **Crash Handling Architecture:**
+> 
+> LangGraph does NOT listen to `worker:lifecycle`. Instead:
+> 1. `worker-manager` is the **sole consumer** of `worker:lifecycle`
+> 2. When worker crashes (OOM, Docker fail, timeout), `worker-manager` detects this via lifecycle event
+> 3. `worker-manager` publishes a **failure result** to `worker:developer:output`:
+>    ```python
+>    DeveloperWorkerOutput(
+>        status="failed",
+>        error="Worker crashed: OOM killed",
+>        task_id=...,
+>        request_id=...
+>    )
+>    ```
+> 4. LangGraph receives this as a normal result and handles retry/failure logic
 
 1.  **Node Execution**: The node (e.g., `Developer`) prepares a payload.
 2.  **Publish**: It publishes the payload to Redis (`worker:commands`) with a `thread_id`.
 3.  **Interrupt**: The node returns a special `Command(interrupt=True)` or simply ends its turn, expecting an input from a specific key. **The execution suspends and state is saved to Postgres.** The Python process is freed.
 4.  **External Work**: The Worker/Service processes the task (taking minutes/hours).
 5.  **Resume (The Listener)**:
-    *   **Option A (Redis)**: A `ResponseListener` component (part of the runtime) listens to `worker:developer:output` AND `worker:lifecycle`. It correlates events by `task_id` or `worker_id` and resumes the graph.
-    *   **Option B (Event)**: For services like Scaffolder, listen to `scaffolder:results`.
+    *   **Worker Results (Redis)**: A `ResponseListener` component listens to `worker:developer:output`. It correlates events by `task_id` and resumes the graph.
+    *   **Service Results**: For services like Scaffolder, listen to `scaffolder:results`.
     *   **Action**: Call `graph.update_state(...)` and `graph.invoke(...)` to resume.
+
+### 3.3 Error Handling in LangGraph
+
+When LangGraph receives a `DeveloperWorkerOutput` with `status="failed"`:
+
+```python
+# Inside DeveloperNode or RouterNode
+def handle_worker_result(state: GraphState, result: DeveloperWorkerOutput):
+    if result.status == "failed":
+        # Check retry policy
+        if state.retry_count < MAX_RETRIES and is_retryable(result.error):
+            return Command(
+                goto="create_developer_worker",
+                update={"retry_count": state.retry_count + 1}
+            )
+        else:
+            # Fatal failure - notify user, mark task failed
+            return Command(
+                goto="fail_task",
+                update={"error": result.error}
+            )
+    # ... handle success
+```
+
+**Retryable errors:**
+- `"Worker crashed: OOM killed"` → Retry with resource adjustment
+- `"Worker timeout"` → Retry with extended timeout
+- `"Docker unavailable"` → Not retryable (infrastructure issue)
 
 ## 4. Concurrency & Scalability
 

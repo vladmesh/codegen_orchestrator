@@ -164,7 +164,53 @@ if status["status"] in ("STOPPED", "FAILED"):
     # Create new worker
 ```
 
----
+### 5.4 Crash Forwarding (Single-Listener Architecture)
+
+When worker-manager detects a worker failure (via Docker Events or lifecycle stream), it publishes a **failure result** to the worker's output stream. This allows LangGraph to use a single listener for all outcomes.
+
+**Flow:**
+1. Worker crashes (OOM, SIGKILL, timeout)
+2. Docker Event API delivers `die` event with exit code
+3. Worker-manager looks up `task_id` and `request_id` from `worker:status:{id}` metadata
+4. Worker-manager publishes to `worker:developer:output`:
+
+```python
+# worker_manager/crash_handler.py
+
+async def handle_worker_crash(
+    worker_id: str, 
+    exit_code: int, 
+    error_reason: str
+):
+    # Get task context from worker metadata
+    metadata = await redis.hgetall(f"worker:status:{worker_id}")
+    
+    # Publish failure to output stream (same as normal result)
+    failure_result = DeveloperWorkerOutput(
+        request_id=metadata.get("request_id"),
+        task_id=metadata.get("task_id"),
+        status="failed",
+        error=f"Worker crashed: {error_reason}",
+        duration_ms=int((datetime.now() - metadata["started_at"]).total_seconds() * 1000)
+    )
+    
+    await redis.xadd("worker:developer:output", failure_result.model_dump())
+    
+    # Update worker status
+    await redis.hset(f"worker:status:{worker_id}", mapping={
+        "status": "FAILED",
+        "error": error_reason,
+        "exit_code": exit_code
+    })
+```
+
+**Error Classification:**
+| Exit Code | Reason | Retryable? |
+|-----------|--------|------------|
+| 137 | OOM killed | Yes (with less memory) |
+| 143 | SIGTERM (timeout) | Yes (with more time) |
+| 1 | General error | Depends on error message |
+| -1 | Docker unavailable | No (infrastructure) |
 
 ## 6. Resource Management (Pause/Resume)
 

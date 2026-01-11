@@ -94,9 +94,10 @@ services/<service-name>/
 4.  **Scaffolder**: Генерация кода.
     *   Тестируется с MockCopier/Git.
 7.  **LangGraph Service**: Мозговой центр.
-    *   *Architecture*: Реализация паттерна "Two-Listener".
-    *   *Feature*: `ResponseListener` слушающий `worker:developer:output` И `worker:lifecycle`.
+    *   *Architecture*: Реализация паттерна "Single-Listener" (только `worker:developer:output`).
+    *   *Feature*: `ResponseListener` слушающий `worker:developer:output` (включая failure-события от worker-manager).
     *   *Feature*: Механизм восстановления состояния (Interrupt & Resume) через Postgres.
+    *   *Feature*: Retry-логика при получении `status="failed"` от воркера.
 
 ### Phase 3: Access & UI
 *Точки входа.*

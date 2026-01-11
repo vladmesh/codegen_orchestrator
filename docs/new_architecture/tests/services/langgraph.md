@@ -59,7 +59,7 @@ class TestHarness:
         # 3. Subscribe to:
         #    - scaffolder:queue
         #    - worker:commands
-        #    - worker:lifecycle (subscribe to inputs to simulate events)
+        #    - (worker:lifecycle is NOT consumed by LangGraph - handled by worker-manager)
         #    - worker:developer:output (subscribe to inputs to simulate results)
         #    - ansible:deploy:queue
         #    - deploy:results
@@ -85,8 +85,8 @@ class TestHarness:
         """Waits for worker:commands (create)"""
         pass
     
-    async def send_worker_started(self, worker_id: str):
-        """Publishes STARTED/READY to worker:lifecycle"""
+    async def send_worker_created(self, worker_id: str):
+        """Sends CreateWorkerResponse to worker:responses"""
         pass
 
     # ... other helper methods
@@ -168,7 +168,8 @@ This scenario explicitly kills the service mid-flight to ensure state recovery.
 
 1.  **Trigger**: Engineering Flow.
 2.  **Worker Failure**:
-    *   Harness sends `WorkerLifecycleEvent(event="failed")` or `WorkerResponse(status="failed")`.
+    *   Harness sends `DeveloperWorkerOutput(status="failed", error="Worker crashed: OOM killed")` to `worker:developer:output`.
+    *   This simulates worker-manager forwarding a crash failure.
 3.  **Retry Logic**:
     *   *Assert*: LangGraph attempts to create worker again (if retry policy exists) OR fails the task.
     *   *Assert*: Mock API receives `PATCH /api/tasks/{task_id}` with `status="failed"`.
