@@ -11,15 +11,59 @@
 
 ---
 
-## Queue Overview
+## Queue Registry
+
+> **Complete list of all Redis Streams / Queues.**
+
+### Engineering Flows
 
 | Queue | DTO | Initiator | Consumer | Purpose |
 |-------|-----|-----------|----------|---------|
 | `engineering:queue` | EngineeringMessage | PO-Worker | langgraph | Start development task |
-| `deploy:results` | AnsibleDeployResult | infra-service | langgraph | Deploy result (Shared) |
+| `deploy:queue` | DeployMessage | PO-Worker | langgraph | Start deploy task |
 | `scaffolder:queue` | ScaffolderMessage | langgraph | scaffolder | Scaffold project |
 | `scaffolder:results` | ScaffolderResult | scaffolder | langgraph | Scaffolder completion |
-| `deploy:queue` | DeployMessage | PO-Worker | langgraph | Start deploy task |
+| `deploy:results` | AnsibleDeployResult | infra-service | langgraph | Deploy result |
+
+---
+
+### Worker Management
+
+| Queue | DTO | Initiator | Consumer | Purpose |
+|-------|-----|-----------|----------|---------|
+| `worker:commands` | WorkerCommand | langgraph, telegram-bot | worker-manager | Create/Delete worker containers |
+| `worker:responses:po` | WorkerResponse | worker-manager | telegram-bot | PO worker command responses |
+| `worker:responses:developer` | WorkerResponse | worker-manager | langgraph | Developer worker command responses |
+| `worker:lifecycle` | WorkerLifecycleEvent | worker-wrapper | worker-manager | Container lifecycle events |
+
+---
+
+### Worker I/O
+
+| Queue | DTO | Initiator | Consumer | Purpose |
+|-------|-----|-----------|----------|---------|
+| `worker:po:{worker_id}:input` | POWorkerInput | telegram-bot | worker-wrapper (PO) | User messages to PO |
+| `worker:po:{worker_id}:output` | POWorkerOutput | worker-wrapper (PO) | telegram-bot | PO responses to user |
+| `worker:developer:input` | DeveloperWorkerInput | langgraph | worker-wrapper (Dev) | Tasks for Developer |
+| `worker:developer:output` | DeveloperWorkerOutput | worker-wrapper (Dev), worker-manager | langgraph | Developer results (incl. crash reports) |
+
+---
+
+### Infrastructure
+
+| Queue | DTO | Initiator | Consumer | Purpose |
+|-------|-----|-----------|----------|---------|
+| `provisioner:queue` | ProvisionerMessage | scheduler | infra-service | Provision server |
+| `provisioner:results` | ProvisionerResult | infra-service | scheduler, telegram-bot | Provisioning result |
+| `ansible:deploy:queue` | AnsibleDeployMessage | langgraph | infra-service | Run Ansible deploy |
+
+---
+
+### Events & Progress
+
+| Queue | DTO | Initiator | Consumer | Purpose |
+|-------|-----|-----------|----------|---------|
+| `task_progress:{task_id}` | ProgressEvent | All services | telegram-bot | Task progress notifications |
 
 ### Transport Layer Note
 
@@ -333,6 +377,51 @@ class AgentConfigDTO(BaseModel):
     model: str
     system_prompt: str
     is_active: bool = True
+```
+
+## AllocationDTO
+
+```python
+# shared/contracts/dto/allocation.py
+
+from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+
+class AllocationDTO(BaseModel):
+    """Port allocation on a server."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: int
+    server_id: int
+    project_id: str
+    service_name: str
+    port: int
+    allocated_at: datetime
+```
+
+## TaskExecutionDTO
+
+```python
+# shared/contracts/dto/task_execution.py
+
+from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+from typing import Literal, Any
+
+class TaskExecutionDTO(BaseModel):
+    """Worker execution record."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: str                                    # request_id from worker
+    task_id: str | None = None                 # Optional link to high-level task
+    worker_id: str
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    exit_code: int
+    status: Literal["success", "failure", "in_progress", "error"]
+    result_data: dict[str, Any] | None = None  # AgentVerdict or error details
+    created_at: datetime
 ```
 
 ---

@@ -11,46 +11,14 @@
 | Severity | Count | Description |
 |----------|-------|-------------|
 | Critical | 0 | ✅ Все критические проблемы решены |
-| Medium | 7 | Несогласованности в контрактах |
+| Medium | 5 | Несогласованности в контрактах |
 | Low | 12 | Недостаточно проработано |
 
 ---
 
 ## Medium Issues (Contract Inconsistencies)
 
-### 1. CONTRACTS.md Queue Overview incomplete
-
-**File:** `CONTRACTS.md`
-
-**Problem:** Queue Overview table contains only 3 queues:
-```
-engineering:queue, deploy:results, deploy:queue
-```
-
-But document describes 15+ queues below. Table is misleading.
-
-**Resolution:**
-- [ ] Create complete Queue Registry table with ALL queues
-
----
-
-### 2. Missing DTOs
-
-**File:** `CONTRACTS.md`
-
-DTOs mentioned but not defined:
-- `AllocationDTO` (mentioned in API description)
-- `TaskExecutionDTO` (mentioned in API description)
-- `ScaffolderResult` (needed for error handling)
-- `TesterInput/Output` (even if MVP stub, contract needed)
-
-**Resolution:**
-- [ ] Add missing DTO definitions
-- [ ] Or explicitly mark as "Post-MVP" with stub contracts
-
----
-
-### 3. File structure diagram outdated
+### 1. File structure diagram outdated
 
 **File:** `CONTRACTS.md`
 
@@ -67,13 +35,15 @@ Missing files defined earlier in same document:
 - `incident.py`
 - `service_deployment.py`
 - `agent_config.py`
+- `allocation.py`
+- `task_execution.py`
 
 **Resolution:**
 - [ ] Update file structure to include all DTOs
 
 ---
 
-### 4. GitHub Client usage in API contradicts "thin API" principle
+### 2. GitHub Client usage in API contradicts "thin API" principle
 
 **File:** `shared/github_client.md`
 
@@ -94,7 +64,7 @@ But `api.md` states API should be "thin CRUD layer" with NO external API calls!
 
 ---
 
-### 5. Engineering vs Developer terminology inconsistent
+### 3. Engineering vs Developer terminology inconsistent
 
 **Files:** Multiple
 
@@ -113,7 +83,7 @@ But `api.md` states API should be "thin CRUD layer" with NO external API calls!
 
 ---
 
-### 6. Consumer vs Service naming confusion
+### 4. Consumer vs Service naming confusion
 
 **File:** `GLOSSARY.md`
 
@@ -128,7 +98,7 @@ But there's no `engineering-consumer` service. It's part of `langgraph` service.
 
 ---
 
-### 7. WorkerLifecycleEvent states inconsistent
+### 5. WorkerLifecycleEvent states inconsistent
 
 **Files:** `worker_wrapper.md`, `CONTRACTS.md`
 
@@ -394,8 +364,8 @@ Open question:
 
 ### Before Implementation
 
-1. **Create complete Queue Registry** - single table with ALL queues, producers, consumers, DTOs
-2. **Resolve Critical Issues** - items 1-4 must be fixed before coding
+1. ~~**Create complete Queue Registry**~~ ✅ Done - single table with ALL queues, producers, consumers, DTOs
+2. ~~**Add missing DTOs**~~ ✅ Done - AllocationDTO, TaskExecutionDTO added
 3. **Add sequence diagrams for error flows** - not just happy path
 4. **Specify retry policy** - globally and per-operation
 5. **Describe secrets architecture** - vault choice, resolution, rotation
