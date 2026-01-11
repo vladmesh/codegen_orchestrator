@@ -224,7 +224,7 @@ Telegram Bot                    Worker-Manager                  Worker-Wrapper
 |-------|----------|
 | Agent timeout | Kill subprocess, return `status=timeout` |
 | Agent crash (non-zero exit) | Return `status=error` with stderr |
-| Redis disconnect | Retry with backoff, exit after 5 failures |
+| Redis disconnect | Retry with backoff, exit after 5 failures. *Note: Docker Pause freezes the process, so TCP connection might break during long pause. Wrapper MUST handle reconnection on unpause.* |
 | SIGTERM received | Finish current request, cleanup, exit |
 
 ## 8. Dependencies

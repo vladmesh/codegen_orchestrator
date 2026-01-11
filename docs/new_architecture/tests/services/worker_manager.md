@@ -101,6 +101,96 @@ Garbage Collector в тестовом режиме настраивается н
 
 ---
 
+#### Scenario D: Configuration & File System Verification (Mock Docker + Exec)
+Проверяем корректность инициализации файловой системы и инструментов внутри контейнера.
+
+1.  **Variations Setup**:
+    *   Case 1: `agent_type=CLAUDE`, `capabilities=["GIT"]`
+    *   Case 2: `agent_type=FACTORY`, `capabilities=[]`
+2.  **Action**: `create_worker(...)`.
+3.  **Assert (Container Inspection)**:
+    *   Через `docker_client.containers.get(id).exec_run("ls -la")` или `inspect`:
+    *   **Case 1**:
+        *   Файл `/app/CLAUDE.md` существует.
+        *   Бинарник `claude` доступен в PATH.
+        *   Бинарник `git` доступен.
+        *   `orchestrator-cli` доступен.
+    *   **Case 2**:
+        *   Файл `/app/AGENTS.md` существует.
+        *   Бинарник `factory` доступен.
+        *   Бинарник `git` **отсутствует**.
+4.  **Assert (Env Vars)**:
+    *   `ORCHESTRATOR_URL` прокинут корректно.
+    *   `ALLOWED_COMMANDS` соответствует переданным.
+
+#### Scenario E: Orchestrator Integration & Permissions (Mock LLM)
+Проверяем цепочку: `Worker Wrapped -> Agent -> Orchestrator CLI -> System`.
+
+1.  **Setup**:
+    *   Запускаем `worker-manager` и `mock-anthropic-server`.
+    *   Настраиваем `ALLOWED_COMMANDS=["project.get", "engineering.*"]`.
+2.  **Action (Allowed Call)**:
+    *   Отправляем в Input Queue промпт: *"Get project info"*.
+    *   **Mock LLM** настроен отвечать вызовом тула: `orchestrator project get`.
+    *   **Assert**: В Output Queue пришел успешный ответ (т.к. команда разрешена).
+3.  **Action (Blocked Call)**:
+    *   Отправляем промпт: *"Delete server 1"*.
+    *   **Mock LLM** отвечает вызовом: `orchestrator infra delete 1`.
+    *   **Assert**: В Output Queue ошибка прав доступа (Standard CLI Permission Error).
+    *   **Assert**: Реального вызова в API не было.
+
+#### Scenario F: Status Lifecycle (Happy Path & Crash)
+Проверяем корректность переходов состояний в Redis при разных жизненных ситуациях.
+
+1.  **STARTING**: Отправляем `create`.
+    *   **Assert**: Redis `worker:status:{id}` == `STARTING` (сразу после приема команды).
+2.  **RUNNING**: Ждем (polling 1-2 sec).
+    *   **Assert**: Redis `worker:status:{id}` == `RUNNING`.
+3.  **FAILED (Simulated Crash)**:
+    *   **Action**: `docker_client.containers.get(id).kill()`.
+    *   **Assert**: Redis `worker:status:{id}` переходит в `FAILED` (или `STOPPED` с exit_code!=0).
+    *   **Assert**: Поле `error` в Redis заполнено.
+
+#### Scenario G: Graceful Deletion (Manual Stop)
+Проверяем команду явного удаления.
+
+1.  **Setup**: Запускаем воркера, ждем `RUNNING`.
+2.  **Action**: Отправляем `delete` в `worker:commands`.
+3.  **Assert (Container)**:
+    *   `docker ps` не показывает контейнер.
+    *   `docker inspect` (если еще есть) показывает `Status=exited`.
+4.  **Assert (Redis Status)**:
+    *   Redis `worker:status:{id}` == `STOPPED`.
+    *   Ключ **не удален**, чтобы клиенты (Telegram Bot) могли узнать финальный статус.
+
+#### Scenario H: Idle Pause (Safety Check)
+Проверяем механизм постановки на паузу при бездействии. Важно: `IDLE_TIMEOUT` должен быть строго больше `TASK_TIMEOUT`.
+
+1.  **Safety Check**:
+    *   **Action**: Проверяем конфиг `worker-manager`.
+    *   **Assert**: `IDLE_TIMEOUT_SECONDS` > `TASK_EXECUTION_TIMEOUT_SECONDS`. (Например, 35 мин > 30 мин). Это гарантирует, что мы не уснем посередине долгой задачи.
+2.  **Idle Detection**:
+    *   **Setup**: Worker `RUNNING`.
+    *   **Action**: Форсированно обновляем в Redis `last_activity` на `NOW - IDLE_TIMEOUT - 1s`.
+    *   **Action**: Запускаем таску мониторинга `pause_idle_workers()`.
+3.  **Assert**:
+    *   `docker_client.containers.get(id).status` == `paused`.
+    *   Redis `worker:status:{id}` == `PAUSED`.
+
+#### Scenario I: Auto-Wakeup
+Проверяем, что воркер просыпается при поступлении новых сообщений.
+
+1.  **Setup**: Worker `PAUSED`.
+2.  **Action**: Публикуем сообщение в `worker:{type}:{id}:input`.
+3.  **Action**: Запускаем таску мониторинга `wakeup_workers()` (или ждем loop).
+4.  **Assert (Wakeup)**:
+    *   `docker_client.containers.get(id).status` == `running`.
+    *   Redis `worker:status:{id}` == `RUNNING`.
+5.  **Assert (Processing)**:
+    *   Воркер успешно вычитал сообщение и опубликовал ответ в `output` (полный цикл).
+
+---
+
 ## 4. Infrastructure Requirements
 
 ### 4.1 Pytest Fixtures

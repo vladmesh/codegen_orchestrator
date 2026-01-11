@@ -166,7 +166,30 @@ if status["status"] in ("STOPPED", "FAILED"):
 
 ---
 
-## 6. Worker Container Specification
+## 6. Resource Management (Pause/Resume)
+
+To prevent resource exhaustion, the Manager implements an **Idle Pause** mechanism.
+
+### 6.1 Pause Logic (`pause_idle_workers`)
+A background task runs periodically (e.g., every 5 minutes):
+1.  Scans all `RUNNING` workers.
+2.  Checks `last_activity` in `worker:status:{id}`.
+3.  If `now() - last_activity > IDLE_TIMEOUT_SECONDS`:
+    *   Executes `docker pause {container_id}`.
+    *   Updates Redis status to `PAUSED`.
+    *   **Constraint**: `IDLE_TIMEOUT` MUST be > `TASK_EXECUTION_TIMEOUT` to avoid pausing active tasks.
+
+### 6.2 Wakeup Logic (`wakeup_workers`)
+A background task monitors Input Queues for `PAUSED` workers:
+1.  Scans input streams for all `PAUSED` workers.
+2.  If `xlen(stream) > 0`:
+    *   Executes `docker unpause {container_id}`.
+    *   Updates Redis status to `RUNNING`.
+3.  Wrapper inside the container resumes `XREAD` immediately (as process was frozen).
+
+---
+
+## 7. Worker Container Specification
 
 ### 6.1 Base Image (`worker-base`)
 
