@@ -383,3 +383,78 @@ One GitHub App installed on both organizations:
 | `GITHUB_APP_ID` | `.env`, CI secrets | Same for all envs |
 | `GITHUB_APP_PRIVATE_KEY` | File mount, CI secret | Same key, different mount paths |
 | `GITHUB_ORG` | `.env`, CI secrets | `project-factory` or `project-factory-test` |
+
+## 8. Rate Limiting
+
+### 8.1 GitHub API Limits
+
+| Limit Type | Value | Scope |
+|------------|-------|-------|
+| **REST API** | 5000 requests/hour | Per installation |
+| **Search API** | 30 requests/min | Per installation |
+| **GraphQL** | 5000 points/hour | Per installation |
+
+### 8.2 Client Implementation
+
+```python
+# shared/clients/github.py
+
+from asyncio import Semaphore
+from datetime import datetime, timedelta
+
+class GitHubAppClient:
+    """GitHub App client with built-in rate limiting."""
+
+    # Rate limiting (Token Bucket)
+    _semaphore: Semaphore = Semaphore(100)  # Max concurrent requests
+    _request_count: int = 0
+    _window_start: datetime = datetime.utcnow()
+    _max_requests_per_hour: int = 4500  # Leave 500 buffer
+
+    async def _check_rate_limit(self) -> None:
+        """Check and enforce rate limits before API call."""
+        now = datetime.utcnow()
+        
+        # Reset window if hour passed
+        if now - self._window_start > timedelta(hours=1):
+            self._request_count = 0
+            self._window_start = now
+        
+        # Check limit
+        if self._request_count >= self._max_requests_per_hour:
+            wait_seconds = 3600 - (now - self._window_start).seconds
+            raise RateLimitExceeded(
+                f"GitHub API rate limit reached. Retry in {wait_seconds}s"
+            )
+        
+        self._request_count += 1
+
+    async def _make_request(self, method: str, url: str, **kwargs) -> dict:
+        """Make rate-limited API request."""
+        async with self._semaphore:
+            await self._check_rate_limit()
+            # ... actual request
+```
+
+### 8.3 Monitoring
+
+| Metric | Alert Threshold | Action |
+|--------|-----------------|--------|
+| `github_api_requests_total` | > 4000/hour | Warning to Telegram |
+| `github_api_requests_total` | > 4500/hour | Block new operations |
+| `github_api_rate_limit_remaining` | < 500 | Warning |
+| `github_api_errors_total{status=403}` | > 0 | Rate limit hit, pause |
+
+### 8.4 Post-MVP: Centralized Rate Limiter
+
+For horizontal scaling, migrate to Redis-based sliding window:
+
+```python
+# Post-MVP: Redis rate limiting
+class RedisRateLimiter:
+    async def acquire(self, key: str = "github") -> bool:
+        current = await redis.incr(f"ratelimit:{key}")
+        if current == 1:
+            await redis.expire(f"ratelimit:{key}", 3600)
+        return current <= 4500
+```

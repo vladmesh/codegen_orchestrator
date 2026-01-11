@@ -97,6 +97,27 @@
 > Implementation: A simple LangGraph node that always returns `{"passed": True}`.  
 > Post-MVP: Will delegate to a Tester-Worker with code analysis capabilities.
 
+### Rate Limiting Policy
+
+> [!IMPORTANT]
+> External APIs have hard limits. Exceeding them blocks all operations.
+
+| Resource | Limit | Strategy |
+|----------|-------|----------|
+| **GitHub API** | 5000 req/hour | Token Bucket in `GitHubAppClient`, buffer 500 |
+| **LLM API (Claude)** | Per-plan limits | Token Bucket per service, cost alerts |
+| **External APIs** | Varies | Per-client configuration |
+
+**Design Principles:**
+
+1. **Fail-fast**: Raise `RateLimitExceeded` immediately, don't queue silently
+2. **Buffer zone**: Use 90% of limit, leave 10% for emergencies
+3. **Monitoring**: Expose metrics for all rate-limited resources
+4. **Per-service**: Each client manages its own limits (MVP)
+5. **Post-MVP**: Centralized Redis-based limiter for horizontal scaling
+
+See [github_client.md](./shared/github_client.md#8-rate-limiting) for implementation details.
+
 ---
 
 ## Flow Diagrams

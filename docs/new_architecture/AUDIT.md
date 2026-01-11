@@ -18,8 +18,6 @@
 
 ## Medium Issues (Contract Inconsistencies)
 
-## Medium Issues (Contract Inconsistencies)
-
 ### 1. Engineering vs Developer terminology inconsistent
 
 **Files:** Multiple
@@ -231,22 +229,7 @@ Not mentioned:
 
 ---
 
-### 18. Rate limiting absent
-
-**Scope:** Overall architecture
-
-Critical for:
-- LLM API calls (expensive!)
-- GitHub API (5000 req/hour limit)
-- External API calls
-
-**Resolution:**
-- [ ] Add rate limiting strategy
-- [ ] Define limits per resource
-
----
-
-### 19. Consumer Groups and DLQ not defined
+### 18. Consumer Groups and DLQ not defined
 
 **Scope:** Redis Streams usage
 
@@ -263,7 +246,7 @@ Not described:
 
 ## Testing Gaps
 
-### 20. SSH testing unresolved
+### 19. SSH testing unresolved
 
 **File:** `TESTING_STRATEGY.md`
 
@@ -302,7 +285,7 @@ Open question:
 
 10. **Create OBSERVABILITY.md** - metrics, tracing, alerting
 11. **Document HA strategy** - Redis cluster, PG replication
-12. **Add rate limiting** - LLM, GitHub API
+12. ~~**Add rate limiting**~~ ✅ Done - documented in CONTRACTS.md and github_client.md
 
 ---
 
@@ -310,6 +293,7 @@ Open question:
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-11 | Claude | Resolved: Rate limiting (Issue #18) - added to CONTRACTS.md and github_client.md |
 | 2026-01-11 | Claude | Resolved: GitHub usage in API (Issue #1) |
 | 2026-01-11 | Claude | Resolved: File structure diagram (Issue #1) |
 | 2026-01-11 | Claude | Resolved: Docker API mocking (Variant D) |
