@@ -73,8 +73,8 @@ Buttons/commands that bypass PO to save tokens:
   5. Store `session:{user_id} = worker_id` (TTL: 24h)
 
 ### 4.4 Message Relay
-- User → Bot: `XADD worker:{id}:input`
-- PO → User: `XREAD worker:{id}:output` → send to Telegram
+- User → Bot: `XADD worker:po:{user_id}:input`
+- PO → User: `XREAD worker:po:{user_id}:output` → send to Telegram
 
 ## 5. Architecture
 

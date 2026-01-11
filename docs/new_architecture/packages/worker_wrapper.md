@@ -14,10 +14,10 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 
 ## 2. Responsibilities
 
-1. **Message Reception**: Listen to `worker:{id}:input` Redis stream.
-2. **Agent Invocation**: Call CLI-Agent in headless mode with prompt + session.
+1. **Listen**: Subscribes to `worker:{type}:{id}:input` Redis stream.
+2. **Process**: Forwards messages to CLI-Agent (Claude Code / Factory Droid) with prompt + session.
 3. **Output Capture**: Collect agent response (stdout).
-4. **Output Publishing**: Send response to `worker:{id}:output` stream.
+4. **Publish**: Sends output to `worker:{type}:{id}:output` stream.
 5. **Lifecycle Reporting**: Publish events to `worker:lifecycle`.
 6. **Graceful Shutdown**: Handle SIGTERM, cleanup, report exit.
 
@@ -31,7 +31,7 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 │   ┌─────────────────────────────────────────────────────┐   │
 │   │                 worker-wrapper (PID 1)              │   │
 │   │                                                     │   │
-│   │  1. XREAD worker:{id}:input (blocking)              │   │
+│   │  1. XREAD worker:{type}:{id}:input (blocking)        │   │
 │   │            │                                        │   │
 │   │            ▼                                        │   │
 │   │  2. Parse message: { prompt, timeout, ... }         │   │
@@ -44,7 +44,7 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 │   │  4. Wait for completion (with timeout)              │   │
 │   │            │                                        │   │
 │   │            ▼                                        │   │
-│   │  5. XADD worker:{id}:output { response, status }    │   │
+│   │  5. XADD worker:{type}:{id}:output { response }      │   │
 │   │            │                                        │   │
 │   │            ▼                                        │   │
 │   │  6. Loop back to step 1                             │   │
@@ -55,7 +55,7 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 
 ## 4. Message Formats
 
-### 4.1 Input Message (`worker:{id}:input`)
+### 4.1 Input Message (`worker:{type}:{id}:input`)
 
 ```python
 class WorkerInputMessage(BaseModel):
@@ -67,7 +67,7 @@ class WorkerInputMessage(BaseModel):
     session_continue: bool = True  # Continue existing session
 ```
 
-### 4.2 Output Message (`worker:{id}:output`)
+### 4.2 Output Message (`worker:{type}:{id}:output`)
 
 ```python
 class WorkerOutputMessage(BaseModel):
@@ -242,6 +242,7 @@ ENTRYPOINT ["python", "-m", "worker_wrapper"]
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `WORKER_ID` | Yes | Container identifier |
+| `WORKER_TYPE` | Yes | Worker type: `po` or `developer` |
 | `REDIS_URL` | Yes | Redis connection string |
 | `AGENT_TYPE` | Yes | `claude` or `factory` |
 | `SESSION_ID` | Yes | Session ID from Telegram Bot |
@@ -260,12 +261,13 @@ from redis.asyncio import Redis
 
 async def main():
     worker_id = os.environ["WORKER_ID"]
+    worker_type = os.environ["WORKER_TYPE"]  # "po" or "developer"
     redis = Redis.from_url(os.environ["REDIS_URL"])
     agent_type = os.environ.get("AGENT_TYPE", "claude")
     session_id = os.environ.get("SESSION_ID", str(uuid.uuid4()))
     
-    input_stream = f"worker:{worker_id}:input"
-    output_stream = f"worker:{worker_id}:output"
+    input_stream = f"worker:{worker_type}:{worker_id}:input"
+    output_stream = f"worker:{worker_type}:{worker_id}:output"
     
     # Report ready
     await publish_lifecycle(redis, worker_id, "ready")

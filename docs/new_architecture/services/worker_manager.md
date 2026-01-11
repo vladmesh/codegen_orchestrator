@@ -64,12 +64,12 @@ Inside the container, there is a **Python Wrapper** (part of `worker-base`) that
 
 ### 3.1 Communication Flow (Data Plane)
 
-1.  **Input Queue** (`worker:{id}:input`):
+1.  **Input Queue** (`worker:{type}:{id}:input`):
     *   The Wrapper listens to this Redis Stream.
     *   Ideally, the User/PO pushes commands here directly.
     *   For "Headless" mode: The `worker-manager` *can* push the initial prompt here after spawning, but subsequent interaction happens directly.
 
-2.  **Output Queue** (`worker:{id}:output`):
+2.  **Output Queue** (`worker:{type}:{id}:output`):
     *   The Wrapper captures `stdout`, `stderr`, and any explicit tool outputs.
     *   Pushes structured events to Redis:
         ```json
@@ -81,7 +81,7 @@ Inside the container, there is a **Python Wrapper** (part of `worker-base`) that
         ```
 
 3.  **Headless Execution**:
-    *   If a Worker is spawned for a single task, the Spawner can optionally inject the initial prompt into `worker:{id}:input` immediately after creating the container.
+    *   If a Worker is spawned for a single task, the Spawner can optionally inject the initial prompt into `worker:{type}:{id}:input` immediately after creating the container.
     *   The Worker runs, processes the input, and can signal completion via a special output event.
 
 ## 4. Open Decisions
