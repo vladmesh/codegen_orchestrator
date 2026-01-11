@@ -16,7 +16,7 @@
 **Примеры:**
 - `engineering-consumer` — обрабатывает engineering:queue
 - `deploy-consumer` — обрабатывает deploy:queue
-- `infra-consumer` — обрабатывает provisioner:queue и ansible:deploy:queue
+- `infra-service` — обрабатывает provisioner:queue и ansible:deploy:queue
 - `scaffolder` — обрабатывает scaffolder:queue
 
 ### Worker (Воркер)

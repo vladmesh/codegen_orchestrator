@@ -97,4 +97,3 @@ Nodes within the graphs primarily publish to:
 
 *   `worker:commands` (Target: `worker-manager`)
 *   `ansible:deploy:queue` (Target: `infra-service`)
-*   `provisioner:queue` (Target: `infra-service`)

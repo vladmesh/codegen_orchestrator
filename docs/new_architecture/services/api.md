@@ -84,8 +84,8 @@ Previously, `create_project` contained:
 The **caller** (CLI, Telegram Bot, or another service) is responsible for triggering workflows:
 ```
 CLI → POST /api/projects → creates row → returns Project
-CLI → POST /api/tasks (type=scaffolding) → creates Task row
-CLI → XADD scaffolder:queue → triggers Scaffolder
+CLI → POST /api/tasks (type=engineering) → creates Task row
+CLI → XADD engineering:queue → triggers Engineering Flow
 ```
 
 ## 6. Dependencies
@@ -137,5 +137,5 @@ CLI → XADD scaffolder:queue → triggers Scaffolder
 - `_resolve_user()` duplicated in every router → move to `dependencies.py`
 
 ### 7.3 Simplify schemas:
-- `ProjectCreate` should not have `modules` — that's for Scaffolder
-- API stores what it received, business decisions happen elsewhere
+- `ProjectCreate` **must** include `modules` so Scaffolder knows what to generate.
+- API stores these modules in the `Project` entity.

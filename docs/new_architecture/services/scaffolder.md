@@ -21,8 +21,9 @@ The service listens to `scaffolder:queue`.
 
 **Message Payload:**
 *   `project_id` (UUID): Reference to the project in DB.
-*   *(Optional)* `spec` (JSON): If we want to avoid DB lookup, we can pass `name`, `modules`, `owner` directly.
-    *   *Decision*: We will fetch from DB to ensure consistency and access fresh secrets/tokens if needed.
+*   `project_name` (str): Name of the project to create.
+*   `modules` (list): Modules to enable.
+*   *(Optional)* `spec` (JSON): If we want to avoid DB lookup.
 
 **Workflow:**
 
@@ -33,9 +34,10 @@ The service listens to `scaffolder:queue`.
 5.  **Apply Template**: Run `copier copy` from `service-template`.
     *   **Flag**: `copier copy --vcs-ref=HEAD ...` (Crucial to avoid dirty state issues).
     *   **Data**: Pass modules selection (e.g., `make_frontend`, `make_backend`) as copier answers.
-6.  **Push**: `git add .`, `git commit -m "Initial commit"`, `git push`.
-7.  **Update Status**: Call API (or update DB directly) to set `project.status = "scaffolded"`.
-    *   *Note*: Waiting agents (DeveloperNode) rely on this status change.
+6.  **Config**: Generate `.project.yml` with project metadata (name, modules, version).
+7.  **Push**: `git add .`, `git commit -m "Initial commit"`, `git push`.
+8.  **Update Status**: Call API (or update DB directly) to set `project.status = "scaffolded"` and `project.repository_url`.
+    *   *Note*: Scaffolder must write back the `repo_url` to DB so subsequent agents know where to look.
 
 ## 3. Dependencies
 

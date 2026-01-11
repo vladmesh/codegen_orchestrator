@@ -37,7 +37,6 @@ The manager listens to `worker:commands`.
 *   `modules` (List[Enum]):
     *   `GIT`
     *   `GITHUB_CLI`
-    *   `COPIER`
     *   `CURL`
     *   `DOCKER` (dind)
     *   *Mechanism*: Spawner decides how to install these (e.g., enable pre-installed features, mount binaries, or `apt-get` on boot).
@@ -55,7 +54,7 @@ The manager listens to `worker:commands`.
 *   `worker_id` (UUID)
 
 **Returns:**
-*   `status`: `STARTING` | `RUNNING` | `STOPPED` | `FAILED`
+*   `status`: `starting` | `running` | `stopped` | `failed`
 *   `ip_address`: Internal IP (if needed)
 
 ## 3. Worker Architecture (The "Wrapper")
@@ -195,7 +194,6 @@ ENTRYPOINT ["worker-wrapper"]
 
 **What's NOT included (added via capabilities):**
 - `git` — added by `GIT` capability
-- `copier` — added by `COPIER` capability
 - `gh` (GitHub CLI) — added by `GITHUB_CLI` capability
 - `docker` — added by `DOCKER` capability (dind mount)
 
@@ -206,7 +204,6 @@ Capabilities are installed on top of base image. Docker layer caching ensures fa
 ```
 worker-base (200MB)
     └── + GIT capability → worker:abc123 (210MB, cached)
-    └── + GIT + COPIER   → worker:def456 (215MB, cached)
     └── + GIT + DOCKER   → worker:ghi789 (250MB, cached)
 ```
 

@@ -32,8 +32,8 @@
 | `engineering:queue` | CLI, Telegram | engineering-consumer |
 | `deploy:queue` | CLI, Telegram | deploy-consumer |
 | `scaffolder:queue` | LangGraph | scaffolder |
-| `provisioner:queue` | Scheduler | infra-consumer |
-| `ansible:deploy:queue` | DevOps Subgraph | infra-consumer |
+| `provisioner:queue` | Scheduler | infra-service |
+| `ansible:deploy:queue` | DevOps Subgraph | infra-service |
 | `worker:commands` | LangGraph | worker-manager |
 | `worker:responses` | worker-manager | LangGraph |
 

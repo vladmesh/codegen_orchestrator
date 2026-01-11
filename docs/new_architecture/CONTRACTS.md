@@ -18,7 +18,7 @@
 | `engineering:queue` | EngineeringMessage | PO-Worker | langgraph | Start development task |
 | `deploy:queue` | DeployMessage | PO-Worker | langgraph | Start deploy task |
 | `scaffolder:queue` | ScaffolderMessage | langgraph | scaffolder | Init project structure |
-| `worker:commands` | WorkerCommand | langgraph | worker-manager | Spawn/kill workers |
+| `worker:commands` | WorkerCommand | langgraph, telegram-bot | worker-manager | Spawn/kill workers |
 | `worker:responses` | WorkerResponse | worker-manager | langgraph | Worker lifecycle events |
 | `worker:lifecycle` | WorkerLifecycleEvent | worker-wrapper | worker-manager | Worker state changes |
 | `worker:po:{user_id}:input` | POWorkerInput | telegram-bot | PO worker-wrapper | User message to PO |
@@ -196,7 +196,6 @@ class TaskStatus(str, Enum):
 class TaskType(str, Enum):
     ENGINEERING = "engineering"
     DEPLOY = "deploy"
-    SCAFFOLDING = "scaffolding"
 
 
 class TaskCreate(BaseModel):
@@ -334,16 +333,25 @@ class DeployResult(BaseResult):
 # shared/contracts/queues/scaffolder.py
 
 class ScaffolderMessage(BaseMessage):
-    """Initialize project structure."""
+    """
+    Initialize project structure.
+    
+    Responsibilities:
+    1. Create remote repository (if not exists).
+    2. Generate .project.yml config.
+    3. Run copier template.
+    4. Push initial commit.
+    """
     project_id: str
-    repo_full_name: str      # "org/repo"
     project_name: str
-    modules: list[str]       # ["backend", "telegram"]
+    modules: list[ServiceModule]
 
 
 class ScaffolderResult(BaseResult):
-    """Scaffolding result - published to callback_stream or updates DB directly."""
+    """Scaffolding result."""
     project_id: str
+    repo_full_name: str   # "org/repo" - Created repository
+    repo_url: str         # "https://github.com/org/repo.git"
     commit_sha: str | None = None
 ```
 
@@ -367,10 +375,10 @@ class AgentType(str, Enum):
     FACTORY = "factory"        # Factory.ai Droid
 
 
-class ModuleType(str, Enum):
+class WorkerCapability(str, Enum):
     GIT = "git"
     GITHUB_CLI = "github_cli"
-    COPIER = "copier"
+    # Copier moved to dedicated service
     CURL = "curl"
     DOCKER = "docker"          # dind mount
 
@@ -382,7 +390,7 @@ class WorkerConfig(BaseModel):
     agent_type: AgentType                     # Which AI agent to use
     instructions: str                         # Content for CLAUDE.md / AGENTS.md
     allowed_commands: list[str]               # ["project.*", "engineering.start"]
-    modules: list[ModuleType]                 # ["git", "copier"]
+    capabilities: list[WorkerCapability]      # ["git", "copier"]
     env_vars: dict[str, str] = {}
 
 
@@ -558,7 +566,7 @@ class DeveloperWorkerOutput(BaseResult):
 
 class ProvisionerMessage(BaseMessage):
     """Provision server."""
-    server_handle: str
+    server_handle: str       # Cloud provider ID (Droplet ID) or unique identifier
     force_reinstall: bool = False
     is_recovery: bool = False
 

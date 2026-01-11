@@ -122,8 +122,8 @@ When spawning PO, bot sends to `worker:commands`:
 CreateWorkerCommand(
     config=WorkerConfig(
         name=f"po-{user_id}",
-        agent="claude-code",
-        capabilities=["orchestrator-cli"],
+        agent="claude",
+        capabilities=[],
         env_vars={
             "USER_ID": str(user_id),
             "API_URL": "http://api:8000",

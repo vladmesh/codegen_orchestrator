@@ -19,7 +19,7 @@ The service acts as a consumer for two main queues.
 
 ### 2.1 Provisioning (`provisioner:queue`)
 
-**Producer:** `Scheduler` (periodic checks) or `LangGraph` (when new server added).
+**Producer:** `Scheduler` (periodic checks).
 
 **Message Payload (`ProvisionerMessage`):**
 *   `server_handle` (string): The identifier of the server (e.g., in Time4VPS or internal DB).
