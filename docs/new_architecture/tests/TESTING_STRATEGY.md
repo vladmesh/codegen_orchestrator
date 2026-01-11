@@ -2,6 +2,13 @@
 
 Стратегия тестирования для новой архитектуры codegen_orchestrator.
 
+## Related Documents
+
+| Document | Description |
+|----------|-------------|
+| [llm_mocking.md](./llm_mocking.md) | Mock Anthropic Server, FakeLLM для тестов |
+| [../shared/github_client.md](../shared/github_client.md) | GitHub client, MockGitHubClient |
+
 ## 1. Philosophy
 
 **TDD от контрактов**: У нас зафиксированы контракты (DTO) между сервисами. Тесты проверяют что сервисы соблюдают эти контракты.
@@ -464,11 +471,17 @@ jobs:
       - run: make test-e2e
 ```
 
-## 9. Open Questions
+## 9. Decisions Made
+
+- [x] **LLM Mocking**: Mock Anthropic Server via `ANTHROPIC_BASE_URL`. See [llm_mocking.md](./llm_mocking.md)
+- [x] **GitHub Mocking**: MockGitHubClient for unit/integration, real `project-factory-test` org for E2E
+- [x] **VCR-style recording**: Решили не использовать. Real GitHub в E2E.
+- [x] **GitHub Org**: Обязательный `GITHUB_ORG` env var, без auto-detect
+
+## 10. Open Questions
 
 - [ ] Нужен ли отдельный уровень "smoke tests" для быстрой проверки критического пути?
 - [ ] Как тестировать real SSH connections в Infra Service? Testcontainers с SSH?
-- [ ] VCR-style recording для GitHub API responses?
 - [ ] Как мокать Docker API в Worker Manager? Testcontainers?
 - [ ] Coverage threshold? 80%?
 
