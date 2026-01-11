@@ -25,8 +25,9 @@ We employ two distinct test levels:
 ## 3. Test Infrastructure
 
 ### 3.1 External Mocks
-*   **GitHub/Time4VPS**: We do NOT hit real external APIs.
-*   **Technique**: Use `pytest-respx` to interpret HTTP calls and return static JSON fixtures from `tests/fixtures/github_responses/` etc.
+*   **Time4VPS**: Use `pytest-respx` to return static JSON.
+*   **GitHub**: Use the centralized **`MockGitHubClient`** from `shared/tests/mocks`. Do NOT use private `respx` mocks for GitHub.
+    *   *Setup*: Pre-seed the mock with repos defined in `tests/fixtures/github_repos.json` (or strictly inside the test).
 
 ### 3.2 Internal API Strategy
 This is the key differentiator between the two levels.

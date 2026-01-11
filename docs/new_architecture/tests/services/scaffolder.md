@@ -36,6 +36,7 @@ These tests run on every PR. We want to ensure the **template is valid** and **c
 
 **Setup:**
 *   Start `scaffolder` service.
+*   **Mock GitHub**: Use `MockGitHubClient` (via fixture) to handle `get_repo_token` calls.
 *   **Mock Git**: A wrapper around `git` command or `GitPython` that:
     *   Allows `git init`, `git add`, `git commit`.
     *   Intercepts `git push` and just returns success (verifying the remote URL).

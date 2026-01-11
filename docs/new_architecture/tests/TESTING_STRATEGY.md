@@ -7,7 +7,7 @@
 | Document | Description |
 |----------|-------------|
 | [llm_mocking.md](./llm_mocking.md) | Mock Anthropic Server, FakeLLM для тестов |
-| [../shared/github_client.md](../shared/github_client.md) | GitHub client, MockGitHubClient |
+| [tests/shared/github_client.md](./shared/github_client.md) | GitHub client, MockGitHubClient |
 
 ## 1. Philosophy
 
@@ -315,25 +315,7 @@ class MockLLM:
 ```
 
 ### 5.2 GitHub Mock
-
-```python
-class MockGitHubClient:
-    """Mock GitHub for integration tests."""
-
-    def __init__(self):
-        self.repos = {}
-        self.prs = {}
-
-    async def create_repo(self, name: str) -> Repo:
-        repo = Repo(name=name, url=f"https://github.com/test/{name}")
-        self.repos[name] = repo
-        return repo
-
-    async def create_pr(self, repo: str, branch: str, title: str) -> PR:
-        pr = PR(number=len(self.prs) + 1, title=title)
-        self.prs[pr.number] = pr
-        return pr
-```
+Refer to [tests/shared/github_client.md](./shared/github_client.md) for the centralized `MockGitHubClient`.
 
 ### 5.3 Subprocess Mock (for Ansible, CLI agents)
 
