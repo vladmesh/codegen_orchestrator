@@ -10,6 +10,7 @@ GitHub App — единая точка интеграции с GitHub для в�
 > **Rule #1:** Организация указывается явно через `GITHUB_ORG`. Никакого auto-detect.
 > **Rule #2:** Один GitHub App, установленный на все нужные организации.
 > **Rule #3:** Все сервисы используют `GitHubAppClient` из shared. Никакого дублирования.
+> **Rule #4:** API Service **MUST NOT** use GitHubAppClient directly. Use Scaffolder via Queue.
 
 ## 2. Configuration
 
@@ -203,33 +204,7 @@ class FileItem(BaseModel):
 
 ## 4. Usage Examples
 
-### 4.1 In API Service
-
-```python
-# services/api/src/routers/projects.py
-
-from shared.clients.github import GitHubAppClient
-
-@router.post("/projects")
-async def create_project(data: ProjectCreate):
-    github = GitHubAppClient()
-
-    repo = await github.provision_repo(
-        name=data.name,
-        description=data.description,
-        spec=data.spec.model_dump(),
-        secrets=data.secrets,
-    )
-
-    project = Project(
-        name=data.name,
-        repository_url=repo.html_url,
-        github_repo_id=repo.id,
-    )
-    # ... save to DB
-```
-
-### 4.2 In LangGraph Tools
+### 4.1 In LangGraph Tools
 
 ```python
 # services/langgraph/src/tools/github.py
@@ -254,7 +229,7 @@ async def get_github_token(repo_name: str) -> str:
     return await github.get_repo_token(repo_name)
 ```
 
-### 4.3 In Scaffolder
+### 4.2 In Scaffolder
 
 ```python
 # services/scaffolder/src/main.py

@@ -11,8 +11,7 @@
 | Severity | Count | Description |
 |----------|-------|-------------|
 | Critical | 0 | ✅ Все критические проблемы решены |
-| Critical | 0 | ✅ Все критические проблемы решены |
-| Medium | 3 | Несогласованности в контрактах |
+| Medium | 2 | Несогласованности в контрактах |
 | Low | 11 | Недостаточно проработано |
 
 ---
@@ -21,28 +20,7 @@
 
 ## Medium Issues (Contract Inconsistencies)
 
-### 1. GitHub Client usage in API contradicts "thin API" principle
-
-**File:** `shared/github_client.md`
-
-Section 4.1 shows:
-```python
-# services/api/src/routers/projects.py
-@router.post("/projects")
-async def create_project(data: ProjectCreate):
-    github = GitHubAppClient()
-    repo = await github.provision_repo(...)
-```
-
-But `api.md` states API should be "thin CRUD layer" with NO external API calls!
-
-**Resolution:**
-- [ ] Remove GitHub example from API usage
-- [ ] Clarify: GitHub calls happen in Scaffolder, not API
-
----
-
-### 2. Engineering vs Developer terminology inconsistent
+### 1. Engineering vs Developer terminology inconsistent
 
 **Files:** Multiple
 
@@ -61,7 +39,7 @@ But `api.md` states API should be "thin CRUD layer" with NO external API calls!
 
 ---
 
-### 3. Consumer vs Service naming confusion
+### 2. Consumer vs Service naming confusion
 
 **File:** `GLOSSARY.md`
 
@@ -332,6 +310,7 @@ Open question:
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-11 | Claude | Resolved: GitHub usage in API (Issue #1) |
 | 2026-01-11 | Claude | Resolved: File structure diagram (Issue #1) |
 | 2026-01-11 | Claude | Resolved: Docker API mocking (Variant D) |
 | 2026-01-11 | Claude | Initial audit |
