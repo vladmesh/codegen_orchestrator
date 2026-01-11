@@ -51,9 +51,9 @@ Since LangGraph nodes are Python functions, we cannot simple `await` for hours. 
 3.  **Interrupt**: The node returns a special `Command(interrupt=True)` or simply ends its turn, expecting an input from a specific key. **The execution suspends and state is saved to Postgres.** The Python process is freed.
 4.  **External Work**: The Worker/Service processes the task (taking minutes/hours).
 5.  **Resume (The Listener)**:
-    *   A separate `ResponseListener` component in the service receives the result from Redis `worker:responses`.
-    *   It calls `graph.update_state(config, {"input": result})` followed by `graph.invoke(None, config)`.
-    *   The graph loads state from Postgres and resumes execution from the exact point it stopped.
+    *   **Option A (Redis)**: A `ResponseListener` receives result from `worker:responses` or `deploy:result`.
+    *   **Option B (Polling)**: For services like Scaffolder that only update DB, a `StatusPoller` checks for state transitions (e.g., `Project.status == SCAFFOLDED`).
+    *   **Action**: Call `graph.update_state(...)` and `graph.invoke(...)` to resume.
 
 ## 4. Concurrency & Scalability
 

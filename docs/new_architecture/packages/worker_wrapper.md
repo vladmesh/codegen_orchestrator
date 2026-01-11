@@ -89,8 +89,10 @@ class WorkerInputMessage(BaseModel):
 See `CONTRACTS.md` for full DTO.
 
 1.  Wrapper looks for regex: `<result>(.*?)</result>` (DOTALL).
-2.  Parses JSON.
-3.  Constructs `WorkerResult`.
+2.  Parses JSON payload.
+3.  Constructs appropriate DTO based on `WORKER_TYPE`:
+    *   **PO**: `POWorkerOutput` (requires `text`).
+    *   **Developer**: `DeveloperWorkerOutput` (requires `commit_sha`, `pr_url`, or `verdict`).
 4.  Pushes to Redis.
 
 ### 4.3 Lifecycle Events (`worker:lifecycle`)
@@ -325,27 +327,26 @@ async def invoke_agent(agent_type: str, session_id: str, request: WorkerInputMes
         )
         
         if proc.returncode == 0:
-            return WorkerOutputMessage(
-                request_id=request.request_id,
-                status="success",
-                response=stdout.decode(),
-                duration_ms=...
-            )
+            # Parse <result>...</result> from stdout
+            result_json = parse_xml_result(stdout.decode())
+            
+            if worker_type == "po":
+                 return POWorkerOutput(
+                    request_id=request.request_id,
+                    user_id=int(os.environ["USER_ID"]),
+                    text=result_json.get("text", stdout.decode())
+                 )
+            else: # developer
+                 return DeveloperWorkerOutput(
+                    request_id=request.request_id,
+                    task_id=request.task_id,
+                    status="success",
+                    commit_sha=result_json.get("commit_sha"),
+                    pr_url=result_json.get("pr_url")
+                 )
         else:
-            return WorkerOutputMessage(
-                request_id=request.request_id,
-                status="error",
-                error=stderr.decode(),
-                duration_ms=...
-            )
-    except asyncio.TimeoutError:
-        proc.kill()
-        return WorkerOutputMessage(
-            request_id=request.request_id,
-            status="timeout",
-            error=f"Agent timed out after {request.timeout}s",
-            duration_ms=request.timeout * 1000
-        )
+            # Handle Error
+            ...
 ```
 
 ## 12. Notes

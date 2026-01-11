@@ -126,7 +126,7 @@
 
 **Integration scenarios (Engineering Subgraph):**
 - [ ] Consume `EngineeringMessage` from `engineering:queue`
-- [ ] ScaffolderNode → publish to `scaffolder:queue`, wait for result
+- [ ] ScaffolderNode → publish to `scaffolder:queue`, poll for `SCAFFOLDED` status
 - [ ] DeveloperNode → spawn worker via `worker:commands`, get result
 - [ ] TesterNode → run tests, pass/fail decision
 - [ ] Success → publish `EngineeringResult` to callback stream

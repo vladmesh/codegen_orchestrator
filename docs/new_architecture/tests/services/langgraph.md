@@ -17,10 +17,37 @@ The service is treated as a complete system that consumes inputs (Redis messages
 
 ### Why this approach?
 1.  **Verifies Persistence**: We confirm that "Interrupt & Resume" actually saves/loads state from Postgres.
-2.  **Verifies Contracts**: We ensure the service emits exact DTOs expected by consumers.
 3.  **Speed**: No need to spin up real LLMs or build Docker images for workers.
 
-## 2. Test Infrastructure: The `TestHarness`
+## 2. Unit & Structural Tests
+
+Unlike Integration tests, these verify the *logic* and *structure* of the graph without starting the runtime or using Redis.
+
+### 2.1 Pure Node Logic (Unit)
+
+Nodes are standard Python functions/classes. We test them by passing a mock `State` and asserting the output `Command` or state update.
+
+**Scenarios:**
+*   **DeveloperNode:**
+    *   Input: `state={task: "fix bug"}`, `mock_llm` returns "call_worker".
+    *   Assert: Returns `Command(goto="worker_creation")`.
+*   **RouterNode:**
+    *   Input: `state={verdict: "failed", retries: 5}`.
+    *   Assert: Returns `Command(goto="end")` (Logic for giving up).
+*   **State Reducers:**
+    *   Verify that `messages` list appends correctly and doesn't duplicate.
+
+### 2.2 Graph Metadata (Structural)
+
+We verify the compiled graph object to ensure structural integrity.
+
+**Scenarios:**
+*   **Integrity:** `graph.compile()` raises no errors.
+*   **Reachability:** All nodes are reachable from `START`.
+*   **Completeness:** All edges lead to valid nodes or `END`.
+*   **Visual Snapshot:** (Optional) Generate Mermaid graph and compare with saved snapshot.
+
+## 3. Test Infrastructure: The `TestHarness`
 
 The Harness is an async context manager that subscribes to all "Outgoing" queues and publishes to "Incoming" queues.
 
@@ -63,7 +90,7 @@ class TestHarness:
     # ... other helper methods
 ```
 
-## 3. Test Scenarios
+## 4. Integration Scenarios
 
 ### 3.1 The "Engineering Flow" (Happy Path)
 
@@ -78,7 +105,8 @@ This scenario verifies the chain: `Engineering Start` -> `Scaffolder` -> `Develo
     *   *Assert*: Harness receives `ScaffolderMessage` in `scaffolder:queue`.
     *   *Assert Payload*: `project_id="p1"`, `modules=[BACKEND]`.
     *   *Action*: Harness simulates scaffolding completion (Update DB status to `SCAFFOLDED`).
-    *   *Wait*: Allow LangGraph to poll/resume.
+    *   *Action*: Harness simulates scaffolding completion (Update DB status to `SCAFFOLDED`).
+    *   *Wait*: Harness waits for LangGraph's background poller to detect the change and resume the graph.
 
 3.  **Developer Isolation (Worker Creation)**:
     *   *Assert*: Harness receives `CreateWorkerCommand` in `worker:commands`.
@@ -143,14 +171,14 @@ This scenario explicitly kills the service mid-flight to ensure state recovery.
     *   *Assert*: LangGraph attempts to create worker again (if retry policy exists) OR fails the task.
     *   *Assert*: Mock API receives `PATCH /api/tasks/{task_id}` with `status="failed"`.
 
-## 4. Mocking Strategy
+## 5. Mocking Strategy
 
 *   **API Calls**: Since LangGraph might call `api` service (to update Task status), we need to:
     *   Option A: Run a lightweight Mock API (FastAPI) alongside Redis.
     *   Option B: Mock `httpx` inside the `langgraph` process (requires injecting a mock client via env var or test config).
     *   **Decision**: **Option A (Mock Server)**. It's more robust for "Black Box" testing. The Harness spins up a dummy uvicorn server on `localhost:8001` that responds to `/projects/{id}` and `/tasks`.
 
-## 5. Next Steps for Implementation
+## 6. Next Steps for Implementation
 
 1.  Create `tests/integration/test_langgraph_flow.py`.
 2.  Implement `TestHarness` fixture (Redis + Postgres + MockAPI).

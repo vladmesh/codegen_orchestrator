@@ -581,33 +581,7 @@ class AgentVerdict(BaseModel):
     data: dict[str, Any] = {}       # Structured context (e.g., commit_sha)
 ```
 
-## WorkerResult (DTO from Wrapper)
 
-```python
-# shared/contracts/dto/worker_result.py
-
-class WorkerResult(BaseModel):
-    """
-    Enriched result from the Worker Wrapper.
-    Sent to worker:{type}:{id}:output
-    """
-    # Identity
-    request_id: str
-    task_id: str | None = None
-    worker_id: str
-    
-    # Telemetry
-    started_at: datetime
-    finished_at: datetime
-    duration_ms: int
-    exit_code: int
-
-    # Payload
-    verdict: AgentVerdict | None = None  # None if wrapper failed to parse or agent crashed
-    
-    # Error Handling
-    error: str | None = None             # System/Wrapper error
-```
 
 ---
 
