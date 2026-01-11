@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codegen-orchestrator-shared-contracts"
+version = "0.1.0"
+description = "Shared Pydantic contracts for Codegen Orchestrator"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0.0",
+]

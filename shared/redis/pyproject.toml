@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codegen-orchestrator-shared-redis"
+version = "0.1.0"
+description = "Shared Redis Streams client"
+requires-python = ">=3.11"
+dependencies = [
+    "redis>=5.0.0",
+    "structlog>=24.1.0",
+    "codegen-orchestrator-shared-contracts",
+]
+
+[project.optional-dependencies]
+test = [
+    "fakeredis>=2.0.0",
+    "pytest-asyncio",
+]

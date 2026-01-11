@@ -72,6 +72,38 @@ API endpoints не защищены (только x-telegram-id header).
 
 ---
 
+## Legacy Roadmap (from Old Status)
+
+### Worker Lifecycle
+- [ ] Модель коммуникации: JSON=остановился, API=продолжаю
+- [ ] Pause/unpause контейнеров по timeout
+- [ ] Cleanup при shutdown (решает проблему зависания)
+- [ ] Token tracking из JSON output
+
+### CLI Pydantic (агент ↔ система)
+- [ ] Убрать curl/API из промптов
+
+### Secrets (US1 requirement)
+- [ ] GitHub Secrets как source of truth
+- [ ] Метаданные в БД, значения в GitHub
+- [ ] LLM не видит секреты
+
+### E2E Integration
+- [ ] E2E тест: US1 полный flow (токен → бот работает)
+
+### Admin UI (Phase 2)
+- [ ] UI для просмотра (Agents, Projects, Logos, Tokens)
+- [ ] Конфигурация через UI (Prompts, Agent selection, TTL)
+- [ ] Мониторинг (Grafana, Prometheus)
+
+### Agent Architecture (Phase 3)
+- [ ] Analyst Node (детализация требований)
+- [ ] Engineering Lead (координация)
+- [ ] Полноценный TesterNode
+- [ ] Agent-to-agent communication
+
+---
+
 ## Low Priority
 
 ### Docker Python SDK

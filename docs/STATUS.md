@@ -1,267 +1,38 @@
 # Project Status
 
-> **Актуально на**: 2026-01-10
+> **Current Phase**: Architecture Refactoring (Migration to 2.0)
+> **Active Plan**: [MIGRATION_PLAN.md](./new_architecture/MIGRATION_PLAN.md)
 
-## Обзор
+## 🚀 Current Focus
 
-Codegen Orchestrator — мультиагентная система для автоматической генерации и деплоя проектов. Пользователь описывает что хочет → система создаёт, тестирует и деплоит.
+**Phase 0: Foundation**
 
----
+Мы закладываем фундамент общей библиотеки `shared/`.
+Реализованы базовые контракты, Redis клиент и логирование.
 
-## Архитектура (текущее состояние)
+### Progress (Phase 0)
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         USER (Telegram)                              │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       telegram_bot                                   │
-│  • Принимает сообщения                                               │
-│  • Создаёт агента через workers-spawner                              │
-│  • Получает ответы синхронно (headless mode)                         │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │ Redis Streams
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                      workers-spawner                                 │
-│  • Создаёт Docker контейнеры с CLI-агентами                         │
-│  • send_message → headless JSON ответ                                │
-│  • Поддержка: ClaudeCodeAgent, FactoryDroidAgent                     │
-│  • GitHubCapability для git push/pull                                │
-└─────────────────────────────────┬───────────────────────────────────┘
-                                  │
-              ┌───────────────────┴───────────────────┐
-              ▼                                       ▼
-┌──────────────────────────┐           ┌──────────────────────────────┐
-│   CLI Agent (Claude)     │           │        LangGraph              │
-│   • PO роль              │           │   • Engineering subgraph      │
-│   • orchestrator CLI     │           │   • DevOps subgraph           │
-│   • Общение с user       │           │   • Provisioner               │
-└──────────────────────────┘           └──────────────────────────────┘
-              │                                       │
-              └───────────────────┬───────────────────┘
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                            API                                       │
-│  • Projects, Servers, Users, AgentConfigs                            │
-│  • PostgreSQL                                                        │
-└─────────────────────────────────────────────────────────────────────┘
-```
+1. **✅ P0.1 Shared Contracts**
+   - Пакет `shared/contracts` создан.
+   - Все DTO и сообщения очередей реализованы.
 
----
+2. **✅ P0.2 Shared Redis**
+   - Пакет `shared/redis` создан.
+   - Клиент поддерживает Pydantic DTO (`publish_message`).
+   - Добавлен `FakeRedisStreamClient` для тестов.
 
-## Компоненты: Что работает / Что нет
+3. **✅ P0.3 Shared Logging**
+   - Пакет `shared/logging` создан.
+   - Настроен `structlog` (JSON/Console).
+   - Добавлена поддержка `correlation_id` (contextvars).
 
-### ✅ Работает (code complete)
+### Next Steps
 
-| Компонент | Статус | Файлы |
-|-----------|--------|-------|
-| **Headless Mode** | ✅ Реализован | `workers-spawner/redis_handlers.py`, `telegram_bot/clients/workers_spawner.py` |
-| **ClaudeCodeAgent** | ✅ Полноценный | `factories/agents/claude_code.py` |
-| **FactoryDroidAgent** | ✅ Реализован | `factories/agents/factory_droid.py` |
-| **GitHubCapability** | ✅ Реализован | `factories/capabilities/github.py`, `container_service.py` |
-| **Session Management** | ✅ Redis-based | `session_manager.py` |
-| **ralph-wiggum** | ✅ Установлен | `universal-worker/Dockerfile`, `container_service.start_ralph_loop()` |
-| **LangGraph Client** | ✅ Мигрирован | `langgraph/clients/worker_spawner.py` использует `send_message` |
+**[P0.4 GitHub Client](./new_architecture/MIGRATION_PLAN.md#p04--github-client)**
+- Реализация `shared/clients/github.py`.
+- Поддержка GitHub App auth и Rate Limiting.
 
-### ⚠️ Частично работает
+## 🔗 Quick Links
 
-| Компонент | Проблема | Требуется |
-|-----------|----------|-----------|
-| **PO (Product Owner)** | Работает, но нестабильно | Отладка, E2E тесты |
-| **DeveloperNode** | Код есть, не тестирован E2E | E2E test через Telegram |
-| **Engineering Subgraph** | Architect→Preparer→Developer→Tester | TesterNode — заглушка |
-
-### ❌ Не работает / Не реализовано
-
-| Компонент | Статус |
-|-----------|--------|
-| **TesterNode** | Заглушка (всегда `passed=True`) |
-| **E2E тесты** | Нет автоматизации |
-| **Админка** | Нет UI, всё hardcoded |
-| **Мониторинг** | Только structlog, нет Grafana/etc |
-
----
-
-## Целевые User Stories (MVP)
-
-Из `spec_init.md`:
-
-### US1: Свой токен бота ✨ **ПРИОРИТЕТ**
-> Пользователь регистрирует свой токен → бот деплоится под него
-
-**Статус**: 🔶 ~60% готово
-- ⚠️ Секреты можно передать через API
-- ❌ Flow не протестирован
-
-### US2: Простой бот по запросу (Auto)
-> Пользователь: "Сделай бота" → Система выделяет токен → Готовый бот
-
-**Статус**: ⬜ Phase 2 (Blocked)
-- ✅ Telegram → PO Agent → ответ
-- ⚠️ Требует пул токенов
-
-
----
-
-## Roadmap
-
-### Phase 1: Работающий MVP 🚀 ← **СЕЙЧАС**
-**Цель**: US1 работает от начала до конца
-
-#### 1.0 Critical Fixes (БЛОКЕРЫ) 🔴
-> Без этих фиксов MVP не работает
-
-- [x] **Engineering Error Handling** — [план](./tasks/engineering-error-handling.md) ✅ 2026-01-10
-  - DeveloperNode падает → TesterNode перезаписывает на "done"
-  - Добавлен conditional edge после developer
-- [x] **Resource Allocator** — [план](./tasks/resource-allocator-node.md) ✅ 2026-01-10
-  - Deploy падает "No resources allocated"
-  - Добавлен ResourceAllocator в DevOps subgraph
-- [x] **Project UUID** — [план](./tasks/project-uuid-migration.md) ✅ 2026-01-10
-  - Scheduler создаёт `id=repo_name`
-  - Унифицировать на UUID везде
-- [x] **Project Scaffolding** — [план](./tasks/project-scaffolding-service.md) ✅ 2026-01-10
-  - API автоматически запускает scaffolder (fire-and-forget)
-  - DeveloperNode ждёт готовности проекта
-  - Scaffolder service использует copier (legacy code removed)
-
-#### 1.1 Worker Lifecycle
-> План: [worker-lifecycle.md](./tasks/worker-lifecycle.md)
-
-- [ ] Модель коммуникации: JSON=остановился, API=продолжаю
-- [ ] Pause/unpause контейнеров по timeout
-- [ ] Cleanup при shutdown (решает проблему зависания)
-- [ ] Token tracking из JSON output
-
-#### 1.2 CLI Pydantic (агент ↔ система)
-> План: [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md)
-
-- [x] Единый интерфейс: только orchestrator CLI
-- [x] Pydantic валидация с понятными ошибками (✅ 2026-01-09)
-- [ ] Убрать curl/API из промптов
-
-#### 1.3 Secrets (US1 requirement)
-> План: [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md)
-
-- [ ] GitHub Secrets как source of truth
-- [ ] Метаданные в БД, значения в GitHub
-- [ ] LLM не видит секреты
-
-#### 1.4 E2E Integration
-- [x] E2E тест: создание проекта через Telegram
-- [x] E2E тест: деплой проекта (✅ 2026-01-09)
-- [ ] E2E тест: US1 полный flow (токен → бот работает)
-
-### Phase 2: Админка 🖥️
-**Цель**: Вынести всё hardcoded, добавить мониторинг
-
-- [ ] UI для просмотра:
-  - Все агенты и их состояние
-  - Все проекты и users
-  - Логи каждого сервиса
-  - Расход токенов
-- [ ] Конфигурация через UI:
-  - Промпты всех нод (PO, Developer, etc.)
-  - Выбор агента (Claude/Factory) per node
-  - TTL, timeouts
-- [ ] Мониторинг:
-  - Grafana/Loki для логов
-  - Prometheus для метрик
-
-### Phase 3: Архитектура агентов 🤖
-**Цель**: BMAD-style multi-agent team
-
-- [ ] Analyst Node (детализация требований)
-- [ ] Engineering Lead (координация)
-- [ ] Полноценный TesterNode
-- [ ] Agent-to-agent communication
-
----
-
-## Документация
-
-| Файл | Назначение |
-|------|------------|
-| [STATUS.md](./STATUS.md) | Текущее состояние проекта (этот файл) |
-| [USER_STORIES.md](./USER_STORIES.md) | User stories с acceptance criteria |
-| [backlog.md](./backlog.md) | Активные задачи |
-| [ARCHITECTURE.md](../ARCHITECTURE.md) | Техническая архитектура |
-| [TESTING.md](./TESTING.md) | Как запускать тесты |
-| [LOGGING.md](./LOGGING.md) | Структура логов |
-
-### Active Tasks & Plans 📋
-
-#### Критические (блокируют MVP)
-| Feature | Plan | Status |
-|---------|------|--------|
-| **Engineering Error Handling** | [engineering-error-handling.md](./tasks/engineering-error-handling.md) | ✅ Done |
-| **Resource Allocator Node** | [resource-allocator-node.md](./tasks/resource-allocator-node.md) | ✅ Done |
-| **Project UUID Migration** | [project-uuid-migration.md](./tasks/project-uuid-migration.md) | ✅ Done |
-| **Project Scaffolding Service** | [project-scaffolding-service.md](./tasks/project-scaffolding-service.md) | ✅ Done |
-
-#### В процессе
-| Feature | Plan | Status |
-|---------|------|--------|
-| **Worker Lifecycle** | [worker-lifecycle.md](./tasks/worker-lifecycle.md) | Planning |
-| **CLI Pydantic** | [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md) | Planning |
-| **Secrets Vault** | [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) | Design Ready |
-| **GitHub Integration** | [github-worker-integration.md](./tasks/github-worker-integration.md) | Phase 1-3 done |
-
-
----
-
-## Известные баги
-
-### Критические (блокируют US1)
-
-1. **Engineering success на ошибках** — DeveloperNode падает, но TesterNode перезаписывает статус на "done"
-   - План: [engineering-error-handling.md](./tasks/engineering-error-handling.md)
-2. ~~**Deploy: "No resources allocated"**~~ → ✅ FIXED (2026-01-10)
-   - План: [resource-allocator-node.md](./tasks/resource-allocator-node.md)
-
-
-### Средние
-
-4. **Agent containers не чистятся** — накапливаются при `docker compose down` → система виснет
-5. **TesterNode заглушка** — всегда возвращает `passed=True` (Phase 3)
-6. **Timeout handling** — не везде корректно пробрасывается
-7. **Error propagation** — ошибки CLI агента не всегда доходят до пользователя
-
-### Исправлено
-
-- ~~**Unknown queue in infrastructure-worker**~~ → ✅ FIXED (2026-01-09)
-- ~~**workers-spawner синхронный**~~ → ✅ FIXED (2026-01-09) — добавлен parallel processing
-- ~~**Project ID: UUID vs repo_name**~~ → ✅ FIXED (2026-01-10) — scheduler now uses UUID
-- ~~**Deploy: "No resources allocated"**~~ → ✅ FIXED (2026-01-10) — ResourceAllocator node added
-- ~~**Invalid API Key (Claude)**~~ → ✅ FIXED (2026-01-10) — added session volume mounting
-- ~~**Provisioning Race Condition**~~ → ✅ FIXED (2026-01-10) — added scheduler retry logic
-- ~~**Copier capability in worker**~~ → ✅ FIXED (2026-01-10) — removed from DeveloperNode, scaffolding by service
-- ~~**Project name validation**~~ → ✅ FIXED (2026-01-10) — scaffolder sanitizes names (underscores→hyphens)
-- ~~**Scaffolder API retry**~~ → ✅ FIXED (2026-01-10) — added exponential backoff for status updates
-
-
----
-
-## Быстрый старт для разработки
-
-```bash
-# Запуск dev stack
-make dev
-
-# Тесты workers-spawner
-make test-workers-spawner
-
-# Проверка что всё поднялось
-docker compose ps
-```
-
----
-
-## Контакты и ресурсы
-
-- **Repo**: codegen_orchestrator
-- **Template**: [service-template](https://github.com/vladmesh/service-template)
-- **Infra**: `infrastructure/` (Ansible playbooks)
+- [Migration Plan](./new_architecture/MIGRATION_PLAN.md)
+- [Legacy Backlog](./backlog.md)

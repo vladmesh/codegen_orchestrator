@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codegen-orchestrator-shared-logging"
+version = "0.1.0"
+description = "Shared structured logging configuration"
+requires-python = ">=3.11"
+dependencies = [
+    "structlog>=24.1.0",
+]
