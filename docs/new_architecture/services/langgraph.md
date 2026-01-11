@@ -43,6 +43,10 @@ We model business domains as **Subgraphs**. External agents (like the Product Ow
     *   It polls `GitHubAppClient.get_workflow_run()` for completion.
     *   On success: extracts `deployed_url` from workflow outputs.
     *   On failure: fetches logs and returns error to Engineering for fix.
+    
+    > **Rate Limiting Requirement:** 
+    > The poller **MUST** adhere to `shared/github_client` rate limits. 
+    > **Implementation Detail:** The loop **MUST** use an exponential backoff strategy (e.g., 15s -> 30s -> 60s) AND/OR check `X-RateLimit-Remaining` headers to dynamically adjust the interval. Fixed-interval polling alone is prohibited.
 
 ### 3.2 Communication Pattern: The "Async Wait" (Human-in-the-loop Style)
 
