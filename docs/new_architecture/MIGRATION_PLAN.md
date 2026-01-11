@@ -158,12 +158,12 @@ flowchart TB
 **Path:** `shared/clients/github.py`
 
 **Tasks:**
-- [ ] GitHub App authentication
-- [ ] Token caching (per-installation)
-- [ ] Rate limiting
+- [x] GitHub App authentication
+- [x] Token caching (per-installation)
+- [x] Rate limiting
 
 **Acceptance Criteria:**
-- [ ] Unit tests с respx mock
+- [x] Unit tests с respx mock
 - [ ] Integration tests с Testcontainers (optional)
 
 ---

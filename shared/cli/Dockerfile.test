@@ -22,7 +22,7 @@ COPY shared/cli/pyproject.toml ./
 
 # Install runtime + test dependencies
 RUN pip install --no-cache-dir . && \
-    pip install --no-cache-dir pytest pytest-asyncio pytest-cov structlog
+    pip install --no-cache-dir pytest pytest-asyncio pytest-cov structlog respx freezegun
 
 # === Test Stage ===
 FROM test-deps AS test

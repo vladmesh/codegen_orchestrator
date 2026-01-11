@@ -13,6 +13,7 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "httpx",  # for TestClient
+    "respx>=0.21.1",
     # Install all services for testing
     "-e ./shared",
     "-e ./services/api",

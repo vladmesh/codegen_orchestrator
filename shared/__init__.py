@@ -2,7 +2,8 @@
 
 try:
     from .redis_client import RedisStreamClient
-except ImportError:
+
+except Exception:
     RedisStreamClient = None  # type: ignore
 
 

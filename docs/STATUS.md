@@ -26,11 +26,18 @@
    - Настроен `structlog` (JSON/Console).
    - Добавлена поддержка `correlation_id` (contextvars).
 
+
+4. **✅ P0.4 GitHub Client**
+   - Реализована аутентификация через GitHub App (JWT).
+   - Добавлено кеширование токенов и Rate Limiting.
+   - Написаны тесты с использованием `respx` и `freezegun`.
+
 ### Next Steps
 
-**[P0.4 GitHub Client](./new_architecture/MIGRATION_PLAN.md#p04--github-client)**
-- Реализация `shared/clients/github.py`.
-- Поддержка GitHub App auth и Rate Limiting.
+**[P0.5 API Refactor](./new_architecture/MIGRATION_PLAN.md#p05--api-refactor)**
+- Удалить Redis Publisher из POST `/tasks`.
+- Удалить прямые вызовы GitHub/GitLab из `services/api`.
+- API должен стать чистым Data Access Layer.
 
 ## 🔗 Quick Links
 

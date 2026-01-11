@@ -1,6 +1,9 @@
+import asyncio
 import base64
+from datetime import UTC, datetime, timedelta
 import os
 import time
+from typing import Any
 
 import httpx
 import jwt
@@ -18,9 +21,69 @@ class GitHubAppClient:
         self.app_id = os.getenv("GITHUB_APP_ID")
         self.private_key_path = os.getenv("GITHUB_APP_PRIVATE_KEY_PATH", "/app/keys/github_app.pem")
         self._private_key = None
+        # Cache: installation_id -> (token, expires_at_utc)
+        self._token_cache: dict[int, tuple[str, datetime]] = {}
 
         if not self.app_id:
             logger.warning("github_app_id_missing", env_var="GITHUB_APP_ID")
+
+    async def _make_request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Make HTTP request with rate limit handling."""
+        max_retries = 3
+
+        async with httpx.AsyncClient() as client:
+            for attempt in range(max_retries):
+                try:
+                    resp = await client.request(method, url, headers=headers, **kwargs)
+
+                    # Handle Rate Limiting
+                    if resp.status_code in (httpx.codes.FORBIDDEN, httpx.codes.TOO_MANY_REQUESTS):
+                        remaining = resp.headers.get("x-ratelimit-remaining")
+                        if remaining == "0":
+                            reset_time = int(resp.headers.get("x-ratelimit-reset", 0))
+                            wait_seconds = max(reset_time - time.time(), 0) + 1
+
+                            if wait_seconds > 60:  # noqa: PLR2004
+                                # Fail fast if wait is too long
+                                logger.error(
+                                    "github_rate_limit_exceeded_long_wait",
+                                    wait_seconds=wait_seconds,
+                                )
+                                resp.raise_for_status()
+
+                            logger.warning("github_rate_limit_hit", wait_seconds=wait_seconds)
+                            await asyncio.sleep(wait_seconds)
+                            continue
+
+                    resp.raise_for_status()
+                    return resp
+
+                except httpx.HTTPStatusError as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    # Only retry server errors or rate limits (if not handled above)
+                    if (
+                        e.response.status_code < httpx.codes.INTERNAL_SERVER_ERROR
+                        and e.response.status_code
+                        not in (
+                            httpx.codes.FORBIDDEN,
+                            httpx.codes.TOO_MANY_REQUESTS,
+                        )
+                    ):
+                        raise
+                    await asyncio.sleep(2**attempt)  # Exponential backoff
+                except httpx.RequestError:
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(2**attempt)
+
+            raise RuntimeError("Unreachable")
 
     def _load_private_key(self) -> str:
         if self._private_key:
@@ -53,12 +116,10 @@ class GitHubAppClient:
             "Accept": "application/vnd.github.v3+json",
         }
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/installation", headers=headers
-            )
-            resp.raise_for_status()
-            return resp.json()["id"]
+        resp = await self._make_request(
+            "GET", f"https://api.github.com/repos/{owner}/{repo}/installation", headers=headers
+        )
+        return resp.json()["id"]
 
     async def get_org_installation_id(self, org: str) -> int:
         """Get installation ID for an organization."""
@@ -67,12 +128,10 @@ class GitHubAppClient:
             "Authorization": f"Bearer {jwt_token}",
             "Accept": "application/vnd.github+json",
         }
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"https://api.github.com/orgs/{org}/installation", headers=headers
-            )
-            resp.raise_for_status()
-            return resp.json()["id"]
+        resp = await self._make_request(
+            "GET", f"https://api.github.com/orgs/{org}/installation", headers=headers
+        )
+        return resp.json()["id"]
 
     async def get_first_org_installation(self) -> dict:
         """Get the first organization installation for this GitHub App.
@@ -86,13 +145,12 @@ class GitHubAppClient:
             "Accept": "application/vnd.github+json",
         }
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                "https://api.github.com/app/installations",
-                headers=headers,
-            )
-            resp.raise_for_status()
-            installations = resp.json()
+        resp = await self._make_request(
+            "GET",
+            "https://api.github.com/app/installations",
+            headers=headers,
+        )
+        installations = resp.json()
 
         for inst in installations:
             if inst.get("account", {}).get("type") == "Organization":
@@ -110,23 +168,49 @@ class GitHubAppClient:
 
         raise RuntimeError("No GitHub App installations found")
 
+    async def _get_installation_token(self, installation_id: int) -> str:
+        """Get or create installation access token with caching."""
+        # 1. Check cache
+        if installation_id in self._token_cache:
+            token, expires_at = self._token_cache[installation_id]
+            # Buffer of 60 seconds
+            if datetime.now(UTC) < expires_at - timedelta(seconds=60):
+                return token
+
+        # 2. Generate new token
+        jwt_token = self._generate_jwt()
+        headers = {
+            "Authorization": f"Bearer {jwt_token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        try:
+            resp = await self._make_request(
+                "POST",
+                f"https://api.github.com/app/installations/{installation_id}/access_tokens",
+                headers=headers,
+            )
+            data = resp.json()
+            token = data["token"]
+
+            # Parse expiration: 2016-07-11T22:14:10Z
+            expires_at = datetime.strptime(data["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=UTC
+            )
+
+            # 3. Update cache
+            self._token_cache[installation_id] = (token, expires_at)
+
+            return token
+        except Exception:
+            logger.exception("github_app_token_generation_failed", installation_id=installation_id)
+            raise
+
     async def get_org_token(self, org: str) -> str:
         """Get an installation access token for an organization."""
         try:
             installation_id = await self.get_org_installation_id(org)
-            jwt_token = self._generate_jwt()
-            headers = {
-                "Authorization": f"Bearer {jwt_token}",
-                "Accept": "application/vnd.github+json",
-            }
-
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"https://api.github.com/app/installations/{installation_id}/access_tokens",
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                return resp.json()["token"]
+            return await self._get_installation_token(installation_id)
         except Exception:
             logger.exception("github_app_token_failed", org=org)
             raise
@@ -135,19 +219,7 @@ class GitHubAppClient:
         """Get an installation access token for a specific repo."""
         try:
             installation_id = await self.get_installation_id(owner, repo)
-            jwt_token = self._generate_jwt()
-            headers = {
-                "Authorization": f"Bearer {jwt_token}",
-                "Accept": "application/vnd.github+json",
-            }
-
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"https://api.github.com/app/installations/{installation_id}/access_tokens",
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                return resp.json()["token"]
+            return await self._get_installation_token(installation_id)
         except Exception:
             logger.exception("github_app_token_failed", owner=owner, repo=repo)
             raise
@@ -169,21 +241,20 @@ class GitHubAppClient:
             "auto_init": True,
         }
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"https://api.github.com/orgs/{org}/repos",
-                headers=headers,
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            logger.info(
-                "github_repo_created",
-                org=org,
-                name=name,
-                repo_url=data.get("html_url"),
-            )
-            return GitHubRepository.model_validate(data)
+        resp = await self._make_request(
+            "POST",
+            f"https://api.github.com/orgs/{org}/repos",
+            headers=headers,
+            json=payload,
+        )
+        data = resp.json()
+        logger.info(
+            "github_repo_created",
+            org=org,
+            name=name,
+            repo_url=data.get("html_url"),
+        )
+        return GitHubRepository.model_validate(data)
 
     async def list_org_repos(self, org: str) -> list[GitHubRepository]:
         """List all repositories in the organization."""
@@ -197,21 +268,20 @@ class GitHubAppClient:
         page = 1
         per_page = 100
 
-        async with httpx.AsyncClient() as client:
-            while True:
-                resp = await client.get(
-                    f"https://api.github.com/orgs/{org}/repos",
-                    params={"type": "all", "per_page": per_page, "page": page},
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                batch = resp.json()
-                if not batch:
-                    break
-                repos.extend([GitHubRepository.model_validate(r) for r in batch])
-                if len(batch) < per_page:
-                    break
-                page += 1
+        while True:
+            resp = await self._make_request(
+                "GET",
+                f"https://api.github.com/orgs/{org}/repos",
+                params={"type": "all", "per_page": per_page, "page": page},
+                headers=headers,
+            )
+            batch = resp.json()
+            if not batch:
+                break
+            repos.extend([GitHubRepository.model_validate(r) for r in batch])
+            if len(batch) < per_page:
+                break
+            page += 1
 
         return repos
 
@@ -223,10 +293,10 @@ class GitHubAppClient:
             "Accept": "application/vnd.github+json",
         }
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
-            resp.raise_for_status()
-            return GitHubRepository.model_validate(resp.json())
+        resp = await self._make_request(
+            "GET", f"https://api.github.com/repos/{owner}/{repo}", headers=headers
+        )
+        return GitHubRepository.model_validate(resp.json())
 
     async def get_file_contents(
         self, owner: str, repo: str, path: str, ref: str = "main"
@@ -239,16 +309,17 @@ class GitHubAppClient:
                 "Accept": "application/vnd.github.raw+json",
             }
 
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
-                    headers=headers,
-                    params={"ref": ref},
-                )
-                if resp.status_code == httpx.codes.NOT_FOUND:
-                    return None
-                resp.raise_for_status()
-                return resp.text
+            resp = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                headers=headers,
+                params={"ref": ref},
+            )
+            return resp.text
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                return None
+            raise
         except Exception as e:
             logger.warning(
                 "github_file_fetch_failed",
@@ -270,13 +341,17 @@ class GitHubAppClient:
                 "Accept": "application/vnd.github+json",
             }
 
-            async with httpx.AsyncClient() as client:
-                url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-                resp = await client.get(url, headers=headers, params={"ref": ref})
-                if resp.status_code == httpx.codes.NOT_FOUND:
-                    return []
-                resp.raise_for_status()
-                return [item["name"] for item in resp.json()]
+            resp = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                headers=headers,
+                params={"ref": ref},
+            )
+            return [item["name"] for item in resp.json()]
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                return []
+            raise
         except Exception as e:
             logger.warning(
                 "github_list_files_failed",
@@ -306,16 +381,19 @@ class GitHubAppClient:
         # First, try to get existing file SHA to support updates
         sha = None
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
-                    headers=headers,
-                    params={"ref": branch},
-                )
-                if resp.status_code == httpx.codes.OK:
-                    sha = resp.json().get("sha")
-        except Exception:  # noqa: S110
-            pass
+            resp = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+                headers=headers,
+                params={"ref": branch},
+            )
+            sha = resp.json().get("sha")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != httpx.codes.NOT_FOUND:
+                raise
+        except Exception as e:
+            # File might not exist or other error, proceed to create
+            logger.debug("github_file_check_failed", error=str(e))
 
         # Prepare payload
         content_b64 = base64.b64encode(content.encode()).decode()
@@ -328,24 +406,23 @@ class GitHubAppClient:
             payload["sha"] = sha
 
         # Create/Update file
-        async with httpx.AsyncClient() as client:
-            resp = await client.put(
-                f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
-                headers=headers,
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        resp = await self._make_request(
+            "PUT",
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+            headers=headers,
+            json=payload,
+        )
+        data = resp.json()
 
-            logger.info(
-                "github_file_updated",
-                owner=owner,
-                repo=repo,
-                path=path,
-                action="update" if sha else "create",
-                sha=data["content"]["sha"],
-            )
-            return data["content"]
+        logger.info(
+            "github_file_updated",
+            owner=owner,
+            repo=repo,
+            path=path,
+            action="update" if sha else "create",
+            sha=data["content"]["sha"],
+        )
+        return data["content"]
 
     async def set_repository_secret(
         self,
@@ -374,41 +451,40 @@ class GitHubAppClient:
             "Accept": "application/vnd.github+json",
         }
 
-        async with httpx.AsyncClient() as client:
-            # 1. Get repository public key for encryption
-            resp = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/actions/secrets/public-key",
-                headers=headers,
-            )
-            resp.raise_for_status()
-            key_data = resp.json()
-            public_key_b64 = key_data["key"]
-            key_id = key_data["key_id"]
+        # 1. Get repository public key for encryption
+        resp = await self._make_request(
+            "GET",
+            f"https://api.github.com/repos/{owner}/{repo}/actions/secrets/public-key",
+            headers=headers,
+        )
+        key_data = resp.json()
+        public_key_b64 = key_data["key"]
+        key_id = key_data["key_id"]
 
-            # 2. Encrypt the secret using libsodium sealed box
-            public_key_bytes = base64.b64decode(public_key_b64)
-            pub_key = public.PublicKey(public_key_bytes)
-            sealed_box = public.SealedBox(pub_key)
-            encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
-            encrypted_b64 = base64.b64encode(encrypted).decode("utf-8")
+        # 2. Encrypt the secret using libsodium sealed box
+        public_key_bytes = base64.b64decode(public_key_b64)
+        pub_key = public.PublicKey(public_key_bytes)
+        sealed_box = public.SealedBox(pub_key)
+        encrypted = sealed_box.encrypt(secret_value.encode("utf-8"))
+        encrypted_b64 = base64.b64encode(encrypted).decode("utf-8")
 
-            # 3. Create or update the secret
-            resp = await client.put(
-                f"https://api.github.com/repos/{owner}/{repo}/actions/secrets/{secret_name}",
-                headers=headers,
-                json={
-                    "encrypted_value": encrypted_b64,
-                    "key_id": key_id,
-                },
-            )
-            resp.raise_for_status()
+        # 3. Create or update the secret
+        await self._make_request(
+            "PUT",
+            f"https://api.github.com/repos/{owner}/{repo}/actions/secrets/{secret_name}",
+            headers=headers,
+            json={
+                "encrypted_value": encrypted_b64,
+                "key_id": key_id,
+            },
+        )
 
-            logger.info(
-                "github_secret_set",
-                owner=owner,
-                repo=repo,
-                secret_name=secret_name,
-            )
+        logger.info(
+            "github_secret_set",
+            owner=owner,
+            repo=repo,
+            secret_name=secret_name,
+        )
 
     async def set_repository_secrets(
         self,
@@ -471,11 +547,19 @@ class GitHubAppClient:
         # 3. Create repository
         try:
             repo = await self.create_repo(org, repo_name, description, private=True)
-        except Exception as e:
+        except httpx.HTTPStatusError as e:
             # Idempotency: Use existing repo if it already exists
             # GitHub API returns 422 Unprocessable Entity for existing repos
-            if "422" in str(e):
+            if e.response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
                 logger.info("github_repo_already_exists_using_existing", org=org, repo=repo_name)
+                repo = await self.get_repo(org, repo_name)
+            else:
+                raise e
+        except Exception as e:
+            if "422" in str(e):  # Fallback for non-HTTPStatusError exceptions if any
+                logger.info(
+                    "github_repo_already_exists_using_existing_fallback", org=org, repo=repo_name
+                )
                 repo = await self.get_repo(org, repo_name)
             else:
                 raise e
