@@ -23,7 +23,6 @@
 | `deploy:queue` | DeployMessage | PO-Worker | langgraph | Start deploy task |
 | `scaffolder:queue` | ScaffolderMessage | langgraph | scaffolder | Scaffold project |
 | `scaffolder:results` | ScaffolderResult | scaffolder | langgraph | Scaffolder completion |
-| `deploy:results` | AnsibleDeployResult | infra-service | langgraph | Deploy result |
 
 ---
 
@@ -55,7 +54,6 @@
 |-------|-----|-----------|----------|---------|
 | `provisioner:queue` | ProvisionerMessage | scheduler | infra-service | Provision server |
 | `provisioner:results` | ProvisionerResult | infra-service | scheduler, telegram-bot | Provisioning result |
-| `ansible:deploy:queue` | AnsibleDeployMessage | langgraph | infra-service | Run Ansible deploy |
 
 ---
 
@@ -64,6 +62,7 @@
 | Queue | DTO | Initiator | Consumer | Purpose |
 |-------|-----|-----------|----------|---------|
 | `task_progress:{task_id}` | ProgressEvent | All services | telegram-bot | Task progress notifications |
+| `workflow:status` | WorkflowStatusEvent | langgraph (poller) | telegram-bot | Deploy progress updates |
 
 ### Transport Layer Note
 
@@ -87,7 +86,7 @@
 | **worker-wrapper** | Process | Agent bridge inside container |
 | **telegram-bot** | Service | User interface |
 | **scaffolder** | Service | Project initialization |
-| **infra-service** | Service | Ansible/provisioning |
+| **infra-service** | Service | Server provisioning only (no app deploy) |
 | **scheduler** | Service | Background tasks |
 
 ### MVP Notes
@@ -167,18 +166,21 @@ sequenceDiagram
     participant API
     participant Redis
     participant LG as langgraph
-    participant Infra as infra-service
+    participant GH as GitHub API
 
     PO->>CLI: orchestrator deploy start --project {id}
     CLI->>API: POST /api/tasks (type=deploy)
     CLI->>Redis: XADD deploy:queue
     Redis-->>LG: Consumer reads
-    LG->>LG: DevOps Subgraph
-    LG->>Redis: XADD ansible:deploy:queue
-    Redis-->>Infra: Consumer reads
-    Infra->>Infra: Run Ansible
-    Infra->>Redis: XADD deploy:results
-    Redis-->>LG: Resume graph (via listener)
+    LG->>LG: DevOps Subgraph (EnvAnalyzer → SecretResolver)
+    LG->>GH: POST /repos/{owner}/{repo}/actions/workflows/main.yml/dispatches
+    Note over LG: Poll workflow status
+    loop Every 15s
+        LG->>GH: GET /repos/{owner}/{repo}/actions/runs?event=workflow_dispatch
+        GH-->>LG: {status, conclusion}
+    end
+    LG->>API: PATCH /tasks/{id} {status: completed}
+    LG->>Redis: XADD task_progress:{id} {deployed_url}
 ```
 
 ---
@@ -529,6 +531,27 @@ class DeployResult(BaseResult):
     deployed_url: str | None = None
     server_ip: str | None = None
     port: int | None = None
+
+
+## Workflow DTOs
+
+```python
+# shared/contracts/queues/workflow.py
+
+class WorkflowTriggerRequest(BaseModel):
+    """Request to trigger GitHub Actions workflow."""
+    project_id: str
+    repo_full_name: str           # "org/repo"
+    workflow_file: str = "main.yml"
+    inputs: dict[str, str] = {}   # workflow_dispatch inputs
+
+class WorkflowStatusResult(BaseResult):
+    """Result of workflow execution."""
+    run_id: int | None = None
+    run_url: str | None = None
+    deployed_url: str | None = None
+    conclusion: Literal["success", "failure", "cancelled", "skipped"] | None = None
+```
 ```
 
 ---
@@ -879,40 +902,7 @@ class ProvisionerResult(BaseResult):
 
 ---
 
-## AnsibleDeployMessage
 
-**Queue:** `ansible:deploy:queue`  
-**Initiator:** langgraph  
-**Consumer:** infra-service
-
-```python
-# shared/contracts/queues/ansible_deploy.py
-
-class AnsibleDeployMessage(BaseMessage):
-    """Run ansible deploy."""
-    job_type: Literal["deploy"] = "deploy"
-    project_id: str
-    project_name: str
-    repo_full_name: str
-    server_ip: str
-    port: int
-    modules: list[str] | None = None
-    github_installation_id: str  # To generate ephemeral token. See SECRETS.md
-    secrets_map: dict[str, str] = {}  # Map: {env_var: secret_name}
-
-
-class AnsibleDeployResult(BaseResult):
-    """
-    Ansible deploy result.
-    Stream: deploy:results
-    """
-    deployed_url: str | None = None
-    server_ip: str | None = None
-    port: int | None = None
-    stdout: str | None = None
-    stderr: str | None = None
-    exit_code: int | None = None
-```
 
 ---
 
@@ -963,7 +953,7 @@ shared/contracts/
     ├── deploy.py
     ├── scaffolder.py
     ├── provisioner.py
-    ├── ansible_deploy.py
+    ├── workflow.py
     ├── worker.py
     └── worker_io.py
 ```

@@ -155,6 +155,46 @@ class GitHubAppClient:
         """Set multiple secrets. Continues on individual failures."""
         ...
 
+    # === Workflow Operations (NEW) ===
+
+    async def trigger_workflow(
+        self,
+        repo: str,
+        workflow_file: str,
+        ref: str = "main",
+        inputs: dict[str, str] | None = None,
+    ) -> int:
+        """
+        Trigger workflow_dispatch event.
+        Returns: workflow run_id
+        """
+        ...
+
+    async def get_workflow_run(
+        self,
+        repo: str,
+        run_id: int,
+    ) -> WorkflowRun:
+        """Get workflow run status and conclusion."""
+        ...
+
+    async def get_workflow_runs(
+        self,
+        repo: str,
+        event: str = "workflow_dispatch",
+        created: str | None = None,  # e.g., ">2024-01-01"
+    ) -> list[WorkflowRun]:
+        """List recent workflow runs."""
+        ...
+
+    async def get_workflow_logs(
+        self,
+        repo: str,
+        run_id: int,
+    ) -> str:
+        """Download and extract workflow logs (for error reporting)."""
+        ...
+
     # === Provisioning (high-level) ===
 
     async def provision_repo(
@@ -200,6 +240,16 @@ class FileItem(BaseModel):
     path: str
     type: Literal["file", "dir"]
     sha: str
+
+class WorkflowRun(BaseModel):
+    id: int
+    name: str
+    status: Literal["queued", "in_progress", "completed"]
+    conclusion: Literal["success", "failure", "cancelled", "skipped"] | None
+    html_url: str
+    created_at: datetime
+    updated_at: datetime
+
 ```
 
 ## 4. Usage Examples
@@ -287,8 +337,14 @@ class MockGitHubClient:
         del self.repos[name]
         del self.files[name]
 
-    # ... other methods
-```
+    async def get_workflow_logs(
+        self,
+        repo: str,
+        run_id: int,
+    ) -> str:
+        """Download and extract workflow logs (for error reporting)."""
+        ...
+
 
 ### 5.2 Fixture
 
@@ -374,6 +430,7 @@ One GitHub App installed on both organizations:
 | **Repository** | Read & Write | Create repos, manage files |
 | **Secrets** | Read & Write | Set Actions secrets |
 | **Contents** | Read & Write | Read/write files |
+| **Actions** | Read & Write | Trigger workflows |
 | **Metadata** | Read | List repos |
 
 ### 7.3 Secrets Management

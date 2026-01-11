@@ -14,7 +14,7 @@
 
 Сервис становится consumer'ом только в контексте конкретной очереди:
 - `langgraph` — consumer для `engineering:queue`, `deploy:queue`
-- `infra-service` — consumer для `provisioner:queue`, `ansible:deploy:queue`
+- `infra-service` — consumer для `provisioner:queue` (provisioning only)
 - `scaffolder` — consumer для `scaffolder:queue`
 - `worker-wrapper` — consumer для `worker:*:input` (внутри контейнера воркера)
 
@@ -109,7 +109,7 @@ AI который работает внутри Worker.
 
 **Примеры:**
 - Engineering Subgraph — Developer → Tester
-- DevOps Subgraph — EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
+- DevOps Subgraph — EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer (triggers GitHub Actions)
 
 ### Tool (Инструмент)
 Функция доступная LLM для вызова. Декоратор `@tool`.
@@ -140,7 +140,7 @@ Redis Stream для асинхронной обработки. Consumer чита
 - `deploy:queue` — задачи на деплой
 - `scaffolder:queue` — scaffolding проектов
 - `provisioner:queue` — провизия серверов
-- `ansible:deploy:queue` — делегированный Ansible деплой
+
 
 ### Command Queue (Очередь команд)
 Redis Stream для управления Workers.

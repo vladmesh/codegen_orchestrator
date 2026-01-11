@@ -43,24 +43,28 @@
 
 ## 3. Integration with Components
 
-### Infra Service & Ansible
-Как `infrastructure-service` деплоит проект, если у него нет секретов L2?
+### Infra Service (Provisioning Only)
 
-**Вариант А: CI-Driven Deployment (Recommended)**
-1.  `infra-service` настраивает сервер (устанавливает Docker, Nginx). Для этого ему нужны L1 Secrets (SSH key оркестратора to connect).
-2.  Сборка образа и деплой приложения (`docker run`) происходит внутри **GitHub Actions** репозитория пользователя.
-3.  Там есть доступ к `secrets.TELEGRAM_TOKEN`.
-4.  Action заходит по SSH и перезапускает контейнер с нужными ENV.
+The `infra-service` is responsible for preparing the "bare metal". It uses **L1 Secrets** only.
+*   **SSH Key**: Uses Orchestrator's L1 Private Key to connect to servers.
+*   **Provider Keys**: API keys for Time4VPS/DigitalOcean (L1).
 
-**Вариант Б: Orchestrator-Driven Deployment (Legacy/Fallback)**
-Если `infra-service` должен сам запустить контейнер:
-1.  Ему нужно получить значение секрета.
-2.  GitHub Secrets — write-only (обычно).
-3.  **Вывод**: Если мы идем по пути L2 Secrets in GitHub, то деплой приложения **обязан** инициироваться из CI (GitHub Actions), либо мы должны дублировать секреты в Encrypted DB (L3/L2 hybrid).
+It does **NOT** handle Project (L2) secrets. It does not deploy applications.
 
-**Решение**: Мы используем **Вариант А**.
-*   `infra-service`: Подготовка "железа" (OS, Docker, Firewall).
-*   `GitHub Actions` (из `service_template`): Сборка, Push в Registry, Deploy (docker-compose up на сервере).
+### Deployment via GitHub Actions
+
+Application deployment is fully delegated to GitHub Actions. This allows secure usage of L2 secrets without exposing them to the Orchestrator's backend.
+
+1.  **Secret Injection**: When a project is configured, Orchestrator pushes L2 secrets (Telegram Token, DB Password) to **GitHub Repository Secrets**.
+2.  **Execution**: The workflow runs in GitHub's environment.
+3.  **Access**: The workflow uses `${{ secrets.MY_SECRET }}` to inject values into:
+    *   Docker Compose `.env` files.
+    *   Build arguments.
+    *   Runtime environments.
+
+**Privilege Separation:**
+*   **Infra Service**: Can create/destroy servers (Root access). Cannot see App Secrets.
+*   **GitHub Actions**: Can deploy apps (SSH User access). Can access App Secrets. Cannot destroy servers.
 
 ### Ref definition in Contracts
 В `CONTRACTS.md` поле `secrets_ref`:

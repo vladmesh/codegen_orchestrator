@@ -134,11 +134,13 @@
 
 **Integration scenarios (DevOps Subgraph):**
 - [ ] Consume `DeployMessage` from `deploy:queue`
-- [ ] EnvAnalyzerNode → determine deploy strategy
-- [ ] SecretResolverNode → resolve secrets (mock vault)
-- [ ] DeployerNode → publish to `ansible:deploy:queue`
-- [ ] Wait for `deploy:results` (match correlation_id)
-- [ ] Success → publish `DeployResult`
+- [ ] EnvAnalyzerNode → fetch .env.example, classify vars
+- [ ] SecretResolverNode → generate/collect secrets
+- [ ] ReadinessCheck → verify all secrets present
+- [ ] DeployerNode → call GitHub API to trigger workflow
+- [ ] DeployerNode → poll workflow status until completion
+- [ ] Success → extract deployed_url, publish `DeployResult`
+- [ ] Failure → fetch logs, return to Engineering
 
 **Mocks:**
 - LLM responses (scripted MockLLM)
@@ -204,21 +206,19 @@
 
 | Level | What to Test |
 |-------|--------------|
-| **Unit** | Playbook selection, inventory generation |
-| **Integration** | Ansible execution (mock), queue processing |
+| **Unit** | Inventory generation, playbook selection |
+| **Integration** | Provisioning flow (mock Ansible), SSH key setup |
 
 **Integration scenarios:**
 - [ ] Consume `ProvisionerMessage` from `provisioner:queue`
 - [ ] Generate inventory from server config
-- [ ] Run ansible-playbook (mock subprocess)
-- [ ] Publish result to `provisioner:result:{request_id}`
-- [ ] Consume `AnsibleDeployMessage` from `ansible:deploy:queue`
-- [ ] Run deploy playbook
-- [ ] Publish result to `deploy:results`
+- [ ] Run ansible-playbook for provisioning (mock subprocess)
+- [ ] Verify SSH public key added to authorized_keys
+- [ ] Publish result to `provisioner:results`
 
 **Mocks:**
 - Ansible subprocess (capture commands, return mock results)
-- SSH connections
+- SSH connections (for key verification)
 
 ### 3.8 Worker Wrapper (Package)
 
@@ -254,7 +254,7 @@ User creates project → PO understands → Engineering builds → Deploy works
 5. Developer adds features (mock LLM)
 6. Tests pass
 7. Deploy task triggered
-8. Ansible deploys (mock)
+8. GitHub Actions deploys (real workflow in test org)
 9. User receives URL
 
 **Assertions:**

@@ -15,7 +15,8 @@ The CLI is the **only interface** between AI Agents inside Worker containers and
 ## 2. Responsibilities
 
 1.  **API Wrapper**: Translate CLI commands to REST API calls.
-2.  **Event Publisher**: Publish messages to Redis queues (engineering, deploy, scaffolder).
+2.  **Event Publisher**: Publish messages to Redis queues (engineering, deploy).
+    Note: Deploy is consumed by LangGraph which triggers GitHub Actions.
 3.  **Permission Enforcement**: Check `ALLOWED_COMMANDS` before executing.
 4.  **Validation**: Pydantic validation with clear error messages.
 

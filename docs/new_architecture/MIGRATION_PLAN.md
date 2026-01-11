@@ -221,13 +221,15 @@ flowchart TB
 
 **Tasks:**
 - [ ] Переименовать из `infrastructure-worker`
-- [ ] Subscribe: `provisioner:queue`, `ansible:deploy:queue`
-- [ ] Ansible execution wrapper
+- [ ] Subscribe: `provisioner:queue` only (REMOVE ansible:deploy:queue)
+- [ ] Ansible execution wrapper (for provisioning playbooks only)
+- [ ] SSH key setup during provisioning
+- [ ] REMOVE: `deploy_project.yml` playbook and related code
 
 **Acceptance Criteria:**
-- [ ] Integration test: Mock Ansible Runner
+- [ ] Integration test: Mock Ansible Runner (provision only)
+- [ ] SSH key installation verification
 - [ ] Provisioning flow works
-- [ ] Deploy flow works
 
 ---
 
@@ -276,6 +278,8 @@ flowchart TB
 **Depends:** P1.3, P1.4, P2.1
 
 **Tasks:**
+- [ ] Make DeployerNode call GitHub API (trigger_workflow)
+- [ ] Add workflow polling loop
 - [ ] Subscribe: `engineering:queue`, `deploy:queue`
 - [ ] Single-Listener pattern (only `worker:developer:output`)
 - [ ] State persistence (Postgres checkpointer)

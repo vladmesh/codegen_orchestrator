@@ -33,8 +33,7 @@
 | `engineering:queue` | CLI, Telegram | engineering-consumer |
 | `deploy:queue` | CLI, Telegram | deploy-consumer |
 | `scaffolder:queue` | LangGraph | scaffolder |
-| `provisioner:queue` | Scheduler | infra-service |
-| `ansible:deploy:queue` | DevOps Subgraph | infra-service |
+| `provisioner:queue` | Scheduler | infra-service (provisioning only) |
 | `worker:commands` | LangGraph, TelegramBot | worker-manager |
 | `worker:responses:po` | worker-manager | telegram-bot |
 | `worker:responses:developer` | worker-manager | langgraph |
@@ -52,7 +51,7 @@
 │  scheduler        Background tasks (sync, health)       │
 │  scaffolder       Project scaffolding (Copier)          │
 │  worker-manager   Worker container lifecycle            │
-│  infra-service    Ansible provisioning/deployment       │
+│  infra-service    Server provisioning only              │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -154,7 +153,7 @@ graph TD
 
 3.  **DevOps Subgraph (The "Ops Dept")**:
     *   **Input**: Проект и сервер.
-    *   **Process**: EnvAnalyzer -> Deployer -> Ansible.
+    *   **Process**: EnvAnalyzer -> SecretResolver -> Deployer -> GitHub Actions.
     *   **Output**: Работающий URL.
     *   **PO View**: "Я сказал админам выкатить, они сказали ок".
 

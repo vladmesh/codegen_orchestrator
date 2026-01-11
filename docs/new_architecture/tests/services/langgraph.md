@@ -61,8 +61,8 @@ class TestHarness:
         #    - worker:commands
         #    - (worker:lifecycle is NOT consumed by LangGraph - handled by worker-manager)
         #    - worker:developer:output (subscribe to inputs to simulate results)
-        #    - ansible:deploy:queue
-        #    - deploy:results
+        #    - worker:developer:output (subscribe to inputs to simulate results)
+        #    - (GitHub API calls are mocked, no queue interaction for deploy)
         pass
 
     async def send_engineering_request(self, project_id: str, task: str):
@@ -128,22 +128,24 @@ This scenario verifies the chain: `Engineering Start` -> `Scaffolder` -> `Develo
 
 ### 3.2 The "Deploy Flow" (Happy Path)
 
-This scenario verifies: `Deploy Start` -> `Env Analysis` -> `Secrets` -> `Ansible` -> `Success`.
+This scenario verifies: `Deploy Start` -> `Env Analysis` -> `Secrets` -> `GitHub Actions` -> `Success`.
 
 **Steps:**
 
 1.  **Trigger**: Harness sends `DeployMessage(project_id="p1", environment="prod")`.
 
 2.  **DevOps Subgraph Execution**:
-    *   (Internal nodes like `EnvAnalyzer` might be skipped if they are pure logic, or we verify logs).
-    *   *Assert*: Harness receives `AnsibleDeployMessage` in `ansible:deploy:queue`.
-    *   *Assert Payload*: `server_ip`, `repo_full_name`, `secrets_ref`.
+    *   Graph runs EnvAnalyzer, SecretResolver, ReadinessCheck.
+    *   DeployerNode calls mock GitHub API.
+    *   *Assert*: `trigger_workflow()` called with correct repo and inputs.
 
-3.  **Ansible Execution**:
-    *   *Action*: Harness sends `AnsibleDeployResult(status="success", url="http://deploy.com")` to `deploy:results`.
+3.  **Workflow Polling**:
+    *   Mock returns `status="in_progress"` then `status="completed", conclusion="success"`.
+    *   *Assert*: Polling occurs with expected interval.
 
 4.  **Completion**:
-    *   *Assert*: LangGraph updates Task status to `COMPLETED` (via API mock or DB).
+    *   *Assert*: Task status updated to `COMPLETED`.
+    *   *Assert*: `deployed_url` extracted from workflow outputs.
 
 ### 3.3 Interrupt & Resume (Persistence Check)
 

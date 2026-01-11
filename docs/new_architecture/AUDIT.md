@@ -111,20 +111,7 @@ Not mentioned:
 ## Testing Gaps
 
 ### 19. SSH testing unresolved
-
-**File:** `TESTING_STRATEGY.md`
-
-Open question:
-> "How to test real SSH connections in Infra Service?"
-
-**Options:**
-- Testcontainers with sshd
-- Mock paramiko/asyncssh
-- E2E only
-
-**Resolution:**
-- [ ] Make decision
-- [ ] Document in TESTING_STRATEGY.md
+✅ **Resolved:** Decision made in `TESTING_STRATEGY.md`. Mock for Integration, Real Container with `sshd` for E2E.
 
 ---
 
@@ -166,4 +153,6 @@ Open question:
 | 2026-01-11 | Claude | Resolved: File structure diagram (Issue #1) |
 | 2026-01-11 | Claude | Resolved: Docker API mocking (Variant D) |
 | 2026-01-11 | Claude | Resolved: Secrets handling (#9) - created SECRETS.md & updated CONTRACTS.md |
+| 2026-01-11 | Claude | Resolved: SSH testing strategy (#19) - defined in TESTING_STRATEGY.md |
+| 2026-01-11 | Claude | Refactored: Deployment Strategy (Ansible -> GitHub Actions) - updated all docs |
 | 2026-01-11 | Claude | Initial audit |

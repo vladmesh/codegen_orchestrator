@@ -39,8 +39,10 @@ We model business domains as **Subgraphs**. External agents (like the Product Ow
 *   **Internal Flow**: `Analyzer` -> `SecretResolver` -> `Deployer`.
 *   **Implementation**:
     *   `Deployer` node DOES NOT run Ansible.
-    *   It sends a job to `ansible:deploy:queue`.
-    *   It waits for result in `deploy:results`.
+    *   It calls `GitHubAppClient.trigger_workflow()` to start GitHub Actions.
+    *   It polls `GitHubAppClient.get_workflow_run()` for completion.
+    *   On success: extracts `deployed_url` from workflow outputs.
+    *   On failure: fetches logs and returns error to Engineering for fix.
 
 ### 3.2 Communication Pattern: The "Async Wait" (Human-in-the-loop Style)
 
@@ -126,6 +128,7 @@ This architecture is **Event-Driven and Stateless** (in terms of memory).
 *   `ansible`, `terraform`
 *   `git` CLI
 *   `docker` CLI or SDK
+*   `paramiko`, `asyncssh` (SSH handled by GitHub Actions, not LangGraph)
 *   Heavy ML libraries (numpy, pandas) - moved to Analyzers/Workers if needed.
 
 ## 6. API (Redis Interfaces)
@@ -142,4 +145,4 @@ The service acts as a Consumer Group listening to high-level intent queues:
 Nodes within the graphs primarily publish to:
 
 *   `worker:commands` (Target: `worker-manager`)
-*   `ansible:deploy:queue` (Target: `infra-service`)
+*   GitHub Actions API (Target: GitHub, via `GitHubAppClient`)
