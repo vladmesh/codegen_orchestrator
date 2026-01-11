@@ -122,22 +122,45 @@ Garbage Collector в тестовом режиме настраивается н
 4.  **Assert (Env Vars)**:
     *   `ORCHESTRATOR_URL` прокинут корректно.
     *   `ALLOWED_COMMANDS` соответствует переданным.
+    *   **System Prompt**: В инструкциях агента (env var или file) есть требование: *"Wrap final result map in <result>...</result> tags"*.
 
-#### Scenario E: Orchestrator Integration & Permissions (Mock LLM)
-Проверяем цепочку: `Worker Wrapped -> Agent -> Orchestrator CLI -> System`.
+#### Scenario E: Orchestrator Integration & Output Protocol (Contract Test)
+Проверяем цепочку: `Worker Wrapped -> Agent -> Orchestrator CLI -> System` и парсинг результата.
 
 1.  **Setup**:
     *   Запускаем `worker-manager` и `mock-anthropic-server`.
-    *   Настраиваем `ALLOWED_COMMANDS=["project.get", "engineering.*"]`.
-2.  **Action (Allowed Call)**:
+    *   Настраиваем `ALLOWED_COMMANDS=["project.get"]`.
+
+2.  **Action (Happy Path with Result)**:
     *   Отправляем в Input Queue промпт: *"Get project info"*.
-    *   **Mock LLM** настроен отвечать вызовом тула: `orchestrator project get`.
-    *   **Assert**: В Output Queue пришел успешный ответ (т.к. команда разрешена).
-3.  **Action (Blocked Call)**:
+    *   **Mock LLM** настроен отвечать:
+        ```xml
+        Ok, I found it.
+        <result>
+        {
+          "status": "success",
+          "summary": "Project found",
+          "data": {"id": "123"}
+        }
+        </result>
+        ```
+    *   **Assert (Output Queue)**:
+        *   Сообщение валидируется как `WorkerResult`.
+        *   `verdict.status` == `success`.
+        *   `verdict.data.id` == `123`.
+        *   `exit_code` == 0.
+
+3.  **Action (Agent Failure / No Result)**:
+    *   **Mock LLM** отвечает текстом без тегов `<result>`.
+    *   **Assert**:
+        *   `WorkerResult` получен.
+        *   `verdict` == `None` (или status=`failure` в зависимости от реализации).
+        *   `error` содержит "Failed to parse agent verdict".
+
+4.  **Action (Blocked Call)**:
     *   Отправляем промпт: *"Delete server 1"*.
-    *   **Mock LLM** отвечает вызовом: `orchestrator infra delete 1`.
+    *   **Mock LLM** пытается вызвать `orchestrator infra delete 1`.
     *   **Assert**: В Output Queue ошибка прав доступа (Standard CLI Permission Error).
-    *   **Assert**: Реального вызова в API не было.
 
 #### Scenario F: Status Lifecycle (Happy Path & Crash)
 Проверяем корректность переходов состояний в Redis при разных жизненных ситуациях.
@@ -187,7 +210,9 @@ Garbage Collector в тестовом режиме настраивается н
     *   `docker_client.containers.get(id).status` == `running`.
     *   Redis `worker:status:{id}` == `RUNNING`.
 5.  **Assert (Processing)**:
-    *   Воркер успешно вычитал сообщение и опубликовал ответ в `output` (полный цикл).
+5.  **Assert (Processing)**:
+    *   Воркер успешно вычитал сообщение.
+    *   В `output` пришел валидный `WorkerResult` с отчетом.
 
 ---
 
