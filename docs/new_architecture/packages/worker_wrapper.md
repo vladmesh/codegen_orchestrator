@@ -77,8 +77,10 @@ class WorkerInputMessage(BaseModel):
     """Message sent to worker."""
     
     request_id: str              # Unique ID for this request
-    prompt: str                  # The message/task for the agent
+    prompt: str                  # The message/command for the agent
     timeout: int = 1800          # Max execution time (seconds)
+    # Plus other fields depending on PO (user_id) or Developer (task_id, project_id) context
+    # See CONTRACTS.md for specific POWorkerInput / DeveloperWorkerInput schemas
     session_continue: bool = True  # Continue existing session
 ```
 

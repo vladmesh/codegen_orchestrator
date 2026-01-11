@@ -125,20 +125,20 @@
 | **Integration** | Subgraph execution, queue processing |
 
 **Integration scenarios (Engineering Subgraph):**
-- [ ] Consume `EngineeringTaskMessage` from `engineering:queue`
+- [ ] Consume `EngineeringMessage` from `engineering:queue`
 - [ ] ScaffolderNode → publish to `scaffolder:queue`, wait for result
 - [ ] DeveloperNode → spawn worker via `worker:commands`, get result
 - [ ] TesterNode → run tests, pass/fail decision
-- [ ] Success → publish `EngineeringTaskResult` to callback stream
+- [ ] Success → publish `EngineeringResult` to callback stream
 - [ ] Failure → retry logic, eventually fail
 
 **Integration scenarios (DevOps Subgraph):**
-- [ ] Consume `DeployTaskMessage` from `deploy:queue`
+- [ ] Consume `DeployMessage` from `deploy:queue`
 - [ ] EnvAnalyzerNode → determine deploy strategy
 - [ ] SecretResolverNode → resolve secrets (mock vault)
 - [ ] DeployerNode → publish to `ansible:deploy:queue`
 - [ ] Wait for `deploy:result:{request_id}`
-- [ ] Success → publish `DeployTaskResult`
+- [ ] Success → publish `DeployResult`
 
 **Mocks:**
 - LLM responses (scripted MockLLM)
@@ -172,7 +172,7 @@
 | **Integration** | Copier execution, queue processing |
 
 **Integration scenarios:**
-- [ ] Consume `ScaffoldTaskMessage` from `scaffolder:queue`
+- [ ] Consume `ScaffolderMessage` from `scaffolder:queue`
 - [ ] Run copier with correct template + answers
 - [ ] Commit result to repo (mock git)
 - [ ] Verify project status in DB updated to `SCAFFOLDED`
@@ -208,7 +208,7 @@
 | **Integration** | Ansible execution (mock), queue processing |
 
 **Integration scenarios:**
-- [ ] Consume `ProvisionerTaskMessage` from `provisioner:queue`
+- [ ] Consume `ProvisionerMessage` from `provisioner:queue`
 - [ ] Generate inventory from server config
 - [ ] Run ansible-playbook (mock subprocess)
 - [ ] Publish result to `provisioner:result:{request_id}`
@@ -228,9 +228,9 @@
 | **Integration** | Redis communication, agent lifecycle |
 
 **Integration scenarios:**
-- [ ] Read from input queue, parse `WorkerInputMessage`
+- [ ] Read from input queue, parse `WorkerInputMessage` (PO or Developer)
 - [ ] Invoke CLI agent (mock subprocess)
-- [ ] Capture stdout, publish `WorkerOutputMessage`
+- [ ] Capture stdout, publish `WorkerResult`
 - [ ] Handle agent timeout → kill, return timeout status
 - [ ] Handle agent crash → return error status
 - [ ] Lifecycle events published to `worker:lifecycle`
