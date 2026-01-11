@@ -212,26 +212,50 @@ async def handle_worker_crash(
 | 1 | General error | Depends on error message |
 | -1 | Docker unavailable | No (infrastructure) |
 
-## 6. Resource Management (Pause/Resume)
+## 6. Resource Management & Quotas
 
-To prevent resource exhaustion, the Manager implements an **Idle Pause** mechanism.
+To ensure system stability and prevent resource exhaustion, the Manager implements strict limits on concurrency and container resources.
 
-### 6.1 Pause Logic (`pause_idle_workers`)
-A background task runs periodically (e.g., every 5 minutes):
-1.  Scans all `RUNNING` workers.
-2.  Checks `last_activity` in `worker:status:{id}`.
-3.  If `now() - last_activity > IDLE_TIMEOUT_SECONDS`:
-    *   Executes `docker pause {container_id}`.
-    *   Updates Redis status to `PAUSED`.
-    *   **Constraint**: `IDLE_TIMEOUT` MUST be > `TASK_EXECUTION_TIMEOUT` to avoid pausing active tasks.
+### 6.1 Global Concurrency Limits
+The manager enforces a hard limit on the number of simultaneously running workers.
 
-### 6.2 Wakeup Logic (`wakeup_workers`)
-A background task monitors Input Queues for `PAUSED` workers:
-1.  Scans input streams for all `PAUSED` workers.
-2.  If `xlen(stream) > 0`:
-    *   Executes `docker unpause {container_id}`.
-    *   Updates Redis status to `RUNNING`.
-3.  Wrapper inside the container resumes `XREAD` immediately (as process was frozen).
+**Configuration:**
+*   `MAX_CONCURRENT_WORKERS` (env): Default `10`. Maximum number of active containers.
+
+**Queueing Logic:**
+1.  When a `create` request arrives, Manager checks `current_active_workers`.
+2.  If `count >= MAX_CONCURRENT_WORKERS`:
+    *   Request is **Queued** (kept in Redis `worker:creation_queue`).
+    *   Status returned to client (if async polling): `QUEUED`.
+    *   **Timeout**: If a request waits in queue longer than `WORKER_CREATION_TIMEOUT` (default 5m), it is rejected with `ResourceExhausted` error.
+3.  **Queue Consumer**: A background loop monitors when a slot opens (worker stops/fails) and immediately processes the next item in `worker:creation_queue`.
+
+### 6.2 Per-Container Limits
+Every worker container is launched with strict Docker resource constraints to prevent "Noisy Neighbor" problems.
+
+**Configuration:**
+*   `WORKER_MEMORY_LIMIT` (env): Default `512m`.
+*   `WORKER_CPU_LIMIT` (env): Default `0.5` (50% of 1 core).
+
+**Implementation:**
+Values are passed to `docker_client.containers.run(..., mem_limit=..., nano_cpus=...)`.
+
+### 6.3 Idle Pause Mechanism
+To free up slots for active users, idle workers are paused (but still count towards `MAX_CONCURRENT` as they hoard memory, unless we decide to commit/kill them - *current decision: Paused workers still hold RAM, so they COUNT towards the limit*).
+
+> **Note**: Paused containers explicitly **do NOT release memory** in Docker. Therefore, pausing helps CPU but not RAM. To handle high load, we rely on the **Session Rotation** (terminate after 30m idle) rather than just pausing.
+
+**Pause Logic:**
+1.  Background task runs every 5 minutes.
+2.  Checks `last_activity`.
+3.  If `now() - last_activity > IDLE_TIMEOUT_SECONDS` (default 10m):
+    *   Worker is **Paused** (docker pause).
+    *   Status: `PAUSED`.
+
+**Wakeup Logic:**
+1.  Input Queue monitor detects message for `PAUSED` worker.
+2.  Executes `docker unpause`.
+3.  Status: `RUNNING`.
 
 ---
 

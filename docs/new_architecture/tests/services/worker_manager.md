@@ -215,6 +215,29 @@ Garbage Collector в тестовом режиме настраивается н
 5.  **Assert (Processing)**:
     *   Воркер успешно вычитал сообщение.
     *   В `output` пришел валидный `WorkerResult` с отчетом.
+    
+#### Scenario J: Resource Limits & Queueing
+Проверяем работу глобальных лимитов и очереди ожидания.
+
+1.  **Global Limit Enforcement**:
+    *   **Setup**: Настраиваем `MAX_CONCURRENT_WORKERS=2`.
+    *   **Action**: Отправляем 3 команды `create` подряд.
+    *   **Assert**:
+        *   2 воркера перешли в `RUNNING`.
+        *   3-й воркер находится в статусе `QUEUED` (в Redis отсутствует контейнер, запись в очереди есть).
+2.  **FIFO Processing**:
+    *   **Action**: Останавливаем 1-го воркера (`delete` или kill).
+    *   **Assert**: 3-й воркер автоматически переходит из `QUEUED` в `STARTING` -> `RUNNING`.
+    *   **Assert**: Количество активных контейнеров == 2.
+3.  **Queue Timeout**:
+    *   **Setup**: `MAX_CONCURRENT=1`, `WORKER_CREATION_TIMEOUT=2s`.
+    *   **Action**: Запускаем 2 воркера. 1-й работает, 2-й встает в очередь.
+    *   **Wait**: Ждем 3 секунды.
+    *   **Assert**: 2-й запрос получает статус `FAILED` с ошибкой `ResourceExhausted`.
+4.  **Container Limits Verification**:
+    *   **Action**: Инспектируем созданный контейнер: `docker inspect {id}`.
+    *   **Assert**: `HostConfig.Memory` == `512 * 1024 * 1024` (если лимит 512m).
+    *   **Assert**: `HostConfig.NanoCpus` == `500000000` (если лимит 0.5 CPU).
 
 ---
 
