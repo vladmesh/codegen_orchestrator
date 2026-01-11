@@ -8,6 +8,7 @@
 |----------|----------|
 | [GLOSSARY.md](./GLOSSARY.md) | Словарь терминов. Единая терминология для проекта. |
 | [CONTRACTS.md](./CONTRACTS.md) | Контракты очередей. Pydantic схемы для всех Redis queues. |
+| [ERROR_HANDLING.md](./ERROR_HANDLING.md) | Стратегия обработки ошибок. Retry policies, timeouts, propagation rules. |
 | [MIGRATION_PLAN.md](./MIGRATION_PLAN.md) | План миграции. Поэтапный план приведения к целевой архитектуре. |
 
 ## Quick Reference

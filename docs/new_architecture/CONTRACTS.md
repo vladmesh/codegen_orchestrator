@@ -794,7 +794,11 @@ class POWorkerOutput(BaseModel):
 
 ## Developer Worker I/O
 
-Коммуникация между LangGraph (Engineering Subgraph) и Developer Worker.
+> **Terminology:** Developer — это конкретная нода внутри Engineering Subgraph.
+> Engineering — абстракция "отдела" для PO. Developer — реализация (воркер, пишущий код).
+> См. [GLOSSARY.md](./GLOSSARY.md#engineering-vs-developer).
+
+Коммуникация между LangGraph (Engineering Subgraph, а именно DeveloperNode) и Developer Worker.
 
 **Design Decision:** Developer Workers are **ephemeral** (stateless). Each task spawns a fresh worker.
 Context is the code in repo + error messages — no session persistence needed.

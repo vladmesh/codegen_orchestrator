@@ -10,14 +10,15 @@
 **Примеры:** `api`, `telegram-bot`, `langgraph`, `scheduler`
 
 ### Consumer (Консьюмер)
-Сервис, который слушает Redis queue и обрабатывает Messages.
-Ранее назывались `*-worker`, но это создавало путаницу с Worker.
+**Роль, а не имя сервиса.** Любой сервис или компонент, который слушает Redis queue.
 
-**Примеры:**
-- `engineering-consumer` — обрабатывает engineering:queue
-- `deploy-consumer` — обрабатывает deploy:queue
-- `infra-service` — обрабатывает provisioner:queue и ansible:deploy:queue
-- `scaffolder` — обрабатывает scaffolder:queue
+Сервис становится consumer'ом только в контексте конкретной очереди:
+- `langgraph` — consumer для `engineering:queue`, `deploy:queue`
+- `infra-service` — consumer для `provisioner:queue`, `ansible:deploy:queue`
+- `scaffolder` — consumer для `scaffolder:queue`
+- `worker-wrapper` — consumer для `worker:*:input` (внутри контейнера воркера)
+
+> **Важно:** Не путайте с именем сервиса. Нет сервиса `engineering-consumer` — есть сервис `langgraph`, который является consumer'ом очереди `engineering:queue`.
 
 ### Worker (Воркер)
 Контейнер с CLI-Agent внутри.
@@ -49,6 +50,18 @@ AI который работает внутри Worker.
 - **Coding Agent**: Узкоспециализированный (внутри Engineering Subgraph, если используется).
 
 **Отличие от LangGraph Agent:** CLI-Agent — это "личность" в контейнере. LangGraph Node — это "функция" в графе.
+
+### Engineering vs Developer
+
+**Engineering** — подграф LangGraph, абстракция "отдела разработки".
+**Developer** — конкретная нода внутри Engineering Subgraph.
+
+| Термин | Уровень | Видимость | Описание |
+|--------|---------|-----------|----------|
+| **Engineering** | Subgraph | Внешний (PO) | Абстракция. PO ставит задачу "отделу", не зная внутренней структуры |
+| **Developer** | Node/Worker | Внутренний | Конкретная реализация — воркер, который пишет код |
+
+**Правило:** Термин "Developer" используется только когда обсуждаем реализацию внутри подграфа или конфигурацию воркера.
 
 ---
 
