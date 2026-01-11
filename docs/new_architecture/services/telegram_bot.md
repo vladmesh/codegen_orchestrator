@@ -17,7 +17,8 @@ The Telegram Bot is the **front door** for users. It handles authentication, rou
 1.  **Authentication**: Check if user exists in DB, reject if not.
 2.  **PO Session Management**: Create/retrieve PO Worker for user via `worker-manager`.
 3.  **Message Relay**: Forward user messages to PO, relay PO responses back.
-4.  **Quick Actions**: Handle simple commands via API (no PO involvement).
+4.  **Admin Notifications**: Listen to `provisioner:results` and notify admins about server setup status.
+5.  **Quick Actions**: Handle simple commands via API (no PO involvement).
 
 ## 3. User Flow
 
@@ -86,7 +87,8 @@ Buttons/commands that bypass PO to save tokens:
 │   handlers/                                                   │
 │     ├── auth.py           User validation                     │
 │     ├── commands.py       Quick commands (/projects, etc)     │
-│     └── chat.py           PO message relay                    │
+│     ├── chat.py           PO message relay                    │
+│     └── notifications.py  Provisioning alerts (admin only)    │
 │                                                               │
 │   session_manager.py      PO Worker lifecycle                 │
 │                                                               │

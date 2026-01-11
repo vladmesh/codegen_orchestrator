@@ -51,6 +51,7 @@ The `scheduler` maintains the "world state" in the database. It runs background 
 - Runs once at startup
 - Retries servers stuck in `pending_setup` status
 - Publishes to `provisioner:queue`
+- Listens to `provisioner:results` (via `provisioner_result_listener` task) to update Server status in DB.
 
 ## 4. Architecture
 
@@ -65,7 +66,8 @@ The `scheduler` maintains the "world state" in the database. It runs background 
 │     ├── server_sync.py      Time4VPS API → DB           │
 │     ├── health_checker.py   SSH checks → DB             │
 │     ├── rag_summarizer.py   Docs → Vector DB            │
-│     └── provisioner_trigger.py  Retry logic             │
+│     ├── provisioner_trigger.py  Retry logic             │
+│     └── provisioner_result_listener.py  Update DB       │
 │                                                         │
 └───────────────────────────┬─────────────────────────────┘
                             │

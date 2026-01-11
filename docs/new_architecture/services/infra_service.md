@@ -30,7 +30,7 @@ The service acts as a consumer for two main queues.
 1.  Fetch Server details (IP, login credentials) from internal Source of Truth (Database/Time4VPS API).
 2.  Check SSH connectivity.
 3.  Run `ansible-playbook setup_server.yml`.
-4.  Report result to `provisioner:result:{request_id}`.
+4.  Report result to `provisioner:results`.
 
 ### 2.2 Deployment (`ansible:deploy:queue`)
 

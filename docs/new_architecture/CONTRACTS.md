@@ -26,7 +26,7 @@
 | `worker:developer:{task_id}:input` | DeveloperWorkerInput | langgraph | Developer worker-wrapper | Task for Developer |
 | `worker:developer:{task_id}:output` | DeveloperWorkerOutput | Developer worker-wrapper | langgraph | Developer result |
 | `provisioner:queue` | ProvisionerMessage | scheduler | infra-service | Setup server |
-| `provisioner:result:{request_id}` | ProvisionerResult | infra-service | langgraph | Provisioning result |
+| `provisioner:results` | ProvisionerResult | infra-service | scheduler, telegram-bot | Provisioning result |
 | `ansible:deploy:queue` | AnsibleDeployMessage | langgraph | infra-service | Run ansible deploy |
 | `deploy:result:{request_id}` | AnsibleDeployResult | infra-service | langgraph | Deploy result |
 
@@ -347,12 +347,7 @@ class ScaffolderMessage(BaseMessage):
     modules: list[ServiceModule]
 
 
-class ScaffolderResult(BaseResult):
-    """Scaffolding result."""
-    project_id: str
-    repo_full_name: str   # "org/repo" - Created repository
-    repo_url: str         # "https://github.com/org/repo.git"
-    commit_sha: str | None = None
+
 ```
 
 ---
@@ -572,7 +567,11 @@ class ProvisionerMessage(BaseMessage):
 
 
 class ProvisionerResult(BaseResult):
-    """Provisioning result."""
+    """
+    Provisioning result.
+    Stream: provisioner:results
+    Consumers: scheduler (update DB), telegram-bot (notify admin)
+    """
     server_handle: str
     server_ip: str | None = None
     services_redeployed: int = 0
