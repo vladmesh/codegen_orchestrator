@@ -275,7 +275,7 @@ The **worker-wrapper** is a Python process that:
 │   │            CLI-Agent (subprocess)               │   │
 │   │                                                 │   │
 │   │  Claude Code / Factory Droid                    │   │
-│   │  Uses: orchestrator-cli, git, copier, etc.      │   │
+│   │  Uses: orchestrator-cli, git, etc.              │   │
 │   └─────────────────────────────────────────────────┘   │
 │                                                         │
 └─────────────────────────────────────────────────────────┘

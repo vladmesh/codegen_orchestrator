@@ -50,7 +50,7 @@ The service acts as a consumer for two main queues.
 2.  **Prepare Inventory**: Generate a temporary in-memory Ansible inventory for the specific host.
 3.  **Run Playbook**: Execute `deploy_project.yml`.
     *   Variables: `repo`, `branch`, `port`, `env_vars`.
-4.  **Result**: Publish `AnsibleDeployResult` to `deploy:result:{request_id}`.
+4.  **Result**: Publish `AnsibleDeployResult` to `deploy:results` (Shared Queue).
 
 ## 3. Architecture & Isolation
 

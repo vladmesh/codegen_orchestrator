@@ -65,7 +65,7 @@ These tests run the full service loop but bypass the actual `subprocess.run`.
 **Scenario C: Deployment Success**
 1.  **Trigger:** Publish `AnsibleDeployMessage(project_id="p1", ...)` to `ansible:deploy:queue`.
 2.  **Mock Behavior:** Interceptor returns `rc=0`.
-3.  **Assert:** `AnsibleDeployResult` published to `deploy:result:{request_id}`.
+3.  **Assert:** `AnsibleDeployResult` published to `deploy:results`.
 
 ### 3.3 E2E Tests (Nightly Only)
 

@@ -60,7 +60,7 @@ class TestHarness:
         #    - scaffolder:queue
         #    - worker:commands
         #    - ansible:deploy:queue
-        #    - deploy:result:*
+        #    - deploy:results
         pass
 
     async def send_engineering_request(self, project_id: str, task: str):
@@ -138,7 +138,7 @@ This scenario verifies: `Deploy Start` -> `Env Analysis` -> `Secrets` -> `Ansibl
     *   *Assert Payload*: `server_ip`, `repo_full_name`, `secrets_ref`.
 
 3.  **Ansible Execution**:
-    *   *Action*: Harness sends `AnsibleDeployResult(status="success", url="http://deploy.com")` to `deploy:result:{request_id}`.
+    *   *Action*: Harness sends `AnsibleDeployResult(status="success", url="http://deploy.com")` to `deploy:results`.
 
 4.  **Completion**:
     *   *Assert*: LangGraph updates Task status to `COMPLETED` (via API mock or DB).

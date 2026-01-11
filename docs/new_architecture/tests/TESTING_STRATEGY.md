@@ -137,7 +137,7 @@
 - [ ] EnvAnalyzerNode → determine deploy strategy
 - [ ] SecretResolverNode → resolve secrets (mock vault)
 - [ ] DeployerNode → publish to `ansible:deploy:queue`
-- [ ] Wait for `deploy:result:{request_id}`
+- [ ] Wait for `deploy:results` (match correlation_id)
 - [ ] Success → publish `DeployResult`
 
 **Mocks:**
@@ -214,7 +214,7 @@
 - [ ] Publish result to `provisioner:result:{request_id}`
 - [ ] Consume `AnsibleDeployMessage` from `ansible:deploy:queue`
 - [ ] Run deploy playbook
-- [ ] Publish result to `deploy:result:{request_id}`
+- [ ] Publish result to `deploy:results`
 
 **Mocks:**
 - Ansible subprocess (capture commands, return mock results)

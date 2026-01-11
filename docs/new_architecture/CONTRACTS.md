@@ -16,19 +16,8 @@
 | Queue | DTO | Initiator | Consumer | Purpose |
 |-------|-----|-----------|----------|---------|
 | `engineering:queue` | EngineeringMessage | PO-Worker | langgraph | Start development task |
+| `deploy:results` | AnsibleDeployResult | infra-service | langgraph | Deploy result (Shared) |
 | `deploy:queue` | DeployMessage | PO-Worker | langgraph | Start deploy task |
-| `scaffolder:queue` | ScaffolderMessage | langgraph | scaffolder | Init project structure |
-| `worker:commands` | WorkerCommand | langgraph, telegram-bot | worker-manager | Spawn/kill workers |
-| `worker:responses` | WorkerResponse | worker-manager | langgraph | Worker lifecycle events |
-| `worker:lifecycle` | WorkerLifecycleEvent | worker-wrapper | worker-manager | Worker state changes |
-| `worker:po:{user_id}:input` | POWorkerInput | telegram-bot | PO worker-wrapper | User message to PO |
-| `worker:po:{user_id}:output` | POWorkerOutput | PO worker-wrapper | telegram-bot | PO reply to user |
-| `worker:developer:input` | DeveloperWorkerInput | langgraph | Developer worker-wrapper | Task for Developer |
-| `worker:developer:output` | DeveloperWorkerOutput | Developer worker-wrapper | langgraph | Developer result |
-| `provisioner:queue` | ProvisionerMessage | scheduler | infra-service | Setup server |
-| `provisioner:results` | ProvisionerResult | infra-service | scheduler, telegram-bot | Provisioning result |
-| `ansible:deploy:queue` | AnsibleDeployMessage | langgraph | infra-service | Run ansible deploy |
-| `deploy:result:{request_id}` | AnsibleDeployResult | infra-service | langgraph | Deploy result |
 
 ### Transport Layer Note
 
@@ -121,8 +110,8 @@ sequenceDiagram
     LG->>Redis: XADD ansible:deploy:queue
     Redis-->>Infra: Consumer reads
     Infra->>Infra: Run Ansible
-    Infra->>Redis: XADD deploy:result:{request_id}
-    Redis-->>LG: Resume graph
+    Infra->>Redis: XADD deploy:results
+    Redis-->>LG: Resume graph (via listener)
 ```
 
 ---
@@ -752,7 +741,10 @@ class AnsibleDeployMessage(BaseMessage):
 
 
 class AnsibleDeployResult(BaseResult):
-    """Ansible deploy result."""
+    """
+    Ansible deploy result.
+    Stream: deploy:results
+    """
     deployed_url: str | None = None
     server_ip: str | None = None
     port: int | None = None

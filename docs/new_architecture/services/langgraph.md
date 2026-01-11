@@ -40,7 +40,7 @@ We model business domains as **Subgraphs**. External agents (like the Product Ow
 *   **Implementation**:
     *   `Deployer` node DOES NOT run Ansible.
     *   It sends a job to `ansible:deploy:queue`.
-    *   It waits for result in `deploy:result`.
+    *   It waits for result in `deploy:results`.
 
 ### 3.2 Communication Pattern: The "Async Wait" (Human-in-the-loop Style)
 
@@ -51,7 +51,7 @@ Since LangGraph nodes are Python functions, we cannot simple `await` for hours. 
 3.  **Interrupt**: The node returns a special `Command(interrupt=True)` or simply ends its turn, expecting an input from a specific key. **The execution suspends and state is saved to Postgres.** The Python process is freed.
 4.  **External Work**: The Worker/Service processes the task (taking minutes/hours).
 5.  **Resume (The Listener)**:
-    *   **Option A (Redis)**: A `ResponseListener` receives result from `worker:responses` or `deploy:result`.
+    *   **Option A (Redis)**: A `ResponseListener` pool receives results from `worker:responses` or `deploy:results`. It filters by `correlation_id` (or `request_id`).
     *   **Option B (Polling)**: For services like Scaffolder that only update DB, a `StatusPoller` checks for state transitions (e.g., `Project.status == SCAFFOLDED`).
     *   **Action**: Call `graph.update_state(...)` and `graph.invoke(...)` to resume.
 
