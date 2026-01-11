@@ -8,7 +8,7 @@
 
 The `worker-manager` is responsible for:
 1.  **Spawning** new Worker containers with specific configurations.
-2.  **Configuring** the Worker environment (injecting instructions, tools, modules).
+2.  **Configuring** the Worker environment (injecting instructions, tools, capabilities).
 3.  **Terminating** Workers when they are no longer needed.
 4.  **Monitoring** Worker status (health, existence).
 
@@ -34,7 +34,7 @@ The manager listens to `worker:commands`.
     *   Format: `["project.get", "project.list", "engineering.*"]` (wildcards supported).
     *   *Mechanism*: Passed as `ALLOWED_COMMANDS` env var. CLI validates before execution.
     *   See [cli_orchestrator.md](../tools/cli_orchestrator.md#4-permission-model) for details.
-*   `modules` (List[Enum]):
+*   `capabilities` (List[Enum]):
     *   `GIT`
     *   `GITHUB_CLI`
     *   `CURL`
@@ -93,7 +93,7 @@ Queue naming depends on worker type:
 
 ## 4. Open Decisions
 
-### 4.1 Modules & Image Strategy (Local Cache + LRU GC)
+### 4.1 Capabilities & Image Strategy (Local Cache + LRU GC)
 
 *   **Concern**: Uncontrolled growth of Docker artifacts (layers/images) on disk.
 *   **Solution**: **Local Registry with Active Garbage Collection**.

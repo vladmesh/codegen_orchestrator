@@ -232,7 +232,116 @@ class UserDTO(BaseModel):
     
     id: int
     telegram_id: int
+
     is_admin: bool = False
+```
+
+---
+
+# Part 1.1: Additional DTOs
+
+## ServerDTO
+
+```python
+# shared/contracts/dto/server.py
+
+from enum import Enum
+from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+
+class ServerStatus(str, Enum):
+    NEW = "new"
+    PENDING_SETUP = "pending_setup"
+    ACTIVE = "active"
+    UNREACHABLE = "unreachable"
+    MAINTENANCE = "maintenance"
+
+class ServerDTO(BaseModel):
+    """Server response."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: int
+    name: str
+    ip_address: str
+    status: ServerStatus
+    provider_id: str
+    specs: dict = {}
+    last_health_check: datetime | None = None
+```
+
+## IncidentDTO
+
+```python
+# shared/contracts/dto/incident.py
+
+from enum import Enum
+from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+
+class IncidentSeverity(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+class IncidentStatus(str, Enum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+class IncidentDTO(BaseModel):
+    """Incident response."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: int
+    server_id: int
+    severity: IncidentSeverity
+    status: IncidentStatus
+    title: str
+    description: str | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+```
+
+## ServiceDeploymentDTO
+
+```python
+# shared/contracts/dto/service_deployment.py
+
+from pydantic import BaseModel, ConfigDict
+from datetime import datetime
+
+class ServiceDeploymentDTO(BaseModel):
+    """Service Deployment response."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: int
+    project_id: str
+    server_id: int
+    service_name: str
+    port: int
+    status: str
+    url: str | None = None
+    deployed_at: datetime
+```
+
+## AgentConfigDTO
+
+```python
+# shared/contracts/dto/agent_config.py
+
+from pydantic import BaseModel, ConfigDict
+from typing import Literal
+
+class AgentConfigDTO(BaseModel):
+    """Agent configuration response."""
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: int
+    name: str
+    type: Literal["claude", "factory"]
+    model: str
+    system_prompt: str
+    is_active: bool = True
 ```
 
 ---
@@ -346,6 +455,12 @@ class ScaffolderMessage(BaseMessage):
     project_name: str
     modules: list[ServiceModule]
 
+    # No Result Message:
+    # Scaffolder updates Project status in DB directly to 'SCAFFOLDED'.
+    # It does NOT publish a result message to Redis.
+    # LangGraph polls API or listens to 'project_updates' stream (if implemented).
+```
+
 
 
 ```
@@ -445,7 +560,59 @@ WorkerResponse = CreateWorkerResponse | DeleteWorkerResponse | StatusWorkerRespo
 
 ---
 
+
+## AgentVerdict (DTO from Agent)
+
+```python
+# shared/contracts/dto/agent_verdict.py
+
+class AgentVerdictStatus(str, Enum):
+    SUCCESS = "success"             # Task completed successfully
+    FAILURE = "failure"             # Task failed (retries exhausted)
+    IN_PROGRESS = "in_progress"     # Waiting for user input or external event
+
+class AgentVerdict(BaseModel):
+    """
+    Subjective result from the Agent.
+    Parsed from stdout JSON wrapped in <result> tags.
+    """
+    status: AgentVerdictStatus
+    summary: str                    # Human-readable summary
+    data: dict[str, Any] = {}       # Structured context (e.g., commit_sha)
+```
+
+## WorkerResult (DTO from Wrapper)
+
+```python
+# shared/contracts/dto/worker_result.py
+
+class WorkerResult(BaseModel):
+    """
+    Enriched result from the Worker Wrapper.
+    Sent to worker:{type}:{id}:output
+    """
+    # Identity
+    request_id: str
+    task_id: str | None = None
+    worker_id: str
+    
+    # Telemetry
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    exit_code: int
+
+    # Payload
+    verdict: AgentVerdict | None = None  # None if wrapper failed to parse or agent crashed
+    
+    # Error Handling
+    error: str | None = None             # System/Wrapper error
+```
+
+---
+
 ## WorkerLifecycleEvent
+
 
 **Stream:** `worker:lifecycle`  
 **Initiator:** worker-wrapper  

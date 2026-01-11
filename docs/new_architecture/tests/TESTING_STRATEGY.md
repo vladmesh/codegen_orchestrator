@@ -175,7 +175,7 @@
 - [ ] Consume `ScaffoldTaskMessage` from `scaffolder:queue`
 - [ ] Run copier with correct template + answers
 - [ ] Commit result to repo (mock git)
-- [ ] Publish `ScaffoldTaskResult` to callback stream
+- [ ] Verify project status in DB updated to `SCAFFOLDED`
 - [ ] Handle copier errors gracefully
 
 **Mocks:**

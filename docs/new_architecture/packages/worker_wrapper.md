@@ -16,10 +16,12 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 
 1. **Listen**: Subscribes to worker input Redis stream.
 2. **Process**: Forwards messages to CLI-Agent (Claude Code / Factory Droid).
-3. **Output Capture**: Collect agent response (stdout).
-4. **Publish**: Sends output to worker output stream.
-5. **Lifecycle Reporting**: Publish events to `worker:lifecycle`.
-6. **Graceful Shutdown**: Handle SIGTERM, cleanup, report exit.
+3. **Output Capture**: Collect agent output (stdout).
+4. **Result Parsing**: Extract `<result>...</result>` JSON block.
+5. **Enrichment**: Wrap verdict with telemetry (start/end time, duration).
+6. **Publish**: Sends `WorkerResult` to worker output stream.
+7. **Lifecycle Reporting**: Publish events to `worker:lifecycle`.
+8. **Graceful Shutdown**: Handle SIGTERM, cleanup, report exit.
 
 ## 2.1 Queue Naming by Worker Type
 
@@ -80,18 +82,14 @@ class WorkerInputMessage(BaseModel):
     session_continue: bool = True  # Continue existing session
 ```
 
-### 4.2 Output Message
+### 4.2 Output Message (`WorkerResult`)
 
-```python
-class WorkerOutputMessage(BaseModel):
-    """Response from worker."""
-    
-    request_id: str              # Matches input request_id
-    status: Literal["success", "error", "timeout"]
-    response: str | None = None  # Agent's response text
-    error: str | None = None     # Error message if failed
-    duration_ms: int             # Execution time
-```
+See `CONTRACTS.md` for full DTO.
+
+1.  Wrapper looks for regex: `<result>(.*?)</result>` (DOTALL).
+2.  Parses JSON.
+3.  Constructs `WorkerResult`.
+4.  Pushes to Redis.
 
 ### 4.3 Lifecycle Events (`worker:lifecycle`)
 

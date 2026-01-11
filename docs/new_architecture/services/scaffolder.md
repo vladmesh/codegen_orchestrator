@@ -66,7 +66,7 @@ The service requires **GitHub App Credentials** to perform actions on behalf of 
 ## 5. Error Handling
 
 *   **Repo Exists**: If repo exists and is not empty -> Fail or Skip (Idempotency).
-*   **Copier Error**: Log output -> Mark project as `failed` -> Notify user via event stream.
+*   **Copier Error**: Log output -> Mark project as `failed` in DB -> Notify user via event stream `task_progress`.
 *   **Cleanup**: Always remove the temporary directory (`/tmp/project_xyz`) after push, regardless of success/failure.
 
 ## 6. Implementation Notes

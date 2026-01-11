@@ -34,6 +34,7 @@ The `api` service is the **single source of truth** for persistent data. It prov
 | `/api/api_keys` | APIKey | Access keys |
 | `/api/available_models` | AvailableModel | LLM model registry |
 | `/api/rag` | RAG | Vector search indices |
+| `/api/task_executions` | TaskExecution | Worker execution usage/results |
 
 ## 4. ORM Ownership
 
@@ -48,6 +49,9 @@ api/src/models/
 ├── task.py           # Task model
 ├── server.py         # Server model
 ├── user.py           # User model
+├── server.py         # Server model
+├── user.py           # User model
+├── task_execution.py # TaskExecution model
 └── ...               # All other DB entities
 ```
 
@@ -138,4 +142,38 @@ CLI → XADD engineering:queue → triggers Engineering Flow
 
 ### 7.3 Simplify schemas:
 - `ProjectCreate` **must** include `modules` so Scaffolder knows what to generate.
+- `ProjectCreate` **must** include `modules` so Scaffolder knows what to generate.
 - API stores these modules in the `Project` entity.
+
+### 7.4 Add `TaskExecution` Model
+
+New model to store results from workers:
+
+```python
+# api/src/models/task_execution.py
+
+class TaskExecution(Base):
+    """
+    History of worker executions for a task.
+    Stores 'WorkerResult' from CONTRACTS.md.
+    """
+    __tablename__ = "task_executions"
+
+    id = Column(String, primary_key=True)  # request_id from worker
+    task_id = Column(String, ForeignKey("tasks.id"), nullable=True) # Optional link to high-level task
+    worker_id = Column(String, nullable=False)
+    
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=False)
+    duration_ms = Column(Integer, nullable=False)
+    exit_code = Column(Integer, nullable=False)
+    
+    # The JSON payload (AgentVerdict or Error)
+    result_data = Column(JSONB, nullable=True) 
+    
+    # Derived from result_data for easy querying
+    status = Column(String, nullable=False) # success/failure/in_progress/error
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+```
+
