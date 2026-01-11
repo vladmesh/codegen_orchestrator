@@ -925,7 +925,13 @@ shared/contracts/
 │   ├── __init__.py
 │   ├── project.py           # ProjectDTO, ProjectCreate
 │   ├── task.py              # TaskDTO, TaskCreate
-│   └── user.py              # UserDTO
+│   ├── user.py              # UserDTO
+│   ├── server.py
+│   ├── incident.py
+│   ├── service_deployment.py
+│   ├── agent_config.py
+│   ├── allocation.py
+│   └── task_execution.py
 └── queues/
     ├── __init__.py
     ├── engineering.py

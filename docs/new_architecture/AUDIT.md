@@ -11,39 +11,17 @@
 | Severity | Count | Description |
 |----------|-------|-------------|
 | Critical | 0 | ✅ Все критические проблемы решены |
-| Medium | 4 | Несогласованности в контрактах |
+| Critical | 0 | ✅ Все критические проблемы решены |
+| Medium | 3 | Несогласованности в контрактах |
 | Low | 11 | Недостаточно проработано |
 
 ---
 
 ## Medium Issues (Contract Inconsistencies)
 
-### 1. File structure diagram outdated
+## Medium Issues (Contract Inconsistencies)
 
-**File:** `CONTRACTS.md`
-
-End of file shows:
-```
-dto/
-├── project.py
-├── task.py
-└── user.py
-```
-
-Missing files defined earlier in same document:
-- `server.py`
-- `incident.py`
-- `service_deployment.py`
-- `agent_config.py`
-- `allocation.py`
-- `task_execution.py`
-
-**Resolution:**
-- [ ] Update file structure to include all DTOs
-
----
-
-### 2. GitHub Client usage in API contradicts "thin API" principle
+### 1. GitHub Client usage in API contradicts "thin API" principle
 
 **File:** `shared/github_client.md`
 
@@ -64,7 +42,7 @@ But `api.md` states API should be "thin CRUD layer" with NO external API calls!
 
 ---
 
-### 3. Engineering vs Developer terminology inconsistent
+### 2. Engineering vs Developer terminology inconsistent
 
 **Files:** Multiple
 
@@ -83,7 +61,7 @@ But `api.md` states API should be "thin CRUD layer" with NO external API calls!
 
 ---
 
-### 4. Consumer vs Service naming confusion
+### 3. Consumer vs Service naming confusion
 
 **File:** `GLOSSARY.md`
 
@@ -354,5 +332,6 @@ Open question:
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-11 | Claude | Resolved: File structure diagram (Issue #1) |
 | 2026-01-11 | Claude | Resolved: Docker API mocking (Variant D) |
 | 2026-01-11 | Claude | Initial audit |
