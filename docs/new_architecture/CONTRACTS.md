@@ -897,8 +897,8 @@ class AnsibleDeployMessage(BaseMessage):
     server_ip: str
     port: int
     modules: list[str] | None = None
-    github_token_ref: str
-    secrets_ref: str
+    github_installation_id: str  # To generate ephemeral token. See SECRETS.md
+    secrets_map: dict[str, str] = {}  # Map: {env_var: secret_name}
 
 
 class AnsibleDeployResult(BaseResult):

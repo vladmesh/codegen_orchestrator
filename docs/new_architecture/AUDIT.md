@@ -12,7 +12,7 @@
 |----------|-------|-------------|
 | Critical | 0 | ✅ Все критические проблемы решены |
 | Medium | 0 | ✅ Все несогласованности устранены |
-| Low | 5 | Недостаточно проработано |
+| Low | 4 | Недостаточно проработано |
 
 ---
 
@@ -26,26 +26,8 @@
 
 ---
 
-### 9. Secrets handling - vault not described
 
-**File:** `CONTRACTS.md`
 
-`AnsibleDeployMessage` has:
-```python
-github_token_ref: str    # Key to fetch GitHub Token from Vault/Secrets
-secrets_ref: str         # Key to fetch Project Secrets
-```
-
-Questions:
-- What vault? HashiCorp? AWS? PostgreSQL table?
-- Where is mapping `ref → actual_value`?
-- Who resolves refs? SecretResolverNode? infra-service?
-- Secret rotation strategy?
-
-**Resolution:**
-- [ ] Add `SECRETS.md` document
-- [ ] Define vault choice and API
-- [ ] Document resolution flow
 
 ---
 
@@ -154,7 +136,7 @@ Open question:
 2. ~~**Add missing DTOs**~~ ✅ Done - AllocationDTO, TaskExecutionDTO added
 3. **Add sequence diagrams for error flows** - not just happy path
 4. **Specify retry policy** - globally and per-operation
-5. **Describe secrets architecture** - vault choice, resolution, rotation
+5. ~~**Describe secrets architecture**~~ ✅ Done - created SECRETS.md
 6. **Fix MIGRATION_PLAN.md** - numbering, dependencies
 
 ### During Implementation
@@ -183,4 +165,5 @@ Open question:
 | 2026-01-11 | Claude | Resolved: GitHub usage in API (Issue #1) |
 | 2026-01-11 | Claude | Resolved: File structure diagram (Issue #1) |
 | 2026-01-11 | Claude | Resolved: Docker API mocking (Variant D) |
+| 2026-01-11 | Claude | Resolved: Secrets handling (#9) - created SECRETS.md & updated CONTRACTS.md |
 | 2026-01-11 | Claude | Initial audit |
