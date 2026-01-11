@@ -102,11 +102,11 @@ class WorkerLifecycleEvent(BaseModel):
     """Worker lifecycle notification."""
     
     worker_id: str
-    event: Literal["started", "ready", "busy", "completed", "failed", "stopped"]
+    event: Literal["started", "completed", "failed", "stopped"]
     timestamp: datetime
     details: dict = {}           # Additional context (error, result summary)
 
-> **Note**: Events `busy` and `completed` trigger `last_activity` update in Worker Manager to prevent Auto-Pause.
+> **Note**: Internal states `ready` and `busy` are NOT published to Redis, they are used locally by the wrapper.
 ```
 
 ## 5. Agent Invocation
@@ -292,8 +292,8 @@ async def main():
         input_stream = "worker:developer:input"
         output_stream = "worker:developer:output"
     
-    # Report ready
-    await publish_lifecycle(redis, worker_id, "ready")
+    # Report started
+    await publish_lifecycle(redis, worker_id, "started")
     
     while True:
         # 1. Wait for message
@@ -303,8 +303,8 @@ async def main():
             for entry_id, data in entries:
                 request = WorkerInputMessage.model_validate(json.loads(data["data"]))
                 
-                # 2. Report busy
-                await publish_lifecycle(redis, worker_id, "busy")
+                # 2. Log start of processing
+                # await publish_lifecycle(redis, worker_id, "busy") # Internal state only
                 
                 # 3. Invoke agent
                 result = await invoke_agent(agent_type, session_id, request)
@@ -312,8 +312,8 @@ async def main():
                 # 4. Publish response
                 await redis.xadd(output_stream, {"data": result.model_dump_json()})
                 
-                # 5. Report ready
-                await publish_lifecycle(redis, worker_id, "ready")
+                # 5. Log ready for next
+                # await publish_lifecycle(redis, worker_id, "ready") # Internal state only
 
 
 async def invoke_agent(agent_type: str, session_id: str, request: WorkerInputMessage):

@@ -11,7 +11,7 @@
 | Severity | Count | Description |
 |----------|-------|-------------|
 | Critical | 0 | ✅ Все критические проблемы решены |
-| Medium | 5 | Несогласованности в контрактах |
+| Medium | 4 | Несогласованности в контрактах |
 | Low | 12 | Недостаточно проработано |
 
 ---
@@ -96,22 +96,7 @@ But there's no `engineering-consumer` service. It's part of `langgraph` service.
 - [ ] Clarify: "consumer" is logical role within langgraph, not separate service
 - [ ] Update GLOSSARY.md
 
----
 
-### 5. WorkerLifecycleEvent states inconsistent
-
-**Files:** `worker_wrapper.md`, `CONTRACTS.md`
-
-| File | States |
-|------|--------|
-| `worker_wrapper.md` section 4.3 | `started`, `ready`, `busy`, `completed`, `failed`, `stopped` |
-| `CONTRACTS.md` WorkerLifecycleEvent | `started`, `completed`, `failed` |
-
-**Resolution:**
-- [ ] Align lifecycle states across documents
-- [ ] Document which states are published when
-
----
 
 ## Low Priority Issues (Underspecified)
 

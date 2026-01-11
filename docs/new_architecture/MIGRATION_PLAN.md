@@ -75,7 +75,7 @@ services/<service-name>/
 3.  **Worker Wrapper** (`packages/worker-wrapper`):
     *   *New Package*: "Нервная система" воркера.
     *   *Feature*: Реализация Loop `XREAD` -> Subprocess (Agent) -> `XADD`.
-    *   *Feature*: Публикация событий `worker:lifecycle` (Started, Busy, Ready, Failed).
+    *   *Feature*: Публикация событий `worker:lifecycle` (Started, Completed, Failed, Stopped).
     *   *Test*: Integration tests с реальным Redis и Mock Agent.
 
 4.  **Infra Service** (Official Rename from `infrastructure-worker`):
