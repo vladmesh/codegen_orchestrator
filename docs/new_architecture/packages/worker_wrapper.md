@@ -27,7 +27,7 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 
 | Worker Type | Input Queue | Output Queue | Notes |
 |-------------|-------------|--------------|-------|
-| **PO** | `worker:po:{user_id}:input` | `worker:po:{user_id}:output` | Per-user queues, long-lived session |
+| **PO** | `worker:po:{worker_id}:input` | `worker:po:{worker_id}:output` | Per-user queues, long-lived session |
 | **Developer** | `worker:developer:input` | `worker:developer:output` | **Shared queues**, ephemeral (stateless) |
 
 **Why the difference?**

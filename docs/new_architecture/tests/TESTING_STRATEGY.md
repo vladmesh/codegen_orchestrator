@@ -109,8 +109,8 @@
 - [ ] Known user, active session → reuse worker
 - [ ] Known user, dead worker → create new worker
 - [ ] Quick command `/projects` → API call, response
-- [ ] User message → publish to `worker:po:{user_id}:input`
-- [ ] Worker response → read from `worker:po:{user_id}:output`, send to user
+- [ ] User message → publish to `worker:po:{worker_id}:input`
+- [ ] Worker response → read from `worker:po:{worker_id}:output`, send to user
 
 **Mocks:**
 - Telegram API (aiogram test client)

@@ -71,7 +71,7 @@ sequenceDiagram
     participant Scaff as scaffolder
 
     User->>TG: "Сделай блог"
-    TG->>PO: Forward via worker:po:{id}:input
+    TG->>PO: Forward via worker:po:{worker_id}:input
     PO->>CLI: orchestrator project create --name blog --modules backend,telegram
     
     Note over CLI: Atomic operation
@@ -630,11 +630,11 @@ class WorkerLifecycleEvent(BaseModel):
 
 Коммуникация между Telegram Bot и Product Owner Worker.
 
-**Queue (input):** `worker:po:{user_id}:input`  
+**Queue (input):** `worker:po:{worker_id}:input`  
 **Initiator:** telegram-bot  
 **Consumer:** worker-wrapper (inside PO container)
 
-**Queue (output):** `worker:po:{user_id}:output`  
+**Queue (output):** `worker:po:{worker_id}:output`  
 **Initiator:** worker-wrapper (inside PO container)  
 **Consumer:** telegram-bot
 

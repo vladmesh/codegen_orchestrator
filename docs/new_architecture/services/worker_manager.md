@@ -67,7 +67,7 @@ Queue naming depends on worker type:
 
 | Worker Type | Input Queue | Output Queue | Lifecycle |
 |-------------|-------------|--------------|-----------|
-| **PO** | `worker:po:{user_id}:input` | `worker:po:{user_id}:output` | Long-lived, per-user |
+| **PO** | `worker:po:{worker_id}:input` | `worker:po:{worker_id}:output` | Long-lived, per-user |
 | **Developer** | `worker:developer:input` | `worker:developer:output` | Ephemeral, per-task |
 
 1.  **Input Queue**:

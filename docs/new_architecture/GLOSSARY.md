@@ -26,7 +26,7 @@
 
 | Type | Lifecycle | Queue Pattern | Session |
 |------|-----------|---------------|---------|
-| **PO Worker** | Long-lived (per user) | `worker:po:{user_id}:*` | Yes |
+| **PO Worker** | Long-lived (per user) | `worker:po:{worker_id}:*` | Yes |
 | **Developer Worker** | Ephemeral (per task) | `worker:developer:*` | No (stateless) |
 
 1.  **Product Owner (PO)** — Единая точка входа. Общается с юзером, управляет проектами через CLI. Сессия сохраняется между сообщениями.

@@ -24,7 +24,7 @@ We treat the bot as a reactive system:
 ### 3.1 `redis_client` (Real)
 *   Standard Redis fixture (same as other services) to verify:
     *   Session keys created (`session:{user_id}`).
-    *   Messages pushed to `worker:commands` or `worker:po:{user_id}:input`.
+    *   Messages pushed to `worker:commands` or `worker:po:{worker_id}:input`.
     *   Listening to `provisioner:results`.
 
 ### 3.2 `api_mock` (respx)
@@ -69,10 +69,10 @@ Verify the core chat loop.
 
 *   **Step 2: Message Forwarding**:
     *   User `123` sends "Build app".
-    *   **Assert**: Bot publishes "Build app" to `worker:po:123:input`.
+    *   **Assert**: Bot publishes "Build app" to `worker:po:po-worker-123:input`.
 
 *   **Step 3: Worker Reply**:
-    *   **Trigger**: Inject message into Redis `worker:po:123:output`.
+    *   **Trigger**: Inject message into Redis `worker:po:po-worker-123:output`.
     *   **Assert**: Bot listener picks it up and calls `send_message(chat_id=123, text="Building...")`.
 
 ### 4.4 Admin Notifications
