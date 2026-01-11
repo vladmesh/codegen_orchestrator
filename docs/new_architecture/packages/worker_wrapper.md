@@ -10,16 +10,27 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 
 > **Rule #1:** Wrapper is the ONLY process that talks to Redis.
 > **Rule #2:** CLI-Agent (Claude/Factory) runs in headless mode — no interactive TTY.
-> **Rule #3:** Wrapper manages session continuity across messages.
+> **Rule #3:** PO Workers manage session continuity; Developer Workers are stateless.
 
 ## 2. Responsibilities
 
-1. **Listen**: Subscribes to `worker:{type}:{id}:input` Redis stream.
-2. **Process**: Forwards messages to CLI-Agent (Claude Code / Factory Droid) with prompt + session.
+1. **Listen**: Subscribes to worker input Redis stream.
+2. **Process**: Forwards messages to CLI-Agent (Claude Code / Factory Droid).
 3. **Output Capture**: Collect agent response (stdout).
-4. **Publish**: Sends output to `worker:{type}:{id}:output` stream.
+4. **Publish**: Sends output to worker output stream.
 5. **Lifecycle Reporting**: Publish events to `worker:lifecycle`.
 6. **Graceful Shutdown**: Handle SIGTERM, cleanup, report exit.
+
+## 2.1 Queue Naming by Worker Type
+
+| Worker Type | Input Queue | Output Queue | Notes |
+|-------------|-------------|--------------|-------|
+| **PO** | `worker:po:{user_id}:input` | `worker:po:{user_id}:output` | Per-user queues, long-lived session |
+| **Developer** | `worker:developer:input` | `worker:developer:output` | Shared queues, ephemeral (stateless) |
+
+**Why the difference?**
+- **PO Workers** are long-lived and handle ongoing conversations with a specific user.
+- **Developer Workers** are ephemeral — spawned per task, process one job, exit. Stateless: context is code in repo + error messages.
 
 ## 3. Architecture
 
@@ -31,7 +42,7 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 │   ┌─────────────────────────────────────────────────────┐   │
 │   │                 worker-wrapper (PID 1)              │   │
 │   │                                                     │   │
-│   │  1. XREAD worker:{type}:{id}:input (blocking)        │   │
+│   │  1. XREAD $INPUT_QUEUE (blocking)                   │   │
 │   │            │                                        │   │
 │   │            ▼                                        │   │
 │   │  2. Parse message: { prompt, timeout, ... }         │   │
@@ -44,18 +55,20 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 │   │  4. Wait for completion (with timeout)              │   │
 │   │            │                                        │   │
 │   │            ▼                                        │   │
-│   │  5. XADD worker:{type}:{id}:output { response }      │   │
+│   │  5. XADD $OUTPUT_QUEUE { response }                 │   │
 │   │            │                                        │   │
 │   │            ▼                                        │   │
-│   │  6. Loop back to step 1                             │   │
+│   │  6. Loop back to step 1 (PO) or exit (Developer)    │   │
 │   └─────────────────────────────────────────────────────┘   │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
+> Queue names are determined by worker type — see table in section 2.1.
+
 ## 4. Message Formats
 
-### 4.1 Input Message (`worker:{type}:{id}:input`)
+### 4.1 Input Message
 
 ```python
 class WorkerInputMessage(BaseModel):
@@ -67,7 +80,7 @@ class WorkerInputMessage(BaseModel):
     session_continue: bool = True  # Continue existing session
 ```
 
-### 4.2 Output Message (`worker:{type}:{id}:output`)
+### 4.2 Output Message
 
 ```python
 class WorkerOutputMessage(BaseModel):

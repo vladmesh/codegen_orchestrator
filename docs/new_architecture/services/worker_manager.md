@@ -63,25 +63,33 @@ Inside the container, there is a **Python Wrapper** (part of `worker-base`) that
 
 ### 3.1 Communication Flow (Data Plane)
 
-1.  **Input Queue** (`worker:{type}:{id}:input`):
-    *   The Wrapper listens to this Redis Stream.
-    *   Ideally, the User/PO pushes commands here directly.
-    *   For "Headless" mode: The `worker-manager` *can* push the initial prompt here after spawning, but subsequent interaction happens directly.
+Queue naming depends on worker type:
 
-2.  **Output Queue** (`worker:{type}:{id}:output`):
-    *   The Wrapper captures `stdout`, `stderr`, and any explicit tool outputs.
-    *   Pushes structured events to Redis:
+| Worker Type | Input Queue | Output Queue | Lifecycle |
+|-------------|-------------|--------------|-----------|
+| **PO** | `worker:po:{user_id}:input` | `worker:po:{user_id}:output` | Long-lived, per-user |
+| **Developer** | `worker:developer:input` | `worker:developer:output` | Ephemeral, per-task |
+
+1.  **Input Queue**:
+    *   The Wrapper listens to this Redis Stream.
+    *   PO: Telegram Bot pushes user messages.
+    *   Developer: LangGraph pushes task specification.
+
+2.  **Output Queue**:
+    *   The Wrapper captures agent output and pushes structured events:
         ```json
         {
-          "type": "stdout",
-          "content": "I am checking the files...",
-          "timestamp": "..."
+          "request_id": "...",
+          "status": "success",
+          "response": "Done. Created PR #42.",
+          "duration_ms": 45000
         }
         ```
 
-3.  **Headless Execution**:
-    *   If a Worker is spawned for a single task, the Spawner can optionally inject the initial prompt into `worker:{type}:{id}:input` immediately after creating the container.
-    *   The Worker runs, processes the input, and can signal completion via a special output event.
+3.  **Headless Execution** (Developer Workers):
+    *   LangGraph spawns worker and pushes task to `worker:developer:input`.
+    *   Worker processes, publishes result, exits.
+    *   Stateless — context is code in repo + error messages.
 
 ## 4. Open Decisions
 

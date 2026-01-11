@@ -20,10 +20,17 @@
 - `scaffolder` — обрабатывает scaffolder:queue
 
 ### Worker (Воркер)
-Эфемерный контейнер с CLI-Agent внутри.
+Контейнер с CLI-Agent внутри.
+
 **Типы:**
-1.  **Product Owner (PO)** — Единая точка входа. Общается с юзером, управляет проектами через CLI.
-2.  **Task Worker** — (Legacy/Specific) Выполняет конкретную задачу если нужно (напр. написать код), но чаще это скрыто внутри подграфов.
+
+| Type | Lifecycle | Queue Pattern | Session |
+|------|-----------|---------------|---------|
+| **PO Worker** | Long-lived (per user) | `worker:po:{user_id}:*` | Yes |
+| **Developer Worker** | Ephemeral (per task) | `worker:developer:*` | No (stateless) |
+
+1.  **Product Owner (PO)** — Единая точка входа. Общается с юзером, управляет проектами через CLI. Сессия сохраняется между сообщениями.
+2.  **Developer Worker** — Эфемерный. Выполняет одну задачу и завершается. Stateless — контекст это код в репо + ошибки.
 
 **Управляется:** `worker-manager`
 **Конфигурация:** Промпты берутся из `CLAUDE.md` (для Claude) или `AGENTS.md` (общее/другие).

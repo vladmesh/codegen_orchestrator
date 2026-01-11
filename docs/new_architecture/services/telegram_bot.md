@@ -124,7 +124,10 @@ When spawning PO, bot sends to `worker:commands`:
 CreateWorkerCommand(
     config=WorkerConfig(
         name=f"po-{user_id}",
-        agent="claude",
+        worker_type="po",
+        agent_type=AgentType.CLAUDE,
+        instructions=load_po_instructions(),  # From CLAUDE.md template
+        allowed_commands=["*"],               # PO has full access
         capabilities=[],
         env_vars={
             "USER_ID": str(user_id),
@@ -132,7 +135,6 @@ CreateWorkerCommand(
         },
     ),
     context={
-        "role": "product_owner",
         "user_telegram_id": str(telegram_id),
     },
 )

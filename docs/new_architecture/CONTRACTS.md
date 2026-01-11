@@ -23,8 +23,8 @@
 | `worker:lifecycle` | WorkerLifecycleEvent | worker-wrapper | worker-manager | Worker state changes |
 | `worker:po:{user_id}:input` | POWorkerInput | telegram-bot | PO worker-wrapper | User message to PO |
 | `worker:po:{user_id}:output` | POWorkerOutput | PO worker-wrapper | telegram-bot | PO reply to user |
-| `worker:developer:{task_id}:input` | DeveloperWorkerInput | langgraph | Developer worker-wrapper | Task for Developer |
-| `worker:developer:{task_id}:output` | DeveloperWorkerOutput | Developer worker-wrapper | langgraph | Developer result |
+| `worker:developer:input` | DeveloperWorkerInput | langgraph | Developer worker-wrapper | Task for Developer |
+| `worker:developer:output` | DeveloperWorkerOutput | Developer worker-wrapper | langgraph | Developer result |
 | `provisioner:queue` | ProvisionerMessage | scheduler | infra-service | Setup server |
 | `provisioner:results` | ProvisionerResult | infra-service | scheduler, telegram-bot | Provisioning result |
 | `ansible:deploy:queue` | AnsibleDeployMessage | langgraph | infra-service | Run ansible deploy |
@@ -208,7 +208,7 @@ class TaskCreate(BaseModel):
 class TaskDTO(BaseModel):
     """Task response."""
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: str
     project_id: str
     type: TaskType
@@ -511,26 +511,29 @@ class POWorkerOutput(BaseModel):
 
 Коммуникация между LangGraph (Engineering Subgraph) и Developer Worker.
 
-**Queue (input):** `worker:developer:{task_id}:input`  
-**Initiator:** langgraph (DeveloperNode)  
+**Design Decision:** Developer Workers are **ephemeral** (stateless). Each task spawns a fresh worker.
+Context is the code in repo + error messages — no session persistence needed.
+This simplifies scaling and reduces resource usage.
+
+**Queue (input):** `worker:developer:input` (shared queue, `task_id` in message)
+**Initiator:** langgraph (DeveloperNode)
 **Consumer:** worker-wrapper (inside Developer container)
 
-**Queue (output):** `worker:developer:{task_id}:output`  
-**Initiator:** worker-wrapper (inside Developer container)  
+**Queue (output):** `worker:developer:output` (shared queue)
+**Initiator:** worker-wrapper (inside Developer container)
 **Consumer:** langgraph (DeveloperNode)
 
 ```python
 # shared/contracts/queues/developer_worker.py
 
 from datetime import datetime
-from typing import Literal
 from pydantic import BaseModel, Field
 import uuid
 
 
 class DeveloperWorkerInput(BaseModel):
     """Task for Developer Worker from LangGraph."""
-    
+
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     task_id: str                    # Engineering task ID
     project_id: str                 # Project UUID
@@ -541,12 +544,17 @@ class DeveloperWorkerInput(BaseModel):
 
 class DeveloperWorkerOutput(BaseResult):
     """Result from Developer Worker to LangGraph."""
-    
+
     # request_id, status, error, duration_ms inherited from BaseResult
     task_id: str                    # Engineering task ID
-    result: str | None = None       # Agent's output (commit SHA, PR URL, etc.)
+    commit_sha: str | None = None   # Commit SHA if code was written
+    pr_url: str | None = None       # PR URL if created
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 ```
+
+> **Post-MVP:** Add `previous_attempts: list[AttemptLog]` to Input and `approach: str` to Output
+> for retry context when Tester/CI returns task for rework. For MVP, Developer sees current code
+> and error — sufficient for simple iterations.
 
 ---
 
