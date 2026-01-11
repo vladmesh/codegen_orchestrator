@@ -21,56 +21,64 @@
 ```mermaid
 flowchart TB
     subgraph Phase0["Phase 0: Foundation"]
-        SC[shared/contracts]
-        SR[shared/redis]
-        SL[shared/logging]
-        GH[GitHub Client]
-        API[API Refactor]
+        P0_1[P0.1 Contracts]
+        P0_2[P0.2 Redis]
+        P0_3[P0.3 Logging]
+        P0_4[P0.4 GH Client]
+        P0_5[P0.5 API]
     end
 
     subgraph Phase1["Phase 1: Base Components"]
-        CLI[Orchestrator CLI]
-        WW[Worker Wrapper]
-        IS[Infra Service]
-        WM[Worker Manager]
+        P1_1[P1.1 CLI]
+        P1_2[P1.2 Wrapper]
+        P1_3[P1.3 Infra]
+        P1_4[P1.4 Manager]
     end
 
     subgraph Phase2["Phase 2: Core Logic"]
-        SCF[Scaffolder]
-        LG[LangGraph Service]
+        P2_1[P2.1 Scaffolder]
+        P2_2[P2.2 LangGraph]
+        P2_5[P2.5 Tpl Tests]
     end
 
     subgraph Phase3["Phase 3: Access"]
-        TB[Telegram Bot]
+        P3_1[P3.1 TG Bot]
     end
 
     subgraph Phase4["Phase 4: E2E"]
-        E2E[System E2E]
+        P4_1[P4.1 E2E]
     end
 
-    %% Dependencies
-    SC --> CLI
-    SC --> WW
-    SC --> IS
-    SC --> SCF
-    SC --> LG
-    SC --> TB
-    SR --> CLI
-    SR --> WW
-    SR --> IS
-    SR --> LG
-    SR --> TB
-    GH --> SCF
-    GH --> LG
-    API --> CLI
-    API --> TB
-    WW --> WM
-    CLI --> WM
-    WM --> LG
-    SCF --> LG
-    IS --> LG
-    LG --> TB
-    TB --> E2E
+    %% Phase 1 Dependencies
+    P0_1 --> P1_1
+    P0_2 --> P1_1
+    P0_5 --> P1_1
+
+    P0_1 --> P1_2
+    P0_2 --> P1_2
+    P0_3 --> P1_2
+
+    P0_1 --> P1_3
+    P0_2 --> P1_3
+
+    P1_1 --> P1_4
+    P1_2 --> P1_4
+
+    %% Phase 2 Dependencies
+    P0_4 --> P2_1
+    P0_1 --> P2_1
+
+    P1_3 --> P2_2
+    P1_4 --> P2_2
+    P2_1 --> P2_2
+    P2_1 --> P2_5
+
+    %% Phase 3 Dependencies
+    P0_5 --> P3_1
+    P2_2 --> P3_1
+
+    %% Phase 4 Dependencies
+    P3_1 --> P4_1
 ```
 
 ---
@@ -88,8 +96,9 @@ flowchart TB
 | P1.2 | Worker Wrapper | `packages/worker-wrapper` | P0.1, P0.2, P0.3 | 1 |
 | P1.3 | Infra Service | `services/infra-service` | P0.1, P0.2 | 1 |
 | P1.4 | Worker Manager | `services/worker-manager` | P1.1, P1.2 | 1 |
-| P2.1 | Scaffolder | `services/scaffolder` | P0.4 | 2 |
+| P2.1 | Scaffolder | `services/scaffolder` | P0.1, P0.4 | 2 |
 | P2.2 | LangGraph Service | `services/langgraph` | P1.3, P1.4, P2.1 | 2 |
+| P2.5 | Template Tests | `tests/integration/template` | P2.1 | 2 |
 | P3.1 | Telegram Bot | `services/telegram-bot` | P0.5, P2.2 | 3 |
 | P4.1 | System E2E | `tests/e2e` | All above | 4 |
 
@@ -289,6 +298,26 @@ flowchart TB
 - [ ] Integration test: MockWorkerManager
 - [ ] Graph pauses and resumes correctly
 - [ ] Failures trigger retries (up to N times)
+
+---
+
+### P2.5 — service_template Integration Tests
+
+**Path:** `tests/integration/template/`  
+**Depends:** P2.1
+
+**Goal:** Validate orchestrator components work correctly with real service_template.
+
+**Tasks:**
+- [ ] Test: Scaffolder + Template Integration (real copier)
+- [ ] Test: Deploy Workflow Validation (parse generated main.yml)
+- [ ] Test: Secrets Injection Compatibility
+- [ ] Test: End-to-End Dry Run (No Deploy, No LLM)
+
+**Acceptance Criteria:**
+- [ ] Scaffolder generates valid project from real template
+- [ ] Generated workflows match Orchestrator expectations
+- [ ] Secret names match between code and template
 
 ---
 

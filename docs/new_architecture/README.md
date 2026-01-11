@@ -30,8 +30,8 @@
 
 | Очередь | Producer | Consumer |
 |---------|----------|----------|
-| `engineering:queue` | CLI, Telegram | engineering-consumer |
-| `deploy:queue` | CLI, Telegram | deploy-consumer |
+| `engineering:queue` | CLI, Telegram | langgraph |
+| `deploy:queue` | CLI, Telegram | langgraph |
 | `scaffolder:queue` | LangGraph | scaffolder |
 | `provisioner:queue` | Scheduler | infra-service (provisioning only) |
 | `worker:commands` | LangGraph, TelegramBot | worker-manager |
