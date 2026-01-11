@@ -52,8 +52,7 @@ class TestSetRepositorySecret:
             create_secret_response = MagicMock()
             create_secret_response.raise_for_status = MagicMock()
 
-            mock_client.get.return_value = public_key_response
-            mock_client.put.return_value = create_secret_response
+            mock_client.request.side_effect = [public_key_response, create_secret_response]
 
             # Call the method
             await github_client.set_repository_secret(
@@ -66,18 +65,22 @@ class TestSetRepositorySecret:
             # Verify get_token was called
             mock_get_token.assert_called_once_with("test-org", "test-repo")
 
-            # Verify public key was fetched
-            mock_client.get.assert_called_once()
-            get_call = mock_client.get.call_args
-            assert "/actions/secrets/public-key" in get_call[0][0]
+            # Verify request calls
+            assert mock_client.request.call_count == 2  # noqa: PLR2004
 
-            # Verify secret was created
-            mock_client.put.assert_called_once()
-            put_call = mock_client.put.call_args
-            assert "/actions/secrets/MY_SECRET" in put_call[0][0]
+            # 1. Verification of Public Key Fetch
+            # call_args_list[0] -> ("GET", url), {headers=...}
+            first_call = mock_client.request.call_args_list[0]
+            assert first_call[0][0] == "GET"
+            assert "/actions/secrets/public-key" in first_call[0][1]
+
+            # 2. Verification of Secret Creation
+            second_call = mock_client.request.call_args_list[1]
+            assert second_call[0][0] == "PUT"
+            assert "/actions/secrets/MY_SECRET" in second_call[0][1]
 
             # Verify encrypted value was sent
-            json_payload = put_call[1]["json"]
+            json_payload = second_call[1]["json"]
             assert "encrypted_value" in json_payload
             assert json_payload["key_id"] == "key-123"
             # Encrypted value should be base64 encoded
