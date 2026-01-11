@@ -86,7 +86,7 @@ class TestHarness:
         pass
     
     async def send_worker_created(self, worker_id: str):
-        """Sends CreateWorkerResponse to worker:responses"""
+        """Sends CreateWorkerResponse to worker:responses:developer"""
         pass
 
     # ... other helper methods
@@ -113,7 +113,7 @@ This scenario verifies the chain: `Engineering Start` -> `Scaffolder` -> `Develo
 3.  **Developer Isolation (Worker Creation)**:
     *   *Assert*: Harness receives `CreateWorkerCommand` in `worker:commands`.
     *   *Assert Payload*: `type="CLAUDE"`, `worker_type="developer"`.
-    *   *Action*: Harness sends `CreateWorkerResponse(success=True, worker_id="w1")` to `worker:responses`.
+    *   *Action*: Harness sends `CreateWorkerResponse(success=True, worker_id="w1")` to `worker:responses:developer`.
 
 4.  **Developer Execution (Task Delegation)**:
     *   *Assert*: Harness receives `DeveloperWorkerInput` in `worker:developer:input`.

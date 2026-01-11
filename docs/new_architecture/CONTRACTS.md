@@ -494,15 +494,20 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 | Queue | Initiator | Consumer | Purpose |
 |-------|-----------|----------|---------|
 | `worker:commands` | LangGraph, TelegramBot | worker-manager | Command to Create/Delete worker container. |
-| `worker:responses` | worker-manager | LangGraph | **Responses to Commands** (e.g. "Container created"). Distinct from task results. |
+| `worker:responses:po` | worker-manager | telegram-bot | Responses for PO worker commands (e.g. "PO container created"). |
+| `worker:responses:developer` | worker-manager | langgraph | Responses for Developer worker commands (e.g. "Developer container created"). |
 
 ## WorkerCommand / WorkerResponse
 
 **Queue (commands):** `worker:commands`  
-**Initiator:** langgraph  
+**Initiator:** langgraph, telegram-bot  
 **Consumer:** worker-manager
 
-**Queue (responses):** `worker:responses`  
+**Queue (responses - PO):** `worker:responses:po`  
+**Initiator:** worker-manager  
+**Consumer:** telegram-bot
+
+**Queue (responses - Developer):** `worker:responses:developer`  
 **Initiator:** worker-manager  
 **Consumer:** langgraph
 

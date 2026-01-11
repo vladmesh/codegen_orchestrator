@@ -10,38 +10,15 @@
 
 | Severity | Count | Description |
 |----------|-------|-------------|
-| Critical | 1 | Блокируют реализацию |
+| Critical | 0 | ✅ Все критические проблемы решены |
 | Medium | 7 | Несогласованности в контрактах |
 | Low | 12 | Недостаточно проработано |
 
 ---
 
-### 1. Telegram Bot + worker:responses consumer conflict
-
-**Files:** `telegram_bot.md`, `CONTRACTS.md`
-
-**Problem:** Per `CONTRACTS.md`:
-```
-worker:responses → Consumer: langgraph
-```
-
-But Telegram Bot ALSO needs `CreateWorkerResponse` when spawning PO Worker!
-
-**Questions:**
-- Does Telegram Bot also consume `worker:responses`?
-- Or does it use different mechanism (sync Redis lookup)?
-- If both consume: consumer group strategy?
-
-**Resolution required:**
-- [ ] Clarify how Telegram Bot gets worker creation result
-- [ ] Update CONTRACTS.md if multiple consumers
-- [ ] Document sync vs async pattern choice
-
----
-
 ## Medium Issues (Contract Inconsistencies)
 
-### 2. CONTRACTS.md Queue Overview incomplete
+### 1. CONTRACTS.md Queue Overview incomplete
 
 **File:** `CONTRACTS.md`
 
@@ -57,7 +34,7 @@ But document describes 15+ queues below. Table is misleading.
 
 ---
 
-### 3. Missing DTOs
+### 2. Missing DTOs
 
 **File:** `CONTRACTS.md`
 
@@ -73,7 +50,7 @@ DTOs mentioned but not defined:
 
 ---
 
-### 4. File structure diagram outdated
+### 3. File structure diagram outdated
 
 **File:** `CONTRACTS.md`
 
@@ -96,7 +73,7 @@ Missing files defined earlier in same document:
 
 ---
 
-### 5. GitHub Client usage in API contradicts "thin API" principle
+### 4. GitHub Client usage in API contradicts "thin API" principle
 
 **File:** `shared/github_client.md`
 
@@ -117,7 +94,7 @@ But `api.md` states API should be "thin CRUD layer" with NO external API calls!
 
 ---
 
-### 6. Engineering vs Developer terminology inconsistent
+### 5. Engineering vs Developer terminology inconsistent
 
 **Files:** Multiple
 
@@ -136,7 +113,7 @@ But `api.md` states API should be "thin CRUD layer" with NO external API calls!
 
 ---
 
-### 7. Consumer vs Service naming confusion
+### 6. Consumer vs Service naming confusion
 
 **File:** `GLOSSARY.md`
 
@@ -151,7 +128,7 @@ But there's no `engineering-consumer` service. It's part of `langgraph` service.
 
 ---
 
-### 8. WorkerLifecycleEvent states inconsistent
+### 7. WorkerLifecycleEvent states inconsistent
 
 **Files:** `worker_wrapper.md`, `CONTRACTS.md`
 
@@ -168,7 +145,7 @@ But there's no `engineering-consumer` service. It's part of `langgraph` service.
 
 ## Low Priority Issues (Underspecified)
 
-### 9. Retry logic not specified
+### 8. Retry logic not specified
 
 **Files:** `langgraph.md`, `TESTING_STRATEGY.md`
 
@@ -188,7 +165,7 @@ Not defined:
 
 ---
 
-### 10. Secrets handling - vault not described
+### 9. Secrets handling - vault not described
 
 **File:** `CONTRACTS.md`
 
@@ -211,7 +188,7 @@ Questions:
 
 ---
 
-### 11. Resource limits not specified
+### 10. Resource limits not specified
 
 **File:** `worker_manager.md`
 
@@ -227,7 +204,7 @@ Pause/Resume described, but missing:
 
 ---
 
-### 12. Error propagation not detailed
+### 11. Error propagation not detailed
 
 **Files:** Multiple
 
@@ -244,7 +221,7 @@ Unspecified error scenarios:
 
 ---
 
-### 13. Session management edge cases
+### 12. Session management edge cases
 
 **File:** `worker_wrapper.md`
 
@@ -262,7 +239,7 @@ Not addressed:
 
 ---
 
-### 14. MIGRATION_PLAN.md numbering broken
+### 13. MIGRATION_PLAN.md numbering broken
 
 **File:** `MIGRATION_PLAN.md`
 
@@ -278,7 +255,7 @@ Phase 3: item 83 (?!), item 7 (duplicated!)
 
 ---
 
-### 15. Phase dependencies not explicit
+### 14. Phase dependencies not explicit
 
 **File:** `MIGRATION_PLAN.md`
 
@@ -293,7 +270,7 @@ Questions:
 
 ---
 
-### 16. No acceptance criteria per service
+### 15. No acceptance criteria per service
 
 **File:** `MIGRATION_PLAN.md`
 
@@ -308,7 +285,7 @@ Generic "Definition of Done" exists, but no service-specific criteria:
 
 ## Architecture Gaps
 
-### 17. Single Points of Failure not addressed
+### 16. Single Points of Failure not addressed
 
 **Scope:** Overall architecture
 
@@ -323,7 +300,7 @@ Not mentioned:
 
 ---
 
-### 18. Observability incomplete
+### 17. Observability incomplete
 
 **Files:** Multiple
 
@@ -343,7 +320,7 @@ Not mentioned:
 
 ---
 
-### 19. Rate limiting absent
+### 18. Rate limiting absent
 
 **Scope:** Overall architecture
 
@@ -358,7 +335,7 @@ Critical for:
 
 ---
 
-### 20. Consumer Groups and DLQ not defined
+### 19. Consumer Groups and DLQ not defined
 
 **Scope:** Redis Streams usage
 
@@ -375,7 +352,7 @@ Not described:
 
 ## Testing Gaps
 
-### 21. Docker API mocking unresolved
+### 20. Docker API mocking unresolved
 
 **File:** `TESTING_STRATEGY.md`
 
@@ -395,7 +372,7 @@ Critical for CI - can't run real Docker in GitHub Actions without privileged mod
 
 ---
 
-### 22. SSH testing unresolved
+### 21. SSH testing unresolved
 
 **File:** `TESTING_STRATEGY.md`
 

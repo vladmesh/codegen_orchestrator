@@ -134,7 +134,8 @@ Redis Stream для управления Workers.
 
 **Очереди:**
 - `worker:commands` — команды для worker-manager (create, send_message, delete)
-- `worker:responses` — ответы от worker-manager
+- `worker:responses:po` — ответы от worker-manager для PO воркеров
+- `worker:responses:developer` — ответы от worker-manager для Developer воркеров
 
 ### Callback Stream
 Redis Stream для Events прогресса конкретной Task.

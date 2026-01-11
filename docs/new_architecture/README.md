@@ -34,8 +34,9 @@
 | `scaffolder:queue` | LangGraph | scaffolder |
 | `provisioner:queue` | Scheduler | infra-service |
 | `ansible:deploy:queue` | DevOps Subgraph | infra-service |
-| `worker:commands` | LangGraph | worker-manager |
-| `worker:responses` | worker-manager | LangGraph |
+| `worker:commands` | LangGraph, TelegramBot | worker-manager |
+| `worker:responses:po` | worker-manager | telegram-bot |
+| `worker:responses:developer` | worker-manager | langgraph |
 
 ### Services
 
