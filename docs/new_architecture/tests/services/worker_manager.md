@@ -48,6 +48,8 @@ Garbage Collector в тестовом режиме настраивается н
 ### 3.2 Service Tests (Mock Docker)
 *Focus on orchestrator logic & Redis state machinery.*
 
+> Для мокирования Docker используем `MockDockerClient` из [TESTING_STRATEGY.md](../TESTING_STRATEGY.md#54-docker-mock-for-worker-manager).
+
 Запускаем сервис с `MockDockerClient`.
 *   **State Transitions**:
     *   Action: Send `create` command.
@@ -241,4 +243,29 @@ def clean_docker(docker_client):
 ```
 
 ### 4.2 CI Configuration
-Github Actions должен запускаться с возможностью доступа к докеру (обычно по умолчанию в ubuntu-latest, либо через service container).
+
+Github Actions Docker Testing Tiers:
+
+| Tier | Tests | Docker | Runs On |
+|------|-------|--------|---------|
+| PR (fast) | Unit + Service | `MockDockerClient` | `ubuntu-latest` |
+| PR (full) | Integration | Real Docker | Self-hosted runner |
+| Nightly | E2E | Real Docker | Self-hosted runner |
+
+> **Note**: Integration tests с реальным Docker требуют self-hosted runner с доступом к `/var/run/docker.sock`.
+> Стандартные GitHub Actions runners не имеют привилегированного доступа к Docker.
+
+```yaml
+# .github/workflows/pr.yml
+jobs:
+  test-unit:  # Runs on ubuntu-latest with MockDockerClient
+    runs-on: ubuntu-latest
+    steps:
+      - run: make test-worker-manager-unit
+
+  test-integration:  # Requires Docker socket access
+    runs-on: self-hosted
+    steps:
+      - run: make test-worker-manager-integration
+```
+

@@ -12,7 +12,7 @@
 |----------|-------|-------------|
 | Critical | 0 | ✅ Все критические проблемы решены |
 | Medium | 4 | Несогласованности в контрактах |
-| Low | 12 | Недостаточно проработано |
+| Low | 11 | Недостаточно проработано |
 
 ---
 
@@ -307,27 +307,7 @@ Not described:
 
 ## Testing Gaps
 
-### 20. Docker API mocking unresolved
-
-**File:** `TESTING_STRATEGY.md`
-
-Open question:
-> "How to mock Docker API in Worker Manager? Testcontainers?"
-
-Critical for CI - can't run real Docker in GitHub Actions without privileged mode.
-
-**Options:**
-- Mock Docker SDK
-- Testcontainers with dind
-- Integration tests only in special environment
-
-**Resolution:**
-- [ ] Make decision
-- [ ] Document in TESTING_STRATEGY.md
-
----
-
-### 21. SSH testing unresolved
+### 20. SSH testing unresolved
 
 **File:** `TESTING_STRATEGY.md`
 
@@ -374,4 +354,5 @@ Open question:
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-11 | Claude | Resolved: Docker API mocking (Variant D) |
 | 2026-01-11 | Claude | Initial audit |

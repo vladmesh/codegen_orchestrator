@@ -339,6 +339,57 @@ class MockSubprocess:
         return CompletedProcess(cmd, 0, "", "")
 ```
 
+### 5.4 Docker Mock (for Worker Manager)
+
+**Decision: Variant D (Hybrid Approach)**
+
+Docker API mocking uses a **protocol-based abstraction** with different implementations:
+
+```python
+# worker_manager/docker.py
+from typing import Protocol
+
+class DockerClientProtocol(Protocol):
+    """Abstract interface for Docker operations."""
+    async def create_container(self, config: ContainerConfig) -> ContainerId: ...
+    async def stop_container(self, id: ContainerId) -> None: ...
+    async def pause_container(self, id: ContainerId) -> None: ...
+    async def unpause_container(self, id: ContainerId) -> None: ...
+    async def get_container_status(self, id: ContainerId) -> ContainerStatus: ...
+    async def subscribe_events(self) -> AsyncIterator[DockerEvent]: ...
+
+
+# Production
+class RealDockerClient(DockerClientProtocol):
+    """Real Docker SDK wrapper."""
+    def __init__(self):
+        self._client = docker.from_env()
+
+
+# Testing
+class MockDockerClient(DockerClientProtocol):
+    """State-based fake for unit/service tests."""
+    def __init__(self):
+        self._containers: Dict[str, FakeContainer] = {}
+        self._events: List[DockerEvent] = []
+```
+
+**Testing Strategy:**
+
+| Test Level | Docker Client | Runs In |
+|------------|---------------|--------|
+| Unit | `MockDockerClient` | CI (every PR) |
+| Service | `MockDockerClient` | CI (every PR) |
+| Integration | `RealDockerClient` | Local / Self-hosted runner |
+| E2E (Nightly) | `RealDockerClient` | Self-hosted runner |
+
+**CI Configuration:**
+- Standard GitHub Actions (ubuntu-latest): Unit + Service tests with `MockDockerClient`
+- Self-hosted runner with Docker: Integration tests with real Docker
+- Nightly job: Full E2E with real Docker
+
+See [tests/services/worker_manager.md](./services/worker_manager.md) for detailed scenarios.
+
 ## 6. Test Infrastructure
 
 ### 6.1 Docker Compose for Tests
@@ -459,12 +510,12 @@ jobs:
 - [x] **GitHub Mocking**: MockGitHubClient for unit/integration, real `project-factory-test` org for E2E
 - [x] **VCR-style recording**: Решили не использовать. Real GitHub в E2E.
 - [x] **GitHub Org**: Обязательный `GITHUB_ORG` env var, без auto-detect
+- [x] **Docker Mocking**: Variant D (Hybrid). `DockerClientProtocol` + `MockDockerClient` для CI, Real Docker для интеграции и E2E
 
 ## 10. Open Questions
 
 - [ ] Нужен ли отдельный уровень "smoke tests" для быстрой проверки критического пути?
 - [ ] Как тестировать real SSH connections в Infra Service? Testcontainers с SSH?
-- [ ] Как мокать Docker API в Worker Manager? Testcontainers?
 - [ ] Coverage threshold? 80%?
 
 ## 10. Next Steps
