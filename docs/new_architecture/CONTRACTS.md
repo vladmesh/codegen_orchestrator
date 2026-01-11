@@ -17,6 +17,8 @@
 |-------|-----|-----------|----------|---------|
 | `engineering:queue` | EngineeringMessage | PO-Worker | langgraph | Start development task |
 | `deploy:results` | AnsibleDeployResult | infra-service | langgraph | Deploy result (Shared) |
+| `scaffolder:queue` | ScaffolderMessage | langgraph | scaffolder | Scaffold project |
+| `scaffolder:results` | ScaffolderResult | scaffolder | langgraph | Scaffolder completion |
 | `deploy:queue` | DeployMessage | PO-Worker | langgraph | Start deploy task |
 
 ### Transport Layer Note
@@ -444,10 +446,21 @@ class ScaffolderMessage(BaseMessage):
     project_name: str
     modules: list[ServiceModule]
 
-    # No Result Message:
-    # Scaffolder updates Project status in DB directly to 'SCAFFOLDED'.
-    # It does NOT publish a result message to Redis.
-    # LangGraph polls API or listens to 'project_updates' stream (if implemented).
+    # Scaffolder Result:
+    # Scaffolder publishes a result message to Redis upon completion.
+    # Stream: scaffolder:results
+    # Consumer: langgraph
+
+
+class ScaffolderResult(BaseResult):
+    """
+    Scaffolder result.
+    Stream: scaffolder:results
+    """
+    project_id: str
+    repo_url: str
+    files_generated: int = 0
+
 ```
 
 

@@ -77,9 +77,9 @@ class TestHarness:
         """
         Simulates Scaffolder success:
         1. Updates 'Mock DB' (or simple Redis key if we mock API)
-        2. (If LangGraph polls) updates status so LG sees it.
+        2. Publishes ScaffolderResult to scaffolder:results.
         """
-        pass
+        await self.redis.xadd("scaffolder:results", ScaffolderResult(project_id=project_id, repo_url="...").model_dump())
 
     async def expect_worker_creation(self) -> CreateWorkerCommand:
         """Waits for worker:commands (create)"""
@@ -107,8 +107,8 @@ This scenario verifies the chain: `Engineering Start` -> `Scaffolder` -> `Develo
     *   *Assert*: Harness receives `ScaffolderMessage` in `scaffolder:queue`.
     *   *Assert Payload*: `project_id="p1"`, `modules=[BACKEND]`.
     *   *Action*: Harness simulates scaffolding completion (Update DB status to `SCAFFOLDED`).
-    *   *Action*: Harness simulates scaffolding completion (Update DB status to `SCAFFOLDED`).
-    *   *Wait*: Harness waits for LangGraph's background poller to detect the change and resume the graph.
+    *   *Action*: Harness simulates scaffolding completion (Update DB status + Publish `ScaffolderResult`).
+    *   *Wait*: Harness waits for LangGraph to consume event and resume graph.
 
 3.  **Developer Isolation (Worker Creation)**:
     *   *Assert*: Harness receives `CreateWorkerCommand` in `worker:commands`.
@@ -155,11 +155,11 @@ This scenario explicitly kills the service mid-flight to ensure state recovery.
 2.  **Wait for Scaffolding**: Reach the step where LangGraph waits for Scaffolder.
 3.  **KILL**: Terminate the `langgraph` subprocess.
 4.  **Simulate Delay**: Wait 2 seconds.
-5.  **Simulate Result**: Harness simulates scaffolding completion (DB Update).
+5.  **Simulate Result**: Harness simulates scaffolding completion (Publish `ScaffolderResult`).
 6.  **RESTART**: Start `langgraph` subprocess again.
 7.  **Assert Recovery**:
     *   LangGraph should *not* restart from the beginning (should not send `ScaffolderMessage` again).
-    *   LangGraph should detect the completion (poll or event) and proceed to **Worker Creation**.
+    *   LangGraph should detect the completion (event) and proceed to **Worker Creation**.
     *   *Assert*: Harness receives `CreateWorkerCommand`.
 
 ### 3.4 Error Handling & Retries

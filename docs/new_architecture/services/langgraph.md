@@ -54,7 +54,7 @@ Since LangGraph nodes are Python functions, we cannot simple `await` for hours. 
 4.  **External Work**: The Worker/Service processes the task (taking minutes/hours).
 5.  **Resume (The Listener)**:
     *   **Option A (Redis)**: A `ResponseListener` component (part of the runtime) listens to `worker:developer:output` AND `worker:lifecycle`. It correlates events by `task_id` or `worker_id` and resumes the graph.
-    *   **Option B (Polling)**: For services like Scaffolder that only update DB, a `StatusPoller` checks for state transitions (e.g., `Project.status == SCAFFOLDED`).
+    *   **Option B (Event)**: For services like Scaffolder, listen to `scaffolder:results`.
     *   **Action**: Call `graph.update_state(...)` and `graph.invoke(...)` to resume.
 
 ## 4. Concurrency & Scalability

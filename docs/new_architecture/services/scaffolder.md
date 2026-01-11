@@ -38,7 +38,10 @@ The service listens to `scaffolder:queue`.
 7.  **Push**: `git add .`, `git commit -m "Initial commit"`, `git push`.
 8.  **Update Status**: Call API (or update DB directly) to set `project.status = "scaffolded"` and `project.repository_url`.
     *   *Note*: Scaffolder must write back the `repo_url` to DB.
-    *   **Completion Signal**: Scaffolder does **NOT** publish a result to Redis. The Orchestrator (LangGraph) detects completion by polling the Project status.
+    *   **Completion Signal**: Publish `ScaffolderResult` to `scaffolder:results`.
+        ```python
+        await redis.xadd("scaffolder:results", ScaffolderResult(...).model_dump())
+        ```
 
 ## 3. Dependencies
 

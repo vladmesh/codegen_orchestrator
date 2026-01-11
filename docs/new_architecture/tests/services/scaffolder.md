@@ -49,6 +49,7 @@ These tests run on every PR. We want to ensure the **template is valid** and **c
     2.  Wait for success (checking mocked Git push calls).
     3.  **Assertion (Critical):** Check that files exist in the temp directory (e.g., `app/main.py`, `bot/dispatcher.py`). This catches broken copier templates!
     4.  Verify `PATCH /projects/{id} status=SCAFFOLDED` called on Mock API.
+    5.  Verify `ScaffolderResult` published to `scaffolder:results`.
 
 *   **Template Error:**
     1.  Force a copier error (e.g., invalid answers).
