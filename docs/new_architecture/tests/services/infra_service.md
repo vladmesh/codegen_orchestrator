@@ -1,6 +1,6 @@
 # Testing Strategy: Infra Service
 
-This document defines the testing strategy for the `infra-service` (formerly `infrastructure-worker`).
+This document defines the testing strategy for the `infra-service`.
 Due to the nature of this service (interacting with remote servers via SSH, running heavy Ansible playbooks), the testing strategy heavily relies on **execution abstraction** and **mocking**.
 
 ## 1. Philosophy: Mock Executable

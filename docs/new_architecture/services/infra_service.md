@@ -1,7 +1,7 @@
 # Service: Infra Service
 
 **Service Name:** `infra-service`
-**Current Name:** `infrastructure-worker` (requires rename)
+**Current Name:** `infra-service` (formerly `infrastructure-worker`)
 **Responsibility:** Execution of low-level infrastructure operations (Ansible, Provisioning, Deployment).
 
 ## 1. Responsibilities

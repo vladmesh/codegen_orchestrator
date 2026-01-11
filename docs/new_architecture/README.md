@@ -121,8 +121,9 @@ graph TD
     
     CLI --> |API Request| API[API Service]
     
-    API --> |"push task"| EngQueue[engineering:queue]
-    API --> |"push task"| DeployQueue[deploy:queue]
+    CLI --> |"push task"| EngQueue[engineering:queue]
+    CLI --> |"push task"| DeployQueue[deploy:queue]
+    
     API --> |"data"| DB[(PostgreSQL)]
     
     EngQueue --> EngConsumer[Engineering Consumer]

@@ -19,8 +19,8 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 3. **Output Capture**: Collect agent output (stdout).
 4. **Result Parsing**: Extract `<result>...</result>` JSON block.
 5. **Enrichment**: Wrap verdict with telemetry (start/end time, duration).
-6. **Publish**: Sends `WorkerResult` to worker output stream.
-7. **Lifecycle Reporting**: Publish events to `worker:lifecycle`.
+6. **Output**: Publish results to `worker:developer:output` (code/verdict).
+7. **Lifecycle Reporting**: Publish system state to `worker:lifecycle` (Started/Ready/Failed).
 8. **Graceful Shutdown**: Handle SIGTERM, cleanup, report exit.
 
 ## 2.1 Queue Naming by Worker Type
@@ -28,7 +28,7 @@ The wrapper is the **nervous system** of a Worker container. It connects the ext
 | Worker Type | Input Queue | Output Queue | Notes |
 |-------------|-------------|--------------|-------|
 | **PO** | `worker:po:{user_id}:input` | `worker:po:{user_id}:output` | Per-user queues, long-lived session |
-| **Developer** | `worker:developer:input` | `worker:developer:output` | Shared queues, ephemeral (stateless) |
+| **Developer** | `worker:developer:input` | `worker:developer:output` | **Shared queues**, ephemeral (stateless) |
 
 **Why the difference?**
 - **PO Workers** are long-lived and handle ongoing conversations with a specific user.
@@ -105,6 +105,8 @@ class WorkerLifecycleEvent(BaseModel):
     event: Literal["started", "ready", "busy", "completed", "failed", "stopped"]
     timestamp: datetime
     details: dict = {}           # Additional context (error, result summary)
+
+> **Note**: Events `busy` and `completed` trigger `last_activity` update in Worker Manager to prevent Auto-Pause.
 ```
 
 ## 5. Agent Invocation
@@ -281,8 +283,14 @@ async def main():
     agent_type = os.environ.get("AGENT_TYPE", "claude")
     session_id = os.environ.get("SESSION_ID", str(uuid.uuid4()))
     
-    input_stream = f"worker:{worker_type}:{worker_id}:input"
-    output_stream = f"worker:{worker_type}:{worker_id}:output"
+    if worker_type == "po":
+        # PO uses unique queues per user/session
+        input_stream = f"worker:po:{worker_id}:input"
+        output_stream = f"worker:po:{worker_id}:output"
+    else:
+        # Developer uses shared queues
+        input_stream = "worker:developer:input"
+        output_stream = "worker:developer:output"
     
     # Report ready
     await publish_lifecycle(redis, worker_id, "ready")

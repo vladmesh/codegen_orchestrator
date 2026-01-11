@@ -456,6 +456,23 @@ class ScaffolderMessage(BaseMessage):
 
 ---
 
+##### 3. Worker Communication (Two-Listener Pattern)
+The Orchestrator (LangGraph) listens to **two** streams to manage worker tasks:
+
+| Stream | Initiator | Consumer | Purpose |
+|--------|-----------|----------|---------|
+| `worker:developer:output` | worker-wrapper | LangGraph | Successful results or logical errors (compiler fails). |
+| `worker:lifecycle` | worker-manager, worker-wrapper | LangGraph | System events: Container Started/Failed/Deleted, Wrapper Ready. |
+
+> **Why two streams?**
+> - `output` gives the task result (code, answer).
+> - `lifecycle` catches early crashes (Docker fail, OOM) where `output` might never be sent.
+
+| Queue | Initiator | Consumer | Purpose |
+|-------|-----------|----------|---------|
+| `worker:commands` | LangGraph, TelegramBot | worker-manager | Command to Create/Delete worker container. |
+| `worker:responses` | worker-manager | LangGraph | **Responses to Commands** (e.g. "Container created"). Distinct from Lifecycle events. |
+
 ## WorkerCommand / WorkerResponse
 
 **Queue (commands):** `worker:commands`  
@@ -643,15 +660,17 @@ class POWorkerOutput(BaseModel):
 
 **Design Decision:** Developer Workers are **ephemeral** (stateless). Each task spawns a fresh worker.
 Context is the code in repo + error messages — no session persistence needed.
-This simplifies scaling and reduces resource usage.
 
-**Queue (input):** `worker:developer:input` (shared queue, `task_id` in message)
+**Queue (input):** `worker:developer:input` (Shared Queue)
 **Initiator:** langgraph (DeveloperNode)
 **Consumer:** worker-wrapper (inside Developer container)
 
-**Queue (output):** `worker:developer:output` (shared queue)
+**Queue (output):** `worker:developer:output` (Shared Queue)
 **Initiator:** worker-wrapper (inside Developer container)
 **Consumer:** langgraph (DeveloperNode)
+
+> **Note**: Unlike PO workers which use unique queues per user (`worker:po:{id}:*`), Developer workers use a single shared queue pair.
+> Responses are correlated via `task_id` or `request_id`.
 
 ```python
 # shared/contracts/queues/developer_worker.py

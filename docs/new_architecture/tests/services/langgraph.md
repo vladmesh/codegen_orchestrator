@@ -59,6 +59,8 @@ class TestHarness:
         # 3. Subscribe to:
         #    - scaffolder:queue
         #    - worker:commands
+        #    - worker:lifecycle (subscribe to inputs to simulate events)
+        #    - worker:developer:output (subscribe to inputs to simulate results)
         #    - ansible:deploy:queue
         #    - deploy:results
         pass
@@ -84,7 +86,7 @@ class TestHarness:
         pass
     
     async def send_worker_started(self, worker_id: str):
-        """Publishes to worker:responses (started)"""
+        """Publishes STARTED/READY to worker:lifecycle"""
         pass
 
     # ... other helper methods

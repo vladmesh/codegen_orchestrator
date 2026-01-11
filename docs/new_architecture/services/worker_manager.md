@@ -144,7 +144,7 @@ worker:status:{id} = {
     *   Guarantees detection even on SIGKILL.
 
 2.  **Explicit Exit Events** (active, rich context):
-    *   Wrapper inside worker publishes to `worker:lifecycle` stream before exit:
+    *   Wrapper inside worker publishes `READY` to `worker:lifecycle` stream.
         ```json
         {"worker_id": "...", "event": "completed", "result": {...}}
         {"worker_id": "...", "event": "failed", "error": "..."}

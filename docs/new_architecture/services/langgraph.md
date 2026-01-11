@@ -45,13 +45,15 @@ We model business domains as **Subgraphs**. External agents (like the Product Ow
 ### 3.2 Communication Pattern: The "Async Wait" (Human-in-the-loop Style)
 
 Since LangGraph nodes are Python functions, we cannot simple `await` for hours. We use the **"Interrupt & Resume"** pattern supported by LangGraph's checkpointer.
+*   **Interrupt & Resume**: Graph execution is paused while waiting for external events.
+*   **Two-Listener Pattern**: Nodes listen to BOTH task results (`worker:developer:output`) AND system health (`worker:lifecycle`) to handle crashes gracefully.
 
 1.  **Node Execution**: The node (e.g., `Developer`) prepares a payload.
 2.  **Publish**: It publishes the payload to Redis (`worker:commands`) with a `thread_id`.
 3.  **Interrupt**: The node returns a special `Command(interrupt=True)` or simply ends its turn, expecting an input from a specific key. **The execution suspends and state is saved to Postgres.** The Python process is freed.
 4.  **External Work**: The Worker/Service processes the task (taking minutes/hours).
 5.  **Resume (The Listener)**:
-    *   **Option A (Redis)**: A `ResponseListener` pool receives results from `worker:responses` or `deploy:results`. It filters by `correlation_id` (or `request_id`).
+    *   **Option A (Redis)**: A `ResponseListener` component (part of the runtime) listens to `worker:developer:output` AND `worker:lifecycle`. It correlates events by `task_id` or `worker_id` and resumes the graph.
     *   **Option B (Polling)**: For services like Scaffolder that only update DB, a `StatusPoller` checks for state transitions (e.g., `Project.status == SCAFFOLDED`).
     *   **Action**: Call `graph.update_state(...)` and `graph.invoke(...)` to resume.
 
