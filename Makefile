@@ -238,6 +238,14 @@ test-orchestrator-cli:
 	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
+test-worker-wrapper:
+	@echo "🧪 Running Worker Wrapper tests..."
+	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
+	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from worker-wrapper-test worker-wrapper-test; \
+	EXIT_CODE=$$?; \
+	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
+	exit $$EXIT_CODE
+
 test-cli-integration:
 	@echo "🧪 Running Orchestrator CLI Integration tests..."
 	@docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml down -v --remove-orphans 2>/dev/null || true

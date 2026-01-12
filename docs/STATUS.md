@@ -50,10 +50,11 @@
 
 ### Next Steps
 
-**[P1.2 Worker Wrapper](./new_architecture/MIGRATION_PLAN.md#p12--worker-wrapper)**
-
-- Implement Loop: XREAD -> Subprocess -> XADD
-- Lifecycle events and session management
+8. **✅ P1.2 Worker Wrapper**
+   - [x] Package `packages/worker-wrapper` created.
+   - [x] Main Loop implemented (XREAD -> Subprocess -> XADD).
+   - [x] Lifecycle events and session management via `WorkerLifecycleEvent`.
+   - [x] Verified with Integration Tests (FakeRedis).
 
 ## 🔗 Quick Links
 

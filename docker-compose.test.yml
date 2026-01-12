@@ -147,6 +147,22 @@ services:
       - ./packages/orchestrator-cli:/app/packages/orchestrator-cli
     command: [ "pytest", "/app/packages/orchestrator-cli/tests/unit", "-v" ]
 
+  worker-wrapper-test:
+    build:
+      context: .
+      dockerfile: packages/worker-wrapper/Dockerfile.test
+      target: test
+    environment:
+      REDIS_URL: redis://redis-test:6379
+      PYTHONPATH: /app/packages/worker-wrapper/src:/app
+    networks:
+      - test-network
+    volumes:
+      - ./packages/worker-wrapper:/app/packages/worker-wrapper
+      - ./tests:/app/tests
+      - ./shared:/app/shared
+    command: [ "pytest", "/app/tests/integration/worker_wrapper", "-v" ]
+
 networks:
   test-network:
     driver: bridge
