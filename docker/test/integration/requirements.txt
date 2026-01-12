@@ -1,0 +1,7 @@
+pytest
+pytest-asyncio
+httpx
+redis
+sqlalchemy
+asyncpg
+faker

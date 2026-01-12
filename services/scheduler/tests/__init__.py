@@ -1,1 +1,0 @@
-"""Scheduler service tests."""

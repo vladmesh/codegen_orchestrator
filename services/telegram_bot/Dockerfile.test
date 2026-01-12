@@ -1,29 +1,20 @@
-# Multi-stage Dockerfile optimized for testing with caching
-
-FROM python:3.12-slim AS base
+FROM python:3.12-slim
 
 WORKDIR /app
 
-# === Test Dependencies Stage ===
-FROM base AS test-deps
-
-# Copy only dependency files first (for caching)
-COPY services/telegram_bot/pyproject.toml ./
-
-# Install runtime + test dependencies
-RUN pip install --no-cache-dir . && \
-    pip install --no-cache-dir pytest pytest-asyncio pytest-cov
-
-# === Test Stage ===
-FROM test-deps AS test
+# Install test dependencies
+RUN pip install pytest pytest-asyncio pytest-cov httpx
 
 # Copy shared module
 COPY shared /app/shared
+RUN pip install /app/shared
 
-# Copy source code
+# Copy requirements
+COPY services/telegram_bot/requirements.lock ./
+RUN pip install -r requirements.lock
+
+# Copy source
 COPY services/telegram_bot/src ./src
 COPY services/telegram_bot/tests ./tests
-COPY services/telegram_bot/pytest.ini ./
 
-# Run tests
 CMD ["pytest", "-v"]

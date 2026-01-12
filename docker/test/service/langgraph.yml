@@ -1,0 +1,45 @@
+services:
+  # The service under test
+  langgraph:
+    build: 
+      context: ../../../services/langgraph
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=test
+      - ANTHROPIC_API_KEY=test
+      - OPENAI_API_KEY=test
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  # Infrastructure
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Mock API for LangGraph to talk to
+  api:
+    image: mockserver/mockserver
+    environment:
+      - MOCKSERVER_SERVER_PORT=8000
+
+  # Test Runner
+  langgraph-test-runner:
+    build:
+      context: ../../../services/langgraph
+      dockerfile: Dockerfile.test
+    command: ["pytest", "tests/service/", "-v"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      langgraph:
+        condition: service_started
+    volumes:
+      - ../../../services/langgraph/tests:/app/tests

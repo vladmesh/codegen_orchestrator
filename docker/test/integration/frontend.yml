@@ -1,0 +1,73 @@
+services:
+  # Services
+  api:
+    build: 
+      context: ../../../services/api
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  telegram-bot:
+    build:
+      context: ../../../services/telegram_bot
+      dockerfile: Dockerfile
+    environment:
+      - API_BASE_URL=http://api:8000
+      - REDIS_URL=redis://redis:6379/0
+      - TELEGRAM_TOKEN=test_token
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Infrastructure
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Test Runner (Integration)
+  integration-test-runner:
+    build:
+      context: ../../../docker/test/integration
+      dockerfile: Dockerfile
+    command: ["pytest", "tests/integration/frontend/", "-v"]
+    environment:
+      - API_URL=http://api:8000
+      - REDIS_URL=redis://redis:6379/0
+      - TELEGRAM_BOT_URL=http://telegram-bot:8000 # If we add metrics/health to bot
+    depends_on:
+      api:
+        condition: service_healthy
+      telegram-bot:
+        condition: service_started
+    volumes:
+      - ../../../tests/integration/frontend:/app/tests/integration/frontend

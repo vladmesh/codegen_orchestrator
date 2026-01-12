@@ -1,0 +1,77 @@
+services:
+  # Services
+  langgraph:
+    build: 
+      context: ../../../services/langgraph
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_URL=http://api:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  worker-manager:
+    build:
+      context: ../../../services/worker-manager
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DOCKER_HOST=tcp://docker:2375
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Infrastructure
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  
+  api:
+    build: services/api
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0"]
+    depends_on: [db, redis]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+
+  # Mock Docker (Dind)
+  docker:
+    image: docker:dind
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+
+  # Test Runner
+  integration-test-runner:
+    build:
+      context: ../../../docker/test/integration
+      dockerfile: Dockerfile
+    command: ["pytest", "tests/integration/backend/", "-v"]
+    depends_on:
+      langgraph:
+        condition: service_started
+      worker-manager:
+        condition: service_started
+    volumes:
+      - ../../../tests/integration/backend:/app/tests/integration/backend

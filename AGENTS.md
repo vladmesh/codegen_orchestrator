@@ -12,6 +12,19 @@
 | [docs/backlog.md](docs/backlog.md) | Бэклог задач и roadmap |
 | [docs/LOGGING.md](docs/LOGGING.md) | Структурированное логирование |
 | [docs/TESTING.md](docs/TESTING.md) | Тестовая инфраструктура |
+| [docs/new_architecture/tests/TESTING_STRATEGY.md](docs/new_architecture/tests/TESTING_STRATEGY.md) | Новая стратегия тестирования (4 уровня) |
+
+## 🚦 TDD Workflow (MANDATORY)
+
+Мы работаем по строгому TDD процессу (Red -> Green -> Refactor).
+Любая новая функциональность должна начинаться с тестов.
+
+1.  **RED (Integration)**: Напиши "service" тест (`docker/test/service/`), который падает.
+2.  **RED (Unit)**: Напиши unit тест (`services/<service>/tests/unit/`), который падает.
+3.  **GREEN**: Реализуй минимальный код для прохождения тестов.
+4.  **REFACTOR**: Улучши код, не ломая тесты.
+
+См. подробности в [TESTING_STRATEGY.md](docs/new_architecture/tests/TESTING_STRATEGY.md).
 
 ## 🛠 Технический стек
 

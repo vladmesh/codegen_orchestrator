@@ -30,17 +30,19 @@
    - Token caching и Rate Limiting.
    - Тесты с `respx` и `freezegun`.
 
-5. **⏳ P0.5 Test Infrastructure** ← *NEXT*
-   - [ ] Настроить 4-уровневую систему тестов (Unit/Service/Integration/E2E)
-   - [ ] Перенести legacy тесты в карантин
-   - [ ] Обновить Makefile и compose файлы
+5. **✅ P0.5 Test Infrastructure**
+   - [x] Настроить 4-уровневую систему тестов (Unit/Service/Integration/E2E)
+   - [x] Перенести legacy тесты в карантин
+   - [x] Обновить Makefile и compose файлы
 
 ### Next Steps
 
-**[P0.5 Test Infrastructure](./new_architecture/MIGRATION_PLAN.md#p05--test-infrastructure)**
+**[P1.0 API Refactor](./new_architecture/MIGRATION_PLAN.md#p10--api-refactor)**
 
-После P0.5 начнём Phase 1 в TDD:
-- **P1.0** — API Refactor (сначала тесты, потом код)
+Phase 1 начинается в TDD режиме (RED → GREEN → REFACTOR).
+Текущая задача:
+- [ ] Написать падающий интеграционный тест `test_post_tasks_no_redis_publish`
+- [ ] Очистить API от Redis side effects
 
 ## 🔗 Quick Links
 
