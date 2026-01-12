@@ -1,0 +1,68 @@
+import docker
+import asyncio
+from typing import Any, Dict, List
+import structlog
+from concurrent.futures import ThreadPoolExecutor
+
+logger = structlog.get_logger()
+
+
+class DockerClientWrapper:
+    """
+    Async wrapper around blocking docker-py client.
+    Abstracts Docker operations to allow mocking and non-blocking execution.
+    """
+
+    def __init__(self, base_url: str | None = None):
+        self._client = docker.from_env()
+        self._executor = ThreadPoolExecutor(max_workers=5)
+
+    async def _run(self, func, *args, **kwargs):
+        """Run blocking function in thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, lambda: func(*args, **kwargs))
+
+    async def run_container(self, image: str, **kwargs) -> Any:
+        """Run a container."""
+        return await self._run(self._client.containers.run, image, **kwargs)
+
+    async def get_container(self, container_id: str) -> Any:
+        """Get a container by ID."""
+        return await self._run(self._client.containers.get, container_id)
+
+    async def list_containers(self, filters: Dict[str, Any] | None = None, all: bool = False) -> List[Any]:
+        """List containers."""
+        return await self._run(self._client.containers.list, all=all, filters=filters)
+
+    async def stop_container(self, container_id: str, timeout: int = 10) -> None:
+        """Stop a container."""
+        container = await self.get_container(container_id)
+        await self._run(container.stop, timeout=timeout)
+
+    async def remove_container(self, container_id: str, force: bool = False, v: bool = False) -> None:
+        """Remove a container."""
+        # Use simple try/except for get in case it's already gone
+        try:
+            container = await self.get_container(container_id)
+            await self._run(container.remove, force=force, v=v)
+        except docker.errors.NotFound:
+            pass
+
+    async def pause_container(self, container_id: str) -> None:
+        """Pause a container."""
+        container = await self.get_container(container_id)
+        await self._run(container.pause)
+
+    async def unpause_container(self, container_id: str) -> None:
+        """Unpause a container."""
+        container = await self.get_container(container_id)
+        await self._run(container.unpause)
+
+    async def inspect_container(self, container_id: str) -> Dict[str, Any]:
+        """Inspect a container."""
+        # container attrs are cached, need to reload to get fresh status
+        container = await self.get_container(container_id)
+        # attrs property is already populated, but might be stale?
+        # get() calls reload() implicitly? No, container object has .attrs.
+        # But get() fetches fresh object.
+        return container.attrs

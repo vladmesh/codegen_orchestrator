@@ -1,0 +1,18 @@
+[project]
+name = "worker-manager"
+version = "0.1.0"
+description = "Service for managing worker containers"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic-settings",
+    "docker",
+    "redis",
+    "structlog",
+    "tenacity",
+    "shared",
+]
+
+[tool.ruff]
+line-length = 120

@@ -254,6 +254,23 @@ test-infra-service:
 	docker compose -p $(TEST_PROJECT)_infra -f docker/test/service/infra.yml down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
+test-worker-manager-unit:
+	@echo "🧪 Running Worker Manager unit tests..."
+	@if [ -d "services/worker-manager/tests/unit" ] && [ "$$(ls -A services/worker-manager/tests/unit)" ]; then \
+		docker build -f services/worker-manager/Dockerfile.test -t worker-manager-test .; \
+		docker run --rm worker-manager-test pytest tests/unit/ -v; \
+	else \
+		echo "⚠️  No unit tests found in services/worker-manager/tests/unit"; \
+	fi
+
+test-worker-manager-service:
+	@echo "🧪 Running Worker Manager service tests..."
+	@docker compose -p $(TEST_PROJECT)_worker_manager -f docker/test/service/worker-manager.yml down -v --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_worker_manager -f docker/test/service/worker-manager.yml up --build --abort-on-container-exit --exit-code-from worker-manager-test-runner; \
+	EXIT_CODE=$$?; \
+	docker compose -p $(TEST_PROJECT)_worker_manager -f docker/test/service/worker-manager.yml down -v --remove-orphans; \
+	exit $$EXIT_CODE
+
 test-cli-integration:
 	@echo "🧪 Running Orchestrator CLI Integration tests..."
 	@docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml down -v --remove-orphans 2>/dev/null || true

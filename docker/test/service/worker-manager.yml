@@ -1,0 +1,44 @@
+services:
+  # The service under test
+  worker-manager:
+    build: 
+      context: ../../..
+      dockerfile: services/worker-manager/Dockerfile
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=test
+      - 'WORKER_DOCKER_LABELS={"com.codegen.environment": "test"}'
+      - WORKER_IMAGE_PREFIX=worker-test
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Infrastructure
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Test Runner
+  worker-manager-test-runner:
+    build:
+      context: ../../..
+      dockerfile: services/worker-manager/Dockerfile.test
+    command: ["pytest", "tests/service/", "-v", "-s"]
+    environment:
+      - WORKER_MANAGER_URL=http://worker-manager:8000
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      worker-manager:
+        condition: service_healthy
+    volumes:
+      - ../../../services/worker-manager/tests:/app/tests
