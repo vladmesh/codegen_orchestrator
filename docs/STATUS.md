@@ -79,10 +79,10 @@
     - [x] **P1.6.3 Docker Exec**: `exec_in_container()`, instruction file injection.
     - [x] **P1.6.4 Docker Events**: Crash detection, failure forwarding to output queue.
 
-13. **🔲 P1.7 Wrapper Completion**
-    - [ ] **P1.7.1 Headless Execution**: ClaudeRunner, FactoryRunner classes.
-    - [ ] **P1.7.2 Result Parsing**: `<result>...</result>` extraction, DTO mapping.
-    - [ ] **P1.7.3 Session Management**: Redis storage, TTL, `--resume` flag.
+13. **✅ P1.7 Wrapper Completion**
+    - [x] **P1.7.1 Headless Execution**: ClaudeRunner, FactoryRunner classes.
+    - [x] **P1.7.2 Result Parsing**: `<result>...</result>` extraction, DTO mapping.
+    - [x] **P1.7.3 Session Management**: Redis storage, TTL, `--resume` flag.
 
 14. **🔲 P1.8 Worker Base Image**
     - [ ] **P1.8.1 Dockerfile Update**: worker-wrapper as ENTRYPOINT, healthcheck.

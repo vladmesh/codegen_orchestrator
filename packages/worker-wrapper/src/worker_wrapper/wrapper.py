@@ -92,16 +92,72 @@ class WorkerWrapper:
         # 4. Lifecycle: Completed/Failed
         await self.publish_lifecycle(status, msg_id, result=result, error=error)
 
-    async def execute_agent(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def execute_agent(self, data: dict[str, Any]) -> dict[str, Any] | None:
         """
-        Execute the actual agent logic.
-        In real usage, this might spawn a subprocess or call an LLM.
-        For verification/integration, this method can be mocked.
+        Execute the agent using the configured runner and parsing logic.
         """
-        # Placeholder implementation
-        logger.info("executing_agent_placeholder", data=data)
-        await asyncio.sleep(0.1)  # Simulate work
-        return {"result": f"Processed {data.get('content', 'unknown')}"}
+        # 1. Get Session
+        # We need raw redis client for session manager
+        # RedisStreamClient exposes .redis property which is redis.Redis
+        from .session import SessionManager
+
+        session_manager = SessionManager(
+            redis=self.redis.redis, worker_id=self.config.consumer_name
+        )
+        session_id = await session_manager.get_or_create_session()
+
+        # 2. Select Runner
+        from .runners.claude import ClaudeRunner
+        from .runners.factory import FactoryRunner
+
+        if self.config.agent_type == "claude":
+            runner = ClaudeRunner(session_id=session_id)
+        elif self.config.agent_type == "factory":
+            runner = FactoryRunner()  # Factory runner might not need session or handled differently
+        else:
+            raise ValueError(f"Unknown agent type: {self.config.agent_type}")
+
+        # 3. Build Command
+        prompt = data.get("content", "")
+        if not prompt:
+            # If no content, maybe just keep alive or error?
+            # For now assume content is required
+            raise ValueError("Task data missing 'content'")
+
+        cmd = runner.build_command(prompt=prompt)
+        logger.info("executing_agent_command", cmd=cmd)
+
+        # 4. Execute Subprocess
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        stdout = stdout_bytes.decode().strip()
+        stderr = stderr_bytes.decode().strip()
+
+        if proc.returncode != 0:
+            logger.error(
+                "agent_process_failed", stderr=stderr, stdout=stdout, exit_code=proc.returncode
+            )
+            raise RuntimeError(f"Agent process failed with code {proc.returncode}: {stderr}")
+
+        # 5. Parse Result
+        from .result_parser import ResultParseError, ResultParser
+
+        try:
+            result = ResultParser.parse(stdout)
+            if result is None:
+                logger.warning("no_result_tags_found", stdout=stdout)
+                # Maybe return raw stdout as fallback?
+                # Protocol says we return dict.
+                return {"raw_output": stdout, "status": "no_structured_result"}
+            return result
+        except ResultParseError as e:
+            logger.error("result_parsing_failed", error=str(e), stdout=stdout)
+            raise
 
     async def publish_lifecycle(
         self, status: str, ref_msg_id: str, result: dict = None, error: str = None
@@ -109,9 +165,6 @@ class WorkerWrapper:
         """Publish lifecycle event."""
         # Use shared contract
         from shared.contracts.queues.worker_lifecycle import WorkerLifecycleEvent
-
-        # event literal: "started", "completed", "failed", "stopped"
-        # status map might be needed if strings differ
 
         event = WorkerLifecycleEvent(
             worker_id=self.config.consumer_name,  # using consumer name as worker_id

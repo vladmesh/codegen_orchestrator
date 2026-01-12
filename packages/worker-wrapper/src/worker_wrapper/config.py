@@ -10,6 +10,7 @@ class WorkerWrapperConfig(BaseSettings):
     output_stream: str = Field(..., description="Redis stream to write results to")
     consumer_group: str = Field(..., description="Consumer group name")
     consumer_name: str = Field(..., description="Consumer instance name")
+    agent_type: str = Field(..., description="Agent type (claude, factory, etc.)")
 
     # Optional execution settings
     poll_interval_ms: int = 500

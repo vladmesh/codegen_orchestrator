@@ -246,6 +246,15 @@ test-worker-wrapper:
 	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
+test-worker-wrapper-unit:
+	@echo "🧪 Running Worker Wrapper unit tests..."
+	@if [ -d "packages/worker-wrapper/tests/unit" ] && [ "$$(ls -A packages/worker-wrapper/tests/unit)" ]; then \
+		docker build -f packages/worker-wrapper/Dockerfile.test -t worker-wrapper-test .; \
+		docker run --rm worker-wrapper-test pytest packages/worker-wrapper/tests/ -v; \
+	else \
+		echo "⚠️  No unit tests found in packages/worker-wrapper/tests/unit"; \
+	fi
+
 test-infra-service:
 	@echo "🧪 Running Infra Service tests..."
 	@docker compose -p $(TEST_PROJECT)_infra -f docker/test/service/infra.yml down -v --remove-orphans 2>/dev/null || true
