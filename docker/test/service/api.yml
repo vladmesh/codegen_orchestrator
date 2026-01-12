@@ -4,7 +4,7 @@ services:
     build: 
       context: ../../..
       dockerfile: services/api/Dockerfile
-    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["/entrypoint.sh"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0

@@ -37,12 +37,17 @@
 
 ### Next Steps
 
-**[P1.0 API Refactor](./new_architecture/MIGRATION_PLAN.md#p10--api-refactor)**
+6. **✅ P1.0 API Service Refactor**
+   - [x] API is now pure DAL (no Redis/GitHub side effects)
+   - [x] Service tests verify strict CRUD behavior
+   - [x] GitHub/Redis clients removed from API routers
 
-Phase 1 начинается в TDD режиме (RED → GREEN → REFACTOR).
-Текущая задача:
-- [ ] Написать падающий интеграционный тест `test_post_tasks_no_redis_publish`
-- [ ] Очистить API от Redis side effects
+### Next Steps
+
+**[P1.1 CLI Implementation](./new_architecture/MIGRATION_PLAN.md#p11--cli-implementation)**
+
+- Implement CLI for project scaffolding
+- Use shared GitHub/Redis clients
 
 ## 🔗 Quick Links
 

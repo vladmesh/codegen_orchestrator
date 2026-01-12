@@ -1,15 +1,11 @@
 """Projects router."""
 
-from datetime import UTC, datetime
-
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.clients.github import GitHubAppClient
 from shared.models import Project, User
-from shared.redis_client import RedisStreamClient
 
 from ..database import get_async_session
 from ..schemas import ProjectCreate, ProjectRead, ProjectUpdate
@@ -100,63 +96,6 @@ async def create_project(
             owner_id=owner_id,
         )
         db.add(project)
-        await db.flush()
-
-        # Provision GitHub repo
-        try:
-            github_client = GitHubAppClient()
-            repo = await github_client.provision_project_repo(
-                name=project_in.name,
-                description=f"Project: {project_in.name}",
-                project_spec={
-                    "id": str(project.id),
-                    "name": project.name,
-                    "description": f"Project: {project.name}",
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "owner": x_telegram_id or "unknown",
-                },
-                secrets=project.config.get("secrets") if project.config else None,
-            )
-
-            # Update project with repo URL
-            project.repository_url = repo.html_url
-            project.github_repo_id = repo.id
-
-            # Update config with repo info
-            new_config = dict(project.config) if project.config else {}
-            new_config["github_repo_id"] = repo.id
-            project.config = new_config
-
-            # Fire-and-forget: send scaffolding job to scaffolder service
-            try:
-                redis_client = RedisStreamClient()
-                await redis_client.connect()
-                await redis_client.publish(
-                    "scaffolder:queue",
-                    {
-                        "repo_full_name": repo.full_name,
-                        "project_name": project_in.name,
-                        "project_id": project_in.id,
-                        "modules": ",".join(m.value for m in project_in.modules),
-                    },
-                )
-                await redis_client.close()
-                logger.info(
-                    "scaffolding_job_queued",
-                    project_id=project.id,
-                    repo=repo.full_name,
-                    modules=[m.value for m in project_in.modules],
-                )
-            except Exception as e:
-                logger.warning("scaffolding_job_queue_failed", error=str(e))
-
-        except Exception as e:
-            logger.error("github_repo_creation_failed", error=str(e), project_name=project.name)
-            project.status = "repo_failed"
-            new_config = dict(project.config) if project.config else {}
-            new_config["repo_error"] = str(e)
-            project.config = new_config
-
         await db.commit()
         await db.refresh(project)
 
@@ -165,7 +104,6 @@ async def create_project(
             project_id=project.id,
             status=project.status,
             owner_id=owner_id,
-            repo_url=project.repository_url,
         )
 
         return project

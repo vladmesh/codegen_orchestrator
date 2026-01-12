@@ -1,7 +1,12 @@
 import asyncio
 from collections.abc import AsyncGenerator
 import os
+import sys
 
+# Ensure /app is in path so 'src' can be imported
+sys.path.append("/app")
+
+from httpx import ASGITransport, AsyncClient
 import pytest
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -39,3 +44,11 @@ async def redis_client() -> AsyncGenerator[Redis, None]:
     client = Redis.from_url(REDIS_URL)
     yield client
     await client.close()
+
+
+@pytest.fixture(scope="function")
+async def async_client() -> AsyncGenerator[AsyncClient, None]:
+    from src.main import app
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        yield client
