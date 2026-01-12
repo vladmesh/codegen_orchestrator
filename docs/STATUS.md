@@ -67,7 +67,11 @@
 10. **🚧 P1.4 Worker Manager**
     - [x] **P1.4.1 Core Logic**: `WorkerManager` class, `DockerClientWrapper`, Service Tests (Green).
     - [x] **P1.4.2 Service Wiring**: Wiring `main.py` with `WorkerCommandConsumer` (Redis), Background Tasks (GC, Auto-Pause).
-    - [ ] **P1.4.3 Worker Base**: Build `worker-base` image, CI integration.
+    - [x] **P1.4.3 Worker Base**: Build `worker-base` image, CI integration.
+
+11. **🚧 P1.5 Runtime Cache** (New!)
+    - [ ] **P1.5.1 ImageBuilder**: Dockerfile generation logic.
+    - [ ] **P1.5.2 Build Logic**: Config hashing and on-demand builds.
 
 ## 🔗 Quick Links
 

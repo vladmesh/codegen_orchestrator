@@ -34,6 +34,9 @@ flowchart TB
         P1_2[P1.2 Wrapper]
         P1_3[P1.3 Infra]
         P1_4[P1.4 Manager]
+        P1_3[P1.3 Infra]
+        P1_4[P1.4 Manager]
+        P1_5[P1.5 Runtime Cache]
     end
 
     subgraph Phase2["Phase 2: Core Logic"]
@@ -66,6 +69,7 @@ flowchart TB
 
     P1_1 --> P1_4
     P1_2 --> P1_4
+    P1_4 --> P1_5
 
     %% Phase 2 Dependencies
     P0_4 --> P2_1
@@ -100,6 +104,7 @@ flowchart TB
 | P1.2 | Worker Wrapper | `packages/worker-wrapper` | P0.1, P0.2, P0.3 | 1 |
 | P1.3 | Infra Service | `services/infra-service` | P0.1, P0.2 | 1 |
 | P1.4 | Worker Manager | `services/worker-manager` | P1.1, P1.2 | 1 |
+| P1.5 | Runtime Cache | `services/worker-manager` | P1.4 | 1 |
 | P2.1 | Scaffolder | `services/scaffolder` | P0.1, P0.4 | 2 |
 | P2.2 | LangGraph Service | `services/langgraph` | P1.3, P1.4, P2.1 | 2 |
 | P2.5 | Template Tests | `tests/integration/template` | P2.1 | 2 |
@@ -305,6 +310,24 @@ flowchart TB
 - [ ] Integration test: Mock Docker API
 - [ ] Create/Delete worker works
 - [ ] Crash detection publishes failure to output queue
+
+---
+
+### P1.5 — Programmatic Runtime Cache
+
+**Path:** `services/worker-manager/`
+**Depends:** P1.4
+
+**Tasks:**
+- [ ] Implement `ImageBuilder` class (Dockerfile generation)
+- [ ] Config hashing logic (JSON canonicalization)
+- [ ] Build & Cache logic (check hash -> build -> tag)
+- [ ] Integration with `WorkerManager` logic
+
+**Acceptance Criteria:**
+- [ ] Unit tests for Dockerfile generation
+- [ ] Integration test: specific config -> new image built
+- [ ] Re-use existing image if hash matches
 
 ---
 
