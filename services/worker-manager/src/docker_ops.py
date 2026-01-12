@@ -66,3 +66,30 @@ class DockerClientWrapper:
         # get() calls reload() implicitly? No, container object has .attrs.
         # But get() fetches fresh object.
         return container.attrs
+
+    async def image_exists(self, image: str) -> bool:
+        """Check if an image exists locally."""
+        try:
+            await self._run(self._client.images.get, image)
+            return True
+        except docker.errors.ImageNotFound:
+            return False
+
+    async def pull_image(self, image: str) -> Any:
+        """Pull an image."""
+        try:
+            return await self._run(self._client.images.pull, image)
+        except Exception:
+            # Re-raise or handle? For now re-raise
+            raise
+
+    async def list_images(self, name: str | None = None, all: bool = False) -> List[Any]:
+        """List images."""
+        return await self._run(self._client.images.list, name=name, all=all)
+
+    async def remove_image(self, image: str, force: bool = False) -> None:
+        """Remove an image."""
+        try:
+            await self._run(self._client.images.remove, image, force=force)
+        except docker.errors.ImageNotFound:
+            pass

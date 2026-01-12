@@ -65,9 +65,9 @@
 ### Next Steps
 
 10. **🚧 P1.4 Worker Manager**
-    - [ ] Create `services/worker-manager`.
-    - [ ] Build `worker-base` Docker image.
-    - [ ] Implement Container lifecycle & Activity tracking.
+    - [x] **P1.4.1 Core Logic**: `WorkerManager` class, `DockerClientWrapper`, Service Tests (Green).
+    - [ ] **P1.4.2 Service Wiring**: `main.py` API endpoints, Background Tasks (GC, Auto-Pause).
+    - [ ] **P1.4.3 Worker Base**: Build `worker-base` image, CI integration.
 
 ## 🔗 Quick Links
 

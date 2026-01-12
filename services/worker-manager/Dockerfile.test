@@ -20,7 +20,7 @@ RUN pip install ./shared
 
 # Install runtime + test dependencies
 RUN pip install --no-cache-dir . && \
-    pip install --no-cache-dir pytest pytest-asyncio pytest-cov httpx docker
+    pip install --no-cache-dir pytest pytest-asyncio pytest-cov httpx docker fakeredis
 
 # === Test Stage ===
 FROM test-deps AS test

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from typing import Optional, Dict
 import structlog
 from redis.asyncio import Redis
@@ -19,11 +20,25 @@ class WorkerManager:
         self.redis = redis
         self.docker = docker_client or DockerClientWrapper()
 
+    async def ensure_image(self, image: str) -> None:
+        """Ensure image exists and update access time."""
+        # Check if exists
+        exists = await self.docker.image_exists(image)
+        if not exists:
+            logger.info("pulling_image", image=image)
+            await self.docker.pull_image(image)
+
+        # Update LRU
+        await self.redis.set(f"worker:image:last_used:{image}", datetime.now().isoformat())
+
     async def create_worker(self, worker_id: str, image: str, env_vars: Dict[str, str] = None) -> str:
         """
         Create and start a new worker container.
         """
         env_vars = env_vars or {}
+
+        # Ensure image exists and update cache stats
+        await self.ensure_image(image)
 
         # Prepare Config
         # In legacy, we parsed config models. Here we accept args.
@@ -94,6 +109,68 @@ class WorkerManager:
             # Even if failed, we mark stopped? Or FAILED?
             # If container doesn't exist, remove_container handles NotFound.
             await self.redis.set(f"worker:status:{worker_id}", "STOPPED")
+
+    async def pause_worker(self, worker_id: str) -> None:
+        """Pause a running worker."""
+        container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
+        await self.docker.pause_container(container_name)
+        await self.redis.set(f"worker:status:{worker_id}", "PAUSED")
+        logger.info("worker_paused", worker_id=worker_id)
+
+    async def resume_worker(self, worker_id: str) -> None:
+        """Resume a paused worker."""
+        container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
+        await self.docker.unpause_container(container_name)
+        await self.redis.set(f"worker:status:{worker_id}", "RUNNING")
+        logger.info("worker_resumed", worker_id=worker_id)
+
+    async def garbage_collect_images(self, retention_seconds: int = 7 * 24 * 3600) -> None:
+        """Remove unused images."""
+        images = await self.docker.list_images()
+        now = datetime.now()
+
+        for img in images:
+            # Docker Py image object has 'tags' list
+            tags = getattr(img, "tags", [])
+            for tag in tags:
+                if not tag:
+                    continue
+                # Check cache key
+                last_used_str = await self.redis.get(f"worker:image:last_used:{tag}")
+                if last_used_str:
+                    last_used = datetime.fromisoformat(last_used_str)
+                    age = (now - last_used).total_seconds()
+                    if age > retention_seconds:
+                        logger.info("gc_removing_image", image=tag, age=age)
+                        await self.docker.remove_image(tag, force=True)
+                        await self.redis.delete(f"worker:image:last_used:{tag}")
+
+    async def check_and_pause_workers(self, idle_timeout: int = 600) -> None:
+        """Pause workers that have been inactive."""
+        # Iterate over redis keys "worker:last_activity:*"
+        # Using scan_iter is best for Redis
+
+        async for key in self.redis.scan_iter(match="worker:last_activity:*"):
+            # key is something like "worker:last_activity:abc-123"
+            worker_id = key.split(":")[-1]
+
+            # Check status first - only pause RUNNING workers
+            status = await self.get_worker_status(worker_id)
+            if status != "RUNNING":
+                continue
+
+            last_activity_ts = await self.redis.get(key)
+            if not last_activity_ts:
+                continue
+
+            age = datetime.now().timestamp() - float(last_activity_ts)
+
+            if age > idle_timeout:
+                logger.info("auto_pausing_worker", worker_id=worker_id, idle_seconds=age)
+                try:
+                    await self.pause_worker(worker_id)
+                except Exception as e:
+                    logger.error("auto_pause_failed", worker_id=worker_id, error=str(e))
 
     async def get_worker_status(self, worker_id: str) -> str:
         """Get status from Redis (primary) or Docker (fallback)."""
