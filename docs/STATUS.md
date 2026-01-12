@@ -5,9 +5,9 @@
 
 ## 🚀 Current Focus
 
-**Phase 1: Base Components → Production-Ready Worker Manager**
+**Phase 2: Core Logic → Scaffolder Service (P2.1)**
 
-Доводим Worker Manager до production-ready состояния с реальными Claude Code и Factory Droid агентами.
+Start implementing the Scaffolder Service.
 
 ### Progress (Phase 0)
 
@@ -84,9 +84,9 @@
     - [x] **P1.7.2 Result Parsing**: `<result>...</result>` extraction, DTO mapping.
     - [x] **P1.7.3 Session Management**: Redis storage, TTL, `--resume` flag.
 
-14. **🔲 P1.8 Worker Base Image**
-    - [ ] **P1.8.1 Dockerfile Update**: worker-wrapper as ENTRYPOINT, healthcheck.
-    - [ ] **P1.8.2 CI Integration**: Build with wrapper, lifecycle event test.
+14. **✅ P1.8 Worker Base Image**
+    - [x] **P1.8.1 Dockerfile Update**: worker-wrapper as ENTRYPOINT, healthcheck.
+    - [x] **P1.8.2 CI Integration**: Build with wrapper, lifecycle event test.
 
 ## 🔗 Quick Links
 

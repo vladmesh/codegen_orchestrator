@@ -49,5 +49,9 @@ RUN pip install --no-cache-dir /wheels/*.whl
 # Cleanup
 RUN rm -rf /wheels
 
-# Default command (overridden by dynamic workers or entrypoint)
-CMD ["python", "-c", "print('Worker Base Image Ready')"]
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD worker-wrapper healthcheck || exit 1
+
+# Entrypoint
+ENTRYPOINT ["worker-wrapper"]

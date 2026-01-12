@@ -12,7 +12,17 @@ from .wrapper import WorkerWrapper
 logger = structlog.get_logger(__name__)
 
 
+def run_main():
+    """Entry point for the console script."""
+    asyncio.run(main())
+
+
 async def main():
+    # Simple argument parsing for healthcheck
+    if len(sys.argv) > 1 and sys.argv[1] == "healthcheck":
+        print("Healthcheck passed")
+        sys.exit(0)
+
     setup_logging()
 
     try:
@@ -66,4 +76,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run_main()

@@ -178,11 +178,28 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: services/worker-manager/images/worker-base/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          load: true # Load into local docker daemon for testing
+          push: false # We push later or rely on another step, but for now we need to load it first to test
+          tags: worker-base:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify image healthcheck
+        run: |
+          docker run --rm worker-base:test healthcheck
+
+      - name: Push image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/worker-manager/images/worker-base/Dockerfile
+          push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base:latest
             ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base:${{ github.sha }}
