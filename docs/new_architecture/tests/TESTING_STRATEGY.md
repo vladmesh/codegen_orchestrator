@@ -13,25 +13,29 @@
 
 **TDD от контрактов**: У нас зафиксированы контракты (DTO) между сервисами. Тесты проверяют что сервисы соблюдают эти контракты.
 
-**Три уровня:**
+**Четыре уровня:**
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  E2E (nightly)                                              │
-│  Real GitHub, real containers, full pipeline                │
+│  Full stack, real GitHub, real LLM                          │
 ├─────────────────────────────────────────────────────────────┤
 │  Integration (on every PR)                                  │
-│  Service + DB + Redis, mock LLM/GitHub                      │
+│  Multiple services communicating                            │
+├─────────────────────────────────────────────────────────────┤
+│  Service (on every PR)                                      │
+│  Single service + infra (DB/Redis), mock external APIs      │
 ├─────────────────────────────────────────────────────────────┤
 │  Unit (on every PR, fast)                                   │
-│  Pure functions, no IO                                      │
+│  Pure functions, no IO, service NOT running                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 **Принципы:**
 - Все тесты в контейнерах (изоляция зависимостей)
-- Unit: `network_mode: none` (гарантия отсутствия IO)
-- Integration: real DB + Redis, mock external APIs
-- E2E: real everything, nightly only
+- Unit: сервис НЕ запускается, только pytest в контейнере
+- Service: сервис запущен, тест-раннер бьёт снаружи через REST/Redis
+- Integration: несколько сервисов взаимодействуют
+- E2E: полный стенд, почти без моков
 - Тесты рядом с кодом (`services/{name}/tests/`)
 - Prod images не содержат тесты (multi-stage / .dockerignore)
 
@@ -39,45 +43,139 @@
 
 ### 2.1 Unit Tests
 
+**Что это:** Изолированный тестовый контейнер, который через pytest дёргает отдельные функции. Сервис НЕ запускается.
+
 **Что тестируем:**
 - Чистые функции без side effects
-- Валидация входных данных
+- Валидация входных данных (Pydantic)
 - Трансформации данных
 - Бизнес-логика в изоляции
 
 **Характеристики:**
-- Без network, DB, Redis, файловой системы
-- Mocks для всех зависимостей
+- Сервис не запущен
+- Все зависимости mock'аются
 - < 1 сек на тест
-- Запуск: `make test-{service}-unit`
+- На каждый сервис свой `Dockerfile.test`
 
-### 2.2 Integration Tests
+**Инфраструктура:**
+```yaml
+# Только тестовый контейнер, без инфры
+services:
+  api-unit-test:
+    build:
+      context: services/api
+      dockerfile: Dockerfile.test
+    command: ["pytest", "tests/unit/", "-v"]
+    network_mode: none  # Гарантия отсутствия IO
+```
+
+**Запуск:** `make test-{service}-unit`
+
+---
+
+### 2.2 Service Tests
+
+**Что это:** Сервис запущен как в проде. Отдельный контейнер test-runner бьёт в него через REST или Redis.
 
 **Что тестируем:**
 - Сервис корректно читает/пишет в DB
 - Сервис корректно читает/пишет в Redis queues
 - Contract validation (DTO парсится/сериализуется)
-- Полный flow внутри одного сервиса
+- HTTP endpoints работают как ожидается
 
 **Характеристики:**
-- Real DB (PostgreSQL) + Real Redis
+- Сервис запущен (prod image, prod CMD)
+- Real DB + Real Redis
 - Mock external APIs (GitHub, LLM, Telegram)
 - < 30 сек на тест
-- Запуск: `make test-{service}-integration`
 
-### 2.3 E2E Tests
+**Инфраструктура:**
+```yaml
+# docker/test/service/api.yml
+services:
+  # Сам сервис — работает как в проде
+  api:
+    build: services/api
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0"]
+    depends_on: [db, redis]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+
+  # Инфраструктура
+  db:
+    image: pgvector/pgvector:pg16
+    tmpfs: /var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+
+  # Тест-раннер — бьёт в сервис снаружи
+  api-test-runner:
+    build:
+      context: services/api
+      dockerfile: Dockerfile.test
+    command: ["pytest", "tests/service/", "-v"]
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+```
+
+**Запуск:** `make test-{service}-service`
+
+---
+
+### 2.3 Integration Tests
+
+**Что это:** Несколько сервисов поднимаются вместе. Проверяем взаимодействие между ними.
+
+**Что тестируем:**
+- Telegram Bot → API
+- LangGraph → Worker Manager → Workers
+- Scheduler → API
+
+**Характеристики:**
+- 2+ сервисов запущено
+- Real DB + Real Redis
+- Mock external APIs
+- Группируем по связям (frontend, backend)
+
+**Инфраструктура:**
+```yaml
+# docker/test/integration/frontend.yml
+services:
+  api:
+    build: services/api
+    ...
+  telegram-bot:
+    build: services/telegram_bot
+    ...
+  integration-test-runner:
+    build: tests/integration
+    command: ["pytest", "tests/integration/frontend/", "-v"]
+```
+
+**Запуск:** `make test-integration-frontend`, `make test-integration-backend`
+
+---
+
+### 2.4 E2E Tests
+
+**Что это:** Полный стенд. Все сервисы запущены, почти ничего не mock'ается.
 
 **Что тестируем:**
 - Полный pipeline от Telegram до deployed URL
-- Реальное взаимодействие между сервисами
-- Реальный GitHub (test org)
+- Реальный GitHub (test org: `codegen-orchestrator-test`)
+- Реальное создание контейнеров
 
 **Характеристики:**
 - Все сервисы запущены
-- Real GitHub API (org: `codegen-orchestrator-test`)
+- Real GitHub API
 - Nightly only (не блокирует PR)
 - Cleanup после каждого теста
-- Запуск: `make test-e2e`
+
+**Запуск:** `make test-e2e`
+
 
 ## 3. Per-Service Test Plan
 

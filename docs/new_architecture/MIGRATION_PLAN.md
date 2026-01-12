@@ -25,10 +25,11 @@ flowchart TB
         P0_2[P0.2 Redis]
         P0_3[P0.3 Logging]
         P0_4[P0.4 GH Client]
-        P0_5[P0.5 API]
+        P0_5[P0.5 Test Infra]
     end
 
     subgraph Phase1["Phase 1: Base Components"]
+        P1_0[P1.0 API Refactor]
         P1_1[P1.1 CLI]
         P1_2[P1.2 Wrapper]
         P1_3[P1.3 Infra]
@@ -50,9 +51,11 @@ flowchart TB
     end
 
     %% Phase 1 Dependencies
+    P0_5 --> P1_0
+    
     P0_1 --> P1_1
     P0_2 --> P1_1
-    P0_5 --> P1_1
+    P1_0 --> P1_1
 
     P0_1 --> P1_2
     P0_2 --> P1_2
@@ -74,7 +77,7 @@ flowchart TB
     P2_1 --> P2_5
 
     %% Phase 3 Dependencies
-    P0_5 --> P3_1
+    P1_0 --> P3_1
     P2_2 --> P3_1
 
     %% Phase 4 Dependencies
@@ -91,15 +94,16 @@ flowchart TB
 | P0.2 | Shared Redis | `shared/redis` | — | 0 |
 | P0.3 | Shared Logging | `shared/logging` | — | 0 |
 | P0.4 | GitHub Client | `shared/clients/github` | — | 0 |
-| P0.5 | API Refactor | `services/api` | — | 0 |
-| P1.1 | Orchestrator CLI | `packages/orchestrator-cli` | P0.1, P0.2, P0.5 | 1 |
+| P0.5 | Test Infrastructure | `docker/test/` | — | 0 |
+| P1.0 | API Refactor | `services/api` | P0.5 | 1 |
+| P1.1 | Orchestrator CLI | `packages/orchestrator-cli` | P0.1, P0.2, P1.0 | 1 |
 | P1.2 | Worker Wrapper | `packages/worker-wrapper` | P0.1, P0.2, P0.3 | 1 |
 | P1.3 | Infra Service | `services/infra-service` | P0.1, P0.2 | 1 |
 | P1.4 | Worker Manager | `services/worker-manager` | P1.1, P1.2 | 1 |
 | P2.1 | Scaffolder | `services/scaffolder` | P0.1, P0.4 | 2 |
 | P2.2 | LangGraph Service | `services/langgraph` | P1.3, P1.4, P2.1 | 2 |
 | P2.5 | Template Tests | `tests/integration/template` | P2.1 | 2 |
-| P3.1 | Telegram Bot | `services/telegram-bot` | P0.5, P2.2 | 3 |
+| P3.1 | Telegram Bot | `services/telegram-bot` | P1.0, P2.2 | 3 |
 | P4.1 | System E2E | `tests/e2e` | All above | 4 |
 
 ---
@@ -168,18 +172,28 @@ flowchart TB
 
 ---
 
-### P0.5 — API Refactor
+### P0.5 — Test Infrastructure
 
-**Path:** `services/api/`
+**Path:** `docker/test/`  
+**Spec:** [TESTING_STRATEGY.md](./tests/TESTING_STRATEGY.md)
+
+**Goal:** Настроить 4-уровневую систему тестирования (Unit, Service, Integration, E2E) чтобы все последующие компоненты разрабатывались в TDD.
 
 **Tasks:**
-- [ ] Удалить Redis Publisher из POST `/tasks`
-- [ ] Удалить прямые вызовы GitHub/GitLab
-- [ ] API = чистый Data Access Layer
+- [ ] Перенести legacy тесты в `tests_legacy/`
+- [ ] Создать структуру `docker/test/{unit,service,integration,e2e}/`
+- [ ] Для каждого сервиса создать `docker/test/service/{service}.yml`
+- [ ] Обновить Makefile: `test-{service}-unit`, `test-{service}-service`
+- [ ] Создать `docker/test/integration/frontend.yml` (telegram + api)
+- [ ] Создать `docker/test/integration/backend.yml` (langgraph + workers)
+- [ ] Обновить pre-push hook для нового формата
+- [ ] Обновить AGENTS.md с TDD workflow
 
 **Acceptance Criteria:**
-- [ ] Только CRUD операции с PostgreSQL
-- [ ] Никаких side effects кроме записи в БД
+- [ ] `make test-api-unit` запускает unit тесты API
+- [ ] `make test-api-service` поднимает API + DB + test-runner
+- [ ] Legacy тесты не блокируют CI
+- [ ] Документация TESTING_STRATEGY.md актуальна
 
 ---
 
@@ -187,10 +201,44 @@ flowchart TB
 
 > **Goal:** Строительные блоки для воркеров и инфраструктуры.
 
+### P1.0 — API Refactor
+
+**Path:** `services/api/`  
+**Depends:** P0.5  
+**Test Spec:** [tests/services/api.md](./tests/services/api.md)
+
+**Goal:** Превратить API в чистый Data Access Layer без side effects.
+
+#### 🔴 RED: Write Failing Tests
+
+**File:** `services/api/tests/service/test_pure_crud.py`
+
+- [ ] `test_post_tasks_no_redis_publish` — POST /tasks НЕ публикует в Redis
+- [ ] `test_post_tasks_no_github_calls` — POST /tasks НЕ вызывает GitHub
+- [ ] `test_post_projects_pure_db` — POST /projects только пишет в DB
+
+**Run:** `make test-api-service` → ❌ FAIL
+
+#### 🟢 GREEN: Implement
+
+- [ ] Удалить Redis Publisher из POST `/tasks`
+- [ ] Удалить прямые вызовы GitHub/GitLab
+- [ ] API = чистый Data Access Layer
+
+**Run:** `make test-api-service` → ✅ PASS
+
+#### ✅ Acceptance Criteria
+
+- [ ] Только CRUD операции с PostgreSQL
+- [ ] Никаких side effects кроме записи в БД
+- [ ] Все тесты проходят
+
+---
+
 ### P1.1 — Orchestrator CLI
 
 **Path:** `packages/orchestrator-cli/`  
-**Depends:** P0.1, P0.2, P0.5
+**Depends:** P0.1, P0.2, P1.0
 
 **Tasks:**
 - [ ] Выделить код из `shared/cli`
