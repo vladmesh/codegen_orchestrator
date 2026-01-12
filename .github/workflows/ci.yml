@@ -92,6 +92,8 @@ jobs:
             changed: needs.detect-changes.outputs.telegram
           - service: workers-spawner
             changed: needs.detect-changes.outputs.workers-spawner
+          - service: worker-manager
+            changed: needs.detect-changes.outputs.worker-manager
           - service: orchestrator-cli
             changed: needs.detect-changes.outputs.cli
     steps:
