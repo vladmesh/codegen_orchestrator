@@ -5,9 +5,9 @@
 
 ## 🚀 Current Focus
 
-**Phase 0: Foundation**
+**Phase 1: Base Components → Production-Ready Worker Manager**
 
-Закладываем фундамент: shared библиотеки и тестовая инфраструктура.
+Доводим Worker Manager до production-ready состояния с реальными Claude Code и Factory Droid агентами.
 
 ### Progress (Phase 0)
 
@@ -72,6 +72,21 @@
 11. **✅ P1.5 Runtime Cache**
     - [x] **P1.5.1 ImageBuilder**: Dockerfile generation logic, `compute_image_hash()`, capability mapping.
     - [x] **P1.5.2 Build Logic**: `DockerClientWrapper.build_image()`, `WorkerManager.ensure_or_build_image()`, `create_worker_with_capabilities()`.
+
+12. **🔲 P1.6 Agent Integration**
+    - [ ] **P1.6.1 Agent Factories**: `AgentConfig` base, Claude/Factory configs, agent type in hash.
+    - [ ] **P1.6.2 Container Config**: Env vars, volumes (Docker socket, Claude session), network.
+    - [ ] **P1.6.3 Docker Exec**: `exec_in_container()`, instruction file injection.
+    - [ ] **P1.6.4 Docker Events**: Crash detection, failure forwarding to output queue.
+
+13. **🔲 P1.7 Wrapper Completion**
+    - [ ] **P1.7.1 Headless Execution**: ClaudeRunner, FactoryRunner classes.
+    - [ ] **P1.7.2 Result Parsing**: `<result>...</result>` extraction, DTO mapping.
+    - [ ] **P1.7.3 Session Management**: Redis storage, TTL, `--resume` flag.
+
+14. **🔲 P1.8 Worker Base Image**
+    - [ ] **P1.8.1 Dockerfile Update**: worker-wrapper as ENTRYPOINT, healthcheck.
+    - [ ] **P1.8.2 CI Integration**: Build with wrapper, lifecycle event test.
 
 ## 🔗 Quick Links
 
