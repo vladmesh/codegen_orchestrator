@@ -1,0 +1,36 @@
+services:
+  # The service under test
+  infra-service:
+    build:
+      context: ../../..
+      dockerfile: services/infra-service/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=test
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Infrastructure
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Test Runner
+  infra-test-runner:
+    build:
+      context: ../../..
+      dockerfile: services/infra-service/Dockerfile.test
+    command: ["pytest", "services/infra-service/tests", "-v"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      infra-service:
+        condition: service_started
+    volumes:
+      - ../../../services/infra-service/tests:/app/services/infra-service/tests
+      - ../../../services/infra-service/src:/app/services/infra-service/src

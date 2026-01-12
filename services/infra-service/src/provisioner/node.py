@@ -18,7 +18,7 @@ from shared.notifications import notify_admins
 
 from ..config.constants import Provisioning, Timeouts
 from ..nodes import FunctionalNode, log_node_execution
-from .ansible_runner import run_ansible_playbook
+from .ansible_runner import AnsibleRunner
 from .api_client import (
     get_server_info,
     update_server_labels,
@@ -26,7 +26,7 @@ from .api_client import (
 )
 from .incidents import create_incident, resolve_active_incidents
 from .recovery import redeploy_all_services
-from .ssh import check_ssh_access, get_ssh_public_key
+from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
 
@@ -88,6 +88,8 @@ async def reinstall_and_provision(
     server_id: int,
     server_ip: str,
     os_template: str,
+    ssh_manager: SSHManager,
+    ansible_runner: AnsibleRunner,
     ssh_public_key: str | None = None,
 ) -> tuple[bool, str]:
     """Reinstall OS and provision server.
@@ -101,6 +103,8 @@ async def reinstall_and_provision(
         server_id: Time4VPS server ID
         server_ip: Server IP address
         os_template: OS template to install
+        ssh_manager: SSH Manager instance
+        ansible_runner: Ansible Runner instance
         ssh_public_key: Optional SSH public key
 
     Returns:
@@ -149,7 +153,7 @@ async def reinstall_and_provision(
 
         # Step 4: Run Access Phase
         logger.info("Running Phase 1: Access Configuration...")
-        success_access, output_access = run_ansible_playbook(
+        success_access, output_access = ansible_runner.run_playbook(
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_access.yml",
@@ -173,7 +177,7 @@ async def reinstall_and_provision(
 
         # Step 5: Run Software Phase
         logger.info("Running Phase 2: Software Installation...")
-        success_soft, output_soft = run_ansible_playbook(
+        success_soft, output_soft = ansible_runner.run_playbook(
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_software.yml",
@@ -269,8 +273,12 @@ The server is now configured with:
 class ProvisionerNode(FunctionalNode):
     """Provisioner node for automated server setup and recovery."""
 
-    def __init__(self):
+    def __init__(
+        self, ssh_manager: SSHManager | None = None, ansible_runner: AnsibleRunner | None = None
+    ):
         super().__init__(node_id="provisioner")
+        self.ssh_manager = ssh_manager or SSHManager()
+        self.ansible_runner = ansible_runner or AnsibleRunner()
 
     async def _get_and_validate_server_info(
         self,
@@ -394,7 +402,7 @@ class ProvisionerNode(FunctionalNode):
         """
         use_reinstall = False
 
-        if check_ssh_access(server_ip):
+        if self.ssh_manager.check_ssh_access(server_ip):
             logger.info("ssh_access_ok", server_handle=server_handle)
         else:
             logger.info("ssh_access_failed", server_handle=server_handle)
@@ -423,7 +431,7 @@ class ProvisionerNode(FunctionalNode):
         Returns:
             State update dict.
         """
-        ssh_public_key = get_ssh_public_key()
+        ssh_public_key = self.ssh_manager.get_public_key()
 
         success, message = await reinstall_and_provision(
             time4vps_client=time4vps_client,
@@ -431,6 +439,8 @@ class ProvisionerNode(FunctionalNode):
             server_id=server_id,
             server_ip=server_ip,
             os_template=os_template,
+            ssh_manager=self.ssh_manager,
+            ansible_runner=self.ansible_runner,
             ssh_public_key=ssh_public_key,
         )
 
@@ -467,12 +477,12 @@ class ProvisionerNode(FunctionalNode):
         logger.info("provisioning_existing_setup", server_handle=server_handle)
 
         # Phase 1: Access
-        success_access, output_access = run_ansible_playbook(
+        success_access, output_access = self.ansible_runner.run_playbook(
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_access.yml",
             root_password=None,
-            ssh_public_key=get_ssh_public_key(),
+            ssh_public_key=self.ssh_manager.get_public_key(),
             timeout=Timeouts.ACCESS_PHASE,
         )
 
@@ -491,7 +501,7 @@ class ProvisionerNode(FunctionalNode):
         await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
 
         # Phase 2: Software
-        success_soft, output_soft = run_ansible_playbook(
+        success_soft, output_soft = self.ansible_runner.run_playbook(
             server_ip=server_ip,
             server_handle=server_handle,
             playbook_name="provision_software.yml",

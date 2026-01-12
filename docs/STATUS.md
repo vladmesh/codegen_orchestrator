@@ -56,6 +56,19 @@
    - [x] Lifecycle events and session management via `WorkerLifecycleEvent`.
    - [x] Verified with Integration Tests (FakeRedis).
 
+9. **✅ P1.3 Infra Service**
+   - [x] Renamed to `services/infra-service`.
+   - [x] Implemented `provisioner:queue` consumer.
+   - [x] Replaced functional Ansible usage with `AnsibleRunner` class.
+   - [x] Removed legacy deployment logic.
+
+### Next Steps
+
+10. **🚧 P1.4 Worker Manager**
+    - [ ] Create `services/worker-manager`.
+    - [ ] Build `worker-base` Docker image.
+    - [ ] Implement Container lifecycle & Activity tracking.
+
 ## 🔗 Quick Links
 
 - [Migration Plan](./new_architecture/MIGRATION_PLAN.md)

@@ -13,10 +13,8 @@ import signal
 import structlog
 
 from shared.logging_config import setup_logging
-from shared.queues import ANSIBLE_DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
-from .provisioner.deployment_executor import run_deployment_playbook
 from .provisioner.node import ProvisionerNode
 
 logger = structlog.get_logger(__name__)
@@ -38,80 +36,18 @@ def handle_shutdown(signum, frame):
 
 
 async def ensure_consumer_groups(redis_client) -> None:
-    """Ensure Redis consumer groups exist for both queues."""
-    queues = [PROVISIONER_QUEUE, ANSIBLE_DEPLOY_QUEUE]
-
-    for queue in queues:
-        try:
-            await redis_client.xgroup_create(queue, PROVISIONER_GROUP, id="0", mkstream=True)
-            logger.info("consumer_group_created", queue=queue, group=PROVISIONER_GROUP)
-        except Exception as e:
-            # Group already exists
-            if "BUSYGROUP" in str(e):
-                logger.debug("consumer_group_exists", queue=queue, group=PROVISIONER_GROUP)
-            else:
-                raise
-
-
-async def process_deployment_job(job_data: dict) -> dict:
-    """Process a deployment job from ansible:deploy:queue.
-
-    Args:
-        job_data: Deployment job data matching DeploymentJobRequest schema
-
-    Returns:
-        Result dict matching DeploymentJobResult schema
-    """
-    request_id = job_data.get("request_id", "unknown")
-    project_name = job_data.get("project_name", "unknown")
-    repo_full_name = job_data.get("repo_full_name", "unknown/unknown")
-
-    logger.info(
-        "deployment_job_started",
-        request_id=request_id,
-        project_name=project_name,
-        repo=repo_full_name,
-    )
-
+    """Ensure Redis consumer groups exist for provisioner queue."""
     try:
-        # Execute deployment playbook
-        result = run_deployment_playbook(
-            project_name=job_data["project_name"],
-            repo_full_name=job_data["repo_full_name"],
-            github_token=job_data["github_token"],
-            server_ip=job_data["server_ip"],
-            service_port=job_data["port"],
-            secrets=job_data.get("secrets", {}),
-            modules=job_data.get("modules"),
+        await redis_client.xgroup_create(
+            PROVISIONER_QUEUE, PROVISIONER_GROUP, id="0", mkstream=True
         )
-
-        if result.get("status") == "success":
-            logger.info(
-                "deployment_job_success",
-                request_id=request_id,
-                deployed_url=result.get("deployed_url"),
-            )
-        else:
-            logger.error(
-                "deployment_job_failed",
-                request_id=request_id,
-                error=result.get("error"),
-            )
-
-        return result
-
+        logger.info("consumer_group_created", queue=PROVISIONER_QUEUE, group=PROVISIONER_GROUP)
     except Exception as e:
-        logger.error(
-            "deployment_job_exception",
-            request_id=request_id,
-            error=str(e),
-            error_type=type(e).__name__,
-            exc_info=True,
-        )
-        return {
-            "status": "error",
-            "error": str(e),
-        }
+        # Group already exists
+        if "BUSYGROUP" in str(e):
+            logger.debug("consumer_group_exists", queue=PROVISIONER_QUEUE, group=PROVISIONER_GROUP)
+        else:
+            raise
 
 
 async def process_provisioner_job(job_data: dict) -> dict:
@@ -192,8 +128,8 @@ async def process_provisioner_job(job_data: dict) -> dict:
 
 
 async def run_worker():
-    """Main worker loop handling both provisioning and deployment queues."""
-    setup_logging(service_name="infrastructure-worker")
+    """Main worker loop handling provisioning queue."""
+    setup_logging(service_name="infra-service")
 
     redis = RedisStreamClient()
     await redis.connect()
@@ -206,11 +142,11 @@ async def run_worker():
     try:
         while not _shutdown:
             try:
-                # Read from both queues
+                # Read from provisioner queue
                 messages = await redis.redis.xreadgroup(
                     groupname=PROVISIONER_GROUP,
                     consumername=CONSUMER_NAME,
-                    streams={PROVISIONER_QUEUE: ">", ANSIBLE_DEPLOY_QUEUE: ">"},
+                    streams={PROVISIONER_QUEUE: ">"},
                     count=1,
                     block=5000,  # 5 second block
                 )
@@ -232,25 +168,25 @@ async def run_worker():
                             else:
                                 job_data = raw_data
 
-                            # Route to appropriate handler based on queue
                             if stream_name_str == PROVISIONER_QUEUE:
                                 result = await process_provisioner_job(job_data)
                                 result_prefix = "provisioner"
-                            elif stream_name_str == ANSIBLE_DEPLOY_QUEUE:
-                                result = await process_deployment_job(job_data)
-                                result_prefix = "deploy"
                             else:
                                 logger.warning("unknown_queue", stream=stream_name_str)
                                 continue
 
-                            # Publish result if request_id provided
-                            request_id = job_data.get("request_id")
+                            # Publish result if request_id (or job_id) provided
+                            request_id = job_data.get("job_id") or job_data.get("request_id")
                             if request_id:
                                 result_key = f"{result_prefix}:result:{request_id}"
                                 await redis.redis.set(
                                     result_key,
                                     json.dumps(result),
                                     ex=3600,  # 1 hour TTL
+                                )
+                                # Also publish to stream for stats/monitoring if needed
+                                await redis.publish_event(
+                                    "provisioner:results", result, category="result"
                                 )
 
                             # ACK the message

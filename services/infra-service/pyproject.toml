@@ -1,5 +1,5 @@
 [project]
-name = "infrastructure-worker"
+name = "infra-service"
 version = "0.1.0"
 description = "Infrastructure worker for provisioning servers via Ansible"
 requires-python = ">=3.12"

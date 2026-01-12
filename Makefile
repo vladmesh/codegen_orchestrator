@@ -246,6 +246,14 @@ test-worker-wrapper:
 	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
+test-infra-service:
+	@echo "🧪 Running Infra Service tests..."
+	@docker compose -p $(TEST_PROJECT)_infra -f docker/test/service/infra.yml down -v --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_infra -f docker/test/service/infra.yml up --build --abort-on-container-exit --exit-code-from infra-test-runner; \
+	EXIT_CODE=$$?; \
+	docker compose -p $(TEST_PROJECT)_infra -f docker/test/service/infra.yml down -v --remove-orphans; \
+	exit $$EXIT_CODE
+
 test-cli-integration:
 	@echo "🧪 Running Orchestrator CLI Integration tests..."
 	@docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml down -v --remove-orphans 2>/dev/null || true
