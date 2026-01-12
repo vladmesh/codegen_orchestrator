@@ -2,8 +2,8 @@ services:
   # Services
   api:
     build: 
-      context: ../../../services/api
-      dockerfile: Dockerfile
+      context: ../../..
+      dockerfile: services/api/Dockerfile
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
@@ -20,8 +20,8 @@ services:
 
   telegram-bot:
     build:
-      context: ../../../services/telegram_bot
-      dockerfile: Dockerfile
+      context: ../../..
+      dockerfile: services/telegram_bot/Dockerfile
     environment:
       - API_BASE_URL=http://api:8000
       - REDIS_URL=redis://redis:6379/0
@@ -57,8 +57,8 @@ services:
   # Test Runner (Integration)
   integration-test-runner:
     build:
-      context: ../../../docker/test/integration
-      dockerfile: Dockerfile
+      context: ../../..
+      dockerfile: docker/test/integration/Dockerfile
     command: ["pytest", "tests/integration/frontend/", "-v"]
     environment:
       - API_URL=http://api:8000

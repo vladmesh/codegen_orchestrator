@@ -2,8 +2,8 @@ services:
   # Services
   langgraph:
     build: 
-      context: ../../../services/langgraph
-      dockerfile: Dockerfile
+      context: ../../..
+      dockerfile: services/langgraph/Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_URL=http://api:8000
@@ -13,16 +13,16 @@ services:
       api:
         condition: service_healthy
 
-  worker-manager:
-    build:
-      context: ../../../services/worker-manager
-      dockerfile: Dockerfile
-    environment:
-      - REDIS_URL=redis://redis:6379/0
-      - DOCKER_HOST=tcp://docker:2375
-    depends_on:
-      redis:
-        condition: service_healthy
+  # worker-manager:
+  #   build:
+  #     context: ../../..
+  #     dockerfile: services/worker-manager/Dockerfile
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379/0
+  #     - DOCKER_HOST=tcp://docker:2375
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
 
   # Infrastructure
   db:
@@ -47,8 +47,13 @@ services:
       retries: 5
   
   api:
-    build: services/api
+    build:
+      context: ../../..
+      dockerfile: services/api/Dockerfile
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379/0
     depends_on: [db, redis]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -65,13 +70,13 @@ services:
   # Test Runner
   integration-test-runner:
     build:
-      context: ../../../docker/test/integration
-      dockerfile: Dockerfile
+      context: ../../..
+      dockerfile: docker/test/integration/Dockerfile
     command: ["pytest", "tests/integration/backend/", "-v"]
     depends_on:
       langgraph:
         condition: service_started
-      worker-manager:
-        condition: service_started
+      # worker-manager:
+      #   condition: service_started
     volumes:
       - ../../../tests/integration/backend:/app/tests/integration/backend

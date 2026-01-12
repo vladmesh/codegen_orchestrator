@@ -111,7 +111,7 @@ DOCKER_COMPOSE_TEST := DOCKER_BUILDKIT=1 docker compose -p $(TEST_PROJECT) -f do
 test-api-unit:
 	@echo "🧪 Running API unit tests (inside container)..."
 	@if [ -d "services/api/tests/unit" ] && [ "$$(ls -A services/api/tests/unit)" ]; then \
-		$(DOCKER_COMPOSE_TOOLS) run --rm api pytest tests/unit/ -v; \
+		docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml run --rm --no-deps api-test-runner pytest tests/unit/ -v; \
 	else \
 		echo "⚠️  No unit tests found in services/api/tests/unit"; \
 	fi
@@ -127,7 +127,7 @@ test-api-service:
 test-langgraph-unit:
 	@echo "🧪 Running LangGraph unit tests..."
 	@if [ -d "services/langgraph/tests/unit" ] && [ "$$(ls -A services/langgraph/tests/unit)" ]; then \
-		$(DOCKER_COMPOSE_TOOLS) run --rm langgraph pytest tests/unit/ -v; \
+		docker compose -p $(TEST_PROJECT)_langgraph -f docker/test/service/langgraph.yml run --rm --no-deps langgraph-test-runner pytest tests/unit/ -v; \
 	else \
 		echo "⚠️  No unit tests found in services/langgraph/tests/unit"; \
 	fi

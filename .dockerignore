@@ -51,6 +51,7 @@ tests/
 # Except allow these for test Docker builds
 !shared/tests/
 !shared/cli/tests/
+!tests/
 
 # Environment
 .env
