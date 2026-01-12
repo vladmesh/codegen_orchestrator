@@ -66,7 +66,7 @@
 
 10. **🚧 P1.4 Worker Manager**
     - [x] **P1.4.1 Core Logic**: `WorkerManager` class, `DockerClientWrapper`, Service Tests (Green).
-    - [ ] **P1.4.2 Service Wiring**: `main.py` API endpoints, Background Tasks (GC, Auto-Pause).
+    - [x] **P1.4.2 Service Wiring**: Wiring `main.py` with `WorkerCommandConsumer` (Redis), Background Tasks (GC, Auto-Pause).
     - [ ] **P1.4.3 Worker Base**: Build `worker-base` image, CI integration.
 
 ## 🔗 Quick Links
