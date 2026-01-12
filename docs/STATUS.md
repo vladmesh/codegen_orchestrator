@@ -42,16 +42,21 @@
    - [x] Service tests verify strict CRUD behavior
    - [x] GitHub/Redis clients removed from API routers
 
+7. **✅ P1.1 Orchestrator CLI**
+   - [x] Created `packages/orchestrator-cli`.
+   - [x] Implemented `project create` with Dual-Write (API + Redis).
+   - [x] Permissions System Implemented.
+   - [x] Verified with Unit & Integration Tests.
+
 ### Next Steps
 
-**[P1.1 CLI Implementation](./new_architecture/MIGRATION_PLAN.md#p11--cli-implementation)**
+**[P1.2 Worker Wrapper](./new_architecture/MIGRATION_PLAN.md#p12--worker-wrapper)**
 
-- Implement CLI for project scaffolding
-- Use shared GitHub/Redis clients
+- Implement Loop: XREAD -> Subprocess -> XADD
+- Lifecycle events and session management
 
 ## 🔗 Quick Links
 
 - [Migration Plan](./new_architecture/MIGRATION_PLAN.md)
 - [Testing Strategy](./new_architecture/tests/TESTING_STRATEGY.md)
 - [Legacy Backlog](./backlog.md)
-

@@ -1,0 +1,39 @@
+FROM python:3.12-slim AS test
+
+WORKDIR /app
+
+# Install uv for fast package management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy shared packages
+COPY shared /app/shared
+
+# Copy CLI package
+COPY packages/orchestrator-cli /app/packages/orchestrator-cli
+
+
+
+
+# Install dependencies
+# We use --system to install into the system python, which is fine for a container
+# We install shared modules as editable to reflect changes immediately
+RUN uv pip install --system --no-cache-dir \
+    pytest \
+    pytest-asyncio \
+    respx \
+    freezegun \
+    fakeredis \
+    -e /app/shared \
+    -e /app/packages/orchestrator-cli
+
+# Set Python path
+ENV PYTHONPATH=/app/packages/orchestrator-cli/src:/app/shared
+
+# Default command (overridden in docker-compose)
+CMD ["pytest", "/app/packages/orchestrator-cli/tests", "-v"]

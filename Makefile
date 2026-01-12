@@ -238,11 +238,19 @@ test-orchestrator-cli:
 	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
+test-cli-integration:
+	@echo "🧪 Running Orchestrator CLI Integration tests..."
+	@docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml down -v --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml up --build --abort-on-container-exit --exit-code-from cli-test-runner; \
+	EXIT_CODE=$$?; \
+	docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml down -v --remove-orphans; \
+	exit $$EXIT_CODE
+
 # Run all unit tests (fast)
 test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit
 
 # Run all integration tests
-test-integration: test-api-integration test-langgraph-integration test-scheduler-integration
+test-integration: test-api-integration test-langgraph-integration test-scheduler-integration test-cli-integration
 
 # Run all service tests
 test-service: test-api-service test-langgraph-service

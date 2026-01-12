@@ -1,0 +1,76 @@
+services:
+  # === Infrastructure ===
+  db-test:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: orchestrator_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d orchestrator_test" ]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    tmpfs:
+      - /var/lib/postgresql/data
+    networks:
+      - test-network
+
+  redis-test:
+    image: redis:7-alpine
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+    networks:
+      - test-network
+
+  # === Services ===
+  api-service:
+    build:
+      context: ../../..
+      dockerfile: services/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db-test:5432/orchestrator_test
+      REDIS_URL: redis://redis-test:6379
+      # Disable security for tests if needed, or seed token
+    depends_on:
+      db-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    networks:
+      - test-network
+    # Run migrations on startup
+    command: sh -c "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # === Test Runner ===
+  cli-test-runner:
+    build:
+      context: ../../..
+      dockerfile: packages/orchestrator-cli/Dockerfile.test
+    environment:
+      ORCHESTRATOR_API_URL: http://api-service:8000
+      ORCHESTRATOR_REDIS_URL: redis://redis-test:6379
+      PYTHONPATH: /app/packages/orchestrator-cli/src:/app
+    depends_on:
+      api-service:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    volumes:
+       - ../../../packages/orchestrator-cli:/app/packages/orchestrator-cli
+    networks:
+      - test-network
+    command: [ "pytest", "/app/packages/orchestrator-cli/tests/integration", "-v", "-s" ]
+
+networks:
+  test-network:
+    driver: bridge
