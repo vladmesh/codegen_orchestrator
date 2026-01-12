@@ -12,7 +12,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /usr/local/bin/uv
 
 # Install Python dev tools
 RUN pip install --no-cache-dir \
-    ruff \
+    ruff==0.8.4 \
     pytest \
     pytest-asyncio \
     pytest-cov \

@@ -633,13 +633,13 @@ class ContainerService:
         Returns:
             True if state file was created successfully
         """
-        state_content = f'''---
+        state_content = f"""---
 iteration: 1
 max_iterations: {max_iterations}
 completion_promise: "{completion_promise}"
 ---
 {prompt}
-'''
+"""
 
         logger.info(
             "starting_ralph_loop",
