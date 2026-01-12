@@ -74,7 +74,7 @@
     - [x] **P1.5.2 Build Logic**: `DockerClientWrapper.build_image()`, `WorkerManager.ensure_or_build_image()`, `create_worker_with_capabilities()`.
 
 12. **🔲 P1.6 Agent Integration**
-    - [ ] **P1.6.1 Agent Factories**: `AgentConfig` base, Claude/Factory configs, agent type in hash.
+    - [x] **P1.6.1 Agent Factories**: `AgentConfig` base, Claude/Factory configs, agent type in hash.
     - [ ] **P1.6.2 Container Config**: Env vars, volumes (Docker socket, Claude session), network.
     - [ ] **P1.6.3 Docker Exec**: `exec_in_container()`, instruction file injection.
     - [ ] **P1.6.4 Docker Events**: Crash detection, failure forwarding to output queue.

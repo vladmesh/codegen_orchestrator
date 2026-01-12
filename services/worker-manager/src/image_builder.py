@@ -42,12 +42,13 @@ APT_PACKAGES: dict[str, str] = {
 }
 
 
-def compute_image_hash(capabilities: list[str]) -> str:
+def compute_image_hash(capabilities: list[str], agent_type: str = "claude") -> str:
     """
-    Compute deterministic hash for a set of capabilities.
+    Compute deterministic hash for a set of capabilities and agent type.
 
     Args:
         capabilities: List of capability names (e.g., ["GIT", "DOCKER"])
+        agent_type: Type of agent ("claude" or "factory"). Defaults to "claude".
 
     Returns:
         12-character lowercase hex hash
@@ -55,11 +56,15 @@ def compute_image_hash(capabilities: list[str]) -> str:
     Note:
         - Capabilities are sorted and deduplicated for determinism
         - Same capabilities in different order produce same hash
+        - Different agent types with same capabilities produce DIFFERENT hash
     """
     # Normalize: uppercase, deduplicate, sort
     normalized = sorted(set(cap.upper() for cap in capabilities))
+
     # Create canonical string representation
-    canonical = ",".join(normalized)
+    # Include agent_type in the canonical string to ensure uniqueness per agent
+    canonical = f"{agent_type.lower()}:" + ",".join(normalized)
+
     # Compute SHA256 and truncate to 12 chars (per spec)
     hash_full = hashlib.sha256(canonical.encode()).hexdigest()
     return hash_full[:12]
@@ -129,16 +134,17 @@ class ImageBuilder:
 
         return "\n".join(lines)
 
-    def get_image_tag(self, capabilities: list[str], prefix: str) -> str:
+    def get_image_tag(self, capabilities: list[str], prefix: str, agent_type: str = "claude") -> str:
         """
         Generate Docker image tag for given capabilities.
 
         Args:
             capabilities: List of capabilities
             prefix: Image name prefix (e.g., "worker" or "worker-test")
+            agent_type: Type of agent ("claude" or "factory")
 
         Returns:
             Full image tag (e.g., "worker:a1b2c3d4e5f6")
         """
-        cap_hash = compute_image_hash(capabilities)
+        cap_hash = compute_image_hash(capabilities, agent_type=agent_type)
         return f"{prefix}:{cap_hash}"

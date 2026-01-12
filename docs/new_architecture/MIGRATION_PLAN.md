@@ -402,11 +402,11 @@ class TestImageHashWithAgentType:
 
 ##### 🟢 GREEN: Implement
 
-- [ ] Create `src/agents/__init__.py`
-- [ ] Create `src/agents/base.py` — `AgentConfig` Protocol
-- [ ] Create `src/agents/claude_code.py` — `ClaudeCodeAgent`
-- [ ] Create `src/agents/factory_droid.py` — `FactoryDroidAgent`
-- [ ] Update `compute_image_hash()` to accept `agent_type` parameter
+- [x] Create `src/agents/__init__.py`
+- [x] Create `src/agents/base.py` — `AgentConfig` Protocol
+- [x] Create `src/agents/claude_code.py` — `ClaudeCodeAgent`
+- [x] Create `src/agents/factory_droid.py` — `FactoryDroidAgent`
+- [x] Update `compute_image_hash()` to accept `agent_type` parameter
 
 **Run:** `make test-worker-manager-unit` → ✅ PASS
 

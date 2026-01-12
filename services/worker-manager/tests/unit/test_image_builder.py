@@ -28,16 +28,34 @@ class TestComputeImageHash:
         hash2 = compute_image_hash(["GIT", "DOCKER"])
         assert hash1 != hash2
 
+    def test_compute_image_hash_determinism(self):
+        """Hash should be deterministic for same capabilities."""
+        caps1 = ["B", "A", "C"]
+        caps2 = ["c", "b", "a"]  # Different order and case
+        assert compute_image_hash(caps1) == compute_image_hash(caps2)
+
+    def test_compute_image_hash_truncation(self):
+        """Hash should be exactly 12 characters."""
+        h = compute_image_hash(["A"])
+        assert len(h) == 12
+
+    def test_same_capabilities_different_agent_produce_different_hash(self):
+        """Same capabilities but different agent = different image."""
+        hash_claude = compute_image_hash(["GIT"], agent_type="claude")
+        hash_factory = compute_image_hash(["GIT"], agent_type="factory")
+        assert hash_claude != hash_factory
+
+    def test_hash_deterministic_with_agent_type(self):
+        """Agent type should be part of deterministic hash."""
+        h1 = compute_image_hash(["GIT", "CURL"], agent_type="claude")
+        h2 = compute_image_hash(["CURL", "GIT"], agent_type="claude")
+        assert h1 == h2
+
     def test_empty_capabilities_has_consistent_hash(self):
         """Empty capabilities should produce consistent hash."""
         hash1 = compute_image_hash([])
         hash2 = compute_image_hash([])
         assert hash1 == hash2
-
-    def test_hash_is_12_chars(self):
-        """Hash should be truncated to 12 characters (per spec)."""
-        h = compute_image_hash(["GIT"])
-        assert len(h) == 12
 
     def test_hash_is_lowercase_hex(self):
         """Hash should be lowercase hexadecimal."""
