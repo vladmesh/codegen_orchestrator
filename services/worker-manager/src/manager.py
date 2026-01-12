@@ -1,11 +1,12 @@
 import json
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import structlog
 from redis.asyncio import Redis
 
 from .config import settings
 from .docker_ops import DockerClientWrapper
+from .image_builder import ImageBuilder
 
 logger = structlog.get_logger()
 
@@ -178,3 +179,89 @@ class WorkerManager:
         if status:
             return status
         return "UNKNOWN"
+
+    async def ensure_or_build_image(
+        self,
+        capabilities: List[str],
+        base_image: str,
+        prefix: str,
+    ) -> str:
+        """
+        Ensure image with given capabilities exists, building if necessary.
+
+        Args:
+            capabilities: List of capabilities (e.g., ["GIT", "CURL"])
+            base_image: Base image to extend (e.g., "worker-base:latest")
+            prefix: Image name prefix (e.g., "worker" or "worker-test")
+
+        Returns:
+            Full image tag (e.g., "worker:abc123def456")
+        """
+        builder = ImageBuilder(base_image=base_image)
+        image_tag = builder.get_image_tag(capabilities=capabilities, prefix=prefix)
+
+        # Check cache
+        exists = await self.docker.image_exists(image_tag)
+
+        if not exists:
+            # Cache miss - need to build
+            logger.info(
+                "image_cache_miss",
+                image_tag=image_tag,
+                capabilities=capabilities,
+            )
+            dockerfile = builder.generate_dockerfile(capabilities=capabilities)
+            await self.docker.build_image(
+                dockerfile_content=dockerfile,
+                tag=image_tag,
+            )
+            logger.info("image_built", image_tag=image_tag)
+        else:
+            logger.info("image_cache_hit", image_tag=image_tag)
+
+        # Update LRU timestamp
+        await self.redis.set(
+            f"worker:image:last_used:{image_tag}",
+            datetime.now().isoformat(),
+        )
+
+        return image_tag
+
+    async def create_worker_with_capabilities(
+        self,
+        worker_id: str,
+        capabilities: List[str],
+        base_image: str,
+        env_vars: Dict[str, str] | None = None,
+        prefix: str | None = None,
+    ) -> str:
+        """
+        Create worker with specified capabilities.
+
+        This method handles image building/caching automatically.
+
+        Args:
+            worker_id: Unique worker identifier
+            capabilities: List of capabilities (e.g., ["GIT", "CURL"])
+            base_image: Base image to extend
+            env_vars: Environment variables for the container
+            prefix: Image prefix (defaults to settings.WORKER_IMAGE_PREFIX)
+
+        Returns:
+            Container ID
+        """
+        prefix = prefix or settings.WORKER_IMAGE_PREFIX
+
+        # Ensure image exists (build if needed)
+        image_tag = await self.ensure_or_build_image(
+            capabilities=capabilities,
+            base_image=base_image,
+            prefix=prefix,
+        )
+
+        # Create worker with the resolved image
+        return await self.create_worker(
+            worker_id=worker_id,
+            image=image_tag,
+            env_vars=env_vars,
+        )

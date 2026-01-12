@@ -10,6 +10,7 @@ async def test_create_worker_unit():
     redis.set = AsyncMock()
 
     wrapper = MagicMock()
+    wrapper.image_exists = AsyncMock(return_value=True)  # Image already cached
     wrapper.run_container = AsyncMock()
     container = MagicMock()
     container.id = "test-id"

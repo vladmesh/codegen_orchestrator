@@ -93,3 +93,47 @@ class DockerClientWrapper:
             await self._run(self._client.images.remove, image, force=force)
         except docker.errors.ImageNotFound:
             pass
+
+    async def build_image(self, dockerfile_content: str, tag: str) -> Any:
+        """
+        Build a Docker image from Dockerfile content.
+
+        Args:
+            dockerfile_content: Dockerfile content as string
+            tag: Tag for the built image (e.g., "worker:abc123")
+
+        Returns:
+            Built image object
+        """
+        import io
+
+        # Docker SDK expects a file-like object or path
+        # We use fileobj with a BytesIO containing the Dockerfile
+        dockerfile_bytes = dockerfile_content.encode("utf-8")
+
+        def _build():
+            # Create a minimal build context with just the Dockerfile
+            import tarfile
+
+            # Build context as tar archive
+            context = io.BytesIO()
+            with tarfile.open(fileobj=context, mode="w") as tar:
+                # Add Dockerfile to the archive
+                dockerfile_info = tarfile.TarInfo(name="Dockerfile")
+                dockerfile_info.size = len(dockerfile_bytes)
+                tar.addfile(dockerfile_info, io.BytesIO(dockerfile_bytes))
+
+            context.seek(0)
+
+            # Build the image
+            image, build_logs = self._client.images.build(
+                fileobj=context,
+                custom_context=True,
+                tag=tag,
+                rm=True,  # Remove intermediate containers
+                forcerm=True,  # Always remove intermediate containers
+            )
+            return image
+
+        logger.info("building_image", tag=tag)
+        return await self._run(_build)
