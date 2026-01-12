@@ -7,6 +7,7 @@ from redis.asyncio import Redis
 from .config import settings
 from .docker_ops import DockerClientWrapper
 from .image_builder import ImageBuilder
+from .container_config import WorkerContainerConfig
 
 logger = structlog.get_logger()
 
@@ -32,7 +33,9 @@ class WorkerManager:
         # Update LRU
         await self.redis.set(f"worker:image:last_used:{image}", datetime.now().isoformat())
 
-    async def create_worker(self, worker_id: str, image: str, env_vars: Dict[str, str] = None) -> str:
+    async def create_worker(
+        self, worker_id: str, image: str, env_vars: Dict[str, str] = None, volumes: Dict[str, Dict[str, str]] = None
+    ) -> str:
         """
         Create and start a new worker container.
         """
@@ -67,6 +70,7 @@ class WorkerManager:
                 detach=True,
                 environment=env_vars,
                 labels=labels,
+                volumes=volumes,
                 network_mode="host",
                 # Network: Legacy used 'container_network' setting.
                 # In compose test, we might be in bridge network.
@@ -185,6 +189,7 @@ class WorkerManager:
         capabilities: List[str],
         base_image: str,
         prefix: str,
+        agent_type: str = "claude",
     ) -> str:
         """
         Ensure image with given capabilities exists, building if necessary.
@@ -193,12 +198,13 @@ class WorkerManager:
             capabilities: List of capabilities (e.g., ["GIT", "CURL"])
             base_image: Base image to extend (e.g., "worker-base:latest")
             prefix: Image name prefix (e.g., "worker" or "worker-test")
+            agent_type: Agent type ("claude" or "factory")
 
         Returns:
             Full image tag (e.g., "worker:abc123def456")
         """
         builder = ImageBuilder(base_image=base_image)
-        image_tag = builder.get_image_tag(capabilities=capabilities, prefix=prefix)
+        image_tag = builder.get_image_tag(capabilities=capabilities, prefix=prefix, agent_type=agent_type)
 
         # Check cache
         exists = await self.docker.image_exists(image_tag)
@@ -209,6 +215,7 @@ class WorkerManager:
                 "image_cache_miss",
                 image_tag=image_tag,
                 capabilities=capabilities,
+                agent_type=agent_type,
             )
             dockerfile = builder.generate_dockerfile(capabilities=capabilities)
             await self.docker.build_image(
@@ -232,36 +239,76 @@ class WorkerManager:
         worker_id: str,
         capabilities: List[str],
         base_image: str,
-        env_vars: Dict[str, str] | None = None,
+        agent_type: str = "claude",
         prefix: str | None = None,
+        # Auth config
+        auth_mode: str = "host_session",
+        host_claude_dir: str | None = None,
+        api_key: str | None = None,
     ) -> str:
         """
-        Create worker with specified capabilities.
-
-        This method handles image building/caching automatically.
-
-        Args:
-            worker_id: Unique worker identifier
-            capabilities: List of capabilities (e.g., ["GIT", "CURL"])
-            base_image: Base image to extend
-            env_vars: Environment variables for the container
-            prefix: Image prefix (defaults to settings.WORKER_IMAGE_PREFIX)
-
-        Returns:
-            Container ID
+        Create worker with specified capabilities and agent config.
         """
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
 
-        # Ensure image exists (build if needed)
+        # Ensure image exists
         image_tag = await self.ensure_or_build_image(
             capabilities=capabilities,
             base_image=base_image,
             prefix=prefix,
+            agent_type=agent_type,
         )
 
-        # Create worker with the resolved image
+        # Create Config
+        config = WorkerContainerConfig(
+            worker_id=worker_id,
+            worker_type="developer",  # Defaulting to developer for now?
+            agent_type=agent_type,
+            capabilities=capabilities,
+            auth_mode=auth_mode,
+            host_claude_dir=host_claude_dir,
+            api_key=api_key,
+        )
+
+        # Generate container params
+        # Env vars
+        env = config.to_env_vars(
+            redis_url=settings.REDIS_URL,
+            api_url="http://api:8000",  # TODO: get from settings
+        )
+
+        # Volumes
+        volumes = config.to_volume_mounts()
+
+        # Base run kwargs
+
+        # Merge overrides
+        # We need to map config params to run_container args
+        # run_container(image, name, detach, environment, labels, network_mode, volumes?)
+        # Our run_container wrapper doesn't expose 'volumes' arg explicitly in signature but accepts **kwargs
+
+        # Let's verify run_container signature
+        # create_worker calls run_container calls docker.containers.run
+
+        # We need to reuse create_worker OR call docker directly.
+        # create_worker adds labels and updates Redis status. We should reuse it if possible usually,
+        # but create_worker takes specific args.
+        # Let's update create_worker to accept volumes?
+
+        # Actually create_worker is simple string logic.
+        # Let's modify create_worker to accept **kwargs to pass to run_container
+
+        # But wait, create_worker creates container_name manually.
+        # WorkerContainerConfig also generates container_name.
+        # Let's rely on create_worker for status updates and basic setup,
+        # but enhance it to accept volumes/mounts.
+
         return await self.create_worker(
             worker_id=worker_id,
             image=image_tag,
-            env_vars=env_vars,
+            env_vars=env,
+            volumes=volumes,
+            # We enforce name strategy in create_worker so config's name might be redundant or matched
         )
+
+    # Need to update create_worker signature to accept volumes

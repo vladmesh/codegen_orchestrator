@@ -1,6 +1,6 @@
 import docker
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 import structlog
 from concurrent.futures import ThreadPoolExecutor
 
@@ -137,3 +137,20 @@ class DockerClientWrapper:
 
         logger.info("building_image", tag=tag)
         return await self._run(_build)
+
+    async def exec_in_container(self, container_id: str, command: str, user: str = "worker") -> Tuple[int, bytes]:
+        """
+        Execute a command in a running container.
+
+        Args:
+            container_id: ID of the container
+            command: Command run
+            user: User to run command as (default: "worker")
+
+        Returns:
+            Tuple of (exit_code, output_bytes)
+        """
+        container = await self.get_container(container_id)
+        # exec_run is blocking, run in executor
+        # returns (exit_code, output)
+        return await self._run(container.exec_run, cmd=command, user=user)

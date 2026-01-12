@@ -95,7 +95,6 @@ class TestWorkerManagerBuildLogic:
 
         # Should have checked if image exists
         mock_docker.image_exists.assert_awaited_once()
-        # Should have built the image
         mock_docker.build_image.assert_awaited_once()
         # Should return the correct tag
         expected_hash = compute_image_hash(["GIT"])
@@ -112,6 +111,7 @@ class TestWorkerManagerBuildLogic:
             capabilities=["GIT", "CURL"],
             base_image="worker-base:latest",
             prefix="worker-test",
+            agent_type="claude",
         )
 
         # Should have checked if image exists
@@ -133,6 +133,7 @@ class TestWorkerManagerBuildLogic:
             capabilities=["GIT"],
             base_image="worker-base:latest",
             prefix="worker",
+            agent_type="claude",
         )
 
         # Should update LRU cache
@@ -153,6 +154,7 @@ class TestWorkerManagerBuildLogic:
             capabilities=["GIT"],
             base_image="worker-base:latest",
             prefix="worker-test",
+            agent_type="claude",
         )
 
         # Check dockerfile content passed to build
@@ -173,6 +175,7 @@ class TestWorkerManagerBuildLogic:
             capabilities=[],
             base_image="worker-base:latest",
             prefix="worker-test",
+            agent_type="claude",
         )
 
         # Should still build (even if minimal)
@@ -211,7 +214,6 @@ class TestWorkerManagerCreateWithCapabilities:
             worker_id="test-worker-1",
             capabilities=["GIT", "CURL"],
             base_image="worker-base:latest",
-            env_vars={"API_URL": "http://api:8000"},
         )
 
         assert container_id == "container-123"

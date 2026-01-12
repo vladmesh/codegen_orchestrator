@@ -7,12 +7,14 @@ import structlog
 from .config import settings
 from .manager import WorkerManager
 from .consumer import WorkerCommandConsumer
+from .events import DockerEventsListener
 
 logger = structlog.get_logger()
 
 # Global instances
 redis: Redis | None = None
 worker_manager: WorkerManager | None = None
+events_listener: DockerEventsListener | None = None
 
 
 async def run_periodic_task(coro_func, interval: int, name: str):
@@ -41,6 +43,11 @@ async def lifespan(app: FastAPI):
     consumer = WorkerCommandConsumer(redis, worker_manager)
     consumer_task = asyncio.create_task(consumer.run())
 
+    # Start Docker Events Listener
+    global events_listener
+    events_listener = DockerEventsListener(redis)
+    events_task = asyncio.create_task(events_listener.start())
+
     # Start Periodic Tasks
     # GC every hour (3600s)
     gc_task = asyncio.create_task(
@@ -58,11 +65,15 @@ async def lifespan(app: FastAPI):
     logger.info("shutdown_initiated")
 
     consumer_task.cancel()
+    events_task.cancel()
+    if events_listener:
+        events_listener.stop()
+
     gc_task.cancel()
     pause_task.cancel()
 
     try:
-        await asyncio.gather(consumer_task, gc_task, pause_task, return_exceptions=True)
+        await asyncio.gather(consumer_task, events_task, gc_task, pause_task, return_exceptions=True)
     except Exception:
         pass
 

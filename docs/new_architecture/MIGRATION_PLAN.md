@@ -459,10 +459,10 @@ class TestWorkerContainerConfig:
 
 ##### 🟢 GREEN: Implement
 
-- [ ] Create `src/container_config.py` — `WorkerContainerConfig` dataclass
-- [ ] Implement `to_env_vars()` method
-- [ ] Implement `to_volume_mounts()` method
-- [ ] Implement `to_docker_run_kwargs()` method
+- [x] Create `src/container_config.py` — `WorkerContainerConfig` dataclass
+- [x] Implement `to_env_vars()` method
+- [x] Implement `to_volume_mounts()` method
+- [x] Implement `to_docker_run_kwargs()` method
 
 **Run:** `make test-worker-manager-unit` → ✅ PASS
 
@@ -508,7 +508,7 @@ class TestDockerExec:
 
 ##### 🟢 GREEN: Implement
 
-- [ ] Add `exec_in_container(container_id, command, user="worker")` to `DockerClientWrapper`
+- [x] Add `exec_in_container(container_id, command, user="worker")` to `DockerClientWrapper`
 
 **Run:** `make test-worker-manager-unit` → ✅ PASS
 
@@ -578,10 +578,10 @@ class TestDockerEventsListener:
 
 ##### 🟢 GREEN: Implement
 
-- [ ] Create `src/events.py` — `DockerEventsListener` class
-- [ ] Implement `_handle_event()` method
-- [ ] Implement crash forwarding to output queue
-- [ ] Wire into `main.py` lifecycle
+- [x] Create `src/events.py` — `DockerEventsListener` class
+- [x] Implement `_handle_event()` method
+- [x] Implement crash forwarding to output queue
+- [x] Wire into `main.py` lifecycle
 
 **Run:** `make test-worker-manager-unit` → ✅ PASS
 
