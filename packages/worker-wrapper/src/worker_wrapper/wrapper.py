@@ -69,6 +69,20 @@ class WorkerWrapper:
 
         logger.info("processing_task", msg_id=msg_id)
 
+        # Persist task context for crash recovery (Gap B)
+        # We save task_id/request_id so DockerEventsListener can read them if container dies
+        context_update = {}
+        if "task_id" in data:
+            context_update["task_id"] = data["task_id"]
+        if "request_id" in data:
+            context_update["request_id"] = data["request_id"]
+
+        if context_update:
+            # Access raw redis client to use hset
+            await self.redis.redis.hset(
+                f"worker:status:{self.config.consumer_name}", mapping=context_update
+            )
+
         # 1. Lifecycle: Started
         await self.publish_lifecycle("started", msg_id)
 

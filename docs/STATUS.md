@@ -17,6 +17,7 @@ All identified gaps have been implemented. Integration tests passed successfully
 2. **✅ Network isolation** - Added `network_name` parameter, configured in backend.yml
 3. **✅ Capability mechanism** - Added `LABEL` for agent_type differentiation
 4. **✅ Test cleanup** - Added `cleanup_worker_containers` fixture
+5. **✅ Task Context** - Added `task_id` persistence for crash recovery (Gap B)
 
 ### Progress (Phase 0)
 

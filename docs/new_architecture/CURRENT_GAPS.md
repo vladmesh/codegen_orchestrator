@@ -47,6 +47,7 @@ All original 7 blockers + 1 new have been fixed:
 
 | 9 | Image Hash Uniqueness | Verified `agent_type` included in hash calculation | `image_builder.py` |
 | 10 | Lifecycle Events | Verified `wrapper.py` publishes events; consumer receives commands | `wrapper.py`, `consumer.py` |
+| 11 | **Task Context Missing (Gap B)** | Added `task_id`/`request_id` to `worker:status:{id}` in wrapper | `wrapper.py` |
 
 ---
 
@@ -108,27 +109,6 @@ All original 7 blockers + 1 new have been fixed:
 
 ---
 
-### Gap B: Task Context Not Saved (HIGH)
-
-**Spec Reference:** [worker_manager.md §5.4](./services/worker_manager.md#54-crash-forwarding-single-listener-architecture)
-
-**What spec says:**
-```python
-# When crash detected, worker-manager needs:
-metadata = await redis.hgetall(f"worker:status:{worker_id}")
-task_id = metadata.get("task_id")
-request_id = metadata.get("request_id")
-```
-
-**Current state:** `worker:status:{id}` only stores `status`, not `task_id`/`request_id`.
-
-**Impact:** Crash forwarding to `worker:developer:output` cannot include task context. LangGraph cannot correlate crash with original request.
-
-**Fix scope:**
-1. worker-wrapper: save `task_id`/`request_id` to Redis when task starts
-2. events.py: read context when forwarding crash
-
----
 
 ### Gap C: Developer Queue Routing Differs (MEDIUM)
 
