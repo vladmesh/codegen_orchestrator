@@ -18,8 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY shared /build/shared
 COPY packages/worker-wrapper /build/packages/worker-wrapper
 
-# Build wheels
-# We build wheels for shared and worker-wrapper to easily install them in the final image
+# Build wheels for both packages
+# Note: shared is NOT in worker-wrapper dependencies to avoid version conflicts
 RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels /build/shared
 RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels /build/packages/worker-wrapper
 
@@ -48,6 +48,15 @@ RUN pip install --no-cache-dir /wheels/*.whl
 
 # Cleanup
 RUN rm -rf /wheels
+
+# Create non-root user
+RUN useradd -m -s /bin/bash worker
+
+# Setup workspace
+RUN mkdir /workspace && chown worker:worker /workspace
+WORKDIR /workspace
+
+USER worker
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

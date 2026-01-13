@@ -34,20 +34,23 @@ class WorkerManager:
         await self.redis.set(f"worker:image:last_used:{image}", datetime.now().isoformat())
 
     async def create_worker(
-        self, worker_id: str, image: str, env_vars: Dict[str, str] = None, volumes: Dict[str, Dict[str, str]] = None
+        self,
+        worker_id: str,
+        image: str,
+        env_vars: Dict[str, str] = None,
+        volumes: Dict[str, Dict[str, str]] = None,
+        network_name: Optional[str] = None,
     ) -> str:
         """
         Create and start a new worker container.
+
+        Args:
+            network_name: Docker network to attach to. If None, uses host networking.
         """
         env_vars = env_vars or {}
 
         # Ensure image exists and update cache stats
         await self.ensure_image(image)
-
-        # Prepare Config
-        # In legacy, we parsed config models. Here we accept args.
-        # Ensure image is prefixed correctly if needed (or assume caller handles it?)
-        # Spec says: IMAGE_PREFIX handled in config/tests.
 
         # Add standard labels
         labels = json.loads(settings.WORKER_DOCKER_LABELS)
@@ -56,36 +59,35 @@ class WorkerManager:
 
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
 
-        logger.info("creating_worker", worker_id=worker_id, image=image, container_name=container_name)
+        logger.info(
+            "creating_worker",
+            worker_id=worker_id,
+            image=image,
+            container_name=container_name,
+            network=network_name or "host",
+        )
 
         try:
             # Update Redis status
             await self.redis.set(f"worker:status:{worker_id}", "STARTING")
 
-            # Run container
-            # Using HostConfig equivalent params in docer-py
-            container = await self.docker.run_container(
-                image=image,
-                name=container_name,
-                detach=True,
-                environment=env_vars,
-                labels=labels,
-                volumes=volumes,
-                network_mode="host",
-                # Network: Legacy used 'container_network' setting.
-                # In compose test, we might be in bridge network.
-                # If we use "host", it breaks isolation?
-                # Usually we want same network as orchestrator.
-                # For now let's use default or user-defined network.
-                # If we run in docker-compose, we can attach to network name.
-                # But 'host' is simplest for connectivity if orchestrator is reachable.
-                # Let's omit network_mode and use default bridge unless specified.
-                # Or better, pass network if needed.
-                # Legacy code: network={self.settings.container_network}
-                # Let's skip explicit network for now to keep simple, valid for creating from inside container?
-                # If we create container FROM container, sibling container.
-                # They share bridge network usually if on same default bridge.
-            )
+            # Build run kwargs
+            run_kwargs = {
+                "image": image,
+                "name": container_name,
+                "detach": True,
+                "environment": env_vars,
+                "labels": labels,
+                "volumes": volumes,
+            }
+
+            # Network configuration
+            if network_name:
+                run_kwargs["network"] = network_name
+            else:
+                run_kwargs["network_mode"] = "host"
+
+            container = await self.docker.run_container(**run_kwargs)
 
             # Update Redis status
             await self.redis.set(f"worker:status:{worker_id}", "RUNNING")
@@ -217,7 +219,7 @@ class WorkerManager:
                 capabilities=capabilities,
                 agent_type=agent_type,
             )
-            dockerfile = builder.generate_dockerfile(capabilities=capabilities)
+            dockerfile = builder.generate_dockerfile(capabilities=capabilities, agent_type=agent_type)
             await self.docker.build_image(
                 dockerfile_content=dockerfile,
                 tag=image_tag,
@@ -234,6 +236,14 @@ class WorkerManager:
 
         return image_tag
 
+    def _get_agent(self, agent_type: str):
+        """Get agent instance by type."""
+        from .agents import ClaudeCodeAgent, FactoryDroidAgent
+
+        if agent_type == "factory":
+            return FactoryDroidAgent()
+        return ClaudeCodeAgent()
+
     async def create_worker_with_capabilities(
         self,
         worker_id: str,
@@ -241,15 +251,19 @@ class WorkerManager:
         base_image: str,
         agent_type: str = "claude",
         prefix: str | None = None,
+        instructions: str | None = None,
         # Auth config
         auth_mode: str = "host_session",
         host_claude_dir: str | None = None,
         api_key: str | None = None,
+        env_vars: Dict[str, str] = None,
     ) -> str:
         """
         Create worker with specified capabilities and agent config.
+        Injects instructions if provided.
         """
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
+        env_vars = env_vars or {}
 
         # Ensure image exists
         image_tag = await self.ensure_or_build_image(
@@ -259,10 +273,13 @@ class WorkerManager:
             agent_type=agent_type,
         )
 
+        # Get Agent Logic
+        agent = self._get_agent(agent_type)
+
         # Create Config
         config = WorkerContainerConfig(
             worker_id=worker_id,
-            worker_type="developer",  # Defaulting to developer for now?
+            worker_type="developer",
             agent_type=agent_type,
             capabilities=capabilities,
             auth_mode=auth_mode,
@@ -271,44 +288,48 @@ class WorkerManager:
         )
 
         # Generate container params
-        # Env vars
-        env = config.to_env_vars(
-            redis_url=settings.REDIS_URL,
-            api_url="http://api:8000",  # TODO: get from settings
+        # Env vars - use WORKER_* URLs if set (for DIND where DNS doesn't work)
+        worker_redis_url = settings.WORKER_REDIS_URL or settings.REDIS_URL
+        worker_api_url = settings.WORKER_API_URL or "http://api:8000"
+        container_env = config.to_env_vars(
+            redis_url=worker_redis_url,
+            api_url=worker_api_url,
         )
+        container_env.update(env_vars)
 
         # Volumes
         volumes = config.to_volume_mounts()
 
-        # Base run kwargs
+        # Network: use DOCKER_NETWORK from settings if set, else None (host mode)
+        network_name = settings.DOCKER_NETWORK if settings.DOCKER_NETWORK else None
 
-        # Merge overrides
-        # We need to map config params to run_container args
-        # run_container(image, name, detach, environment, labels, network_mode, volumes?)
-        # Our run_container wrapper doesn't expose 'volumes' arg explicitly in signature but accepts **kwargs
-
-        # Let's verify run_container signature
-        # create_worker calls run_container calls docker.containers.run
-
-        # We need to reuse create_worker OR call docker directly.
-        # create_worker adds labels and updates Redis status. We should reuse it if possible usually,
-        # but create_worker takes specific args.
-        # Let's update create_worker to accept volumes?
-
-        # Actually create_worker is simple string logic.
-        # Let's modify create_worker to accept **kwargs to pass to run_container
-
-        # But wait, create_worker creates container_name manually.
-        # WorkerContainerConfig also generates container_name.
-        # Let's rely on create_worker for status updates and basic setup,
-        # but enhance it to accept volumes/mounts.
-
-        return await self.create_worker(
+        # Create container
+        container_id = await self.create_worker(
             worker_id=worker_id,
             image=image_tag,
-            env_vars=env,
+            env_vars=container_env,
             volumes=volumes,
-            # We enforce name strategy in create_worker so config's name might be redundant or matched
+            network_name=network_name,
         )
 
-    # Need to update create_worker signature to accept volumes
+        # Inject instructions if provided
+        if instructions:
+            target_path = agent.get_instruction_path()
+            logger.info("injecting_instructions", worker_id=worker_id, path=target_path)
+
+            # Use base64 encoding to avoid shell quoting issues
+            # Worker base has python3 installed
+            import base64
+
+            encoded = base64.b64encode(instructions.encode()).decode()
+
+            # Python one-liner to decode base64 and write to file
+            cmd = f"python3 -c \"import base64; open('{target_path}', 'w').write(base64.b64decode('{encoded}').decode())\""
+
+            exit_code, output = await self.docker.exec_in_container(container_id, cmd)
+            if exit_code != 0:
+                logger.error("instruction_injection_failed", worker_id=worker_id, error=output)
+
+        # Return the worker_id (name), not container_id (Docker hash)
+        # This allows callers to reference the worker by its logical name
+        return worker_id

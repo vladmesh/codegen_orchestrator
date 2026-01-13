@@ -12,6 +12,24 @@ class DockerEventsListener:
 
     def __init__(self, redis_client: RedisStreamClient):
         self.redis = redis_client
+        self._running = False
+
+    async def start(self):
+        """Start listening for Docker events."""
+        self._running = True
+        logger.info("docker_events_listener_started")
+
+        # TODO: Implement actual event listening via DockerClient
+        # For now, just sleep to keep the task alive
+        import asyncio
+
+        while self._running:
+            await asyncio.sleep(1)
+
+    def stop(self):
+        """Stop listening."""
+        self._running = False
+        logger.info("docker_events_listener_stopped")
 
     async def _handle_event(self, event: Dict[str, Any]) -> None:
         """

@@ -6,7 +6,10 @@ authors = [{name = "Antigravity", email = "antigravity@gemini.google.com"}]
 dependencies = [
     "redis>=5.0.0",
     "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
     "structlog>=24.1.0",
+    # Note: 'shared' is installed separately in Dockerfile (not as pip dependency)
+    # to avoid version conflicts during wheel builds
 ]
 requires-python = ">=3.12"
 

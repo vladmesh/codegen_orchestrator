@@ -14,13 +14,15 @@ import hashlib
 
 # Capability to installation commands mapping
 # Each capability maps to a list of Dockerfile instructions
+#
+# NOTE: GIT and CURL are pre-installed in worker-base image, so they don't need
+# additional installation. They are listed here only to be recognized as valid
+# capabilities and included in the image hash computation.
 CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
-    "GIT": [
-        "RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*",
-    ],
-    "CURL": [
-        "RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*",
-    ],
+    # GIT and CURL are already in worker-base (see images/worker-base/Dockerfile)
+    # No installation needed, just recognized as valid capabilities
+    "GIT": [],
+    "CURL": [],
     "GITHUB_CLI": [
         # GitHub CLI installation per official docs
         "RUN apt-get update && apt-get install -y --no-install-recommends curl gpg && \\",
@@ -36,9 +38,9 @@ CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
 }
 
 # Packages that can be combined in a single apt-get install
+# NOTE: GIT and CURL are pre-installed in worker-base, so they're not here
 APT_PACKAGES: dict[str, str] = {
-    "GIT": "git",
-    "CURL": "curl",
+    # Empty - all common packages are pre-installed in worker-base
 }
 
 
@@ -89,17 +91,23 @@ class ImageBuilder:
         """
         self.base_image = base_image
 
-    def generate_dockerfile(self, capabilities: list[str]) -> str:
+    def generate_dockerfile(self, capabilities: list[str], agent_type: str = "claude") -> str:
         """
         Generate Dockerfile content for given capabilities.
 
         Args:
             capabilities: List of capabilities to install (e.g., ["GIT", "CURL"])
+            agent_type: Type of agent ("claude" or "factory")
 
         Returns:
             Complete Dockerfile content as string
         """
         lines = [f"FROM {self.base_image}"]
+
+        # Add agent type marker to ensure different images for different agents
+        # This creates a unique layer even if capabilities are identical
+        lines.append("")
+        lines.append(f'LABEL com.codegen.agent_type="{agent_type}"')
 
         # Normalize capabilities
         caps = sorted(set(cap.upper() for cap in capabilities))
@@ -127,10 +135,12 @@ class ImageBuilder:
             )
 
         # Add complex installations (GITHUB_CLI, DOCKER)
+        # Skip capabilities with empty install lists (pre-installed in worker-base)
         for cap in complex_caps:
-            if cap in CAPABILITY_INSTALL_MAP:
+            install_commands = CAPABILITY_INSTALL_MAP.get(cap, [])
+            if install_commands:
                 lines.append("")
-                lines.extend(CAPABILITY_INSTALL_MAP[cap])
+                lines.extend(install_commands)
 
         return "\n".join(lines)
 

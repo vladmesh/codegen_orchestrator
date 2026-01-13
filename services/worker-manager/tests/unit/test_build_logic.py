@@ -145,7 +145,7 @@ class TestWorkerManagerBuildLogic:
 
     @pytest.mark.asyncio
     async def test_ensure_or_build_image_generates_correct_dockerfile(self, mock_redis, mock_docker):
-        """Build should use correctly generated Dockerfile."""
+        """Build should use correctly generated Dockerfile with agent label."""
         mock_docker.image_exists.return_value = False
 
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
@@ -162,7 +162,9 @@ class TestWorkerManagerBuildLogic:
         dockerfile = call_kwargs["dockerfile_content"]
 
         assert "FROM worker-base:latest" in dockerfile
-        assert "git" in dockerfile
+        # GIT is pre-installed, but agent type LABEL should be present
+        assert "LABEL" in dockerfile
+        assert "claude" in dockerfile
 
     @pytest.mark.asyncio
     async def test_ensure_or_build_image_empty_capabilities(self, mock_redis, mock_docker):
@@ -210,13 +212,14 @@ class TestWorkerManagerCreateWithCapabilities:
         """create_worker should accept capabilities and build image if needed."""
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
-        container_id = await manager.create_worker_with_capabilities(
+        # Now returns worker_id (not container.id) for logical referencing
+        result = await manager.create_worker_with_capabilities(
             worker_id="test-worker-1",
             capabilities=["GIT", "CURL"],
             base_image="worker-base:latest",
         )
 
-        assert container_id == "container-123"
+        assert result == "test-worker-1"  # Returns worker_id for logical reference
         # Should have ensured/built image first
         mock_docker.image_exists.assert_awaited()
         # Should have run container with correct image

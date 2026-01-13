@@ -19,6 +19,18 @@ class WorkerCapability(str, Enum):
     DOCKER = "docker"  # dind mount
 
 
+class WorkerChannels(str, Enum):
+    """Redis stream channels and patterns."""
+
+    # Global streams
+    COMMANDS = "worker:commands"
+    LIFECYCLE = "worker:lifecycle"
+
+    # Patterns
+    INPUT_PATTERN = "worker:{worker_id}:input"
+    OUTPUT_PATTERN = "worker:{worker_id}:output"
+
+
 class WorkerConfig(BaseModel):
     """Worker container configuration."""
 

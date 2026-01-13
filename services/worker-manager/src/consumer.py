@@ -1,7 +1,7 @@
 import asyncio
 import structlog
 from redis.asyncio import Redis
-from pydantic import ValidationError
+from pydantic import ValidationError, TypeAdapter
 
 from shared.contracts.queues.worker import (
     WorkerCommand,
@@ -82,7 +82,8 @@ class WorkerCommandConsumer:
                 logger.error("missing_data_field", message_id=message_id)
                 return
 
-            command = WorkerCommand.model_validate_json(raw_data)
+            adapter = TypeAdapter(WorkerCommand)
+            command = adapter.validate_json(raw_data)
 
             response = await self.handle_command(command)
             if response:
@@ -110,13 +111,17 @@ class WorkerCommandConsumer:
 
     async def _handle_create(self, cmd: CreateWorkerCommand) -> CreateWorkerResponse:
         try:
-            worker_id = await self.manager.create_worker(
-                worker_id=cmd.config.name,  # Use name as ID or generate?
-                # Spec says "worker_id" in manager. "name" in config.
-                # Usually we use generated ID or name if unique.
-                # The CLI sends name. Let's assume name is ID for now or we map it.
-                # In create_worker(worker_id, image, env)
-                image=self._get_image_for_agent(cmd.config.agent_type),
+            from .config import settings
+
+            # Convert capabilities enum to string list
+            caps = [c.value for c in cmd.config.capabilities]
+
+            worker_id = await self.manager.create_worker_with_capabilities(
+                worker_id=cmd.config.name,
+                capabilities=caps,
+                base_image=settings.WORKER_BASE_IMAGE,
+                agent_type=cmd.config.agent_type.value,
+                instructions=cmd.config.instructions,
                 env_vars=cmd.config.env_vars,
             )
             return CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
@@ -150,12 +155,6 @@ class WorkerCommandConsumer:
             return StatusWorkerResponse(request_id=cmd.request_id, success=False, error=error)
         # Fallback?
         return None
-
-    def _get_image_for_agent(self, agent_type: str) -> str:
-        # TODO: Configure images in settings
-        if agent_type == "claude":
-            return "codegen-worker:latest"  # Placeholder
-        return "codegen-worker:latest"
 
     async def publish_response(self, cmd: WorkerCommand, response: WorkerResponse):
         """Publish response to appropriate queue."""

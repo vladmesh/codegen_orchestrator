@@ -15,14 +15,25 @@ class WorkerContainerConfig:
     api_key: Optional[str] = None
 
     def to_env_vars(self, redis_url: str, api_url: str) -> Dict[str, str]:
-        """Generate environment variables for the container."""
+        """Generate environment variables for the container.
+
+        Note: worker-wrapper uses WORKER_ prefix for pydantic-settings,
+        so all config vars must have this prefix.
+        """
+        from shared.contracts.queues.worker import WorkerChannels
+
         env = {
             "WORKER_ID": self.worker_id,
-            "REDIS_URL": redis_url,
-            "API_URL": api_url,
-            "AGENT_TYPE": self.agent_type,
+            "WORKER_REDIS_URL": redis_url,  # worker-wrapper expects WORKER_ prefix
+            "WORKER_API_URL": api_url,
+            "WORKER_AGENT_TYPE": self.agent_type,
             "WORKER_TYPE": self.worker_type,
-            "CAPABILITIES": ",".join(self.capabilities),
+            "WORKER_CAPABILITIES": ",".join(self.capabilities),
+            # Redis Stream Config (already have WORKER_ prefix)
+            "WORKER_INPUT_STREAM": WorkerChannels.INPUT_PATTERN.value.format(worker_id=self.worker_id),
+            "WORKER_OUTPUT_STREAM": WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=self.worker_id),
+            "WORKER_CONSUMER_GROUP": "worker_group",
+            "WORKER_CONSUMER_NAME": self.worker_id,
         }
 
         if self.auth_mode == "api_key" and self.api_key:
@@ -45,16 +56,29 @@ class WorkerContainerConfig:
 
         return volumes
 
-    def to_docker_run_kwargs(self) -> Dict[str, Any]:
-        """Generate kwargs for docker.containers.run()."""
-        # Base config
-        return {
+    def to_docker_run_kwargs(self, network_name: Optional[str] = None) -> Dict[str, Any]:
+        """Generate kwargs for docker.containers.run().
+
+        Args:
+            network_name: Optional Docker network to attach container to.
+                          If None, uses host networking (production default).
+                          If provided, attaches to specified network (for DIND/testing).
+        """
+        kwargs = {
             "detach": True,
-            "network_mode": "host",  # Using host networking for now as per design
             "name": f"worker-{self.worker_id}",
             "hostname": f"worker-{self.worker_id}",
-            # Standard limits can be added here
+            # Standard limits
             "mem_limit": "2g",
             "cpu_period": 100000,
             "cpu_quota": 100000,  # 1 CPU
         }
+
+        if network_name:
+            # Attach to specific network (for DIND / integration tests)
+            kwargs["network"] = network_name
+        else:
+            # Use host networking (production default)
+            kwargs["network_mode"] = "host"
+
+        return kwargs

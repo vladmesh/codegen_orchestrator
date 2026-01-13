@@ -5,3 +5,6 @@ redis
 sqlalchemy
 asyncpg
 faker
+docker
+pydantic
+pydantic-settings

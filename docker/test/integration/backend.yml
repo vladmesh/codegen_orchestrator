@@ -1,28 +1,46 @@
+networks:
+  backend-test:
+    name: backend-test-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
 services:
   # Services
   langgraph:
-    build: 
+    build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_URL=http://api:8000
+      - API_BASE_URL=http://api:8000
     depends_on:
       redis:
         condition: service_healthy
       api:
         condition: service_healthy
+    networks:
+      - backend-test
 
-  # worker-manager:
-  #   build:
-  #     context: ../../..
-  #     dockerfile: services/worker-manager/Dockerfile
-  #   environment:
-  #     - REDIS_URL=redis://redis:6379/0
-  #     - DOCKER_HOST=tcp://docker:2375
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
+  worker-manager:
+    build:
+      context: ../../..
+      dockerfile: services/worker-manager/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DOCKER_HOST=tcp://docker:2375
+      # Worker URLs use IP because workers inside DIND can't resolve DNS
+      - WORKER_REDIS_URL=redis://172.28.0.10:6379/0
+      - WORKER_API_URL=http://172.28.0.20:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+      docker:
+        condition: service_healthy
+    networks:
+      - backend-test
 
   # Infrastructure
   db:
@@ -37,6 +55,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - backend-test
 
   redis:
     image: redis:7-alpine
@@ -45,7 +65,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-  
+    networks:
+      backend-test:
+        ipv4_address: 172.28.0.10
+
   api:
     build:
       context: ../../..
@@ -57,6 +80,9 @@ services:
     depends_on: [db, redis]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    networks:
+      backend-test:
+        ipv4_address: 172.28.0.20
 
   # Mock Docker (Dind)
   docker:
@@ -64,8 +90,20 @@ services:
     privileged: true
     environment:
       - DOCKER_TLS_CERTDIR=
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    # Pass DNS to Docker daemon for containers spawned inside DIND
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--dns=8.8.8.8", "--dns=8.8.4.4"]
     healthcheck:
-      test: ["CMD", "docker", "info"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:2375/_ping || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      backend-test:
+        ipv4_address: 172.28.0.30
 
   # Test Runner
   integration-test-runner:
@@ -76,7 +114,16 @@ services:
     depends_on:
       langgraph:
         condition: service_started
-      # worker-manager:
-      #   condition: service_started
+      worker-manager:
+        condition: service_started
     volumes:
       - ../../../tests/integration/backend:/app/tests/integration/backend
+      - ../../../services:/app/services
+      - ../../../shared:/app/shared
+      - ../../../packages:/app/packages
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379/0
+      - DOCKER_HOST=tcp://docker:2375
+    networks:
+      - backend-test

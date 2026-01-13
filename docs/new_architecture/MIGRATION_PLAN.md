@@ -1028,6 +1028,20 @@ jobs:
 
 > Этот milestone подтверждает, что Phase 1 завершена и система готова к Phase 2.
 
+---
+
+#### ⚠️ CURRENT STATUS: BLOCKED
+
+Integration tests failing. See **[CURRENT_GAPS.md](./CURRENT_GAPS.md)** for detailed analysis.
+
+**Blocking Issues:**
+1. Env var naming mismatch (container_config vs worker-wrapper)
+2. Network isolation (host network vs DIND)
+3. Capability installation mechanism (GIT/CURL pre-installed)
+4. Test cleanup (container name conflicts)
+
+---
+
 #### Test Infrastructure
 
 **File:** `docker/test/integration/phase1-milestone.yml`

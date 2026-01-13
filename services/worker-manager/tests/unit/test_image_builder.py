@@ -76,51 +76,53 @@ class TestImageBuilderDockerfileGeneration:
         dockerfile = builder.generate_dockerfile(capabilities=[])
         assert dockerfile.startswith("FROM worker-base:latest")
 
-    def test_dockerfile_empty_capabilities_no_apt_install(self, builder):
-        """No capabilities = no apt-get install."""
-        dockerfile = builder.generate_dockerfile(capabilities=[])
-        assert "apt-get install" not in dockerfile
+    def test_dockerfile_empty_capabilities_has_agent_label(self, builder):
+        """Empty capabilities should still have agent type label."""
+        dockerfile = builder.generate_dockerfile(capabilities=[], agent_type="claude")
+        assert "LABEL" in dockerfile
+        assert "claude" in dockerfile
 
-    def test_dockerfile_git_capability_installs_git(self, builder):
-        """GIT capability should install git package."""
+    def test_dockerfile_git_capability_preinstalled(self, builder):
+        """GIT is pre-installed in worker-base, no apt-get needed."""
         dockerfile = builder.generate_dockerfile(capabilities=["GIT"])
-        assert "apt-get" in dockerfile
-        assert "git" in dockerfile
+        # GIT is pre-installed, so no apt-get install for git
+        # But LABEL should be present
+        assert "LABEL" in dockerfile
 
     def test_dockerfile_github_cli_capability_installs_gh(self, builder):
         """GITHUB_CLI capability should install gh CLI."""
         dockerfile = builder.generate_dockerfile(capabilities=["GITHUB_CLI"])
-        # gh CLI requires special installation (not just apt-get)
+        # gh CLI requires special installation
         assert "gh" in dockerfile.lower()
+        assert "apt-get" in dockerfile
 
-    def test_dockerfile_curl_capability_installs_curl(self, builder):
-        """CURL capability should install curl."""
+    def test_dockerfile_curl_capability_preinstalled(self, builder):
+        """CURL is pre-installed in worker-base, no apt-get needed."""
         dockerfile = builder.generate_dockerfile(capabilities=["CURL"])
-        assert "curl" in dockerfile
+        # CURL is pre-installed
+        assert "LABEL" in dockerfile
 
-    def test_dockerfile_docker_capability_note(self, builder):
-        """DOCKER capability uses bind mount, not installation."""
-        # Docker-in-Docker is handled at runtime (mount /var/run/docker.sock)
-        # Dockerfile should add docker CLI only
+    def test_dockerfile_docker_capability_installs_docker_cli(self, builder):
+        """DOCKER capability should install docker CLI."""
         dockerfile = builder.generate_dockerfile(capabilities=["DOCKER"])
         assert "docker" in dockerfile.lower()
+        assert "apt-get" in dockerfile
 
-    def test_dockerfile_multiple_capabilities_combined(self, builder):
-        """Multiple capabilities should be combined efficiently."""
+    def test_dockerfile_preinstalled_capabilities_no_apt_install(self, builder):
+        """Pre-installed capabilities (GIT, CURL) should not add apt-get."""
         dockerfile = builder.generate_dockerfile(capabilities=["GIT", "CURL"])
-        # Should have single apt-get install with multiple packages
-        assert "git" in dockerfile
-        assert "curl" in dockerfile
+        # Only LABEL, no apt-get for pre-installed caps
+        lines = [line for line in dockerfile.split("\n") if "apt-get install" in line]
+        assert len(lines) == 0
 
-    def test_dockerfile_deduplicates_capabilities(self, builder):
-        """Duplicate capabilities should not cause duplicate installs."""
-        dockerfile = builder.generate_dockerfile(capabilities=["GIT", "GIT"])
-        # Count occurrences of 'git' in apt-get line
-        lines = [line for line in dockerfile.split("\n") if "apt-get" in line]
-        if lines:
-            apt_line = lines[0]
-            # 'git' should appear only once in install command
-            assert apt_line.count(" git") <= 1
+    def test_dockerfile_agent_type_creates_unique_layer(self, builder):
+        """Different agent types should produce different Dockerfiles."""
+        dockerfile_claude = builder.generate_dockerfile(capabilities=["GIT"], agent_type="claude")
+        dockerfile_factory = builder.generate_dockerfile(capabilities=["GIT"], agent_type="factory")
+        # Different agent types should have different labels
+        assert "claude" in dockerfile_claude
+        assert "factory" in dockerfile_factory
+        assert dockerfile_claude != dockerfile_factory
 
 
 class TestImageBuilderImageTag:
