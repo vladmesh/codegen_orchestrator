@@ -117,7 +117,7 @@ services:
       worker-manager:
         condition: service_started
     volumes:
-      - ../../../tests/integration/backend:/app/tests/integration/backend
+      - ../../../tests:/app/tests
       - ../../../services:/app/services
       - ../../../shared:/app/shared
       - ../../../packages:/app/packages

@@ -8,3 +8,5 @@ faker
 docker
 pydantic
 pydantic-settings
+tenacity
+structlog

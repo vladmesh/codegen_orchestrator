@@ -3,14 +3,15 @@ from .base import AgentConfig
 
 
 class FactoryDroidAgent(AgentConfig):
-    """Configuration for Factory.ai Droid agent."""
+    """Configuration for Factory.ai Droid agent.
+
+    Factory CLI (droid) is pre-installed in worker-base-factory image
+    for faster builds.
+    """
 
     def get_install_commands(self) -> List[str]:
-        # Implementation assumes factory.ai installation script or procedure
-        # For now, we simulate installing the CLI
-        return [
-            "curl -fsSL https://factory.ai/install.sh | sh",
-        ]
+        # CLI is pre-installed in worker-base-factory image
+        return []
 
     def get_instruction_path(self) -> str:
         return "/workspace/AGENTS.md"

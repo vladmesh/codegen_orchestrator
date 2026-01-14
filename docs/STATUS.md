@@ -83,23 +83,21 @@ All identified gaps have been implemented. Integration tests passed successfully
     - [x] **P1.5.1 ImageBuilder**: Dockerfile generation logic, `compute_image_hash()`, capability mapping.
     - [x] **P1.5.2 Build Logic**: `DockerClientWrapper.build_image()`, `WorkerManager.ensure_or_build_image()`, `create_worker_with_capabilities()`.
 
-12. **⚠️ P1.6 Agent Integration** (unit tests pass, integration blocked)
+12. **✅ P1.6 Agent Integration**
     - [x] **P1.6.1 Agent Factories**: `AgentConfig` base, Claude/Factory configs, agent type in hash.
     - [x] **P1.6.2 Container Config**: Env vars, volumes (Docker socket, Claude session), network.
     - [x] **P1.6.3 Docker Exec**: `exec_in_container()`, instruction file injection.
     - [x] **P1.6.4 Docker Events**: Crash detection, failure forwarding to output queue.
-    - [ ] **BLOCKED**: Env var naming mismatch (see CURRENT_GAPS.md #1)
 
-13. **⚠️ P1.7 Wrapper Completion** (unit tests pass, integration blocked)
+13. **✅ P1.7 Wrapper Completion**
     - [x] **P1.7.1 Headless Execution**: ClaudeRunner, FactoryRunner classes.
     - [x] **P1.7.2 Result Parsing**: `<result>...</result>` extraction, DTO mapping.
     - [x] **P1.7.3 Session Management**: Redis storage, TTL, `--resume` flag.
-    - [ ] **BLOCKED**: Missing shared dependency in pyproject.toml (see CURRENT_GAPS.md #5)
 
-14. **⚠️ P1.8 Worker Base Image** (built, but containers fail to start)
+14. **✅ P1.8 Worker Base Image**
     - [x] **P1.8.1 Dockerfile Update**: worker-wrapper as ENTRYPOINT, healthcheck.
     - [x] **P1.8.2 CI Integration**: Build with wrapper, lifecycle event test.
-    - [ ] **BLOCKED**: Container exits immediately due to config errors (see CURRENT_GAPS.md #6)
+    - [x] **P1.8.3 Optimization**: Introduced `worker-base-common` to deduplicate layers and reduce disk usage.
 
 15. **✅ P1.9 Phase 1 Milestone**
     - [x] `test_create_claude_worker_with_git_capability` - PASSED
@@ -107,6 +105,12 @@ All identified gaps have been implemented. Integration tests passed successfully
     - [x] `test_different_agent_types_produce_different_images` - PASSED
     - [x] `test_worker_executes_task_with_mocked_claude` - PASSED
     - [x] `test_backend_integration_smoke` - PASSED
+
+16. **✅ P1.10 Agent & CLI Tests**
+    - [x] Gap 1-6 Fixed (Node.js, Auth, CLI installation)
+    - [x] Series 1: Claude Agent Integration - PASSED
+    - [x] Series 2: Factory Agent Integration - PASSED
+    - [x] Series 3: E2E Manually Verified
 
 ## 🔗 Quick Links
 

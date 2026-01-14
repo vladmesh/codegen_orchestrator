@@ -3,13 +3,15 @@ from .base import AgentConfig
 
 
 class ClaudeCodeAgent(AgentConfig):
-    """Configuration for Anthropic's Claude Code agent."""
+    """Configuration for Anthropic's Claude Code agent.
+
+    Claude CLI (Node.js + @anthropic-ai/claude-code) is pre-installed in
+    worker-base-claude image for faster builds.
+    """
 
     def get_install_commands(self) -> List[str]:
-        return [
-            # Node.js is pre-installed in worker-base, but we ensure npm is available
-            "npm install -g @anthropic-ai/claude-code",
-        ]
+        # CLI is pre-installed in worker-base-claude image
+        return []
 
     def get_instruction_path(self) -> str:
         return "/workspace/CLAUDE.md"

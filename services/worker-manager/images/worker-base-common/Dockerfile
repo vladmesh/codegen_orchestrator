@@ -1,4 +1,5 @@
-# Multi-stage build for worker-base
+# Worker Common Base Image
+# Contains shared dependencies, Python environment, and packages common to all workers.
 
 # -----------------
 # Builder Stage
@@ -17,11 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy packages
 COPY shared /build/shared
 COPY packages/worker-wrapper /build/packages/worker-wrapper
+COPY packages/orchestrator-cli /build/packages/orchestrator-cli
 
-# Build wheels for both packages
-# Note: shared is NOT in worker-wrapper dependencies to avoid version conflicts
+# Build wheels for all packages
 RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels /build/shared
 RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels /build/packages/worker-wrapper
+RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels --find-links=/build/wheels /build/packages/orchestrator-cli
 
 # -----------------
 # Runtime Stage
@@ -33,7 +35,7 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Install runtime dependencies (git for developer agent, etc)
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
@@ -43,11 +45,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy wheels from builder
 COPY --from=builder /build/wheels /wheels
 
-# Install packages from wheels
-RUN pip install --no-cache-dir /wheels/*.whl
-
-# Cleanup
-RUN rm -rf /wheels
+# Install Python packages from wheels
+RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 
 # Create non-root user
 RUN useradd -m -s /bin/bash worker

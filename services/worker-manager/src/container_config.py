@@ -37,7 +37,10 @@ class WorkerContainerConfig:
         }
 
         if self.auth_mode == "api_key" and self.api_key:
-            env["ANTHROPIC_API_KEY"] = self.api_key
+            if self.agent_type == "factory":
+                env["FACTORY_API_KEY"] = self.api_key
+            else:
+                env["ANTHROPIC_API_KEY"] = self.api_key
 
         return env
 

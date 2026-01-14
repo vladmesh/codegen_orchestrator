@@ -3,11 +3,11 @@ from src.agents.factory_droid import FactoryDroidAgent
 
 
 class TestClaudeCodeAgent:
-    def test_get_install_commands_includes_npm_install(self):
-        """Install commands should include Claude Code npm install."""
+    def test_get_install_commands_returns_empty(self):
+        """Install commands should be empty (CLI pre-installed in base image)."""
         agent = ClaudeCodeAgent()
         commands = agent.get_install_commands()
-        assert any("npm install" in cmd and "claude-code" in cmd for cmd in commands)
+        assert commands == []
 
     def test_get_instruction_path_returns_claude_md(self):
         """Claude uses CLAUDE.md for instructions."""
@@ -20,10 +20,10 @@ class TestClaudeCodeAgent:
 
 
 class TestFactoryDroidAgent:
-    def test_get_install_commands_includes_curl_install(self):
-        """Install commands should include Factory CLI install."""
+    def test_get_install_commands_returns_empty(self):
+        """Install commands should be empty (CLI pre-installed in base image)."""
         commands = FactoryDroidAgent().get_install_commands()
-        assert any("factory.ai" in cmd for cmd in commands)
+        assert commands == []
 
     def test_get_instruction_path_returns_agents_md(self):
         """Factory uses AGENTS.md for instructions."""

@@ -7,9 +7,26 @@ Responsibilities:
 - Generate Dockerfiles based on requested capabilities
 - Compute deterministic hashes for image caching
 - Provide image tags for cache lookup
+
+Agent CLIs (Claude Code, Factory Droid) are pre-installed in agent-specific
+base images (worker-base-claude, worker-base-factory) for faster builds.
 """
 
 import hashlib
+
+# Agent-specific base images with pre-installed CLIs
+# These images include Node.js + Claude CLI or Factory CLI respectively
+AGENT_BASE_IMAGES = {
+    "claude": "worker-base-claude:latest",
+    "factory": "worker-base-factory:latest",
+}
+
+DEFAULT_BASE_IMAGE = "worker-base-claude:latest"
+
+
+def get_base_image(agent_type: str) -> str:
+    """Get the appropriate base image for the agent type."""
+    return AGENT_BASE_IMAGES.get(agent_type.lower(), DEFAULT_BASE_IMAGE)
 
 
 # Capability to installation commands mapping
@@ -95,6 +112,9 @@ class ImageBuilder:
         """
         Generate Dockerfile content for given capabilities.
 
+        Agent CLI is already pre-installed in the base image (worker-base-claude
+        or worker-base-factory), so we only add capability-specific packages.
+
         Args:
             capabilities: List of capabilities to install (e.g., ["GIT", "CURL"])
             agent_type: Type of agent ("claude" or "factory")
@@ -102,19 +122,25 @@ class ImageBuilder:
         Returns:
             Complete Dockerfile content as string
         """
-        lines = [f"FROM {self.base_image}"]
+        # Use agent-specific base image with pre-installed CLI
+        base_image = get_base_image(agent_type)
+        lines = [f"FROM {base_image}"]
 
-        # Add agent type marker to ensure different images for different agents
-        # This creates a unique layer even if capabilities are identical
+        # Add agent type marker for identification
         lines.append("")
         lines.append(f'LABEL com.codegen.agent_type="{agent_type}"')
 
         # Normalize capabilities
         caps = sorted(set(cap.upper() for cap in capabilities))
 
-        if not caps:
-            # No capabilities - return minimal Dockerfile
-            return "\n".join(lines)
+        # Only switch to root if we need to install something
+        has_installations = any(cap in CAPABILITY_INSTALL_MAP and CAPABILITY_INSTALL_MAP[cap] for cap in caps) or any(
+            cap in APT_PACKAGES for cap in caps
+        )
+
+        if has_installations:
+            lines.append("")
+            lines.append("USER root")
 
         # Optimization: combine simple apt packages into single RUN
         apt_packages = []
@@ -141,6 +167,11 @@ class ImageBuilder:
             if install_commands:
                 lines.append("")
                 lines.extend(install_commands)
+
+        # Switch back to worker user only if we switched to root
+        if has_installations:
+            lines.append("")
+            lines.append("USER worker")
 
         return "\n".join(lines)
 

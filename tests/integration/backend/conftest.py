@@ -84,79 +84,86 @@ async def cleanup_redis_streams(redis_client):
     await cleanup()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def setup_worker_base():
-    """Build worker-base image in dind with correct context."""
+def _build_base_image(client, dockerfile_path: str, tag: str, shared_path: str, packages_path: str):
+    """Build a worker base image with given Dockerfile."""
     import os
     import shutil
     import tempfile
 
-    # We need a docker client for session scope
-    client = docker.DockerClient(base_url=DOCKER_HOST)
-
-    # Source paths mapped in integration-test-runner container
-    dockerfile_path = "/app/services/worker-manager/images/worker-base/Dockerfile"
-    shared_path = "/app/shared"
-    packages_path = "/app/packages"
-
-    # Create temp context
     with tempfile.TemporaryDirectory() as tmp_dir:
-        print(f"Preparing build context in {tmp_dir}...")
+        print(f"Preparing build context for {tag} in {tmp_dir}...")
 
         dest_dockerfile = os.path.join(tmp_dir, "Dockerfile")
         shutil.copy(dockerfile_path, dest_dockerfile)
 
-        # Debug: Print Dockerfile content
-        with open(dest_dockerfile) as f:
-            print(f"DEBUG: Dockerfile content:\n{f.read()}")
-
-        # Copy shared
+        # Copy shared and packages
         shutil.copytree(shared_path, os.path.join(tmp_dir, "shared"))
-
-        # Copy packages
         shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"))
 
-        print("Building worker-base...")
+        print(f"Building {tag}...")
         try:
-            # Build using low-level API to stream logs
-            # client.images.build returns (image, logs) iterator if we use it differently,
-            # OR we can use low level api.
-            # Easiest: use client.images.build but print logs if it fails.
-            # Actually client.images.build returns image object.
-            # logs are lost unless we catch api error or usage json stream.
-
             image, build_logs = client.images.build(
                 path=tmp_dir,
-                tag="worker-base:latest",
+                tag=tag,
                 rm=True,
-                nocache=False,  # Allow cache
+                nocache=False,  # Allow cache for faster rebuilds
             )
             for chunk in build_logs:
                 if "stream" in chunk:
                     print(chunk["stream"], end="")
 
-            print("worker-base built successfully.")
+            print(f"{tag} built successfully.")
 
-            # Verify user worker exists
-            try:
-                print("Verifying worker user...")
-                # Override entrypoint to properly execute command
-                output = client.containers.run(
-                    "worker-base:latest", "id worker", remove=True, entrypoint="/bin/sh -c"
-                )
-                print(f"Verification success: {output.decode().strip()}")
-            except Exception as e:
-                print(f"Verification failed! User 'worker' not found in image: {e}")
-                pytest.exit(f"Verification failed for worker-base: {e}")
+            # Verify worker user exists
+            print(f"Verifying worker user in {tag}...")
+            output = client.containers.run(tag, "id worker", remove=True, entrypoint="/bin/sh -c")
+            print(f"Verification success: {output.decode().strip()}")
 
         except docker.errors.BuildError as e:
-            print("Build failed!")
+            print(f"Build failed for {tag}!")
             for chunk in e.build_log:
                 if "stream" in chunk:
                     print(chunk["stream"], end="")
-            pytest.exit(f"Failed to build worker-base: {e}")
+            pytest.exit(f"Failed to build {tag}: {e}")
         except Exception as e:
-            print(f"Failed to build worker-base: {e}")
-            pytest.exit(f"Failed to build worker-base: {e}")
-        finally:
-            client.close()
+            print(f"Failed to build {tag}: {e}")
+            pytest.exit(f"Failed to build {tag}: {e}")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_worker_base_images():
+    """Build agent-specific worker base images in DIND.
+
+    Builds two images:
+    - worker-base-claude: with Node.js + Claude CLI pre-installed
+    - worker-base-factory: with Factory CLI pre-installed
+
+    This ensures fast worker image builds during tests (only capabilities added).
+    """
+    client = docker.DockerClient(base_url=DOCKER_HOST)
+
+    # Source paths mapped in integration-test-runner container
+    shared_path = "/app/shared"
+    packages_path = "/app/packages"
+
+    # Agent-specific Dockerfiles
+    images_to_build = [
+        (
+            "/app/services/worker-manager/images/worker-base-common/Dockerfile",
+            "worker-base-common:latest",
+        ),
+        (
+            "/app/services/worker-manager/images/worker-base-claude/Dockerfile",
+            "worker-base-claude:latest",
+        ),
+        (
+            "/app/services/worker-manager/images/worker-base-factory/Dockerfile",
+            "worker-base-factory:latest",
+        ),
+    ]
+
+    try:
+        for dockerfile_path, tag in images_to_build:
+            _build_base_image(client, dockerfile_path, tag, shared_path, packages_path)
+    finally:
+        client.close()

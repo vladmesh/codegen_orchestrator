@@ -123,6 +123,9 @@ class WorkerCommandConsumer:
                 agent_type=cmd.config.agent_type.value,
                 instructions=cmd.config.instructions,
                 env_vars=cmd.config.env_vars,
+                auth_mode=cmd.config.auth_mode,
+                host_claude_dir=cmd.config.host_claude_dir,
+                api_key=cmd.config.api_key,
             )
             return CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
         except Exception as e:

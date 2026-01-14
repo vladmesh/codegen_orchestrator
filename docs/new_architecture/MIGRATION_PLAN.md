@@ -113,7 +113,9 @@ flowchart TB
 | P1.6 | Agent Integration | `services/worker-manager` | P1.5 | 1 |
 | P1.7 | Wrapper Completion | `packages/worker-wrapper` | P1.2, P1.6 | 1 |
 | P1.8 | Worker Base Image | `services/worker-manager/docker` | P1.7 | 1 |
-| P2.1 | Scaffolder | `services/scaffolder` | P0.1, P0.4 | 2 |
+| P1.9 | Integration Milestone | `tests/integration/backend` | P1.8 | 1 |
+| P1.10 | **Agent & CLI Tests** | `tests/integration/backend` | P1.9 | 1 |
+| P2.1 | Scaffolder | `services/scaffolder` | P0.1, P0.4, **P1.10** | 2 |
 | P2.2 | LangGraph Service | `services/langgraph` | P1.3, P1.8, P2.1 | 2 |
 | P2.5 | Template Tests | `tests/integration/template` | P2.1 | 2 |
 | P3.1 | Telegram Bot | `services/telegram-bot` | P1.0, P2.2 | 3 |
@@ -1030,15 +1032,39 @@ jobs:
 
 ---
 
-#### ⚠️ CURRENT STATUS: BLOCKED
+#### ✅ CURRENT STATUS: PASSED (5/5 tests)
 
-Integration tests failing. See **[CURRENT_GAPS.md](./CURRENT_GAPS.md)** for detailed analysis.
+All basic integration tests passing as of 2026-01-13.
 
-**Blocking Issues:**
-1. Env var naming mismatch (container_config vs worker-wrapper)
-2. Network isolation (host network vs DIND)
-3. Capability installation mechanism (GIT/CURL pre-installed)
-4. Test cleanup (container name conflicts)
+---
+
+### P1.10 — Agent Installation & CLI Integration Tests 🚧
+
+**Path:** `tests/integration/backend/test_claude_agent.py`, `test_factory_agent.py`
+**Depends:** P1.9
+**Test Spec:** [tests/P1_BLOCKING_TESTS.md](./tests/P1_BLOCKING_TESTS.md)
+
+**Goal:** Проверить что агенты (Claude CLI, Droid CLI) реально устанавливаются и работают внутри контейнеров.
+
+> ⚠️ **HARD BLOCKER для Phase 2** — без этих тестов нельзя переходить к P2.
+
+---
+
+#### ❌ CURRENT STATUS: NOT IMPLEMENTED
+
+**Gaps to fix before tests:**
+1. `image_builder.py` — включить `agent.get_install_commands()` в Dockerfile
+2. `worker-base/Dockerfile` — добавить Node.js
+3. `contracts/worker.py` — добавить auth fields
+4. `consumer.py` — передавать auth config
+5. `container_config.py` — добавить FACTORY_API_KEY
+
+**Test Series:**
+- Series 1: Claude Agent Installation (7 tests)
+- Series 2: Factory Agent Installation (7 tests)
+- Series 3: E2E Real LLM (4 tests, skipped by default)
+
+See **[P1_BLOCKING_TESTS.md](./tests/P1_BLOCKING_TESTS.md)** for full specification
 
 ---
 
@@ -1612,6 +1638,7 @@ When all tests pass, Phase 1 is complete.
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-14 | Claude | Added P1.8.3 Optimization (Shared base layers) to reduce disk usage during tests |
 | 2026-01-12 | Claude | Added P1.6 (Agent Integration), P1.7 (Wrapper Completion), P1.8 (Worker Base Image) for production-ready worker management |
 | 2026-01-11 | Claude | Complete rewrite: fixed numbering, added dependency graph, acceptance criteria per component |
 | 2026-01-11 | Claude | Initial structure |

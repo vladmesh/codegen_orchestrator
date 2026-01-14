@@ -41,6 +41,9 @@ class WorkerConfig(BaseModel):
     allowed_commands: list[str]  # ["project.*", "engineering.start"]
     capabilities: list[WorkerCapability]  # ["git", "copier"]
     env_vars: dict[str, str] = {}
+    auth_mode: Literal["host_session", "api_key"] = "host_session"
+    host_claude_dir: str | None = None
+    api_key: str | None = None
 
 
 class CreateWorkerCommand(QueueMeta):
