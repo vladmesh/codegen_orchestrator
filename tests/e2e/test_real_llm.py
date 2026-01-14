@@ -11,13 +11,17 @@ from shared.contracts.queues.worker import (
 )
 from shared.redis.client import RedisStreamClient
 
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.fixture
 def run_e2e_real(request):
     return request.config.getoption("--run-e2e-real")
 
 
-async def wait_for_stream_message(redis: RedisStreamClient, stream: str, timeout: int = 60) -> dict:
+async def wait_for_stream_message(
+    redis: RedisStreamClient, stream: str, timeout: int = 300
+) -> dict:
     """Wait for a message on Redis stream."""
     start = time.time()
     while time.time() - start < timeout:
@@ -56,9 +60,13 @@ async def test_claude_real_session_deterministic_answer(redis: RedisStreamClient
     3. Читать из worker:{id}:output
     4. Assert "девять" in result.lower()
     """
+    # Clear streams to ensure fresh start
+    await redis.delete("worker:responses:developer")
+
     # 1. Create Worker
+    request_id = f"claude-real-{int(time.time())}"
     cmd = CreateWorkerCommand(
-        request_id="claude-real-test-1",
+        request_id=request_id,
         config=WorkerConfig(
             name="claude-real-worker",
             worker_type="developer",
@@ -83,27 +91,14 @@ async def test_claude_real_session_deterministic_answer(redis: RedisStreamClient
 
     try:
         # 2. Send Input
-        # Note: The actual messaging format might differ based on wrapper implementation.
-        # Assuming worker consumes from worker:{id}:input and expects some format?
-        # Actually, Claude runner (headless) typically takes task instructions on start or
-        # via an input stream?
-        # Checking implementation details:
-        # The Orchestrator usually adds tasks to a queue or the worker listens on a channel.
-        # But for 'test_worker_executes_task_with_mocked_claude', we just created the
-        # worker with instructions.
-        # Wait, strictly speaking, `CreateWorkerCommand` *starts* the worker.
-        # If the worker is "task-based" (one-shot), the instructions ARE the task.
-        # If it's a persistent session, we might need to send more inputs.
-        # P1_BLOCKING_TESTS says: "Отправить в worker:{id}:input".
-        # Let's assume there is an input stream for interactive communication or we
-        # rely on initial instructions?
-        # Re-reading P1_BLOCKING_TESTS: "2. Отправить в worker:{id}:input..."
-        # This implies an interactive mode or at least a way to pipe input.
-        # Let's try writing to that stream.
 
         await redis.xadd(
             f"worker:{worker_id}:input",
-            {"content": "Ответь сколько будет шесть плюс три одним словом на русском языке"},
+            {
+                "data": json.dumps(
+                    {"content": "Ответь сколько будет шесть плюс три одним словом на русском языке"}
+                )
+            },
         )
 
         # 3. Read Output
@@ -158,14 +153,18 @@ async def test_claude_real_session_memory(redis: RedisStreamClient, docker_clien
         # Question 1
         await redis.xadd(
             f"worker:{worker_id}:input",
-            {"content": "Ответь сколько будет шесть плюс три одним словом"},
+            {"data": json.dumps({"content": "Ответь сколько будет шесть плюс три одним словом"})},
         )
         await wait_for_stream_message(redis, f"worker:{worker_id}:output", timeout=60)
 
         # Question 2
         await redis.xadd(
             f"worker:{worker_id}:input",
-            {"content": "Верни предыдущий вопрос который я тебе задавал и только его"},
+            {
+                "data": json.dumps(
+                    {"content": "Верни предыдущий вопрос который я тебе задавал и только его"}
+                )
+            },
         )
         msg2 = await wait_for_stream_message(redis, f"worker:{worker_id}:output", timeout=60)
 
@@ -185,13 +184,20 @@ async def test_factory_api_key_deterministic_answer(redis: RedisStreamClient, do
     """
     Factory должен правильно ответить на математический вопрос.
     """
+    # Clear streams to ensure fresh start
+    await redis.delete("worker:responses:developer")
+
+    request_id = f"factory-real-{int(time.time())}"
     cmd = CreateWorkerCommand(
-        request_id="factory-real-test",
+        request_id=request_id,
         config=WorkerConfig(
             name="factory-real-worker",
             worker_type="developer",
             agent_type=AgentType.FACTORY,
             env_vars={"FACTORY_API_KEY": os.getenv("FACTORY_API_KEY")},
+            instructions="You are a helpful assistant.",
+            capabilities=["git", "curl"],
+            allowed_commands=["git", "curl", "droid"],
         ),
     )
     await redis.xadd("worker:commands", {"data": cmd.model_dump_json()})
@@ -204,10 +210,39 @@ async def test_factory_api_key_deterministic_answer(redis: RedisStreamClient, do
     try:
         await redis.xadd(
             f"worker:{worker_id}:input",
-            {"content": "Ответь сколько будет шесть плюс три одним словом на русском языке"},
+            {
+                "data": json.dumps(
+                    {"content": "Ответь сколько будет шесть плюс три одним словом на русском языке"}
+                )
+            },
         )
-        msg = await wait_for_stream_message(redis, f"worker:{worker_id}:output", timeout=60)
-        content = str(msg)
+        msg = await wait_for_stream_message(redis, f"worker:{worker_id}:output")
+
+        # 4. Assert
+        # The output format is likely AgentOutput or similar
+        result_str = msg.get("data", "") or msg.get("content", "")
+        # Try to parse if it's JSON
+        try:
+            res_json = json.loads(result_str)
+
+            # Case: Agent returned a JSON string inside 'raw_output' if parsing failed
+            # (e.g. due to CLI noise)
+            if res_json.get("status") == "no_structured_result" and "raw_output" in res_json:
+                raw = res_json["raw_output"]
+                # Clean up known noise (e.g. bell char)
+                raw = raw.replace("\u0007", "")
+                try:
+                    inner_json = json.loads(raw)
+                    # Factory/Claude agent result field
+                    content = inner_json.get("result", str(inner_json))
+                except json.JSONDecodeError:
+                    content = raw
+            else:
+                content = res_json.get("content", str(res_json))
+        except Exception:
+            content = str(result_str)
+
+        print(f"DEBUG: Parsed content: {content}")
         assert "девять" in content.lower()
     finally:
         await cleanup_worker(redis, worker_id)
@@ -241,15 +276,19 @@ async def test_factory_api_key_session_memory(redis: RedisStreamClient, docker_c
     try:
         await redis.xadd(
             f"worker:{worker_id}:input",
-            {"content": "Ответь сколько будет шесть плюс три одним словом"},
+            {"data": json.dumps({"content": "Ответь сколько будет шесть плюс три одним словом"})},
         )
-        await wait_for_stream_message(redis, f"worker:{worker_id}:output", timeout=60)
+        await wait_for_stream_message(redis, f"worker:{worker_id}:output")
 
         await redis.xadd(
             f"worker:{worker_id}:input",
-            {"content": "Верни предыдущий вопрос который я тебе задавал и только его"},
+            {
+                "data": json.dumps(
+                    {"content": "Верни предыдущий вопрос который я тебе задавал и только его"}
+                )
+            },
         )
-        msg = await wait_for_stream_message(redis, f"worker:{worker_id}:output", timeout=60)
+        msg = await wait_for_stream_message(redis, f"worker:{worker_id}:output")
         content = str(msg)
         assert "шесть" in content.lower() and "три" in content.lower()
     finally:

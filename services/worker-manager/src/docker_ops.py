@@ -138,7 +138,9 @@ class DockerClientWrapper:
         logger.info("building_image", tag=tag)
         return await self._run(_build)
 
-    async def exec_in_container(self, container_id: str, command: str, user: str = "worker") -> Tuple[int, bytes]:
+    async def exec_in_container(
+        self, container_id: str, command: str, user: str = "worker", timeout: int = 30
+    ) -> Tuple[int, bytes]:
         """
         Execute a command in a running container.
 
@@ -146,6 +148,7 @@ class DockerClientWrapper:
             container_id: ID of the container
             command: Command run
             user: User to run command as (default: "worker")
+            timeout: Timeout in seconds (default: 30)
 
         Returns:
             Tuple of (exit_code, output_bytes)
@@ -153,4 +156,4 @@ class DockerClientWrapper:
         container = await self.get_container(container_id)
         # exec_run is blocking, run in executor
         # returns (exit_code, output)
-        return await self._run(container.exec_run, cmd=command, user=user)
+        return await asyncio.wait_for(self._run(container.exec_run, cmd=command, user=user), timeout=timeout)

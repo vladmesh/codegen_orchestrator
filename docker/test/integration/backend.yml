@@ -29,8 +29,9 @@ services:
       context: ../../..
       dockerfile: services/worker-manager/Dockerfile
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://172.28.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
+      - DOCKER_NETWORK=host
       # Worker URLs use IP because workers inside DIND can't resolve DNS
       - WORKER_REDIS_URL=redis://172.28.0.10:6379/0
       - WORKER_API_URL=http://172.28.0.20:8000
@@ -122,8 +123,11 @@ services:
       - ../../../shared:/app/shared
       - ../../../packages:/app/packages
     environment:
-      - PYTHONPATH=/app
-      - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://172.28.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
+      - FACTORY_API_KEY=${FACTORY_API_KEY}
+      - CLAUDE_SESSION_DIR=${HOST_CLAUDE_DIR}
+      - HOST_CLAUDE_DIR=${HOST_CLAUDE_DIR}
     networks:
       - backend-test
