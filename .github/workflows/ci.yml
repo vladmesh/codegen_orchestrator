@@ -221,7 +221,7 @@ jobs:
         run: |
           # Verify the images we just built (using local tags if push: false, or pulling if needed)
           # Note: build-push-action with load: true is needed to run locally if not pushing
-          docker run --rm ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:${{ github.sha }} worker-wrapper healthcheck
-          docker run --rm ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:${{ github.sha }} worker-wrapper healthcheck
+          docker run --rm ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:${{ github.sha }} healthcheck
+          docker run --rm ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:${{ github.sha }} healthcheck
         if: github.event_name != 'pull_request'
 

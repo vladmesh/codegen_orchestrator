@@ -19,7 +19,9 @@ def run_main():
 
 async def main():
     # Simple argument parsing for healthcheck
-    if len(sys.argv) > 1 and sys.argv[1] == "healthcheck":
+    # We check if "healthcheck" is anywhere in args to be robust against
+    # entrypoint/command shifting.
+    if "healthcheck" in sys.argv:
         print("Healthcheck passed")
         sys.exit(0)
 
