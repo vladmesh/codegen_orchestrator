@@ -9,6 +9,7 @@ on:
     branches:
       - main
       - develop
+  workflow_dispatch:
 
 jobs:
   # Job 1: Detect Changes - Identify which services have been modified
@@ -49,6 +50,8 @@ jobs:
               - 'shared/cli/**'
             shared:
               - 'shared/**'
+            packages:
+              - 'packages/**'
 
   # Job 2: Lint - Fast syntax and style checks (always run)
   lint:
@@ -158,7 +161,7 @@ jobs:
     name: Build Worker Base
     runs-on: ubuntu-latest
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.worker-manager == 'true' || needs.detect-changes.outputs.shared == 'true' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ needs.detect-changes.outputs.worker-manager == 'true' || needs.detect-changes.outputs.shared == 'true' || needs.detect-changes.outputs.packages == 'true' || github.event_name == 'workflow_dispatch' }}
     permissions:
       contents: read
       packages: write
