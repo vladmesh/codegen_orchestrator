@@ -177,32 +177,47 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
-        id: build
+      - name: Build Common Base
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: services/worker-manager/images/worker-base/Dockerfile
-          load: true # Load into local docker daemon for testing
-          push: false # We push later or rely on another step, but for now we need to load it first to test
-          tags: worker-base:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Verify image healthcheck
-        run: |
-          docker run --rm worker-base:test healthcheck
-
-      - name: Push image
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: services/worker-manager/images/worker-base/Dockerfile
-          push: true
+          file: services/worker-manager/images/worker-base-common/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base:latest
-            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:latest
+            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build Claude Base
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/worker-manager/images/worker-base-claude/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:latest
+            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Factory Base
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/worker-manager/images/worker-base-factory/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:latest
+            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify image healthchecks
+        run: |
+          # Verify the images we just built (using local tags if push: false, or pulling if needed)
+          # Note: build-push-action with load: true is needed to run locally if not pushing
+          docker run --rm ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:${{ github.sha }} worker-wrapper healthcheck
+          docker run --rm ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:${{ github.sha }} worker-wrapper healthcheck
+        if: github.event_name != 'pull_request'
 

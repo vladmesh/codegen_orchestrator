@@ -32,11 +32,11 @@ def get_base_image(agent_type: str) -> str:
 # Capability to installation commands mapping
 # Each capability maps to a list of Dockerfile instructions
 #
-# NOTE: GIT and CURL are pre-installed in worker-base image, so they don't need
+# NOTE: GIT and CURL are pre-installed in worker-base-common image, so they don't need
 # additional installation. They are listed here only to be recognized as valid
 # capabilities and included in the image hash computation.
 CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
-    # GIT and CURL are already in worker-base (see images/worker-base/Dockerfile)
+    # GIT and CURL are already in worker-base-common
     # No installation needed, just recognized as valid capabilities
     "GIT": [],
     "CURL": [],
@@ -55,9 +55,9 @@ CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
 }
 
 # Packages that can be combined in a single apt-get install
-# NOTE: GIT and CURL are pre-installed in worker-base, so they're not here
+# NOTE: GIT and CURL are pre-installed in worker-base-common, so they're not here
 APT_PACKAGES: dict[str, str] = {
-    # Empty - all common packages are pre-installed in worker-base
+    # Empty - all common packages are pre-installed in worker-base-common
 }
 
 
