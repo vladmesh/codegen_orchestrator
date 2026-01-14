@@ -1,7 +1,8 @@
 # Worker base image with Claude CLI pre-installed
 # Inherits from worker-base-common
 
-FROM worker-base-common:latest
+ARG BASE_IMAGE=worker-base-common:latest
+FROM ${BASE_IMAGE}
 
 USER root
 

@@ -195,6 +195,8 @@ jobs:
           context: .
           file: services/worker-manager/images/worker-base-claude/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:${{ github.sha }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:latest
             ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:${{ github.sha }}
@@ -207,6 +209,8 @@ jobs:
           context: .
           file: services/worker-manager/images/worker-base-factory/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
+          build-args: |
+            BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:${{ github.sha }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:latest
             ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:${{ github.sha }}
