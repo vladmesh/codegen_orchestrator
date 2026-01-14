@@ -238,6 +238,15 @@ test-orchestrator-cli:
 	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
+test-orchestrator-cli-unit:
+	@echo "🧪 Running Orchestrator CLI unit tests..."
+	@if [ -d "shared/orchestrator-cli/tests/unit" ] && [ "$$(ls -A shared/orchestrator-cli/tests/unit)" ]; then \
+		docker build -f shared/orchestrator-cli/Dockerfile.test -t orchestrator-cli-test .; \
+		docker run --rm orchestrator-cli-test pytest shared/orchestrator-cli/tests/ -v; \
+	else \
+		echo "⚠️  No unit tests found in shared/orchestrator-cli/tests/unit"; \
+	fi
+
 test-worker-wrapper:
 	@echo "🧪 Running Worker Wrapper tests..."
 	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
