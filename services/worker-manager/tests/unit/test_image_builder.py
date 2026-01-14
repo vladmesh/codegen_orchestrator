@@ -74,7 +74,7 @@ class TestImageBuilderDockerfileGeneration:
     def test_dockerfile_starts_with_from_base_image(self, builder):
         """Dockerfile must start with FROM base image."""
         dockerfile = builder.generate_dockerfile(capabilities=[])
-        assert dockerfile.startswith("FROM worker-base:latest")
+        assert dockerfile.startswith("FROM worker-base-claude:latest")
 
     def test_dockerfile_empty_capabilities_has_agent_label(self, builder):
         """Empty capabilities should still have agent type label."""

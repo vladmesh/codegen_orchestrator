@@ -161,7 +161,7 @@ class TestWorkerManagerBuildLogic:
         call_kwargs = mock_docker.build_image.call_args[1]
         dockerfile = call_kwargs["dockerfile_content"]
 
-        assert "FROM worker-base:latest" in dockerfile
+        assert "FROM worker-base-claude:latest" in dockerfile
         # GIT is pre-installed, but agent type LABEL should be present
         assert "LABEL" in dockerfile
         assert "claude" in dockerfile

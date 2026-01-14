@@ -298,7 +298,7 @@ test-cli-integration:
 	exit $$EXIT_CODE
 
 # Run all unit tests (fast)
-test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit
+test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit
 
 # Run all integration tests
 test-integration: test-api-integration test-langgraph-integration test-scheduler-integration test-cli-integration
