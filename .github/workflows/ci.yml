@@ -25,6 +25,7 @@ jobs:
       worker-manager: ${{ steps.filter.outputs.worker-manager }}
       cli: ${{ steps.filter.outputs.cli }}
       shared: ${{ steps.filter.outputs.shared }}
+      packages: ${{ steps.filter.outputs.packages }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
