@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -57,8 +57,8 @@ class MockGitHubClient:
             clone_url=f"https://github.com/{full_name}.git",
             default_branch="main",
             description=description,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         self.repos[name] = repo
         self.files[name] = {}

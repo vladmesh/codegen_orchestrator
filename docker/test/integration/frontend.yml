@@ -25,7 +25,7 @@ services:
     environment:
       - API_BASE_URL=http://api:8000
       - REDIS_URL=redis://redis:6379/0
-      - TELEGRAM_TOKEN=test_token
+      - TELEGRAM_BOT_TOKEN=test_token
     depends_on:
       api:
         condition: service_healthy

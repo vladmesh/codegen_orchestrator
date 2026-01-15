@@ -52,7 +52,7 @@ services:
       start_period: 10s
 
   # === Test Runner ===
-  cli-test-runner:
+  integration-test-runner:
     build:
       context: ../../..
       dockerfile: packages/orchestrator-cli/Dockerfile.test

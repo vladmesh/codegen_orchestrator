@@ -105,7 +105,9 @@ setup-hooks:
 
 # === Testing ===
 
-DOCKER_COMPOSE_TEST := DOCKER_BUILDKIT=1 docker compose -p $(TEST_PROJECT) -f docker-compose.test.yml
+# Dynamic discovery of integration test compose files
+INTEGRATION_COMPOSE_FILES := $(wildcard docker/test/integration/*.yml)
+INTEGRATION_TESTS := $(patsubst docker/test/integration/%.yml,test-integration-%,$(INTEGRATION_COMPOSE_FILES))
 
 # Individual service unit tests (fast, no external deps)
 test-api-unit:
@@ -142,15 +144,8 @@ test-langgraph-service:
 
 test-scheduler-unit:
 	@echo "🧪 Running Scheduler unit tests..."
-	@# For now, Scheduler doesn't have a dedicated service test file, creating placeholder or reusing old method but strictly scoped
-	@# TODO: Create docker/test/service/scheduler.yml
 	@if [ -d "services/scheduler/tests/unit" ] && [ "$$(ls -A services/scheduler/tests/unit)" ]; then \
-		$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true; \
-		$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true; \
-		$(DOCKER_COMPOSE_TEST) run --rm --no-deps scheduler-test pytest tests/unit/ -v; \
-		EXIT_CODE=$$?; \
-		$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
-		exit $$EXIT_CODE; \
+		docker compose -p $(TEST_PROJECT)_scheduler -f docker/test/service/scheduler.yml run --rm --no-deps scheduler-test-runner pytest tests/unit/ -v; \
 	else \
 		echo "⚠️  No unit tests found in services/scheduler/tests/unit"; \
 	fi
@@ -164,56 +159,18 @@ test-telegram-unit:
 		echo "⚠️  No unit tests found in services/telegram_bot/tests/unit"; \
 	fi
 
-# Individual service integration tests (require infrastructure)
-test-integration-frontend:
-	@echo "🧪 Running Frontend integration tests..."
-	@docker compose -p $(TEST_PROJECT)_frontend -f docker/test/integration/frontend.yml down -v --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_frontend -f docker/test/integration/frontend.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
+# Integration tests - pattern rule for dynamic discovery
+# Any docker/test/integration/*.yml file automatically becomes test-integration-* target
+test-integration-%:
+	@echo "🧪 Running $* integration tests..."
+	@docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down -v --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
 	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_frontend -f docker/test/integration/frontend.yml down -v --remove-orphans; \
+	docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
-test-langgraph-integration:
-	@echo "🧪 Running LangGraph integration tests..."
-	@docker compose -p $(TEST_PROJECT)_backend -f docker/test/integration/backend.yml down -v --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_backend -f docker/test/integration/backend.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
-	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_backend -f docker/test/integration/backend.yml down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-test-scheduler-integration:
-	@echo "🧪 Running Scheduler integration tests..."
-	@# TODO: Create docker/test/integration/scheduler.yml or include in backend
-	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
-	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from scheduler-test scheduler-test db-test redis-test; \
-	EXIT_CODE=$$?; \
-	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-# All tests for a specific service
-test-api:
-	@echo "🧪 Running all API tests..."
-	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
-	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from api-test api-test db-test redis-test; \
-	EXIT_CODE=$$?; \
-	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-test-langgraph:
-	@echo "🧪 Running all LangGraph tests..."
-	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
-	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from langgraph-test langgraph-test redis-test; \
-	EXIT_CODE=$$?; \
-	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-test-scheduler:
-	@echo "🧪 Running all Scheduler tests..."
-	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
-	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from scheduler-test scheduler-test db-test redis-test; \
-	EXIT_CODE=$$?; \
-	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
-	exit $$EXIT_CODE
+# Note: Legacy aggregate targets (test-api, test-langgraph, etc.) were removed.
+# Use test-{service}-unit and test-{service}-service instead.
 
 test-scheduler-service:
 	@echo "🧪 Running Scheduler Service tests..."
@@ -221,30 +178,6 @@ test-scheduler-service:
 	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler up -d db redis api
 	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler run --rm scheduler-test-runner
 	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler down -v
-
-test-telegram:
-	@echo "🧪 Running all Telegram bot tests..."
-	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
-	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from telegram-bot-test telegram-bot-test; \
-	EXIT_CODE=$$?; \
-	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-test-workers-spawner:
-	@echo "🧪 Running Workers Spawner tests..."
-	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
-	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from workers-spawner-test workers-spawner-test; \
-	EXIT_CODE=$$?; \
-	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-test-orchestrator-cli:
-	@echo "🧪 Running Orchestrator CLI tests..."
-	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
-	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from orchestrator-cli-test orchestrator-cli-test; \
-	EXIT_CODE=$$?; \
-	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
-	exit $$EXIT_CODE
 
 test-orchestrator-cli-unit:
 	@echo "🧪 Running Orchestrator CLI unit tests..."
@@ -254,14 +187,6 @@ test-orchestrator-cli-unit:
 	else \
 		echo "⚠️  No unit tests found in shared/orchestrator-cli/tests/unit"; \
 	fi
-
-test-worker-wrapper:
-	@echo "🧪 Running Worker Wrapper tests..."
-	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true
-	@$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from worker-wrapper-test worker-wrapper-test; \
-	EXIT_CODE=$$?; \
-	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
-	exit $$EXIT_CODE
 
 test-worker-wrapper-unit:
 	@echo "🧪 Running Worker Wrapper unit tests..."
@@ -297,14 +222,6 @@ test-worker-manager-service:
 	docker compose -p $(TEST_PROJECT)_worker_manager -f docker/test/service/worker-manager.yml down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
-test-cli-integration:
-	@echo "🧪 Running Orchestrator CLI Integration tests..."
-	@docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml down -v --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml up --build --abort-on-container-exit --exit-code-from cli-test-runner; \
-	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
 test-scaffolder-unit:
 	@echo "🧪 Running Scaffolder unit tests..."
 	@if [ -d "services/scaffolder/tests/unit" ] && [ "$$(ls -A services/scaffolder/tests/unit)" ]; then \
@@ -332,8 +249,9 @@ test-shared-unit:
 # Run all unit tests (fast)
 test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit test-scaffolder-unit test-shared-unit
 
-# Run all integration tests
-test-integration: test-api-integration test-langgraph-integration test-scheduler-integration test-cli-integration
+# Run all integration tests (auto-discovered from docker/test/integration/*.yml)
+test-integration: $(INTEGRATION_TESTS)
+	@echo "✅ All integration tests completed"
 
 # Run all service tests
 test-service: test-api-service test-langgraph-service test-scaffolder-service
@@ -354,10 +272,14 @@ test-legacy:
 		--ignore=services/api/tests_legacy/integration \
 		-v
 
-# Cleanup test containers and volumes
+# Cleanup test containers and volumes (all test projects)
 test-clean:
 	@echo "🧹 Cleaning up test containers and volumes..."
-	@$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 
+	@for yml in docker/test/integration/*.yml docker/test/service/*.yml; do \
+		name=$$(basename $$yml .yml); \
+		docker compose -p $(TEST_PROJECT)_$$name -f $$yml down -v --remove-orphans 2>/dev/null || true; \
+	done
+	@echo "✅ Test cleanup complete"
 
 
 # === Database ===
