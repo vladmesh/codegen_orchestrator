@@ -43,6 +43,8 @@ flowchart TB
     subgraph Phase2["Phase 2: Core Logic"]
         P2_1[P2.1 Scaffolder]
         P2_2[P2.2 LangGraph]
+        P2_3[P2.3 Scheduler]
+        P2_4[P2.4 Provisioner Listener]
         P2_5[P2.5 Tpl Tests]
     end
 
@@ -85,6 +87,11 @@ flowchart TB
     P2_1 --> P2_2
     P2_1 --> P2_5
 
+    %% Scheduler dependencies
+    P1_0 --> P2_3
+    P2_3 --> P2_4
+    P1_3 --> P2_4
+
     %% Phase 3 Dependencies
     P1_0 --> P3_1
     P2_2 --> P3_1
@@ -117,6 +124,8 @@ flowchart TB
 | P1.10 | **Agent & CLI Tests** | `tests/integration/backend` | P1.9 | 1 |
 | P2.1 | Scaffolder | `services/scaffolder` | P0.1, P0.4, **P1.10** | 2 |
 | P2.2 | LangGraph Service | `services/langgraph` | P1.3, P1.8, P2.1 | 2 |
+| P2.3 | Scheduler Refactoring | `services/scheduler` | P1.0 | 2 |
+| P2.4 | Provisioner Result Listener | `services/scheduler` | P2.3, P1.3 | 2 |
 | P2.5 | Template Tests | `tests/integration/template` | P2.1 | 2 |
 | P3.1 | Telegram Bot | `services/telegram-bot` | P1.0, P2.2 | 3 |
 | P4.1 | System E2E | `tests/e2e` | All above | 4 |
@@ -1559,6 +1568,62 @@ When all tests pass, Phase 1 is complete.
 
 ---
 
+### P2.3 — Scheduler Refactoring
+
+**Path:** `services/scheduler/`  
+**Depends:** P1.0 (API Pure CRUD)  
+**Spec:** [services/scheduler.md](./services/scheduler.md)
+
+**Goal:** Scheduler maintains "world state" in DB. Currently uses direct SQLAlchemy — must migrate to API calls.
+
+**Current Tasks (implemented but need refactoring):**
+| Task | Interval | Purpose |
+|------|----------|---------|
+| `github_sync` | 5 min | Sync projects from GitHub organization |
+| `server_sync` | 1 min | Sync servers from Time4VPS provider |
+| `health_checker` | 2 min | Monitor server health via SSH |
+| `rag_summarizer` | 10 min | Summarize project documentation |
+| `provisioner_trigger` | startup | Retry pending server provisioning |
+
+**Tasks:**
+- [ ] Replace direct SQLAlchemy with API client calls
+- [ ] Add Pydantic validation for all task payloads
+- [ ] Add comprehensive unit tests (currently only placeholder)
+- [ ] Verify `api_client` properly handles auth/errors
+
+**Acceptance Criteria:**
+- [ ] No direct `sqlalchemy` imports in scheduler (only API client)
+- [ ] All 5 tasks have unit tests with mocked API
+- [ ] Scheduler can run independently of DB connection
+
+---
+
+### P2.4 — Provisioner Result Listener
+
+**Path:** `services/scheduler/src/tasks/provisioner_result_listener.py`  
+**Depends:** P2.3, P1.3 (infra-service)
+
+**Goal:** Close the feedback loop for server provisioning.
+
+**Current Gap:** Spec mentions this listener but it's NOT implemented!
+```
+Scheduler → provisioner:queue → infra-service → provisioner:results → ??? (missing)
+```
+
+**Tasks:**
+- [ ] Create `provisioner_result_listener.py`
+- [ ] Subscribe to `provisioner:results` stream
+- [ ] Update Server status via API on success/failure
+- [ ] Handle error cases (provisioning failed, timeout)
+- [ ] Wire into scheduler main.py lifecycle
+
+**Acceptance Criteria:**
+- [ ] Server status updated after provisioning completes
+- [ ] Failed provisioning triggers alert via `notify_admins`
+- [ ] Integration test with mock infra-service
+
+---
+
 ### P2.5 — service_template Integration Tests
 
 **Path:** `tests/integration/template/`  
@@ -1638,6 +1703,7 @@ When all tests pass, Phase 1 is complete.
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-15 | Claude | Added P2.3 (Scheduler Refactoring) and P2.4 (Provisioner Result Listener) to Phase 2 |
 | 2026-01-14 | Claude | Added P1.8.3 Optimization (Shared base layers) to reduce disk usage during tests |
 | 2026-01-12 | Claude | Added P1.6 (Agent Integration), P1.7 (Wrapper Completion), P1.8 (Worker Base Image) for production-ready worker management |
 | 2026-01-11 | Claude | Complete rewrite: fixed numbering, added dependency graph, acceptance criteria per component |
