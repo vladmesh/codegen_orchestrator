@@ -1,0 +1,24 @@
+services:
+  # Infrastructure
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Test Runner - runs scaffolder service tests
+  scaffolder-test-runner:
+    build:
+      context: ../../..
+      dockerfile: services/scaffolder/Dockerfile.test
+    command: ["pytest", "tests/service/", "-v", "-s"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONPATH=/app:/app/src
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../../../services/scaffolder/tests:/app/tests

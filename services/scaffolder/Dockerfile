@@ -12,10 +12,16 @@ RUN pip install --no-cache-dir \
     httpx==0.27.0 \
     structlog==24.1.0 \
     pyyaml==6.0.1 \
-    pyjwt[crypto]==2.8.0
+    pyjwt[crypto]==2.8.0 \
+    pydantic==2.7.4 \
+    pynacl==1.5.0
 
 WORKDIR /app
 
-COPY src/ /app/
+# Copy shared packages (contracts, clients)
+COPY shared/ /app/shared/
+
+# Copy service code
+COPY services/scaffolder/src/ /app/
 
 CMD ["python", "main.py"]

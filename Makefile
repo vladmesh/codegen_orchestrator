@@ -297,14 +297,30 @@ test-cli-integration:
 	docker compose -p $(TEST_PROJECT)_cli -f docker/test/integration/cli.yml down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
+test-scaffolder-unit:
+	@echo "🧪 Running Scaffolder unit tests..."
+	@if [ -d "services/scaffolder/tests/unit" ] && [ "$$(ls -A services/scaffolder/tests/unit)" ]; then \
+		docker compose -p $(TEST_PROJECT)_scaffolder -f docker/test/service/scaffolder.yml run --rm --no-deps scaffolder-test-runner pytest tests/unit/ -v; \
+	else \
+		echo "⚠️  No unit tests found in services/scaffolder/tests/unit"; \
+	fi
+
+test-scaffolder-service:
+	@echo "🧪 Running Scaffolder service tests..."
+	@docker compose -p $(TEST_PROJECT)_scaffolder -f docker/test/service/scaffolder.yml down -v --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_scaffolder -f docker/test/service/scaffolder.yml up --build --abort-on-container-exit --exit-code-from scaffolder-test-runner; \
+	EXIT_CODE=$$?; \
+	docker compose -p $(TEST_PROJECT)_scaffolder -f docker/test/service/scaffolder.yml down -v --remove-orphans; \
+	exit $$EXIT_CODE
+
 # Run all unit tests (fast)
-test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit
+test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit test-scaffolder-unit
 
 # Run all integration tests
 test-integration: test-api-integration test-langgraph-integration test-scheduler-integration test-cli-integration
 
 # Run all service tests
-test-service: test-api-service test-langgraph-service
+test-service: test-api-service test-langgraph-service test-scaffolder-service
 
 # Run ALL tests
 test-all: test-unit test-service test-integration

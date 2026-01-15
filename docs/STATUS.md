@@ -112,6 +112,13 @@ All identified gaps have been implemented. Integration tests passed successfully
     - [x] Series 2: Factory Agent Integration - PASSED
     - [x] Series 3: E2E Manually Verified
 
+### Phase 2: Core Logic
+
+17. **✅ P2.1 Scaffolder Refactoring**
+    - [x] Refactored `services/scaffolder` (DTOs, shared client).
+    - [x] Added Unit Tests (10) and Service Tests (4).
+    - [x] Integrated with CI.
+
 ## 🔗 Quick Links
 
 - [Migration Plan](./new_architecture/MIGRATION_PLAN.md)

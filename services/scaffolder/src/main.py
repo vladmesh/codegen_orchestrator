@@ -14,57 +14,29 @@ import httpx
 import redis.asyncio as redis
 import structlog
 
+from shared.clients.github import GitHubAppClient
+from shared.contracts.queues.scaffolder import ScaffolderMessage, ScaffolderResult
+
 logger = structlog.get_logger()
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 API_URL = os.getenv("API_URL", "http://api:8000")
-GITHUB_APP_ID = os.getenv("GITHUB_APP_ID")
-GITHUB_APP_PRIVATE_KEY_PATH = os.getenv("GITHUB_APP_PRIVATE_KEY_PATH", "/app/keys/github_app.pem")
 SERVICE_TEMPLATE_REPO = os.getenv("SERVICE_TEMPLATE_REPO", "gh:vladmesh/service-template")
 
 QUEUE_NAME = "scaffolder:queue"
+RESULT_QUEUE_NAME = "scaffolder:results"
 CONSUMER_GROUP = "scaffolder-workers"
 CONSUMER_NAME = f"scaffolder-{os.getpid()}"
 
+# Shared GitHub client
+github_client = GitHubAppClient()
+
 
 async def get_github_token(org: str) -> str:
-    """Get GitHub App installation token for the organization."""
-    import time
-
-    import jwt
-
-    # Load private key
-    with open(GITHUB_APP_PRIVATE_KEY_PATH) as f:
-        private_key = f.read()
-
-    # Generate JWT
-    now = int(time.time())
-    payload = {"iat": now - 60, "exp": now + (10 * 60), "iss": GITHUB_APP_ID}
-    jwt_token = jwt.encode(payload, private_key, algorithm="RS256")
-
-    headers = {
-        "Authorization": f"Bearer {jwt_token}",
-        "Accept": "application/vnd.github+json",
-    }
-
-    async with httpx.AsyncClient() as client:
-        # Get installation ID for org
-        resp = await client.get(
-            f"https://api.github.com/orgs/{org}/installation",
-            headers=headers,
-        )
-        resp.raise_for_status()
-        installation_id = resp.json()["id"]
-
-        # Get installation token
-        resp = await client.post(
-            f"https://api.github.com/app/installations/{installation_id}/access_tokens",
-            headers=headers,
-        )
-        resp.raise_for_status()
-        return resp.json()["token"]
+    """Get GitHub App installation token for the organization using shared client."""
+    return await github_client.get_org_token(org)
 
 
 async def update_project_status(project_id: str, status: str, max_retries: int = 3) -> bool:
@@ -255,31 +227,54 @@ async def scaffold_project(
         return False
 
 
-async def process_job(job_data: dict) -> None:
-    """Process a scaffolding job."""
-    repo_full_name = job_data.get("repo_full_name")
-    project_name = job_data.get("project_name")
-    project_id = job_data.get("project_id")
-    modules = job_data.get("modules", "backend")
-
-    if not all([repo_full_name, project_name, project_id]):
-        logger.error("invalid_job_data", data=job_data)
+async def process_job(job_data: dict, redis_client: redis.Redis) -> None:
+    """Process a scaffolding job using ScaffolderMessage DTO."""
+    # Parse with Pydantic DTO for validation
+    try:
+        message = ScaffolderMessage.model_validate(job_data)
+    except Exception as e:
+        logger.error("invalid_job_data", data=job_data, error=str(e))
         return
 
     logger.info(
         "processing_scaffold_job",
-        repo=repo_full_name,
-        project_name=project_name,
-        project_id=project_id,
-        modules=modules,
+        repo=message.repo_full_name,
+        project_name=message.project_name,
+        project_id=message.project_id,
+        modules=[m.value for m in message.modules],
     )
 
-    success = await scaffold_project(repo_full_name, project_name, project_id, modules)
+    # Convert list of enums to comma-separated string for copier
+    modules_str = ",".join(m.value for m in message.modules) if message.modules else "backend"
 
+    success = await scaffold_project(
+        message.repo_full_name,
+        message.project_name,
+        message.project_id,
+        modules_str,
+    )
+
+    # Publish ScaffolderResult to results queue
+    result = ScaffolderResult(
+        request_id=message.request_id,
+        project_id=message.project_id,
+        repo_url=f"https://github.com/{message.repo_full_name}",
+        status="success" if success else "failed",
+        error=None if success else "Scaffolding failed - check logs",
+    )
+    await redis_client.xadd(RESULT_QUEUE_NAME, {"data": result.model_dump_json()})
+    logger.info(
+        "scaffold_result_published",
+        project_id=message.project_id,
+        status=result.status,
+        queue=RESULT_QUEUE_NAME,
+    )
+
+    # Also update project status via API
     if success:
-        await update_project_status(project_id, "scaffolded")
+        await update_project_status(message.project_id, "scaffolded")
     else:
-        await update_project_status(project_id, "scaffold_failed")
+        await update_project_status(message.project_id, "scaffold_failed")
 
 
 async def ensure_consumer_group(redis_client: redis.Redis) -> None:
@@ -335,7 +330,7 @@ async def main() -> None:
                             job_data = json_lib.loads(data["data"])
                         else:
                             job_data = data
-                        await process_job(job_data)
+                        await process_job(job_data, redis_client)
                         # Acknowledge message
                         await redis_client.xack(QUEUE_NAME, CONSUMER_GROUP, message_id)
                     except Exception as e:

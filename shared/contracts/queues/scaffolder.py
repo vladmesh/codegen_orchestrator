@@ -15,6 +15,7 @@ class ScaffolderMessage(BaseMessage):
 
     project_id: str
     project_name: str
+    repo_full_name: str  # org/repo format, e.g. "vladmesh/my-project"
     modules: list[ServiceModule]
 
 
