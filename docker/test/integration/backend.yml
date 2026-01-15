@@ -94,6 +94,10 @@ services:
     dns:
       - 8.8.8.8
       - 8.8.4.4
+    # Mount host Claude session directory for E2E tests
+    # Workers inside DIND will mount /host-claude as their ~/.claude
+    volumes:
+      - ${HOST_CLAUDE_DIR:-/tmp/fake-claude}:/host-claude:rw
     # Pass DNS to Docker daemon for containers spawned inside DIND
     command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--dns=8.8.8.8", "--dns=8.8.4.4"]
     healthcheck:

@@ -20,15 +20,21 @@ def run_e2e_real(request):
 
 
 async def wait_for_stream_message(
-    redis: RedisStreamClient, stream: str, timeout: int = 300
-) -> dict:
-    """Wait for a message on Redis stream."""
+    redis: RedisStreamClient, stream: str, timeout: int = 300, last_id: str = "0"
+) -> tuple[str, dict]:
+    """Wait for a message on Redis stream. Returns (message_id, data)."""
     start = time.time()
     while time.time() - start < timeout:
-        messages = await redis.xread({stream: "0"}, count=1, block=1000)
+        # Use > if last_id is provided and we want new messages, but xread takes explicit ID.
+        # If last_id is "0", it gets all. If we want only new relative to last_id, we pass last_id.
+        # But for xread with specific ID, it returns generic stream.
+        # Actually xread({stream: last_id}) returns messages with ID > last_id.
+        messages = await redis.xread({stream: last_id}, count=1, block=1000)
         if messages:
             # expected structure: [[stream_name, [[message_id, {data: ...}]]]]
-            return messages[0][1][0][1]
+            msg_id = messages[0][1][0][0]
+            data = messages[0][1][0][1]
+            return msg_id, data
     raise TimeoutError(f"No message received on {stream} within {timeout}s")
 
 
@@ -73,7 +79,9 @@ async def test_claude_real_session_deterministic_answer(redis: RedisStreamClient
             agent_type=AgentType.CLAUDE,
             instructions="You are a helpful assistant.",
             auth_mode="host_session",
-            host_claude_dir=os.getenv("CLAUDE_SESSION_DIR", "/home/vlad/.claude"),
+            host_claude_dir="/host-claude",
+            allowed_commands=["*"],
+            capabilities=[],
         ),
     )
     # Using raw xadd because CreateWorkerCommand might need to be wrapped or standardized
@@ -81,7 +89,7 @@ async def test_claude_real_session_deterministic_answer(redis: RedisStreamClient
     await redis.xadd("worker:commands", {"data": cmd.model_dump_json()})
 
     # Wait for creation response
-    resp = await wait_for_stream_message(redis, "worker:responses:developer")
+    _, resp = await wait_for_stream_message(redis, "worker:responses:developer")
     # Parse just to get ID - assuming response is valid JSON
     import json
 
@@ -104,7 +112,9 @@ async def test_claude_real_session_deterministic_answer(redis: RedisStreamClient
         # 3. Read Output
         # output stream: worker:{worker_id}:output? Or worker:developer:output?
         # P1_BLOCKING_TESTS: "Читать из worker:{id}:output"
-        output_msg = await wait_for_stream_message(redis, f"worker:{worker_id}:output", timeout=120)
+        _, output_msg = await wait_for_stream_message(
+            redis, f"worker:{worker_id}:output", timeout=120
+        )
 
         # 4. Assert
         # The output format is likely AgentOutput or similar
@@ -112,7 +122,16 @@ async def test_claude_real_session_deterministic_answer(redis: RedisStreamClient
         # Try to parse if it's JSON
         try:
             res_json = json.loads(result_str)
-            content = res_json.get("content", str(res_json))
+            if res_json.get("status") == "no_structured_result" and "raw_output" in res_json:
+                # Handle raw output from Claude CLI
+                raw = res_json["raw_output"]
+                try:
+                    inner = json.loads(raw)
+                    content = inner.get("result", str(inner))
+                except json.JSONDecodeError:
+                    content = raw
+            else:
+                content = res_json.get("content", str(res_json))
         except Exception:
             content = str(result_str)
 
@@ -130,24 +149,40 @@ async def test_claude_real_session_deterministic_answer(redis: RedisStreamClient
 async def test_claude_real_session_memory(redis: RedisStreamClient, docker_client):
     """
     Claude должен помнить предыдущий вопрос в рамках сессии.
+
+    Flow:
+    1. Create worker
+    2. Send Question 1: "Ответь сколько будет шесть плюс три одним словом"
+    3. Wait for answer
+    4. Send Question 2: "Верни предыдущий вопрос который я тебе задавал"
+    5. Assert that response contains "шесть" and "три" (proving memory)
     """
-    # Reuse flow or create new worker
+    import json
+
+    # Clear streams
+    await redis.delete("worker:responses:developer")
+
     cmd = CreateWorkerCommand(
-        request_id="claude-mem-test",
+        request_id=f"claude-mem-{int(time.time())}",
         config=WorkerConfig(
             name="claude-mem-worker",
             worker_type="developer",
             agent_type=AgentType.CLAUDE,
+            instructions="You are a helpful assistant.",
             auth_mode="host_session",
-            host_claude_dir=os.getenv("CLAUDE_SESSION_DIR", "/home/vlad/.claude"),
+            host_claude_dir="/host-claude",
+            allowed_commands=["*"],
+            capabilities=[],
         ),
     )
     await redis.xadd("worker:commands", {"data": cmd.model_dump_json()})
-    resp = await wait_for_stream_message(redis, "worker:responses:developer")
-    import json
+    _, resp = await wait_for_stream_message(redis, "worker:responses:developer")
 
     data = json.loads(resp["data"])
     worker_id = data.get("worker_id")
+    assert worker_id, "Failed to get worker_id"
+
+    last_output_id = "0"
 
     try:
         # Question 1
@@ -155,9 +190,12 @@ async def test_claude_real_session_memory(redis: RedisStreamClient, docker_clien
             f"worker:{worker_id}:input",
             {"data": json.dumps({"content": "Ответь сколько будет шесть плюс три одним словом"})},
         )
-        await wait_for_stream_message(redis, f"worker:{worker_id}:output", timeout=60)
+        last_output_id, q1_msg = await wait_for_stream_message(
+            redis, f"worker:{worker_id}:output", timeout=120, last_id=last_output_id
+        )
+        print(f"[DEBUG] Q1 response received, msg_id={last_output_id}")
 
-        # Question 2
+        # Question 2 - test session memory
         await redis.xadd(
             f"worker:{worker_id}:input",
             {
@@ -166,10 +204,41 @@ async def test_claude_real_session_memory(redis: RedisStreamClient, docker_clien
                 )
             },
         )
-        msg2 = await wait_for_stream_message(redis, f"worker:{worker_id}:output", timeout=60)
+        _, q2_msg = await wait_for_stream_message(
+            redis, f"worker:{worker_id}:output", timeout=120, last_id=last_output_id
+        )
 
-        content = str(msg2)
-        assert "шесть" in content.lower() and "три" in content.lower()
+        # Parse Q2 response
+        result_str = q2_msg.get("data", "") or q2_msg.get("content", "")
+        try:
+            res_json = json.loads(result_str)
+            if res_json.get("status") == "no_structured_result" and "raw_output" in res_json:
+                raw = res_json["raw_output"]
+                try:
+                    inner = json.loads(raw)
+                    content = inner.get("result", str(inner))
+                except json.JSONDecodeError:
+                    content = raw
+            else:
+                content = res_json.get("content", str(res_json))
+        except Exception:
+            content = str(result_str)
+
+        print(f"[DEBUG] Q2 content: {content}")
+
+        # Assert memory works - Claude should remember the previous question
+        assert (
+            "шесть" in content.lower() and "три" in content.lower()
+        ), f"Session memory failed. Expected previous question about 6+3. Got: {content}"
+
+    except Exception:
+        # Dump logs for debugging
+        try:
+            c = docker_client.containers.get(f"worker-{worker_id}")
+            print(f"\n[DEBUG] Logs for worker-{worker_id}:\n{c.logs().decode()}\n[DEBUG] End Logs")
+        except Exception as log_err:
+            print(f"\n[DEBUG] Failed to get logs: {log_err}")
+        raise
 
     finally:
         await cleanup_worker(redis, worker_id)
@@ -201,7 +270,7 @@ async def test_factory_api_key_deterministic_answer(redis: RedisStreamClient, do
         ),
     )
     await redis.xadd("worker:commands", {"data": cmd.model_dump_json()})
-    resp = await wait_for_stream_message(redis, "worker:responses:developer")
+    _, resp = await wait_for_stream_message(redis, "worker:responses:developer")
     import json
 
     data = json.loads(resp["data"])
@@ -216,7 +285,7 @@ async def test_factory_api_key_deterministic_answer(redis: RedisStreamClient, do
                 )
             },
         )
-        msg = await wait_for_stream_message(redis, f"worker:{worker_id}:output")
+        _, msg = await wait_for_stream_message(redis, f"worker:{worker_id}:output")
 
         # 4. Assert
         # The output format is likely AgentOutput or similar
@@ -264,21 +333,28 @@ async def test_factory_api_key_session_memory(redis: RedisStreamClient, docker_c
             worker_type="developer",
             agent_type=AgentType.FACTORY,
             env_vars={"FACTORY_API_KEY": os.getenv("FACTORY_API_KEY")},
+            instructions="You are a helpful assistant.",
+            allowed_commands=["*"],
+            capabilities=[],
         ),
     )
     await redis.xadd("worker:commands", {"data": cmd.model_dump_json()})
-    resp = await wait_for_stream_message(redis, "worker:responses:developer")
+    _, resp = await wait_for_stream_message(redis, "worker:responses:developer")
     import json
 
     data = json.loads(resp["data"])
     worker_id = data.get("worker_id")
+
+    last_output_id = "0"
 
     try:
         await redis.xadd(
             f"worker:{worker_id}:input",
             {"data": json.dumps({"content": "Ответь сколько будет шесть плюс три одним словом"})},
         )
-        await wait_for_stream_message(redis, f"worker:{worker_id}:output")
+        last_output_id, _ = await wait_for_stream_message(
+            redis, f"worker:{worker_id}:output", last_id=last_output_id
+        )
 
         await redis.xadd(
             f"worker:{worker_id}:input",
@@ -288,7 +364,9 @@ async def test_factory_api_key_session_memory(redis: RedisStreamClient, docker_c
                 )
             },
         )
-        msg = await wait_for_stream_message(redis, f"worker:{worker_id}:output")
+        _, msg = await wait_for_stream_message(
+            redis, f"worker:{worker_id}:output", last_id=last_output_id
+        )
         content = str(msg)
         assert "шесть" in content.lower() and "три" in content.lower()
     finally:

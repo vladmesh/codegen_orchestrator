@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Any
 
 import structlog
@@ -118,7 +119,11 @@ class WorkerWrapper:
         session_manager = SessionManager(
             redis=self.redis.redis, worker_id=self.config.consumer_name
         )
-        session_id = await session_manager.get_or_create_session()
+
+        # Gap solution: Claude CLI manages its own session IDs and doesn't accept random ones.
+        # So for Claude, we don't create a new random ID.
+        create_new_session = self.config.agent_type != "claude"
+        session_id = await session_manager.get_or_create_session(create_new=create_new_session)
 
         # 2. Select Runner
         from .runners.claude import ClaudeRunner
@@ -158,7 +163,15 @@ class WorkerWrapper:
             )
             raise RuntimeError(f"Agent process failed with code {proc.returncode}: {stderr}")
 
-        # 5. Parse Result
+        # 5. Capture session_id from Claude CLI JSON output
+        # Claude CLI with --output-format json returns session_id in the response
+        if self.config.agent_type == "claude" and not session_id:
+            captured_session_id = self._extract_session_id_from_output(stdout)
+            if captured_session_id:
+                logger.info("captured_claude_session_from_output", session_id=captured_session_id)
+                await session_manager.update_session(captured_session_id)
+
+        # 6. Parse Result
         from .result_parser import ResultParseError, ResultParser
 
         try:
@@ -172,6 +185,40 @@ class WorkerWrapper:
         except ResultParseError as e:
             logger.error("result_parsing_failed", error=str(e), stdout=stdout)
             raise
+
+    def _extract_session_id_from_output(self, stdout: str) -> str | None:
+        """
+        Extract session_id from Claude CLI JSON output.
+
+        Claude CLI with --output-format json returns:
+        {
+            "type": "result",
+            "session_id": "uuid-here",
+            ...
+        }
+        """
+        try:
+            # stdout may contain multiple JSON objects (streaming), find the result one
+            # Try parsing the whole output first
+            data = json.loads(stdout)
+            if isinstance(data, dict) and "session_id" in data:
+                return data["session_id"]
+        except json.JSONDecodeError:
+            # Try to find JSON objects line by line
+            for line in stdout.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if isinstance(data, dict) and "session_id" in data:
+                        return data["session_id"]
+                except json.JSONDecodeError:
+                    continue
+        except Exception as e:
+            logger.warning("failed_to_extract_session_id", error=str(e))
+
+        return None
 
     async def publish_lifecycle(
         self, status: str, ref_msg_id: str, result: dict = None, error: str = None

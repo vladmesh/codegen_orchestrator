@@ -13,6 +13,15 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "tcp://docker:2375")
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-e2e-real",
+        action="store_true",
+        default=False,
+        help="run e2e real llm tests",
+    )
+
+
 @pytest_asyncio.fixture
 async def redis_client():
     client = aioredis.from_url(REDIS_URL, decode_responses=True)

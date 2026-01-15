@@ -19,7 +19,7 @@ class SessionManager:
         self.ttl = ttl_seconds
         self._key = f"worker:session:{worker_id}"
 
-    async def get_or_create_session(self) -> str:
+    async def get_or_create_session(self, create_new: bool = True) -> str | None:
         """
         Get existing session ID or create a new one.
         Refreshes TTL on access.
@@ -31,7 +31,7 @@ class SessionManager:
             session_id = raw_session_id
             if isinstance(session_id, bytes):
                 session_id = session_id.decode()
-        else:
+        elif create_new:
             # Create new
             session_id = str(uuid.uuid4())
             # Use set with nx=True to avoid race conditions (first write wins)
@@ -44,8 +44,15 @@ class SessionManager:
                     session_id = raw_session_id
                     if isinstance(session_id, bytes):
                         session_id = session_id.decode()
+        else:
+            return None
 
         # Refresh TTL
         await self.redis.expire(self._key, self.ttl)
 
         return session_id
+
+    async def update_session(self, session_id: str) -> None:
+        """Update the session ID for the worker."""
+        await self.redis.set(self._key, session_id)
+        await self.redis.expire(self._key, self.ttl)

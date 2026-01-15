@@ -28,6 +28,10 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e_real: marks tests as real e2e tests (deselect with '-m \"not e2e_real\"')",
+    "integration: marks tests as integration tests",
+]
 
 [tool.mypy]
 python_version = "3.12"
