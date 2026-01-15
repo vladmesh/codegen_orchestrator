@@ -94,6 +94,7 @@ async def create_project(
             status=project_in.status,
             config=project_in.config,
             owner_id=owner_id,
+            github_repo_id=project_in.github_repo_id,
         )
         db.add(project)
         await db.commit()
@@ -192,11 +193,13 @@ async def update_project(
         project.config = project_in.config
     if project_in.repository_url is not None:
         project.repository_url = project_in.repository_url
+    if project_in.github_repo_id is not None:
+        project.github_repo_id = project_in.github_repo_id
 
     await db.commit()
     await db.refresh(project)
 
-    logger.info("project_updated", project_id=project.id, status=project.status)
+    logger.info("project_patched", project_id=project.id, status=project.status)
 
     return project
 
@@ -221,6 +224,8 @@ async def patch_project(
         project.config = project_in.config
     if project_in.repository_url is not None:
         project.repository_url = project_in.repository_url
+    if project_in.github_repo_id is not None:
+        project.github_repo_id = project_in.github_repo_id
 
     await db.commit()
     await db.refresh(project)

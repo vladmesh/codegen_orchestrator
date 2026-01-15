@@ -19,13 +19,15 @@ class ServerBase(BaseModel):
     labels: dict[str, Any] = {}
     is_managed: bool = True
     status: str = "active"
+    provider_id: str | None = None
     notes: str | None = None
 
 
 class ServerCreate(ServerBase):
     """Schema for creating a server."""
 
-    ssh_key: str = Field(description="Raw SSH private key to be encrypted")
+    ssh_key: str | None = Field(None, description="Raw SSH private key to be encrypted")
+    provider_id: str | None = None
 
 
 class ServerRead(ServerBase):

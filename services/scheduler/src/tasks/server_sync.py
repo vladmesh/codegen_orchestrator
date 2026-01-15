@@ -33,15 +33,19 @@ PROVISIONING_TRIGGER_COOLDOWN_SECONDS = 120
 
 async def get_time4vps_client() -> Time4VPSClient | None:
     """Create Time4VPS client with credentials from DB."""
-    api_key_dto = await api_client.get_api_key("time4vps")
+    api_key_data = await api_client.get_api_key("time4vps")
 
-    if not api_key_dto:
+    if not api_key_data or "value" not in api_key_data:
         return None
 
     try:
-        creds = json.loads(api_key_dto.key_enc)
+        # API returns decrypted value in "value" field
+        creds = api_key_data["value"]
+        if isinstance(creds, str):
+            creds = json.loads(creds)
+
         return Time4VPSClient(creds["username"], creds["password"])
-    except (json.JSONDecodeError, KeyError) as e:
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error(f"Failed to parse Time4VPS credentials: {e}")
         return None
 
@@ -159,14 +163,14 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
             # Choosing UNREACHABLE for now as closest semantic match for "not found in provider".
             if existing.status == ServerStatus.UNREACHABLE:
                 await api_client.update_server(
-                    existing.id, ServerUpdate(status=ServerStatus.ACTIVE)
+                    existing.handle, ServerUpdate(status=ServerStatus.ACTIVE)
                 )
                 updated_count += 1
                 logger.info("server_reappeared", server_ip=ip)
             # Update provider_id if changed
             if existing.labels.get("provider_id") != str(server_id):
                 new_labels = {**existing.labels, "provider_id": str(server_id)}
-                await api_client.update_server(existing.id, ServerUpdate(labels=new_labels))
+                await api_client.update_server(existing.handle, ServerUpdate(labels=new_labels))
                 updated_count += 1
         else:
             # New Server Discovered
@@ -219,7 +223,9 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
     api_ips = {s.ip for s in api_servers if s.ip}
     for ip, srv in db_servers.items():
         if ip not in api_ips and srv.status != ServerStatus.UNREACHABLE:
-            await api_client.update_server(srv.id, ServerUpdate(status=ServerStatus.UNREACHABLE))
+            await api_client.update_server(
+                srv.handle, ServerUpdate(status=ServerStatus.UNREACHABLE)
+            )
             missing_count += 1
             logger.warning("server_missing_from_time4vps", server_ip=ip)
 
@@ -266,7 +272,7 @@ async def _sync_server_details(client: Time4VPSClient) -> int:
             if api_status == "active" and server.status == ServerStatus.NEW:
                 update_data.status = ServerStatus.ACTIVE
 
-            await api_client.update_server(server.id, update_data)
+            await api_client.update_server(server.handle, update_data)
             updated_count += 1
 
             logger.debug(
@@ -332,7 +338,8 @@ async def _check_provisioning_triggers() -> int:
 
         # Update status to PROVISIONING before triggering
         await api_client.update_server(
-            server.id, ServerUpdate(status=ServerStatus.PROVISIONING, provisioning_started_at=now)
+            server.handle,
+            ServerUpdate(status=ServerStatus.PROVISIONING, provisioning_started_at=now),
         )
 
         # Trigger provisioner
@@ -366,7 +373,8 @@ async def _check_provisioning_triggers() -> int:
 
         # Update status to PROVISIONING before triggering
         await api_client.update_server(
-            server.id, ServerUpdate(status=ServerStatus.PROVISIONING, provisioning_started_at=now)
+            server.handle,
+            ServerUpdate(status=ServerStatus.PROVISIONING, provisioning_started_at=now),
         )
 
         # Trigger provisioner
@@ -379,7 +387,7 @@ async def _check_provisioning_triggers() -> int:
     for server in provisioning_servers:
         if server.provisioning_started_at is None:
             # Should have started_at if status is provisioning, but fix if missing
-            await api_client.update_server(server.id, ServerUpdate(provisioning_started_at=now))
+            await api_client.update_server(server.handle, ServerUpdate(provisioning_started_at=now))
             logger.info("provisioning_start_marked", server_handle=server.handle)
             continue
 
@@ -395,7 +403,7 @@ async def _check_provisioning_triggers() -> int:
         )
 
         # Reset started_at to now for retry
-        await api_client.update_server(server.id, ServerUpdate(provisioning_started_at=now))
+        await api_client.update_server(server.handle, ServerUpdate(provisioning_started_at=now))
 
         await publish_provisioner_trigger(server.handle, is_incident_recovery=False)
         triggers_published += 1

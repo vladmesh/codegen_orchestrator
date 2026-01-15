@@ -12,6 +12,7 @@ class ServerStatus(str, Enum):
     UNREACHABLE = "unreachable"
     MAINTENANCE = "maintenance"
     FORCE_REBUILD = "force_rebuild"
+    DISCOVERED = "discovered"
 
 
 class ServerCreate(BaseModel):
@@ -20,9 +21,8 @@ class ServerCreate(BaseModel):
     handle: str
     host: str
     public_ip: str
-    provider_id: str
     is_managed: bool = True
-    status: ServerStatus = ServerStatus.NEW
+    status: str = "discovered"  # Use str for flexibility
     labels: dict = {}
 
 
@@ -50,15 +50,13 @@ class ServerDTO(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
     handle: str
     host: str
     public_ip: str
-    status: ServerStatus
-    provider_id: str
+    status: str  # Use str to accept any status value
+    provider_id: str | None = None  # Computed from labels
     is_managed: bool
     labels: dict = {}
-    specs: dict = {}
 
     capacity_cpu: int = 0
     capacity_ram_mb: int = 0

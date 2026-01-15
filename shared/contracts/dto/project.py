@@ -28,6 +28,7 @@ class ServiceModule(str, Enum):
 class ProjectCreate(BaseModel):
     """Create project request."""
 
+    id: str | None = None
     name: str
     description: str | None = None
     modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import httpx
 
-from shared.contracts.dto.api_key import APIKeyDTO
 from shared.contracts.dto.project import ProjectCreate, ProjectDTO, ProjectUpdate
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerUpdate
 from src.config import get_settings
@@ -89,7 +88,7 @@ class SchedulerAPIClient:
         resp = await self._request("POST", "servers", json=server.model_dump())
         return ServerDTO.model_validate(resp.json())
 
-    async def update_server(self, server_id: int, server: ServerUpdate) -> ServerDTO:
+    async def update_server(self, server_id: str, server: ServerUpdate) -> ServerDTO:
         resp = await self._request(
             "PATCH", f"servers/{server_id}", json=server.model_dump(exclude_unset=True)
         )
@@ -97,10 +96,10 @@ class SchedulerAPIClient:
 
     # --- API Keys ---
 
-    async def get_api_key(self, service: str) -> APIKeyDTO | None:
+    async def get_api_key(self, service: str) -> dict | None:
         try:
             resp = await self._request("GET", f"api-keys/{service}")
-            return APIKeyDTO.model_validate(resp.json())
+            return resp.json()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == httpx.codes.NOT_FOUND:
                 return None

@@ -2,7 +2,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.contracts.dto.api_key import APIKeyDTO
 from shared.contracts.dto.server import ServerDTO, ServerStatus
 from src.tasks import server_sync
 
@@ -22,9 +21,11 @@ def mock_time4vps_client():
 @pytest.mark.asyncio
 async def test_get_time4vps_client_returns_client(mock_api_client):
     mock_api_client.get_api_key = AsyncMock(
-        return_value=APIKeyDTO(
-            id=1, service="time4vps", key_enc='{"username": "u", "password": "p"}'
-        )
+        return_value={
+            "id": 1,
+            "service": "time4vps",
+            "value": '{"username": "u", "password": "p"}',
+        }
     )
 
     client = await server_sync.get_time4vps_client()
@@ -41,7 +42,6 @@ async def test_sync_server_list_discovers_new_managed(mock_api_client, mock_time
     mock_api_client.get_servers = AsyncMock(return_value=[])  # No DB servers
 
     new_server_dto = ServerDTO(
-        id=1,
         handle="vps-1001",
         host="test.com",
         public_ip="1.2.3.4",
@@ -66,7 +66,6 @@ async def test_sync_server_list_discovers_new_managed(mock_api_client, mock_time
 async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_client):
     # Setup
     server = ServerDTO(
-        id=1,
         handle="vps-1",
         host="host",
         public_ip="1.1.1.1",
@@ -104,7 +103,6 @@ async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_
 async def test_check_provisioning_triggers_detects_force_rebuild(mock_api_client):
     # Setup
     server = ServerDTO(
-        id=1,
         handle="vps-1",
         host="host",
         public_ip="1.1.1.1",

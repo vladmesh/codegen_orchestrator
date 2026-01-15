@@ -80,3 +80,8 @@ class Server(Base):
     def available_disk_mb(self) -> int:
         """Disk available for new allocations."""
         return self.capacity_disk_mb - self.used_disk_mb
+
+    @property
+    def provider_id(self) -> str | None:
+        """Provider ID from labels."""
+        return self.labels.get("provider_id")

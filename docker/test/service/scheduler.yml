@@ -1,0 +1,62 @@
+services:
+  # Infrastructure
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Real API Service
+  api:
+    build: 
+      context: ../../..
+      dockerfile: services/api/Dockerfile
+    command: ["/entrypoint.sh"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=test
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Scheduler Test Runner
+  scheduler-test-runner:
+    build:
+      context: ../../..
+      dockerfile: services/scheduler/Dockerfile.test
+    command: ["pytest", "tests/service/", "-v"]
+    environment:
+      - API_BASE_URL=http://api:8000
+      - REDIS_URL=redis://redis:6379/0
+      - GITHUB_ORG_NAME=test-org
+      - TIME4VPS_USERNAME=test
+      - TIME4VPS_PASSWORD=test
+      - PYTHONPATH=/app:/app/src
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ../../../services/scheduler/tests:/app/tests

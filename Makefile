@@ -146,7 +146,8 @@ test-scheduler-unit:
 	@# TODO: Create docker/test/service/scheduler.yml
 	@if [ -d "services/scheduler/tests/unit" ] && [ "$$(ls -A services/scheduler/tests/unit)" ]; then \
 		$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true; \
-		$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --exit-code-from scheduler-test scheduler-test db-test redis-test; \
+		$(DOCKER_COMPOSE_TEST) down -v --remove-orphans 2>/dev/null || true; \
+		$(DOCKER_COMPOSE_TEST) run --rm --no-deps scheduler-test pytest tests/unit/ -v; \
 		EXIT_CODE=$$?; \
 		$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
 		exit $$EXIT_CODE; \
@@ -213,6 +214,13 @@ test-scheduler:
 	EXIT_CODE=$$?; \
 	$(DOCKER_COMPOSE_TEST) down -v --remove-orphans; \
 	exit $$EXIT_CODE
+
+test-scheduler-service:
+	@echo "🧪 Running Scheduler Service tests..."
+	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler build
+	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler up -d db redis api
+	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler run --rm scheduler-test-runner
+	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler down -v
 
 test-telegram:
 	@echo "🧪 Running all Telegram bot tests..."

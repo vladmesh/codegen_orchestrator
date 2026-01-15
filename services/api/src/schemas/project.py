@@ -12,6 +12,7 @@ class ProjectBase(BaseModel):
 
     id: str
     name: str
+    github_repo_id: int | None = None
     status: str = "created"
     config: dict[str, Any] = {}
     repository_url: str | None = None
@@ -43,3 +44,4 @@ class ProjectUpdate(BaseModel):
     status: str | None = None
     config: dict[str, Any] | None = None
     repository_url: str | None = None
+    github_repo_id: int | None = None

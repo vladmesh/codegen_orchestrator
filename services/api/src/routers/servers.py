@@ -75,6 +75,8 @@ async def create_server(
         capacity_cpu=server_in.capacity_cpu,
         capacity_ram_mb=server_in.capacity_ram_mb,
         labels=server_in.labels,
+        status=server_in.status,
+        is_managed=server_in.is_managed,
     )
     db.add(server)
     await db.commit()

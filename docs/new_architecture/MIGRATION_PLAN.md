@@ -1599,9 +1599,9 @@ When all tests pass, Phase 1 is complete.
 - [x] Verify `api_client` properly handles auth/errors
 
 **Acceptance Criteria:**
-- [ ] No direct `sqlalchemy` imports in scheduler (only API client)
-- [ ] All 5 tasks have unit tests with mocked API
-- [ ] Scheduler can run independently of DB connection
+- [x] No direct `sqlalchemy` imports in scheduler (only API client)
+- [x] All 5 tasks have unit tests with mocked API
+- [x] Scheduler can run independently of DB connection
 
 ---
 
@@ -1710,6 +1710,7 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-15 | Claude | Completed P2.3 (Scheduler Refactoring) - Migrated to API Client |
 | 2026-01-15 | Claude | Added P2.3 (Scheduler Refactoring) and P2.4 (Provisioner Result Listener) to Phase 2 |
 | 2026-01-14 | Claude | Added P1.8.3 Optimization (Shared base layers) to reduce disk usage during tests |
 | 2026-01-12 | Claude | Added P1.6 (Agent Integration), P1.7 (Wrapper Completion), P1.8 (Worker Base Image) for production-ready worker management |
