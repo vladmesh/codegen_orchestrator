@@ -313,8 +313,16 @@ test-scaffolder-service:
 	docker compose -p $(TEST_PROJECT)_scaffolder -f docker/test/service/scaffolder.yml down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
+test-shared-unit:
+	@echo "🧪 Running Shared unit tests..."
+	@if [ -d "shared/tests" ] && [ "$$(ls -A shared/tests)" ]; then \
+		docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml run --rm --no-deps -e PYTHONPATH=/app api-test-runner pytest shared/tests/ -v; \
+	else \
+		echo "⚠️  No unit tests found in shared/tests"; \
+	fi
+
 # Run all unit tests (fast)
-test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit test-scaffolder-unit
+test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit test-scaffolder-unit test-shared-unit
 
 # Run all integration tests
 test-integration: test-api-integration test-langgraph-integration test-scheduler-integration test-cli-integration

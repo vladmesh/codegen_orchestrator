@@ -13,6 +13,8 @@ class ProjectStatus(str, Enum):
     ACTIVE = "active"
     FAILED = "failed"
     ARCHIVED = "archived"
+    DISCOVERED = "discovered"
+    MISSING = "missing"
 
 
 class ServiceModule(str, Enum):
@@ -29,6 +31,20 @@ class ProjectCreate(BaseModel):
     name: str
     description: str | None = None
     modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
+    github_repo_id: int | None = None
+    status: ProjectStatus | None = None
+
+
+class ProjectUpdate(BaseModel):
+    """Update project request."""
+
+    name: str | None = None
+    description: str | None = None
+    status: ProjectStatus | None = None
+    modules: list[ServiceModule] | None = None
+    github_repo_id: int | None = None
+    owner_id: int | None = None
+    project_spec: dict | None = None
 
 
 class ProjectDTO(BaseModel):
@@ -42,4 +58,6 @@ class ProjectDTO(BaseModel):
     status: ProjectStatus
     modules: list[ServiceModule] = []
     repository_url: str | None = None
+    github_repo_id: int | None = None
     owner_id: int | None = None
+    project_spec: dict | None = None

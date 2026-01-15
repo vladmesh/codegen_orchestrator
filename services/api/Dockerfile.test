@@ -16,7 +16,9 @@ COPY services/api/pyproject.toml ./
 
 # Install runtime + test dependencies
 RUN pip install --no-cache-dir . && \
-    pip install --no-cache-dir pytest pytest-asyncio pytest-cov httpx
+    pip install --no-cache-dir pytest pytest-asyncio pytest-cov httpx respx rich typer
+
+RUN pip install --no-cache-dir makefun
 
 # === Test Stage ===
 FROM test-deps AS test

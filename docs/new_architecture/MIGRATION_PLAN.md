@@ -1554,24 +1554,24 @@ When all tests pass, Phase 1 is complete.
 **Depends:** P1.3, P1.4, P2.1
 
 **Tasks:**
-- [ ] Make DeployerNode call GitHub API (trigger_workflow)
-- [ ] Add workflow polling loop
-- [ ] Subscribe: `engineering:queue`, `deploy:queue`
-- [ ] Single-Listener pattern (only `worker:developer:output`)
-- [ ] State persistence (Postgres checkpointer)
-- [ ] Retry logic on worker failure
+- [x] Make DeployerNode call GitHub API (trigger_workflow)
+- [x] Add workflow polling loop
+- [x] Subscribe: `engineering:queue`, `deploy:queue`
+- [x] Single-Listener pattern (only `worker:developer:output`)
+- [x] State persistence (Postgres checkpointer)
+- [x] Retry logic on worker failure
 
 **Service Tests (TDD):**
-- [ ] `test_engineering_flow_happy_path`: Full chain (Scaffold -> Worker -> Success)
-- [ ] `test_persistence_recovery`: Interrupt & Resume verification
-- [ ] `test_worker_crash_handling`: Failure simulation & retry policy
-- [ ] `test_deploy_flow_polling`: Deploy & Polling logic
+- [x] `test_engineering_flow_happy_path`: Full chain (Scaffold -> Worker -> Success)
+- [x] `test_persistence_recovery`: Interrupt & Resume verification
+- [x] `test_worker_crash_handling`: Failure simulation & retry policy
+- [x] `test_deploy_flow_polling`: Deploy & Polling logic
 
 **Acceptance Criteria:**
-- [ ] Service Tests pass
-- [ ] Integration test: MockWorkerManager
-- [ ] Graph pauses and resumes correctly
-- [ ] Failures trigger retries (up to N times)
+- [x] Service Tests pass
+- [x] Integration test: MockWorkerManager
+- [x] Graph pauses and resumes correctly
+- [x] Failures trigger retries (up to N times)
 
 ---
 
@@ -1593,10 +1593,10 @@ When all tests pass, Phase 1 is complete.
 | `provisioner_trigger` | startup | Retry pending server provisioning |
 
 **Tasks:**
-- [ ] Replace direct SQLAlchemy with API client calls
-- [ ] Add Pydantic validation for all task payloads
-- [ ] Add comprehensive unit tests (currently only placeholder)
-- [ ] Verify `api_client` properly handles auth/errors
+- [x] Replace direct SQLAlchemy with API client calls
+- [x] Add Pydantic validation for all task payloads
+- [x] Add comprehensive unit tests (currently only placeholder)
+- [x] Verify `api_client` properly handles auth/errors
 
 **Acceptance Criteria:**
 - [ ] No direct `sqlalchemy` imports in scheduler (only API client)

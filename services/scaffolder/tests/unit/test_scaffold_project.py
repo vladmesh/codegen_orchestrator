@@ -1,19 +1,12 @@
 """Unit tests for scaffold_project function."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 
 class TestScaffoldProject:
     """Tests for scaffold_project with mocked git, copier, and GitHub."""
-
-    @pytest.fixture
-    def mock_github_token(self):
-        """Mock GitHub token retrieval."""
-        with patch("main.get_github_token", new_callable=AsyncMock) as mock:
-            mock.return_value = "ghp_test_token_123"
-            yield mock
 
     @pytest.fixture
     def mock_git(self):
@@ -38,7 +31,7 @@ class TestScaffoldProject:
 
     @pytest.mark.asyncio
     async def test_clones_repo_with_auth_token(
-        self, mock_github_token, mock_git, mock_copier, mock_shutil_which
+        self, mock_github, mock_git, mock_copier, mock_shutil_which
     ):
         """Should clone repo using GitHub token in URL."""
         from main import scaffold_project
@@ -59,13 +52,14 @@ class TestScaffoldProject:
             assert len(clone_calls) >= 1
 
             # Token should be in clone URL
+            # MockGitHubClient returns "mock-org-token"
             clone_url = clone_calls[0][0][1]
-            assert "ghp_test_token_123" in clone_url
+            assert "mock-org-token" in clone_url
             assert "vladmesh/test-repo" in clone_url
 
     @pytest.mark.asyncio
     async def test_runs_copier_with_correct_args(
-        self, mock_github_token, mock_git, mock_copier, mock_shutil_which
+        self, mock_github, mock_git, mock_copier, mock_shutil_which
     ):
         """Should run copier with project_name and modules data args."""
         from main import scaffold_project
@@ -96,7 +90,7 @@ class TestScaffoldProject:
 
     @pytest.mark.asyncio
     async def test_commits_and_pushes_changes(
-        self, mock_github_token, mock_git, mock_copier, mock_shutil_which
+        self, mock_github, mock_git, mock_copier, mock_shutil_which
     ):
         """Should commit changes and push to origin main."""
         from main import scaffold_project
@@ -121,7 +115,7 @@ class TestScaffoldProject:
             assert any("push" in cmd for cmd in git_commands)
 
     @pytest.mark.asyncio
-    async def test_returns_false_on_clone_failure(self, mock_github_token, mock_shutil_which):
+    async def test_returns_false_on_clone_failure(self, mock_github, mock_shutil_which):
         """Should return False if git clone fails."""
         from main import scaffold_project
 
@@ -143,7 +137,7 @@ class TestScaffoldProject:
 
     @pytest.mark.asyncio
     async def test_sanitizes_project_name(
-        self, mock_github_token, mock_git, mock_copier, mock_shutil_which
+        self, mock_github, mock_git, mock_copier, mock_shutil_which
     ):
         """Project name should be sanitized: lowercase, hyphens, no special chars."""
         from main import scaffold_project

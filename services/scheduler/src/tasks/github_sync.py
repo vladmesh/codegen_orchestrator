@@ -6,23 +6,19 @@ import hmac
 import json
 import os
 import time
-import uuid
 
 import httpx
 from pydantic import ValidationError
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 import yaml
 
 from shared.clients.github import GitHubAppClient
-from shared.models.project import Project, ProjectStatus
+from shared.contracts.dto.project import ProjectCreate, ProjectDTO, ProjectStatus, ProjectUpdate
 from shared.notifications import notify_admins
 from shared.schemas.github import GitHubRepository
 from shared.schemas.project_spec import ProjectSpecYAML
 from src.clients.api import api_client
 from src.config import get_settings
-from src.db import async_session_maker
 
 logger = structlog.get_logger()
 
@@ -112,7 +108,7 @@ def _hash_content(content: str) -> str:
 
 async def _sync_project_docs(
     github_client: GitHubAppClient,
-    project: Project,
+    project: ProjectDTO,
     r: GitHubRepository,
 ) -> None:
     """Sync project spec and README to RAG index."""
@@ -125,7 +121,12 @@ async def _sync_project_docs(
         if spec_content:
             spec_dict = yaml.safe_load(spec_content)
             spec_model = ProjectSpecYAML(**spec_dict)
-            project.project_spec = spec_model.to_yaml_dict()
+
+            # Update project spec via API
+            await api_client.update_project(
+                project.id, ProjectUpdate(project_spec=spec_model.to_yaml_dict())
+            )
+
             logger.info(
                 "project_spec_synced",
                 project_name=project.name,
@@ -197,7 +198,6 @@ async def _sync_project_docs(
 
 
 async def _sync_single_repo(
-    db: AsyncSession,
     github_client: GitHubAppClient,
     r: GitHubRepository,
     missing_counters: dict[str, int],
@@ -207,15 +207,11 @@ async def _sync_single_repo(
     repo_name = r.name
 
     # Try to find in DB by github_repo_id
-    query = select(Project).where(Project.github_repo_id == repo_id)
-    result = await db.execute(query)
-    project = result.scalar_one_or_none()
+    project = await api_client.get_project_by_repo_id(repo_id)
 
     if not project:
         # Try to find by name (legacy projects or first sync)
-        query = select(Project).where(Project.name == repo_name)
-        result = await db.execute(query)
-        project = result.scalar_one_or_none()
+        project = await api_client.get_project_by_name(repo_name)
 
         if project:
             # Link legacy project
@@ -224,7 +220,9 @@ async def _sync_single_repo(
                 project_name=project.name,
                 github_repo_id=repo_id,
             )
-            project.github_repo_id = repo_id
+            project = await api_client.update_project(
+                project.id, ProjectUpdate(github_repo_id=repo_id)
+            )
         else:
             # Create new project
             logger.info(
@@ -232,13 +230,13 @@ async def _sync_single_repo(
                 project_name=repo_name,
                 github_repo_id=repo_id,
             )
-            project = Project(
-                id=str(uuid.uuid4())[:8],
-                name=repo_name,
-                github_repo_id=repo_id,
-                status=ProjectStatus.DISCOVERED.value,
+            project = await api_client.create_project(
+                ProjectCreate(
+                    name=repo_name,
+                    github_repo_id=repo_id,
+                    status=ProjectStatus.DISCOVERED,
+                )
             )
-            db.add(project)
 
     # Sync project spec and README to RAG
     await _sync_project_docs(github_client, project, r)
@@ -246,8 +244,8 @@ async def _sync_single_repo(
     # Reset missing counter if it was missing
     if project.id in missing_counters:
         del missing_counters[project.id]
-        if project.status == ProjectStatus.MISSING.value:
-            project.status = ProjectStatus.ACTIVE.value
+        if project.status == ProjectStatus.MISSING:
+            await api_client.update_project(project.id, ProjectUpdate(status=ProjectStatus.ACTIVE))
             logger.info(
                 "project_recovered",
                 project_name=project.name,
@@ -256,19 +254,21 @@ async def _sync_single_repo(
 
 
 async def _detect_missing_projects(
-    db: AsyncSession,
     gh_repos_map: dict[int, GitHubRepository],
     missing_counters: dict[str, int],
 ) -> None:
     """Detect and alert on projects missing from GitHub."""
-    query = select(Project).where(
-        Project.github_repo_id.is_not(None),
-        Project.status.notin_([ProjectStatus.MISSING.value, ProjectStatus.ARCHIVED.value]),
-    )
-    result = await db.execute(query)
-    db_projects = result.scalars().all()
+    db_projects = await api_client.get_projects()
 
-    for proj in db_projects:
+    # Filter for active projects that should be on GitHub
+    active_projects = [
+        p
+        for p in db_projects
+        if p.github_repo_id is not None
+        and p.status not in (ProjectStatus.MISSING, ProjectStatus.ARCHIVED)
+    ]
+
+    for proj in active_projects:
         if proj.github_repo_id not in gh_repos_map:
             count = missing_counters.get(proj.id, 0) + 1
             missing_counters[proj.id] = count
@@ -282,7 +282,9 @@ async def _detect_missing_projects(
             )
 
             if count >= MISSING_THRESHOLD:
-                proj.status = ProjectStatus.MISSING.value
+                await api_client.update_project(
+                    proj.id, ProjectUpdate(status=ProjectStatus.MISSING)
+                )
                 logger.error(
                     "project_marked_missing",
                     project_name=proj.name,
@@ -308,58 +310,56 @@ async def sync_projects_worker() -> None:
         start_time = time.time()
         repos_synced = 0
         try:
-            async with async_session_maker() as db:
-                github_client = GitHubAppClient()
+            github_client = GitHubAppClient()
 
-                # 1. Get Organization
-                try:
-                    install_info = await github_client.get_first_org_installation()
-                    org_name = install_info["org"]
-                except Exception as e:
-                    logger.error(
-                        "github_app_installation_resolve_failed",
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        exc_info=True,
-                    )
-                    await asyncio.sleep(SYNC_INTERVAL)
-                    continue
-
-                logger.info("github_sync_start", org_name=org_name)
-
-                # 2. Fetch all Repositories
-                try:
-                    github_repos = await github_client.list_org_repos(org_name)
-                except Exception as e:
-                    logger.error(
-                        "github_repos_fetch_failed",
-                        org_name=org_name,
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        exc_info=True,
-                    )
-                    await asyncio.sleep(SYNC_INTERVAL)
-                    continue
-
-                logger.info(
-                    "github_repos_fetched",
-                    org_name=org_name,
-                    repo_count=len(github_repos),
+            # 1. Get Organization
+            try:
+                install_info = await github_client.get_first_org_installation()
+                org_name = install_info["org"]
+            except Exception as e:
+                logger.error(
+                    "github_app_installation_resolve_failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
                 )
+                await asyncio.sleep(SYNC_INTERVAL)
+                continue
 
-                # Map by ID for accurate tracking
-                gh_repos_map = {r.id: r for r in github_repos}
+            logger.info("github_sync_start", org_name=org_name)
 
-                # 3. Sync each repo
-                for r in github_repos:
-                    await _sync_single_repo(db, github_client, r, missing_counters)
-                    repos_synced += 1
+            # 2. Fetch all Repositories
+            try:
+                github_repos = await github_client.list_org_repos(org_name)
+            except Exception as e:
+                logger.error(
+                    "github_repos_fetch_failed",
+                    org_name=org_name,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
+                )
+                await asyncio.sleep(SYNC_INTERVAL)
+                continue
 
-                # 4. Detect missing projects
-                await _detect_missing_projects(db, gh_repos_map, missing_counters)
+            logger.info(
+                "github_repos_fetched",
+                org_name=org_name,
+                repo_count=len(github_repos),
+            )
 
-                await db.commit()
-                logger.debug("github_sync_db_updated", repo_count=len(github_repos))
+            # Map by ID for accurate tracking
+            gh_repos_map = {r.id: r for r in github_repos}
+
+            # 3. Sync each repo
+            for r in github_repos:
+                await _sync_single_repo(github_client, r, missing_counters)
+                repos_synced += 1
+
+            # 4. Detect missing projects
+            await _detect_missing_projects(gh_repos_map, missing_counters)
+
+            logger.debug("github_sync_db_updated", repo_count=len(github_repos))
 
         except Exception as e:
             logger.error(

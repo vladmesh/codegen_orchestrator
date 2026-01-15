@@ -102,6 +102,8 @@ jobs:
             changed: needs.detect-changes.outputs.packages
           - service: scaffolder
             changed: needs.detect-changes.outputs.scaffolder
+          - service: shared
+            changed: needs.detect-changes.outputs.shared
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
