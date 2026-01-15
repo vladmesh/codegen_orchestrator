@@ -30,5 +30,5 @@ COPY services/scheduler/src ./src
 COPY services/scheduler/tests ./tests
 COPY services/scheduler/pytest.ini ./
 
-# Run tests
-CMD ["pytest", "-v"]
+# Run unit tests only (service tests need full environment via docker/test/service/scheduler.yml)
+CMD ["pytest", "tests/unit/", "-v"]
