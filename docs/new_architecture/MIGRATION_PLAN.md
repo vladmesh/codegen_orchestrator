@@ -1537,14 +1537,14 @@ When all tests pass, Phase 1 is complete.
 **Depends:** P0.4
 
 **Tasks:**
-- [ ] Subscribe: `scaffolder:queue`
-- [ ] Copier template execution
-- [ ] GitHub repo creation
-- [ ] Initial commit push
+- [x] Subscribe: `scaffolder:queue`
+- [x] Copier template execution
+- [x] GitHub repo creation
+- [x] Initial commit push
 
 **Acceptance Criteria:**
-- [ ] Integration test: Real Copier + Mock Git
-- [ ] E2E Nightly: Real GitHub test org
+- [x] Integration test: Real Copier + Mock Git
+- [x] E2E Nightly: Real GitHub test org
 
 ---
 
@@ -1561,7 +1561,14 @@ When all tests pass, Phase 1 is complete.
 - [ ] State persistence (Postgres checkpointer)
 - [ ] Retry logic on worker failure
 
+**Service Tests (TDD):**
+- [ ] `test_engineering_flow_happy_path`: Full chain (Scaffold -> Worker -> Success)
+- [ ] `test_persistence_recovery`: Interrupt & Resume verification
+- [ ] `test_worker_crash_handling`: Failure simulation & retry policy
+- [ ] `test_deploy_flow_polling`: Deploy & Polling logic
+
 **Acceptance Criteria:**
+- [ ] Service Tests pass
 - [ ] Integration test: MockWorkerManager
 - [ ] Graph pauses and resumes correctly
 - [ ] Failures trigger retries (up to N times)

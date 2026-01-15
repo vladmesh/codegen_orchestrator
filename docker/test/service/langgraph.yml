@@ -2,13 +2,14 @@ services:
   # The service under test
   langgraph:
     build: 
-      context: ../../../services/langgraph
-      dockerfile: Dockerfile
+      context: ../../..
+      dockerfile: services/langgraph/Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
       - ANTHROPIC_API_KEY=test
       - OPENAI_API_KEY=test
+      - API_BASE_URL=http://api:8000
     depends_on:
       redis:
         condition: service_healthy

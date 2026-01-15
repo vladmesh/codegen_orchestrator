@@ -113,11 +113,17 @@ All identified gaps have been implemented. Integration tests passed successfully
     - [x] Series 3: E2E Manually Verified
 
 ### Phase 2: Core Logic
-
 17. **✅ P2.1 Scaffolder Refactoring**
     - [x] Refactored `services/scaffolder` (DTOs, shared client).
     - [x] Added Unit Tests (10) and Service Tests (4).
     - [x] Integrated with CI.
+
+18. **✅ P2.2 LangGraph Service**
+    - [x] `test_engineering_flow_happy_path` (Service Test) ✅
+    - [x] `test_persistence_recovery` (Service Test) ✅
+    - [x] `test_worker_crash_handling` (Service Test) ✅
+    - [x] `test_deploy_flow_polling` (Service Test) ✅
+    - [x] Implementation: `consumers.py`, `graph_runner.py`, `redis_publisher.py`
 
 ## 🔗 Quick Links
 
