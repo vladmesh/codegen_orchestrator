@@ -23,7 +23,7 @@ DOCKER_HOST = os.getenv("DOCKER_HOST", "tcp://docker:2375")
 async def redis_client():
     client = redis.from_url(REDIS_URL, decode_responses=True)
     yield client
-    await client.close()
+    await client.aclose()
 
 
 @pytest.fixture

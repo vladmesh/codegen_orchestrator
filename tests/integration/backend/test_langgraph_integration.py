@@ -11,7 +11,7 @@ class TestLangGraphIntegration:
     """
 
     @pytest.mark.asyncio
-    async def test_langgraph_scaffolder_integration(self, redis):
+    async def test_langgraph_scaffolder_integration(self, redis_client):
         """
         Verifies LangGraph -> Scaffolder -> LangGraph loop.
         """
@@ -20,7 +20,7 @@ class TestLangGraphIntegration:
         project_id = "p-int-scaffold"
 
         msg = EngineeringMessage(task_id=task_id, project_id=project_id, user_id=1)
-        await redis.xadd("engineering:queue", {"data": msg.model_dump_json()})
+        await redis_client.xadd("engineering:queue", {"data": msg.model_dump_json()})
 
         # 2. Wait for Scaffolder Response (Result)
         # Since we have Real Scaffolder running, it should process the request from LangGraph
@@ -34,7 +34,7 @@ class TestLangGraphIntegration:
         pass
 
     @pytest.mark.asyncio
-    async def test_langgraph_worker_manager_integration(self, redis, docker_client):
+    async def test_langgraph_worker_manager_integration(self, redis_client, docker_client):
         """
         Verifies LangGraph -> WorkerManager -> Container Created.
         """

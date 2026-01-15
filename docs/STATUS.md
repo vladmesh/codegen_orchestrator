@@ -125,6 +125,11 @@ All identified gaps have been implemented. Integration tests passed successfully
     - [x] `test_deploy_flow_polling` (Service Test) ✅
     - [x] Implementation: `consumers.py`, `graph_runner.py`, `redis_publisher.py`
 
+19. **✅ P2.3 Scheduler Refactoring**
+    - [x] Separated Data Layer: Service now talks to API, not DB.
+    - [x] Refactored Tasks: `github_sync` and `server_sync`.
+    - [x] Verified: Unit Tests (Mock) + Service Tests (Real API).
+
 ## 🔗 Quick Links
 
 - [Migration Plan](./new_architecture/MIGRATION_PLAN.md)
