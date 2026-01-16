@@ -1,0 +1,50 @@
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: redis-cli ping
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    networks:
+      - test-net
+
+  telegram-bot:
+    build: 
+        context: ../../..
+        dockerfile: services/telegram_bot/Dockerfile
+    environment:
+      TELEGRAM_BOT_TOKEN: "123:test"
+      REDIS_URL: redis://redis:6379/0
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - redis
+    volumes:
+      - ../../../services/telegram_bot:/app
+    networks:
+      - test-net
+
+  test-runner:
+    build: 
+        context: ../../..
+        dockerfile: services/telegram_bot/Dockerfile.test
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      TELEGRAM_BOT_TOKEN: "123:test"
+      API_BASE_URL: http://api:8000
+      PYTHONPATH: /app
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../../../services/telegram_bot:/app
+      - ../../../shared:/app/shared
+    working_dir: /app
+    command: ["pytest", "tests/service", "-v", "-s", "--asyncio-mode=auto"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - test-net
+
+networks:
+  test-net:
+    driver: bridge

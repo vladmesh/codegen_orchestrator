@@ -1657,16 +1657,23 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 ### P3.1 — Telegram Bot
 
-**Path:** `services/telegram-bot/`  
-**Depends:** P0.5, P2.2
+**Path:** `services/telegram_bot/`  
+**Depends:** P1.0, P2.2
 
 **Tasks:**
-- [ ] Session → Worker ID mapping
-- [ ] Message routing to PO worker
+- [x] Create `POSessionManager` class with Redis Streams
+- [x] Session → Worker ID mapping via Redis
+- [x] Message routing to PO worker via `worker:po:{id}:input`
+- [x] Worker response listener for `worker:po:{id}:output`
+- [x] Service tests (3/3 passing)
+- [ ] Implement `_wait_for_worker_response()` for synchronous mode
 - [ ] Progress events display
 - [ ] Admin commands
 
 **Acceptance Criteria:**
+- [x] Service test: `test_new_user_creates_po_worker_via_redis`
+- [x] Service test: `test_existing_session_reuses_worker`
+- [x] Service test: `test_message_published_to_worker_input_stream`
 - [ ] Integration test: Telegram Update simulation
 - [ ] User message reaches PO worker
 - [ ] PO response returns to user
@@ -1710,6 +1717,7 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-16 | Claude | Started P3.1 (Telegram Bot) - Created POSessionManager with Redis Streams, service tests passing |
 | 2026-01-16 | Claude | Completed P2.4 (Provisioner Result Listener) - Implemented consumer, service and integration tests |
 | 2026-01-15 | Claude | Completed P2.3 (Scheduler Refactoring) - Migrated to API Client |
 | 2026-01-15 | Claude | Added P2.3 (Scheduler Refactoring) and P2.4 (Provisioner Result Listener) to Phase 2 |

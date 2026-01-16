@@ -1,41 +1,47 @@
-"""Telegram Bot - Main entry point."""
+"""Telegram Bot - Main entry point.
+
+Refactored to use POSessionManager with Redis Streams.
+"""
 
 import asyncio
 import logging
 import os
 import sys
-import uuid
 
 import httpx
-import redis.asyncio as redis
+import redis.asyncio as redis_lib
 import structlog
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
 
 # Add shared to path
 sys.path.insert(0, "/app")
-from shared.logging_config import setup_logging
+from shared.logging_config import setup_logging  # noqa: E402
 
-from .agent_manager import agent_manager
-from .clients.api import api_client
-from .clients.workers_spawner import workers_spawner
-from .config import get_settings
-from .handlers import handle_callback_query
-from .keyboards import main_menu_keyboard
-from .middleware import auth_middleware, is_admin
+from .clients.api import api_client  # noqa: E402
+from .config import get_settings  # noqa: E402
+from .handlers import handle_callback_query  # noqa: E402
+from .keyboards import main_menu_keyboard  # noqa: E402
+from .middleware import auth_middleware, is_admin  # noqa: E402
+from .session import POSessionManager  # noqa: E402
 
 logger = structlog.get_logger()
 
-# Stream for async messages from agents (via orchestrator respond)
-USER_MESSAGE_STREAM = "cli-agent:user-messages"
-
-# ... existing start/menu handlers ... (keep them if they were imported or define them here)
-# Actually, I should keep the existing start/menu functions.
-# I will copy them from the original file content below.
+# Global session manager (initialized in post_init)
+_session_manager: POSessionManager | None = None
+_response_listener_task: asyncio.Task | None = None
+_redis_client: redis_lib.Redis | None = None
 
 
 async def _post_rag_message(payload: dict) -> None:
+    """Log message to RAG system (fire and forget)."""
     headers = {}
     if payload.get("telegram_id"):
         headers["X-Telegram-ID"] = str(payload["telegram_id"])
@@ -76,14 +82,14 @@ async def _ensure_user_registered(tg_user) -> None:
     """Upsert user in database via API."""
     settings = get_settings()
     admin_ids = settings.get_admin_ids()
-    is_admin = tg_user.id in admin_ids
+    is_admin_user = tg_user.id in admin_ids
 
     payload = {
         "telegram_id": tg_user.id,
         "username": tg_user.username,
         "first_name": tg_user.first_name,
         "last_name": tg_user.last_name,
-        "is_admin": is_admin,
+        "is_admin": is_admin_user,
     }
 
     headers = {"X-Telegram-ID": str(tg_user.id)}
@@ -95,7 +101,12 @@ async def _ensure_user_registered(tg_user) -> None:
 
 
 async def handle_message(update: Update, context) -> None:
-    """Handle incoming messages - send to AgentManager and reply with response."""
+    """Handle incoming messages - send to PO worker via Redis Streams.
+
+    This is the NEW implementation using POSessionManager.
+    """
+    global _session_manager
+
     # Auth check
     if not await auth_middleware(update, context):
         return
@@ -114,8 +125,7 @@ async def handle_message(update: Update, context) -> None:
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        # Log user message to RAG
-        # We do this asynchronously to not block
+        # Log user message to RAG (fire and forget)
         asyncio.create_task(
             _post_rag_message(
                 {
@@ -128,164 +138,158 @@ async def handle_message(update: Update, context) -> None:
             )
         )
 
-        # Send to agent and wait for response (headless mode)
-        response_text = await agent_manager.send_message(user_id, text)
+        # Ensure we have a PO worker
+        if _session_manager is None:
+            raise RuntimeError("Session manager not initialized")
 
-        if not response_text:
-            response_text = "⚠️ Агент вернул пустой ответ (без текста). Проверьте логи."
+        await _session_manager.get_or_create_worker(user_id)
 
-        # Send response to user
-        try:
-            await update.message.reply_text(
-                response_text,
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        except Exception:
-            # Fallback to plain text if markdown fails
-            await update.message.reply_text(response_text)
+        # Send message to worker (async, response comes via listener)
+        await _session_manager.send_message(user_id, text)
+
+        # Acknowledge message sent (response will come via listener)
+        await update.message.reply_text(
+            "⏳ Обрабатываю запрос...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
     except Exception as e:
         logger.error("message_handling_failed", error=str(e), user_id=user_id)
-        await update.message.reply_text(f"⚠️ Ошибка: {str(e)}")
+        await update.message.reply_text(f"⚠️ Ошибка: {e!s}")
 
 
-async def _listen_for_direct_messages(app: Application) -> None:
-    """Listen for async messages from agents (via orchestrator respond).
+async def _get_active_session_streams() -> tuple[dict[str, str], dict[str, int]]:
+    """Get all active worker output streams and their user mappings."""
+    global _redis_client
 
-    These are messages that agents send directly to users, outside of the
-    normal request-response flow. Used for progress updates, questions, etc.
-    """
-    settings = get_settings()
-    redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+    streams: dict[str, str] = {}
+    user_by_stream: dict[str, int] = {}
 
-    consumer_id = f"telegram-bot-{uuid.uuid4().hex[:8]}"
-    group_name = f"telegram-bot-direct-{consumer_id}"
+    cursor = 0
+    session_keys: list[str] = []
+    while True:
+        cursor, keys = await _redis_client.scan(
+            cursor=cursor,
+            match="session:po:*",
+            count=100,  # noqa: PLR2004
+        )
+        session_keys.extend(keys)
+        if cursor == 0:
+            break
 
-    # Create consumer group
+    for session_key in session_keys:
+        worker_id = await _redis_client.get(session_key)
+        if worker_id:
+            stream_key = f"worker:po:{worker_id}:output"
+            streams[stream_key] = "$"
+            user_id_str = session_key.replace("session:po:", "")
+            user_by_stream[stream_key] = int(user_id_str)
+
+    return streams, user_by_stream
+
+
+async def _send_response_to_user(app: Application, user_id: int, text: str) -> None:
+    """Send response text to Telegram user with markdown fallback."""
     try:
-        await redis_client.xgroup_create(USER_MESSAGE_STREAM, group_name, id="$", mkstream=True)
-        logger.info("direct_message_group_created", group=group_name)
-    except redis.ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
+        await app.bot.send_message(chat_id=user_id, text=text, parse_mode=ParseMode.MARKDOWN)
+    except Exception:
+        await app.bot.send_message(chat_id=user_id, text=text)
 
-    logger.info("direct_message_listener_started", stream=USER_MESSAGE_STREAM, group=group_name)
+    logger.info("worker_response_sent", user_id=user_id, text_length=len(text))
+
+
+async def _process_worker_message(app: Application, msg_data: dict, user_id: int) -> None:
+    """Process a single worker output message."""
+    import json
+
+    payload = json.loads(msg_data.get("data", "{}"))
+    response_text = payload.get("content") or payload.get("response", "")
+
+    if response_text:
+        await _send_response_to_user(app, user_id, response_text)
+
+
+async def _listen_for_worker_responses(app: Application) -> None:
+    """Listen for PO worker responses and relay to Telegram users."""
+    global _redis_client, _session_manager
+
+    if _redis_client is None or _session_manager is None:
+        logger.error("Cannot start response listener: Redis/SessionManager not initialized")
+        return
+
+    logger.info("worker_response_listener_started")
 
     try:
         while True:
             try:
-                messages = await redis_client.xreadgroup(
-                    groupname=group_name,
-                    consumername=consumer_id,
-                    streams={USER_MESSAGE_STREAM: ">"},
-                    count=10,
-                    block=1000,
-                )
+                streams, user_by_stream = await _get_active_session_streams()
+
+                if not streams:
+                    await asyncio.sleep(1)
+                    continue
+
+                messages = await _redis_client.xread(streams, count=10, block=1000)  # noqa: PLR2004
 
                 if not messages:
                     continue
 
-                for _stream_name, stream_messages in messages:
+                for stream_name, stream_messages in messages:
+                    user_id = user_by_stream.get(stream_name)
+                    if not user_id:
+                        continue
+
                     for msg_id, msg_data in stream_messages:
                         try:
-                            agent_id = msg_data.get("agent_id")
-                            msg_type = msg_data.get("type", "answer")
-                            message_text = msg_data.get("message") or msg_data.get("question")
-
-                            if not agent_id or not message_text:
-                                logger.warning(
-                                    "invalid_direct_message",
-                                    msg_id=msg_id,
-                                    data=msg_data,
-                                )
-                                await redis_client.xack(USER_MESSAGE_STREAM, group_name, msg_id)
-                                continue
-
-                            # Look up Telegram user for this agent
-                            user_id = await agent_manager.get_user_by_agent(agent_id)
-
-                            if not user_id:
-                                logger.warning(
-                                    "no_user_for_agent",
-                                    agent_id=agent_id,
-                                    msg_type=msg_type,
-                                )
-                                await redis_client.xack(USER_MESSAGE_STREAM, group_name, msg_id)
-                                continue
-
-                            # Send message to Telegram user
-                            try:
-                                await app.bot.send_message(
-                                    chat_id=user_id,
-                                    text=message_text,
-                                    parse_mode=ParseMode.MARKDOWN,
-                                )
-                            except Exception:
-                                # Fallback to plain text if markdown fails
-                                await app.bot.send_message(chat_id=user_id, text=message_text)
-
-                            logger.info(
-                                "direct_message_sent",
-                                agent_id=agent_id,
-                                user_id=user_id,
-                                msg_type=msg_type,
-                                text_length=len(message_text),
-                            )
-
+                            await _process_worker_message(app, msg_data, user_id)
                         except Exception as e:
                             logger.error(
-                                "direct_message_processing_error", error=str(e), msg_id=msg_id
+                                "worker_response_processing_error",
+                                error=str(e),
+                                msg_id=msg_id,
                             )
-                        finally:
-                            await redis_client.xack(USER_MESSAGE_STREAM, group_name, msg_id)
 
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error("direct_message_listener_error", error=str(e))
+                logger.error("response_listener_error", error=str(e))
                 await asyncio.sleep(1)
 
     except asyncio.CancelledError:
-        logger.info("direct_message_listener_stopped")
-    finally:
-        try:
-            await redis_client.xgroup_destroy(USER_MESSAGE_STREAM, group_name)
-        except Exception as e:
-            logger.debug("group_destroy_failed", error=str(e), group=group_name)
-        await redis_client.aclose()
-
-
-# Global reference to direct message listener task
-_direct_message_task: asyncio.Task | None = None
+        logger.info("worker_response_listener_stopped")
 
 
 async def post_init(app: Application) -> None:
-    """Post-initialization: connect clients."""
-    global _direct_message_task
+    """Post-initialization: connect clients and start listeners."""
+    global _session_manager, _response_listener_task, _redis_client
 
-    await workers_spawner.connect()
+    settings = get_settings()
+    _redis_client = redis_lib.from_url(settings.redis_url, decode_responses=True)
+    _session_manager = POSessionManager(redis=_redis_client)
 
-    # Start direct message listener
-    _direct_message_task = asyncio.create_task(_listen_for_direct_messages(app))
+    # Start worker response listener
+    _response_listener_task = asyncio.create_task(_listen_for_worker_responses(app))
 
-    logger.info("Telegram bot initialized")
+    logger.info("telegram_bot_initialized")
 
 
 async def post_shutdown(app: Application) -> None:
     """Cleanup on shutdown."""
-    global _direct_message_task
+    global _response_listener_task, _redis_client
 
-    # Stop direct message listener
-    if _direct_message_task:
-        _direct_message_task.cancel()
+    # Stop response listener
+    if _response_listener_task:
+        _response_listener_task.cancel()
         try:
-            await _direct_message_task
+            await _response_listener_task
         except asyncio.CancelledError:
             pass
-        _direct_message_task = None
+        _response_listener_task = None
 
-    await workers_spawner.close()
-    await agent_manager.close()
+    # Close Redis
+    if _redis_client:
+        await _redis_client.aclose()
+        _redis_client = None
+
     await api_client.close()
 
 
