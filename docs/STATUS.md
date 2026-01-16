@@ -7,9 +7,9 @@
 
 **Phase 3: Telegram Bot (P3.1) - IN PROGRESS**
 
-Synchronous wait mode and progress events display implemented. 7/7 service tests passing.
+Synchronous wait mode, progress events display, and Admin Notifications implemented. 10/10 service tests passing.
 
-Remaining: Admin commands, integration tests.
+Remaining: Integration tests.
 
 ### Resolved Issues
 

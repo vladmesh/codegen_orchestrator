@@ -35,6 +35,7 @@ from .config import get_settings  # noqa: E402
 from .handlers import handle_callback_query  # noqa: E402
 from .keyboards import main_menu_keyboard  # noqa: E402
 from .middleware import auth_middleware, is_admin  # noqa: E402
+from .notifications import ProvisionerNotifier  # noqa: E402
 from .session import POSessionManager  # noqa: E402
 
 logger = structlog.get_logger()
@@ -42,6 +43,7 @@ logger = structlog.get_logger()
 # Global session manager (initialized in post_init)
 _session_manager: POSessionManager | None = None
 _response_listener_task: asyncio.Task | None = None
+_provisioner_notifier_task: asyncio.Task | None = None
 _redis_client: redis_lib.Redis | None = None
 
 
@@ -475,7 +477,7 @@ async def _listen_for_worker_responses(app: Application) -> None:
 
 async def post_init(app: Application) -> None:
     """Post-initialization: connect clients and start listeners."""
-    global _session_manager, _response_listener_task, _redis_client
+    global _session_manager, _response_listener_task, _provisioner_notifier_task, _redis_client
 
     settings = get_settings()
     _redis_client = redis_lib.from_url(settings.redis_url, decode_responses=True)
@@ -484,12 +486,17 @@ async def post_init(app: Application) -> None:
     # Start worker response listener
     _response_listener_task = asyncio.create_task(_listen_for_worker_responses(app))
 
-    logger.info("telegram_bot_initialized")
+    # Start provisioner notifications listener
+    admin_ids = settings.get_admin_ids()
+    notifier = ProvisionerNotifier(redis=_redis_client, admin_ids=admin_ids)
+    _provisioner_notifier_task = await notifier.start(app.bot)
+
+    logger.info("telegram_bot_initialized", admin_count=len(admin_ids))
 
 
 async def post_shutdown(app: Application) -> None:
     """Cleanup on shutdown."""
-    global _response_listener_task, _redis_client
+    global _response_listener_task, _provisioner_notifier_task, _redis_client
 
     # Stop response listener
     if _response_listener_task:
@@ -499,6 +506,15 @@ async def post_shutdown(app: Application) -> None:
         except asyncio.CancelledError:
             pass
         _response_listener_task = None
+
+    # Stop provisioner notifier
+    if _provisioner_notifier_task:
+        _provisioner_notifier_task.cancel()
+        try:
+            await _provisioner_notifier_task
+        except asyncio.CancelledError:
+            pass
+        _provisioner_notifier_task = None
 
     # Close Redis
     if _redis_client:

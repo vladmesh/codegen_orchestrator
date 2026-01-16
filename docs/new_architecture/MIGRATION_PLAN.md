@@ -1668,7 +1668,7 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 - [x] Service tests (7/7 passing)
 - [x] Implement `_wait_for_worker_response()` for synchronous mode
 - [x] Progress events display (callback_stream + real-time updates)
-- [ ] Admin commands
+- [x] Admin commands & Notifications (ProvisionerNotifier)
 
 **Acceptance Criteria:**
 - [x] Service test: `test_new_user_creates_po_worker_via_redis`
@@ -1678,6 +1678,8 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 - [x] Service test: `test_wait_for_worker_response_success`
 - [x] Service test: `test_wait_for_worker_response_timeout`
 - [x] Service test: `test_wait_for_worker_response_filters_by_request_id`
+- [x] Service test: `test_provisioner_success_notifies_admins`
+- [x] Service test: `test_provisioner_failure_notifies_admins`
 - [ ] Integration test: Telegram Update simulation
 - [ ] User message reaches PO worker
 - [ ] PO response returns to user
