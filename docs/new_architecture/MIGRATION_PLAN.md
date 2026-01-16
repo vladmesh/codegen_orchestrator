@@ -1618,16 +1618,16 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 ```
 
 **Tasks:**
-- [ ] Create `provisioner_result_listener.py`
-- [ ] Subscribe to `provisioner:results` stream
-- [ ] Update Server status via API on success/failure
-- [ ] Handle error cases (provisioning failed, timeout)
-- [ ] Wire into scheduler main.py lifecycle
+- [x] Create `provisioner_result_listener.py`
+- [x] Subscribe to `provisioner:results` stream
+- [x] Update Server status via API on success/failure
+- [x] Handle error cases (provisioning failed, timeout)
+- [x] Wire into scheduler main.py lifecycle
 
 **Acceptance Criteria:**
-- [ ] Server status updated after provisioning completes
-- [ ] Failed provisioning triggers alert via `notify_admins`
-- [ ] Integration test with mock infra-service
+- [x] Server status updated after provisioning completes
+- [x] Failed provisioning triggers alert via `notify_admins`
+- [x] Integration test with mock infra-service
 
 ---
 
@@ -1710,6 +1710,7 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-16 | Claude | Completed P2.4 (Provisioner Result Listener) - Implemented consumer, service and integration tests |
 | 2026-01-15 | Claude | Completed P2.3 (Scheduler Refactoring) - Migrated to API Client |
 | 2026-01-15 | Claude | Added P2.3 (Scheduler Refactoring) and P2.4 (Provisioner Result Listener) to Phase 2 |
 | 2026-01-14 | Claude | Added P1.8.3 Optimization (Shared base layers) to reduce disk usage during tests |

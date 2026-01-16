@@ -1,0 +1,95 @@
+networks:
+  infra-test:
+    name: infra-test-network
+    driver: bridge
+
+services:
+  # Database
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - infra-test
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - infra-test
+
+  # API Service
+  api:
+    build:
+      context: ../../..
+      dockerfile: services/api/Dockerfile
+    command: ["/entrypoint.sh"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=test
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - infra-test
+
+  # Scheduler Service (with consumer loop)
+  scheduler:
+    build:
+      context: ../../..
+      dockerfile: services/scheduler/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
+      - GITHUB_ORG_NAME=test-org
+      - TIME4VPS_USERNAME=test
+      - TIME4VPS_PASSWORD=test
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - infra-test
+
+  # Integration Test Runner
+  integration-test-runner:
+    build:
+      context: ../../..
+      dockerfile: docker/test/integration/Dockerfile
+    command: ["pytest", "tests/integration/infra/", "-v", "-x"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      scheduler:
+        condition: service_started
+      api:
+        condition: service_healthy
+    volumes:
+      - ../../../tests:/app/tests
+      - ../../../shared:/app/shared
+    networks:
+      - infra-test

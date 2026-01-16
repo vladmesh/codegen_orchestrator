@@ -130,6 +130,12 @@ All identified gaps have been implemented. Integration tests passed successfully
     - [x] Refactored Tasks: `github_sync` and `server_sync`.
     - [x] Verified: Unit Tests (Mock) + Service Tests (Real API).
 
+20. **✅ P2.4 Provisioner Result Listener**
+    - [x] Implemented `provisioner_result_listener.py` consumer task.
+    - [x] Added `provisioner:results` consumer loop to scheduler `main.py`.
+    - [x] Implemented full feedback loop (Infra -> Redis -> Scheduler -> API -> DB).
+    - [x] Verified: Service Tests (5/5) & Integration Tests (2/2).
+
 ## 🔗 Quick Links
 
 - [Migration Plan](./new_architecture/MIGRATION_PLAN.md)
