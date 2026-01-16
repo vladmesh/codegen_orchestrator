@@ -5,11 +5,11 @@
 
 ## 🚀 Current Focus
 
-**Phase 1: Integration Milestone (P1.9) - FIXES APPLIED**
+**Phase 3: Telegram Bot (P3.1) - IN PROGRESS**
 
-All identified gaps have been implemented. Integration tests passed successfully (4/4).
+Synchronous wait mode and progress events display implemented. 7/7 service tests passing.
 
-**Fixes Applied:** [CURRENT_GAPS.md](./new_architecture/CURRENT_GAPS.md)
+Remaining: Admin commands, integration tests.
 
 ### Resolved Issues
 

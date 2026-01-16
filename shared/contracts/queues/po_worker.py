@@ -10,6 +10,7 @@ class POWorkerInput(BaseModel):
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: int  # Telegram user ID
     prompt: str  # User's message text
+    callback_stream: str | None = None  # Redis stream for progress events
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 

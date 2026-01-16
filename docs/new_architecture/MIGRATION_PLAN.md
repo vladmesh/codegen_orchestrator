@@ -1657,7 +1657,7 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 ### P3.1 — Telegram Bot
 
-**Path:** `services/telegram_bot/`  
+**Path:** `services/telegram_bot/`
 **Depends:** P1.0, P2.2
 
 **Tasks:**
@@ -1665,15 +1665,19 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 - [x] Session → Worker ID mapping via Redis
 - [x] Message routing to PO worker via `worker:po:{id}:input`
 - [x] Worker response listener for `worker:po:{id}:output`
-- [x] Service tests (3/3 passing)
-- [ ] Implement `_wait_for_worker_response()` for synchronous mode
-- [ ] Progress events display
+- [x] Service tests (7/7 passing)
+- [x] Implement `_wait_for_worker_response()` for synchronous mode
+- [x] Progress events display (callback_stream + real-time updates)
 - [ ] Admin commands
 
 **Acceptance Criteria:**
 - [x] Service test: `test_new_user_creates_po_worker_via_redis`
 - [x] Service test: `test_existing_session_reuses_worker`
 - [x] Service test: `test_message_published_to_worker_input_stream`
+- [x] Service test: `test_message_with_callback_stream`
+- [x] Service test: `test_wait_for_worker_response_success`
+- [x] Service test: `test_wait_for_worker_response_timeout`
+- [x] Service test: `test_wait_for_worker_response_filters_by_request_id`
 - [ ] Integration test: Telegram Update simulation
 - [ ] User message reaches PO worker
 - [ ] PO response returns to user
@@ -1717,6 +1721,7 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-16 | Claude | P3.1 Progress: Implemented synchronous wait mode, progress events display, 7/7 service tests passing |
 | 2026-01-16 | Claude | Started P3.1 (Telegram Bot) - Created POSessionManager with Redis Streams, service tests passing |
 | 2026-01-16 | Claude | Completed P2.4 (Provisioner Result Listener) - Implemented consumer, service and integration tests |
 | 2026-01-15 | Claude | Completed P2.3 (Scheduler Refactoring) - Migrated to API Client |

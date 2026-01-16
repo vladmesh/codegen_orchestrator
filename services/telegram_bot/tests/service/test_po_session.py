@@ -9,6 +9,7 @@ Expected behavior:
 3. User message → Published to `worker:po:{id}:input`
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -104,7 +105,7 @@ async def test_message_published_to_worker_input_stream(redis_client):
 
     Expected:
     1. Message is XADD'ed to `worker:po:{id}:input`
-    2. Payload contains user text and metadata
+    2. Payload contains user text, request_id, and optional callback_stream
     """
     user_id = 11111
     worker_id = "po-worker-for-msg-test"
@@ -117,7 +118,11 @@ async def test_message_published_to_worker_input_stream(redis_client):
     manager = POSessionManager(redis=redis_client)
 
     # Act
-    await manager.send_message(user_id, message_text)
+    request_id = await manager.send_message(user_id, message_text)
+
+    # Assert: request_id is returned
+    assert request_id is not None
+    assert len(request_id) > 0
 
     # Assert: Message in worker input stream
     stream_key = f"worker:po:{worker_id}:input"
@@ -127,5 +132,132 @@ async def test_message_published_to_worker_input_stream(redis_client):
     msg_id, msg_data = messages[0]
     payload = json.loads(msg_data["data"])
 
-    assert payload["content"] == message_text
+    assert payload["prompt"] == message_text
     assert payload["user_id"] == user_id
+    assert payload["request_id"] == request_id
+
+
+@pytest.mark.asyncio
+async def test_message_with_callback_stream(redis_client):
+    """
+    Scenario: User message includes callback_stream for progress tracking.
+
+    Expected:
+    1. callback_stream is included in payload
+    2. request_id is returned for tracking
+    """
+    user_id = 22222
+    worker_id = "po-worker-callback-test"
+    message_text = "Test message"
+    callback_stream = "progress:po:22222:abc123"
+
+    # Setup
+    await redis_client.set(f"session:po:{user_id}", worker_id)
+    await redis_client.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
+
+    manager = POSessionManager(redis=redis_client)
+
+    # Act
+    request_id = await manager.send_message(user_id, message_text, callback_stream=callback_stream)
+
+    # Assert: Message contains callback_stream
+    stream_key = f"worker:po:{worker_id}:input"
+    messages = await redis_client.xrange(stream_key, "-", "+")
+    payload = json.loads(messages[0][1]["data"])
+
+    assert payload["callback_stream"] == callback_stream
+    assert payload["request_id"] == request_id
+
+
+@pytest.mark.asyncio
+async def test_wait_for_worker_response_success(redis_client):
+    """
+    Scenario: Worker responds successfully within timeout.
+
+    Expected:
+    1. _wait_for_worker_response returns response dict
+    2. Response is matched by request_id
+    """
+    manager = POSessionManager(redis=redis_client)
+    request_id = "test-request-123"
+
+    # Simulate worker response published to stream
+    async def publish_response():
+        await asyncio.sleep(0.1)  # Small delay
+        await redis_client.xadd(
+            "worker:responses:po",
+            {"data": json.dumps({"request_id": request_id, "success": True, "worker_id": "w-123"})},
+        )
+
+    asyncio.create_task(publish_response())
+
+    # Act
+    response = await manager._wait_for_worker_response(request_id, timeout=5.0)
+
+    # Assert
+    assert response is not None
+    assert response["success"] is True
+    assert response["worker_id"] == "w-123"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_worker_response_timeout(redis_client):
+    """
+    Scenario: Worker does not respond within timeout.
+
+    Expected:
+    1. _wait_for_worker_response returns None after timeout
+    """
+    manager = POSessionManager(redis=redis_client)
+    request_id = "test-request-timeout"
+
+    # Act: Short timeout, no response
+    response = await manager._wait_for_worker_response(request_id, timeout=0.5)
+
+    # Assert
+    assert response is None
+
+
+@pytest.mark.asyncio
+async def test_wait_for_worker_response_filters_by_request_id(redis_client):
+    """
+    Scenario: Multiple responses on stream, filter by request_id.
+
+    Expected:
+    1. Only matching request_id is returned
+    2. Other responses are ignored
+    """
+    manager = POSessionManager(redis=redis_client)
+    target_request_id = "target-request"
+    other_request_id = "other-request"
+
+    async def publish_responses():
+        await asyncio.sleep(0.05)
+        # Publish wrong request_id first
+        await redis_client.xadd(
+            "worker:responses:po",
+            {
+                "data": json.dumps(
+                    {"request_id": other_request_id, "success": True, "worker_id": "w-other"}
+                )
+            },
+        )
+        await asyncio.sleep(0.05)
+        # Then correct one
+        await redis_client.xadd(
+            "worker:responses:po",
+            {
+                "data": json.dumps(
+                    {"request_id": target_request_id, "success": True, "worker_id": "w-target"}
+                )
+            },
+        )
+
+    asyncio.create_task(publish_responses())
+
+    # Act
+    response = await manager._wait_for_worker_response(target_request_id, timeout=5.0)
+
+    # Assert
+    assert response is not None
+    assert response["worker_id"] == "w-target"

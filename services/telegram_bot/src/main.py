@@ -1,12 +1,15 @@
 """Telegram Bot - Main entry point.
 
 Refactored to use POSessionManager with Redis Streams.
+Supports progress events display during message processing.
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
+import uuid
 
 import httpx
 import redis.asyncio as redis_lib
@@ -20,6 +23,8 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
+from shared.contracts.events import ProgressEvent
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -103,9 +108,9 @@ async def _ensure_user_registered(tg_user) -> None:
 async def handle_message(update: Update, context) -> None:
     """Handle incoming messages - send to PO worker via Redis Streams.
 
-    This is the NEW implementation using POSessionManager.
+    This is the NEW implementation using POSessionManager with progress tracking.
     """
-    global _session_manager
+    global _session_manager, _redis_client
 
     # Auth check
     if not await auth_middleware(update, context):
@@ -116,13 +121,14 @@ async def handle_message(update: Update, context) -> None:
         await _ensure_user_registered(update.effective_user)
 
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     message_id = update.message.message_id
     text = update.message.text
 
     logger.info("message_received", user_id=user_id, text_length=len(text) if text else 0)
 
     # Indicate typing status
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
         # Log user message to RAG (fire and forget)
@@ -144,18 +150,80 @@ async def handle_message(update: Update, context) -> None:
 
         await _session_manager.get_or_create_worker(user_id)
 
-        # Send message to worker (async, response comes via listener)
-        await _session_manager.send_message(user_id, text)
+        # Create callback stream for progress events
+        callback_stream = f"progress:po:{user_id}:{uuid.uuid4().hex[:8]}"
 
-        # Acknowledge message sent (response will come via listener)
-        await update.message.reply_text(
-            "⏳ Обрабатываю запрос...",
+        # Send progress message first
+        progress_msg = await update.message.reply_text(
+            "🚀 Начинаю обработку...",
             parse_mode=ParseMode.MARKDOWN,
         )
+
+        # Send message to worker with callback stream
+        request_id = await _session_manager.send_message(
+            user_id, text, callback_stream=callback_stream
+        )
+
+        # Start background task to track progress events
+        # Note: Final response will still come via _listen_for_worker_responses
+        if _redis_client:
+            asyncio.create_task(
+                _track_progress_with_cleanup(
+                    redis=_redis_client,
+                    callback_stream=callback_stream,
+                    request_id=request_id,
+                    bot=context.bot,
+                    chat_id=chat_id,
+                    progress_message_id=progress_msg.message_id,
+                )
+            )
 
     except Exception as e:
         logger.error("message_handling_failed", error=str(e), user_id=user_id)
         await update.message.reply_text(f"⚠️ Ошибка: {e!s}")
+
+
+async def _track_progress_with_cleanup(
+    redis: redis_lib.Redis,
+    callback_stream: str,
+    request_id: str,
+    bot,
+    chat_id: int,
+    progress_message_id: int,
+) -> None:
+    """Track progress events and cleanup callback stream after completion."""
+    try:
+        final_event = await _listen_progress_events(
+            redis=redis,
+            callback_stream=callback_stream,
+            request_id=request_id,
+            bot=bot,
+            chat_id=chat_id,
+            progress_message_id=progress_message_id,
+            timeout=300.0,  # 5 minutes max
+        )
+
+        if final_event is None:
+            # Timeout - update progress message
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=progress_message_id,
+                    text="⏰ Таймаут ожидания. Ответ может прийти позже.",
+                )
+            except Exception as e:
+                logger.debug("timeout_message_edit_failed", error=str(e))
+
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error("progress_tracking_error", error=str(e), request_id=request_id)
+    finally:
+        # Cleanup: delete callback stream (best effort)
+        try:
+            await redis.delete(callback_stream)
+        except Exception as e:
+            logger.debug("callback_stream_cleanup_failed", error=str(e))
 
 
 async def _get_active_session_streams() -> tuple[dict[str, str], dict[str, int]]:
@@ -196,6 +264,153 @@ async def _send_response_to_user(app: Application, user_id: int, text: str) -> N
         await app.bot.send_message(chat_id=user_id, text=text)
 
     logger.info("worker_response_sent", user_id=user_id, text_length=len(text))
+
+
+def _format_progress_message(event: ProgressEvent) -> str:
+    """Format progress event for Telegram display."""
+    emoji_map = {
+        "started": "🚀",
+        "progress": "⏳",
+        "completed": "✅",
+        "failed": "❌",
+    }
+    emoji = emoji_map.get(event.type, "📌")
+
+    if event.type == "started":
+        return f"{emoji} Начинаю обработку..."
+
+    if event.type == "progress":
+        parts = [emoji]
+        if event.current_step:
+            parts.append(f"**{event.current_step}**")
+        if event.message:
+            parts.append(event.message)
+        if event.progress_pct is not None:
+            parts.append(f"({event.progress_pct}%)")
+        return " ".join(parts)
+
+    if event.type == "completed":
+        msg = event.message or "Готово!"
+        return f"{emoji} {msg}"
+
+    if event.type == "failed":
+        error = event.error or "Неизвестная ошибка"
+        return f"{emoji} Ошибка: {error}"
+
+    return f"{emoji} {event.message or ''}"
+
+
+async def _update_progress_message(
+    bot,
+    chat_id: int,
+    message_id: int,
+    event: ProgressEvent,
+) -> None:
+    """Update Telegram message with progress event."""
+    text = _format_progress_message(event)
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as e:
+        # Message might be the same, or other edit error
+        logger.debug("progress_message_edit_failed", error=str(e))
+
+
+async def _listen_progress_events(
+    redis: redis_lib.Redis,
+    callback_stream: str,
+    request_id: str,
+    bot,
+    chat_id: int,
+    progress_message_id: int,
+    timeout: float = 300.0,
+) -> ProgressEvent | None:
+    """Listen for progress events and update Telegram message.
+
+    Args:
+        redis: Redis client
+        callback_stream: Stream to listen for events
+        request_id: Request ID to filter events
+        bot: Telegram bot instance
+        chat_id: Chat to update
+        progress_message_id: Message ID to edit with progress
+        timeout: Max wait time in seconds
+
+    Returns:
+        Final event (completed/failed) or None on timeout
+    """
+    import time
+
+    start_time = time.monotonic()
+    last_id = "0"  # Read all messages from start
+
+    logger.debug(
+        "listening_progress_events",
+        callback_stream=callback_stream,
+        request_id=request_id,
+        timeout=timeout,
+    )
+
+    while True:
+        elapsed = time.monotonic() - start_time
+        remaining = timeout - elapsed
+
+        if remaining <= 0:
+            logger.warning("progress_listen_timeout", request_id=request_id)
+            return None
+
+        block_ms = min(2000, int(remaining * 1000))
+
+        try:
+            messages = await redis.xread(
+                {callback_stream: last_id},
+                count=10,
+                block=block_ms,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("progress_xread_error", error=str(e))
+            await asyncio.sleep(0.5)
+            continue
+
+        if not messages:
+            continue
+
+        for _, stream_messages in messages:
+            for msg_id, msg_data in stream_messages:
+                last_id = msg_id
+
+                try:
+                    payload = json.loads(msg_data.get("data", "{}"))
+                    event = ProgressEvent.model_validate(payload)
+                except (json.JSONDecodeError, Exception) as e:
+                    logger.debug("invalid_progress_event", error=str(e))
+                    continue
+
+                # Filter by request_id
+                if event.request_id != request_id:
+                    continue
+
+                logger.info(
+                    "progress_event_received",
+                    event_type=event.type,
+                    request_id=request_id,
+                    message=event.message,
+                )
+
+                # Update progress message
+                await _update_progress_message(bot, chat_id, progress_message_id, event)
+
+                # Check for terminal events
+                if event.type in ("completed", "failed"):
+                    return event
+
+    return None
 
 
 async def _process_worker_message(app: Application, msg_data: dict, user_id: int) -> None:
