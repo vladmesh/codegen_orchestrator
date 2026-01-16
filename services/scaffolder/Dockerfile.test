@@ -23,7 +23,8 @@ RUN pip install --no-cache-dir \
     pydantic==2.7.4 \
     pynacl==1.5.0 \
     pytest==8.3.4 \
-    pytest-asyncio==0.24.0
+    pytest-asyncio==0.24.0 \
+    pytest-cov==5.0.0
 
 # === Test Stage ===
 FROM deps AS test
@@ -33,6 +34,7 @@ COPY shared /app/shared
 
 # Copy scaffolder source
 COPY services/scaffolder/src /app/src
+COPY services/scaffolder/pytest.ini /app/pytest.ini
 
 # Tests will be mounted via volume for faster iteration
 

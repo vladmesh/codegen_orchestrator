@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 import uuid
 
@@ -10,7 +10,7 @@ class QueueMeta(BaseModel):
 
     version: Literal["1"] = "1"
     correlation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class BaseMessage(QueueMeta):
