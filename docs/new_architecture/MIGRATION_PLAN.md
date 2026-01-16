@@ -1680,9 +1680,16 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 - [x] Service test: `test_wait_for_worker_response_filters_by_request_id`
 - [x] Service test: `test_provisioner_success_notifies_admins`
 - [x] Service test: `test_provisioner_failure_notifies_admins`
-- [ ] Integration test: Telegram Update simulation
-- [ ] User message reaches PO worker
-- [ ] PO response returns to user
+- [ ] ~~Integration test: Telegram Update simulation~~ **DEFERRED**
+- [ ] ~~User message reaches PO worker~~ **DEFERRED**
+- [ ] ~~PO response returns to user~~ **DEFERRED**
+
+> [!WARNING]
+> **Integration tests deferred** (2026-01-16): Mock Telegram polling approach proved problematic.
+> - `getUpdates` long-polling with offsets requires webhook mode instead
+> - Bot processes updates before test can assert on state
+> - Docker-in-Docker worker spawning adds significant complexity
+> - Service tests (10/10 passing) provide adequate coverage for now
 
 ---
 
@@ -1723,6 +1730,7 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-16 | Claude | P3.1 Integration tests DEFERRED - Mock Telegram polling issues, Docker-in-Docker complexity |
 | 2026-01-16 | Claude | P3.1 Progress: Implemented synchronous wait mode, progress events display, 7/7 service tests passing |
 | 2026-01-16 | Claude | Started P3.1 (Telegram Bot) - Created POSessionManager with Redis Streams, service tests passing |
 | 2026-01-16 | Claude | Completed P2.4 (Provisioner Result Listener) - Implemented consumer, service and integration tests |

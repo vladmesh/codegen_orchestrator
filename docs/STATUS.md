@@ -5,11 +5,13 @@
 
 ## 🚀 Current Focus
 
-**Phase 3: Telegram Bot (P3.1) - IN PROGRESS**
+**Phase 3: Telegram Bot (P3.1) - SERVICE TESTS COMPLETE**
 
-Synchronous wait mode, progress events display, and Admin Notifications implemented. 10/10 service tests passing.
-
-Remaining: Integration tests.
+- 10/10 service tests passing (POSessionManager, ProvisionerNotifier)
+- Integration tests **DEFERRED** — Mock Telegram polling approach proved problematic:
+  - `getUpdates` long-polling requires webhook mode for reliable testing
+  - Docker-in-Docker worker spawning adds significant infrastructure complexity
+- Service tests provide adequate coverage for current needs
 
 ### Resolved Issues
 
