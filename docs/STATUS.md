@@ -136,6 +136,15 @@ All identified gaps have been implemented. Integration tests passed successfully
     - [x] Implemented full feedback loop (Infra -> Redis -> Scheduler -> API -> DB).
     - [x] Verified: Service Tests (5/5) & Integration Tests (2/2).
 
+
+21. **✅ P2.5 template Integration Tests**
+    - [x] Implemented integration tests in `tests/integration/template/`
+    - [x] Verified `Scaffolder` -> `Copier` -> `Generated Project` flow
+    - [x] Validated generated GitHub Workflows (`main.yml`)
+    - [x] Verified Secrets Injection (`TELEGRAM_BOT_TOKEN`, `DEPLOY_HOST`, etc.)
+    - [x] Added `make test-integration-template` target
+    - [x] Fixed: Forced `--vcs-ref=HEAD` to ensure latest template version
+
 ## 🔗 Quick Links
 
 - [Migration Plan](./new_architecture/MIGRATION_PLAN.md)

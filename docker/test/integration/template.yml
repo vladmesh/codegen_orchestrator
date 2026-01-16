@@ -1,0 +1,21 @@
+networks:
+  template-test:
+    name: template-test-network
+    driver: bridge
+
+services:
+  # Template Integration Test Runner
+  # No dependencies needed - just copier + yaml parsing
+  integration-test-runner:
+    build:
+      context: ../../..
+      dockerfile: docker/test/integration/Dockerfile.template
+    command: ["pytest", "tests/integration/template/", "-v"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Use GitHub URL - copier will clone it
+      - SERVICE_TEMPLATE_PATH=gh:vladmesh/service-template
+    volumes:
+      - ../../../tests:/app/tests
+    networks:
+      - template-test

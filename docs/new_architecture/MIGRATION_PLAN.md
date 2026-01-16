@@ -1639,15 +1639,15 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 **Goal:** Validate orchestrator components work correctly with real service_template.
 
 **Tasks:**
-- [ ] Test: Scaffolder + Template Integration (real copier)
-- [ ] Test: Deploy Workflow Validation (parse generated main.yml)
-- [ ] Test: Secrets Injection Compatibility
-- [ ] Test: End-to-End Dry Run (No Deploy, No LLM)
+- [x] Test: Scaffolder + Template Integration (real copier)
+- [x] Test: Deploy Workflow Validation (parse generated main.yml)
+- [x] Test: Secrets Injection Compatibility
+- [x] Test: End-to-End Dry Run (No Deploy, No LLM)
 
 **Acceptance Criteria:**
-- [ ] Scaffolder generates valid project from real template
-- [ ] Generated workflows match Orchestrator expectations
-- [ ] Secret names match between code and template
+- [x] Scaffolder generates valid project from real template
+- [x] Generated workflows match Orchestrator expectations
+- [x] Secret names match between code and template
 
 ---
 
