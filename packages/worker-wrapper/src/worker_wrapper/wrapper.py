@@ -137,11 +137,10 @@ class WorkerWrapper:
             raise ValueError(f"Unknown agent type: {self.config.agent_type}")
 
         # 3. Build Command
-        prompt = data.get("content", "")
+        # PO workers use 'content', Developer workers use 'prompt' (DeveloperWorkerInput)
+        prompt = data.get("content") or data.get("prompt", "")
         if not prompt:
-            # If no content, maybe just keep alive or error?
-            # For now assume content is required
-            raise ValueError("Task data missing 'content'")
+            raise ValueError("Task data missing 'content' or 'prompt'")
 
         cmd = runner.build_command(prompt=prompt)
         logger.info("executing_agent_command", cmd=cmd)

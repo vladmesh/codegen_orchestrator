@@ -8,6 +8,7 @@ from src.manager import WorkerManager
 async def test_create_worker_unit():
     redis = MagicMock()
     redis.set = AsyncMock()
+    redis.hset = AsyncMock()
 
     wrapper = MagicMock()
     wrapper.image_exists = AsyncMock(return_value=True)  # Image already cached

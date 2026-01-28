@@ -147,6 +147,22 @@
     - [x] Added `make test-integration-template` target
     - [x] Fixed: Forced `--vcs-ref=HEAD` to ensure latest template version
 
+### Phase 4: E2E Testing
+
+22. **🔄 P4.1 E2E Engineering Flow Test**
+    - [x] **Phase 1**: Mock Anthropic Server ✅
+    - [x] **Phase 2**: Worker ANTHROPIC_BASE_URL Support ✅
+    - [x] **Phase 3**: PO Worker Test Prompt ✅
+    - [x] **Phase 4**: Infrastructure Sanity Check (GitHub + Copier) ✅
+    - [x] **Phase 4.5**: Worker Mock Anthropic Integration ✅
+      - Fixed Claude CLI native installer (deprecated npm package)
+      - Fixed ResultParser for Claude CLI JSON output format
+      - Fixed Mock server to extract all text blocks from messages
+      - Tests: `test_worker_receives_mock_response`, `test_worker_response_matches_scenario` PASSED
+    - [ ] **Phase 5**: Developer Worker Mock Responses (Pending)
+    - [ ] **Phase 6**: Full E2E Test (Pending)
+    - [ ] **Phase 7**: CI Integration (Pending)
+
 ## 🔗 Quick Links
 
 - [Migration Plan](./new_architecture/MIGRATION_PLAN.md)

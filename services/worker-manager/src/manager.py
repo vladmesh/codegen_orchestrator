@@ -69,7 +69,7 @@ class WorkerManager:
 
         try:
             # Update Redis status
-            await self.redis.set(f"worker:status:{worker_id}", "STARTING")
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "STARTING"})
 
             # Build run kwargs
             run_kwargs = {
@@ -90,13 +90,13 @@ class WorkerManager:
             container = await self.docker.run_container(**run_kwargs)
 
             # Update Redis status
-            await self.redis.set(f"worker:status:{worker_id}", "RUNNING")
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
 
             return container.id
 
         except Exception as e:
             logger.error("worker_creation_failed", worker_id=worker_id, error=str(e))
-            await self.redis.set(f"worker:status:{worker_id}", "FAILED")
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "FAILED"})
             await self.redis.set(f"worker:error:{worker_id}", str(e))
             raise
 
@@ -109,26 +109,26 @@ class WorkerManager:
             # We try to remove by name or lookup ID?
             # docker-py remove accepts name or ID.
             await self.docker.remove_container(container_name, force=True)
-            await self.redis.set(f"worker:status:{worker_id}", "STOPPED")
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "STOPPED"})
 
         except Exception as e:
             logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
             # Even if failed, we mark stopped? Or FAILED?
             # If container doesn't exist, remove_container handles NotFound.
-            await self.redis.set(f"worker:status:{worker_id}", "STOPPED")
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "STOPPED"})
 
     async def pause_worker(self, worker_id: str) -> None:
         """Pause a running worker."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         await self.docker.pause_container(container_name)
-        await self.redis.set(f"worker:status:{worker_id}", "PAUSED")
+        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "PAUSED"})
         logger.info("worker_paused", worker_id=worker_id)
 
     async def resume_worker(self, worker_id: str) -> None:
         """Resume a paused worker."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         await self.docker.unpause_container(container_name)
-        await self.redis.set(f"worker:status:{worker_id}", "RUNNING")
+        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
         logger.info("worker_resumed", worker_id=worker_id)
 
     async def garbage_collect_images(self, retention_seconds: int = 7 * 24 * 3600) -> None:
@@ -181,7 +181,7 @@ class WorkerManager:
 
     async def get_worker_status(self, worker_id: str) -> str:
         """Get status from Redis (primary) or Docker (fallback)."""
-        status = await self.redis.get(f"worker:status:{worker_id}")
+        status = await self.redis.hget(f"worker:status:{worker_id}", "status")
         if status:
             return status
         return "UNKNOWN"

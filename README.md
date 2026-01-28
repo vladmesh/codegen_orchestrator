@@ -134,6 +134,17 @@ logger.info("event_name", user_id=123, duration_ms=45.2)
 
 Подробнее см. [docs/LOGGING.md](docs/LOGGING.md).
 
+## GitHub Secrets
+
+Секреты хранятся в GitHub Actions (`Settings → Secrets → Actions`):
+
+| Secret | Description |
+|--------|-------------|
+| `GH_APP_ID` | GitHub App ID for API authentication |
+| `GH_APP_PRIVATE_KEY` | GitHub App private key (PEM) |
+| `E2E_TEST_ORG` | Test organization: `project-factory-test` |
+| `E2E_TEST_INSTALLATION_ID` | Installation ID for test org |
+
 ## Roadmap
 
 См. [docs/backlog.md](docs/backlog.md) для актуального списка задач.

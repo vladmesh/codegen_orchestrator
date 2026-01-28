@@ -94,16 +94,22 @@ async def request_spawn(
 
     # Construct WorkerConfig
     # Use 'claude-code' agent directly for now as factory-droid is a stub.
+    env_vars = {
+        "GITHUB_TOKEN": github_token,
+        "REPO_NAME": repo,
+        # Task content is sent via file to avoid shell quoting issues with large prompts
+    }
+
+    # Add custom Anthropic API URL if configured (for E2E testing with mock server)
+    if settings.anthropic_base_url:
+        env_vars["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
+
     config = {
         "name": f"Dev {repo.split('/')[-1]}",
         "agent": "claude-code",
         "capabilities": ["git", "github", "node", "python"],
         "allowed_tools": ["project"],
-        "env_vars": {
-            "GITHUB_TOKEN": github_token,
-            "REPO_NAME": repo,
-            # Task content is sent via file to avoid shell quoting issues with large prompts
-        },
+        "env_vars": env_vars,
         "mount_session_volume": settings.mount_claude_session,
     }
 

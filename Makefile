@@ -256,21 +256,48 @@ test-integration: $(INTEGRATION_TESTS)
 # Run all service tests
 test-service: test-api-service test-langgraph-service test-scaffolder-service
 
+# Run E2E tests (requires real GitHub, Claude credentials)
+# Usage: HOST_CLAUDE_DIR=~/.claude make test-e2e
+test-e2e:
+	@echo "🧪 Running E2E tests..."
+	@docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml down -v --remove-orphans 2>/dev/null || true
+	@HOST_CLAUDE_DIR=$(HOST_CLAUDE_DIR) docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-test-runner; \
+	EXIT_CODE=$$?; \
+	docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml down -v --remove-orphans; \
+	exit $$EXIT_CODE
+
+# Run infrastructure sanity test only (GitHub + Copier, no LLM)
+# Validates that GitHub App auth, repo creation, copier, and git push work
+test-e2e-infra:
+	@echo "🧪 Running Infrastructure Sanity Test..."
+	@docker build -t e2e-test-runner -f docker/test/e2e/Dockerfile .
+	@docker run --rm \
+		-v $(PWD)/secrets/github_app.pem:/app/keys/github_app.pem:ro \
+		-v $(PWD)/tests:/app/tests \
+		-v $(PWD)/shared:/app/shared \
+		--env-file .env \
+		--env-file .env.test \
+		e2e-test-runner \
+		pytest tests/e2e/test_infrastructure_sanity.py -v --tb=short --noconftest -p no:cacheprovider
+
+# Run worker mock integration test (no real GitHub/Claude needed)
+# Uses standard conftest which handles image building inside DIND
+test-e2e-worker-mock:
+	@echo "🧪 Running Worker Mock Integration Test..."
+	@docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml down -v --remove-orphans 2>/dev/null || true
+	# Start all required services
+	@HOST_CLAUDE_DIR=$(HOST_CLAUDE_DIR) docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml up -d --build
+	# Wait for services to be healthy
+	@echo "⏳ Waiting for services..."
+	@sleep 10
+	# Run tests (conftest handles image building in dind)
+	@echo "🧪 Running tests..."
+	@HOST_CLAUDE_DIR=$(HOST_CLAUDE_DIR) docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml run --rm e2e-test-runner \
+		pytest tests/e2e/test_worker_mock_anthropic.py -v --tb=long -p no:cacheprovider
+	@docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml down -v --remove-orphans
+
 # Run ALL tests
 test-all: test-unit test-service test-integration
-
-# Legacy test command (runs quarantined tests)
-test-legacy:
-	@echo "🧟 Running Legacy tests..."
-	@$(TOOLING_NON_INT) pytest services/api/tests_legacy \
-		services/langgraph/tests_legacy \
-		services/scheduler/tests_legacy \
-		services/telegram_bot/tests_legacy \
-		services/workers-spawner/tests_legacy \
-		shared/redis/tests_legacy \
-		shared/logging/tests_legacy \
-		--ignore=services/api/tests_legacy/integration \
-		-v
 
 # Cleanup test containers and volumes (all test projects)
 test-clean:

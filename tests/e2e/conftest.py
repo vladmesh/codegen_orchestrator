@@ -51,7 +51,8 @@ def _build_base_image(client, dockerfile_path: str, tag: str, shared_path: str, 
                 path=tmp_dir,
                 tag=tag,
                 rm=True,
-                nocache=False,  # Allow cache for faster rebuilds
+                nocache=True,  # Force rebuild to pick up wrapper.py changes
+                pull=False,  # Don't pull base images - use local ones (e.g. worker-base-common)
             )
             for chunk in build_logs:
                 if "stream" in chunk:
@@ -77,15 +78,26 @@ def _build_base_image(client, dockerfile_path: str, tag: str, shared_path: str, 
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_worker_base_images():
-    """Build agent-specific worker base images in DIND.
+    """Build agent-specific worker base images in DIND and create network.
 
     Builds two images:
     - worker-base-claude: with Node.js + Claude CLI pre-installed
     - worker-base-factory: with Factory CLI pre-installed
 
-    This ensures fast worker image builds during tests (only capabilities added).
+    Also creates the e2e-test-network inside DIND for worker containers.
     """
     client = docker.DockerClient(base_url=DOCKER_HOST)
+
+    # Create network inside DIND for worker containers
+    # This is needed because worker-manager creates workers that attach to this network
+    try:
+        client.networks.create("e2e-test-network", driver="bridge")
+        print("Created e2e-test-network inside DIND")
+    except docker.errors.APIError as e:
+        if "already exists" in str(e):
+            print("Network e2e-test-network already exists in DIND")
+        else:
+            raise
 
     # Source paths mapped in integration-test-runner container
     shared_path = "/app/shared"

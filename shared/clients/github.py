@@ -298,6 +298,43 @@ class GitHubAppClient:
         )
         return GitHubRepository.model_validate(resp.json())
 
+    async def delete_repo(self, owner: str, repo: str) -> bool:
+        """Delete a repository.
+
+        Requires the GitHub App to have 'administration' permission with 'write' access.
+
+        Args:
+            owner: Repository owner (org or user)
+            repo: Repository name
+
+        Returns:
+            True if deleted successfully, False if repo not found
+        """
+        try:
+            token = await self.get_token(owner, repo)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                logger.info("github_repo_not_found_skip_delete", owner=owner, repo=repo)
+                return False
+            raise
+
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        try:
+            await self._make_request(
+                "DELETE", f"https://api.github.com/repos/{owner}/{repo}", headers=headers
+            )
+            logger.info("github_repo_deleted", owner=owner, repo=repo)
+            return True
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                logger.info("github_repo_not_found_skip_delete", owner=owner, repo=repo)
+                return False
+            raise
+
     async def get_file_contents(
         self, owner: str, repo: str, path: str, ref: str = "main"
     ) -> str | None:

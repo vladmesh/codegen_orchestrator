@@ -71,6 +71,8 @@ class TestWorkerManagerBuildLogic:
         redis = MagicMock()
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
+        redis.hset = AsyncMock()
+        redis.hget = AsyncMock(return_value=None)
         return redis
 
     @pytest.fixture
@@ -194,6 +196,8 @@ class TestWorkerManagerCreateWithCapabilities:
         redis = MagicMock()
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
+        redis.hset = AsyncMock()
+        redis.hget = AsyncMock(return_value=None)
         return redis
 
     @pytest.fixture

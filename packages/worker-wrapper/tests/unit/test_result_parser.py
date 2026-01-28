@@ -44,3 +44,33 @@ class TestResultParser:
         stdout = '<result>{"a": 1}</result> text <result>{"b": 2}</result>'
         result = ResultParser.parse(stdout)
         assert result["a"] == 1
+
+    def test_claude_cli_json_format(self):
+        """Should extract result from Claude CLI JSON output format."""
+        import json
+
+        cli_output = {
+            "type": "result",
+            "subtype": "success",
+            # Long string split for readability
+            "result": "All tests passed.\n\n<result>\n"
+            '{"status": "success", "tests_run": 5}\n</result>',
+            "session_id": "test-session-id",
+        }
+        stdout = json.dumps(cli_output)
+        result = ResultParser.parse(stdout)
+        assert result["status"] == "success"
+        assert result["tests_run"] == 5  # noqa: PLR2004
+
+    def test_claude_cli_json_format_no_result_tags(self):
+        """Should return None when Claude CLI result has no <result> tags."""
+        import json
+
+        cli_output = {
+            "type": "result",
+            "result": "Just plain text output without result tags",
+            "session_id": "test-session-id",
+        }
+        stdout = json.dumps(cli_output)
+        result = ResultParser.parse(stdout)
+        assert result is None

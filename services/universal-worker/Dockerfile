@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.4
 # ===================================
 # Universal Worker Base Image
-# Runs any CLI agent with orchestrator-cli pre-installed
+# Minimal base for all agent types (Claude, Factory, etc.)
+# Agent-specific tools are installed at runtime via INSTALL_COMMANDS
 # ===================================
 
 FROM ubuntu:24.04
@@ -9,15 +10,11 @@ FROM ubuntu:24.04
 # Avoid interactive prompts during apt install
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install base system dependencies
+# Install base system dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Python
+    # Python (for orchestrator-cli)
     python3 \
     python3-pip \
-    python3-venv \
-    # Node.js (for Claude Code, Gemini CLI, etc.)
-    nodejs \
-    npm \
     # Essential tools
     git \
     curl \
@@ -35,12 +32,7 @@ ENV HOME=/home/worker
 # Add local bin to PATH
 ENV PATH="/home/worker/.local/bin:${PATH}"
 
-# Allow worker to install global npm packages
-RUN mkdir -p /usr/local/lib/node_modules && \
-    chown -R worker:worker /usr/local/lib/node_modules /usr/local/bin
-
 # Copy shared modules (schemas needed by CLI)
-# Create minimal shared package (avoid importing redis_client which is not needed for CLI)
 COPY shared/schemas /opt/shared/schemas
 RUN echo '"""Shared schemas for CLI."""' > /opt/shared/__init__.py
 ENV PYTHONPATH="/opt:${PYTHONPATH}"
@@ -59,17 +51,6 @@ RUN chown worker:worker /workspace
 
 # Switch to non-root user
 USER worker
-
-# Install ralph-wiggum plugin for long-running autonomous tasks
-# This plugin intercepts Claude's exit attempts and continues iteration
-# until completion promise is met or max iterations reached
-RUN mkdir -p ~/.claude/plugins && \
-    git clone --depth 1 --filter=blob:none --sparse \
-    https://github.com/anthropics/claude-code.git /tmp/claude-code && \
-    cd /tmp/claude-code && \
-    git sparse-checkout set plugins/ralph-wiggum && \
-    cp -r plugins/ralph-wiggum ~/.claude/plugins/ && \
-    rm -rf /tmp/claude-code
 
 # Default entrypoint
 ENTRYPOINT ["/entrypoint.sh"]

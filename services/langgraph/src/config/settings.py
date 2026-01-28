@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # Optional: Mount host Claude session for dev agents (avoids API key need)
     mount_claude_session: bool = True
 
+    # Optional: Override Anthropic API URL for developer workers (E2E testing)
+    # When set, workers use this URL instead of api.anthropic.com
+    anthropic_base_url: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

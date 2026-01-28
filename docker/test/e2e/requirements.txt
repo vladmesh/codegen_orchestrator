@@ -1,0 +1,14 @@
+pytest
+pytest-asyncio
+pytest-cov
+httpx
+redis
+docker
+pydantic
+pydantic-settings
+structlog
+tenacity
+fastapi
+uvicorn
+copier
+pyjwt[crypto]

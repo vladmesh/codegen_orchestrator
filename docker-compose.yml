@@ -30,7 +30,7 @@ services:
       - ./services/api/migrations:/app/migrations:delegated
       - ./shared:/app/shared:delegated
       - ./scripts:/app/scripts:ro
-      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
     ports:
       - "8000:8000"
 
@@ -49,7 +49,7 @@ services:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ~/.ssh:/root/.ssh:ro
-      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
       - api
       - redis
@@ -72,7 +72,7 @@ services:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ~/.ssh:/root/.ssh:ro
-      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
       - api
       - redis
@@ -96,7 +96,7 @@ services:
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
       - api
       - redis
@@ -189,7 +189,7 @@ services:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ~/.ssh:/root/.ssh:ro
-      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
       api:
         condition: service_healthy
@@ -212,7 +212,7 @@ services:
       GITHUB_APP_ID: ${GITHUB_APP_ID}
       GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
     volumes:
-      - ~/.gemini/keys/github_app.pem:/app/keys/github_app.pem:ro
+      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
       api:
         condition: service_healthy

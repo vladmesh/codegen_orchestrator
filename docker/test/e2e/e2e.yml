@@ -1,0 +1,199 @@
+networks:
+  e2e-test:
+    name: e2e-test-network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+services:
+  # === Infrastructure ===
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - e2e-test
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      e2e-test:
+        ipv4_address: 172.30.0.10
+
+  docker:
+    image: docker:dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    volumes:
+      - ${HOST_CLAUDE_DIR:-/tmp/fake-claude}:/host-claude:rw
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--dns=8.8.8.8", "--dns=8.8.4.4"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:2375/_ping || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks:
+      e2e-test:
+        ipv4_address: 172.30.0.30
+
+  mock-anthropic:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/mock_anthropic/Dockerfile
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      e2e-test:
+        ipv4_address: 172.30.0.40
+
+  # === Services ===
+  api:
+    build:
+      context: ../../..
+      dockerfile: services/api/Dockerfile
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/postgres
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      e2e-test:
+        ipv4_address: 172.30.0.20
+
+  langgraph:
+    build:
+      context: ../../..
+      dockerfile: services/langgraph/Dockerfile
+    volumes:
+      - ../../../secrets/github_app.pem:/app/keys/github_app.pem:ro
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      API_URL: http://api:8000
+      API_BASE_URL: http://api:8000
+      # Mock Anthropic API URL for developer workers (E2E testing)
+      ANTHROPIC_BASE_URL: http://172.30.0.40:8000
+      # GitHub App credentials (support both file-based and content-based)
+      GITHUB_APP_ID: ${GH_APP_ID:-${GITHUB_APP_ID}}
+      GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
+      GITHUB_PRIVATE_KEY_CONTENT: ${GH_APP_PRIVATE_KEY}
+      GITHUB_ORG: ${E2E_TEST_ORG:-project-factory-test}
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      mock-anthropic:
+        condition: service_healthy
+    networks:
+      - e2e-test
+
+  worker-manager:
+    build:
+      context: ../../..
+      dockerfile: services/worker-manager/Dockerfile
+    environment:
+      REDIS_URL: redis://172.30.0.10:6379/0
+      DOCKER_HOST: tcp://docker:2375
+      DOCKER_NETWORK: e2e-test-network
+      WORKER_REDIS_URL: redis://172.30.0.10:6379/0
+      WORKER_API_URL: http://172.30.0.20:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+      docker:
+        condition: service_healthy
+    networks:
+      - e2e-test
+
+  scaffolder:
+    build:
+      context: ../../..
+      dockerfile: services/scaffolder/Dockerfile
+    volumes:
+      - ../../../secrets/github_app.pem:/app/keys/github_app.pem:ro
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      API_BASE_URL: http://api:8000
+      GITHUB_APP_ID: ${GH_APP_ID:-${GITHUB_APP_ID}}
+      GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
+      GITHUB_PRIVATE_KEY_CONTENT: ${GH_APP_PRIVATE_KEY}
+      GITHUB_ORG: ${E2E_TEST_ORG:-project-factory-test}
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - e2e-test
+
+  # === Test Runner ===
+  e2e-test-runner:
+    build:
+      context: ../../..
+      dockerfile: docker/test/e2e/Dockerfile
+    command: ["pytest", "tests/e2e/", "-v", "-m", "e2e", "--tb=short"]
+    depends_on:
+      langgraph:
+        condition: service_started
+      worker-manager:
+        condition: service_started
+      scaffolder:
+        condition: service_started
+      mock-anthropic:
+        condition: service_healthy
+    volumes:
+      - ../../../tests:/app/tests
+      - ../../../services:/app/services
+      - ../../../shared:/app/shared
+      - ../../../packages:/app/packages
+      # Mount GitHub App key for infrastructure sanity tests
+      - ../../../secrets/github_app.pem:/app/keys/github_app.pem:ro
+    environment:
+      PYTHONUNBUFFERED: "1"
+      REDIS_URL: redis://172.30.0.10:6379/0
+      API_URL: http://172.30.0.20:8000
+      DOCKER_HOST: tcp://docker:2375
+      # Claude auth
+      CLAUDE_SESSION_DIR: ${HOST_CLAUDE_DIR}
+      HOST_CLAUDE_DIR: ${HOST_CLAUDE_DIR}
+      # Mock Anthropic for developer workers
+      MOCK_ANTHROPIC_URL: http://172.30.0.40:8000
+      # GitHub (support both file-based and content-based secrets)
+      GITHUB_APP_ID: ${GH_APP_ID:-${GITHUB_APP_ID}}
+      GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
+      GITHUB_PRIVATE_KEY_CONTENT: ${GH_APP_PRIVATE_KEY}
+      GITHUB_TEST_ORG: ${E2E_TEST_ORG:-project-factory-test}
+      GITHUB_INSTALLATION_ID: ${E2E_TEST_INSTALLATION_ID}
+    networks:
+      - e2e-test

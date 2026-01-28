@@ -168,8 +168,8 @@ async def test_auto_pause_workers(mock_docker_client, worker_settings):
     mock_docker_client.pause_container = AsyncMock()
 
     # Setup status
-    await redis.set(f"worker:status:{active_worker}", "RUNNING")
-    await redis.set(f"worker:status:{idle_worker}", "RUNNING")
+    await redis.hset(f"worker:status:{active_worker}", mapping={"status": "RUNNING"})
+    await redis.hset(f"worker:status:{idle_worker}", mapping={"status": "RUNNING"})
 
     # Setup activity timestamps
     # Auto-pause threshold e.g. 600s
