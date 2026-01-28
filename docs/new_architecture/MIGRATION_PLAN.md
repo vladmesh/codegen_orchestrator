@@ -53,7 +53,8 @@ flowchart TB
     end
 
     subgraph Phase4["Phase 4: E2E"]
-        P4_1[P4.1 E2E]
+        P4_5[P4.5 Mock Anthropic E2E]
+        P4_1[P4.1 System E2E]
     end
 
     %% Phase 1 Dependencies
@@ -97,6 +98,8 @@ flowchart TB
     P2_2 --> P3_1
 
     %% Phase 4 Dependencies
+    P1_8 --> P4_5
+    P4_5 --> P4_1
     P3_1 --> P4_1
 ```
 
@@ -128,6 +131,7 @@ flowchart TB
 | P2.4 | Provisioner Result Listener | `services/scheduler` | P2.3, P1.3 | 2 |
 | P2.5 | Template Tests | `tests/integration/template` | P2.1 | 2 |
 | P3.1 | Telegram Bot | `services/telegram-bot` | P1.0, P2.2 | 3 |
+| P4.5 | Mock Anthropic E2E | `tests/e2e/mock_anthropic` | P1.8 | 4 |
 | P4.1 | System E2E | `tests/e2e` | All above | 4 |
 
 ---
@@ -1697,6 +1701,34 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 > **Goal:** Full system validation.
 
+### P4.5 — Mock Anthropic E2E Tests ✅
+
+**Path:** `tests/e2e/mock_anthropic/`, `tests/e2e/test_*_mock_anthropic.py`  
+**Depends:** P1.8, P1.4
+**Spec:** [E2E_ENGINEERING_TEST_PLAN.md](./E2E_ENGINEERING_TEST_PLAN.md)
+
+**Goal:** Validate full worker flow with deterministic (mocked) LLM responses.
+
+**Tasks:**
+- [x] Create Mock Anthropic server (`tests/e2e/mock_anthropic/`)
+- [x] Create E2E Docker Compose with DIND support (`docker/test/e2e/e2e.yml`)
+- [x] Implement PO worker tests (`test_worker_mock_anthropic.py`)
+- [x] Implement Developer worker tests (`test_developer_mock_anthropic.py`)
+- [x] Fix Redis WRONGTYPE bug (`worker-manager` HSET vs SET)
+
+**Test Results (2026-01-29):**
+- PO E2E: ✅ 2/2 passed
+- Developer E2E: ✅ 2/2 passed  
+- Worker-manager unit: ✅ 50/50 passed
+
+**Acceptance Criteria:**
+- [x] Mock server returns deterministic responses
+- [x] Worker container receives and processes tasks
+- [x] Results published to output Redis stream
+- [x] E2E tests run in CI-compatible Docker environment
+
+---
+
 ### P4.1 — System E2E
 
 **Path:** `tests/e2e/`  
@@ -1730,6 +1762,7 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-29 | Claude | **P4.5 Mock Anthropic E2E COMPLETED** — Fixed Redis WRONGTYPE bug (HSET vs SET), Developer E2E 2/2 tests pass, PO E2E 2/2 tests pass |
 | 2026-01-16 | Claude | P3.1 Integration tests DEFERRED - Mock Telegram polling issues, Docker-in-Docker complexity |
 | 2026-01-16 | Claude | P3.1 Progress: Implemented synchronous wait mode, progress events display, 7/7 service tests passing |
 | 2026-01-16 | Claude | Started P3.1 (Telegram Bot) - Created POSessionManager with Redis Streams, service tests passing |
