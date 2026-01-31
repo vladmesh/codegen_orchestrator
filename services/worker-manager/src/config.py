@@ -21,6 +21,9 @@ class WorkerManagerSettings(BaseSettings):
     WORKER_REDIS_URL: str = ""
     WORKER_API_URL: str = ""
 
+    # Host path to .claude directory (for mounting into workers)
+    HOST_CLAUDE_DIR: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

@@ -45,6 +45,7 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
+      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -106,10 +107,10 @@ services:
     deploy:
       replicas: 1
 
-  infrastructure-worker:
+  infra-service:
     build:
       context: .
-      dockerfile: services/infrastructure-worker/Dockerfile
+      dockerfile: services/infra-service/Dockerfile
     env_file:
       - .env
     environment:
@@ -117,8 +118,8 @@ services:
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
     volumes:
-      - ./services/infrastructure-worker/src:/app/src:delegated
-      - ./services/infrastructure-worker/ansible:/app/ansible:delegated
+      - ./services/infra-service/src:/app/src:delegated
+      - ./services/infra-service/ansible:/app/ansible:delegated
       - ./shared:/app/shared:delegated
       - ~/.ssh:/root/.ssh:ro
     depends_on:
@@ -138,6 +139,7 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
+      DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
     volumes:
       - ./services/telegram_bot/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -147,21 +149,34 @@ services:
     networks:
       - internal
 
-  workers-spawner:
+  worker-manager:
     build:
       context: .
-      dockerfile: services/workers-spawner/Dockerfile
+      dockerfile: services/worker-manager/Dockerfile
+    user: root # Required for Docker socket access
     env_file:
       - .env
     environment:
       REDIS_URL: redis://redis:6379
-      PYTHONPYCACHEPREFIX: /tmp/pycache
+      API_BASE_URL: http://api:8000
+      WORKER_BASE_IMAGE: universal-worker:latest
+      # Worker URLs for containers in host network mode
+      WORKER_REDIS_URL: redis://localhost:6379
+      WORKER_API_URL: http://localhost:8000
+      PYTHONPATH: /app
+      # Host path for mounting .claude dir into workers
+      HOST_CLAUDE_DIR: ${HOST_CLAUDE_DIR:-/home/user/.claude}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./services/workers-spawner/src:/app/src:delegated
-      - ./shared:/app/shared:delegated
+      - ${HOST_CLAUDE_DIR:-/home/user/.claude}:/host-claude:ro
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - internal
 
@@ -202,7 +217,8 @@ services:
 
   scaffolder:
     build:
-      context: ./services/scaffolder
+      context: .
+      dockerfile: services/scaffolder/Dockerfile
     env_file:
       - .env
     environment:
@@ -242,6 +258,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    ports:
+      - "6379:6379" # Expose for worker containers in host network mode
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s

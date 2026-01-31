@@ -7,7 +7,13 @@ from functools import lru_cache
 
 from pydantic import Field
 
-from shared.config import BaseSettings, api_base_url_field, redis_url_field, telegram_token_field
+from shared.config import (
+    BaseSettings,
+    api_base_url_field,
+    default_agent_type_field,
+    redis_url_field,
+    telegram_token_field,
+)
 
 
 class Settings(BaseSettings):
@@ -17,6 +23,9 @@ class Settings(BaseSettings):
     redis_url: str = redis_url_field(required=True)
     api_base_url: str = api_base_url_field(required=True)
     telegram_bot_token: str = telegram_token_field(required=True)
+
+    # Worker configuration
+    default_agent_type: str = default_agent_type_field()
 
     # Access Control
     admin_telegram_ids: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")

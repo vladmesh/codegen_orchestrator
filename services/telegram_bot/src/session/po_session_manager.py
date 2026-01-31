@@ -15,8 +15,11 @@ from shared.contracts.queues.po_worker import POWorkerInput
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
+    WorkerChannels,
     WorkerConfig,
 )
+
+from ..config import get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -119,7 +122,10 @@ class POSessionManager:
         )
 
         # Publish to worker input stream
-        stream_key = f"worker:po:{worker_id}:input"
+        stream_key = WorkerChannels.INPUT_PATTERN.value.format(worker_id=worker_id)
+        # Was previously hardcoded as f"worker:po:{worker_id}:input" which caused double 'po' prefix
+        # because worker_id already contains 'po-' prefix.
+
         await self.redis.xadd(
             stream_key,
             {"data": message.model_dump_json()},
@@ -161,13 +167,21 @@ class POSessionManager:
         request_id = str(uuid.uuid4())
         worker_name = f"po-{user_id}"
 
+        # Get configured agent type
+        settings = get_settings()
+        agent_type = (
+            AgentType.FACTORY
+            if settings.default_agent_type.lower() == "factory"
+            else AgentType.CLAUDE
+        )
+
         # Build command
         command = CreateWorkerCommand(
             request_id=request_id,
             config=WorkerConfig(
                 name=worker_name,
                 worker_type="po",
-                agent_type=AgentType.CLAUDE,
+                agent_type=agent_type,
                 instructions="You are a Product Owner assistant.",
                 allowed_commands=["*"],
                 capabilities=[],

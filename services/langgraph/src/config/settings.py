@@ -6,7 +6,12 @@ Does NOT need DATABASE_URL (accesses DB via API)
 
 from functools import lru_cache
 
-from shared.config import BaseSettings, api_base_url_field, redis_url_field
+from shared.config import (
+    BaseSettings,
+    api_base_url_field,
+    default_agent_type_field,
+    redis_url_field,
+)
 
 
 class Settings(BaseSettings):
@@ -15,6 +20,9 @@ class Settings(BaseSettings):
     # Required
     redis_url: str = redis_url_field(required=True)
     api_base_url: str = api_base_url_field(required=True)
+
+    # Worker configuration
+    default_agent_type: str = default_agent_type_field()
 
     # Optional: Mount host Claude session for dev agents (avoids API key need)
     mount_claude_session: bool = True

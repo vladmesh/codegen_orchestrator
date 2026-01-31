@@ -176,9 +176,11 @@ class WorkerWrapper:
         try:
             result = ResultParser.parse(stdout)
             if result is None:
-                logger.warning("no_result_tags_found", stdout=stdout)
-                # Maybe return raw stdout as fallback?
-                # Protocol says we return dict.
+                # No <result> tags — try extracting plain text from Claude CLI JSON
+                content = ResultParser.extract_text(stdout)
+                if content:
+                    return {"content": content, "status": "success"}
+                logger.warning("no_result_tags_found", stdout=stdout[:500])
                 return {"raw_output": stdout, "status": "no_structured_result"}
             return result
         except ResultParseError as e:

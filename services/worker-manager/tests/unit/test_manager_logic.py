@@ -12,6 +12,7 @@ async def test_create_worker_unit():
 
     wrapper = MagicMock()
     wrapper.image_exists = AsyncMock(return_value=True)  # Image already cached
+    wrapper.remove_container = AsyncMock()  # Stale container cleanup
     wrapper.run_container = AsyncMock()
     container = MagicMock()
     container.id = "test-id"

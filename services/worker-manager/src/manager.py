@@ -68,6 +68,9 @@ class WorkerManager:
         )
 
         try:
+            # Remove stale container with the same name (if any)
+            await self.docker.remove_container(container_name, force=True)
+
             # Update Redis status
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "STARTING"})
 
@@ -257,6 +260,7 @@ class WorkerManager:
         host_claude_dir: str | None = None,
         api_key: str | None = None,
         env_vars: Dict[str, str] = None,
+        worker_type: str = "developer",
     ) -> str:
         """
         Create worker with specified capabilities and agent config.
@@ -279,7 +283,7 @@ class WorkerManager:
         # Create Config
         config = WorkerContainerConfig(
             worker_id=worker_id,
-            worker_type="developer",
+            worker_type=worker_type,
             agent_type=agent_type,
             capabilities=capabilities,
             auth_mode=auth_mode,

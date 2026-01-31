@@ -205,6 +205,7 @@ class TestWorkerManagerCreateWithCapabilities:
         docker = MagicMock()
         docker.image_exists = AsyncMock(return_value=True)
         docker.build_image = AsyncMock()
+        docker.remove_container = AsyncMock()
         docker.run_container = AsyncMock()
         container = MagicMock()
         container.id = "container-123"

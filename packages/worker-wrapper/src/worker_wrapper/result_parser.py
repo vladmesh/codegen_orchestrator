@@ -40,6 +40,21 @@ class ResultParser:
             raise ResultParseError(f"Invalid JSON in result block: {e}") from e
 
     @classmethod
+    def extract_text(cls, stdout: str) -> str | None:
+        """Extract plain text from Claude CLI JSON output.
+
+        When Claude returns {"type": "result", "result": "some text"} without
+        <result> tags, this extracts the plain text directly.
+        """
+        try:
+            data = json.loads(stdout)
+            if isinstance(data, dict) and data.get("type") == "result":
+                return data.get("result")
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return None
+
+    @classmethod
     def _extract_result_text(cls, stdout: str) -> str:
         """
         Extract the text content to search for <result> tags.

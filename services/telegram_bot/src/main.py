@@ -25,6 +25,7 @@ from telegram.ext import (
 )
 
 from shared.contracts.events import ProgressEvent
+from shared.contracts.queues.worker import WorkerChannels
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -250,7 +251,7 @@ async def _get_active_session_streams() -> tuple[dict[str, str], dict[str, int]]
     for session_key in session_keys:
         worker_id = await _redis_client.get(session_key)
         if worker_id:
-            stream_key = f"worker:po:{worker_id}:output"
+            stream_key = WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=worker_id)
             streams[stream_key] = "$"
             user_id_str = session_key.replace("session:po:", "")
             user_by_stream[stream_key] = int(user_id_str)
@@ -417,10 +418,23 @@ async def _listen_progress_events(
 
 async def _process_worker_message(app: Application, msg_data: dict, user_id: int) -> None:
     """Process a single worker output message."""
-    import json
-
     payload = json.loads(msg_data.get("data", "{}"))
-    response_text = payload.get("content") or payload.get("response", "")
+    response_text = (
+        payload.get("content")
+        or payload.get("text")
+        or payload.get("response")
+        or payload.get("result")
+        or ""
+    )
+
+    # Fallback: extract text from raw_output (old worker images that lack extract_text)
+    if not response_text and payload.get("raw_output"):
+        try:
+            raw = json.loads(payload["raw_output"])
+            if isinstance(raw, dict) and raw.get("type") == "result":
+                response_text = raw.get("result", "")
+        except (json.JSONDecodeError, TypeError):
+            pass
 
     if response_text:
         await _send_response_to_user(app, user_id, response_text)
@@ -436,6 +450,10 @@ async def _listen_for_worker_responses(app: Application) -> None:
 
     logger.info("worker_response_listener_started")
 
+    # Track last-seen message ID per stream to avoid missing messages
+    # New streams start with "0" (read from beginning) instead of "$" (only future)
+    last_ids: dict[str, str] = {}
+
     try:
         while True:
             try:
@@ -445,7 +463,13 @@ async def _listen_for_worker_responses(app: Application) -> None:
                     await asyncio.sleep(1)
                     continue
 
-                messages = await _redis_client.xread(streams, count=10, block=1000)  # noqa: PLR2004
+                # Use tracked offsets; default to "0" for new streams so we
+                # don't miss messages published between iterations
+                read_offsets = {}
+                for stream_key in streams:
+                    read_offsets[stream_key] = last_ids.get(stream_key, "0")
+
+                messages = await _redis_client.xread(read_offsets, count=10, block=1000)  # noqa: PLR2004
 
                 if not messages:
                     continue
@@ -456,6 +480,7 @@ async def _listen_for_worker_responses(app: Application) -> None:
                         continue
 
                     for msg_id, msg_data in stream_messages:
+                        last_ids[stream_name] = msg_id
                         try:
                             await _process_worker_message(app, msg_data, user_id)
                         except Exception as e:

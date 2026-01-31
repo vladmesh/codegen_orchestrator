@@ -1749,6 +1749,65 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 ---
 
+### P4.2 — Configurable Agent Type ✅
+
+**Path:** `shared/config.py`, `services/telegram_bot/`, `services/langgraph/`  
+**Depends:** P3.1, P4.5
+
+**Goal:** Allow switching between Claude Code and Factory Droid via environment variable.
+
+**Tasks:**
+- [x] Add `default_agent_type_field()` helper to `shared/config.py`
+- [x] Add `default_agent_type` setting to `telegram_bot/src/config.py`
+- [x] Add `default_agent_type` setting to `langgraph/src/config/settings.py`
+- [x] Update `po_session_manager.py` to use config (PO workers)
+- [x] Update `graph_runner.py` to use config (Developer workers + retries)
+- [x] Add `DEFAULT_AGENT_TYPE` env var to `docker-compose.yml`
+
+**Usage:**
+```bash
+# In .env or docker-compose environment
+DEFAULT_AGENT_TYPE=claude   # default
+DEFAULT_AGENT_TYPE=factory  # use Factory Droid instead
+```
+
+**Acceptance Criteria:**
+- [x] No hardcoded `AgentType.CLAUDE` in production code
+- [x] Default is `claude` when env var not set
+- [x] Unit tests pass
+
+---
+
+### P4.3 — Worker Manager Integration (Replace Legacy Spawner) ✅
+
+**Path:** `docker-compose.yml`, `services/worker-manager/`  
+**Depends:** P1.4, P4.2
+
+**Goal:** Заменить legacy `workers-spawner` на новый `worker-manager`, чтобы вся система работала end-to-end.
+
+**Problem:**
+- `telegram_bot` и `langgraph` публикуют `CreateWorkerCommand` в `worker:commands`
+- Legacy `workers-spawner` слушает `cli-agent:commands` (старый формат)
+- Никто не обрабатывает команды из новой архитектуры
+
+**Tasks:**
+- [x] Добавить `worker-manager` сервис в `docker-compose.yml`
+- [x] Настроить volumes для Docker socket и Claude session
+- [x] Убедиться что `worker-manager` слушает `worker:commands`
+- [x] Проверить что воркеры создаются и отвечают (E2E tests P4.5 passing)
+- [x] Удалить `workers-spawner` из `docker-compose.yml`
+- [x] Удалить `services/workers-spawner/` полностью
+- [x] CI workflows не требуют обновлений (не содержат `workers-spawner`)
+
+**Acceptance Criteria:**
+- [x] Telegram Bot → `worker:commands` → `worker-manager` → Container started
+- [x] Worker containers respond via `worker:responses:*` streams
+- [x] Legacy `workers-spawner` removed from codebase
+- [x] E2E tests pass with new architecture (P4.5 ✅)
+
+
+---
+
 ## Definition of Done (Per Component)
 
 | Criterion | Required |
@@ -1766,6 +1825,7 @@ Scheduler → provisioner:queue → infra-service → provisioner:results → ??
 
 | Date | Author | Changes |
 |------|--------|---------|
+| 2026-01-31 | Claude | **P4.3 Worker Manager Integration COMPLETED** — Replaced `workers-spawner` with `worker-manager` in docker-compose.yml, deleted legacy service |
 | 2026-01-29 | Claude | **Audit & checkbox sync** — Updated all Phase 0 and Phase 1 checkboxes to match actual implementation. Only remaining gap: P0.2 unit tests (empty dir), P4.1 full system E2E |
 | 2026-01-29 | Claude | **P1.10 Agent Installation Tests** marked IMPLEMENTED — 4 Claude tests + 1 Factory test + 5 unit tests already exist |
 | 2026-01-29 | Claude | **P4.5 Mock Anthropic E2E COMPLETED** — Fixed Redis WRONGTYPE bug (HSET vs SET), Developer E2E 2/2 tests pass, PO E2E 2/2 tests pass |

@@ -132,3 +132,17 @@ def telegram_token_field(required: bool = True):
         default="",
         description="Telegram Bot API token (optional)",
     )
+
+
+def default_agent_type_field():
+    """Default agent type field definition.
+
+    Can be set via `DEFAULT_AGENT_TYPE` environment variable.
+    Valid values: "claude" or "factory"
+    Defaults to "claude".
+    """
+    return Field(
+        default="claude",
+        alias="DEFAULT_AGENT_TYPE",
+        description="Default AI agent to use (claude or factory)",
+    )

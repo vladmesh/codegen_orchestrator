@@ -26,10 +26,19 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
 )
 
+from ..config.settings import get_settings
 from ..graph import create_graph
 from .redis_publisher import RedisPublisher
 
 logger = structlog.get_logger()
+
+
+def _get_agent_type() -> AgentType:
+    """Get configured agent type from settings."""
+    settings = get_settings()
+    return (
+        AgentType.FACTORY if settings.default_agent_type.lower() == "factory" else AgentType.CLAUDE
+    )
 
 
 MAX_RETRIES = 3
@@ -146,7 +155,7 @@ class GraphRunner:
             config=WorkerConfig(
                 name=f"dev-{result.project_id[:8]}",
                 worker_type="developer",
-                agent_type=AgentType.CLAUDE,
+                agent_type=_get_agent_type(),
                 instructions=f"You are a developer working on project {result.project_id}.",
                 allowed_commands=["project.*"],
                 capabilities=[WorkerCapability.GIT],
@@ -286,7 +295,7 @@ class GraphRunner:
                         config=WorkerConfig(
                             name=f"dev-{flow_id[:8]}-retry{retry_count + 1}",
                             worker_type="developer",
-                            agent_type=AgentType.CLAUDE,
+                            agent_type=_get_agent_type(),
                             instructions=(
                                 f"You are a developer working on project {flow_id}. "
                                 f"(Retry attempt {retry_count + 1})"
