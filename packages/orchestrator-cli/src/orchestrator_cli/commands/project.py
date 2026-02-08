@@ -6,7 +6,7 @@ from rich.console import Console
 from rich.table import Table
 import typer
 
-from orchestrator_cli.client import get_api_client, get_redis_client
+from orchestrator_cli.client import get_api_client
 from orchestrator_cli.permissions import require_permission
 from shared.contracts.dto.project import ProjectStatus
 
@@ -18,9 +18,12 @@ console = Console()
 
 
 async def create_project_async(name: str) -> dict:
-    """Create a new project via API and notify scaffolder."""
+    """Create a new project via API.
+
+    Note: Scaffolding is triggered separately via engineering flow,
+    not directly from project creation.
+    """
     api_client = get_api_client()
-    redis_client = get_redis_client()
 
     project_id = str(uuid.uuid4())
     payload = {
@@ -33,17 +36,9 @@ async def create_project_async(name: str) -> dict:
     try:
         response = await api_client.post("/api/projects/", json=payload)
         response.raise_for_status()
-        project_data = response.json()
+        return response.json()
     finally:
         await api_client.aclose()
-
-    try:
-        stream_payload = {"project_id": project_id, "action": "create", "name": name}
-        await redis_client.xadd(name="scaffolder:queue", fields=stream_payload)
-    finally:
-        await redis_client.aclose()
-
-    return project_data
 
 
 async def list_projects_async() -> list[dict]:

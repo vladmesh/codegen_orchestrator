@@ -7,6 +7,7 @@ Handles:
 - State persistence via Postgres checkpointer
 """
 
+import os
 from typing import Any
 import uuid
 
@@ -92,8 +93,9 @@ class GraphRunner:
         from shared.contracts.queues.scaffolder import ScaffolderMessage
 
         # Generate repo_full_name from project_id
-        # TODO: Get org name from settings or API
-        org_name = "test-org"
+        org_name = os.getenv("GITHUB_ORG")
+        if not org_name:
+            raise RuntimeError("GITHUB_ORG environment variable is not set")
         repo_name = message.project_id.lower().replace(" ", "-").replace("_", "-")
         repo_full_name = f"{org_name}/{repo_name}"
 

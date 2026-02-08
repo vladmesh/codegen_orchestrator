@@ -46,6 +46,7 @@ services:
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
       DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
+      GITHUB_ORG: ${GITHUB_ORG}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -94,6 +95,7 @@ services:
       API_BASE_URL: http://api:8000
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
+      GITHUB_ORG: ${GITHUB_ORG}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -218,6 +220,7 @@ services:
       API_URL: http://api:8000
       GITHUB_APP_ID: ${GITHUB_APP_ID}
       GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
+      GITHUB_ORG: ${GITHUB_ORG}
     volumes:
       - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
