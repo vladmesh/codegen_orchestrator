@@ -144,8 +144,9 @@ async def scaffold_project(
             )
             logger.info("repo_created", repo=repo_full_name)
         except Exception as e:
-            # Repo might already exist, try to continue
-            if "already exists" in str(e).lower():
+            # Repo might already exist (422 Unprocessable Entity)
+            error_str = str(e).lower()
+            if "already exists" in error_str or "422" in error_str:
                 logger.info("repo_already_exists", repo=repo_full_name)
             else:
                 logger.error("repo_creation_failed", error=str(e))
