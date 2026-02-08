@@ -39,23 +39,33 @@ async def get_github_token(org: str) -> str:
     return await github_client.get_org_token(org)
 
 
-async def update_project_status(project_id: str, status: str, max_retries: int = 3) -> bool:
-    """Update project status via API with retry logic.
+async def update_project(
+    project_id: str,
+    status: str,
+    repository_url: str | None = None,
+    max_retries: int = 3,
+) -> bool:
+    """Update project via API with retry logic.
 
     Args:
         project_id: Project ID to update
         status: New status value
+        repository_url: Optional repository URL to set
         max_retries: Maximum number of retry attempts
 
     Returns:
         True if update succeeded, False otherwise
     """
+    payload = {"status": status}
+    if repository_url:
+        payload["repository_url"] = repository_url
+
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.patch(
                     f"{API_URL}/api/projects/{project_id}",
-                    json={"status": status},
+                    json=payload,
                 )
                 if resp.is_success:
                     logger.info(
@@ -289,11 +299,12 @@ async def process_job(job_data: dict, redis_client: redis.Redis) -> None:
         queue=RESULT_QUEUE_NAME,
     )
 
-    # Also update project status via API
+    # Also update project via API
+    repo_url = f"https://github.com/{message.repo_full_name}"
     if success:
-        await update_project_status(message.project_id, "scaffolded")
+        await update_project(message.project_id, "scaffolded", repository_url=repo_url)
     else:
-        await update_project_status(message.project_id, "scaffold_failed")
+        await update_project(message.project_id, "scaffold_failed")
 
 
 async def ensure_consumer_group(redis_client: redis.Redis) -> None:
