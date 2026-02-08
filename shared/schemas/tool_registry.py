@@ -77,27 +77,11 @@ def load_cli_commands():
     This must be called before generating documentation to ensure
     all commands are registered in TOOL_REGISTRY.
     """
-    from pathlib import Path
-    import sys
-
-    # Try to find shared/cli/src and add to path
-    # This file is in shared/schemas/tool_registry.py
-    # Path: shared/schemas/tool_registry.py -> parent -> parent = shared root
-    try:
-        current_file = Path(__file__)
-        shared_root = current_file.parent.parent
-        cli_src = shared_root / "cli" / "src"
-
-        if cli_src.exists() and str(cli_src) not in sys.path:
-            sys.path.append(str(cli_src))
-    except Exception:  # noqa: S110
-        # Ignore path errors
-        pass
-
     try:
         # Import will trigger @register_tool decorators
+        # orchestrator_cli is installed as a package
         # pylint: disable=import-outside-toplevel,unused-import
-        from orchestrator.commands import deploy, engineering, project  # noqa: F401
+        from orchestrator_cli.commands import deploy, engineering, project  # noqa: F401
     except ImportError as e:
         # CLI not available (e.g., in other contexts)
         print(f"Warning: Failed to load CLI commands: {e}")

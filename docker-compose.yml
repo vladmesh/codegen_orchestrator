@@ -159,7 +159,6 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       API_BASE_URL: http://api:8000
-      WORKER_BASE_IMAGE: universal-worker:latest
       # Worker URLs for containers in host network mode
       WORKER_REDIS_URL: redis://localhost:6379
       WORKER_API_URL: http://localhost:8000
@@ -179,14 +178,6 @@ services:
       retries: 5
     networks:
       - internal
-
-  # Universal base image for all CLI agents (build-only target)
-  universal-worker:
-    build:
-      context: .
-      dockerfile: services/universal-worker/Dockerfile
-    image: universal-worker:latest
-    profiles: [ "build" ] # Never runs as service, just builds the image
 
   scheduler:
     build:

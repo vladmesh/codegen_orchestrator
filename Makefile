@@ -5,7 +5,8 @@
 	test-telegram test-telegram-unit \
 	test-workers-spawner test-orchestrator-cli \
 	build up down logs help nuke seed migrate makemigrations shell \
-	setup-hooks lock-deps cleanup-agents
+	setup-hooks lock-deps cleanup-agents \
+	rebuild-worker-images rebuild-worker-images-hard
 
 # Load .env file
 -include .env
@@ -52,6 +53,10 @@ help:
 	@echo "  make seed           - Seed database with API keys from env"
 	@echo "  make lock-deps      - Regenerate all requirements.lock files"
 	@echo "  make cleanup-agents - Remove all agent-* containers"
+	@echo ""
+	@echo "Worker Images:"
+	@echo "  make rebuild-worker-images      - Rebuild worker base images (common → claude)"
+	@echo "  make rebuild-worker-images-hard - Rebuild with --no-cache (when cache is stale)"
 
 # === Dependency Lock Files ===
 
@@ -86,6 +91,33 @@ cleanup-agents:
 	@echo "🧹 Cleaning up agent containers..."
 	@docker ps -a --filter "name=agent-" --format "{{.Names}}" | xargs -r docker rm -f 2>/dev/null || true
 	@echo "✅ Agent containers cleaned up"
+
+# === Worker Base Images ===
+# Build the worker image chain: common -> claude/factory
+# Use rebuild-worker-images after changing orchestrator-cli or worker-base Dockerfiles
+
+rebuild-worker-images:
+	@echo "🔨 Building worker-base-common..."
+	docker build -t worker-base-common:latest \
+		-f services/worker-manager/images/worker-base-common/Dockerfile .
+	@echo "🔨 Building worker-base-claude..."
+	docker build -t worker-base-claude:latest \
+		-f services/worker-manager/images/worker-base-claude/Dockerfile .
+	@echo "🧹 Cleaning cached worker:* images..."
+	@docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
+	@echo "✅ Worker images rebuilt!"
+
+# Full rebuild with --no-cache (use when Docker cache is stale)
+rebuild-worker-images-hard:
+	@echo "🔨 Building worker-base-common (no-cache)..."
+	docker build --no-cache -t worker-base-common:latest \
+		-f services/worker-manager/images/worker-base-common/Dockerfile .
+	@echo "🔨 Building worker-base-claude (no-cache)..."
+	docker build --no-cache -t worker-base-claude:latest \
+		-f services/worker-manager/images/worker-base-claude/Dockerfile .
+	@echo "🧹 Cleaning cached worker:* images..."
+	@docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
+	@echo "✅ Worker images rebuilt (no-cache)!"
 
 # === Quality ===
 
@@ -181,11 +213,11 @@ test-scheduler-service:
 
 test-orchestrator-cli-unit:
 	@echo "🧪 Running Orchestrator CLI unit tests..."
-	@if [ -d "shared/orchestrator-cli/tests/unit" ] && [ "$$(ls -A shared/orchestrator-cli/tests/unit)" ]; then \
-		docker build -f shared/orchestrator-cli/Dockerfile.test -t orchestrator-cli-test .; \
-		docker run --rm orchestrator-cli-test pytest shared/orchestrator-cli/tests/ -v; \
+	@if [ -d "packages/orchestrator-cli/tests/unit" ] && [ "$$(ls -A packages/orchestrator-cli/tests/unit)" ]; then \
+		docker build -f packages/orchestrator-cli/Dockerfile.test -t orchestrator-cli-test .; \
+		docker run --rm orchestrator-cli-test pytest packages/orchestrator-cli/tests/ -v; \
 	else \
-		echo "⚠️  No unit tests found in shared/orchestrator-cli/tests/unit"; \
+		echo "⚠️  No unit tests found in packages/orchestrator-cli/tests/unit"; \
 	fi
 
 test-worker-wrapper-unit:

@@ -48,7 +48,7 @@ jobs:
             scaffolder:
               - 'services/scaffolder/**'
             cli:
-              - 'shared/cli/**'
+              - 'packages/orchestrator-cli/**'
             shared:
               - 'shared/**'
             packages:
