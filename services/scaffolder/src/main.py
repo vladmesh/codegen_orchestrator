@@ -119,7 +119,7 @@ async def scaffold_project(
     project_id: str,
     modules: str,
 ) -> bool:
-    """Clone repo, run copier, commit and push.
+    """Create repo, run copier, commit and push.
 
     Args:
         repo_full_name: Full repo name (org/repo)
@@ -130,16 +130,34 @@ async def scaffold_project(
     Returns:
         True if successful, False otherwise
     """
-    org = repo_full_name.split("/")[0]
+    org, repo_name = repo_full_name.split("/")
 
     try:
-        # Get GitHub token
+        # Step 1: Create repository if it doesn't exist
+        logger.info("creating_repo", org=org, repo=repo_name)
+        try:
+            await github_client.create_repo(
+                org=org,
+                name=repo_name,
+                description=f"Project: {project_name}",
+                private=True,
+            )
+            logger.info("repo_created", repo=repo_full_name)
+        except Exception as e:
+            # Repo might already exist, try to continue
+            if "already exists" in str(e).lower():
+                logger.info("repo_already_exists", repo=repo_full_name)
+            else:
+                logger.error("repo_creation_failed", error=str(e))
+                raise
+
+        # Get GitHub token for git operations
         token = await get_github_token(org)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_dir = Path(tmpdir) / "repo"
 
-            # 1. Clone repository
+            # Step 2: Clone repository
             logger.info("cloning_repo", repo=repo_full_name)
             clone_url = f"https://x-access-token:{token}@github.com/{repo_full_name}.git"
 
