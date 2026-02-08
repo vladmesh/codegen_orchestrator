@@ -116,13 +116,18 @@ class WorkerCommandConsumer:
             # Convert capabilities enum to string list
             caps = [c.value for c in cmd.config.capabilities]
 
+            # Merge context into env vars (e.g., user_telegram_id → ORCHESTRATOR_USER_ID)
+            env_vars = dict(cmd.config.env_vars)
+            if user_id := cmd.context.get("user_telegram_id"):
+                env_vars["ORCHESTRATOR_USER_ID"] = user_id
+
             worker_id = await self.manager.create_worker_with_capabilities(
                 worker_id=cmd.config.name,
                 capabilities=caps,
                 base_image=settings.WORKER_BASE_IMAGE,
                 agent_type=cmd.config.agent_type.value,
                 instructions=cmd.config.instructions,
-                env_vars=cmd.config.env_vars,
+                env_vars=env_vars,
                 auth_mode=cmd.config.auth_mode,
                 host_claude_dir=cmd.config.host_claude_dir or settings.HOST_CLAUDE_DIR,
                 api_key=cmd.config.api_key,

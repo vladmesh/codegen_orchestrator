@@ -18,6 +18,7 @@ from shared.contracts.queues.worker import (
     WorkerChannels,
     WorkerConfig,
 )
+from shared.schemas.tool_groups import ToolGroup, get_instructions_content
 
 from ..config import get_settings
 
@@ -175,6 +176,15 @@ class POSessionManager:
             else AgentType.CLAUDE
         )
 
+        # Generate PO instructions from prompt template + tool docs
+        po_tools = [
+            ToolGroup.PROJECT,
+            ToolGroup.ENGINEERING,
+            ToolGroup.DEPLOY,
+            ToolGroup.RESPOND,
+        ]
+        instructions = get_instructions_content(po_tools)
+
         # Build command
         command = CreateWorkerCommand(
             request_id=request_id,
@@ -182,7 +192,7 @@ class POSessionManager:
                 name=worker_name,
                 worker_type="po",
                 agent_type=agent_type,
-                instructions="You are a Product Owner assistant.",
+                instructions=instructions,
                 allowed_commands=["*"],
                 capabilities=[],
             ),

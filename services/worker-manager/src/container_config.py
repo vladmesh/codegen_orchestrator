@@ -34,6 +34,9 @@ class WorkerContainerConfig:
             "WORKER_OUTPUT_STREAM": WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=self.worker_id),
             "WORKER_CONSUMER_GROUP": "worker_group",
             "WORKER_CONSUMER_NAME": self.worker_id,
+            # Orchestrator CLI env vars (used by `orchestrator` command inside container)
+            "ORCHESTRATOR_API_URL": api_url,
+            "ORCHESTRATOR_REDIS_URL": redis_url,
         }
 
         if self.auth_mode == "api_key" and self.api_key:
