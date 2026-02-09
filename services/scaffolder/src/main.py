@@ -128,6 +128,7 @@ async def scaffold_project(
     project_name: str,
     project_id: str,
     modules: str,
+    task_description: str = "",
 ) -> bool:
     """Create repo, run copier, commit and push.
 
@@ -136,6 +137,7 @@ async def scaffold_project(
         project_name: Project name for copier
         project_id: Project ID for status updates
         modules: Comma-separated list of modules
+        task_description: Detailed task description for TASK.md
 
     Returns:
         True if successful, False otherwise
@@ -207,9 +209,12 @@ async def scaffold_project(
                 f"project_name={sanitized_name}",
                 "--data",
                 f"modules={modules}",
+                "--data",
+                f"task_description={task_description}",
                 "--trust",
                 "--defaults",
                 "--overwrite",  # Overwrite existing files from init
+                "--vcs-ref=HEAD",  # Always use latest commit, not cached tag
             ]
 
             result = subprocess.run(
@@ -223,9 +228,10 @@ async def scaffold_project(
                 logger.error("copier_failed", error=result.stderr, stdout=result.stdout)
                 return False
 
-            # 3. Configure git user
+            # 3. Configure git user and disable hooks
             _run_git("config", "user.email", "scaffolder@codegen.local", cwd=repo_dir)
             _run_git("config", "user.name", "Scaffolder Bot", cwd=repo_dir)
+            _run_git("config", "core.hooksPath", "/dev/null", cwd=repo_dir)  # Disable all hooks
 
             # 4. Commit changes
             logger.info("committing_changes")
@@ -233,6 +239,7 @@ async def scaffold_project(
 
             result = _run_git(
                 "commit",
+                "--no-verify",  # Skip pre-commit hooks (no make in container)
                 "-m",
                 f"feat: scaffold {project_name} with modules: {modules}",
                 cwd=repo_dir,
@@ -281,6 +288,7 @@ async def process_job(job_data: dict, redis_client: redis.Redis) -> None:
         message.project_name,
         message.project_id,
         modules_str,
+        task_description=message.task_description,
     )
 
     # Publish ScaffolderResult to results queue

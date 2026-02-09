@@ -17,6 +17,7 @@ class ScaffolderMessage(BaseMessage):
     project_name: str
     repo_full_name: str  # org/repo format, e.g. "vladmesh/my-project"
     modules: list[ServiceModule]
+    task_description: str = ""  # Detailed task description for TASK.md
 
 
 class ScaffolderResult(BaseResult):

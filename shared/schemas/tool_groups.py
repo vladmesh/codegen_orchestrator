@@ -32,8 +32,22 @@ TOOL_DOCS: dict[ToolGroup, str] = {
 Manage projects in the orchestrator system.
 
 ```bash
-# Create a new project
-orchestrator project create --name <project_name> [--type telegram-bot] [--description <desc>]
+# Create a new project with modules and description
+orchestrator project create --name <name> --modules <modules> \\
+    --description "<what to build>"
+
+# Available modules (comma-separated):
+#   backend    - FastAPI REST API (always included)
+#   tg_bot     - Telegram bot service
+#   notifications - Notification worker
+#   frontend   - Frontend application
+
+# Examples:
+orchestrator project create --name my-api --modules backend \\
+    --description "REST API for user management"
+
+orchestrator project create --name my-bot --modules backend,tg_bot \\
+    --description "Telegram bot that reverses words in messages"
 
 # List all projects
 orchestrator project list
@@ -42,34 +56,47 @@ orchestrator project list
 orchestrator project get <project_id>
 
 # Set a secret for a project (e.g., API tokens)
-orchestrator project set-secret <project_id> <KEY> <value>
+orchestrator project set-secret -p <project_id> -k <KEY> -v <value>
 ```
 
-**Important**: Always create a project before triggering engineering or deploy tasks.
+**Important**:
+- Always create a project before triggering engineering or deploy tasks.
+- For Telegram bots, use `--modules backend,tg_bot` (NOT just "telegram").
+- ALWAYS include `--description` with what the project should do!
 """,
     ToolGroup.DEPLOY: """## Deploy Commands
 
-Trigger and monitor deployments.
+Deploy existing projects WITHOUT code changes. Use this when:
+- Redeploying after a failed deployment
+- Deploying existing code to a server
+- User explicitly asks to "deploy" or "redeploy"
 
 ```bash
-# Trigger deployment for a project
-orchestrator deploy trigger <project_id>
+# Trigger deployment for a project (NO code changes)
+orchestrator deploy trigger -p <project_id>
 
 # Check deployment status
-orchestrator deploy status <job_id>
+orchestrator deploy status <task_id>
 ```
+
+**Note**: If you need to CREATE or MODIFY code, use `engineering trigger` instead.
 """,
     ToolGroup.ENGINEERING: """## Engineering Commands
 
-Trigger engineering tasks (code generation, modifications).
+Run FULL development flow: code generation + testing + deployment. Use this when:
+- Creating a new project from scratch
+- Modifying existing code/adding features
+- User wants to "build", "create", or "change" something
 
 ```bash
-# Trigger engineering task for a project
-orchestrator engineering trigger <project_id>
+# Trigger FULL engineering task (code + deploy)
+orchestrator engineering trigger -p <project_id>
 
 # Check task status (with optional --follow for live updates)
 orchestrator engineering status <task_id> [--follow]
 ```
+
+**Note**: If code already exists and you just need to deploy, use `deploy trigger` instead.
 """,
     ToolGroup.INFRA: """## Infrastructure Commands
 

@@ -115,12 +115,32 @@ class GraphRunner:
             repo_name = message.project_id[:8]  # Fallback to short UUID
         repo_full_name = f"{org_name}/{repo_name}"
 
+        # Get modules from project config, default to backend
+        project_config = project.get("config") or {}
+        modules_list = project_config.get("modules", ["backend"])
+
+        # Convert string module names to ServiceModule enum
+        service_modules = []
+        for mod in modules_list:
+            try:
+                service_modules.append(ServiceModule(mod))
+            except ValueError:
+                logger.warning("unknown_module_skipped", module=mod)
+        if not service_modules:
+            service_modules = [ServiceModule.BACKEND]
+
+        # Get task description from project config
+        task_description = project_config.get("description", "")
+        if not task_description:
+            task_description = project_config.get("detailed_spec", "")
+
         scaffolder_msg = ScaffolderMessage(
             request_id=str(uuid.uuid4()),
             project_id=message.project_id,
             project_name=project_name,
             repo_full_name=repo_full_name,
-            modules=[ServiceModule.BACKEND],  # TODO: Get from message or API
+            modules=service_modules,
+            task_description=task_description,
         )
 
         await self.redis_publisher.publish("scaffolder:queue", scaffolder_msg.model_dump_json())

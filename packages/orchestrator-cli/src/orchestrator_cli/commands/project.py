@@ -17,20 +17,45 @@ console = Console()
 # --- Async implementations ---
 
 
-async def create_project_async(name: str) -> dict:
+# Available modules in service-template (must match copier.yml)
+# backend is always required
+AVAILABLE_MODULES = ["backend", "tg_bot", "notifications", "frontend"]
+DESCRIPTION_TRUNCATE_LENGTH = 80
+
+
+async def create_project_async(
+    name: str, modules: list[str] | None = None, description: str = ""
+) -> dict:
     """Create a new project via API.
 
     Note: Scaffolding is triggered separately via engineering flow,
     not directly from project creation.
+
+    Args:
+        name: Project name
+        modules: List of modules to include. Defaults to ["backend"].
+        description: Task description for the developer (what to build).
     """
     api_client = get_api_client()
 
+    # Default to backend if no modules specified
+    if not modules:
+        modules = ["backend"]
+
+    # Ensure backend is always included
+    if "backend" not in modules:
+        modules = ["backend", *modules]
+
     project_id = str(uuid.uuid4())
+    config = {"modules": modules}
+    if description:
+        config["description"] = description
+
     payload = {
         "id": project_id,
         "name": name,
         "status": ProjectStatus.DRAFT,
-        "config": {},
+        "config": config,
     }
 
     try:
@@ -96,11 +121,34 @@ async def set_secret_async(project_id: str, key: str, value: str) -> dict:
 @require_permission("project")
 def create(
     name: str = typer.Option(..., "--name", "-n", help="Project name"),
+    modules: str = typer.Option(
+        "backend",
+        "--modules",
+        "-m",
+        help="Comma-separated: backend, tg_bot, notifications, frontend.",
+    ),
+    description: str = typer.Option(
+        "",
+        "--description",
+        "-d",
+        help="Task description: what the project should do (written to TASK.md for developer)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
-    """Create a new project."""
+    """Create a new project with specified modules and description."""
     try:
-        project_data = asyncio.run(create_project_async(name))
+        # Parse and validate modules
+        modules_list = [m.strip() for m in modules.split(",") if m.strip()]
+
+        invalid_modules = [m for m in modules_list if m not in AVAILABLE_MODULES]
+        if invalid_modules:
+            console.print(
+                f"[bold red]Error:[/bold red] Invalid modules: {', '.join(invalid_modules)}"
+            )
+            console.print(f"Available: {', '.join(AVAILABLE_MODULES)}")
+            raise typer.Exit(code=1)
+
+        project_data = asyncio.run(create_project_async(name, modules_list, description))
 
         if json_output:
             typer.echo(json.dumps(project_data, indent=2))
@@ -109,7 +157,14 @@ def create(
         console.print("[bold green]✓ Project created successfully![/bold green]")
         console.print(f"ID: [cyan]{project_data['id']}[/cyan]")
         console.print(f"Name: [magenta]{project_data['name']}[/magenta]")
+        console.print(f"Modules: [yellow]{', '.join(modules_list)}[/yellow]")
+        if description:
+            max_len = DESCRIPTION_TRUNCATE_LENGTH
+            truncated = description[:max_len] + "..." if len(description) > max_len else description
+            console.print(f"Description: [dim]{truncated}[/dim]")
 
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(code=1) from None
