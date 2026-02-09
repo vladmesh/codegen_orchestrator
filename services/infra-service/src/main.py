@@ -185,9 +185,7 @@ async def run_worker():
                                     ex=3600,  # 1 hour TTL
                                 )
                                 # Also publish to stream for stats/monitoring if needed
-                                await redis.publish_event(
-                                    "provisioner:results", result, category="result"
-                                )
+                                await redis.publish("provisioner:results", result)
 
                             # ACK the message
                             await redis.redis.xack(

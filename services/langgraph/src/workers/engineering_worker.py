@@ -18,6 +18,7 @@ from shared.queues import ENGINEERING_QUEUE, WORKER_GROUP, ensure_consumer_group
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ..nodes.resource_allocator import resource_allocator_node
 
 logger = structlog.get_logger(__name__)
 
@@ -83,12 +84,63 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             )
             return {"status": "failed", "error": error_msg}
 
+        # Allocate resources if not already allocated
+        existing_allocations = await api_client.get_project_allocations(project_id)
+        if existing_allocations:
+            # Convert existing allocations to allocated_resources format
+            allocated_resources = {
+                f"{a['server_handle']}:{a['port']}": a for a in existing_allocations
+            }
+            logger.info(
+                "using_existing_allocations",
+                task_id=task_id,
+                project_id=project_id,
+                count=len(allocated_resources),
+            )
+        else:
+            # Run resource allocator to create allocations
+            logger.info(
+                "allocating_resources",
+                task_id=task_id,
+                project_id=project_id,
+            )
+            alloc_result = await resource_allocator_node.run(
+                {
+                    "project_id": project_id,
+                    "project_spec": project,
+                    "allocated_resources": {},
+                    "errors": [],
+                }
+            )
+
+            if alloc_result.get("errors"):
+                error_msg = "; ".join(alloc_result["errors"])
+                logger.error(
+                    "resource_allocation_failed",
+                    task_id=task_id,
+                    project_id=project_id,
+                    errors=alloc_result["errors"],
+                )
+                await api_client.patch(
+                    f"tasks/{task_id}",
+                    json={"status": "failed", "error_message": error_msg},
+                )
+                return {"status": "failed", "error": error_msg}
+
+            allocated_resources = alloc_result.get("allocated_resources", {})
+            logger.info(
+                "resources_allocated",
+                task_id=task_id,
+                project_id=project_id,
+                count=len(allocated_resources),
+            )
+
         # Prepare EngineeringState
         subgraph_input = {
             "messages": [],
             "current_project": project_id,
             "project_spec": project,
-            "allocated_resources": {},
+            "allocated_resources": allocated_resources,
             "commit_sha": None,
             "engineering_status": "idle",
             "iteration_count": 0,
