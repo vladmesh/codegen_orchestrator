@@ -1,6 +1,6 @@
 """Worker Spawner Client for LangGraph.
 
-Client for requesting coding worker spawns via Redis Stream (workers-spawner service).
+Client for requesting coding worker spawns via Redis Stream (worker-manager service).
 Used by LangGraph nodes to trigger container spawning.
 """
 
@@ -11,6 +11,12 @@ import uuid
 
 import redis.asyncio as redis
 
+from shared.contracts.queues.worker import (
+    AgentType,
+    CreateWorkerCommand,
+    WorkerCapability,
+    WorkerConfig,
+)
 from shared.logging_config import get_logger
 
 from ..config.constants import Timeouts
@@ -18,8 +24,8 @@ from ..config.settings import get_settings
 
 logger = get_logger(__name__)
 
-COMMAND_STREAM = "cli-agent:commands"
-RESPONSE_STREAM = "cli-agent:responses"
+COMMAND_STREAM = "worker:commands"
+RESPONSE_STREAM = "worker:responses:developer"
 CREATION_TIMEOUT = 60
 
 
@@ -42,36 +48,54 @@ async def _wait_for_response(
     redis_client: redis.Redis,
     group_name: str,
     consumer_id: str,
-    request_id: str,
+    request_id: str | None,
     timeout_s: float,
+    stream: str = RESPONSE_STREAM,
 ) -> dict | None:
-    """Wait for a specific response in the stream."""
+    """Wait for a specific response in the stream.
+
+    If request_id is None, returns the first message (used for worker output streams).
+    """
     start_time = asyncio.get_running_loop().time()
 
     while (asyncio.get_running_loop().time() - start_time) < timeout_s:
-        messages = await redis_client.xreadgroup(
-            groupname=group_name,
-            consumername=consumer_id,
-            streams={RESPONSE_STREAM: ">"},
-            count=1,
-            block=1000,
-        )
+        try:
+            messages = await redis_client.xreadgroup(
+                groupname=group_name,
+                consumername=consumer_id,
+                streams={stream: ">"},
+                count=1,
+                block=1000,
+            )
+        except redis.ResponseError as e:
+            if "NOGROUP" in str(e):
+                # Group doesn't exist yet, create it
+                try:
+                    await redis_client.xgroup_create(stream, group_name, id="$", mkstream=True)
+                except redis.ResponseError:
+                    pass
+                continue
+            raise
 
         if messages:
             for _, stream_msgs in messages:
                 for msg_id, msg_data in stream_msgs:
                     # Skip messages without 'data' field (wrong format)
                     if b"data" not in msg_data and "data" not in msg_data:
-                        await redis_client.xack(RESPONSE_STREAM, group_name, msg_id)
+                        await redis_client.xack(stream, group_name, msg_id)
                         continue
 
                     data_str = msg_data[b"data"] if b"data" in msg_data else msg_data["data"]
                     try:
                         resp = json.loads(data_str)
-                        if resp.get("request_id") == request_id:
-                            await redis_client.xack(RESPONSE_STREAM, group_name, msg_id)
+                        # If no request_id filter, return any message
+                        if request_id is None or resp.get("request_id") == request_id:
+                            await redis_client.xack(stream, group_name, msg_id)
                             return resp
+                        # ACK non-matching messages so they don't pile up
+                        await redis_client.xack(stream, group_name, msg_id)
                     except json.JSONDecodeError:
+                        await redis_client.xack(stream, group_name, msg_id)
                         continue
     return None
 
@@ -81,37 +105,16 @@ async def request_spawn(
     github_token: str,
     task_content: str,
     task_title: str = "AI generated changes",
-    model: str = "claude-sonnet-4-5-20250929",  # Used to select agent model if configurable
+    model: str = "claude-sonnet-4-5-20250929",
     agents_content: str | None = None,
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 
-    Uses 'factory-droid' agent type via workers-spawner service.
+    Uses worker-manager to create a developer worker container.
     """
     request_id = str(uuid.uuid4())
     settings = get_settings()
-
-    # Construct WorkerConfig
-    # Use 'claude-code' agent directly for now as factory-droid is a stub.
-    env_vars = {
-        "GITHUB_TOKEN": github_token,
-        "REPO_NAME": repo,
-        # Task content is sent via file to avoid shell quoting issues with large prompts
-    }
-
-    # Add custom Anthropic API URL if configured (for E2E testing with mock server)
-    if settings.anthropic_base_url:
-        env_vars["ANTHROPIC_BASE_URL"] = settings.anthropic_base_url
-
-    config = {
-        "name": f"Dev {repo.split('/')[-1]}",
-        "agent": "claude-code",
-        "capabilities": ["git", "github", "node", "python"],
-        "allowed_tools": ["project"],
-        "env_vars": env_vars,
-        "mount_session_volume": settings.mount_claude_session,
-    }
 
     redis_client = redis.from_url(settings.redis_url)
 
@@ -119,20 +122,50 @@ async def request_spawn(
     consumer_id = f"langgraph-{request_id[:8]}"
     group_name = f"langgraph-client-{request_id[:8]}"
 
-    try:
-        # 1. Publish Create Command
-        create_payload = {
-            "command": "create",
-            "request_id": request_id,
-            "config": config,
-            "context": {"source": "langgraph"},
-        }
+    worker_id = None
 
-        await redis_client.xgroup_create(RESPONSE_STREAM, group_name, id="$", mkstream=True)
-        await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(create_payload)})
+    try:
+        # 1. Create consumer group for responses
+        try:
+            await redis_client.xgroup_create(RESPONSE_STREAM, group_name, id="$", mkstream=True)
+        except redis.ResponseError as e:
+            if "BUSYGROUP" not in str(e):
+                raise
+
+        # 2. Build CreateWorkerCommand using shared contracts
+        worker_name = f"dev-{repo.split('/')[-1][:20]}-{request_id[:8]}"
+
+        # Build instructions with task content
+        instructions = f"""{task_title}
+
+{task_content}
+
+After completing the task:
+1. Commit all changes with descriptive message
+2. Push to the repository
+"""
+
+        create_cmd = CreateWorkerCommand(
+            request_id=request_id,
+            config=WorkerConfig(
+                name=worker_name,
+                worker_type="developer",
+                agent_type=AgentType.CLAUDE,
+                instructions=instructions,
+                allowed_commands=["*"],
+                capabilities=[WorkerCapability.GIT],
+                env_vars={
+                    "GITHUB_TOKEN": github_token,
+                    "REPO_NAME": repo,
+                },
+            ),
+            context={"source": "langgraph", "repo": repo},
+        )
+
+        await redis_client.xadd(COMMAND_STREAM, {"data": create_cmd.model_dump_json()})
         logger.info("worker_spawn_requested", request_id=request_id, repo=repo)
 
-        # 2. Wait for Creation Response
+        # 3. Wait for Creation Response
         create_resp = await _wait_for_response(
             redis_client, group_name, consumer_id, request_id, CREATION_TIMEOUT
         )
@@ -145,74 +178,69 @@ async def request_spawn(
                 request_id, False, -1, f"Creation failed: {create_resp.get('error')}"
             )
 
-        agent_id = create_resp.get("agent_id")
+        worker_id = create_resp.get("worker_id")
+        logger.info("worker_created", request_id=request_id, worker_id=worker_id)
 
-        # 3. Send Task Content as File (for AGENTS.md only, message goes direct now)
-        if agents_content:
-            agents_file_payload = {
-                "command": "send_file",
-                "request_id": f"{request_id}-agents",
-                "agent_id": agent_id,
-                "path": "/workspace/AGENTS.md",
-                "content": agents_content,
-            }
-            await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(agents_file_payload)})
+        # 4. Set up output stream consumer group BEFORE sending task
+        # Use id="0" to read any existing messages (in case worker is very fast)
+        output_stream = f"worker:{worker_id}:output"
+        try:
+            await redis_client.xgroup_create(output_stream, group_name, id="0", mkstream=True)
+        except redis.ResponseError as e:
+            if "BUSYGROUP" not in str(e):
+                raise
 
-        # 4. Build task message with context
-        task_message = f"""{task_title}
-
-{task_content}
-
-After completing the task:
-1. Commit all changes with descriptive message
-2. Push to the repository
-"""
-
-        # 5. Send message via headless protocol (no shell escaping needed)
-        msg_payload = {
-            "command": "send_message",
-            "request_id": f"{request_id}-exec",
-            "agent_id": agent_id,
-            "message": task_message,
-            "timeout": timeout_seconds,
+        # 5. Send task message to worker input stream
+        input_stream = f"worker:{worker_id}:input"
+        task_message = {
+            "request_id": request_id,
+            "prompt": instructions,
+            "user_id": 0,  # System task
         }
+        await redis_client.xadd(input_stream, {"data": json.dumps(task_message)})
+        logger.info("task_sent_to_worker", request_id=request_id, worker_id=worker_id)
 
-        await redis_client.xadd(COMMAND_STREAM, {"data": json.dumps(msg_payload)})
-
-        # 6. Wait for Execution Response
-        exec_result = await _wait_for_response(
-            redis_client, group_name, consumer_id, f"{request_id}-exec", float(timeout_seconds)
+        # Wait for output (worker output doesn't have request_id, so pass None)
+        output_resp = await _wait_for_response(
+            redis_client, group_name, consumer_id, None, float(timeout_seconds), output_stream
         )
 
-        # DELETE container
-        await redis_client.xadd(
-            COMMAND_STREAM,
-            {
-                "data": json.dumps(
-                    {"command": "delete", "request_id": f"{request_id}-del", "agent_id": agent_id}
-                )
-            },
-        )
-
-        if exec_result:
-            # send_message returns 'response' not 'output'
+        if output_resp:
+            # Worker outputs: {"content": "...", "status": "success|failed"}
+            is_success = output_resp.get("status") == "success" or output_resp.get("success", False)
+            content = output_resp.get(
+                "content", output_resp.get("response", output_resp.get("output", ""))
+            )
             return SpawnResult(
                 request_id=request_id,
-                success=exec_result.get("success", False),
-                exit_code=0 if exec_result.get("success") else 1,
-                output=exec_result.get("response", ""),
-                error_message=exec_result.get("error"),
+                success=is_success,
+                exit_code=0 if is_success else 1,
+                output=content,
+                error_message=output_resp.get("error"),
             )
         else:
-            return SpawnResult(request_id, False, -1, "Timeout waiting for execution")
+            # No output received - worker might still be running
+            # Return partial success since container was created
+            return SpawnResult(
+                request_id,
+                False,
+                -1,
+                "Timeout waiting for worker output. Worker may still be running.",
+                error_message="execution_timeout",
+            )
 
     except Exception as e:
         logger.error("spawn_failed", error=str(e))
         return SpawnResult(request_id, False, -1, str(e))
     finally:
-        # Cleanup consumer group
+        # Cleanup consumer groups (ignore errors - groups may not exist)
         try:
             await redis_client.xgroup_destroy(RESPONSE_STREAM, group_name)
         except Exception as e:
-            logger.warning("cleanup_failed", error=str(e))
+            logger.debug("cleanup_response_group_failed", error=str(e))
+        if worker_id:
+            try:
+                await redis_client.xgroup_destroy(f"worker:{worker_id}:output", group_name)
+            except Exception as e:
+                logger.debug("cleanup_output_group_failed", error=str(e))
         await redis_client.aclose()

@@ -173,14 +173,34 @@ async def update_server(
     _: None = Depends(_require_admin_if_user),
 ) -> Server:
     """Update server fields (admin only)."""
+    from datetime import datetime
+
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
 
     # Update allowed fields
-    allowed_fields = {"status", "notes", "is_managed", "labels"}
+    allowed_fields = {
+        "status",
+        "notes",
+        "is_managed",
+        "labels",
+        "provisioning_started_at",
+        "capacity_cpu",
+        "capacity_ram_mb",
+        "capacity_disk_mb",
+        "used_ram_mb",
+        "used_disk_mb",
+        "os_template",
+    }
+    # Fields that need datetime parsing
+    datetime_fields = {"provisioning_started_at"}
+
     for field, value in updates.items():
         if field in allowed_fields and hasattr(server, field):
+            # Parse datetime strings
+            if field in datetime_fields and isinstance(value, str):
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
             setattr(server, field, value)
 
     await db.commit()

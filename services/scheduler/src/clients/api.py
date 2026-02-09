@@ -90,7 +90,7 @@ class SchedulerAPIClient:
 
     async def update_server(self, server_id: str, server: ServerUpdate) -> ServerDTO:
         resp = await self._request(
-            "PATCH", f"servers/{server_id}", json=server.model_dump(exclude_unset=True)
+            "PATCH", f"servers/{server_id}", json=server.model_dump(mode="json", exclude_unset=True)
         )
         return ServerDTO.model_validate(resp.json())
 

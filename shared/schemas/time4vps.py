@@ -18,9 +18,10 @@ class Time4VPSServer(BaseModel):
     Use `Time4VPSServerDetails` for full server information.
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    id: int = Field(..., description="Unique server ID in Time4VPS")
+    # Time4VPS API returns 'server_id', we normalize to 'id'
+    id: int = Field(..., alias="server_id", description="Unique server ID in Time4VPS")
     name: str | None = Field(None, description="Server display name")
     domain: str | None = Field(None, description="Server hostname/domain")
     ip: str | None = Field(None, description="Primary IP address")

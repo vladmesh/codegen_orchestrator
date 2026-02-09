@@ -99,12 +99,28 @@ class DeveloperNode(FunctionalNode):
             # Get GitHub App token for the project's organization
             github_client = GitHubAppClient()
 
-            # Auto-detect org from GitHub App installation
-            installation = await github_client.get_first_org_installation()
-            owner = installation["org"]
-
-            repo_name = project_name.lower().replace(" ", "-").replace("_", "-")
-            repo_full_name = f"{owner}/{repo_name}"
+            # Use repository_url from project if available (set by scaffolder)
+            repository_url = project_spec.get("repository_url")
+            if repository_url and "github.com/" in repository_url:
+                # Extract owner/repo from URL like https://github.com/owner/repo
+                repo_full_name = repository_url.split("github.com/")[-1].rstrip("/")
+                owner, repo_name = repo_full_name.split("/", 1)
+                logger.info(
+                    "using_repository_url_from_project",
+                    repository_url=repository_url,
+                    repo_full_name=repo_full_name,
+                )
+            else:
+                # Fallback: auto-detect org and infer repo name
+                installation = await github_client.get_first_org_installation()
+                owner = installation["org"]
+                repo_name = project_name.lower().replace(" ", "-").replace("_", "-")
+                repo_full_name = f"{owner}/{repo_name}"
+                logger.info(
+                    "inferring_repo_from_project_name",
+                    project_name=project_name,
+                    repo_full_name=repo_full_name,
+                )
 
             # Get token for the repository
             access_token = await github_client.get_token(owner, repo_name)

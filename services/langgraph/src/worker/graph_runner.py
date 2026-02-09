@@ -27,6 +27,7 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
 )
 
+from ..clients.api import api_client
 from ..config.settings import get_settings
 from ..graph import create_graph
 from .redis_publisher import RedisPublisher
@@ -72,10 +73,18 @@ class GraphRunner:
         1. Send ScaffolderMessage to scaffolder:queue
         2. Wait for ScaffolderResult (handled by resume_after_scaffolding)
         """
+        # Fetch project to get the name
+        project = await api_client.get_project(message.project_id)
+        if not project:
+            logger.error("project_not_found", project_id=message.project_id)
+            return
+        project_name = project.get("name", message.project_id)
+
         logger.info(
             "starting_engineering_flow",
             task_id=message.task_id,
             project_id=message.project_id,
+            project_name=project_name,
         )
 
         # Store flow context
@@ -84,6 +93,7 @@ class GraphRunner:
             "type": "engineering",
             "task_id": message.task_id,
             "project_id": message.project_id,
+            "project_name": project_name,
             "user_id": message.user_id,
             "state": "scaffolding",
         }
@@ -92,17 +102,23 @@ class GraphRunner:
         from shared.contracts.dto.project import ServiceModule
         from shared.contracts.queues.scaffolder import ScaffolderMessage
 
-        # Generate repo_full_name from project_id
+        # Generate repo_full_name from project name (human-readable)
         org_name = os.getenv("GITHUB_ORG")
         if not org_name:
             raise RuntimeError("GITHUB_ORG environment variable is not set")
-        repo_name = message.project_id.lower().replace(" ", "-").replace("_", "-")
+        import re
+
+        repo_name = project_name.lower().replace(" ", "-").replace("_", "-")
+        repo_name = re.sub(r"[^a-z0-9-]", "", repo_name)  # Remove invalid chars
+        repo_name = re.sub(r"-+", "-", repo_name).strip("-")  # Collapse hyphens
+        if not repo_name:
+            repo_name = message.project_id[:8]  # Fallback to short UUID
         repo_full_name = f"{org_name}/{repo_name}"
 
         scaffolder_msg = ScaffolderMessage(
             request_id=str(uuid.uuid4()),
             project_id=message.project_id,
-            project_name=message.project_id,  # TODO: Get from API
+            project_name=project_name,
             repo_full_name=repo_full_name,
             modules=[ServiceModule.BACKEND],  # TODO: Get from message or API
         )
@@ -225,7 +241,7 @@ class GraphRunner:
             task_id=flow["task_id"],
             project_id=flow_id,
             prompt=(
-                f"Init Backend for project {flow_id}. "
+                f"Init Backend for project {flow.get('project_name', flow_id)}. "
                 f"Clone {flow.get('repo_url')} and implement the business logic."
             ),
             timeout=300,
