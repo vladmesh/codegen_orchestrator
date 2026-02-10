@@ -42,12 +42,24 @@ class SecretResolverNode(FunctionalNode):
         # Normalize project_id for DB names
         safe_project_id = project_id.replace("-", "_").lower()
 
+        # Get previously saved secrets from project config
+        config_secrets = project_spec.get("config", {}).get("secrets", {})
+
         resolved = {}
         missing_user = []
+        newly_generated = {}  # Track new infra secrets to save
 
         for var, var_type in env_analysis.items():
             if var_type == "infra":
-                resolved[var] = self._generate_infra_secret(var, safe_project_id)
+                # First check if secret already exists in project config
+                if var in config_secrets:
+                    resolved[var] = config_secrets[var]
+                    logger.debug("secret_reused", var=var)
+                else:
+                    # Generate new secret and mark for saving
+                    resolved[var] = self._generate_infra_secret(var, safe_project_id)
+                    newly_generated[var] = resolved[var]
+                    logger.debug("secret_generated", var=var)
 
             elif var_type == "computed":
                 resolved[var] = self._compute_secret(var, project_spec, state)
@@ -56,7 +68,6 @@ class SecretResolverNode(FunctionalNode):
                 # Check if user provided it via:
                 # 1. provided_secrets (passed directly)
                 # 2. project_spec.config.secrets (saved to DB via save_project_secret)
-                config_secrets = project_spec.get("config", {}).get("secrets", {})
                 if var in provided_secrets:
                     resolved[var] = provided_secrets[var]
                 elif var in config_secrets:
@@ -64,11 +75,16 @@ class SecretResolverNode(FunctionalNode):
                 else:
                     missing_user.append(var)
 
+        # Save newly generated secrets to project config for reuse on redeploy
+        if newly_generated and project_id != "unknown":
+            await self._save_secrets_to_project(project_id, newly_generated)
+
         logger.info(
             "secret_resolver_complete",
             resolved_count=len(resolved),
             missing_user_count=len(missing_user),
             missing_user=missing_user,
+            newly_generated_count=len(newly_generated),
         )
 
         return {
@@ -113,10 +129,22 @@ class SecretResolverNode(FunctionalNode):
         elif key_upper in {"APP_ENV", "ENVIRONMENT"}:
             return "production"
 
+        elif key_upper == "DEBUG":
+            return "false"
+
         elif key_upper == "PROJECT_NAME":
             return project_spec.get("name", "project")
 
-        elif key_upper in {"BACKEND_API_URL", "API_URL"}:
+        elif key_upper == "POSTGRES_HOST":
+            return "db"  # Docker service name
+
+        elif key_upper == "POSTGRES_PORT":
+            return "5432"
+
+        elif key_upper == "POSTGRES_REQUIRE_SSL":
+            return "false"
+
+        elif key_upper in {"BACKEND_API_URL", "API_URL", "API_BASE_URL", "BACKEND_URL"}:
             resources = state.get("allocated_resources", {})
             if resources:
                 first_resource = list(resources.values())[0]
@@ -126,8 +154,61 @@ class SecretResolverNode(FunctionalNode):
                     return f"http://{ip}:{port}"
             return "http://localhost:8000"
 
+        # Docker images from GHCR
+        elif key_upper.endswith("_IMAGE"):
+            repo_url = get_repo_url(project_spec)
+            if repo_url:
+                # Parse: https://github.com/org/repo -> org/repo
+                parts = repo_url.rstrip("/").split("/")
+                owner = parts[-2] if len(parts) > 1 else "unknown"
+                repo = parts[-1] if parts else "unknown"
+
+                # Derive service name: BACKEND_IMAGE -> backend, TG_BOT_IMAGE -> tg-bot
+                service = key_upper.replace("_IMAGE", "").lower().replace("_", "-")
+
+                return f"ghcr.io/{owner}/{repo}-{service}:latest"
+            return "ghcr.io/unknown/unknown-service:latest"
+
         # Default: project name
         return project_spec.get("name", "value")
+
+    async def _save_secrets_to_project(self, project_id: str, secrets: dict) -> None:
+        """Save newly generated secrets to project config for reuse on redeploy.
+
+        Args:
+            project_id: Project ID
+            secrets: Dict of secret_name -> secret_value to save
+        """
+        try:
+            # Get current project to preserve existing config
+            project = await api_client.get_project(project_id)
+            if not project:
+                logger.warning("save_secrets_project_not_found", project_id=project_id)
+                return
+
+            # Merge new secrets with existing config
+            config = project.get("config", {}) or {}
+            config_secrets = config.get("secrets", {}) or {}
+            config_secrets.update(secrets)
+            config["secrets"] = config_secrets
+
+            # Save back to project
+            await api_client.patch(f"/projects/{project_id}", json={"config": config})
+
+            logger.info(
+                "secrets_saved_to_project",
+                project_id=project_id,
+                secrets_count=len(secrets),
+                secret_names=list(secrets.keys()),
+            )
+        except Exception as e:
+            # Log but don't fail - secrets will be regenerated next time
+            logger.error(
+                "save_secrets_failed",
+                project_id=project_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
 
 
 class ReadinessCheckNode(FunctionalNode):
@@ -247,16 +328,53 @@ class DeployerNode(FunctionalNode):
     async def run(self, state: DevOpsState) -> dict:
         """Execute deployment by delegating to infrastructure-worker."""
         project_id = state.get("project_id")
+        project_spec = state.get("project_spec") or {}
         logger.info("deployer_start", project_id=project_id)
 
         resolved_secrets = state.get("resolved_secrets", {})
-        project_spec = state.get("project_spec") or {}
 
         if not project_id:
             return {
                 "deployment_result": {"status": "failed", "error": "No project_id"},
                 "errors": ["No project_id for deployment"],
             }
+
+        # Wait for CI to build Docker images
+        repo_url = get_repo_url(project_spec)
+        if repo_url:
+            parts = repo_url.rstrip("/").split("/")
+            owner, repo = parts[-2], parts[-1]
+
+            try:
+                github = GitHubAppClient()
+                logger.info("waiting_for_ci", owner=owner, repo=repo)
+
+                run_info = await github.wait_for_workflow_completion(
+                    owner=owner,
+                    repo=repo,
+                    workflow_file="main.yml",
+                    branch="main",
+                    timeout_seconds=600,  # 10 minutes
+                )
+
+                logger.info(
+                    "ci_completed",
+                    owner=owner,
+                    repo=repo,
+                    run_id=run_info["id"],
+                )
+            except TimeoutError as e:
+                logger.error("ci_timeout", error=str(e))
+                return {
+                    "deployment_result": {"status": "failed", "error": str(e)},
+                    "errors": [f"CI build timeout: {e}"],
+                }
+            except RuntimeError as e:
+                logger.error("ci_failed", error=str(e))
+                return {
+                    "deployment_result": {"status": "failed", "error": str(e)},
+                    "errors": [f"CI build failed: {e}"],
+                }
 
         try:
             # Delegate deployment to infrastructure-worker

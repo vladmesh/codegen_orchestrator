@@ -26,7 +26,7 @@ class Timeouts:
     ACCESS_PHASE = int(os.getenv("ACCESS_PHASE_TIMEOUT", "180"))  # 3 minutes
 
     # Worker spawners
-    WORKER_SPAWN = int(os.getenv("WORKER_SPAWN_TIMEOUT", "600"))  # 10 minutes
+    WORKER_SPAWN = int(os.getenv("WORKER_SPAWN_TIMEOUT", "1800"))  # 30 minutes
     PREPARER_SPAWN = int(os.getenv("PREPARER_SPAWN_TIMEOUT", "120"))  # 2 minutes
 
     # Deployment

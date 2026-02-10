@@ -63,6 +63,87 @@ Respond with a JSON object mapping each variable to its type:
 Only respond with the JSON, no other text."""
 
 
+# Deterministic classification patterns (no LLM needed)
+INFRA_EXACT = {
+    "DATABASE_URL",
+    "ASYNC_DATABASE_URL",
+    "REDIS_URL",
+    "MONGO_URL",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+}
+
+INFRA_PATTERNS = [
+    "SECRET_KEY",
+    "SECRET",
+    "_PASSWORD",
+    "JWT_SECRET",
+    "SESSION_SECRET",
+]
+
+COMPUTED_EXACT = {
+    "APP_NAME",
+    "APP_ENV",
+    "ENVIRONMENT",
+    "DEBUG",
+    "PROJECT_NAME",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_REQUIRE_SSL",
+    "API_BASE_URL",
+    "BACKEND_API_URL",
+    "BACKEND_URL",
+}
+
+COMPUTED_PATTERNS = [
+    "_IMAGE",  # Docker image tags computed from repo name
+]
+
+USER_PATTERNS = [
+    "TELEGRAM",
+    "OPENAI",
+    "ANTHROPIC",
+    "STRIPE",
+    "SLACK",
+    "DISCORD",
+    "TWILIO",
+    "SENDGRID",
+    "MAILGUN",
+]
+
+
+def _classify_by_pattern(var: str) -> str | None:
+    """Classify environment variable by name pattern.
+
+    Returns:
+        "infra", "computed", "user", or None if unknown
+    """
+    upper = var.upper()
+
+    # Exact matches first
+    if upper in INFRA_EXACT:
+        return "infra"
+    if upper in COMPUTED_EXACT:
+        return "computed"
+
+    # Pattern matches
+    for pattern in INFRA_PATTERNS:
+        if pattern in upper:
+            return "infra"
+
+    for pattern in COMPUTED_PATTERNS:
+        if pattern in upper:
+            return "computed"
+
+    for pattern in USER_PATTERNS:
+        if pattern in upper:
+            return "user"
+
+    # Unknown - will use LLM or default to user
+    return None
+
+
 def _parse_repo_url(repo_url: str) -> tuple[str, str] | None:
     """Parse owner and repo name from repository URL.
 
@@ -149,7 +230,7 @@ async def _classify_variables_with_llm(
     variables: list[str],
     project_context: str,
 ) -> tuple[dict, AIMessage | None]:
-    """Classify environment variables using LLM.
+    """Classify environment variables using patterns first, LLM as fallback.
 
     Args:
         variables: List of variable names
@@ -158,30 +239,60 @@ async def _classify_variables_with_llm(
     Returns:
         Tuple of (analysis dict, AI message) or (fallback dict, None) on error
     """
+    result = {}
+    unknown_vars = []
+
+    # Step 1: Classify by pattern (fast, deterministic)
+    for var in variables:
+        classification = _classify_by_pattern(var)
+        if classification:
+            result[var] = classification
+        else:
+            unknown_vars.append(var)
+
+    logger.info(
+        "pattern_classification_complete",
+        total=len(variables),
+        classified=len(result),
+        unknown=len(unknown_vars),
+    )
+
+    # Step 2: If all classified, skip LLM
+    if not unknown_vars:
+        return result, None
+
+    # Step 3: Try LLM for unknown variables
     try:
         config = await agent_config_cache.get("devops")
         llm = LLMFactory.create_llm(config)
-    except Exception as e:
-        logger.error("devops_config_fetch_failed", error=str(e))
-        return dict.fromkeys(variables, "user"), None
 
-    prompt = ENV_ANALYZER_PROMPT.format(
-        project_context=project_context,
-        env_variables="\n".join(f"- {v}" for v in variables),
-    )
-
-    response = await llm.ainvoke([SystemMessage(content=prompt)])
-    response_text = response.content
-
-    env_analysis = _parse_llm_response(response_text)
-    if env_analysis is None:
-        logger.warning(
-            "env_analysis_json_parse_failed",
-            response=response_text[:200],
+        prompt = ENV_ANALYZER_PROMPT.format(
+            project_context=project_context,
+            env_variables="\n".join(f"- {v}" for v in unknown_vars),
         )
-        env_analysis = dict.fromkeys(variables, "user")
 
-    return env_analysis, response
+        response = await llm.ainvoke([SystemMessage(content=prompt)])
+        response_text = response.content
+
+        env_analysis = _parse_llm_response(response_text)
+        if env_analysis:
+            result.update(env_analysis)
+            return result, response
+        else:
+            logger.warning(
+                "env_analysis_json_parse_failed",
+                response=response_text[:200],
+            )
+
+    except Exception as e:
+        logger.warning("llm_classification_failed", error=str(e))
+
+    # Step 4: Default unknown to "user" (safe fallback)
+    for var in unknown_vars:
+        if var not in result:
+            result[var] = "user"
+
+    return result, None
 
 
 async def env_analyzer_run(state: DevOpsState) -> dict:

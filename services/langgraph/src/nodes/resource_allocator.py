@@ -2,8 +2,7 @@
 
 import structlog
 
-from ..tools.ports import allocate_port, get_next_available_port
-from ..tools.servers import find_suitable_server
+from ..tools.allocator import AllocationError, ensure_project_allocations
 from .base import FunctionalNode
 
 logger = structlog.get_logger()
@@ -13,6 +12,7 @@ class ResourceAllocatorNode(FunctionalNode):
     """Allocate server resources for a project before deployment.
 
     This is a FUNCTIONAL node (no LLM) - deterministic logic only.
+    Uses shared allocation logic from tools/allocator.py.
     """
 
     def __init__(self):
@@ -28,7 +28,7 @@ class ResourceAllocatorNode(FunctionalNode):
                 "errors": state.get("errors", []) + ["No project_id provided"],
             }
 
-        # Check if already allocated
+        # Check if already allocated in state
         existing = state.get("allocated_resources", {})
         if existing:
             logger.info(
@@ -38,11 +38,9 @@ class ResourceAllocatorNode(FunctionalNode):
             )
             return {}  # Already done
 
-        # Determine modules from project config
+        # Get config from project spec
         config = project_spec.get("config", {})
         modules = config.get("modules", ["backend"])
-
-        # Estimate resources (simple heuristic)
         min_ram_mb = config.get("estimated_ram_mb", 512)
 
         logger.info(
@@ -53,55 +51,22 @@ class ResourceAllocatorNode(FunctionalNode):
         )
 
         try:
-            # 1. Find suitable server
-            server = await find_suitable_server.ainvoke(
-                {
-                    "min_ram_mb": min_ram_mb,
-                    "min_disk_mb": 1024,
-                }
+            allocated = await ensure_project_allocations(
+                project_id=project_id,
+                modules=modules,
+                min_ram_mb=min_ram_mb,
             )
-
-            if not server:
-                return {
-                    "errors": state.get("errors", [])
-                    + ["No suitable server found with enough resources"],
-                }
-
-            server_handle = server.handle
-
-            # 2. Allocate port for each module
-            allocated = {}
-            for module in modules:
-                # Get next available port
-                port = await get_next_available_port.ainvoke(
-                    {
-                        "server_handle": server_handle,
-                        "start_port": 8000,
-                    }
-                )
-
-                # Allocate it
-                allocation = await allocate_port.ainvoke(
-                    {
-                        "server_handle": server_handle,
-                        "port": port,
-                        "service_name": module,
-                        "project_id": project_id,
-                    }
-                )
-
-                port_key = f"{server_handle}:{port}"
-                allocated[port_key] = allocation.model_dump()
-
-                logger.info(
-                    "port_allocated",
-                    project_id=project_id,
-                    module=module,
-                    server=server_handle,
-                    port=port,
-                )
-
             return {"allocated_resources": allocated}
+
+        except AllocationError as e:
+            logger.error(
+                "resource_allocation_failed",
+                project_id=project_id,
+                error=str(e),
+            )
+            return {
+                "errors": state.get("errors", []) + [str(e)],
+            }
 
         except Exception as e:
             logger.error(

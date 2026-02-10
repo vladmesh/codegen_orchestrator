@@ -1,7 +1,18 @@
 """Graph Runner - Orchestrates LangGraph execution.
 
-Connects Redis Stream consumers to LangGraph state machine.
-Handles:
+DEPRECATED: This module is no longer used.
+
+Engineering and Deploy flows are now handled by dedicated workers:
+- engineering-worker: Uses DeveloperNode which handles scaffolding wait and worker creation
+- deploy-worker: Uses DevOps subgraph
+
+The in-memory state machine approach here was replaced with task-based persistence
+via the API (project status, task status). DeveloperNode polls for scaffolding completion
+rather than relying on scaffolder:results stream.
+
+This file is kept for reference only.
+
+Original functionality:
 - Starting new flows (engineering, deploy)
 - Resuming flows after external events (scaffolder, worker results)
 - State persistence via Postgres checkpointer

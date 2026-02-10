@@ -9,18 +9,96 @@ import asyncio
 from datetime import UTC, datetime
 import json
 import os
+import re
 import signal
+import uuid
 
 import structlog
 
+from shared.contracts.dto.project import ServiceModule
+from shared.contracts.queues.scaffolder import ScaffolderMessage
 from shared.logging_config import setup_logging
-from shared.queues import ENGINEERING_QUEUE, WORKER_GROUP, ensure_consumer_groups
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, WORKER_GROUP, ensure_consumer_groups
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ..nodes.resource_allocator import resource_allocator_node
 
 logger = structlog.get_logger(__name__)
+
+# Scaffolder queue
+SCAFFOLDER_QUEUE = "scaffolder:queue"
+
+
+async def _trigger_scaffolding(project: dict, redis: RedisStreamClient) -> None:
+    """Trigger scaffolding for a project in draft status.
+
+    Sends ScaffolderMessage to scaffolder:queue and updates project status.
+    """
+    project_id = project["id"]
+    project_name = project.get("name", project_id)
+
+    # Get GITHUB_ORG for repo name
+    org_name = os.getenv("GITHUB_ORG")
+    if not org_name:
+        raise RuntimeError("GITHUB_ORG environment variable is not set")
+
+    # Generate repo name from project name
+    repo_name = project_name.lower().replace(" ", "-").replace("_", "-")
+    repo_name = re.sub(r"[^a-z0-9-]", "", repo_name)
+    repo_name = re.sub(r"-+", "-", repo_name).strip("-")
+    if not repo_name:
+        repo_name = project_id[:8]
+    repo_full_name = f"{org_name}/{repo_name}"
+
+    # Get modules from project config
+    project_config = project.get("config") or {}
+    modules_list = project_config.get("modules", ["backend"])
+
+    # Convert to ServiceModule enum
+    service_modules = []
+    for mod in modules_list:
+        try:
+            service_modules.append(ServiceModule(mod))
+        except ValueError:
+            logger.warning("unknown_module_skipped", module=mod)
+    if not service_modules:
+        service_modules = [ServiceModule.BACKEND]
+
+    # Get task description
+    task_description = project_config.get("description", "")
+    if not task_description:
+        task_description = project_config.get("detailed_spec", "")
+
+    # Build scaffolder message
+    scaffolder_msg = ScaffolderMessage(
+        request_id=str(uuid.uuid4()),
+        project_id=project_id,
+        project_name=project_name,
+        repo_full_name=repo_full_name,
+        modules=service_modules,
+        task_description=task_description,
+    )
+
+    # Send to scaffolder queue
+    await redis.redis.xadd(
+        SCAFFOLDER_QUEUE,
+        {"data": scaffolder_msg.model_dump_json()},
+    )
+
+    # Update project status to scaffolding
+    await api_client.patch(
+        f"projects/{project_id}",
+        json={"status": "scaffolding"},
+    )
+
+    logger.info(
+        "scaffolding_triggered",
+        project_id=project_id,
+        repo_full_name=repo_full_name,
+        modules=[m.value for m in service_modules],
+    )
+
 
 # Worker identification
 CONSUMER_NAME = f"engineering-worker-{os.getpid()}"
@@ -83,6 +161,11 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 json={"status": "failed", "error_message": error_msg},
             )
             return {"status": "failed", "error": error_msg}
+
+        # Trigger scaffolding if project is still in draft status
+        project_status = project.get("status")
+        if project_status == "draft":
+            await _trigger_scaffolding(project, redis)
 
         # Allocate resources if not already allocated
         existing_allocations = await api_client.get_project_allocations(project_id)
@@ -189,9 +272,49 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     },
                 )
 
+            # Auto-trigger deploy after successful engineering
+            deploy_task_id = f"deploy-{task_id.replace('eng-', '')}"
+            try:
+                # Create deploy task in API
+                await api_client.post(
+                    "tasks/",
+                    json={
+                        "id": deploy_task_id,
+                        "type": "deploy",
+                        "project_id": project_id,
+                        "status": "pending",
+                    },
+                )
+                # Queue deploy job
+                await redis.redis.xadd(
+                    DEPLOY_QUEUE,
+                    {
+                        "data": json.dumps(
+                            {
+                                "task_id": deploy_task_id,
+                                "project_id": project_id,
+                                "callback_stream": callback_stream,
+                            }
+                        )
+                    },
+                )
+                logger.info(
+                    "deploy_auto_triggered",
+                    task_id=task_id,
+                    deploy_task_id=deploy_task_id,
+                    project_id=project_id,
+                )
+            except Exception as e:
+                logger.error(
+                    "deploy_auto_trigger_failed",
+                    task_id=task_id,
+                    error=str(e),
+                )
+
             return {
                 "status": "success",
                 "commit_sha": result.get("commit_sha"),
+                "deploy_task_id": deploy_task_id,
                 "finished_at": datetime.now(UTC).isoformat(),
             }
 

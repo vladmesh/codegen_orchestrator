@@ -1,6 +1,14 @@
 """Redis Stream consumers for LangGraph orchestrator.
 
-Consumes messages from:
+DEPRECATED: This module is no longer used.
+
+Engineering and Deploy queues are now consumed by dedicated workers:
+- engineering-worker (services/langgraph/src/workers/engineering_worker.py)
+- deploy-worker (services/langgraph/src/workers/deploy_worker.py)
+
+This file is kept for reference but run_consumers() is not called from main.py.
+
+Original consumers:
 - engineering:queue -> Triggers Engineering Flow
 - deploy:queue -> Triggers Deploy Flow
 - scaffolder:results -> Resumes graph after scaffolding

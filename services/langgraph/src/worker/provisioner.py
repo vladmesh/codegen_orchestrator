@@ -19,6 +19,7 @@ PROVISIONING_TRIGGER_COOLDOWN_SECONDS = 120
 # Track active provisioning and cooldowns
 active_provisioning: set[str] = set()
 provisioning_cooldowns: dict[str, datetime] = {}
+background_tasks: set[asyncio.Task] = set()  # prevent GC of background tasks
 
 # Create graph instance for provisioning
 graph = create_graph()
@@ -60,7 +61,7 @@ async def listen_provisioner_triggers() -> None:
 
 
 async def process_provisioning_trigger(data: dict) -> None:
-    """Run the graph for provisioning."""
+    """Handle provisioning trigger - spawn background task to not block listener."""
     server_handle = data.get("server_handle")
     is_incident_recovery = data.get("is_incident_recovery", False)
 
@@ -68,14 +69,15 @@ async def process_provisioning_trigger(data: dict) -> None:
         logger.warning("provisioner_trigger_missing_handle", payload=data)
         return
 
-    structlog.contextvars.bind_contextvars(server_handle=server_handle, trigger="provisioner")
-
-    logger.info("provisioner_trigger_received", is_incident_recovery=is_incident_recovery)
+    logger.info(
+        "provisioner_trigger_received",
+        server_handle=server_handle,
+        is_incident_recovery=is_incident_recovery,
+    )
 
     now = datetime.now(UTC)
     if server_handle in active_provisioning:
-        logger.info("provisioner_trigger_deduped", reason="active")
-        structlog.contextvars.clear_contextvars()
+        logger.info("provisioner_trigger_deduped", server_handle=server_handle, reason="active")
         return
 
     last_complete = provisioning_cooldowns.get(server_handle)
@@ -84,14 +86,30 @@ async def process_provisioning_trigger(data: dict) -> None:
     ):
         logger.info(
             "provisioner_trigger_deduped",
+            server_handle=server_handle,
             reason="cooldown",
             last_complete_at=last_complete.isoformat(),
             cooldown_seconds=PROVISIONING_TRIGGER_COOLDOWN_SECONDS,
         )
-        structlog.contextvars.clear_contextvars()
         return
 
+    # Mark as active before spawning task to prevent duplicates
     active_provisioning.add(server_handle)
+
+    # Spawn background task to not block the pub/sub listener
+    task = asyncio.create_task(
+        _run_provisioning_graph(server_handle, is_incident_recovery),
+        name=f"provisioner-{server_handle}",
+    )
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+
+    logger.info("provisioner_task_spawned", server_handle=server_handle)
+
+
+async def _run_provisioning_graph(server_handle: str, is_incident_recovery: bool) -> None:
+    """Execute the provisioning graph for a server."""
+    structlog.contextvars.bind_contextvars(server_handle=server_handle, trigger="provisioner")
 
     state: OrchestratorState = {
         "messages": [HumanMessage(content=f"Provision server {server_handle}")],

@@ -17,7 +17,7 @@ from shared.queues import DEPLOY_QUEUE, WORKER_GROUP, ensure_consumer_groups
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
-from ..schemas.api_types import AllocationInfo, ProjectInfo, ServerInfo, get_server_ip
+from ..schemas.api_types import ProjectInfo
 from ..subgraphs.devops import create_devops_subgraph
 
 logger = structlog.get_logger(__name__)
@@ -84,25 +84,27 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             )
             return {"status": "failed", "error": error_msg}
 
-        # Get allocations for the project
-        allocations: list[AllocationInfo] = await api_client.get_project_allocations(project_id)
-        if not allocations:
-            error_msg = "No resources allocated for project"
+        # Get or create allocations for the project
+        from ..tools.allocator import AllocationError, ensure_project_allocations
+
+        try:
+            # Get config from project
+            config = project.get("config", {})
+            modules = config.get("modules", ["backend"])
+            min_ram_mb = config.get("estimated_ram_mb", 512)
+
+            allocated_resources = await ensure_project_allocations(
+                project_id=project_id,
+                modules=modules,
+                min_ram_mb=min_ram_mb,
+            )
+        except AllocationError as e:
+            error_msg = str(e)
             await api_client.patch(
                 f"tasks/{task_id}",
                 json={"status": "failed", "error_message": error_msg},
             )
             return {"status": "failed", "error": error_msg}
-
-        allocation = allocations[0]
-
-        # If server_ip not in allocation, fetch from server
-        resource_key = f"{allocation['server_handle']}:{allocation['port']}"
-        server_ip = allocation.get("server_ip")
-        if not server_ip:
-            server: ServerInfo | None = await api_client.get_server(allocation["server_handle"])
-            if server:
-                server_ip = get_server_ip(server)
 
         # Run DevOps subgraph
         devops_subgraph = create_devops_subgraph()
@@ -117,13 +119,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 .rstrip(".git"),
                 "html_url": project.get("repository_url"),
             },
-            "allocated_resources": {
-                resource_key: {
-                    "port": allocation["port"],
-                    "server_handle": allocation["server_handle"],
-                    "server_ip": server_ip,
-                }
-            },
+            "allocated_resources": allocated_resources,
             "provided_secrets": job_data.get("provided_secrets", {}),
             # Initialize empty fields
             "messages": [],
