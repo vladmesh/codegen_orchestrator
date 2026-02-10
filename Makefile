@@ -215,7 +215,7 @@ test-orchestrator-cli-unit:
 	@echo "🧪 Running Orchestrator CLI unit tests..."
 	@if [ -d "packages/orchestrator-cli/tests/unit" ] && [ "$$(ls -A packages/orchestrator-cli/tests/unit)" ]; then \
 		docker build -f packages/orchestrator-cli/Dockerfile.test -t orchestrator-cli-test .; \
-		docker run --rm orchestrator-cli-test pytest packages/orchestrator-cli/tests/ -v; \
+		docker run --rm orchestrator-cli-test pytest packages/orchestrator-cli/tests/unit/ -v; \
 	else \
 		echo "⚠️  No unit tests found in packages/orchestrator-cli/tests/unit"; \
 	fi
