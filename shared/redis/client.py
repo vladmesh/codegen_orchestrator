@@ -59,7 +59,7 @@ class RedisStreamClient:
             logger.info("redis_connection_closed")
 
     @property
-    def redis(self) -> redis.Redis:
+    def redis(self) -> "redis.Redis":
         """Get Redis client, ensuring connection."""
         if self._redis is None:
             raise RuntimeError("Redis not connected. Call connect() first.")
