@@ -451,7 +451,7 @@ async def _listen_for_worker_responses(app: Application) -> None:
     logger.info("worker_response_listener_started")
 
     # Track last-seen message ID per stream to avoid missing messages
-    # New streams start with "0" (read from beginning) instead of "$" (only future)
+    # New streams start with "$" (only new messages) to prevent redelivery on restart
     last_ids: dict[str, str] = {}
 
     try:
@@ -463,11 +463,11 @@ async def _listen_for_worker_responses(app: Application) -> None:
                     await asyncio.sleep(1)
                     continue
 
-                # Use tracked offsets; default to "0" for new streams so we
-                # don't miss messages published between iterations
+                # Use tracked offsets; default to "$" for new streams so we
+                # only read NEW messages (not historical ones from before restart)
                 read_offsets = {}
                 for stream_key in streams:
-                    read_offsets[stream_key] = last_ids.get(stream_key, "0")
+                    read_offsets[stream_key] = last_ids.get(stream_key, "$")
 
                 messages = await _redis_client.xread(read_offsets, count=10, block=1000)  # noqa: PLR2004
 

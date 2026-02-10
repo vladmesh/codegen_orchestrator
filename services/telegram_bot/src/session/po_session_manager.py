@@ -32,6 +32,9 @@ WORKER_STATUS_KEY_PREFIX = "worker:status:"
 WORKER_COMMANDS_STREAM = "worker:commands"
 WORKER_RESPONSES_STREAM = "worker:responses"
 
+# Timeout for worker creation (includes image build time)
+WORKER_CREATION_TIMEOUT = 120.0  # 2 minutes
+
 
 class POSessionManager:
     """Manages PO Worker sessions for Telegram users.
@@ -214,7 +217,8 @@ class POSessionManager:
         )
 
         # Wait for response (this method can be mocked in tests)
-        response = await self._wait_for_worker_response(request_id, timeout=30.0)
+        # Timeout is long to account for first-time image build after restart
+        response = await self._wait_for_worker_response(request_id, timeout=WORKER_CREATION_TIMEOUT)
 
         if not response or not response.get("success"):
             raise RuntimeError(f"Failed to create worker: {response}")
