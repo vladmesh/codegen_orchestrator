@@ -316,7 +316,15 @@ class WorkerManager:
             network_name=network_name,
         )
 
-        # Inject instructions if provided
+        # Auto-setup git repository FIRST (before instructions)
+        # This is important because instructions go to /workspace/CLAUDE.md
+        # and git clone requires empty directory
+        repo_name = env_vars.get("REPO_NAME")
+        github_token = env_vars.get("GITHUB_TOKEN")
+        if repo_name and github_token:
+            await self._setup_git_repo(container_id, repo_name, github_token, worker_id)
+
+        # Inject instructions AFTER git clone (so CLAUDE.md doesn't block clone)
         if instructions:
             target_path = agent.get_instruction_path()
             logger.info("injecting_instructions", worker_id=worker_id, path=target_path)
@@ -337,3 +345,64 @@ class WorkerManager:
         # Return the worker_id (name), not container_id (Docker hash)
         # This allows callers to reference the worker by its logical name
         return worker_id
+
+    async def _setup_git_repo(
+        self,
+        container_id: str,
+        repo: str,
+        token: str,
+        worker_id: str,
+    ) -> bool:
+        """Clone repository and configure git hooks before LLM starts.
+
+        This saves tokens by automating:
+        - git clone
+        - git config core.hooksPath (enables pre-commit/pre-push hooks)
+        - git user config
+
+        Args:
+            container_id: Docker container ID
+            repo: Repository in "owner/repo" format
+            token: GitHub access token
+            worker_id: Worker ID for logging
+
+        Returns:
+            True if setup succeeded, False otherwise
+        """
+        logger.info("git_repo_setup_start", worker_id=worker_id, repo=repo)
+
+        # Clone repo and configure git in one script
+        # Using x-access-token for GitHub App token authentication
+        setup_script = f"""set -e
+cd /workspace
+git clone "https://x-access-token:{token}@github.com/{repo}" .
+git config core.hooksPath .githooks
+git config user.name "AI Agent"
+git config user.email "ai@codegen.local"
+"""
+
+        # Use base64 encoding to avoid shell quoting issues (same pattern as instructions)
+        import base64
+
+        encoded = base64.b64encode(setup_script.encode()).decode()
+        # Wrap in bash -c because docker exec_run doesn't use shell by default
+        cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"
+
+        exit_code, output = await self.docker.exec_in_container(
+            container_id,
+            cmd,
+            timeout=120,  # git clone may take time
+        )
+
+        if exit_code != 0:
+            logger.error(
+                "git_repo_setup_failed",
+                worker_id=worker_id,
+                repo=repo,
+                exit_code=exit_code,
+                error=output,
+            )
+            return False
+
+        logger.info("git_repo_setup_complete", worker_id=worker_id, repo=repo)
+        return True

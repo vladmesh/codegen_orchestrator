@@ -49,8 +49,15 @@ CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
         "    rm -rf /var/lib/apt/lists/*",
     ],
     "DOCKER": [
-        # Docker CLI only - socket is mounted at runtime
-        "RUN apt-get update && apt-get install -y --no-install-recommends docker.io && rm -rf /var/lib/apt/lists/*",
+        # Docker CLI + Compose plugin + make (for pre-push hooks)
+        # Note: docker.io package on Debian doesn't include CLI, only daemon
+        # Socket is mounted at runtime; worker needs docker group access
+        "RUN apt-get update && apt-get install -y --no-install-recommends make curl && rm -rf /var/lib/apt/lists/* && \\",
+        "    curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-26.1.4.tgz | tar xz -C /usr/local/bin --strip-components=1 docker/docker && \\",
+        "    mkdir -p /usr/local/lib/docker/cli-plugins && \\",
+        "    curl -fsSL https://github.com/docker/compose/releases/download/v2.27.1/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && \\",
+        "    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose && \\",
+        "    groupadd -g 988 docker && usermod -aG docker worker",
     ],
 }
 

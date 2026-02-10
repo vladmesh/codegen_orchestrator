@@ -5,6 +5,7 @@ business logic. Scaffolding is handled by the separate scaffolder service.
 """
 
 import asyncio
+import os
 
 from langchain_core.messages import AIMessage
 import structlog
@@ -56,7 +57,9 @@ class DeveloperNode(FunctionalNode):
 
         project_name = project_spec.get("name", "project")
         description = project_spec.get("description", "")
-        modules = project_spec.get("modules", ["backend"])
+        # Modules are stored in project.config.modules
+        config = project_spec.get("config") or {}
+        modules = config.get("modules", ["backend"])
 
         logger.info(
             "developer_node_start",
@@ -74,6 +77,8 @@ class DeveloperNode(FunctionalNode):
                     status = project.get("status")
                     if status == "scaffolded":
                         logger.info("scaffolding_complete", project_id=project_id)
+                        # Update project_spec with fresh data (includes repository_url)
+                        project_spec = project
                         break
                     if status == "scaffold_failed":
                         logger.error("scaffolding_failed", project_id=project_id)
@@ -111,9 +116,10 @@ class DeveloperNode(FunctionalNode):
                     repo_full_name=repo_full_name,
                 )
             else:
-                # Fallback: auto-detect org and infer repo name
-                installation = await github_client.get_first_org_installation()
-                owner = installation["org"]
+                # Fallback: use GITHUB_ORG env and infer repo name
+                owner = os.getenv("GITHUB_ORG")
+                if not owner:
+                    raise RuntimeError("No repository_url in project and GITHUB_ORG env not set")
                 repo_name = project_name.lower().replace(" ", "-").replace("_", "-")
                 repo_full_name = f"{owner}/{repo_name}"
                 logger.info(
@@ -200,12 +206,10 @@ class DeveloperNode(FunctionalNode):
         repo_full_name: str,
         project_spec: dict,
     ) -> str:
-        """Build comprehensive task message for Claude.
+        """Build task message for Claude.
 
-        This message instructs Claude to:
-        - Clone the repository (already scaffolded)
-        - Implement business logic based on TASK.md
-        - Commit and push
+        Repository is already cloned and git hooks configured by worker-manager.
+        This message focuses on implementation work only.
         """
         modules_str = ",".join(modules)
 
@@ -220,17 +224,12 @@ class DeveloperNode(FunctionalNode):
 **Detailed Spec**:
 {project_spec.get("detailed_spec", "N/A")}
 
-## Implementation Steps
+## Workspace
 
-### 1. Setup Repository
+The repository is already cloned to `/workspace`. Git hooks are configured.
+You are already in the project directory — start working immediately.
 
-Repository {repo_full_name} is already created and scaffolded. Clone to your workspace:
-```bash
-git clone https://github.com/{repo_full_name}
-cd {repo_full_name.split("/")[-1]}
-```
-
-### 2. Project Structure (already scaffolded)
+## Project Structure (already scaffolded)
 
 The project was scaffolded with `copier` from `service-template`.
 You'll find:
@@ -243,7 +242,7 @@ You'll find:
 
 Run `make generate` after modifying spec files to regenerate code.
 
-### 3. Write Business Logic
+## Implementation
 
 Implement the business logic according to the specification:
 - Read TASK.md for detailed requirements
@@ -251,18 +250,14 @@ Implement the business logic according to the specification:
 - Implement all required functionality
 - Use existing generated code as foundation
 
-### 4. Commit and Push
+## Commit and Push
 
-After implementation:
-```bash
-git add .
-git commit -m \"feat: implement {project_name}\"
-git push origin main
-```
+After implementation, commit and push your changes.
+Git hooks will automatically run linters and tests before push.
 
 ## Expected Output
 
-After completing all steps, provide a summary including:
+Provide a summary including:
 - Commit SHA
 - What was implemented
 - Any important notes or next steps
@@ -271,7 +266,7 @@ After completing all steps, provide a summary including:
 
 - Project is already scaffolded - focus on business logic
 - Follow the project structure conventions from service-template
-- Ensure all code is properly formatted and tested
+- Git hooks are enabled - code will be checked before push
 - Make descriptive commit messages
 """
         return task

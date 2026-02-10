@@ -14,6 +14,7 @@ import redis.asyncio as redis
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
+    DeleteWorkerCommand,
     WorkerCapability,
     WorkerConfig,
 )
@@ -153,7 +154,7 @@ After completing the task:
                 agent_type=AgentType.CLAUDE,
                 instructions=instructions,
                 allowed_commands=["*"],
-                capabilities=[WorkerCapability.GIT],
+                capabilities=[WorkerCapability.GIT, WorkerCapability.DOCKER],
                 env_vars={
                     "GITHUB_TOKEN": github_token,
                     "REPO_NAME": repo,
@@ -219,13 +220,25 @@ After completing the task:
                 error_message=output_resp.get("error"),
             )
         else:
-            # No output received - worker might still be running
-            # Return partial success since container was created
+            # Timeout - cleanup the zombie container
+            if worker_id:
+                logger.warning(
+                    "worker_timeout_cleanup",
+                    worker_id=worker_id,
+                    timeout_seconds=timeout_seconds,
+                )
+                delete_cmd = DeleteWorkerCommand(
+                    request_id=f"cleanup-{request_id}",
+                    worker_id=worker_id,
+                )
+                await redis_client.xadd(COMMAND_STREAM, {"data": delete_cmd.model_dump_json()})
+
             return SpawnResult(
                 request_id,
                 False,
                 -1,
-                "Timeout waiting for worker output. Worker may still be running.",
+                f"Timeout after {timeout_seconds}s waiting for worker output. "
+                "Container cleaned up.",
                 error_message="execution_timeout",
             )
 

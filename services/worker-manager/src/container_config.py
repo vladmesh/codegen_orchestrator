@@ -52,7 +52,9 @@ class WorkerContainerConfig:
         volumes = {}
 
         # Mount Docker socket if DOCKER capability is requested
-        if "DOCKER" in self.capabilities:
+        # Normalize to uppercase for comparison (capabilities come as lowercase from enum)
+        caps_upper = [c.upper() for c in self.capabilities]
+        if "DOCKER" in caps_upper:
             volumes["/var/run/docker.sock"] = {"bind": "/var/run/docker.sock", "mode": "rw"}
 
         # Mount host session directory if in host_session mode
