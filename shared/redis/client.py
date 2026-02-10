@@ -80,7 +80,11 @@ class RedisStreamClient:
         return await self.publish(stream, data)
 
     async def ensure_consumer_group(self, stream: str, group: str) -> None:
-        """Ensure a consumer group exists for the stream."""
+        """Ensure a consumer group exists for the stream.
+
+        Uses id="0" to process ALL messages including ones sent before group creation.
+        This prevents race conditions where messages are sent before worker starts.
+        """
         try:
             await self.redis.xgroup_create(stream, group, id="0", mkstream=True)
             logger.info("consumer_group_created", stream=stream, group=group)

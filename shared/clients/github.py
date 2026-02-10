@@ -554,6 +554,101 @@ class GitHubAppClient:
                 )
         return count
 
+    async def get_latest_workflow_run(
+        self,
+        owner: str,
+        repo: str,
+        workflow_file: str = "main.yml",
+        branch: str = "main",
+    ) -> dict | None:
+        """Get the most recent workflow run for a branch.
+
+        Returns:
+            Workflow run dict with keys: id, status, conclusion, html_url
+            None if no runs found
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        resp = await self._make_request(
+            "GET",
+            f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_file}/runs",
+            headers=headers,
+            params={"branch": branch, "per_page": 1},
+        )
+
+        runs = resp.json().get("workflow_runs", [])
+        if not runs:
+            return None
+
+        run = runs[0]
+        return {
+            "id": run["id"],
+            "status": run["status"],  # queued, in_progress, completed
+            "conclusion": run.get("conclusion"),  # success, failure, cancelled
+            "html_url": run["html_url"],
+            "created_at": run["created_at"],
+        }
+
+    async def wait_for_workflow_completion(
+        self,
+        owner: str,
+        repo: str,
+        workflow_file: str = "main.yml",
+        branch: str = "main",
+        timeout_seconds: int = 600,
+        poll_interval: int = 15,
+    ) -> dict:
+        """Wait for the latest workflow run to complete.
+
+        Returns:
+            Final workflow run state
+
+        Raises:
+            TimeoutError: If workflow doesn't complete within timeout
+            RuntimeError: If workflow fails
+        """
+        start = datetime.now(UTC)
+
+        while True:
+            elapsed = (datetime.now(UTC) - start).total_seconds()
+            if elapsed > timeout_seconds:
+                raise TimeoutError(
+                    f"Workflow {workflow_file} did not complete within {timeout_seconds}s"
+                )
+
+            run = await self.get_latest_workflow_run(owner, repo, workflow_file, branch)
+
+            if not run:
+                logger.info("workflow_not_found_waiting", workflow=workflow_file)
+                await asyncio.sleep(poll_interval)
+                continue
+
+            if run["status"] == "completed":
+                if run["conclusion"] == "success":
+                    logger.info(
+                        "workflow_completed_success",
+                        workflow=workflow_file,
+                        run_id=run["id"],
+                    )
+                    return run
+                else:
+                    raise RuntimeError(
+                        f"Workflow {workflow_file} failed: {run['conclusion']}. "
+                        f"See: {run['html_url']}"
+                    )
+
+            logger.info(
+                "workflow_in_progress",
+                workflow=workflow_file,
+                status=run["status"],
+                elapsed_sec=int(elapsed),
+            )
+            await asyncio.sleep(poll_interval)
+
     async def provision_project_repo(
         self,
         name: str,

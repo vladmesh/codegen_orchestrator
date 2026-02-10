@@ -7,6 +7,7 @@ class ProjectStatus(str, Enum):
     DRAFT = "draft"
     SCAFFOLDING = "scaffolding"
     SCAFFOLDED = "scaffolded"
+    SCAFFOLD_FAILED = "scaffold_failed"
     DEVELOPING = "developing"
     TESTING = "testing"
     DEPLOYING = "deploying"
@@ -18,10 +19,14 @@ class ProjectStatus(str, Enum):
 
 
 class ServiceModule(str, Enum):
-    """Available project modules for scaffolding."""
+    """Available project modules for scaffolding.
+
+    Must match module names in service-template/copier.yml.
+    """
 
     BACKEND = "backend"
-    TELEGRAM = "telegram"
+    TG_BOT = "tg_bot"
+    NOTIFICATIONS = "notifications"
     FRONTEND = "frontend"
 
 
