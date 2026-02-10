@@ -1,6 +1,6 @@
 """API client for provisioner - communicates with the API service."""
 
-from shared.logging_config import get_logger
+from shared.log_config import get_logger
 
 from ..clients.api import api_client
 

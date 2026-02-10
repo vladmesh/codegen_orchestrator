@@ -122,7 +122,7 @@ See [docs/TESTING.md](docs/TESTING.md) for detailed testing guide.
 Проект использует `structlog` (JSON для prod, console для dev).
 
 ```python
-from shared.logging_config import setup_logging
+from shared.log_config import setup_logging
 import structlog
 
 setup_logging(service_name="my_service")

@@ -4,7 +4,7 @@ import sys
 
 import structlog
 
-from shared.logging.config import setup_logging
+from shared.log_config.config import setup_logging
 
 from .config import WorkerWrapperConfig
 from .wrapper import WorkerWrapper

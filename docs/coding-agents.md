@@ -4,7 +4,7 @@
 
 ## Текущая реализация: Factory.ai Droid
 
-Автономный coding agent с уровнями автономности. **Это единственный coding agent, используемый в проекте.**
+Автономный coding agent с уровнями автономности.
 
 ```bash
 # Интерактивный режим
@@ -19,25 +19,13 @@ droid exec --prompt-file TASK.md --skip-permissions-unsafe
 
 **Autonomy levels:** low (много подтверждений), medium, high (полная автономия).
 
-### Интеграция в проект
-
-Developer node в Engineering Subgraph использует coding agents через `workers-spawner` сервис:
-
-1. Workers-spawner создаёт контейнер из `universal-worker:latest`
-2. Контейнер клонирует репозиторий
-3. Записывает `TASK.md` и `AGENTS.md` с инструкциями
-4. Запускает coding agent (Droid или Claude Code)
-5. Коммитит и пушит изменения
-
----
-
 ## Claude Code
 
 Claude Code — CLI-инструмент от Anthropic для agentic coding. Реализован наравне с Droid.
 
 ```bash
-# Установка
-npm install -g @anthropic-ai/claude-code
+# Установка (native installer)
+curl -fsSL https://claude.ai/install.sh | sh
 
 # Использование
 claude -p "Implement user registration endpoint"
@@ -52,13 +40,23 @@ cat error.log | claude -p "Fix this error"
 
 ---
 
+## Интеграция в проект
+
+Developer node в Engineering Subgraph использует coding agents через `worker-manager` сервис:
+
+1. Worker-manager создаёт контейнер из worker-base образа
+2. Контейнер клонирует репозиторий
+3. Записывает `TASK.md` и `AGENTS.md` с инструкциями
+4. Запускает coding agent (Droid или Claude Code)
+5. Коммитит и пушит изменения
+
+---
+
 ## Маппинг на узлы графа
 
 | Узел | Инструмент | Статус |
 |------|------------|--------|
-| **Architect** | LLM (GPT-4/Claude) + Preparer | ✅ Реализовано |
-| **Preparer** | Copier template | ✅ Реализовано |
-| **Developer** | Factory.ai Droid | ✅ Реализовано |
-| **Tester** | Функциональный узел (запуск тестов) | ✅ Реализовано |
+| **Scaffolder** | Copier template | ✅ Реализовано |
+| **Developer** | Factory.ai Droid / Claude Code | ✅ Реализовано |
+| **Tester** | Функциональный узел (запуск тестов) | ⚠️ Заглушка |
 | **DevOps** | Ansible wrapper | ✅ Реализовано |
-| **Zavhoz** | LangGraph native (LLM + tools) | ✅ Реализовано |

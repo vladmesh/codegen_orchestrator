@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import jwt
 
-from shared.logging_config import get_logger
+from shared.log_config import get_logger
 from shared.schemas.github import GitHubRepository
 
 logger = get_logger(__name__)

@@ -22,21 +22,21 @@ services/
     Dockerfile.test
     pytest.ini
   
-  worker-manager/        # REPLACES workers-spawner
+  worker-manager/
     tests/
       unit/
       integration/
     Dockerfile.test
     pytest.ini
 
-  scaffolder/            # REPLACES preparer
+  scaffolder/
     tests/
       unit/
       integration/
     Dockerfile.test
     pytest.ini
 
-  infra-service/         # REPLACES infrastructure-worker
+  infra-service/
     tests/
       unit/
       integration/

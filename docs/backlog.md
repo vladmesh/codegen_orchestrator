@@ -32,7 +32,7 @@
 TesterNode сейчас заглушка — всегда возвращает `passed=True`.
 
 **Задачи:**
-1. Использовать `worker_spawner` для запуска тестов в контейнере
+1. Использовать `worker-manager` для запуска тестов в контейнере
 2. Парсить результаты pytest
 3. Возвращать ошибки для retry в Developer
 
@@ -107,7 +107,7 @@ API endpoints не защищены (только x-telegram-id header).
 ## Low Priority
 
 ### Docker Python SDK
-Миграция workers-spawner с subprocess на Python Docker SDK.
+Миграция worker-manager с subprocess на Python Docker SDK.
 
 ### Rollback Capability
 Откат к предыдущему деплою при failed health checks.
@@ -131,7 +131,7 @@ API endpoints не защищены (только x-telegram-id header).
 - ✅ **Deploy Worker Refactor** (2026-01-02)
 - ✅ **CLI Agent Migration** — PO as pluggable CLI worker
 - ✅ **Session Management** — Redis-based
-- ✅ **Engineering Subgraph** — Architect → Preparer → Developer → Tester
+- ✅ **Engineering Subgraph** — Scaffolder → Developer → Tester
 - ✅ **DevOps Subgraph** — EnvAnalyzer → Deployer
 - ✅ **Sysbox Installation** — Docker-in-Docker
 

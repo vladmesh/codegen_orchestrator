@@ -39,38 +39,33 @@ make test-clean            # Cleanup test containers
 ## Architecture
 
 ```
-Telegram Bot → CLI Agent (Product Owner)
+Telegram Bot → worker-manager → CLI Agent (Product Owner)
                         │
         ┌───────────────┴────────────────┐
         ▼                                ▼
-    [Analyst → Zavhoz]      Engineering/DevOps Subgraphs
-    (⚠️ не используется)
-        
-    Engineering: Developer → Tester (scaffolding done by scaffolder service)
-    DevOps: EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
+    Engineering Subgraph          DevOps Subgraph
+    Scaffolder → Developer → Tester     EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
 ```
 
 **Key Components:**
-- **CLI Agent**: Pluggable Product Owner (Claude Code, Factory.ai, custom) via workers-spawner
+- **CLI Agent**: Pluggable Product Owner (Claude Code, Factory.ai, custom) via worker-manager
 - **Tool System**: All API endpoints exposed via OpenAPI, native tool calling
 - **Session Management**: Redis-based locks (PROCESSING/AWAITING states)
 
 **Services** (in `services/`):
 - `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs (port 8000)
-- `langgraph`: LangGraph subgraph workers (Engineering, DevOps)
-- `telegram_bot`: python-telegram-bot interface
-- `scheduler`: Background workers (github_sync, server_sync, health_checker)
-- `workers-spawner`: Spawns agent containers via Redis pub/sub
-- `universal-worker`: Base Docker image for CLI agents (Claude, Factory.ai)
+- `langgraph`: LangGraph orchestration (Engineering, DevOps subgraphs)
+- `engineering-worker`: Consumes `engineering:queue`, runs Engineering subgraph
+- `deploy-worker`: Consumes `deploy:queue`, runs DevOps subgraph
+- `telegram_bot`: python-telegram-bot interface + PO session management
+- `worker-manager`: Docker container lifecycle for CLI agents (replaces `workers-spawner`)
 - `scaffolder`: Runs copier for project scaffolding (async, before developer work)
-- `deploy-worker`: Consumes deploy:queue, runs DevOps subgraph
-- `infrastructure-worker`: Ansible execution service for provisioning AND deployment
-  - Handles `provisioner:queue` (server setup, OS reinstall, recovery)
-  - Handles `ansible:deploy:queue` (project deployment delegated from DeployerNode)
-  - Returns results via Redis: `{provisioner|deploy}:result:{request_id}` (TTL 1 hour)
-- `infrastructure`: Ansible playbooks for server configuration
+- `infra-service`: Ansible execution for provisioning (consumes `provisioner:queue`)
+- `scheduler`: Background workers (github_sync, server_sync, health_checker)
 
-**Shared** (`shared/`): Logging setup (structlog), shared schemas, models, configuration.
+**Packages** (`packages/`): `orchestrator-cli` (CLI tools for agents), `worker-wrapper` (agent container entrypoint).
+
+**Shared** (`shared/`): Logging setup (structlog), contracts (DTOs, queue schemas), models, configuration.
 
 **External Coding Agents**: Claude Code and Factory.ai Droid for actual code generation (not custom agents).
 
@@ -117,7 +112,7 @@ def my_agent(state: OrchestratorState) -> OrchestratorState:
 
 ### Logging
 ```python
-from shared.logging_config import setup_logging
+from shared.log_config import setup_logging
 import structlog
 
 setup_logging(service_name="my_service")
@@ -166,5 +161,5 @@ def deploy_to_server(server_handle: str):
 | Logging | structlog (JSON in prod, console in dev) |
 | Linting | Ruff |
 | Container Isolation | Sysbox runtime |
-| Secrets | project.config.secrets (PostgreSQL) |
+| Secrets | project.config.secrets (PostgreSQL), GitHub Repository Secrets |
 

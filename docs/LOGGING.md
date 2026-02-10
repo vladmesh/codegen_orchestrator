@@ -5,7 +5,7 @@
 ## Quick Start
 
 ```python
-from shared.logging_config import setup_logging
+from shared.log_config import setup_logging
 import structlog
 
 # Initialize at service startup
@@ -194,7 +194,7 @@ async def my_node(state: dict) -> dict:
 | `message_sent` | info | Response sent | `chat_id` |
 | `invalid_outgoing_message` | warning | Invalid message format | `payload` |
 
-### Worker Spawner
+### Worker Manager
 
 | Event | Level | Description | Context Fields |
 |-------|-------|-------------|----------------|

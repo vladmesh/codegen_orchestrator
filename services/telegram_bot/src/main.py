@@ -29,7 +29,7 @@ from shared.contracts.queues.worker import WorkerChannels
 
 # Add shared to path
 sys.path.insert(0, "/app")
-from shared.logging_config import setup_logging  # noqa: E402
+from shared.log_config import setup_logging  # noqa: E402
 
 from .clients.api import api_client  # noqa: E402
 from .config import get_settings  # noqa: E402

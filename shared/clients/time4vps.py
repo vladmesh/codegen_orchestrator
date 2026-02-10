@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from shared.logging_config import get_logger
+from shared.log_config import get_logger
 from shared.schemas import Time4VPSServer, Time4VPSServerDetails, Time4VPSTask
 
 logger = get_logger(__name__)

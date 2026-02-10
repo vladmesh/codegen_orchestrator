@@ -134,13 +134,16 @@ graph TD
 
 | Тема | Файл |
 |------|------|
-| **Migration Plan** | [docs/new_architecture/MIGRATION_PLAN.md](docs/new_architecture/MIGRATION_PLAN.md) |
-| **Contracts (DTO)** | [docs/new_architecture/CONTRACTS.md](docs/new_architecture/CONTRACTS.md) |
-| **New Architecture** | [docs/new_architecture/README.md](docs/new_architecture/README.md) |
+| **Contracts (DTO)** | [docs/CONTRACTS.md](docs/CONTRACTS.md) |
+| **Glossary** | [docs/GLOSSARY.md](docs/GLOSSARY.md) |
+| **Error Handling** | [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) |
+| **Secrets** | [docs/SECRETS.md](docs/SECRETS.md) |
+| Status & Progress | [docs/STATUS.md](docs/STATUS.md) |
 | Resource Management (Завхоз) | [docs/resource-management.md](docs/resource-management.md) |
 | Coding Agents (Claude/Droid) | [docs/coding-agents.md](docs/coding-agents.md) |
 | Parallel Workers | [docs/parallel-workers.md](docs/parallel-workers.md) |
 | Logging | [docs/LOGGING.md](docs/LOGGING.md) |
+| Audit (Known Issues) | [docs/audit.md](docs/audit.md) |
 
 ## Мониторинг
 

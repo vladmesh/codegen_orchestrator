@@ -12,7 +12,7 @@ import signal
 
 import structlog
 
-from shared.logging_config import setup_logging
+from shared.log_config import setup_logging
 from shared.redis_client import RedisStreamClient
 
 from .deployer import deploy_project

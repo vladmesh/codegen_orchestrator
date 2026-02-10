@@ -18,7 +18,7 @@ from shared.contracts.queues.worker import (
     WorkerCapability,
     WorkerConfig,
 )
-from shared.logging_config import get_logger
+from shared.log_config import get_logger
 
 from ..config.constants import Timeouts
 from ..config.settings import get_settings

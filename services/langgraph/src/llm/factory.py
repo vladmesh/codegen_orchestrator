@@ -9,7 +9,7 @@ import os
 
 from langchain_openai import ChatOpenAI
 
-from shared.logging_config import get_logger
+from shared.log_config import get_logger
 
 logger = get_logger(__name__)
 

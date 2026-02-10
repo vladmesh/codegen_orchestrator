@@ -1,7 +1,6 @@
 # Project Status
 
 > **Current Phase**: Phase 4: System E2E & Final Polish
-> **Active Plan**: [MIGRATION_PLAN.md](./new_architecture/MIGRATION_PLAN.md)
 
 ## 🚀 Current Focus
 
@@ -60,6 +59,7 @@ We have completed the core migration to the new architecture (Worker Manager, La
 
 ## 🔗 Quick Links
 
-- [Migration Plan](./new_architecture/MIGRATION_PLAN.md) — Detailed completed tasks.
-- [Architecture](./../ARCHITECTURE.md) — High-level system overview.
+- [Architecture](../ARCHITECTURE.md) — High-level system overview.
 - [Testing Strategy](./TESTING.md) — How to run tests.
+- [Contracts](./CONTRACTS.md) — Queue schemas and DTOs.
+- [Audit](./audit.md) — Known issues and gaps.

@@ -15,7 +15,7 @@ import redis.asyncio as redis
 import structlog
 
 from shared.contracts.queues.provisioner import ProvisionerResult
-from shared.logging_config import setup_logging
+from shared.log_config import setup_logging
 
 from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker

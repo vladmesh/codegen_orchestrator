@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "codegen-orchestrator-shared-logging"
+name = "codegen-orchestrator-shared-log-config"
 version = "0.1.0"
 description = "Shared structured logging configuration"
 requires-python = ">=3.11"

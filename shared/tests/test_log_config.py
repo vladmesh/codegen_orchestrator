@@ -7,7 +7,7 @@ import re
 import pytest
 import structlog
 
-from shared.logging_config import get_logger, setup_logging
+from shared.log_config import get_logger, setup_logging
 
 
 def strip_ansi(text):

@@ -9,7 +9,7 @@ import sys
 # Add src to path
 sys.path.append("/app")
 
-from shared.logging_config import get_logger, setup_logging
+from shared.log_config import get_logger, setup_logging
 
 setup_logging(service_name="langgraph")
 logger = get_logger(__name__)

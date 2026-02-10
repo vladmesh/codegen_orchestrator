@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from shared.logging_config import get_logger
+from shared.log_config import get_logger
 from src.clients.api import api_client
 
 logger = get_logger(__name__)

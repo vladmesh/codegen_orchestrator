@@ -17,7 +17,7 @@ import structlog
 
 from shared.contracts.dto.project import ServiceModule
 from shared.contracts.queues.scaffolder import ScaffolderMessage
-from shared.logging_config import setup_logging
+from shared.log_config import setup_logging
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, WORKER_GROUP, ensure_consumer_groups
 from shared.redis_client import RedisStreamClient
 

@@ -11,21 +11,21 @@
 └─────────────────────────────────────────────────────┘
                          │
                   Redis streams
-          (cli-agent:commands / cli-agent:responses)
+          (worker:commands / worker:po:{id}:*)
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│              workers-spawner Service                │
-│    (слушает cli-agent:commands Redis stream)        │
+│              worker-manager Service                 │
+│    (слушает worker:commands Redis stream)           │
 └─────────────────────────────────────────────────────┘
                          │
                   Docker API
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│        universal-worker Container (ephemeral)       │
-│  - Базовый образ: Ubuntu 24.04 + Python + Node.js  │
-│  - Устанавливает нужный agent (Droid / Claude)     │
+│        Worker Container (ephemeral)                 │
+│  - Базовый образ: worker-base-claude / droid       │
+│  - worker-wrapper: entrypoint + session mgmt       │
 │  - git clone репозитория                           │
 │  - Выполняет coding task                           │
 │  - git commit + git push                           │
@@ -34,7 +34,7 @@
                   Redis streams
                          │
                          ▼
-              cli-agent:responses:{request_id}
+               worker:developer:output / worker:po:{id}:output
 ```
 
 ## Docker-in-Docker с Sysbox
@@ -47,29 +47,24 @@ wget https://downloads.nestybox.com/sysbox/releases/v0.6.4/sysbox-ce_0.6.4-0.lin
 sudo dpkg -i sysbox-ce_0.6.4-0.linux_amd64.deb
 ```
 
-**Запуск worker контейнера с Docker capability:**
-```bash
-docker run --runtime=sysbox-runc -it --rm \
-    -e FACTORY_API_KEY=... \
-    universal-worker:latest
-```
-
 **Внутри контейнера доступно:**
 - Полноценный Docker daemon (при Docker capability)
 - `git clone`, `git push`
 - `docker compose up -d`
 - Factory.ai Droid CLI или Claude Code CLI
 
-## Universal Worker Dockerfile
+## Worker Образы
 
-Актуальный Dockerfile находится в `services/universal-worker/Dockerfile`.
+Worker-base образы находятся в `services/worker-manager/`:
+- `worker-base-claude` — образ с Claude Code CLI
+- `worker-base-droid` — образ с Factory.ai Droid
 
 Основные характеристики:
 - Ubuntu 24.04 + Python 3.12 + Node.js
 - Non-root user `worker` (uid 1000)
-- Pre-installed `orchestrator-cli`
-- Динамическая настройка через ENV (`INSTALL_COMMANDS`, `AGENT_COMMAND`)
-- Daemon mode для persistent containers
+- Pre-installed `orchestrator-cli` + `worker-wrapper`
+- Динамическая настройка через ENV (`AGENT_TYPE`)
+- Hash-based image caching в worker-manager
 
 ## Ограничения
 
@@ -79,5 +74,3 @@ docker run --runtime=sysbox-runc -it --rm \
 | Startup | Docker daemon стартует 5-10 сек |
 | Disk | Образы качаются в каждый worker (кэшировать через volumes) |
 | GitHub API | Rate limits — добавить throttling |
-
-

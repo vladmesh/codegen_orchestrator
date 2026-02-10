@@ -12,7 +12,6 @@
 | [docs/backlog.md](docs/backlog.md) | Бэклог задач и roadmap |
 | [docs/LOGGING.md](docs/LOGGING.md) | Структурированное логирование |
 | [docs/TESTING.md](docs/TESTING.md) | Тестовая инфраструктура |
-| [docs/new_architecture/tests/TESTING_STRATEGY.md](docs/new_architecture/tests/TESTING_STRATEGY.md) | Новая стратегия тестирования (4 уровня) |
 
 ## 🚦 TDD Workflow (MANDATORY)
 
@@ -21,8 +20,7 @@
 ### Шаг 1: Сбор контекста (Context)
 Перед началом любой задачи:
 1. Прочитай **`docs/STATUS.md`** — пойми текущую фазу и статус.
-2. Прочитай **`docs/new_architecture/MIGRATION_PLAN.md`** — найди свой тикет (P*.*).
-3. Найди **Spec** для своего сервиса в `docs/new_architecture/tests/`.
+2. Прочитай **`docs/CONTRACTS.md`** — пойми контракты (DTO, очереди).
 
 ### Шаг 2: Изучение Legacy (Reference)
 1. Если есть старые тесты в `tests_legacy/` — изучи их для идей.
@@ -47,7 +45,7 @@
 
 ⚠️ **Review Trigger**: Если задача требует изменения `Shared Contracts` или схемы БД, которые не описаны в плане — остановись и спроси.
 
-См. подробности в [TESTING_STRATEGY.md](docs/new_architecture/tests/TESTING_STRATEGY.md).
+См. подробности в [TESTING.md](docs/TESTING.md).
 
 ## 🛠 Технический стек
 
@@ -83,16 +81,19 @@ codegen_orchestrator/
 │   │       ├── capabilities/   # Capability registry
 │   │       ├── subgraphs/      # Engineering, DevOps
 │   │       └── schemas/        # State schemas
-│   ├── telegram_bot/   # Telegram interface
+│   ├── telegram_bot/   # Telegram interface + PO sessions
 │   ├── scheduler/      # Background jobs
-│   ├── workers-spawner/ # CLI agent container spawner
-│   ├── universal-worker/ # Base image for CLI agents
-│   ├── preparer/       # Copier runner
-│   └── infrastructure/ # Ansible playbooks
+│   ├── worker-manager/ # Docker lifecycle for CLI agents
+│   ├── scaffolder/     # Copier runner (project scaffolding)
+│   └── infra-service/  # Ansible provisioning
+├── packages/
+│   ├── orchestrator-cli/ # CLI tools for agents
+│   └── worker-wrapper/   # Agent container entrypoint
 ├── shared/             # Shared code between services
+│   ├── contracts/     # DTOs and queue schemas
 │   ├── models/         # SQLAlchemy models
 │   └── *.py            # Utilities
-└── tests/              # E2E tests (future)
+└── tests/              # E2E tests
 ```
 
 ## 🔗 Связанные проекты
@@ -167,4 +168,4 @@ make test-unit  # Только unit тесты (быстрые)
 - **Новый tool**: `services/langgraph/src/tools/`, `services/langgraph/src/capabilities/__init__.py`
 - **API endpoint**: `services/api/src/routers/`
 - **Интеграция с service-template**: `/home/vlad/projects/service-template/`
-- **Деплой**: `services/infrastructure/`, `services/langgraph/src/subgraphs/devops.py`
+- **Деплой**: `services/infra-service/`, `services/langgraph/src/subgraphs/devops/`

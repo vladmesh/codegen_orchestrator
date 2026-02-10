@@ -13,7 +13,7 @@ User messages are handled by workers-spawner, not this worker.
 
 import asyncio
 
-from shared.logging_config import setup_logging
+from shared.log_config import setup_logging
 
 from .events import listen_worker_events
 from .provisioner import listen_provisioner_triggers

@@ -8,7 +8,7 @@
 
 **Роль**: Центральный координатор на базе CLI-агента. Управляет всем жизненным циклом проекта через API tools.
 
-**Реализация**: workers-spawner создаёт Docker-контейнер с CLI агентом (Claude Code, Factory.ai или custom), который работает как Product Owner.
+**Реализация**: worker-manager создаёт Docker-контейнер с CLI агентом (Claude Code, Factory.ai или custom), который работает как Product Owner.
 
 **Инструменты**: Все инструменты из API предоставляются через OpenAPI и native tool calling:
 - `delegate_to_analyst`: делегирование анализа запроса
@@ -111,7 +111,7 @@
 
 **Реализация**:
 1. Ждёт `project.status == "scaffolded"` (макс 5 мин, poll каждые 10s)
-2. Спавнит контейнер через `workers-spawner` (Claude Code)
+2. Спавнит контейнер через `worker-manager` (Claude Code)
 3. Агент клонирует scaffolded repo и пишет бизнес-логику
 
 **Валидация**: Проверяет наличие commit SHA в результате.
@@ -175,7 +175,7 @@ devops/
    - Если всё готово → Deployer
 
 4. **Deployer (Functional)**:
-   - Делегирует выполнение Ansible playbook в `infrastructure-worker` через Redis
+   - Делегирует выполнение Ansible playbook в `infra-service` через Redis
    - Polling результата из `deploy:result:{request_id}`
    - Post-deployment операции:
      * Создает service deployment record в БД
@@ -184,9 +184,9 @@ devops/
 
 **Архитектура**:
 ```
-Deployer → delegate_ansible_deploy → Redis: ansible:deploy:queue
+Deployer → delegate_ansible_deploy → Redis: deploy:queue
                                            ↓
-                                    infrastructure-worker
+                                    infra-service
                                            ↓
                                     Ansible Execution
                                            ↓
@@ -199,11 +199,11 @@ Deployer → delegate_ansible_deploy → Redis: ansible:deploy:queue
 
 ---
 
-## 🚧 Infrastructure Worker
+## 🚧 Infra Service
 
-**Роль**: Изолированный сервис для выполнения Ansible операций (provisioning и deployment).
+**Роль**: Изолированный сервис для выполнения Ansible операций (provisioning).
 
-**Реализация**: Отдельный сервис `infrastructure-worker` для изоляции тяжёлых зависимостей (Ansible, SSH).
+**Реализация**: Отдельный сервис `infra-service` для изоляции тяжёлых зависимостей (Ansible, SSH).
 
 **Типы jobs**:
 1. **Provisioning** (`provisioner:queue`):
@@ -212,22 +212,16 @@ Deployer → delegate_ansible_deploy → Redis: ansible:deploy:queue
    - Ansible playbooks для настройки сервера
    - Редеплой сервисов после восстановления
 
-2. **Deployment** (`ansible:deploy:queue`):
-   - Выполнение Ansible playbook для деплоя проектов
-   - Делегируется из DeployerNode (langgraph)
-   - Результаты возвращаются через Redis: `deploy:result:{request_id}`
-
 **Архитектура**:
 ```
-infrastructure-worker
-  ├── Listen: provisioner:queue + ansible:deploy:queue
+infra-service
+  ├── Listen: provisioner:queue
   ├── Handlers:
-  │   ├── process_provisioner_job() → ansible_runner.py
-  │   └── process_deployment_job() → deployment_executor.py
-  └── Publish: {provisioner|deploy}:result:{request_id}
+  │   └── process_provisioner_job() → ansible_runner.py
+  └── Publish: provisioner:results
 ```
 
-**Выход**: Результаты в Redis с TTL 1 час
+**Выход**: Результаты в Redis Stream `provisioner:results`
 
 ---
 
@@ -237,7 +231,7 @@ infrastructure-worker
 Пользователь (Telegram)
      │
      ▼
-Telegram Bot → workers-spawner
+Telegram Bot → worker-manager
      │
      ▼
 CLI Agent (Product Owner)
