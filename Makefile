@@ -273,6 +273,7 @@ test-scaffolder-service:
 test-shared-unit:
 	@echo "🧪 Running Shared unit tests..."
 	@if [ -d "shared/tests" ] && [ "$$(ls -A shared/tests)" ]; then \
+		docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml build api-test-runner; \
 		docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml run --rm --no-deps -e PYTHONPATH=/app api-test-runner pytest shared/tests/ -v; \
 	else \
 		echo "⚠️  No unit tests found in shared/tests"; \
