@@ -1,4 +1,10 @@
-"""Test tool registry and automatic command documentation."""
+"""Test tool registry and automatic command documentation.
+
+These tests require orchestrator_cli to be installed (for load_cli_commands).
+They will be skipped in environments without it (e.g., api-test-runner).
+"""
+
+import pytest
 
 from shared.schemas.tool_groups import get_instructions_content
 from shared.schemas.tool_registry import (
@@ -8,6 +14,15 @@ from shared.schemas.tool_registry import (
     load_cli_commands,
     register_tool,
 )
+
+try:
+    import orchestrator_cli  # noqa: F401
+
+    HAS_CLI = True
+except ImportError:
+    HAS_CLI = False
+
+requires_cli = pytest.mark.skipif(not HAS_CLI, reason="orchestrator_cli not installed")
 
 
 def test_register_tool_decorator():
@@ -21,19 +36,17 @@ def test_register_tool_decorator():
 
     commands = get_registered_commands(ToolGroup.PROJECT)
     assert len(commands) == 1
-    assert commands[0]["name"] == "test-command"  # Underscores replaced with hyphens
+    assert commands[0]["name"] == "test-command"
     assert commands[0]["description"] == "Test command description."
 
     clear_registry()
 
 
+@requires_cli
 def test_load_cli_commands():
     """Loading CLI commands populates registry."""
     clear_registry()
 
-    # Force reload of CLI modules by clearing them from sys.modules
-    # This is necessary because other tests might have already imported them,
-    # preventing decorators from running again.
     import sys
 
     modules_to_clear = [m for m in sys.modules if m.startswith("orchestrator_cli.commands")]
@@ -72,27 +85,24 @@ def test_get_instructions_content_uses_registry():
     """Documentation generation uses registered commands."""
     clear_registry()
 
-    # Register a test command
     @register_tool(ToolGroup.PROJECT)
     def my_test_cmd():
         """My test command."""
         pass
 
-    # Generate docs with only PROJECT tools
     content = get_instructions_content([ToolGroup.PROJECT])
 
-    # Should include the registered command
     assert "my-test-cmd" in content
     assert "My test command." in content
     assert "orchestrator project my-test-cmd" in content
 
-    # Should NOT include other groups
     assert "## Deploy Commands" not in content
     assert "## Engineering Commands" not in content
 
     clear_registry()
 
 
+@requires_cli
 def test_generated_docs_filtered_by_allowed_tools():
     """Only allowed tool groups appear in documentation."""
     clear_registry()
@@ -100,16 +110,14 @@ def test_generated_docs_filtered_by_allowed_tools():
 
     content = get_instructions_content([ToolGroup.PROJECT, ToolGroup.DEPLOY])
 
-    # Should include PROJECT and DEPLOY sections
     assert "## Project Commands" in content
     assert "## Deploy Commands" in content
-
-    # Should NOT include ENGINEERING section header
     assert "## Engineering Commands" not in content
 
     clear_registry()
 
 
+@requires_cli
 def test_command_descriptions_in_docs():
     """Command docstrings appear as descriptions."""
     clear_registry()
@@ -117,7 +125,6 @@ def test_command_descriptions_in_docs():
 
     content = get_instructions_content([ToolGroup.PROJECT])
 
-    # Check that command descriptions from docstrings are included
     assert "List all projects" in content or "list" in content
     assert "Create a new project" in content or "create" in content
 
