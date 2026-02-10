@@ -111,7 +111,7 @@ class TestProcessJob:
             "project_id": "proj-456",
             "project_name": "multi-module",
             "repo_full_name": "vladmesh/multi-module",
-            "modules": ["backend", "frontend", "telegram"],
+            "modules": ["backend", "frontend", "tg_bot"],
         }
 
         with patch("main.scaffold_project", new_callable=AsyncMock) as mock_scaffold:
@@ -123,4 +123,4 @@ class TestProcessJob:
 
                 # Check modules arg is comma-separated
                 call_args = mock_scaffold.call_args[0]
-                assert call_args[3] == "backend,frontend,telegram"
+                assert call_args[3] == "backend,frontend,tg_bot"
