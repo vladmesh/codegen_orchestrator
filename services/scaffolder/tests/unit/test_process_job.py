@@ -31,7 +31,7 @@ class TestProcessJob:
         """Job data should be parsed into ScaffolderMessage DTO."""
         with patch("main.scaffold_project", new_callable=AsyncMock) as mock_scaffold:
             mock_scaffold.return_value = True
-            with patch("main.update_project_status", new_callable=AsyncMock):
+            with patch("main.update_project", new_callable=AsyncMock):
                 # Import here to allow patching
                 from main import process_job
 
@@ -50,7 +50,7 @@ class TestProcessJob:
         """Successful scaffolding should publish ScaffolderResult with success=True."""
         with patch("main.scaffold_project", new_callable=AsyncMock) as mock_scaffold:
             mock_scaffold.return_value = True
-            with patch("main.update_project_status", new_callable=AsyncMock):
+            with patch("main.update_project", new_callable=AsyncMock):
                 from main import process_job
 
                 await process_job(valid_job_data, mock_redis)
@@ -73,7 +73,7 @@ class TestProcessJob:
         """Failed scaffolding should publish ScaffolderResult with success=False."""
         with patch("main.scaffold_project", new_callable=AsyncMock) as mock_scaffold:
             mock_scaffold.return_value = False
-            with patch("main.update_project_status", new_callable=AsyncMock):
+            with patch("main.update_project", new_callable=AsyncMock):
                 from main import process_job
 
                 await process_job(valid_job_data, mock_redis)
@@ -116,7 +116,7 @@ class TestProcessJob:
 
         with patch("main.scaffold_project", new_callable=AsyncMock) as mock_scaffold:
             mock_scaffold.return_value = True
-            with patch("main.update_project_status", new_callable=AsyncMock):
+            with patch("main.update_project", new_callable=AsyncMock):
                 from main import process_job
 
                 await process_job(job_data, mock_redis)
