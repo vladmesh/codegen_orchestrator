@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-01-09
+> **Актуально на**: 2026-02-09
 
 ## Обзор
 
@@ -11,12 +11,12 @@ Codegen Orchestrator — мультиагентная система для ав
 | Компонент | Технология |
 |-----------|------------|
 | **CLI Agents** | Claude Code, Factory.ai Droid |
-| **Agent Orchestration** | workers-spawner (Docker + Redis) |
+| **Agent Orchestration** | worker-manager (Docker + Redis) |
 | **Backend Orchestration** | LangGraph (subgraphs) |
 | **LLM** | Anthropic Claude (via CLI or API) |
 | **Интерфейс** | Telegram Bot |
 | **Кодогенерация** | service-template (Copier) |
-| **Инфраструктура** | `services/infrastructure-worker/ansible` |
+| **Инфраструктура** | `services/infra-service` (Ansible) |
 | **Хранение** | PostgreSQL + Redis |
 
 ## Ключевые концепции
@@ -38,20 +38,49 @@ Redis-based sessions с `--resume session_id` для сохранения кон
 | Сервис | Описание |
 |--------|----------|
 | `api` | FastAPI + SQLAlchemy — проекты, серверы, users, configs |
-| `telegram_bot` | Telegram интерфейс → workers-spawner |
-| `workers-spawner` | Docker контейнеры с CLI агентами |
+| `telegram_bot` | Telegram интерфейс + PO sessions |
+| `worker-manager` | Docker контейнеры с CLI агентами (Replacer legacy workers-spawner) |
 | `langgraph` | Engineering/DevOps subgraphs |
 | `scheduler` | Background tasks (sync, health checks) |
-| `preparer` | Copier runner для scaffolding |
-| `infrastructure-worker` | Ansible runner, SSH операции |
+| `scaffolder` | Copier runner для scaffolding (бывший preparer) |
+| `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
 
 ## Граф (CLI Agent Architecture)
 
+```mermaid
+graph TD
+    User((User)) <--> |Telegram| Bot[Telegram Bot Service]
+    Bot <--> |Command Queue| PO[Product Owner Worker]
+    
+    subgraph "Worker Container"
+        PO -- "Claude/Factory" --> CLI[Orchestrator CLI]
+    end
+    
+    CLI --> |API Request| API[API Service]
+    
+    CLI --> |"push task"| EngQueue[engineering:queue]
+    CLI --> |"push task"| DeployQueue[deploy:queue]
+    
+    API --> |"data"| DB[(PostgreSQL)]
+    
+    EngQueue --> EngConsumer[Engineering Consumer]
+    EngConsumer --> EngGraph[Engineering Subgraph]
+    
+    DeployQueue --> DepConsumer[Deploy Consumer]
+    DepConsumer --> DepGraph[DevOps Subgraph]
+
+    %% Feedback Loops
+    EngGraph --> |"Result / Progress"| DB
+    DepGraph --> |"Result / Progress"| DB
+```
+
+### Потоки данных
+
 ```
 ┌─────────┐     ┌──────────────────────┐     ┌─────────────────────────────┐
-│  START  │────▶│ Telegram Bot         │────▶│  workers-spawner            │
-└─────────┘     │                      │     │  (Docker isolation)         │
-                └──────────────────────┘     └──────────┬──────────────────┘
+│  START  │────▶│ Telegram Bot         │────▶│  worker-manager             │
+│  User   │     │                      │     │  (Docker isolation)         │
+└─────────┘     └──────────────────────┘     └──────────┬──────────────────┘
                                                         │
                                                         ▼
                                              ┌────────────────────────────┐
@@ -74,29 +103,30 @@ Redis-based sessions с `--resume session_id` для сохранения кон
 │ ┌──────────────────┐      │                    │                             │
 │ │  Create Project  │      │                    ▼                             ▼
 │ └────────┬─────────┘      │    ┌────────────────────────────┐  ┌──────────────────────────┐
-│          │                │    │ Architect → Preparer →     │  │ EnvAnalyzer → Deployer   │
-└──────────┼────────────────┘    │ Developer → Tester         │  │ (Ansible via infra-worker)│
-           │                     │ (max 3 iterations)         │  └──────────────────────────┘
-           ▼                     └────────────────────────────┘
-   ┌───────────────┐
-   │    Zavhoz     │
-   │  (resources)  │
-   └───────────────┘
+│          │                │    │ Scaffolder → Developer →   │  │ EnvAnalyzer → Deployer   │
+│          │                │    │ Tester                     │  │ (Ansible via infra-svc)  │
+│          │                │    │ (max 3 iterations)         │  └──────────────────────────┘
+│          ▼                │    └────────────────────────────┘
+│    ┌─────────────────┐    │
+│    │ Resource Mgmt   │    │
+│    │ (Zavhoz Node)   │    │
+│    └─────────────────┘    │
+└───────────────────────────┘
 ```
 
 **Key Features:**
 - **CLI Agent**: Product Owner as pluggable CLI worker (Claude Code, Factory.ai, custom)
 - **Native Tools**: All API endpoints exposed as tools via OpenAPI
 - **Session Management**: Redis-based locks (PROCESSING/AWAITING states)
-- **Engineering Subgraph**: Architect → Preparer → Developer → Tester (max 3 iterations)
-- **DevOps Subgraph**: LLM-based env analysis, Ansible deployment via infrastructure-worker
+- **Engineering Subgraph**: Scaffolder → Developer → Tester (max 3 iterations)
+- **DevOps Subgraph**: LLM-based env analysis, Ansible deployment via infra-service
 
 ## Внешние зависимости
 
 | Репозиторий | Использование |
 |-------------|---------------|
 | [service-template](https://github.com/vladmesh/service-template) | Copier шаблон для генерации проектов |
-| `infrastructure-worker` | Ansible runner для деплоя |
+| `infra-service` | Ansible runner для деплоя |
 
 ## Документация
 
@@ -104,12 +134,13 @@ Redis-based sessions с `--resume session_id` для сохранения кон
 
 | Тема | Файл |
 |------|------|
+| **Migration Plan** | [docs/new_architecture/MIGRATION_PLAN.md](docs/new_architecture/MIGRATION_PLAN.md) |
+| **Contracts (DTO)** | [docs/new_architecture/CONTRACTS.md](docs/new_architecture/CONTRACTS.md) |
+| **New Architecture** | [docs/new_architecture/README.md](docs/new_architecture/README.md) |
 | Resource Management (Завхоз) | [docs/resource-management.md](docs/resource-management.md) |
 | Coding Agents (Claude/Droid) | [docs/coding-agents.md](docs/coding-agents.md) |
 | Parallel Workers | [docs/parallel-workers.md](docs/parallel-workers.md) |
 | Logging | [docs/LOGGING.md](docs/LOGGING.md) |
-| Nodes | [docs/NODES.md](docs/NODES.md) |
-| Testing | [docs/TESTING.md](docs/TESTING.md) |
 
 ## Мониторинг
 
@@ -124,22 +155,3 @@ export LANGCHAIN_API_KEY=...
 
 Все сервисы используют `structlog` (JSON для prod, console для dev).
 Подробнее: [docs/LOGGING.md](docs/LOGGING.md)
-
-## Открытые вопросы
-
-### Решено
-
-1. ~~**Ресурсница**: отдельный сервис или часть оркестратора?~~ → **Узел LangGraph** (Zavhoz)
-2. ~~**Хранение секретов**~~ → **project.config.secrets** через PostgreSQL API
-3. ~~**Coding agents**: писать свои или использовать готовые?~~ → **Factory.ai Droid**
-4. ~~**Docker-in-Docker для тестов**~~ → **Sysbox** (безопасный nested Docker)
-5. ~~**Session management**~~ → **Redis-based locks** (PROCESSING/AWAITING states)
-
-### В бэклоге
-
-- **Persistent Checkpointing** — сейчас используется `MemorySaver`, миграция на `PostgresSaver` запланирована
-- Human escalation (backlog: Human Escalation)
-- Cost tracking (backlog: Cost Tracking)
-- RAG с embeddings (backlog: RAG с Embeddings)
-- Telegram Bot Pool (backlog: Telegram Bot Pool)
-- API Authentication (backlog: API Authentication)

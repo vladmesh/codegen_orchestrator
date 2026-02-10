@@ -22,6 +22,27 @@ services/
     Dockerfile.test
     pytest.ini
   
+  worker-manager/        # REPLACES workers-spawner
+    tests/
+      unit/
+      integration/
+    Dockerfile.test
+    pytest.ini
+
+  scaffolder/            # REPLACES preparer
+    tests/
+      unit/
+      integration/
+    Dockerfile.test
+    pytest.ini
+
+  infra-service/         # REPLACES infrastructure-worker
+    tests/
+      unit/
+      integration/
+    Dockerfile.test
+    pytest.ini
+  
   scheduler/
     tests/
       unit/
@@ -36,7 +57,7 @@ services/
     pytest.ini
 
 tests/
-  e2e/                   # End-to-end system tests (future)
+  e2e/                   # End-to-end system tests (mocked & full)
 ```
 
 ## Test Types
@@ -55,11 +76,11 @@ tests/
 - **Speed**: Slower (1-10 seconds per test)
 - **Run with**: `make test-{service}-integration`
 
-### E2E Tests (Future)
+### E2E Tests
 - **Location**: `tests/e2e/`
 - **Purpose**: Test full user workflows across all services
-- **Dependencies**: Full stack running
-- **Speed**: Slowest (10+ seconds per test)
+- **Dependencies**: Full stack running + Mock LLM (or Real LLM)
+- **Run with**: `make test-e2e` (see Makefile for specific targets)
 
 ## Running Tests
 
@@ -78,6 +99,9 @@ make test-all
 # Run tests for a specific service
 make test-api
 make test-langgraph
+make test-worker-manager
+make test-scaffolder
+make test-infra
 make test-scheduler
 make test-telegram
 ```
@@ -86,23 +110,27 @@ make test-telegram
 
 ```bash
 # API service
-make test-api-unit          # API unit tests only
-make test-api-integration   # API integration tests only
-make test-api               # All API tests
+make test-api-unit
+make test-api-integration
+
+# Worker Manager (Core Logic)
+make test-worker-manager-unit
+make test-worker-manager-integration
+
+# Scaffolder (Copier)
+make test-scaffolder-unit
+make test-scaffolder-integration
+
+# Infra Service (Ansible)
+make test-infra-unit
+make test-infra-integration
 
 # LangGraph service
 make test-langgraph-unit
 make test-langgraph-integration
-make test-langgraph
-
-# Scheduler service
-make test-scheduler-unit
-make test-scheduler-integration
-make test-scheduler
 
 # Telegram Bot service
 make test-telegram-unit
-make test-telegram
 ```
 
 ### Cleanup
@@ -188,7 +216,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [api, langgraph, scheduler, telegram]
+        service: [api, langgraph, scheduler, telegram, worker-manager, scaffolder, infra-service]
     steps:
       - uses: actions/checkout@v4
       - name: Run unit tests

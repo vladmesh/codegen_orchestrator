@@ -14,39 +14,44 @@
 
 ## Архитектура
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Telegram Bot                             │
-│                     (интерфейс пользователя)                    │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       LangGraph Orchestrator                    │
-│                                                                 │
-│  CLI Agent (Product Owner)                                      │
-│         │                                                       │
-│         ▼                                                       │
-│  ┌───────────────┐   ┌───────────────────────────────────────┐    │
-│  │ Analyst →     │   │ Engineering Subgraph                      │    │
-│  │ Zavhoz        │   │ Architect → Preparer → Developer → Tester │    │
-│  └───────────────┘   └───────────────────────────────────────┘    │
-│                                       │                          │
-│                                       ▼                          │
-│                         ┌───────────────────────────────────────┐    │
-│                         │ DevOps Subgraph                                  │    │
-│                         │ EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer│    │
-│                         └───────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
-                    │                    │
-                    ▼                    ▼
-        ┌───────────────────┐   ┌───────────────────┐
-        │  service-template │   │    prod_infra     │
-        │   (кодогенерация) │   │   (Ansible)       │
-        └───────────────────┘   └───────────────────┘
+```mermaid
+graph TD
+    User((User)) <--> |Telegram| Bot[Telegram Bot Service]
+    Bot <--> |Command Queue| PO[Product Owner Worker]
+    
+    subgraph "Worker Container"
+        PO -- "Claude/Factory" --> CLI[Orchestrator CLI]
+    end
+    
+    CLI --> |API Request| API[API Service]
+    
+    CLI --> |"push task"| EngQueue[engineering:queue]
+    CLI --> |"push task"| DeployQueue[deploy:queue]
+    
+    API --> |"data"| DB[(PostgreSQL)]
+    
+    EngQueue --> EngConsumer[Engineering Consumer]
+    EngConsumer --> EngGraph[Engineering Subgraph]
+    
+    DeployQueue --> DepConsumer[Deploy Consumer]
+    DepConsumer --> DepGraph[DevOps Subgraph]
+
+    %% Feedback Loops
+    EngGraph --> |"Result / Progress"| DB
+    DepGraph --> |"Result / Progress"| DB
 ```
 
-## Связанные проекты
+### Основные компоненты
+
+- **API**: FastAPI сервис, единственный источник правды (DAL) для PostgreSQL.
+- **Telegram Bot**: Интерфейс для пользователя, управляет PO сессиями.
+- **Worker Manager**: Управляет Docker контейнерами с AI агентами (Claude/Factory). Заменил legacy `workers-spawner`.
+- **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps).
+- **Scaffolder**: Сервис генерации кода через Copier (бывший `preparer`).
+- **Infra Service**: Ansible runner для настройки серверов (бывший `infrastructure-worker`).
+- **Scheduler**: Фоновые задачи (синхронизация, проверка здоровья).
+
+### Связанные проекты
 
 | Проект | Описание | Репо |
 |--------|----------|------|
@@ -56,8 +61,8 @@
 ## Инфраструктура
 
 - **LangGraph сервер**: Отдельный сервер для оркестратора и агентов
-- **Prod серверы**: Управляются через prod_infra, используются для деплоя сгенерированных проектов
-- **Телеграм**: Основной интерфейс для взаимодействия с человеком
+- **Prod серверы**: Управляются через prod_infra
+- **Телеграм**: Основной интерфейс
 
 ## Development Setup
 
@@ -74,7 +79,7 @@
    cd codegen_orchestrator
    ```
 
-2. **Install git hooks** (for automatic code quality checks)
+2. **Install git hooks**
    ```bash
    make setup-hooks
    ```
@@ -100,24 +105,21 @@
 
 ### Development Workflow
 
-- **Code quality**: Git hooks provide automatic quality enforcement
-  - **Pre-commit**: Automatically formats code with `ruff format` and adds to commit (never blocks)
-  - **Pre-push**: Runs linters and unit tests, BLOCKS push if either fails
-- **Testing**: Write tests in `services/{service}/tests/{unit,integration}/`
-- **CI/CD**: GitHub Actions runs tests on every push/PR
-- **Skip hooks**: Use `--no-verify` flag if absolutely necessary (NOT recommended)
+- **Code quality**: `ruff format` (pre-commit), linters/tests (pre-push).
+- **Testing**: `services/{service}/tests/{unit,integration}/`.
+- **CI/CD**: GitHub Actions.
 
-See [TESTING.md](docs/TESTING.md) for detailed testing guide.
+See [docs/TESTING.md](docs/TESTING.md) for detailed testing guide.
 
 ## Документация
 
 - [AGENTS.md](AGENTS.md) — описание каждого агента
-- [ARCHITECTURE.md](ARCHITECTURE.md) — техническая архитектура
+- [ARCHITECTURE.md](ARCHITECTURE.md) — актуальная архитектура и потоки данных
 - [docs/LOGGING.md](docs/LOGGING.md) — руководство по структурированному логированию
 
 ## Logging
 
-Проект использует `structlog` для структурированного логирования с поддержкой JSON-формата.
+Проект использует `structlog` (JSON для prod, console для dev).
 
 ```python
 from shared.logging_config import setup_logging
@@ -125,14 +127,8 @@ import structlog
 
 setup_logging(service_name="my_service")
 logger = structlog.get_logger()
-logger.info("event_name", user_id=123, duration_ms=45.2)
+logger.info("event_name", user_id=123)
 ```
-
-**Environment variables:**
-- `LOG_LEVEL` — уровень логирования (DEBUG, INFO, WARNING, ERROR)
-- `LOG_FORMAT` — формат вывода: `json` (production) или `console` (dev)
-
-Подробнее см. [docs/LOGGING.md](docs/LOGGING.md).
 
 ## GitHub Secrets
 
@@ -140,23 +136,11 @@ logger.info("event_name", user_id=123, duration_ms=45.2)
 
 | Secret | Description |
 |--------|-------------|
-| `GH_APP_ID` | GitHub App ID for API authentication |
-| `GH_APP_PRIVATE_KEY` | GitHub App private key (PEM) |
-| `E2E_TEST_ORG` | Test organization: `project-factory-test` |
-| `E2E_TEST_INSTALLATION_ID` | Installation ID for test org |
+| `GH_APP_ID` | GitHub App ID |
+| `GH_APP_PRIVATE_KEY` | GitHub App private key |
+| `E2E_TEST_ORG` | Test organization |
+| `E2E_TEST_INSTALLATION_ID` | Test installation ID |
 
 ## Roadmap
 
-См. [docs/backlog.md](docs/backlog.md) для актуального списка задач.
-
-**Реализовано:**
-- CLI Agent as Product Owner (pluggable: Claude Code, Factory.ai, custom)
-- Engineering Subgraph (Architect → Preparer → Developer → Tester)
-- DevOps Subgraph (LLM-based env analysis, auto-generates infra secrets)
-- Session Management (Redis-based locks)
-- Multi-tenancy (user_id propagation, project filtering)
-
-**В бэклоге:**
-- RAG с embeddings
-- Telegram Bot Pool
-- API Authentication
+См. [docs/STATUS.md](docs/STATUS.md) для актуального статуса.

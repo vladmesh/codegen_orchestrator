@@ -48,8 +48,8 @@ help:
 	@echo "  make makemigrations MSG='...' - Create new migration"
 	@echo ""
 	@echo "  make shell       - Open shell in tooling container"
-	@echo "  make nuke           - Full reset (smart build): remove volumes, incremental rebuild"
-	@echo "  make nuke-hard      - Full reset (hard build): remove volumes, NO-CACHE rebuild"
+	@echo "  make nuke           - Full reset: clean workers, remove volumes, incremental rebuild"
+	@echo "  make nuke-hard      - Full reset: clean workers, remove volumes, NO-CACHE rebuild"
 	@echo "  make seed           - Seed database with API keys from env"
 	@echo "  make lock-deps      - Regenerate all requirements.lock files"
 	@echo "  make cleanup-agents - Remove all agent-* containers"
@@ -161,7 +161,7 @@ test-api-service:
 test-langgraph-unit:
 	@echo "🧪 Running LangGraph unit tests..."
 	@if [ -d "services/langgraph/tests/unit" ] && [ "$$(ls -A services/langgraph/tests/unit)" ]; then \
-		docker compose -p $(TEST_PROJECT)_langgraph -f docker/test/service/langgraph.yml run --rm --no-deps langgraph-test-runner pytest tests/unit/ -v; \
+		docker compose -p $(TEST_PROJECT)_langgraph -f docker/test/service/langgraph.yml run --rm --no-deps -e API_BASE_URL=http://localhost:8000 langgraph-test-runner pytest tests/unit/ -v; \
 	else \
 		echo "⚠️  No unit tests found in services/langgraph/tests/unit"; \
 	fi
@@ -365,8 +365,14 @@ nuke-hard: .nuke-common
 
 .nuke-common:
 	@echo "🔥 Nuking everything (Build mode: $(if $(filter --no-cache,$(BUILD_OPTS)),hard reset,smart incremental))..."
+	@echo "🧹 Cleaning up stale worker containers..."
+	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
+	@echo "🧹 Cleaning up worker images..."
+	@docker images --filter "reference=worker*" -q | xargs -r docker rmi -f 2>/dev/null || true
 	$(DOCKER_COMPOSE) down -v
 	$(DOCKER_COMPOSE) --profile build build $(BUILD_OPTS)
+	@echo "🔨 Rebuilding worker base images..."
+	@$(MAKE) rebuild-worker-images
 	$(DOCKER_COMPOSE) up -d
 	@echo "⏳ Waiting for DB to be healthy..."
 	@timeout=60; \

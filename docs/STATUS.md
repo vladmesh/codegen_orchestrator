@@ -1,171 +1,65 @@
 # Project Status
 
-> **Current Phase**: Architecture Refactoring (Migration to 2.0)
+> **Current Phase**: Phase 4: System E2E & Final Polish
 > **Active Plan**: [MIGRATION_PLAN.md](./new_architecture/MIGRATION_PLAN.md)
 
 ## 🚀 Current Focus
 
-**Phase 3: Telegram Bot (P3.1) - SERVICE TESTS COMPLETE**
+**Phase 4: System E2E Integration**
 
-- 10/10 service tests passing (POSessionManager, ProvisionerNotifier)
-- Integration tests **DEFERRED** — Mock Telegram polling approach proved problematic:
-  - `getUpdates` long-polling requires webhook mode for reliable testing
-  - Docker-in-Docker worker spawning adds significant infrastructure complexity
-- Service tests provide adequate coverage for current needs
+We have completed the core migration to the new architecture (Worker Manager, LangGraph, Infra Service). The focus is now on end-to-end system validation and CI integration.
 
-### Resolved Issues
+### ✅ Completed Milestones
 
-1. **✅ Env var naming** - Added `WORKER_` prefix to container_config.py
-2. **✅ Network isolation** - Added `network_name` parameter, configured in backend.yml
-3. **✅ Capability mechanism** - Added `LABEL` for agent_type differentiation
-4. **✅ Test cleanup** - Added `cleanup_worker_containers` fixture
-5. **✅ Task Context** - Added `task_id` persistence for crash recovery (Gap B)
+#### Phase 0: Foundation
+- **DTO Contracts**: `shared/contracts` implemented and verified.
+- **Shared Redis**: `shared/redis` with Pydantic support.
+- **Shared Logging**: `structlog` implementation.
+- **Github Client**: Token caching, rate limiting.
+- **Test Infra**: 4-layer test strategy (Unit/Service/Integration/Milestone).
 
-### Progress (Phase 0)
+#### Phase 1: Base Components (Worker Management)
+- **API Refactor**: Pure DAL (no side effects).
+- **Orchestrator CLI**: Dual-write (API + Redis), Permissions.
+- **Worker Wrapper**: Headless agent execution, session management (Redis), result parsing.
+- **Infra Service**: Ansible runner, provisioning queue consumer.
+- **Worker Manager**:
+  - Replaced legacy `workers-spawner`.
+  - Docker container lifecycle management.
+  - Dynamic image building with caching (hash-based).
+  - **Agent Integration**: Claude Code & Factory Droid support.
+  - **Capabilities**: Custom worker capabilities (git, curl, docker).
 
-1. **✅ P0.1 Shared Contracts**
-   - Пакет `shared/contracts` создан.
-   - Все DTO и сообщения очередей реализованы.
+#### Phase 2: Core Logic (Orchestration)
+- **Scaffolder**: Copier integration, GitHub repo creation.
+- **LangGraph**:
+  - Engineering Subgraph (Scaffolder -> Developer -> Tester).
+  - DevOps Subgraph (EnvAnalyzer -> Deployer).
+  - State persistence (Postgres).
+- **Scheduler**: Migrated to API client, Provisioner Result Listener loop.
+- **Template Tests**: Validated service-template integration.
 
-2. **✅ P0.2 Shared Redis**
-   - Пакет `shared/redis` создан.
-   - Клиент поддерживает Pydantic DTO.
-   - Добавлен `FakeRedisStreamClient` для тестов.
+#### Phase 3: Access (Telegram Bot)
+- **POSessionManager**: Redis streams integration.
+- **User Interface**: Progress events, synchronous waiting mode.
+- **Admin Tools**: Provisioning notifications.
 
-3. **✅ P0.3 Shared Logging**
-   - Пакет `shared/logging` создан.
-   - Настроен `structlog` (JSON/Console).
-   - Поддержка `correlation_id`.
+#### Phase 4: E2E (Partial)
+- **Mock Anthropic**: E2E tests with deterministic LLM responses (Passed).
+- **Configurable Agents**: Support for switching default agent type via env var.
+- **Legacy Removal**: `workers-spawner` successfully removed.
 
-4. **✅ P0.4 GitHub Client**
-   - GitHub App authentication (JWT).
-   - Token caching и Rate Limiting.
-   - Тесты с `respx` и `freezegun`.
+### 🚧 Outstanding Tasks
 
-5. **✅ P0.5 Test Infrastructure**
-   - [x] Настроить 4-уровневую систему тестов (Unit/Service/Integration/E2E)
-   - [x] Перенести legacy тесты в карантин
-   - [x] Обновить Makefile и compose файлы
+#### System E2E (P4.1)
+- [ ] Full system `docker-compose up` validation.
+- [ ] User -> Bot -> PO -> Spec -> Dev -> Deploy -> URL flow.
 
-### Next Steps
-
-6. **✅ P1.0 API Service Refactor**
-   - [x] API is now pure DAL (no Redis/GitHub side effects)
-   - [x] Service tests verify strict CRUD behavior
-   - [x] GitHub/Redis clients removed from API routers
-
-7. **✅ P1.1 Orchestrator CLI**
-   - [x] Created `packages/orchestrator-cli`.
-   - [x] Implemented `project create` with Dual-Write (API + Redis).
-   - [x] Permissions System Implemented.
-   - [x] Verified with Unit & Integration Tests.
-
-### Next Steps
-
-8. **✅ P1.2 Worker Wrapper**
-   - [x] Package `packages/worker-wrapper` created.
-   - [x] Main Loop implemented (XREAD -> Subprocess -> XADD).
-   - [x] Lifecycle events and session management via `WorkerLifecycleEvent`.
-   - [x] Verified with Integration Tests (FakeRedis).
-
-9. **✅ P1.3 Infra Service**
-   - [x] Renamed to `services/infra-service`.
-   - [x] Implemented `provisioner:queue` consumer.
-   - [x] Replaced functional Ansible usage with `AnsibleRunner` class.
-   - [x] Removed legacy deployment logic.
-
-### Next Steps
-
-10. **✅ P1.4 Worker Manager**
-    - [x] **P1.4.1 Core Logic**: `WorkerManager` class, `DockerClientWrapper`, Service Tests (Green).
-    - [x] **P1.4.2 Service Wiring**: Wiring `main.py` with `WorkerCommandConsumer` (Redis), Background Tasks (GC, Auto-Pause).
-    - [x] **P1.4.3 Worker Base**: Build `worker-base` image, CI integration.
-
-11. **✅ P1.5 Runtime Cache**
-    - [x] **P1.5.1 ImageBuilder**: Dockerfile generation logic, `compute_image_hash()`, capability mapping.
-    - [x] **P1.5.2 Build Logic**: `DockerClientWrapper.build_image()`, `WorkerManager.ensure_or_build_image()`, `create_worker_with_capabilities()`.
-
-12. **✅ P1.6 Agent Integration**
-    - [x] **P1.6.1 Agent Factories**: `AgentConfig` base, Claude/Factory configs, agent type in hash.
-    - [x] **P1.6.2 Container Config**: Env vars, volumes (Docker socket, Claude session), network.
-    - [x] **P1.6.3 Docker Exec**: `exec_in_container()`, instruction file injection.
-    - [x] **P1.6.4 Docker Events**: Crash detection, failure forwarding to output queue.
-
-13. **✅ P1.7 Wrapper Completion**
-    - [x] **P1.7.1 Headless Execution**: ClaudeRunner, FactoryRunner classes.
-    - [x] **P1.7.2 Result Parsing**: `<result>...</result>` extraction, DTO mapping.
-    - [x] **P1.7.3 Session Management**: Redis storage, TTL, `--resume` flag.
-
-14. **✅ P1.8 Worker Base Image**
-    - [x] **P1.8.1 Dockerfile Update**: worker-wrapper as ENTRYPOINT, healthcheck.
-    - [x] **P1.8.2 CI Integration**: Build with wrapper, lifecycle event test.
-    - [x] **P1.8.3 Optimization**: Introduced `worker-base-common` to deduplicate layers and reduce disk usage.
-
-15. **✅ P1.9 Phase 1 Milestone**
-    - [x] `test_create_claude_worker_with_git_capability` - PASSED
-    - [x] `test_create_factory_worker_with_curl_capability` - PASSED
-    - [x] `test_different_agent_types_produce_different_images` - PASSED
-    - [x] `test_worker_executes_task_with_mocked_claude` - PASSED
-    - [x] `test_backend_integration_smoke` - PASSED
-
-16. **✅ P1.10 Agent & CLI Tests**
-    - [x] Gap 1-6 Fixed (Node.js, Auth, CLI installation)
-    - [x] Series 1: Claude Agent Integration - PASSED
-    - [x] Series 2: Factory Agent Integration - PASSED
-    - [x] Series 3: E2E Manually Verified
-
-### Phase 2: Core Logic
-17. **✅ P2.1 Scaffolder Refactoring**
-    - [x] Refactored `services/scaffolder` (DTOs, shared client).
-    - [x] Added Unit Tests (10) and Service Tests (4).
-    - [x] Integrated with CI.
-
-18. **✅ P2.2 LangGraph Service**
-    - [x] `test_engineering_flow_happy_path` (Service Test) ✅
-    - [x] `test_persistence_recovery` (Service Test) ✅
-    - [x] `test_worker_crash_handling` (Service Test) ✅
-    - [x] `test_deploy_flow_polling` (Service Test) ✅
-    - [x] Implementation: `consumers.py`, `graph_runner.py`, `redis_publisher.py`
-
-19. **✅ P2.3 Scheduler Refactoring**
-    - [x] Separated Data Layer: Service now talks to API, not DB.
-    - [x] Refactored Tasks: `github_sync` and `server_sync`.
-    - [x] Verified: Unit Tests (Mock) + Service Tests (Real API).
-
-20. **✅ P2.4 Provisioner Result Listener**
-    - [x] Implemented `provisioner_result_listener.py` consumer task.
-    - [x] Added `provisioner:results` consumer loop to scheduler `main.py`.
-    - [x] Implemented full feedback loop (Infra -> Redis -> Scheduler -> API -> DB).
-    - [x] Verified: Service Tests (5/5) & Integration Tests (2/2).
-
-
-21. **✅ P2.5 template Integration Tests**
-    - [x] Implemented integration tests in `tests/integration/template/`
-    - [x] Verified `Scaffolder` -> `Copier` -> `Generated Project` flow
-    - [x] Validated generated GitHub Workflows (`main.yml`)
-    - [x] Verified Secrets Injection (`TELEGRAM_BOT_TOKEN`, `DEPLOY_HOST`, etc.)
-    - [x] Added `make test-integration-template` target
-    - [x] Fixed: Forced `--vcs-ref=HEAD` to ensure latest template version
-
-### Phase 4: E2E Testing
-
-22. **🔄 P4.1 E2E Engineering Flow Test**
-    - [x] **Phase 1**: Mock Anthropic Server ✅
-    - [x] **Phase 2**: Worker ANTHROPIC_BASE_URL Support ✅
-    - [x] **Phase 3**: PO Worker Test Prompt ✅
-    - [x] **Phase 4**: Infrastructure Sanity Check (GitHub + Copier) ✅
-    - [x] **Phase 4.5**: Worker Mock Anthropic Integration ✅
-      - Fixed Claude CLI native installer (deprecated npm package)
-      - Fixed ResultParser for Claude CLI JSON output format
-      - Fixed Mock server to extract all text blocks from messages
-      - Tests: `test_worker_receives_mock_response`, `test_worker_response_matches_scenario` PASSED
-    - [ ] **Phase 5**: Developer Worker Mock Responses (Pending)
-    - [ ] **Phase 6**: Full E2E Test (Pending)
-    - [ ] **Phase 7**: CI Integration (Pending)
+#### CI/CD
+- [ ] Update CI workflows to run full E2E suite.
 
 ## 🔗 Quick Links
 
-- [Migration Plan](./new_architecture/MIGRATION_PLAN.md)
-- [**Current Gaps (Active)**](./new_architecture/CURRENT_GAPS.md)
-- [Testing Strategy](./new_architecture/tests/TESTING_STRATEGY.md)
-- [Legacy Backlog](./backlog.md)
+- [Migration Plan](./new_architecture/MIGRATION_PLAN.md) — Detailed completed tasks.
+- [Architecture](./../ARCHITECTURE.md) — High-level system overview.
+- [Testing Strategy](./TESTING.md) — How to run tests.
