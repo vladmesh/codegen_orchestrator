@@ -135,8 +135,8 @@ async def reinstall_and_provision(
 
         logger.info("os_reinstall_completed", server_handle=server_handle)
 
-        # Extract password from reinstall result
-        results = task_result.get("results", "")
+        # Extract password from reinstall result (task_result is Time4VPSTask model)
+        results = task_result.results or ""
         password = time4vps_client.extract_password(results)
 
         if not password:

@@ -128,6 +128,15 @@ class AnsibleRunner:
                     else process.stdout
                 )
                 output = f"STDERR: {process.stderr}\n\nSTDOUT TAIL:\n{stdout_tail}"
+                # Log failure details for easier troubleshooting
+                logger.error(
+                    "ansible_playbook_failed",
+                    playbook=playbook_name,
+                    server_handle=server_handle,
+                    exit_code=process.returncode,
+                    stderr=process.stderr[:MAX_LOG_LENGTH] if process.stderr else None,
+                    stdout_tail=stdout_tail,
+                )
 
             return success, output
 

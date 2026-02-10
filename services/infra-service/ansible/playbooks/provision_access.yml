@@ -10,10 +10,9 @@
     - ../group_vars/provision_vars.yml
   
   pre_tasks:
-    - name: Wait for server to be reachable
-      wait_for_connection:
-        timeout: 60
-    
+    # Note: wait_for_connection removed - if Gathering Facts succeeds,
+    # connection is already established. wait_for_connection can fail with
+    # "Host key verification failed" even when ssh_common_args is set.
     - name: Gather facts
       setup:
 

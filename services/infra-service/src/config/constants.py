@@ -35,6 +35,9 @@ class Timeouts:
     PASSWORD_RESET = int(os.getenv("PASSWORD_RESET_TIMEOUT", "300"))  # 5 minutes
     ACCESS_PHASE = int(os.getenv("ACCESS_PHASE_TIMEOUT", "180"))  # 3 minutes
 
+    # Deployment
+    SERVICE_DEPLOY = int(os.getenv("SERVICE_DEPLOY_TIMEOUT", "300"))  # 5 minutes
+
 
 class Provisioning:
     """Provisioning-related constants."""

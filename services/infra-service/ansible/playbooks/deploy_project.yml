@@ -1,0 +1,190 @@
+---
+# Deploy Project Playbook
+# Deploys a project from GitHub to a server using Docker Compose
+# Usage: ansible-playbook -i inventory.ini playbooks/deploy_project.yml \
+#        -e "project_name=hello-bot repo_full_name=org/repo github_token=xxx service_port=8000"
+
+- name: Deploy Project
+  hosts: all
+  become: true
+  vars:
+    deploy_dir: "/opt/apps/{{ project_name }}"
+    infra_dir: "{{ deploy_dir }}/infra"
+    env_file_path: "{{ deploy_dir }}/.env"
+    # Modules to profiles mapping: tg_bot -> tg profile
+    modules_list: "{{ (modules | default('backend')).split(',') }}"
+    profile_flags: "{{ '--profile tg' if 'tg_bot' in modules_list else '' }}"
+    # Support both root docker-compose.yml and infra/compose.*.yml structures
+    # Use --env-file to load variables before YAML interpolation
+    compose_cmd_base: "docker compose --env-file {{ env_file_path }} -f compose.base.yml {{ profile_flags }}"
+    compose_cmd_dev: "docker compose --env-file {{ env_file_path }} -f compose.base.yml -f compose.dev.yml {{ profile_flags }}"
+
+  tasks:
+    # ========================================
+    # 1. Create project directory
+    # ========================================
+    - name: Create deploy directory
+      file:
+        path: "{{ deploy_dir }}"
+        state: directory
+        mode: '0755'
+      tags: [setup]
+
+    # ========================================
+    # 2. Clone or update repository
+    # ========================================
+    - name: Clone/update repository from GitHub
+      git:
+        repo: "https://x-access-token:{{ github_token }}@github.com/{{ repo_full_name }}.git"
+        dest: "{{ deploy_dir }}"
+        version: main
+        force: yes
+        accept_hostkey: yes
+      tags: [git]
+
+    # ========================================
+    # 3. Write environment file
+    # ========================================
+    - name: Copy env file if provided
+      copy:
+        src: "{{ env_file }}"
+        dest: "{{ deploy_dir }}/.env"
+        mode: '0600'
+      when: env_file is defined and env_file != ""
+      tags: [config]
+
+    # ========================================
+    # 4. Open firewall ports
+    # ========================================
+    - name: Allow service port through firewall
+      ufw:
+        rule: allow
+        port: "{{ service_port }}"
+        proto: tcp
+      tags: [firewall]
+
+    - name: Allow HTTP port through firewall
+      ufw:
+        rule: allow
+        port: "80"
+        proto: tcp
+      tags: [firewall]
+
+    - name: Allow HTTPS port through firewall
+      ufw:
+        rule: allow
+        port: "443"
+        proto: tcp
+      tags: [firewall]
+
+    # ========================================
+    # 5. Check compose file structure
+    # ========================================
+    - name: Check if infra/compose.base.yml exists
+      stat:
+        path: "{{ infra_dir }}/compose.base.yml"
+      register: infra_compose
+      tags: [docker]
+
+    - name: Check if root docker-compose.yml exists
+      stat:
+        path: "{{ deploy_dir }}/docker-compose.yml"
+      register: root_compose
+      tags: [docker]
+
+    # ========================================
+    # 6. Stop existing containers
+    # ========================================
+    - name: Stop existing containers (infra structure)
+      command:
+        cmd: "{{ compose_cmd_base }} down --remove-orphans"
+        chdir: "{{ infra_dir }}"
+      ignore_errors: yes
+      when: infra_compose.stat.exists
+      tags: [docker]
+
+    - name: Stop existing containers (root structure)
+      command:
+        cmd: docker compose down --remove-orphans
+        chdir: "{{ deploy_dir }}"
+      ignore_errors: yes
+      when: root_compose.stat.exists and not infra_compose.stat.exists
+      tags: [docker]
+
+    # ========================================
+    # 7. Build and start containers
+    # ========================================
+    - name: Build and start containers (infra structure)
+      command:
+        cmd: "{{ compose_cmd_dev }} up -d --build"
+        chdir: "{{ infra_dir }}"
+      register: compose_result
+      when: infra_compose.stat.exists
+      tags: [docker]
+
+    - name: Build and start containers (root structure)
+      command:
+        cmd: docker compose up -d --build
+        chdir: "{{ deploy_dir }}"
+      register: compose_result
+      when: root_compose.stat.exists and not infra_compose.stat.exists
+      tags: [docker]
+
+    - name: Display compose output
+      debug:
+        msg: "{{ compose_result.stdout_lines | default([]) }}"
+      when: compose_result.stdout_lines is defined
+      tags: [docker]
+
+    # ========================================
+    # 8. Wait for container to be healthy
+    # ========================================
+    - name: Wait for container to start
+      pause:
+        seconds: 10
+      tags: [verify]
+
+    - name: Check container status (infra structure)
+      command: "{{ compose_cmd_base }} ps"
+      args:
+        chdir: "{{ infra_dir }}"
+      register: container_status
+      changed_when: false
+      when: infra_compose.stat.exists
+      tags: [verify]
+
+    - name: Check container status (root structure)
+      command: docker compose ps
+      args:
+        chdir: "{{ deploy_dir }}"
+      register: container_status
+      changed_when: false
+      when: root_compose.stat.exists and not infra_compose.stat.exists
+      tags: [verify]
+
+    - name: Display container status
+      debug:
+        msg: "{{ container_status.stdout_lines | default(['No output']) }}"
+      when: container_status is defined
+      tags: [verify]
+
+    # ========================================
+    # 8. Health check
+    # ========================================
+    - name: Check if service responds
+      uri:
+        url: "http://localhost:{{ service_port }}/health"
+        method: GET
+        status_code: [200, 404]
+        timeout: 10
+      register: health_check
+      ignore_errors: yes
+      tags: [verify]
+
+    - name: Deployment summary
+      debug:
+        msg:
+          - "Project: {{ project_name }}"
+          - "Deployed to: {{ inventory_hostname }}:{{ service_port }}"
+          - "Health check: {{ 'OK' if health_check is succeeded else 'Skipped or failed' }}"
+      tags: [verify]
