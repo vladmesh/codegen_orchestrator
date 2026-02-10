@@ -36,7 +36,7 @@ def test_load_cli_commands():
     # preventing decorators from running again.
     import sys
 
-    modules_to_clear = [m for m in sys.modules if m.startswith("orchestrator.commands")]
+    modules_to_clear = [m for m in sys.modules if m.startswith("orchestrator_cli.commands")]
     for module_name in modules_to_clear:
         del sys.modules[module_name]
 
@@ -95,14 +95,19 @@ def test_get_instructions_content_uses_registry():
 
 def test_generated_docs_filtered_by_allowed_tools():
     """Only allowed tool groups appear in documentation."""
+    clear_registry()
+    load_cli_commands()
+
     content = get_instructions_content([ToolGroup.PROJECT, ToolGroup.DEPLOY])
 
-    # Should include PROJECT and DEPLOY
-    assert "orchestrator project" in content
-    assert "orchestrator deploy" in content
+    # Should include PROJECT and DEPLOY sections
+    assert "## Project Commands" in content
+    assert "## Deploy Commands" in content
 
-    # Should NOT include ENGINEERING
-    assert "orchestrator engineering" not in content
+    # Should NOT include ENGINEERING section header
+    assert "## Engineering Commands" not in content
+
+    clear_registry()
 
 
 def test_command_descriptions_in_docs():
