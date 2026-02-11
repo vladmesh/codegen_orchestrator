@@ -219,7 +219,7 @@ def get(
         console.print(f"[bold]Project: {project['name']}[/bold]")
         console.print(f"ID: [cyan]{project['id']}[/cyan]")
         status = project.get("status", "unknown")
-        status_color = "green" if status == "deployed" else "yellow"
+        status_color = "green" if status == "active" else "yellow"
         console.print(f"Status: [{status_color}]{status}[/{status_color}]")
 
         if project.get("repository_url"):

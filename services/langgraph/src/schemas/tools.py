@@ -146,7 +146,7 @@ class ProjectCreateResult(BaseModel):
 
     id: str = Field(..., description="Created project ID")
     name: str = Field(..., description="Project name")
-    status: str = Field("pending_resources", description="Initial project status")
+    status: str = Field("draft", description="Initial project status")
     config: dict = Field(default_factory=dict, description="Project configuration")
     created_at: str | None = Field(None, description="Creation timestamp")
 

@@ -12,6 +12,7 @@ import signal
 
 import structlog
 
+from shared.contracts.dto.project import ProjectStatus
 from shared.log_config import setup_logging
 from shared.queues import DEPLOY_QUEUE, WORKER_GROUP, ensure_consumer_groups
 from shared.redis_client import RedisStreamClient
@@ -106,6 +107,12 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             )
             return {"status": "failed", "error": error_msg}
 
+        # Update project status to deploying
+        await api_client.patch(
+            f"projects/{project_id}",
+            json={"status": ProjectStatus.DEPLOYING.value},
+        )
+
         # Run DevOps subgraph
         devops_subgraph = create_devops_subgraph()
 
@@ -149,6 +156,11 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                         "deployment_result": result.get("deployment_result"),
                     },
                 },
+            )
+            # Update project status to active
+            await api_client.patch(
+                f"projects/{project_id}",
+                json={"status": ProjectStatus.ACTIVE.value},
             )
 
             if callback_stream:
@@ -243,6 +255,12 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             f"tasks/{task_id}",
             json={"status": "failed", "error_message": str(e), "error_traceback": str(e)},
         )
+        # Update project status to failed
+        if project_id:
+            await api_client.patch(
+                f"projects/{project_id}",
+                json={"status": ProjectStatus.FAILED.value},
+            )
 
         if callback_stream:
             await redis.redis.xadd(

@@ -4,18 +4,35 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ProjectStatus(str, Enum):
+    """Project lifecycle status.
+
+    Happy path: DRAFT → SCAFFOLDING → SCAFFOLDED → DEVELOPING → TESTING → DEPLOYING → ACTIVE
+    """
+
+    # Origin
     DRAFT = "draft"
+    DISCOVERED = "discovered"
+
+    # Scaffolding
     SCAFFOLDING = "scaffolding"
     SCAFFOLDED = "scaffolded"
     SCAFFOLD_FAILED = "scaffold_failed"
+
+    # Development
     DEVELOPING = "developing"
     TESTING = "testing"
+
+    # Deployment
     DEPLOYING = "deploying"
     ACTIVE = "active"
+
+    # Maintenance
+    MAINTENANCE = "maintenance"
+
+    # Issues
     FAILED = "failed"
-    ARCHIVED = "archived"
-    DISCOVERED = "discovered"
     MISSING = "missing"
+    ARCHIVED = "archived"
 
 
 class ServiceModule(str, Enum):

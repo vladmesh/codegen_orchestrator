@@ -19,7 +19,7 @@ import structlog
 if TYPE_CHECKING:
     from shared.clients.github import GitHubAppClient
 
-from shared.contracts.dto.project import ServiceModule
+from shared.contracts.dto.project import ProjectStatus, ServiceModule
 from shared.contracts.queues.scaffolder import ScaffolderMessage
 from shared.log_config import setup_logging
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, WORKER_GROUP, ensure_consumer_groups
@@ -298,7 +298,7 @@ async def _trigger_scaffolding(project: dict, redis: RedisStreamClient) -> None:
     # Update project status to scaffolding
     await api_client.patch(
         f"projects/{project_id}",
-        json={"status": "scaffolding"},
+        json={"status": ProjectStatus.SCAFFOLDING.value},
     )
 
     logger.info(
@@ -461,6 +461,12 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "errors": [],
         }
 
+        # Update project status to developing
+        await api_client.patch(
+            f"projects/{project_id}",
+            json={"status": ProjectStatus.DEVELOPING.value},
+        )
+
         # Create and run engineering subgraph
         engineering_subgraph = create_engineering_subgraph()
         result = await engineering_subgraph.ainvoke(subgraph_input)
@@ -540,6 +546,12 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             f"tasks/{task_id}",
             json={"status": "failed", "error_message": str(e), "error_traceback": str(e)},
         )
+        # Update project status to failed
+        if project_id:
+            await api_client.patch(
+                f"projects/{project_id}",
+                json={"status": ProjectStatus.FAILED.value},
+            )
 
         if callback_stream:
             await redis.redis.xadd(

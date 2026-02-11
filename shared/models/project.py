@@ -1,43 +1,11 @@
 """Project model."""
 
-from enum import Enum
-
 from sqlalchemy import JSON, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from shared.contracts.dto.project import ProjectStatus  # Single source of truth
+
 from .base import Base
-
-
-class ProjectStatus(str, Enum):
-    """Project lifecycle status."""
-
-    # Inception
-    DRAFT = "draft"
-    DISCOVERED = "discovered"
-    SETUP_REQUIRED = "setup_required"  # User requested activation, collecting secrets
-    ESTIMATED = "estimated"
-
-    # Materialization
-    PROVISIONING = "provisioning"
-    INITIALIZED = "initialized"
-
-    # Construction
-    DESIGNING = "designing"
-    DESIGNED = "designed"
-    IMPLEMENTING = "implementing"
-    IMPLEMENTED = "implemented"
-    VERIFYING = "verifying"
-    VERIFIED = "verified"
-
-    # Production
-    DEPLOYING = "deploying"
-    ACTIVE = "active"
-
-    # Maintenance & Issues
-    MAINTENANCE = "maintenance"
-    MISSING = "missing"
-    ERROR = "error"
-    ARCHIVED = "archived"
 
 
 class Project(Base):

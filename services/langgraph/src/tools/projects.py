@@ -8,6 +8,8 @@ import uuid
 from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 
+from shared.contracts.dto.project import ProjectStatus
+
 from ..schemas.tools import ProjectCreateResult, ProjectInfo, ProjectIntent
 from .base import api_client
 
@@ -90,7 +92,7 @@ async def create_project(
     payload = {
         "id": project_id,
         "name": name,
-        "status": "pending_resources",
+        "status": ProjectStatus.DRAFT.value,
         "config": config_payload,
     }
 
@@ -193,7 +195,7 @@ async def set_project_maintenance(
     updated = await api_client.patch(
         f"/projects/{project_id}",
         json={
-            "status": "maintenance",
+            "status": ProjectStatus.MAINTENANCE.value,
             "config": {
                 **project.get("config", {}),
                 "maintenance_request": update_description,
