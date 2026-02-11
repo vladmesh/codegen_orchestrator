@@ -11,9 +11,13 @@ import json
 import os
 import re
 import signal
+from typing import TYPE_CHECKING
 import uuid
 
 import structlog
+
+if TYPE_CHECKING:
+    from shared.clients.github import GitHubAppClient
 
 from shared.contracts.dto.project import ServiceModule
 from shared.contracts.queues.scaffolder import ScaffolderMessage
@@ -28,6 +32,211 @@ logger = structlog.get_logger(__name__)
 
 # Scaffolder queue
 SCAFFOLDER_QUEUE = "scaffolder:queue"
+
+
+def _extract_run_id_from_error(error_msg: str) -> int | None:
+    """Extract workflow run ID from URL in RuntimeError message.
+
+    The wait_for_workflow_completion raises RuntimeError with format:
+    'Workflow ci.yml failed: failure. See: https://github.com/.../actions/runs/12345'
+    """
+    match = re.search(r"/actions/runs/(\d+)", error_msg)
+    return int(match.group(1)) if match else None
+
+
+async def _respawn_developer_for_ci_fix(
+    project: dict,
+    owner: str,
+    repo_name: str,
+    repo_full_name: str,
+    github_client: GitHubAppClient,
+    failure_context: str,
+    attempt: int,
+) -> bool:
+    """Spawn a new developer worker to fix CI failures.
+
+    Returns:
+        True if developer completed successfully, False otherwise
+    """
+    from ..clients.worker_spawner import request_spawn
+    from ..config.constants import Timeouts
+
+    access_token = await github_client.get_token(owner, repo_name)
+    project_name = project.get("name", "project")
+
+    task_message = f"""# Task: Fix CI Failures (Attempt {attempt})
+
+## Context
+
+The code was pushed but CI failed. Your job is to fix the issues and push again.
+
+## CI Failure Details
+
+{failure_context or "CI workflow failed. Run `ruff check .` and fix any linting errors."}
+
+## Instructions
+
+1. The repository is already cloned to `/workspace`. Pull latest changes with `git pull`.
+2. Run `ruff check .` to see current linting errors
+3. Run `ruff format --exclude 'services/**/migrations' --exclude '.venv' .` to auto-format
+4. Run `ruff check --fix --exclude 'services/**/migrations' --exclude '.venv' .` to auto-fix
+5. For remaining errors that can't be auto-fixed, manually fix them
+6. Commit and push your fixes
+
+## Important
+
+- Focus ONLY on fixing the CI failures, do not add new features
+- Make a descriptive commit message like "fix: resolve CI linting errors"
+"""
+
+    worker_result = await request_spawn(
+        repo=repo_full_name,
+        github_token=access_token,
+        task_content=task_message,
+        task_title=f"Fix CI failures for {project_name} (attempt {attempt})",
+        timeout_seconds=Timeouts.WORKER_SPAWN,
+    )
+
+    return worker_result.success
+
+
+async def _wait_for_ci_and_fix(
+    project: dict,
+    task_id: str,
+    callback_stream: str | None,
+    redis: RedisStreamClient,
+) -> bool:
+    """Wait for CI workflow to pass, re-spawning developer on failure.
+
+    After the developer pushes code, CI runs on GitHub. This function monitors
+    the CI workflow and, if it fails, re-spawns a developer worker to fix
+    the issues. Retries up to CI.MAX_FIX_RETRIES times.
+
+    Returns:
+        True if CI passed (proceed to deploy), False if max retries exhausted
+    """
+    from shared.clients.github import GitHubAppClient
+
+    from ..config.constants import CI
+
+    repo_url = project.get("repository_url", "")
+    if not repo_url or "github.com/" not in repo_url:
+        logger.warning("ci_check_skip_no_repo_url", task_id=task_id)
+        return True  # Can't check CI without repo URL; proceed anyway
+
+    repo_full_name = repo_url.split("github.com/")[-1].rstrip("/")
+    owner, repo_name = repo_full_name.split("/", 1)
+
+    github_client = GitHubAppClient()
+
+    for attempt in range(CI.MAX_FIX_RETRIES + 1):  # 0 = initial check, 1..N = retries
+        # Record time before waiting so we only look at runs created after this point
+        created_after = datetime.now(UTC)
+
+        try:
+            logger.info(
+                "ci_check_waiting",
+                task_id=task_id,
+                attempt=attempt,
+                workflow=CI.CI_WORKFLOW_FILE,
+            )
+
+            if callback_stream:
+                msg = "Waiting for CI checks..."
+                if attempt > 0:
+                    msg = f"Waiting for CI checks (retry {attempt})..."
+                await redis.redis.xadd(
+                    callback_stream,
+                    {
+                        "data": json.dumps(
+                            {
+                                "type": "progress",
+                                "task_id": task_id,
+                                "message": msg,
+                                "timestamp": datetime.now(UTC).isoformat(),
+                            }
+                        )
+                    },
+                )
+
+            run_info = await github_client.wait_for_workflow_completion(
+                owner=owner,
+                repo=repo_name,
+                workflow_file=CI.CI_WORKFLOW_FILE,
+                branch="main",
+                timeout_seconds=CI.WORKFLOW_TIMEOUT,
+                poll_interval=CI.POLL_INTERVAL,
+                created_after=created_after,
+            )
+
+            logger.info(
+                "ci_check_passed",
+                task_id=task_id,
+                attempt=attempt,
+                run_id=run_info["id"],
+            )
+            return True
+
+        except RuntimeError as e:
+            # CI failed
+            run_id = _extract_run_id_from_error(str(e))
+            logger.warning(
+                "ci_check_failed",
+                task_id=task_id,
+                attempt=attempt,
+                error=str(e),
+            )
+
+            if attempt >= CI.MAX_FIX_RETRIES:
+                logger.error(
+                    "ci_fix_retries_exhausted",
+                    task_id=task_id,
+                    max_retries=CI.MAX_FIX_RETRIES,
+                )
+                return False
+
+            # Fetch failure details for context
+            failure_context = ""
+            if run_id:
+                try:
+                    failure_context = await github_client.get_workflow_failure_logs(
+                        owner, repo_name, run_id
+                    )
+                except Exception as log_err:
+                    logger.warning("ci_log_fetch_failed", error=str(log_err))
+
+            # Re-spawn developer worker with fix context
+            logger.info(
+                "ci_fix_respawn_developer",
+                task_id=task_id,
+                attempt=attempt + 1,
+            )
+
+            fix_success = await _respawn_developer_for_ci_fix(
+                project=project,
+                owner=owner,
+                repo_name=repo_name,
+                repo_full_name=repo_full_name,
+                github_client=github_client,
+                failure_context=failure_context,
+                attempt=attempt + 1,
+            )
+
+            if not fix_success:
+                logger.error(
+                    "ci_fix_developer_failed",
+                    task_id=task_id,
+                    attempt=attempt + 1,
+                )
+                return False
+
+            # Loop continues: will wait for CI again
+
+        except TimeoutError:
+            logger.error("ci_check_timeout", task_id=task_id, attempt=attempt)
+            return False
+
+    return False
 
 
 async def _trigger_scaffolding(project: dict, redis: RedisStreamClient) -> None:
@@ -244,6 +453,45 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 task_id=task_id,
                 commit_sha=result.get("commit_sha"),
             )
+
+            # --- CI Gate: wait for ci.yml before triggering deploy ---
+            ci_passed = await _wait_for_ci_and_fix(
+                project=project,
+                task_id=task_id,
+                callback_stream=callback_stream,
+                redis=redis,
+            )
+
+            if not ci_passed:
+                logger.error("ci_gate_failed", task_id=task_id, project_id=project_id)
+                await api_client.patch(
+                    f"tasks/{task_id}",
+                    json={
+                        "status": "failed",
+                        "error_message": "CI checks failed after max retries",
+                    },
+                )
+                if callback_stream:
+                    await redis.redis.xadd(
+                        callback_stream,
+                        {
+                            "data": json.dumps(
+                                {
+                                    "type": "failed",
+                                    "task_id": task_id,
+                                    "message": "Engineering completed but CI checks failed",
+                                    "timestamp": datetime.now(UTC).isoformat(),
+                                }
+                            )
+                        },
+                    )
+                return {
+                    "status": "failed",
+                    "error": "CI checks failed after max retries",
+                    "finished_at": datetime.now(UTC).isoformat(),
+                }
+
+            # CI passed — mark engineering task as completed
             await api_client.patch(
                 f"tasks/{task_id}",
                 json={
@@ -265,14 +513,14 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                             {
                                 "type": "completed",
                                 "task_id": task_id,
-                                "message": "Engineering task completed successfully",
+                                "message": "Engineering task completed, CI passed",
                                 "timestamp": datetime.now(UTC).isoformat(),
                             }
                         )
                     },
                 )
 
-            # Auto-trigger deploy after successful engineering
+            # Auto-trigger deploy after CI passes
             deploy_task_id = f"deploy-{task_id.replace('eng-', '')}"
             try:
                 # Create deploy task in API

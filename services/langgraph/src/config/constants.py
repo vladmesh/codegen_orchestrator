@@ -33,6 +33,22 @@ class Timeouts:
     SERVICE_DEPLOY = int(os.getenv("SERVICE_DEPLOY_TIMEOUT", "300"))  # 5 minutes
 
 
+class CI:
+    """CI monitoring constants."""
+
+    # Maximum times to re-spawn developer after CI failure
+    MAX_FIX_RETRIES = int(os.getenv("CI_MAX_FIX_RETRIES", "2"))
+
+    # Timeout waiting for ci.yml to complete (seconds)
+    WORKFLOW_TIMEOUT = int(os.getenv("CI_WORKFLOW_TIMEOUT", "600"))  # 10 minutes
+
+    # Poll interval for CI status (seconds)
+    POLL_INTERVAL = int(os.getenv("CI_POLL_INTERVAL", "15"))
+
+    # CI workflow filename
+    CI_WORKFLOW_FILE = os.getenv("CI_WORKFLOW_FILE", "ci.yml")
+
+
 class Provisioning:
     """Provisioning-related constants."""
 

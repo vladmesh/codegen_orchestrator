@@ -226,7 +226,7 @@ class DeveloperNode(FunctionalNode):
 
 ## Workspace
 
-The repository is already cloned to `/workspace`. Git hooks are configured.
+The repository is already cloned to `/workspace`. Git hooks run native ruff (Docker not required).
 You are already in the project directory — start working immediately.
 
 ## Project Structure (already scaffolded)
@@ -253,7 +253,7 @@ Implement the business logic according to the specification:
 ## Commit and Push
 
 After implementation, commit and push your changes.
-Git hooks will automatically run linters and tests before push.
+Git hooks run ruff format on commit and ruff check on push. Full CI validates on GitHub.
 
 ## Expected Output
 
@@ -266,7 +266,7 @@ Provide a summary including:
 
 - Project is already scaffolded - focus on business logic
 - Follow the project structure conventions from service-template
-- Git hooks are enabled - code will be checked before push
+- Git hooks run natively (ruff) - code formatted on commit, linted before push
 - Make descriptive commit messages
 """
         return task

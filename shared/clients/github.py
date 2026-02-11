@@ -560,12 +560,21 @@ class GitHubAppClient:
         repo: str,
         workflow_file: str = "main.yml",
         branch: str = "main",
+        created_after: datetime | None = None,
     ) -> dict | None:
         """Get the most recent workflow run for a branch.
 
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            workflow_file: Workflow filename (e.g. "ci.yml")
+            branch: Branch name to filter by
+            created_after: If set, ignore runs created before this time.
+                Useful to avoid picking up stale runs after a new push.
+
         Returns:
             Workflow run dict with keys: id, status, conclusion, html_url
-            None if no runs found
+            None if no runs found (or all runs are stale)
         """
         token = await self.get_token(owner, repo)
         headers = {
@@ -573,11 +582,15 @@ class GitHubAppClient:
             "Accept": "application/vnd.github+json",
         }
 
+        params: dict[str, str | int] = {"branch": branch, "per_page": 1}
+        if created_after:
+            params["created"] = f">={created_after.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+
         resp = await self._make_request(
             "GET",
             f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_file}/runs",
             headers=headers,
-            params={"branch": branch, "per_page": 1},
+            params=params,
         )
 
         runs = resp.json().get("workflow_runs", [])
@@ -601,8 +614,19 @@ class GitHubAppClient:
         branch: str = "main",
         timeout_seconds: int = 600,
         poll_interval: int = 15,
+        created_after: datetime | None = None,
     ) -> dict:
         """Wait for the latest workflow run to complete.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            workflow_file: Workflow filename to monitor
+            branch: Branch name
+            timeout_seconds: Max wait time
+            poll_interval: Seconds between polls
+            created_after: If set, only consider runs created after this time.
+                Prevents picking up stale runs from before a new push.
 
         Returns:
             Final workflow run state
@@ -620,7 +644,9 @@ class GitHubAppClient:
                     f"Workflow {workflow_file} did not complete within {timeout_seconds}s"
                 )
 
-            run = await self.get_latest_workflow_run(owner, repo, workflow_file, branch)
+            run = await self.get_latest_workflow_run(
+                owner, repo, workflow_file, branch, created_after=created_after
+            )
 
             if not run:
                 logger.info("workflow_not_found_waiting", workflow=workflow_file)
@@ -648,6 +674,52 @@ class GitHubAppClient:
                 elapsed_sec=int(elapsed),
             )
             await asyncio.sleep(poll_interval)
+
+    async def get_workflow_failure_logs(
+        self,
+        owner: str,
+        repo: str,
+        run_id: int,
+    ) -> str:
+        """Fetch failure details from a workflow run.
+
+        Gets failed job names and step names from the GitHub Actions API,
+        providing context about what failed in CI.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            run_id: Workflow run ID
+
+        Returns:
+            Formatted string describing what failed
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        resp = await self._make_request(
+            "GET",
+            f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
+            headers=headers,
+        )
+        jobs = resp.json().get("jobs", [])
+
+        lines = []
+        for job in jobs:
+            if job.get("conclusion") != "failure":
+                continue
+            lines.append(f"Job '{job['name']}' failed:")
+            for step in job.get("steps", []):
+                if step.get("conclusion") == "failure":
+                    lines.append(f"  Step '{step['name']}' failed")
+
+        if not lines:
+            return f"Workflow run {run_id} failed (no job details available)"
+
+        return "\n".join(lines)
 
     async def provision_project_repo(
         self,
