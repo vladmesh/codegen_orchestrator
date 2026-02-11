@@ -4,7 +4,7 @@
 	test-scheduler test-scheduler-unit test-scheduler-integration \
 	test-telegram test-telegram-unit \
 	test-orchestrator-cli \
-	build up down logs help nuke seed migrate makemigrations shell \
+	build up down stop logs help nuke seed migrate makemigrations shell \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard
 
@@ -79,6 +79,13 @@ up:
 
 down:
 	$(DOCKER_COMPOSE) down 
+
+stop:
+	@echo "🛑 Stopping stack and killing workers..."
+	$(DOCKER_COMPOSE) down
+	@echo "🔪 Killing worker containers..."
+	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
+	@echo "✅ Stack stopped and workers killed"
 
 logs:
 	$(DOCKER_COMPOSE) logs -f
