@@ -152,7 +152,22 @@ class WorkerWrapper:
             stderr=asyncio.subprocess.PIPE,
         )
 
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=self.config.subprocess_timeout_seconds
+            )
+        except TimeoutError:
+            logger.error(
+                "agent_process_timed_out",
+                timeout=self.config.subprocess_timeout_seconds,
+            )
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            raise RuntimeError(
+                f"Agent process timed out after {self.config.subprocess_timeout_seconds} seconds"
+            ) from None
         stdout = stdout_bytes.decode().strip()
         stderr = stderr_bytes.decode().strip()
 

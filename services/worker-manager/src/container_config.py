@@ -14,7 +14,7 @@ class WorkerContainerConfig:
     host_claude_dir: Optional[str] = None
     api_key: Optional[str] = None
 
-    def to_env_vars(self, redis_url: str, api_url: str) -> Dict[str, str]:
+    def to_env_vars(self, redis_url: str, api_url: str, subprocess_timeout_seconds: int = 300) -> Dict[str, str]:
         """Generate environment variables for the container.
 
         Note: worker-wrapper uses WORKER_ prefix for pydantic-settings,
@@ -29,6 +29,7 @@ class WorkerContainerConfig:
             "WORKER_AGENT_TYPE": self.agent_type,
             "WORKER_TYPE": self.worker_type,
             "WORKER_CAPABILITIES": ",".join(self.capabilities),
+            "WORKER_SUBPROCESS_TIMEOUT_SECONDS": str(subprocess_timeout_seconds),
             # Redis Stream Config (already have WORKER_ prefix)
             "WORKER_INPUT_STREAM": WorkerChannels.INPUT_PATTERN.value.format(worker_id=self.worker_id),
             "WORKER_OUTPUT_STREAM": WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=self.worker_id),

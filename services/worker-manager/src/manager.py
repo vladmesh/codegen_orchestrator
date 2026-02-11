@@ -299,6 +299,7 @@ class WorkerManager:
         container_env = config.to_env_vars(
             redis_url=worker_redis_url,
             api_url=worker_api_url,
+            subprocess_timeout_seconds=settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS,
         )
         container_env.update(env_vars)
 

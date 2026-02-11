@@ -21,7 +21,12 @@ def _get_user_id() -> str:
     return os.getenv("ORCHESTRATOR_USER_ID", "unknown")
 
 
-async def trigger_engineering_async(project_id: str) -> dict:
+async def trigger_engineering_async(
+    project_id: str,
+    action: str = "create",
+    description: str | None = None,
+    skip_deploy: bool = False,
+) -> dict:
     """Trigger engineering task for a project."""
     api_client = get_api_client()
     redis_client = get_redis_client()
@@ -35,7 +40,7 @@ async def trigger_engineering_async(project_id: str) -> dict:
         "id": task_id,
         "type": "engineering",
         "project_id": project_id,
-        "task_metadata": {"triggered_by": "cli"},
+        "task_metadata": {"triggered_by": "cli", "action": action},
         "callback_stream": callback_stream,
     }
 
@@ -52,12 +57,15 @@ async def trigger_engineering_async(project_id: str) -> dict:
             "project_id": project_id,
             "user_id": user_id,
             "callback_stream": callback_stream,
+            "action": action,
+            "description": description,
+            "skip_deploy": skip_deploy,
         }
         await redis_client.xadd("engineering:queue", {"data": json.dumps(queue_message)})
     finally:
         await redis_client.aclose()
 
-    return {"task_id": task_id, "project_id": project_id, "status": "queued"}
+    return {"task_id": task_id, "project_id": project_id, "action": action, "status": "queued"}
 
 
 async def get_task_status_async(task_id: str) -> dict:
@@ -77,11 +85,22 @@ def trigger(
     project_id: str = typer.Option(
         ..., "--project-id", "-p", help="Project ID to run engineering task for"
     ),
+    action: str = typer.Option(
+        "create", "--action", "-a", help="Action type: create, feature, or fix"
+    ),
+    description: str = typer.Option(
+        None, "--description", "-d", help="Task description (required for feature/fix)"
+    ),
+    skip_deploy: bool = typer.Option(
+        False, "--skip-deploy", help="Skip auto-deploy after CI passes"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Trigger engineering task for a project."""
     try:
-        result = asyncio.run(trigger_engineering_async(project_id))
+        result = asyncio.run(
+            trigger_engineering_async(project_id, action, description, skip_deploy)
+        )
 
         if json_output:
             typer.echo(json.dumps(result, indent=2))

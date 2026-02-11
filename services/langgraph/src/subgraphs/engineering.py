@@ -44,6 +44,10 @@ class EngineeringState(TypedDict):
     project_spec: dict | None
     allocated_resources: dict
 
+    # Task type and description
+    action: str  # "create" | "feature" | "fix"
+    description: str | None  # Human-readable task description
+
     # Engineering result
     engineering_status: str  # "idle" | "working" | "done" | "blocked"
     commit_sha: str | None

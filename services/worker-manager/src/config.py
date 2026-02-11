@@ -24,6 +24,9 @@ class WorkerManagerSettings(BaseSettings):
     # Host path to .claude directory (for mounting into workers)
     HOST_CLAUDE_DIR: str | None = None
 
+    # Worker subprocess timeout (seconds)
+    WORKER_SUBPROCESS_TIMEOUT_SECONDS: int = 300
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

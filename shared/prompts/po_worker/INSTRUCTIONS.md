@@ -56,18 +56,21 @@ When user asks to "deploy", "redeploy", "deploy again", or mentions deployment e
 
 ## Scenario: User wants to REBUILD/MODIFY existing project
 
-When user asks to "rebuild", "modify code", "change functionality":
+When user asks to "rebuild", "modify code", "change functionality", "add feature", "fix bug":
 
-1. **Get the project ID**
+1. **Get the project ID** (ask user or use `orchestrator project list`)
 
-2. **Trigger FULL engineering (coding + deploy)**:
-   - Use: `orchestrator engineering trigger -p <project_id>`
-   - This runs developer workers to modify code, then deploys
+2. **Understand what they want**: Ask the user to describe the feature or fix
 
-**IMPORTANT**: Use `engineering trigger` when:
-- Creating a new project from scratch
-- User wants to change/add features
-- User wants to modify the code
+3. **Trigger engineering with description**:
+   - For new features: `orchestrator engineering trigger -p <project_id> --action feature --description "description of the feature"`
+   - For bug fixes: `orchestrator engineering trigger -p <project_id> --action fix --description "description of the problem"`
+
+**IMPORTANT**:
+- `--action create` (default) — new project from scratch (with scaffolding)
+- `--action feature` — add functionality to existing project (no scaffolding)
+- `--action fix` — fix a bug in existing project (no scaffolding)
+- Always provide `--description` for feature/fix actions
 
 ## Important Rules
 
@@ -97,7 +100,10 @@ When user asks to "rebuild", "modify code", "change functionality":
 ### Two types of triggers:
 | Command | What it does | When to use |
 |---------|--------------|-------------|
-| `orchestrator engineering trigger -p <id>` | Full flow: develops code + deploys | New projects, code changes |
+| `orchestrator engineering trigger -p <id>` | Full flow: scaffold + develop + deploy | New projects |
+| `orchestrator engineering trigger -p <id> --action feature -d "..."` | Develop + deploy (no scaffold) | Add features |
+| `orchestrator engineering trigger -p <id> --action fix -d "..."` | Develop + deploy (no scaffold) | Fix bugs |
+| `orchestrator engineering trigger -p <id> --action feature -d "..." --skip-deploy` | Develop only (no deploy) | Iterative dev |
 | `orchestrator deploy trigger -p <id>` | Deploy only: no code changes | Redeploy, retry after failure |
 
 ## Error Handling

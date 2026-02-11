@@ -499,6 +499,9 @@ class EngineeringMessage(BaseMessage):
     task_id: str
     project_id: str
     user_id: int
+    action: Literal["create", "feature", "fix"] = "create"
+    description: str | None = None
+    skip_deploy: bool = False
 
 
 class EngineeringResult(BaseResult):
@@ -507,6 +510,14 @@ class EngineeringResult(BaseResult):
     commit_sha: str | None = None
     branch: str | None = None
 ```
+
+**Action types:**
+- `create` (default) — new project: scaffold → develop → CI → deploy
+- `feature` — add feature to existing project: develop → CI → deploy (no scaffolding)
+- `fix` — fix issue in existing project: develop → CI → deploy (no scaffolding)
+
+**Flags:**
+- `skip_deploy=True` — skip auto-deploy after CI passes (develop → CI only)
 
 ---
 

@@ -338,8 +338,16 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     task_id = job_data.get("task_id", "unknown")
     project_id = job_data.get("project_id")
     callback_stream = job_data.get("callback_stream")
+    action = job_data.get("action", "create")
+    description = job_data.get("description")
+    skip_deploy = job_data.get("skip_deploy", False)
 
-    logger.info("engineering_job_started", task_id=task_id, project_id=project_id)
+    logger.info(
+        "engineering_job_started",
+        task_id=task_id,
+        project_id=project_id,
+        action=action,
+    )
 
     try:
         # Update task status to running
@@ -371,10 +379,19 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             )
             return {"status": "failed", "error": error_msg}
 
-        # Trigger scaffolding if project is still in draft status
+        # Trigger scaffolding only for new project creation on draft projects
         project_status = project.get("status")
-        if project_status == "draft":
+        if project_status == "draft" and action == "create":
             await _trigger_scaffolding(project, redis)
+        elif project_status == "draft" and action != "create":
+            logger.warning(
+                "feature_fix_on_draft_project",
+                task_id=task_id,
+                project_id=project_id,
+                action=action,
+                hint="Project is in draft status but action is not 'create'. "
+                "Skipping scaffolding — developer will work with existing repo.",
+            )
 
         # Allocate resources if not already allocated
         existing_allocations = await api_client.get_project_allocations(project_id)
@@ -433,6 +450,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "current_project": project_id,
             "project_spec": project,
             "allocated_resources": allocated_resources,
+            "action": action,
+            "description": description,
             "commit_sha": None,
             "engineering_status": "idle",
             "iteration_count": 0,
@@ -454,117 +473,15 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 commit_sha=result.get("commit_sha"),
             )
 
-            # --- CI Gate: wait for ci.yml before triggering deploy ---
-            ci_passed = await _wait_for_ci_and_fix(
-                project=project,
+            # --- CI Gate & Auto-Deploy ---
+            return await _handle_engineering_success(
+                result=result,
                 task_id=task_id,
+                project=project,
                 callback_stream=callback_stream,
                 redis=redis,
+                skip_deploy=skip_deploy,
             )
-
-            if not ci_passed:
-                logger.error("ci_gate_failed", task_id=task_id, project_id=project_id)
-                await api_client.patch(
-                    f"tasks/{task_id}",
-                    json={
-                        "status": "failed",
-                        "error_message": "CI checks failed after max retries",
-                    },
-                )
-                if callback_stream:
-                    await redis.redis.xadd(
-                        callback_stream,
-                        {
-                            "data": json.dumps(
-                                {
-                                    "type": "failed",
-                                    "task_id": task_id,
-                                    "message": "Engineering completed but CI checks failed",
-                                    "timestamp": datetime.now(UTC).isoformat(),
-                                }
-                            )
-                        },
-                    )
-                return {
-                    "status": "failed",
-                    "error": "CI checks failed after max retries",
-                    "finished_at": datetime.now(UTC).isoformat(),
-                }
-
-            # CI passed — mark engineering task as completed
-            await api_client.patch(
-                f"tasks/{task_id}",
-                json={
-                    "status": "completed",
-                    "result": {
-                        "engineering_status": result["engineering_status"],
-                        "commit_sha": result.get("commit_sha"),
-                        "selected_modules": result.get("selected_modules"),
-                        "test_results": result.get("test_results"),
-                    },
-                },
-            )
-
-            if callback_stream:
-                await redis.redis.xadd(
-                    callback_stream,
-                    {
-                        "data": json.dumps(
-                            {
-                                "type": "completed",
-                                "task_id": task_id,
-                                "message": "Engineering task completed, CI passed",
-                                "timestamp": datetime.now(UTC).isoformat(),
-                            }
-                        )
-                    },
-                )
-
-            # Auto-trigger deploy after CI passes
-            deploy_task_id = f"deploy-{task_id.replace('eng-', '')}"
-            try:
-                # Create deploy task in API
-                await api_client.post(
-                    "tasks/",
-                    json={
-                        "id": deploy_task_id,
-                        "type": "deploy",
-                        "project_id": project_id,
-                        "status": "pending",
-                    },
-                )
-                # Queue deploy job
-                await redis.redis.xadd(
-                    DEPLOY_QUEUE,
-                    {
-                        "data": json.dumps(
-                            {
-                                "task_id": deploy_task_id,
-                                "project_id": project_id,
-                                "callback_stream": callback_stream,
-                            }
-                        )
-                    },
-                )
-                logger.info(
-                    "deploy_auto_triggered",
-                    task_id=task_id,
-                    deploy_task_id=deploy_task_id,
-                    project_id=project_id,
-                )
-            except Exception as e:
-                logger.error(
-                    "deploy_auto_trigger_failed",
-                    task_id=task_id,
-                    error=str(e),
-                )
-
-            return {
-                "status": "success",
-                "commit_sha": result.get("commit_sha"),
-                "deploy_task_id": deploy_task_id,
-                "finished_at": datetime.now(UTC).isoformat(),
-            }
 
         elif result.get("engineering_status") == "blocked" or result.get("needs_human_approval"):
             logger.info("engineering_job_blocked", task_id=task_id, errors=result.get("errors"))
@@ -644,6 +561,144 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "error": str(e),
             "finished_at": datetime.now(UTC).isoformat(),
         }
+
+
+async def _handle_engineering_success(
+    result: dict,
+    task_id: str,
+    project: dict,
+    callback_stream: str | None,
+    redis: RedisStreamClient,
+    skip_deploy: bool,
+) -> dict:
+    """Handle successful engineering result: CI gate and auto-deploy."""
+    logger.info(
+        "engineering_job_success",
+        task_id=task_id,
+        commit_sha=result.get("commit_sha"),
+    )
+
+    project_id = project["id"]
+
+    # --- CI Gate: wait for ci.yml before triggering deploy ---
+    ci_passed = await _wait_for_ci_and_fix(
+        project=project,
+        task_id=task_id,
+        callback_stream=callback_stream,
+        redis=redis,
+    )
+
+    if not ci_passed:
+        logger.error("ci_gate_failed", task_id=task_id, project_id=project_id)
+        await api_client.patch(
+            f"tasks/{task_id}",
+            json={
+                "status": "failed",
+                "error_message": "CI checks failed after max retries",
+            },
+        )
+        if callback_stream:
+            await redis.redis.xadd(
+                callback_stream,
+                {
+                    "data": json.dumps(
+                        {
+                            "type": "failed",
+                            "task_id": task_id,
+                            "message": "Engineering completed but CI checks failed",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        }
+                    )
+                },
+            )
+        return {
+            "status": "failed",
+            "error": "CI checks failed after max retries",
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+
+    # CI passed — mark engineering task as completed
+    await api_client.patch(
+        f"tasks/{task_id}",
+        json={
+            "status": "completed",
+            "result": {
+                "engineering_status": result["engineering_status"],
+                "commit_sha": result.get("commit_sha"),
+                "selected_modules": result.get("selected_modules"),
+                "test_results": result.get("test_results"),
+            },
+        },
+    )
+
+    if callback_stream:
+        await redis.redis.xadd(
+            callback_stream,
+            {
+                "data": json.dumps(
+                    {
+                        "type": "completed",
+                        "task_id": task_id,
+                        "message": "Engineering task completed, CI passed",
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    }
+                )
+            },
+        )
+
+    # Auto-trigger deploy after CI passes (unless skip_deploy)
+    if not skip_deploy:
+        deploy_task_id = f"deploy-{task_id.replace('eng-', '')}"
+        try:
+            # Create deploy task in API
+            await api_client.post(
+                "tasks/",
+                json={
+                    "id": deploy_task_id,
+                    "type": "deploy",
+                    "project_id": project_id,
+                    "status": "pending",
+                },
+            )
+            # Queue deploy job
+            await redis.redis.xadd(
+                DEPLOY_QUEUE,
+                {
+                    "data": json.dumps(
+                        {
+                            "task_id": deploy_task_id,
+                            "project_id": project_id,
+                            "callback_stream": callback_stream,
+                        }
+                    )
+                },
+            )
+            logger.info(
+                "deploy_auto_triggered",
+                task_id=task_id,
+                deploy_task_id=deploy_task_id,
+                project_id=project_id,
+            )
+        except Exception as e:
+            logger.error(
+                "deploy_auto_trigger_failed",
+                task_id=task_id,
+                error=str(e),
+            )
+    else:
+        deploy_task_id = None
+        logger.info(
+            "deploy_skipped",
+            task_id=task_id,
+            project_id=project_id,
+        )
+
+    return {
+        "status": "success",
+        "commit_sha": result.get("commit_sha"),
+        "deploy_task_id": deploy_task_id,
+        "finished_at": datetime.now(UTC).isoformat(),
+    }
 
 
 async def run_worker():
