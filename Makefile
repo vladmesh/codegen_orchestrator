@@ -14,7 +14,7 @@ export
 
 DOCKER_COMPOSE ?= docker compose
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
-DOCKER_COMPOSE_TOOLS := $(COMPOSE_ENV) $(DOCKER_COMPOSE) -f docker-compose.tools.yml
+DOCKER_COMPOSE_TOOLS := $(COMPOSE_ENV) $(DOCKER_COMPOSE) -f docker-compose.tools.yml -p codegen_orchestrator_tools
 TOOLING := $(DOCKER_COMPOSE_TOOLS) run --rm tooling
 TOOLING_NON_INT := $(DOCKER_COMPOSE_TOOLS) run --rm -T tooling
 
