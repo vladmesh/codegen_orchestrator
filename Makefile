@@ -3,7 +3,7 @@
 	test-langgraph test-langgraph-unit test-langgraph-integration \
 	test-scheduler test-scheduler-unit test-scheduler-integration \
 	test-telegram test-telegram-unit \
-	test-workers-spawner test-orchestrator-cli \
+	test-orchestrator-cli \
 	build up down logs help nuke seed migrate makemigrations shell \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard
@@ -68,8 +68,8 @@ lock-deps:
 	$(TOOLING_UV) uv pip compile services/api/pyproject.toml -o services/api/requirements.lock
 	$(TOOLING_UV) uv pip compile services/scheduler/pyproject.toml -o services/scheduler/requirements.lock
 	$(TOOLING_UV) uv pip compile services/telegram_bot/pyproject.toml -o services/telegram_bot/requirements.lock
-	$(TOOLING_UV) uv pip compile services/workers-spawner/pyproject.toml -o services/workers-spawner/requirements.lock
-	$(TOOLING_UV) uv pip compile services/infrastructure-worker/pyproject.toml -o services/infrastructure-worker/requirements.lock
+	$(TOOLING_UV) uv pip compile services/worker-manager/pyproject.toml -o services/worker-manager/requirements.lock
+	$(TOOLING_UV) uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
 	@echo "✅ All lock files updated!"
 
 # === Docker ===
