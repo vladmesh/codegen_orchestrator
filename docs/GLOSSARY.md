@@ -102,7 +102,7 @@ AI который работает внутри Worker.
 - LLM нода — использует LLM для принятия решений
 - Tool executor — выполняет вызовы Tools
 
-**Примеры:** `DeveloperNode`, `DeployerNode`, `AnalystNode`
+**Примеры:** `DeveloperNode`, `DeployerNode`, `TesterNode`
 
 ### Subgraph (Подграф)
 Группа связанных Nodes, выполняющих определённый этап работы.

@@ -3,7 +3,7 @@
 **Цель**: Воркер как абстракция "работника" — создание, коммуникация, управление ресурсами.
 
 **Дата создания**: 2026-01-09
-**Статус**: Planning
+**Статус**: Planning (требует переработки под worker-manager)
 
 ---
 
@@ -20,7 +20,7 @@
 ## Целевая Модель: Воркер как Работник
 
 ```
-Найм/онбординг  → создание контейнера + инструкции (AGENTS.md, TASK.md)
+Найм/онбординг  → создание контейнера + инструкции (INSTRUCTIONS.md, TASK.md)
 Рабочее место   → контейнер с tools (orchestrator CLI, git)
 Работа          → выполнение задачи автономно
 Отчётность      → JSON output / API callback
@@ -215,7 +215,7 @@ if context_tokens > 150_000:
       question: str | None = None  # если blocked
   ```
 - [ ] Добавить endpoint `POST /api/worker/progress` для async updates
-- [ ] Обновить workers-spawner для парсинга обоих типов output
+- [ ] Обновить worker-manager для парсинга обоих типов output
 
 **Definition of Done:**
 - Воркер может вернуть structured JSON
@@ -361,6 +361,4 @@ if context_tokens > 150_000:
 
 ## Связанные Документы
 
-- [orchestrator-cli-pydantic.md](./orchestrator-cli-pydantic.md) — CLI interface
-- [github-worker-integration.md](./github-worker-integration.md) — GitHub capability
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — общая архитектура

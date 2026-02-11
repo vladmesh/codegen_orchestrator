@@ -608,24 +608,33 @@ class WorkflowStatusEvent(BaseModel):
 ```python
 # shared/contracts/queues/scaffolder.py
 
+class ScaffolderAction(str, Enum):
+    """Action type for scaffolder messages."""
+    CREATE = "create"
+    UPDATE = "update"
+
+
 class ScaffolderMessage(BaseMessage):
     """
-    Initialize project structure.
-    
-    Responsibilities:
+    Scaffold or update project structure.
+
+    Responsibilities for CREATE:
     1. Create remote repository (if not exists).
     2. Generate .project.yml config.
     3. Run copier template.
     4. Push initial commit.
+
+    Responsibilities for UPDATE:
+    1. Clone existing repository.
+    2. Run copier update --defaults.
+    3. Commit and push changes.
     """
+    action: ScaffolderAction = ScaffolderAction.CREATE
     project_id: str
     project_name: str
-    modules: list[ServiceModule]
-
-    # Scaffolder Result:
-    # Scaffolder publishes a result message to Redis upon completion.
-    # Stream: scaffolder:results
-    # Consumer: langgraph
+    repo_full_name: str  # org/repo format, e.g. "vladmesh/my-project"
+    modules: list[ServiceModule] = []  # Not required for update action
+    task_description: str = ""  # Detailed task description for TASK.md
 
 
 class ScaffolderResult(BaseResult):
@@ -636,7 +645,6 @@ class ScaffolderResult(BaseResult):
     project_id: str
     repo_url: str
     files_generated: int = 0
-
 ```
 
 

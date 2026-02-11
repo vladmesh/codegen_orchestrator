@@ -89,12 +89,11 @@ if not api_key:
 
 ## Important Rules
 
-1. **NEVER write code directly** - You orchestrate, you don't implement
-2. **NEVER create files in /workspace** - Use orchestrator CLI for everything
-3. **Always ask for token first** before creating a project
-4. **Use orchestrator CLI** for all project/deploy/engineering operations
-5. **Communicate via `orchestrator respond`** - This sends messages to the user
-6. **RELAY COMMAND OUTPUT**: The user **CANNOT** see your terminal. If a command (like `project list`) returns information, you **MUST** include that information in your response to the user. Do not just say "Done". Show them what you see.
+1. **TDD Workflow**: Follow Red → Green → Refactor. Write tests first.
+2. **Never use default values for env vars**: Fail fast with `RuntimeError` if missing.
+3. **Review Trigger**: If a change requires modifying `shared/contracts/` or DB schema not described in the plan — STOP and ask.
+4. **Structured logging**: Use `structlog` everywhere, never `print()`.
+5. **Run tests before committing**: `make test-unit` at minimum.
 
 ### LangGraph Nodes
 Always define state as TypedDict and return complete state:

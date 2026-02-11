@@ -1,32 +1,19 @@
 # Backlog
 
-> **Актуально на**: 2026-01-09
+> **Актуально на**: 2026-02-11
 
 ## Active Design & Implementation Plans
 
 | Feature | Plan | Status |
 |---------|------|--------|
-| **Worker Lifecycle** | [worker-lifecycle.md](./tasks/worker-lifecycle.md) | **Planning** |
-| **Orchestrator CLI Pydantic** | [orchestrator-cli-pydantic.md](./tasks/orchestrator-cli-pydantic.md) | Planning |
+| **Worker Lifecycle** | [worker-lifecycle.md](./tasks/worker-lifecycle.md) | Planning (нужна переработка под worker-manager) |
 | **Secrets Vault** | [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) | Design Ready |
-| **GitHub Integration** | [github-worker-integration.md](./tasks/github-worker-integration.md) | Phase 1-3 Done |
 
 ---
 
-### Agent Communication & Containers
-**Приоритет**: HIGH
-**Статус**: → Включено в [worker-lifecycle.md](./tasks/worker-lifecycle.md)
-
-Объединено в Worker Lifecycle план:
-- Два канала общения: JSON=остановился, API=продолжаю
-- Container cleanup при shutdown
-- Pause/unpause для экономии ресурсов
-- Token tracking для session management
-
----
+## 🔴 HIGH Priority
 
 ### TesterNode: Реальный запуск тестов
-**Приоритет**: HIGH
 **Статус**: TODO
 
 TesterNode сейчас заглушка — всегда возвращает `passed=True`.
@@ -38,8 +25,57 @@ TesterNode сейчас заглушка — всегда возвращает `
 
 ---
 
+### API Authentication
+**Статус**: TODO
+
+API endpoints не защищены (только x-telegram-id header).
+Любой с доступом к сети может вызывать API.
+
+**Решение**: API key / JWT аутентификация.
+
+---
+
+### Resource Limits (Worker Manager)
+**Статус**: TODO
+
+Нет ограничений на ресурсы:
+- `MAX_CONCURRENT_WORKERS` — количество одновременных контейнеров
+- Memory/CPU limits на контейнеры
+- Disk usage limits
+
+**Влияние**: Один пользователь может исчерпать все ресурсы хоста.
+
+---
+
+### Admin UI
+**Статус**: TODO
+
+Без админки невозможно нормально отлаживать проект. Нужна хотя бы базовая версия.
+
+**Базовая версия:**
+- Просмотр: Projects, Workers, Logs
+- Мониторинг состояния системы
+
+**Полная версия (позже):**
+- Конфигурация через UI (Prompts, Agent selection, TTL)
+- Мониторинг (Grafana, Prometheus)
+
+---
+
+## 🟡 MEDIUM Priority
+
+### Worker Lifecycle (Pause/Unpause, Cleanup, Token Tracking)
+**Статус**: TODO — план в [worker-lifecycle.md](./tasks/worker-lifecycle.md), требует переработки
+
+**Задачи:**
+1. Idle pause/wakeup — `docker pause/unpause` по таймауту неактивности
+2. Container cleanup при shutdown
+3. Token tracking из Claude Code JSON output
+4. Creation queue — очередь создания воркеров с приоритетами
+
+---
+
 ### PO: Ожидание завершения deploy
-**Приоритет**: MEDIUM  
 **Статус**: TODO
 
 PO не ждёт завершения деплоя — сразу отдаёт job_id пользователю.
@@ -48,63 +84,36 @@ PO не ждёт завершения деплоя — сразу отдаёт j
 
 ---
 
+### E2E тесты
+**Статус**: Фазы 1-4 готовы, фазы 5-7 не реализованы
+
+Завершить E2E покрытие. Full system docker-compose validation.
+
+---
+
+### Secrets Vault
+**Статус**: Design Ready — план в [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md)
+
+- GitHub Secrets как source of truth
+- Метаданные в БД, значения в GitHub
+- LLM не видит секреты
+
+---
+
 ### Caddy Reverse Proxy
-**Приоритет**: MEDIUM  
 **Статус**: TODO
 
 Убрать port management, использовать Caddy для routing по доменам.
 
 ---
 
-### Telegram Bot Pool
-**Приоритет**: MEDIUM  
-**Статус**: TODO
+## 🟢 LOW Priority
 
+### Telegram Bot Pool
 Пул pre-registered ботов для автоматического выделения проектам.
 
----
-
-### API Authentication
-**Приоритет**: MEDIUM  
-**Статус**: TODO
-
-API endpoints не защищены (только x-telegram-id header).
-
----
-
-## Legacy Roadmap (from Old Status)
-
-### Worker Lifecycle
-- [ ] Модель коммуникации: JSON=остановился, API=продолжаю
-- [ ] Pause/unpause контейнеров по timeout
-- [ ] Cleanup при shutdown (решает проблему зависания)
-- [ ] Token tracking из JSON output
-
-### CLI Pydantic (агент ↔ система)
-- [ ] Убрать curl/API из промптов
-
-### Secrets (US1 requirement)
-- [ ] GitHub Secrets как source of truth
-- [ ] Метаданные в БД, значения в GitHub
-- [ ] LLM не видит секреты
-
-### E2E Integration
-- [ ] E2E тест: US1 полный flow (токен → бот работает)
-
-### Admin UI (Phase 2)
-- [ ] UI для просмотра (Agents, Projects, Logos, Tokens)
-- [ ] Конфигурация через UI (Prompts, Agent selection, TTL)
-- [ ] Мониторинг (Grafana, Prometheus)
-
-### Agent Architecture (Phase 3)
-- [ ] Analyst Node (детализация требований)
-- [ ] Engineering Lead (координация)
-- [ ] Полноценный TesterNode
-- [ ] Agent-to-agent communication
-
----
-
-## Low Priority
+### Удалить мёртвый код (analyst.py, zavhoz.py)
+Файлы существуют в `services/langgraph/src/nodes/`, но ноды не подключены в граф.
 
 ### Docker Python SDK
 Миграция worker-manager с subprocess на Python Docker SDK.
@@ -120,19 +129,9 @@ API endpoints не защищены (только x-telegram-id header).
 
 ---
 
-## Completed ✅
+## 📦 Phase 3 (Future)
 
-<details>
-<summary>Выполненные задачи</summary>
-
-- ✅ **Headless Mode Migration** (2026-01-08)
-- ✅ **GitHub Capability** (2026-01-08)
-- ✅ **Ralph-Wiggum Integration** (2026-01-08)
-- ✅ **Deploy Worker Refactor** (2026-01-02)
-- ✅ **CLI Agent Migration** — PO as pluggable CLI worker
-- ✅ **Session Management** — Redis-based
-- ✅ **Engineering Subgraph** — Scaffolder → Developer → Tester
-- ✅ **DevOps Subgraph** — EnvAnalyzer → Deployer
-- ✅ **Sysbox Installation** — Docker-in-Docker
-
-</details>
+### Agent Architecture
+- Analyst Node (детализация требований)
+- Engineering Lead (координация)
+- Agent-to-agent communication
