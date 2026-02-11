@@ -215,6 +215,9 @@ async def request_spawn(
                 success=is_success,
                 exit_code=0 if is_success else 1,
                 output=content,
+                commit_sha=output_resp.get("commit_sha"),
+                branch=output_resp.get("branch"),
+                files_changed=output_resp.get("files_changed"),
                 error_message=output_resp.get("error"),
             )
         else:

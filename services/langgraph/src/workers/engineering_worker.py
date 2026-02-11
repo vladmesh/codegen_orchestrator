@@ -105,6 +105,7 @@ async def _wait_for_ci_and_fix(
     task_id: str,
     callback_stream: str | None,
     redis: RedisStreamClient,
+    developer_started_at: datetime | None = None,
 ) -> bool:
     """Wait for CI workflow to pass, re-spawning developer on failure.
 
@@ -130,8 +131,12 @@ async def _wait_for_ci_and_fix(
     github_client = GitHubAppClient()
 
     for attempt in range(CI.MAX_FIX_RETRIES + 1):  # 0 = initial check, 1..N = retries
-        # Record time before waiting so we only look at runs created after this point
-        created_after = datetime.now(UTC)
+        # attempt 0: use pre-developer timestamp (CI was triggered during dev)
+        # attempt 1+: use fresh timestamp (CI triggered by respawned fix worker)
+        if attempt == 0 and developer_started_at:
+            created_after = developer_started_at
+        else:
+            created_after = datetime.now(UTC)
 
         try:
             logger.info(
@@ -379,8 +384,20 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             )
             return {"status": "failed", "error": error_msg}
 
-        # Trigger scaffolding only for new project creation on draft projects
+        # Auto-correct action: "create" only valid for draft projects
         project_status = project.get("status")
+        if action == "create" and project_status not in ("draft", None):
+            logger.warning(
+                "action_auto_corrected",
+                task_id=task_id,
+                project_id=project_id,
+                original_action=action,
+                corrected_action="feature",
+                project_status=project_status,
+            )
+            action = "feature"
+
+        # Trigger scaffolding only for new project creation on draft projects
         if project_status == "draft" and action == "create":
             await _trigger_scaffolding(project, redis)
         elif project_status == "draft" and action != "create":
@@ -469,6 +486,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
         # Create and run engineering subgraph
         engineering_subgraph = create_engineering_subgraph()
+        developer_started_at = datetime.now(UTC)
         result = await engineering_subgraph.ainvoke(subgraph_input)
 
         # Check result status
@@ -487,6 +505,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 callback_stream=callback_stream,
                 redis=redis,
                 skip_deploy=skip_deploy,
+                developer_started_at=developer_started_at,
             )
 
         elif result.get("engineering_status") == "blocked" or result.get("needs_human_approval"):
@@ -582,6 +601,7 @@ async def _handle_engineering_success(
     callback_stream: str | None,
     redis: RedisStreamClient,
     skip_deploy: bool,
+    developer_started_at: datetime | None = None,
 ) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
     logger.info(
@@ -598,6 +618,7 @@ async def _handle_engineering_success(
         task_id=task_id,
         callback_stream=callback_stream,
         redis=redis,
+        developer_started_at=developer_started_at,
     )
 
     if not ci_passed:
