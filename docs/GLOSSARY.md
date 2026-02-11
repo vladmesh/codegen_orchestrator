@@ -34,7 +34,7 @@
 2.  **Developer Worker** — Эфемерный. Выполняет одну задачу и завершается. Stateless — контекст это код в репо + ошибки.
 
 **Управляется:** `worker-manager`
-**Конфигурация:** Промпты берутся из `CLAUDE.md` (для Claude) или `AGENTS.md` (общее/другие).
+**Конфигурация:** Промпты хранятся в `shared/prompts/{worker_type}/INSTRUCTIONS.md` (общий формат). Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory → `AGENTS.md`. Для task-driven воркеров (Developer) также инжектится `TASK.md` с конкретной задачей.
 
 ### Product Owner (PO)
 Специализированный Worker, который:

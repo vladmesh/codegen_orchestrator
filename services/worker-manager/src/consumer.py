@@ -127,6 +127,7 @@ class WorkerCommandConsumer:
                 base_image=settings.WORKER_BASE_IMAGE,
                 agent_type=cmd.config.agent_type.value,
                 instructions=cmd.config.instructions,
+                task_content=cmd.config.task_content,
                 env_vars=env_vars,
                 auth_mode=cmd.config.auth_mode,
                 host_claude_dir=cmd.config.host_claude_dir or settings.HOST_CLAUDE_DIR,

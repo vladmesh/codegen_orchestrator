@@ -136,15 +136,12 @@ async def request_spawn(
         # 2. Build CreateWorkerCommand using shared contracts
         worker_name = f"dev-{repo.split('/')[-1][:20]}-{request_id[:8]}"
 
-        # Build instructions with task content
-        instructions = f"""{task_title}
+        # Load static developer instructions from INSTRUCTIONS.md
+        from shared.schemas.tool_groups import _load_worker_instructions
 
-{task_content}
-
-After completing the task:
-1. Commit all changes with descriptive message
-2. Push to the repository
-"""
+        instructions = _load_worker_instructions("developer_worker")
+        if not instructions:
+            instructions = "Read TASK.md for your implementation task."
 
         create_cmd = CreateWorkerCommand(
             request_id=request_id,
@@ -153,6 +150,7 @@ After completing the task:
                 worker_type="developer",
                 agent_type=AgentType.CLAUDE,
                 instructions=instructions,
+                task_content=task_content,
                 allowed_commands=["*"],
                 capabilities=[WorkerCapability.GIT, WorkerCapability.DOCKER],
                 env_vars={
@@ -195,7 +193,7 @@ After completing the task:
         input_stream = f"worker:{worker_id}:input"
         task_message = {
             "request_id": request_id,
-            "prompt": instructions,
+            "prompt": task_content,
             "user_id": 0,  # System task
         }
         await redis_client.xadd(input_stream, {"data": json.dumps(task_message)})

@@ -1,13 +1,11 @@
 """Tool groups for orchestrator CLI.
 
 This module defines the available tool groups and their documentation.
-Used by workers-spawner to generate AGENTS.md/CLAUDE.md files.
+Used by worker-manager to generate instruction files for agents.
 """
 
 from enum import Enum
 from pathlib import Path
-
-import yaml
 
 
 class ToolGroup(str, Enum):
@@ -140,28 +138,33 @@ orchestrator respond "<question>" --expect-reply
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
-def _load_po_prompt() -> dict:
-    """Load PO agent prompt from YAML file.
+def _load_worker_instructions(worker_type: str) -> str:
+    """Load worker instructions from INSTRUCTIONS.md file.
+
+    Args:
+        worker_type: Worker type directory name (e.g., 'po_worker', 'developer_worker').
 
     Returns:
-        Dict with role, scenarios, rules sections.
+        Markdown content of INSTRUCTIONS.md, or empty string if not found.
     """
-    prompt_file = PROMPTS_DIR / "po_agent.yml"
-    if not prompt_file.exists():
-        return {}
+    instructions_file = PROMPTS_DIR / worker_type / "INSTRUCTIONS.md"
+    if not instructions_file.exists():
+        return ""
 
-    with open(prompt_file) as f:
-        return yaml.safe_load(f) or {}
+    return instructions_file.read_text()
 
 
 def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
     """Generate instruction file content for given tool groups.
 
+    Loads static role instructions from INSTRUCTIONS.md and appends
+    CLI documentation for allowed tool groups.
+
     Args:
         allowed_tools: List of tool groups the agent is allowed to use.
 
     Returns:
-        Markdown content with documentation for allowed tools.
+        Markdown content with role instructions and documentation for allowed tools.
     """
     from .tool_registry import get_registered_commands, load_cli_commands
 
@@ -170,21 +173,11 @@ def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
 
     sections: list[str] = []
 
-    # Load and add PO system prompt
-    po_prompt = _load_po_prompt()
-    if po_prompt:
-        if role := po_prompt.get("role"):
-            sections.append(role)
-            sections.append("")
-
-        if scenarios := po_prompt.get("scenarios"):
-            for scenario_content in scenarios.values():
-                sections.append(scenario_content)
-                sections.append("")
-
-        if rules := po_prompt.get("rules"):
-            sections.append(rules)
-            sections.append("")
+    # Load PO worker instructions from INSTRUCTIONS.md
+    worker_instructions = _load_worker_instructions("po_worker")
+    if worker_instructions:
+        sections.append(worker_instructions)
+        sections.append("")
 
     # Add CLI documentation
     sections.append("# Orchestrator CLI Reference")

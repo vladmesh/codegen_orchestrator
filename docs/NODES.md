@@ -111,8 +111,9 @@
 
 **Реализация**:
 1. Ждёт `project.status == "scaffolded"` (макс 5 мин, poll каждые 10s)
-2. Спавнит контейнер через `worker-manager` (Claude Code)
-3. Агент клонирует scaffolded repo и пишет бизнес-логику
+2. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai)
+3. Worker-manager инжектит инструкции из `shared/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` с project-specific задачей
+4. Агент клонирует scaffolded repo и пишет бизнес-логику
 
 **Валидация**: Проверяет наличие commit SHA в результате.
 

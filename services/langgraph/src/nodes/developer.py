@@ -206,10 +206,10 @@ class DeveloperNode(FunctionalNode):
         repo_full_name: str,
         project_spec: dict,
     ) -> str:
-        """Build task message for Claude.
+        """Build TASK.md content for the developer worker.
 
-        Repository is already cloned and git hooks configured by worker-manager.
-        This message focuses on implementation work only.
+        Contains only project-specific information. Generic role instructions
+        are in shared/prompts/developer_worker/INSTRUCTIONS.md.
         """
         modules_str = ",".join(modules)
 
@@ -223,11 +223,6 @@ class DeveloperNode(FunctionalNode):
 
 **Detailed Spec**:
 {project_spec.get("detailed_spec", "N/A")}
-
-## Workspace
-
-The repository is already cloned to `/workspace`. Git hooks run native ruff (Docker not required).
-You are already in the project directory — start working immediately.
 
 ## Project Structure (already scaffolded)
 
@@ -249,25 +244,6 @@ Implement the business logic according to the specification:
 - Follow patterns in AGENTS.md for code structure
 - Implement all required functionality
 - Use existing generated code as foundation
-
-## Commit and Push
-
-After implementation, commit and push your changes.
-Git hooks run ruff format on commit and ruff check on push. Full CI validates on GitHub.
-
-## Expected Output
-
-Provide a summary including:
-- Commit SHA
-- What was implemented
-- Any important notes or next steps
-
-## Important Notes
-
-- Project is already scaffolded - focus on business logic
-- Follow the project structure conventions from service-template
-- Git hooks run natively (ruff) - code formatted on commit, linted before push
-- Make descriptive commit messages
 """
         return task
 

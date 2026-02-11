@@ -255,6 +255,7 @@ class WorkerManager:
         agent_type: str = "claude",
         prefix: str | None = None,
         instructions: str | None = None,
+        task_content: str | None = None,
         # Auth config
         auth_mode: str = "host_session",
         host_claude_dir: str | None = None,
@@ -264,7 +265,7 @@ class WorkerManager:
     ) -> str:
         """
         Create worker with specified capabilities and agent config.
-        Injects instructions if provided.
+        Injects instructions (-> instruction file) and task_content (-> TASK.md) if provided.
         """
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
         env_vars = env_vars or {}
@@ -324,7 +325,7 @@ class WorkerManager:
         if repo_name and github_token:
             await self._setup_git_repo(container_id, repo_name, github_token, worker_id)
 
-        # Inject instructions AFTER git clone (so CLAUDE.md doesn't block clone)
+        # Inject instructions AFTER git clone (so instruction file doesn't block clone)
         if instructions:
             target_path = agent.get_instruction_path()
             logger.info("injecting_instructions", worker_id=worker_id, path=target_path)
@@ -341,6 +342,20 @@ class WorkerManager:
             exit_code, output = await self.docker.exec_in_container(container_id, cmd)
             if exit_code != 0:
                 logger.error("instruction_injection_failed", worker_id=worker_id, error=output)
+
+        # Inject task content as TASK.md (for task-driven workers like developer)
+        if task_content:
+            task_path = "/workspace/TASK.md"
+            logger.info("injecting_task_content", worker_id=worker_id, path=task_path)
+
+            import base64
+
+            encoded_task = base64.b64encode(task_content.encode()).decode()
+            cmd = f"python3 -c \"import base64; open('{task_path}', 'w').write(base64.b64decode('{encoded_task}').decode())\""
+
+            exit_code, output = await self.docker.exec_in_container(container_id, cmd)
+            if exit_code != 0:
+                logger.error("task_injection_failed", worker_id=worker_id, error=output)
 
         # Return the worker_id (name), not container_id (Docker hash)
         # This allows callers to reference the worker by its logical name

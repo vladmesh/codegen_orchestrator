@@ -34,7 +34,7 @@ claude -p "Implement user registration endpoint"
 cat error.log | claude -p "Fix this error"
 ```
 
-**Контекст:** Использует `CLAUDE.md` файлы (аналог нашего `AGENTS.md`).
+**Контекст:** Нативно использует `CLAUDE.md` файлы. Worker-manager автоматически маппит `INSTRUCTIONS.md` → `CLAUDE.md`.
 
 **Цена:** Pro/Max подписка (~$20-100/мес), дешевле чем API.
 
@@ -46,9 +46,10 @@ Developer node в Engineering Subgraph использует coding agents чер
 
 1. Worker-manager создаёт контейнер из worker-base образа
 2. Контейнер клонирует репозиторий
-3. Записывает `TASK.md` и `AGENTS.md` с инструкциями
-4. Запускает coding agent (Droid или Claude Code)
-5. Коммитит и пушит изменения
+3. Инжектит статические инструкции из `shared/prompts/developer_worker/INSTRUCTIONS.md` → agent-specific file (`CLAUDE.md` / `AGENTS.md`)
+4. Инжектит динамический `TASK.md` с project-specific задачей
+5. Запускает coding agent (Droid или Claude Code)
+6. Агент коммитит и пушит изменения
 
 ---
 

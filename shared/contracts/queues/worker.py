@@ -37,7 +37,8 @@ class WorkerConfig(BaseModel):
     name: str
     worker_type: Literal["po", "developer"]  # Worker type for queue naming
     agent_type: AgentType  # Which AI agent to use
-    instructions: str  # Content for CLAUDE.md / AGENTS.md
+    instructions: str  # Content for instruction file (CLAUDE.md / AGENTS.md)
+    task_content: str | None = None  # Content for TASK.md (optional, for task-driven workers)
     allowed_commands: list[str]  # ["project.*", "engineering.start"]
     capabilities: list[WorkerCapability]  # ["git", "copier"]
     env_vars: dict[str, str] = {}
