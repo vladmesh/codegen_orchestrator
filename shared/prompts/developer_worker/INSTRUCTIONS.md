@@ -12,13 +12,13 @@ You are already in the project directory — start working immediately.
 
 You'll find:
 - `services/` - service directories for each module
-- `TASK.md` - your specific implementation task
+- `/home/worker/TASK.md` - your specific implementation task
 - `AGENTS.md` - code structure patterns and conventions (if present)
 - `Makefile` - build commands (if present)
 
 ## Workflow
 
-1. **Read `TASK.md`** first — it contains your specific implementation task
+1. **Read `/home/worker/TASK.md`** first — it contains your specific implementation task
 2. **Read `AGENTS.md`** if present — for framework patterns and conventions
 3. Understand existing code before making changes
 4. Implement changes according to your task

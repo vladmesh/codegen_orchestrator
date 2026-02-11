@@ -346,7 +346,7 @@ class WorkerManager:
 
         # Inject task content as TASK.md (for task-driven workers like developer)
         if task_content:
-            task_path = "/workspace/TASK.md"
+            task_path = "/home/worker/TASK.md"
             logger.info("injecting_task_content", worker_id=worker_id, path=task_path)
 
             import base64

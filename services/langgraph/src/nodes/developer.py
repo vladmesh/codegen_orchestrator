@@ -30,7 +30,7 @@ class DeveloperNode(FunctionalNode):
     For new projects (action=create):
         1. Wait for project status == 'scaffolded' (done by scaffolder service)
         2. Spawn Claude Code worker to clone scaffolded repo
-        3. Implement business logic according to TASK.md
+        3. Implement business logic according to /home/worker/TASK.md
         4. Commit and push changes
 
     For existing projects (action=feature/fix):
@@ -325,7 +325,7 @@ You'll find:
 - `services/{modules_str.split(",")[0]}/` - main service directory
 - `shared/spec/models.yaml` - domain models definition
 - `shared/spec/events.yaml` - events definition
-- `TASK.md` - detailed requirements
+- `/home/worker/TASK.md` - detailed requirements
 - `AGENTS.md` - code structure patterns
 - `Makefile` - build commands
 
@@ -334,7 +334,7 @@ Run `make generate` after modifying spec files to regenerate code.
 ## Implementation
 
 Implement the business logic according to the specification:
-- Read TASK.md for detailed requirements
+- Read /home/worker/TASK.md for detailed requirements
 - Follow patterns in AGENTS.md for code structure
 - Implement all required functionality
 - Use existing generated code as foundation
