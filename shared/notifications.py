@@ -6,7 +6,7 @@ Configuration is read from environment or passed explicitly.
 
 import asyncio
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 import os
 
@@ -174,7 +174,7 @@ def _check_rate_limit(telegram_id: int) -> bool:
     Returns:
         True if within limit, False otherwise
     """
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     cutoff = now - timedelta(hours=1)
 
     # Clean old timestamps
@@ -192,4 +192,4 @@ def _record_message(telegram_id: int):
     Args:
         telegram_id: Telegram user ID
     """
-    _rate_limit_storage[telegram_id].append(datetime.utcnow())
+    _rate_limit_storage[telegram_id].append(datetime.now(UTC))

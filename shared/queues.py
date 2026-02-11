@@ -18,6 +18,7 @@ logger = structlog.get_logger(__name__)
 DEPLOY_QUEUE = "deploy:queue"
 ENGINEERING_QUEUE = "engineering:queue"
 ADMIN_QUEUE = "admin:queue"
+SCAFFOLDER_QUEUE = "scaffolder:queue"
 
 # Infrastructure worker queues
 ANSIBLE_DEPLOY_QUEUE = "ansible:deploy:queue"  # For delegated Ansible deployments

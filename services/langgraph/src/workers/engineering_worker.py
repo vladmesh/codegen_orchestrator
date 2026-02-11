@@ -5,12 +5,10 @@ Run standalone: python -m src.workers.engineering_worker
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 import json
 import os
 import re
-import signal
 from typing import TYPE_CHECKING
 import uuid
 
@@ -21,17 +19,15 @@ if TYPE_CHECKING:
 
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
 from shared.contracts.queues.scaffolder import ScaffolderMessage
-from shared.log_config import setup_logging
-from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, WORKER_GROUP, ensure_consumer_groups
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLDER_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ..nodes.resource_allocator import resource_allocator_node
+from ._base import start_worker
+from ._events import publish_callback_event
 
 logger = structlog.get_logger(__name__)
-
-# Scaffolder queue
-SCAFFOLDER_QUEUE = "scaffolder:queue"
 
 
 def _extract_run_id_from_error(error_msg: str) -> int | None:
@@ -146,23 +142,10 @@ async def _wait_for_ci_and_fix(
                 workflow=CI.CI_WORKFLOW_FILE,
             )
 
-            if callback_stream:
-                msg = "Waiting for CI checks..."
-                if attempt > 0:
-                    msg = f"Waiting for CI checks (retry {attempt})..."
-                await redis.redis.xadd(
-                    callback_stream,
-                    {
-                        "data": json.dumps(
-                            {
-                                "type": "progress",
-                                "task_id": task_id,
-                                "message": msg,
-                                "timestamp": datetime.now(UTC).isoformat(),
-                            }
-                        )
-                    },
-                )
+            msg = "Waiting for CI checks..."
+            if attempt > 0:
+                msg = f"Waiting for CI checks (retry {attempt})..."
+            await publish_callback_event(redis, callback_stream, "progress", task_id, msg)
 
             run_info = await github_client.wait_for_workflow_completion(
                 owner=owner,
@@ -314,20 +297,6 @@ async def _trigger_scaffolding(project: dict, redis: RedisStreamClient) -> None:
     )
 
 
-# Worker identification
-CONSUMER_NAME = f"engineering-worker-{os.getpid()}"
-
-# Shutdown flag
-_shutdown = False
-
-
-def handle_shutdown(signum, frame):
-    """Handle shutdown signals gracefully."""
-    global _shutdown
-    logger.info("shutdown_signal_received", signal=signum)
-    _shutdown = True
-
-
 async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single engineering job by running Engineering Subgraph.
 
@@ -359,20 +328,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         await api_client.patch(f"tasks/{task_id}", json={"status": "running"})
 
         # Publish progress event
-        if callback_stream:
-            await redis.redis.xadd(
-                callback_stream,
-                {
-                    "data": json.dumps(
-                        {
-                            "type": "progress",
-                            "task_id": task_id,
-                            "message": "Engineering task started",
-                            "timestamp": datetime.now(UTC).isoformat(),
-                        }
-                    )
-                },
-            )
+        await publish_callback_event(
+            redis, callback_stream, "progress", task_id, "Engineering task started"
+        )
 
         # Fetch project details
         project = await api_client.get_project(project_id)
@@ -518,20 +476,13 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 },
             )
 
-            if callback_stream:
-                await redis.redis.xadd(
-                    callback_stream,
-                    {
-                        "data": json.dumps(
-                            {
-                                "type": "failed",
-                                "task_id": task_id,
-                                "message": "Engineering task blocked or needs approval",
-                                "timestamp": datetime.now(UTC).isoformat(),
-                            }
-                        )
-                    },
-                )
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "failed",
+                task_id,
+                "Engineering task blocked or needs approval",
+            )
 
             return {
                 "status": "failed",
@@ -572,20 +523,13 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 json={"status": ProjectStatus.FAILED.value},
             )
 
-        if callback_stream:
-            await redis.redis.xadd(
-                callback_stream,
-                {
-                    "data": json.dumps(
-                        {
-                            "type": "failed",
-                            "task_id": task_id,
-                            "message": f"Engineering task failed: {e!s}",
-                            "timestamp": datetime.now(UTC).isoformat(),
-                        }
-                    )
-                },
-            )
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "failed",
+            task_id,
+            f"Engineering task failed: {e!s}",
+        )
 
         return {
             "status": "failed",
@@ -630,20 +574,13 @@ async def _handle_engineering_success(
                 "error_message": "CI checks failed after max retries",
             },
         )
-        if callback_stream:
-            await redis.redis.xadd(
-                callback_stream,
-                {
-                    "data": json.dumps(
-                        {
-                            "type": "failed",
-                            "task_id": task_id,
-                            "message": "Engineering completed but CI checks failed",
-                            "timestamp": datetime.now(UTC).isoformat(),
-                        }
-                    )
-                },
-            )
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "failed",
+            task_id,
+            "Engineering completed but CI checks failed",
+        )
         return {
             "status": "failed",
             "error": "CI checks failed after max retries",
@@ -664,20 +601,13 @@ async def _handle_engineering_success(
         },
     )
 
-    if callback_stream:
-        await redis.redis.xadd(
-            callback_stream,
-            {
-                "data": json.dumps(
-                    {
-                        "type": "completed",
-                        "task_id": task_id,
-                        "message": "Engineering task completed, CI passed",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                    }
-                )
-            },
-        )
+    await publish_callback_event(
+        redis,
+        callback_stream,
+        "completed",
+        task_id,
+        "Engineering task completed, CI passed",
+    )
 
     # Auto-trigger deploy after CI passes (unless skip_deploy)
     if not skip_deploy:
@@ -734,72 +664,13 @@ async def _handle_engineering_success(
     }
 
 
-async def run_worker():
-    """Main worker loop."""
-    setup_logging(service_name="engineering-worker")
-
-    redis = RedisStreamClient()
-    await redis.connect()
-
-    # Ensure consumer groups exist
-    await ensure_consumer_groups(redis.redis)
-
-    logger.info("engineering_worker_started", consumer=CONSUMER_NAME)
-
-    try:
-        while not _shutdown:
-            try:
-                # Read from consumer group
-                messages = await redis.redis.xreadgroup(
-                    groupname=WORKER_GROUP,
-                    consumername=CONSUMER_NAME,
-                    streams={ENGINEERING_QUEUE: ">"},
-                    count=1,
-                    block=5000,
-                )
-
-                if not messages:
-                    continue
-
-                for _stream_name, entries in messages:
-                    for entry_id, raw_data in entries:
-                        try:
-                            if "data" in raw_data:
-                                job_data = json.loads(raw_data["data"])
-                            else:
-                                job_data = raw_data
-
-                            result = await process_engineering_job(job_data, redis)
-                            job_data.update(result)
-
-                            await redis.redis.xack(ENGINEERING_QUEUE, WORKER_GROUP, entry_id)
-                            logger.debug("engineering_job_acked", entry_id=entry_id)
-
-                        except Exception as e:
-                            logger.error(
-                                "engineering_job_processing_error",
-                                entry_id=entry_id,
-                                error=str(e),
-                            )
-
-            except asyncio.CancelledError:
-                logger.info("worker_cancelled")
-                break
-            except Exception as e:
-                logger.error("worker_loop_error", error=str(e))
-                await asyncio.sleep(1)
-
-    finally:
-        await redis.close()
-        await api_client.close()
-        logger.info("engineering_worker_shutdown")
-
-
 def main():
     """Entry point for running as module."""
-    signal.signal(signal.SIGTERM, handle_shutdown)
-    signal.signal(signal.SIGINT, handle_shutdown)
-    asyncio.run(run_worker())
+    start_worker(
+        service_name="engineering-worker",
+        queue=ENGINEERING_QUEUE,
+        process_fn=process_engineering_job,
+    )
 
 
 if __name__ == "__main__":

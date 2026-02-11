@@ -5,36 +5,21 @@ Run standalone: python -m src.workers.deploy_worker
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
-import os
-import signal
 
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
-from shared.log_config import setup_logging
-from shared.queues import DEPLOY_QUEUE, WORKER_GROUP, ensure_consumer_groups
+from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ..schemas.api_types import ProjectInfo
 from ..subgraphs.devops import create_devops_subgraph
+from ._base import start_worker
+from ._events import publish_callback_event
 
 logger = structlog.get_logger(__name__)
-
-# Worker identification
-CONSUMER_NAME = f"deploy-worker-{os.getpid()}"
-
-# Shutdown flag
-_shutdown = False
-
-
-def handle_shutdown(signum, frame):
-    """Handle shutdown signals gracefully."""
-    global _shutdown
-    logger.info("shutdown_signal_received", signal=signum)
-    _shutdown = True
 
 
 async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
@@ -47,8 +32,6 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     Returns:
         Result dict with status and details
     """
-    import json
-
     task_id = job_data.get("task_id", "unknown")
     project_id = job_data.get("project_id")
     callback_stream = job_data.get("callback_stream")
@@ -60,20 +43,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         await api_client.patch(f"tasks/{task_id}", json={"status": "running"})
 
         # Publish progress event
-        if callback_stream:
-            await redis.redis.xadd(
-                callback_stream,
-                {
-                    "data": json.dumps(
-                        {
-                            "type": "progress",
-                            "task_id": task_id,
-                            "message": "Deploy task started",
-                            "timestamp": datetime.now(UTC).isoformat(),
-                        }
-                    )
-                },
-            )
+        await publish_callback_event(
+            redis, callback_stream, "progress", task_id, "Deploy task started"
+        )
 
         # Fetch project details
         project: ProjectInfo | None = await api_client.get_project(project_id)
@@ -163,20 +135,13 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 json={"status": ProjectStatus.ACTIVE.value},
             )
 
-            if callback_stream:
-                await redis.redis.xadd(
-                    callback_stream,
-                    {
-                        "data": json.dumps(
-                            {
-                                "type": "completed",
-                                "task_id": task_id,
-                                "message": f"Deploy completed: {result['deployed_url']}",
-                                "timestamp": datetime.now(UTC).isoformat(),
-                            }
-                        )
-                    },
-                )
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "completed",
+                task_id,
+                f"Deploy completed: {result['deployed_url']}",
+            )
 
             return {
                 "status": "success",
@@ -192,20 +157,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 json={"status": "failed", "error_message": error_msg},
             )
 
-            if callback_stream:
-                await redis.redis.xadd(
-                    callback_stream,
-                    {
-                        "data": json.dumps(
-                            {
-                                "type": "failed",
-                                "task_id": task_id,
-                                "message": error_msg,
-                                "timestamp": datetime.now(UTC).isoformat(),
-                            }
-                        )
-                    },
-                )
+            await publish_callback_event(redis, callback_stream, "failed", task_id, error_msg)
 
             return {
                 "status": "failed",
@@ -222,20 +174,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 json={"status": "failed", "error_message": error_msg},
             )
 
-            if callback_stream:
-                await redis.redis.xadd(
-                    callback_stream,
-                    {
-                        "data": json.dumps(
-                            {
-                                "type": "failed",
-                                "task_id": task_id,
-                                "message": error_msg,
-                                "timestamp": datetime.now(UTC).isoformat(),
-                            }
-                        )
-                    },
-                )
+            await publish_callback_event(redis, callback_stream, "failed", task_id, error_msg)
 
             return {
                 "status": "failed",
@@ -262,20 +201,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 json={"status": ProjectStatus.FAILED.value},
             )
 
-        if callback_stream:
-            await redis.redis.xadd(
-                callback_stream,
-                {
-                    "data": json.dumps(
-                        {
-                            "type": "failed",
-                            "task_id": task_id,
-                            "message": f"Deploy task failed: {e!s}",
-                            "timestamp": datetime.now(UTC).isoformat(),
-                        }
-                    )
-                },
-            )
+        await publish_callback_event(
+            redis, callback_stream, "failed", task_id, f"Deploy task failed: {e!s}"
+        )
 
         return {
             "status": "failed",
@@ -284,83 +212,13 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         }
 
 
-async def run_worker():
-    """Main worker loop."""
-    setup_logging(service_name="deploy-worker")
-
-    redis = RedisStreamClient()
-    await redis.connect()
-
-    # Ensure consumer groups exist
-    await ensure_consumer_groups(redis.redis)
-
-    logger.info("deploy_worker_started", consumer=CONSUMER_NAME)
-
-    try:
-        while not _shutdown:
-            try:
-                # Read from consumer group
-                messages = await redis.redis.xreadgroup(
-                    groupname=WORKER_GROUP,
-                    consumername=CONSUMER_NAME,
-                    streams={DEPLOY_QUEUE: ">"},
-                    count=1,
-                    block=5000,  # 5 second block
-                )
-
-                if not messages:
-                    continue
-
-                for _stream_name, entries in messages:
-                    for entry_id, raw_data in entries:
-                        try:
-                            # Parse JSON data if needed
-                            import json
-
-                            if "data" in raw_data:
-                                job_data = json.loads(raw_data["data"])
-                            else:
-                                job_data = raw_data
-
-                            # Process the job
-                            result = await process_deploy_job(job_data, redis)
-
-                            # Update job status in stream (for polling)
-                            # Note: In production, we'd update checkpointer
-                            job_data.update(result)
-
-                            # ACK the message
-                            await redis.redis.xack(DEPLOY_QUEUE, WORKER_GROUP, entry_id)
-                            logger.debug("deploy_job_acked", entry_id=entry_id)
-
-                        except Exception as e:
-                            logger.error(
-                                "deploy_job_processing_error",
-                                entry_id=entry_id,
-                                error=str(e),
-                            )
-                            # Don't ACK — job will be redelivered
-
-            except asyncio.CancelledError:
-                logger.info("worker_cancelled")
-                break
-            except Exception as e:
-                logger.error("worker_loop_error", error=str(e))
-                await asyncio.sleep(1)
-
-    finally:
-        await redis.close()
-        await api_client.close()
-        logger.info("deploy_worker_shutdown")
-
-
 def main():
     """Entry point for running as module."""
-    # Register signal handlers
-    signal.signal(signal.SIGTERM, handle_shutdown)
-    signal.signal(signal.SIGINT, handle_shutdown)
-
-    asyncio.run(run_worker())
+    start_worker(
+        service_name="deploy-worker",
+        queue=DEPLOY_QUEUE,
+        process_fn=process_deploy_job,
+    )
 
 
 if __name__ == "__main__":
