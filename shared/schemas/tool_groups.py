@@ -92,6 +92,9 @@ orchestrator engineering trigger -p <project_id>
 
 # Check task status (with optional --follow for live updates)
 orchestrator engineering status <task_id> [--follow]
+
+# Update project framework (pull latest copier template changes)
+orchestrator engineering update-framework -p <project_id>
 ```
 
 **Note**: If code already exists and you just need to deploy, use `deploy trigger` instead.

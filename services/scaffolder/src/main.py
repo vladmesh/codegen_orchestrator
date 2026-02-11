@@ -15,7 +15,7 @@ import redis.asyncio as redis
 import structlog
 
 from shared.clients.github import GitHubAppClient
-from shared.contracts.queues.scaffolder import ScaffolderMessage, ScaffolderResult
+from shared.contracts.queues.scaffolder import ScaffolderAction, ScaffolderMessage, ScaffolderResult
 
 logger = structlog.get_logger()
 
@@ -263,6 +263,109 @@ async def scaffold_project(
         return False
 
 
+async def update_project_copier(
+    repo_full_name: str,
+    project_id: str,
+) -> bool:
+    """Clone existing repo, run copier update, commit and push.
+
+    Args:
+        repo_full_name: Full repo name (org/repo)
+        project_id: Project ID for logging
+
+    Returns:
+        True if successful, False otherwise
+    """
+    org, repo_name = repo_full_name.split("/")
+
+    try:
+        token = await get_github_token(org)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = Path(tmpdir) / "repo"
+
+            # Step 1: Clone repository
+            logger.info("update_cloning_repo", repo=repo_full_name)
+            clone_url = f"https://x-access-token:{token}@github.com/{repo_full_name}.git"
+
+            result = _run_git("clone", clone_url, str(repo_dir))
+            if result.returncode != 0:
+                logger.error("update_git_clone_failed", error=result.stderr)
+                return False
+
+            # Step 2: Run copier update
+            import shutil
+
+            copier_path = shutil.which("copier")
+            if not copier_path:
+                logger.error("copier_not_found")
+                return False
+
+            logger.info("running_copier_update", repo=repo_full_name)
+            copier_cmd = [
+                copier_path,
+                "update",
+                "--defaults",
+                "--trust",
+            ]
+
+            result = subprocess.run(
+                copier_cmd,
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                env={**os.environ, "HOME": tmpdir},
+            )
+            if result.returncode != 0:
+                logger.error(
+                    "copier_update_failed",
+                    error=result.stderr,
+                    stdout=result.stdout,
+                )
+                return False
+
+            # Step 3: Configure git user and disable hooks
+            _run_git("config", "user.email", "scaffolder@codegen.local", cwd=repo_dir)
+            _run_git("config", "user.name", "Scaffolder Bot", cwd=repo_dir)
+            _run_git("config", "core.hooksPath", "/dev/null", cwd=repo_dir)
+
+            # Step 4: Check if there are changes
+            status_result = _run_git("status", "--porcelain", cwd=repo_dir)
+            if not status_result.stdout.strip():
+                logger.info("copier_update_no_changes", repo=repo_full_name)
+                return True  # No changes needed, still success
+
+            # Step 5: Commit changes
+            logger.info("update_committing_changes", repo=repo_full_name)
+            _run_git("add", ".", cwd=repo_dir)
+
+            result = _run_git(
+                "commit",
+                "--no-verify",
+                "-m",
+                "chore: update framework via copier update",
+                cwd=repo_dir,
+            )
+            if result.returncode != 0 and "nothing to commit" not in result.stdout:
+                logger.error("update_git_commit_failed", error=result.stderr)
+                return False
+
+            # Step 6: Push
+            logger.info("update_pushing_changes", repo=repo_full_name)
+            result = _run_git("push", "origin", "main", cwd=repo_dir)
+            if result.returncode != 0:
+                logger.error("update_git_push_failed", error=result.stderr)
+                return False
+
+            logger.info("copier_update_complete", repo=repo_full_name)
+            return True
+
+    except Exception as e:
+        logger.exception("copier_update_error", error=str(e))
+        return False
+
+
 async def process_job(job_data: dict, redis_client: redis.Redis) -> None:
     """Process a scaffolding job using ScaffolderMessage DTO."""
     # Parse with Pydantic DTO for validation
@@ -280,16 +383,22 @@ async def process_job(job_data: dict, redis_client: redis.Redis) -> None:
         modules=[m.value for m in message.modules],
     )
 
-    # Convert list of enums to comma-separated string for copier
-    modules_str = ",".join(m.value for m in message.modules) if message.modules else "backend"
-
-    success = await scaffold_project(
-        message.repo_full_name,
-        message.project_name,
-        message.project_id,
-        modules_str,
-        task_description=message.task_description,
-    )
+    # Route by action
+    if message.action == ScaffolderAction.UPDATE:
+        success = await update_project_copier(
+            message.repo_full_name,
+            message.project_id,
+        )
+    else:
+        # Convert list of enums to comma-separated string for copier
+        modules_str = ",".join(m.value for m in message.modules) if message.modules else "backend"
+        success = await scaffold_project(
+            message.repo_full_name,
+            message.project_name,
+            message.project_id,
+            modules_str,
+            task_description=message.task_description,
+        )
 
     # Publish ScaffolderResult to results queue
     result = ScaffolderResult(

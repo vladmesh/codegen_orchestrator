@@ -11,6 +11,8 @@ import typer
 
 from orchestrator_cli.client import get_api_client, get_redis_client
 from orchestrator_cli.permissions import require_permission
+from shared.schemas.tool_groups import ToolGroup
+from shared.schemas.tool_registry import register_tool
 
 app = typer.Typer()
 console = Console()
@@ -153,6 +155,81 @@ def status(
         if task.get("status") == "completed" and task.get("result"):
             console.print("\n[bold]Result:[/bold]")
             console.print_json(data=task["result"])
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1) from None
+
+
+async def update_framework_async(project_id: str) -> dict:
+    """Send copier update request to scaffolder queue."""
+    api_client = get_api_client()
+    redis_client = get_redis_client()
+
+    try:
+        # Fetch project to get repo info
+        response = await api_client.get(f"/api/projects/{project_id}")
+        response.raise_for_status()
+        project = response.json()
+    finally:
+        await api_client.aclose()
+
+    repo_url = project.get("repository_url", "")
+    if not repo_url or "github.com/" not in repo_url:
+        raise ValueError(
+            f"Project {project_id} has no valid GitHub repository URL. "
+            "Cannot update framework without an existing repository."
+        )
+
+    # Extract org/repo from URL
+    repo_full_name = repo_url.split("github.com/")[-1].rstrip("/").removesuffix(".git")
+    project_name = project.get("name", project_id)
+
+    # Build scaffolder message
+    from shared.contracts.queues.scaffolder import ScaffolderAction, ScaffolderMessage
+
+    msg = ScaffolderMessage(
+        request_id=str(uuid.uuid4()),
+        action=ScaffolderAction.UPDATE,
+        project_id=project_id,
+        project_name=project_name,
+        repo_full_name=repo_full_name,
+    )
+
+    try:
+        await redis_client.xadd("scaffolder:queue", {"data": msg.model_dump_json()})
+    finally:
+        await redis_client.aclose()
+
+    return {
+        "project_id": project_id,
+        "repo_full_name": repo_full_name,
+        "status": "queued",
+    }
+
+
+@app.command()
+@register_tool(ToolGroup.ENGINEERING)
+def update_framework(
+    project_id: str = typer.Option(
+        ..., "--project-id", "-p", help="Project ID to update framework for"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Update project framework using copier update."""
+    try:
+        result = asyncio.run(update_framework_async(project_id))
+
+        if json_output:
+            typer.echo(json.dumps(result, indent=2))
+            return
+
+        console.print("[green]✓[/green] Framework update queued")
+        console.print(f"Project ID: [cyan]{result['project_id']}[/cyan]")
+        console.print(f"Repository: [cyan]{result['repo_full_name']}[/cyan]")
+        console.print(
+            "\n[dim]The scaffolder will clone, run copier update, and push changes.[/dim]"
+        )
 
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")

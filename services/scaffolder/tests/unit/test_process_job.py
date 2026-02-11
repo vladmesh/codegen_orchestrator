@@ -124,3 +124,50 @@ class TestProcessJob:
                 # Check modules arg is comma-separated
                 call_args = mock_scaffold.call_args[0]
                 assert call_args[3] == "backend,frontend,tg_bot"
+
+    @pytest.mark.asyncio
+    async def test_update_action_routes_to_update_function(self, mock_redis):
+        """Update action should call update_project_copier instead of scaffold_project."""
+        job_data = {
+            "request_id": "req-789",
+            "action": "update",
+            "project_id": "proj-456",
+            "project_name": "my-test-project",
+            "repo_full_name": "vladmesh/my-test-project",
+        }
+
+        with (
+            patch("main.scaffold_project", new_callable=AsyncMock) as mock_scaffold,
+            patch("main.update_project_copier", new_callable=AsyncMock) as mock_update,
+            patch("main.update_project", new_callable=AsyncMock),
+        ):
+            mock_update.return_value = True
+            from main import process_job
+
+            await process_job(job_data, mock_redis)
+
+            # scaffold_project should NOT be called
+            mock_scaffold.assert_not_called()
+            # update_project_copier should be called
+            mock_update.assert_called_once_with(
+                "vladmesh/my-test-project",
+                "proj-456",
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_action_routes_to_scaffold(self, mock_redis, valid_job_data):
+        """Default/create action should call scaffold_project."""
+        with (
+            patch("main.scaffold_project", new_callable=AsyncMock) as mock_scaffold,
+            patch("main.update_project_copier", new_callable=AsyncMock) as mock_update,
+            patch("main.update_project", new_callable=AsyncMock),
+        ):
+            mock_scaffold.return_value = True
+            from main import process_job
+
+            await process_job(valid_job_data, mock_redis)
+
+            # scaffold_project should be called
+            mock_scaffold.assert_called_once()
+            # update_project_copier should NOT be called
+            mock_update.assert_not_called()
