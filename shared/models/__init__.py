@@ -4,7 +4,6 @@ from .agent_config import AgentConfig
 from .api_key import APIKey
 from .base import Base
 from .cli_agent_config import CLIAgentConfig
-from .domain import Domain
 from .incident import Incident, IncidentStatus, IncidentType
 from .port_allocation import PortAllocation
 from .project import Project
@@ -13,7 +12,6 @@ from .resource import Resource
 from .server import Server, ServerStatus
 from .service_deployment import ServiceDeployment
 from .task import Task, TaskStatus, TaskType
-from .telegram_bot import TelegramBot
 from .user import User
 
 __all__ = [
@@ -33,8 +31,6 @@ __all__ = [
     "Task",
     "TaskStatus",
     "TaskType",
-    "TelegramBot",
-    "Domain",
     "APIKey",
     "User",
     "Incident",

@@ -193,24 +193,6 @@ class CLIAgentNode(BaseNode):
         return await cli_agent_config_cache.get(self.node_id)
 
 
-class CodexNode(CLIAgentNode):
-    """OpenAI Codex CLI agent."""
-
-    provider = "codex"
-
-
-class FactoryNode(CLIAgentNode):
-    """Factory.ai Droid CLI agent."""
-
-    provider = "factory"
-
-
-class ClaudeNode(CLIAgentNode):
-    """Claude Code CLI agent."""
-
-    provider = "claude"
-
-
 class FunctionalNode(BaseNode):
     """Deterministic node without LLM involvement."""
 
@@ -293,18 +275,3 @@ def log_node_execution(node_name: str) -> Callable:
         return wrapper
 
     return decorator
-
-
-class BaseAgentNode(LLMNode):
-    """Base class for all LangGraph agent nodes.
-
-    Handles:
-    - Fetching agent config (prompt, model, temperature) from API
-    - Common tool execution with error handling
-    - State updates based on tool results
-
-    IMPORTANT: No fallbacks - if API is unavailable, we fail fast.
-    This ensures configuration issues are caught immediately.
-    """
-
-    pass

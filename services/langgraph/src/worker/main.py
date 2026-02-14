@@ -8,7 +8,7 @@ Note: Engineering and Deploy queues are consumed by dedicated workers:
 - engineering-worker (services/langgraph/src/workers/engineering_worker.py)
 - deploy-worker (services/langgraph/src/workers/deploy_worker.py)
 
-User messages are handled by workers-spawner, not this worker.
+User messages are handled by worker-manager + CLI agents, not this worker.
 """
 
 import asyncio

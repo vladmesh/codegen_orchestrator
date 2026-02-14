@@ -14,7 +14,6 @@ class TaskType(str, Enum):
 
     ENGINEERING = "engineering"
     DEPLOY = "deploy"
-    INFRASTRUCTURE = "infrastructure"
 
 
 class TaskStatus(str, Enum):
