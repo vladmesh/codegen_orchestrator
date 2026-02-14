@@ -49,7 +49,8 @@ COPY --from=builder /build/wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 
 # Install ruff for native git hook linting (matches service-template tooling version)
-RUN pip install --no-cache-dir ruff==0.14.5
+# Install copier for framework updates (copier update)
+RUN pip install --no-cache-dir ruff==0.14.5 copier==9.4.1
 
 # Create non-root user
 RUN useradd -m -s /bin/bash worker

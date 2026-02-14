@@ -6,7 +6,7 @@
 	test-orchestrator-cli \
 	build up down stop logs help nuke seed migrate makemigrations shell \
 	setup-hooks lock-deps cleanup-agents \
-	rebuild-worker-images rebuild-worker-images-hard
+	rebuild-worker-images rebuild-worker-images-hard rebuild
 
 # Load .env file
 -include .env
@@ -54,6 +54,8 @@ help:
 	@echo "  make lock-deps      - Regenerate all requirements.lock files"
 	@echo "  make cleanup-agents - Remove all agent-* containers"
 	@echo ""
+	@echo "  make rebuild      - Rebuild everything (services + worker images), restart stack"
+	@echo ""
 	@echo "Worker Images:"
 	@echo "  make rebuild-worker-images      - Rebuild worker base images (common → claude)"
 	@echo "  make rebuild-worker-images-hard - Rebuild with --no-cache (when cache is stale)"
@@ -92,6 +94,24 @@ logs:
 
 build:
 	$(DOCKER_COMPOSE) --profile build build
+
+# === Full Rebuild (with cache) ===
+# Stops stack, kills workers, rebuilds all service + worker images, restarts
+rebuild:
+	@echo "🔄 Rebuilding everything..."
+	@echo "🛑 Stopping stack..."
+	$(DOCKER_COMPOSE) down
+	@echo "🔪 Killing worker containers..."
+	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
+	@echo "🧹 Cleaning cached worker:* images..."
+	@docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
+	@echo "🔨 Building service images..."
+	$(DOCKER_COMPOSE) --profile build build
+	@echo "🔨 Building worker base images..."
+	@$(MAKE) rebuild-worker-images
+	@echo "🚀 Starting stack..."
+	$(DOCKER_COMPOSE) up -d
+	@echo "✅ Rebuild complete!"
 
 # Cleanup orphaned agent containers (manual cleanup)
 cleanup-agents:

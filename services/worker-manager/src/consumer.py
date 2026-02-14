@@ -62,7 +62,11 @@ class WorkerCommandConsumer:
                 logger.info("worker_consumer_stopping")
                 break
             except Exception as e:
-                logger.error("worker_consumer_error", error=str(e))
+                if "NOGROUP" in str(e):
+                    logger.warning("worker_consumer_nogroup", error=str(e))
+                    await self.ensure_group()
+                else:
+                    logger.error("worker_consumer_error", error=str(e))
                 await asyncio.sleep(1)
 
     async def process_message(self, message_id: str, data: dict):

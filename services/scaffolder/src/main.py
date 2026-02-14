@@ -8,6 +8,7 @@ import asyncio
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 import httpx
@@ -307,6 +308,7 @@ async def update_project_copier(
                 "update",
                 "--defaults",
                 "--trust",
+                "--vcs-ref=HEAD",
             ]
 
             result = subprocess.run(
@@ -325,7 +327,30 @@ async def update_project_copier(
                 )
                 return False
 
-            # Step 3: Configure git user and disable hooks
+            # Step 3: Run sync-services to regenerate derived files (Dockerfiles, compose)
+            logger.info("running_sync_services", repo=repo_full_name)
+            framework_dir = repo_dir / ".framework"
+            if framework_dir.exists():
+                sync_result = subprocess.run(
+                    [sys.executable, "-m", "framework.sync_services", "create"],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env={**os.environ, "HOME": tmpdir, "PYTHONPATH": str(framework_dir)},
+                )
+                if sync_result.returncode != 0:
+                    logger.warning(
+                        "sync_services_failed",
+                        error=sync_result.stderr,
+                        stdout=sync_result.stdout,
+                    )
+                else:
+                    logger.info("sync_services_complete", stdout=sync_result.stdout.strip())
+            else:
+                logger.debug("no_framework_dir_skipping_sync", repo=repo_full_name)
+
+            # Step 4: Configure git user and disable hooks
             _run_git("config", "user.email", "scaffolder@codegen.local", cwd=repo_dir)
             _run_git("config", "user.name", "Scaffolder Bot", cwd=repo_dir)
             _run_git("config", "core.hooksPath", "/dev/null", cwd=repo_dir)

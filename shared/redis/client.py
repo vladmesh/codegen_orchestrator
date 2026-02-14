@@ -160,5 +160,9 @@ class RedisStreamClient:
                 logger.info("consumer_cancelled", consumer=consumer)
                 break
             except Exception as e:
-                logger.error("consume_error", stream=stream, error=str(e))
+                if "NOGROUP" in str(e):
+                    logger.warning("consumer_nogroup_recovering", stream=stream, group=group)
+                    await self.ensure_consumer_group(stream, group)
+                else:
+                    logger.error("consume_error", stream=stream, error=str(e))
                 await asyncio.sleep(1)

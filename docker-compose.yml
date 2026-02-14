@@ -254,6 +254,8 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379" # Expose for worker containers in host network mode
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
@@ -268,3 +270,4 @@ networks:
 
 volumes:
   db_data:
+  redis_data:

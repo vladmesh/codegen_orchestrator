@@ -35,6 +35,23 @@ API endpoints не защищены (только x-telegram-id header).
 
 ---
 
+### Docker Events Listener: Обновление статуса воркеров
+**Статус**: TODO
+
+`DockerEventsListener` (worker-manager/src/events.py) — заглушка, не слушает Docker-события.
+Когда контейнер воркера умирает (kill, crash, restart), `worker:status:{id}` в Redis остаётся `RUNNING`.
+Telegram-бот видит `RUNNING` → шлёт сообщения в стрим мёртвого контейнера → таймаут, пользователь не получает ответ.
+
+**Задачи:**
+1. Реализовать подписку на Docker events (`container die/stop/destroy`) через Docker SDK или API
+2. При `die`/`stop` — обновлять `worker:status:{id}` → `STOPPED` в Redis
+3. Очищать `session:po:{user_id}` при смерти PO-воркера (чтобы бот создал нового)
+4. Опционально: уведомлять пользователя через callback stream что воркер упал
+
+**Связано с**: Worker Lifecycle (pause/unpause, cleanup)
+
+---
+
 ### Resource Limits (Worker Manager)
 **Статус**: TODO
 
