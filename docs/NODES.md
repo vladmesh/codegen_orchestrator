@@ -11,7 +11,6 @@
 **Реализация**: worker-manager создаёт Docker-контейнер с CLI агентом (Claude Code, Factory.ai или custom), который работает как Product Owner.
 
 **Инструменты**: Все инструменты из API предоставляются через OpenAPI и native tool calling:
-- `delegate_to_analyst`: делегирование анализа запроса
 - `trigger_engineering`: запуск Engineering Subgraph
 - `trigger_deploy`: запуск DevOps Subgraph
 - `list_projects`, `get_project_status`: управление проектами
@@ -22,61 +21,6 @@
 **Выход**: Действия через tools, сообщения пользователю через Telegram
 
 ---
-
-## 🧠 Analyst ⚠️ НЕ ИСПОЛЬЗУЕТСЯ
-
-> **Статус**: Код есть (`nodes/analyst.py`), но НЕ подключен в graph. Планируется для Phase 3.
-
-**Роль**: Первичный анализ запроса, уточнение требований, создание проекта.
-
-**Когда вызывается**:
-- Через `delegate_to_analyst` tool от PO
-- При создании нового проекта
-
-**Инструменты**:
-- `list_projects`, `get_project_status`
-- `create_project`: создаёт project record в БД
-- Доступ к контексту предыдущих проектов
-
-**Выход**: `current_project`, `project_spec` → переход к Zavhoz
-
----
-
-## 🏠 Завхоз (Zavhoz) ⚠️ НЕ ИСПОЛЬЗУЕТСЯ
-
-> **Статус**: Код есть (`nodes/zavhoz.py`), но НЕ подключен в graph. Ресурсы выделяются через `ResourceAllocator` (DevOps).
-
-**Роль**: Управление ресурсами, изоляция секретов от LLM.
-
-**Когда вызывается**:
-- После Analyst (для нового проекта)
-- Для выделения ресурсов перед деплоем
-
-**Принцип**: LLM видит только handles, не реальные секреты.
-
-**Инструменты**:
-- `list_managed_servers`, `find_suitable_server`
-- `allocate_port`, `get_next_available_port`
-- `list_resource_inventory`
-
-**Выход**: `allocated_resources` → переход к Engineering или DevOps
-
----
-
-## 📐 Architect (Engineering Subgraph)
-
-**Роль**: Проектирование структуры, создание GitHub репозитория, выбор модулей.
-
-**Когда вызывается**:
-- Первый этап Engineering Subgraph
-- При необходимости изменить архитектуру
-
-**Инструменты**:
-- `create_github_repo`: создаёт репозиторий через GitHub App
-- `select_modules`: выбор модулей из service-template
-- `set_deployment_hints`: конфигурация для деплоя
-
-**Выход**: `repo_info`, `selected_modules` → Scaffolder Service
 
 ---
 
@@ -238,7 +182,6 @@ Telegram Bot → worker-manager
 CLI Agent (Product Owner)
      │ tool calls via OpenAPI
      ├──────────────▶ respond (via Redis) ──▶ Пользователь
-     ├──────────────▶ delegate_to_analyst ──▶ [Analyst ──▶ Zavhoz] (⚠️ не используется)
      │
      ├──────────────▶ trigger_engineering
      │                     │
