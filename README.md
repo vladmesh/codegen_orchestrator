@@ -45,7 +45,7 @@ graph TD
 
 - **API**: FastAPI сервис, единственный источник правды (DAL) для PostgreSQL.
 - **Telegram Bot**: Интерфейс для пользователя, управляет PO сессиями.
-- **Worker Manager**: Управляет Docker контейнерами с AI агентами (Claude/Factory). Заменил legacy `workers-spawner`.
+- **Worker Manager**: Управляет Docker контейнерами с AI агентами (Claude/Factory).
 - **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps).
 - **Scaffolder**: Сервис генерации кода через Copier (бывший `preparer`).
 - **Infra Service**: Ansible runner для настройки серверов (бывший `infrastructure-worker`).

@@ -23,7 +23,7 @@ We have completed the core migration to the new architecture (Worker Manager, La
 - **Worker Wrapper**: Headless agent execution, session management (Redis), result parsing.
 - **Infra Service**: Ansible runner, provisioning queue consumer.
 - **Worker Manager**:
-  - Replaced legacy `workers-spawner`.
+  - Docker container lifecycle management.
   - Docker container lifecycle management.
   - Dynamic image building with caching (hash-based).
   - **Agent Integration**: Claude Code & Factory Droid support.
@@ -46,7 +46,7 @@ We have completed the core migration to the new architecture (Worker Manager, La
 #### Phase 4: E2E (Partial)
 - **Mock Anthropic**: E2E tests with deterministic LLM responses (Passed).
 - **Configurable Agents**: Support for switching default agent type via env var.
-- **Legacy Removal**: `workers-spawner` successfully removed.
+- **Legacy Removal**: Dead code cleanup (analyst, zavhoz, graph_runner, legacy tests).
 
 ### 🚧 Outstanding Tasks
 

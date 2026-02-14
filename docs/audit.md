@@ -24,4 +24,4 @@
 ---
 
 > **Примечание**: Остальные пункты из предыдущего аудита перенесены в [backlog.md](./backlog.md) как конкретные задачи:
-> TesterNode, API Authentication, Resource Limits, Idle Pause/Wakeup, Creation Queue, E2E тесты, удаление мёртвого кода (analyst.py/zavhoz.py).
+> TesterNode, API Authentication, Resource Limits, Idle Pause/Wakeup, Creation Queue, E2E тесты.

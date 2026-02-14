@@ -258,7 +258,7 @@ if context_tokens > 150_000:
 
 **Задачи:**
 - [ ] Hook на docker compose down → terminate all agent containers
-- [ ] Hook на workers-spawner shutdown → cleanup
+- [ ] Hook на worker-manager shutdown → cleanup
 - [ ] Periodic job: find orphaned containers → terminate
 - [ ] Health check: if container unresponsive → terminate
 

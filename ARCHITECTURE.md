@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-02-09
+> **Актуально на**: 2026-02-14
 
 ## Обзор
 
@@ -39,7 +39,7 @@ Redis-based sessions с `--resume session_id` для сохранения кон
 |--------|----------|
 | `api` | FastAPI + SQLAlchemy — проекты, серверы, users, configs |
 | `telegram_bot` | Telegram интерфейс + PO sessions |
-| `worker-manager` | Docker контейнеры с CLI агентами (Replacer legacy workers-spawner) |
+| `worker-manager` | Docker контейнеры с CLI агентами |
 | `langgraph` | Engineering/DevOps subgraphs |
 | `scheduler` | Background tasks (sync, health checks) |
 | `scaffolder` | Copier runner для scaffolding (бывший preparer) |
@@ -134,7 +134,7 @@ graph TD
 | **Error Handling** | [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) |
 | **Secrets** | [docs/SECRETS.md](docs/SECRETS.md) |
 | Status & Progress | [docs/STATUS.md](docs/STATUS.md) |
-| Resource Management (Завхоз) | [docs/resource-management.md](docs/resource-management.md) |
+| Resource Management | [docs/resource-management.md](docs/resource-management.md) |
 | Coding Agents (Claude/Droid) | [docs/coding-agents.md](docs/coding-agents.md) |
 | Parallel Workers | [docs/parallel-workers.md](docs/parallel-workers.md) |
 | Logging | [docs/LOGGING.md](docs/LOGGING.md) |
