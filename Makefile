@@ -393,6 +393,8 @@ nuke-hard: .nuke-common
 
 .nuke-common:
 	@echo "🔥 Nuking everything (Build mode: $(if $(filter --no-cache,$(BUILD_OPTS)),hard reset,smart incremental))..."
+	@echo "🧹 Cleaning build cache..."
+	@docker builder prune -f
 	@echo "🧹 Cleaning up stale worker containers..."
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
 	@echo "🧹 Cleaning up worker images..."
