@@ -1,6 +1,6 @@
 # Backlog
 
-> **Актуально на**: 2026-02-11
+> **Актуально на**: 2026-02-14
 
 ## Active Design & Implementation Plans
 
@@ -129,9 +129,6 @@ PO не ждёт завершения деплоя — сразу отдаёт j
 ### Telegram Bot Pool
 Пул pre-registered ботов для автоматического выделения проектам.
 
-### Удалить мёртвый код (analyst.py, zavhoz.py)
-Файлы существуют в `services/langgraph/src/nodes/`, но ноды не подключены в граф.
-
 ### Docker Python SDK
 Миграция worker-manager с subprocess на Python Docker SDK.
 
@@ -149,6 +146,5 @@ PO не ждёт завершения деплоя — сразу отдаёт j
 ## 📦 Phase 3 (Future)
 
 ### Agent Architecture
-- Analyst Node (детализация требований)
 - Engineering Lead (координация)
 - Agent-to-agent communication
