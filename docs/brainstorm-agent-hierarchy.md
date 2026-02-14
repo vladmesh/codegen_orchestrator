@@ -295,6 +295,91 @@ PO → engineering:queue → update_framework_subgraph → spawn developer:
 
 ---
 
+## PO без контейнера: переход на API-based ReactAgent
+
+### Проблема
+
+PO-воркер сейчас — Docker-контейнер с Claude Code CLI внутри. Это оправдано для Developer (ему нужна FS, git, build tools). Но PO **не работает с файлами** — он координатор. Весь контейнер существует ради `claude -p "..." --resume X --output-format json` как subprocess.
+
+Путь сообщения: `User → Telegram → Redis → worker-manager → Docker → worker-wrapper → subprocess(claude) → orchestrator-cli → API/Redis → обратно`. 7 хопов для "какой статус у проекта?".
+
+При 20 пользователях — 10-40GB RAM на idle PO-контейнеры. При 100 — система ляжет.
+
+### Предварительное решение: LangGraph ReactAgent через API
+
+PO становится обычным LangGraph графом с `ChatAnthropic` + tool calling. Без контейнера, без subprocess, без worker-manager в PO flow.
+
+```
+Было:   Telegram → worker-manager → PO container → orchestrator-cli → API
+Будет:  Telegram → LangGraph PO Graph → Direct API/Redis calls
+```
+
+**Conversation history** — LangGraph PostgreSQL checkpointer (per-user thread_id). Заменяет Claude Code `--resume`.
+
+**Tools** — прямые Python-функции вместо orchestrator-cli. CLI был нужен как прокси для агента в контейнере. Без контейнера прокси не нужен.
+
+**Модель** — Sonnet (PO — координатор, не кодер). Fallback на Opus для сложных задач. Anthropic primary, OpenAI fallback.
+
+### Стоимость (20 юзеров × 10 сообщений/день)
+
+| Вариант | LLM cost/мес | RAM overhead | Latency |
+|---------|-------------|-------------|---------|
+| Текущий (Claude Code Max) | $100-200/seat | 10-40GB | 2-10s (subprocess) |
+| Sonnet API + prompt caching | ~$50-70 total | ~0 | <2s |
+| С model cascade (Haiku для простых) | ~$20-30 total | ~0 | <1s |
+
+### Плюсы
+
+- **Ноль container overhead** — RAM, CPU, Docker daemon не нужны для PO
+- **Мгновенный ответ** — нет спауна контейнера, нет subprocess startup
+- **Скейлинг** — 100+ юзеров без дополнительных ресурсов (stateless API calls)
+- **LangSmith трейсинг** — PO сейчас чёрная коробка, станет полностью прозрачным
+- **Гибкие промежуточные ноды** — intent classifier, model cascade, smart routing добавляются как ноды графа
+- **Dynamic configs** — модель/промпт из БД, применяются мгновенно (не нужен respawn контейнера)
+
+### Минусы и риски
+
+- **Потеря subscription pricing** — но Sonnet + caching дешевле Claude Code Max
+- **Нужно переписать tools** — с CLI-команд на прямые API-вызовы (одноразовая работа)
+- **Потеря Claude Code features** — file editing, codebase search. PO они не нужны, но если появится "PO пишет спеку в файл" — придётся решать
+- **Vendor lock-in на Anthropic API** — митигация: OpenAI fallback, LangGraph абстрагирует модель
+- **Conversation compaction** — нужно самим управлять длиной контекста (суммаризация каждые N сообщений)
+
+### Классификация нод: контейнер vs API
+
+| Нода | Работа с FS? | Рекомендация |
+|------|-------------|--------------|
+| PO | Нет | **API node** (ReactAgent) |
+| Developer | Да (код) | **Container** (как есть) |
+| Tester | Да (тесты) | **Container** (как есть) |
+| Diagnostician | Нет (read-only) | **API node** (one-shot LLM call) |
+| Ops Executor | Возможно | **Container** (если пишет в FS), иначе API |
+| Router, checks | Нет | **Functional node** (Python) |
+| EnvAnalyzer | Нет | **API node** (уже так) |
+
+Принцип: **контейнер только для нод, которые пишут в файловую систему или запускают произвольный код**. Всё остальное — API или functional nodes.
+
+### Model cascade (оптимизация поверх)
+
+```
+User message → Intent Classifier (Haiku/rule-based, ~$0.001)
+    ├── "привет" / "статус проекта" → DB query + template ($0)
+    ├── "сделай бота" → Sonnet + tools ($0.02-0.05)
+    └── "спланируй архитектуру с учётом..." → Opus ($0.10-0.50)
+```
+
+80% запросов не требуют дорогой модели. Добавляется как отдельная нода в PO-граф.
+
+### Миграция
+
+1. Реализовать PO как LangGraph граф с tools (прямые API-вызовы)
+2. Feature flag: новые юзеры → API PO, старые → container PO
+3. Валидация на реальном трафике
+4. Deprecate container PO, убрать worker-manager из PO flow
+5. `orchestrator-cli` остаётся только для Developer/Tester workers
+
+---
+
 ## Открытые вопросы
 
 ### С предварительными ответами
