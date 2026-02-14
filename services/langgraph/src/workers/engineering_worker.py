@@ -342,18 +342,26 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             )
             return {"status": "failed", "error": error_msg}
 
-        # Auto-correct action: "create" only valid for draft projects
+        # Fail fast if scaffold previously failed
         project_status = project.get("status")
-        if action == "create" and project_status not in ("draft", None):
-            logger.warning(
-                "action_auto_corrected",
+        if project_status == "scaffold_failed":
+            error_msg = (
+                f"Project {project_id} has status 'scaffold_failed'. "
+                "Scaffold must succeed before developer can work. "
+                "Fix the scaffolding issue and retry."
+            )
+            logger.error(
+                "scaffold_failed_abort",
                 task_id=task_id,
                 project_id=project_id,
-                original_action=action,
-                corrected_action="feature",
-                project_status=project_status,
+                action=action,
             )
-            action = "feature"
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={"status": "failed", "error_message": error_msg},
+            )
+            await publish_callback_event(redis, callback_stream, "error", task_id, error_msg)
+            return {"status": "failed", "error": error_msg}
 
         # Trigger scaffolding only for new project creation on draft projects
         if project_status == "draft" and action == "create":

@@ -14,7 +14,8 @@ RUN pip install --no-cache-dir \
     pyyaml==6.0.1 \
     pyjwt[crypto]==2.8.0 \
     pydantic==2.7.4 \
-    pynacl==1.5.0
+    pynacl==1.5.0 \
+    ruff==0.14.5
 
 WORKDIR /app
 
