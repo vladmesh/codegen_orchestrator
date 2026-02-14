@@ -16,6 +16,7 @@ import structlog
 
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.log_config import setup_logging
+from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, ensure_all_groups
 
 from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker
@@ -28,8 +29,6 @@ logger = structlog.get_logger()
 
 # Redis configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-PROVISIONER_RESULTS_STREAM = "provisioner:results"
-PROVISIONER_RESULTS_GROUP = "scheduler-consumers"
 CONSUMER_NAME = f"scheduler-{os.getpid()}"
 
 
@@ -42,28 +41,11 @@ async def provisioner_results_worker():
     redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
     try:
-        # Create consumer group if doesn't exist
-        try:
-            await redis_client.xgroup_create(
-                PROVISIONER_RESULTS_STREAM,
-                PROVISIONER_RESULTS_GROUP,
-                id="0",
-                mkstream=True,
-            )
-            logger.info(
-                "consumer_group_created",
-                stream=PROVISIONER_RESULTS_STREAM,
-                group=PROVISIONER_RESULTS_GROUP,
-            )
-        except redis.ResponseError as e:
-            if "BUSYGROUP" in str(e):
-                logger.debug("consumer_group_exists", group=PROVISIONER_RESULTS_GROUP)
-            else:
-                raise
+        await ensure_all_groups(redis_client)
 
         logger.info(
             "provisioner_results_worker_started",
-            stream=PROVISIONER_RESULTS_STREAM,
+            stream=PROVISIONER_RESULTS,
             consumer=CONSUMER_NAME,
         )
 
@@ -71,9 +53,9 @@ async def provisioner_results_worker():
             try:
                 # Read from stream with blocking
                 messages = await redis_client.xreadgroup(
-                    groupname=PROVISIONER_RESULTS_GROUP,
+                    groupname=SCHEDULER_CONSUMER_GROUP,
                     consumername=CONSUMER_NAME,
-                    streams={PROVISIONER_RESULTS_STREAM: ">"},
+                    streams={PROVISIONER_RESULTS: ">"},
                     count=1,
                     block=5000,  # 5 second block
                 )
@@ -100,8 +82,8 @@ async def provisioner_results_worker():
 
                             # ACK the message
                             await redis_client.xack(
-                                PROVISIONER_RESULTS_STREAM,
-                                PROVISIONER_RESULTS_GROUP,
+                                PROVISIONER_RESULTS,
+                                SCHEDULER_CONSUMER_GROUP,
                                 entry_id,
                             )
                             logger.debug("message_acked", entry_id=entry_id)
@@ -119,11 +101,19 @@ async def provisioner_results_worker():
                 logger.info("provisioner_results_worker_cancelled")
                 break
             except Exception as e:
-                logger.error(
-                    "provisioner_results_worker_error",
-                    error=str(e),
-                    exc_info=True,
-                )
+                if "NOGROUP" in str(e):
+                    logger.warning(
+                        "consumer_nogroup_recovering",
+                        stream=PROVISIONER_RESULTS,
+                        group=SCHEDULER_CONSUMER_GROUP,
+                    )
+                    await ensure_all_groups(redis_client)
+                else:
+                    logger.error(
+                        "provisioner_results_worker_error",
+                        error=str(e),
+                        exc_info=True,
+                    )
                 await asyncio.sleep(1)  # Backoff on error
 
     finally:

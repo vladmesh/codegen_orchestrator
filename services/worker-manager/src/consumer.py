@@ -13,6 +13,8 @@ from shared.contracts.queues.worker import (
     StatusWorkerResponse,
     WorkerResponse,
 )
+from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP
+
 from .manager import WorkerManager
 
 logger = structlog.get_logger()
@@ -22,8 +24,8 @@ class WorkerCommandConsumer:
     def __init__(self, redis: Redis, manager: WorkerManager):
         self.redis = redis
         self.manager = manager
-        self.stream_name = "worker:commands"
-        self.group_name = "worker_manager"
+        self.stream_name = WORKER_COMMANDS
+        self.group_name = WORKER_MANAGER_GROUP
         self.consumer_name = "worker_manager_1"  # In prod, use hostname/podname
 
     async def ensure_group(self):

@@ -17,6 +17,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.queues.scaffolder import ScaffolderAction, ScaffolderMessage, ScaffolderResult
+from shared.queues import SCAFFOLDER_GROUP, SCAFFOLDER_QUEUE, ensure_all_groups
 
 logger = structlog.get_logger()
 
@@ -26,9 +27,7 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 API_URL = os.getenv("API_URL", "http://api:8000")
 SERVICE_TEMPLATE_REPO = os.getenv("SERVICE_TEMPLATE_REPO", "gh:vladmesh/service-template")
 
-QUEUE_NAME = "scaffolder:queue"
-RESULT_QUEUE_NAME = "scaffolder:results"
-CONSUMER_GROUP = "scaffolder-workers"
+RESULT_SCAFFOLDER_QUEUE = "scaffolder:results"
 CONSUMER_NAME = f"scaffolder-{os.getpid()}"
 
 # Shared GitHub client
@@ -433,12 +432,12 @@ async def process_job(job_data: dict, redis_client: redis.Redis) -> None:
         status="success" if success else "failed",
         error=None if success else "Scaffolding failed - check logs",
     )
-    await redis_client.xadd(RESULT_QUEUE_NAME, {"data": result.model_dump_json()})
+    await redis_client.xadd(RESULT_SCAFFOLDER_QUEUE, {"data": result.model_dump_json()})
     logger.info(
         "scaffold_result_published",
         project_id=message.project_id,
         status=result.status,
-        queue=RESULT_QUEUE_NAME,
+        queue=RESULT_SCAFFOLDER_QUEUE,
     )
 
     # Also update project via API
@@ -449,24 +448,9 @@ async def process_job(job_data: dict, redis_client: redis.Redis) -> None:
         await update_project(message.project_id, "scaffold_failed")
 
 
-async def ensure_consumer_group(redis_client: redis.Redis) -> None:
-    """Ensure consumer group exists."""
-    try:
-        await redis_client.xgroup_create(
-            QUEUE_NAME,
-            CONSUMER_GROUP,
-            id="0",
-            mkstream=True,
-        )
-        logger.info("consumer_group_created", group=CONSUMER_GROUP)
-    except redis.ResponseError as e:
-        if "BUSYGROUP" not in str(e):
-            raise
-
-
 async def main() -> None:
     """Main loop - consume jobs from Redis Stream."""
-    logger.info("scaffolder_starting", queue=QUEUE_NAME)
+    logger.info("scaffolder_starting", queue=SCAFFOLDER_QUEUE)
 
     redis_client = redis.Redis(
         host=REDIS_HOST,
@@ -474,7 +458,7 @@ async def main() -> None:
         decode_responses=True,
     )
 
-    await ensure_consumer_group(redis_client)
+    await ensure_all_groups(redis_client)
 
     logger.info("scaffolder_ready", consumer=CONSUMER_NAME)
 
@@ -482,9 +466,9 @@ async def main() -> None:
         try:
             # Read from stream with blocking
             messages = await redis_client.xreadgroup(
-                CONSUMER_GROUP,
+                SCAFFOLDER_GROUP,
                 CONSUMER_NAME,
-                {QUEUE_NAME: ">"},
+                {SCAFFOLDER_QUEUE: ">"},
                 count=1,
                 block=5000,  # 5 second timeout
             )
@@ -504,14 +488,22 @@ async def main() -> None:
                             job_data = data
                         await process_job(job_data, redis_client)
                         # Acknowledge message
-                        await redis_client.xack(QUEUE_NAME, CONSUMER_GROUP, message_id)
+                        await redis_client.xack(SCAFFOLDER_QUEUE, SCAFFOLDER_GROUP, message_id)
                     except Exception as e:
                         logger.exception(
                             "job_processing_error", message_id=message_id, error=str(e)
                         )
 
         except Exception as e:
-            logger.exception("main_loop_error", error=str(e))
+            if "NOGROUP" in str(e):
+                logger.warning(
+                    "consumer_nogroup_recovering",
+                    stream=SCAFFOLDER_QUEUE,
+                    group=SCAFFOLDER_GROUP,
+                )
+                await ensure_all_groups(redis_client)
+            else:
+                logger.exception("main_loop_error", error=str(e))
             await asyncio.sleep(5)
 
 

@@ -13,6 +13,7 @@ import signal
 import structlog
 
 from shared.log_config import setup_logging
+from shared.queues import ANSIBLE_DEPLOY_QUEUE, INFRA_GROUP, PROVISIONER_QUEUE, ensure_all_groups
 from shared.redis_client import RedisStreamClient
 
 from .deployer import deploy_project
@@ -20,10 +21,7 @@ from .provisioner.node import ProvisionerNode
 
 logger = structlog.get_logger(__name__)
 
-# Queue configuration
-PROVISIONER_QUEUE = "provisioner:queue"
-DEPLOY_QUEUE = "ansible:deploy:queue"
-WORKER_GROUP = "infrastructure-workers"
+# Consumer configuration
 CONSUMER_NAME = f"infra-worker-{os.getpid()}"
 
 # Shutdown flag
@@ -35,23 +33,6 @@ def handle_shutdown(signum, frame):
     global _shutdown
     logger.info("shutdown_signal_received", signal=signum)
     _shutdown = True
-
-
-async def ensure_consumer_groups(redis_client) -> None:
-    """Ensure Redis consumer groups exist for all queues."""
-    queues = [PROVISIONER_QUEUE, DEPLOY_QUEUE]
-
-    for queue in queues:
-        try:
-            # Use id="0" for job queues - we want to process pending jobs from before restart
-            # Idempotency should be handled at the job processing level
-            await redis_client.xgroup_create(queue, WORKER_GROUP, id="0", mkstream=True)
-            logger.info("consumer_group_created", queue=queue, group=WORKER_GROUP)
-        except Exception as e:
-            if "BUSYGROUP" in str(e):
-                logger.debug("consumer_group_exists", queue=queue, group=WORKER_GROUP)
-            else:
-                raise
 
 
 async def process_provisioner_job(job_data: dict) -> dict:
@@ -227,7 +208,7 @@ async def run_worker():
     await redis.connect()
 
     # Ensure consumer groups exist
-    await ensure_consumer_groups(redis.redis)
+    await ensure_all_groups(redis.redis)
 
     logger.info("infrastructure_worker_started", consumer=CONSUMER_NAME)
 
@@ -236,9 +217,9 @@ async def run_worker():
             try:
                 # Read from both queues
                 messages = await redis.redis.xreadgroup(
-                    groupname=WORKER_GROUP,
+                    groupname=INFRA_GROUP,
                     consumername=CONSUMER_NAME,
-                    streams={PROVISIONER_QUEUE: ">", DEPLOY_QUEUE: ">"},
+                    streams={PROVISIONER_QUEUE: ">", ANSIBLE_DEPLOY_QUEUE: ">"},
                     count=1,
                     block=5000,  # 5 second block
                 )
@@ -264,7 +245,7 @@ async def run_worker():
                             if stream_name_str == PROVISIONER_QUEUE:
                                 result = await process_provisioner_job(job_data)
                                 result_stream = "provisioner:results"
-                            elif stream_name_str == DEPLOY_QUEUE:
+                            elif stream_name_str == ANSIBLE_DEPLOY_QUEUE:
                                 result = await process_deploy_job(job_data)
                                 result_stream = "deploy:results"
                             else:
@@ -287,7 +268,7 @@ async def run_worker():
                             # ACK the message
                             await redis.redis.xack(
                                 stream_name_str,
-                                WORKER_GROUP,
+                                INFRA_GROUP,
                                 entry_id,
                             )
                             logger.debug("job_acked", stream=stream_name_str, entry_id=entry_id)
@@ -306,7 +287,15 @@ async def run_worker():
                 logger.info("worker_cancelled")
                 break
             except Exception as e:
-                logger.error("worker_loop_error", error=str(e))
+                if "NOGROUP" in str(e):
+                    logger.warning(
+                        "consumer_nogroup_recovering",
+                        stream=PROVISIONER_QUEUE,
+                        group=INFRA_GROUP,
+                    )
+                    await ensure_all_groups(redis.redis)
+                else:
+                    logger.error("worker_loop_error", error=str(e))
                 await asyncio.sleep(1)
 
     finally:

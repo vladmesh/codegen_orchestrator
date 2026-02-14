@@ -112,6 +112,7 @@ async def root():
 
 
 app.include_router(routers.health.router)
+app.include_router(routers.debug.router)
 app.include_router(routers.resources.router, prefix="/api")
 app.include_router(routers.users.router, prefix="/api")
 app.include_router(routers.projects.router, prefix="/api")

@@ -1,10 +1,12 @@
 """Redis Streams job queues for async task processing.
 
 Provides queue constants and utilities for Phase 4 capability workers.
+Single source of truth for all stream/group bindings.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import structlog
@@ -14,92 +16,95 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Queue stream names (Phase 6: CLI-triggered queues)
+# ---------------------------------------------------------------------------
+# Stream names
+# ---------------------------------------------------------------------------
 DEPLOY_QUEUE = "deploy:queue"
 ENGINEERING_QUEUE = "engineering:queue"
-ADMIN_QUEUE = "admin:queue"
 SCAFFOLDER_QUEUE = "scaffolder:queue"
+PROVISIONER_QUEUE = "provisioner:queue"
+PROVISIONER_RESULTS = "provisioner:results"
+ANSIBLE_DEPLOY_QUEUE = "ansible:deploy:queue"
+WORKER_COMMANDS = "worker:commands"
 
-# Infrastructure worker queues
-ANSIBLE_DEPLOY_QUEUE = "ansible:deploy:queue"  # For delegated Ansible deployments
-
-# Consumer group name (shared across all workers)
+# ---------------------------------------------------------------------------
+# Consumer group names
+# ---------------------------------------------------------------------------
 WORKER_GROUP = "capability-workers"
+SCAFFOLDER_GROUP = "scaffolder-workers"
+INFRA_GROUP = "infrastructure-workers"
+SCHEDULER_CONSUMER_GROUP = "scheduler-consumers"
+TELEGRAM_BOT_GROUP = "telegram-bot"
+WORKER_MANAGER_GROUP = "worker_manager"
 
+# ---------------------------------------------------------------------------
 # Job retention TTL in seconds (7 days)
+# ---------------------------------------------------------------------------
 JOB_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
-async def ensure_consumer_groups(redis: Redis) -> None:
-    """Create consumer groups if they don't exist.
+# ---------------------------------------------------------------------------
+# Declarative queue topology
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class QueueBinding:
+    """A single stream ↔ consumer-group binding."""
 
+    stream: str
+    group: str
+    description: str
+
+
+QUEUE_TOPOLOGY: list[QueueBinding] = [
+    QueueBinding(ENGINEERING_QUEUE, WORKER_GROUP, "Engineering tasks"),
+    QueueBinding(DEPLOY_QUEUE, WORKER_GROUP, "Deploy tasks"),
+    QueueBinding(SCAFFOLDER_QUEUE, SCAFFOLDER_GROUP, "Project scaffolding"),
+    QueueBinding(PROVISIONER_QUEUE, INFRA_GROUP, "Server provisioning"),
+    QueueBinding(ANSIBLE_DEPLOY_QUEUE, INFRA_GROUP, "Ansible deployments"),
+    QueueBinding(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, "Provisioner results → scheduler"),
+    QueueBinding(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, "Provisioner results → telegram-bot"),
+    QueueBinding(WORKER_COMMANDS, WORKER_MANAGER_GROUP, "Worker lifecycle commands"),
+]
+
+
+async def ensure_all_groups(redis: Redis) -> None:
+    """Create every consumer group declared in QUEUE_TOPOLOGY.
+
+    Idempotent — silently skips groups that already exist.
     Should be called on worker startup.
 
     Args:
         redis: Connected Redis client
     """
-    queues = [DEPLOY_QUEUE, ENGINEERING_QUEUE, ADMIN_QUEUE]
-
-    for queue in queues:
+    for binding in QUEUE_TOPOLOGY:
         try:
             await redis.xgroup_create(
-                queue,
-                WORKER_GROUP,
+                binding.stream,
+                binding.group,
                 id="0",
                 mkstream=True,
             )
-            logger.info("consumer_group_created", queue=queue, group=WORKER_GROUP)
+            logger.info(
+                "consumer_group_created",
+                queue=binding.stream,
+                group=binding.group,
+            )
         except Exception as e:
             if "BUSYGROUP" in str(e):
-                # Group already exists
-                logger.debug("consumer_group_exists", queue=queue, group=WORKER_GROUP)
+                logger.debug(
+                    "consumer_group_exists",
+                    queue=binding.stream,
+                    group=binding.group,
+                )
             else:
                 logger.error(
                     "consumer_group_creation_failed",
-                    queue=queue,
+                    queue=binding.stream,
+                    group=binding.group,
                     error=str(e),
                 )
                 raise
 
 
-async def get_pending_job_count(redis: Redis, queue: str) -> int:
-    """Get count of pending (unacked) jobs in a queue.
-
-    Args:
-        redis: Connected Redis client
-        queue: Queue stream name
-
-    Returns:
-        Number of pending jobs
-    """
-    try:
-        info = await redis.xpending(queue, WORKER_GROUP)
-        return info.get("pending", 0) if isinstance(info, dict) else 0
-    except Exception:
-        return 0
-
-
-async def get_user_active_jobs(redis: Redis, queue: str, user_id: int) -> int:
-    """Count active jobs for a specific user in a queue.
-
-    Used to enforce per-user concurrency limits.
-
-    Args:
-        redis: Connected Redis client
-        queue: Queue stream name
-        user_id: Telegram user ID
-
-    Returns:
-        Number of active jobs for this user
-    """
-    # Read recent entries and count by user
-    # This is approximate - for exact count would need secondary index
-    try:
-        entries = await redis.xrevrange(queue, count=100)
-        count = 0
-        for _entry_id, data in entries:
-            if data.get("user_id") == str(user_id):
-                count += 1
-        return count
-    except Exception:
-        return 0
+# Backward-compatible alias
+ensure_consumer_groups = ensure_all_groups

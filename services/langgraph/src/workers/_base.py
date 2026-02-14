@@ -102,7 +102,16 @@ async def run_queue_worker(
                 logger.info("worker_cancelled", worker=service_name)
                 break
             except Exception as e:
-                logger.error("worker_loop_error", error=str(e), worker=service_name)
+                if "NOGROUP" in str(e):
+                    logger.warning(
+                        "consumer_nogroup_recovering",
+                        stream=queue,
+                        group=WORKER_GROUP,
+                        worker=service_name,
+                    )
+                    await ensure_consumer_groups(redis.redis)
+                else:
+                    logger.error("worker_loop_error", error=str(e), worker=service_name)
                 await asyncio.sleep(1)
 
     finally:

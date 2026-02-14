@@ -11,11 +11,10 @@ import structlog
 from telegram import Bot
 
 from shared.contracts.queues.provisioner import ProvisionerResult
+from shared.queues import PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, ensure_all_groups
 
 logger = structlog.get_logger()
 
-STREAM_KEY = "provisioner:results"
-CONSUMER_GROUP = "telegram-bot"
 CONSUMER_NAME = "notifier"
 
 
@@ -36,23 +35,9 @@ class ProvisionerNotifier:
         """Stop the notifier."""
         self._running = False
 
-    async def _ensure_consumer_group(self) -> None:
-        """Create consumer group if not exists."""
-        try:
-            await self.redis.xgroup_create(
-                STREAM_KEY,
-                CONSUMER_GROUP,
-                id="0",
-                mkstream=True,
-            )
-        except Exception as e:
-            # Group already exists
-            if "BUSYGROUP" not in str(e):
-                raise
-
     async def _listen_loop(self, bot: Bot) -> None:
         """Main loop: listen for provisioner results."""
-        await self._ensure_consumer_group()
+        await ensure_all_groups(self.redis)
 
         logger.info("provisioner_notifier_started", admin_count=len(self.admin_ids))
 
@@ -62,22 +47,30 @@ class ProvisionerNotifier:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error("provisioner_notifier_error", error=str(e))
+                if "NOGROUP" in str(e):
+                    logger.warning(
+                        "consumer_nogroup_recovering",
+                        stream=PROVISIONER_RESULTS,
+                        group=TELEGRAM_BOT_GROUP,
+                    )
+                    await ensure_all_groups(self.redis)
+                else:
+                    logger.error("provisioner_notifier_error", error=str(e))
                 await asyncio.sleep(1)
 
         logger.info("provisioner_notifier_stopped")
 
     async def _listen_once(self, bot: Bot) -> None:
         """Process one batch of messages (for testing)."""
-        await self._ensure_consumer_group()
+        await ensure_all_groups(self.redis)
         await self._process_messages(bot, block_ms=1000)
 
     async def _process_messages(self, bot: Bot, block_ms: int = 2000) -> None:
         """Read and process messages from stream."""
         messages = await self.redis.xreadgroup(
-            groupname=CONSUMER_GROUP,
+            groupname=TELEGRAM_BOT_GROUP,
             consumername=CONSUMER_NAME,
-            streams={STREAM_KEY: ">"},
+            streams={PROVISIONER_RESULTS: ">"},
             count=10,
             block=block_ms,
         )
@@ -89,7 +82,7 @@ class ProvisionerNotifier:
             for msg_id, msg_data in stream_messages:
                 try:
                     await self._handle_message(bot, msg_id, msg_data)
-                    await self.redis.xack(STREAM_KEY, CONSUMER_GROUP, msg_id)
+                    await self.redis.xack(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, msg_id)
                 except Exception as e:
                     logger.error(
                         "provisioner_message_error",

@@ -14,55 +14,59 @@
 ## Queue Registry
 
 > **Complete list of all Redis Streams / Queues.**
+>
+> **Source of Truth:** `shared/queues.py` (`QUEUE_TOPOLOGY`)
 
 ### Engineering Flows
 
-| Queue | DTO | Initiator | Consumer | Purpose |
-|-------|-----|-----------|----------|---------|
-| `engineering:queue` | EngineeringMessage | PO-Worker | langgraph | Start development task |
-| `deploy:queue` | DeployMessage | PO-Worker | langgraph | Start deploy task |
-| `scaffolder:queue` | ScaffolderMessage | langgraph | scaffolder | Scaffold project |
-| `scaffolder:results` | ScaffolderResult | scaffolder | langgraph | Scaffolder completion |
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `engineering:queue` | `capability-workers` | EngineeringMessage | PO-Worker | langgraph | Start development task |
+| `deploy:queue` | `capability-workers` | DeployMessage | PO-Worker | langgraph | Start deploy task |
+| `scaffolder:queue` | `scaffolder-workers` | ScaffolderMessage | langgraph | scaffolder | Scaffold project |
+| `scaffolder:results` | — | ScaffolderResult | scaffolder | langgraph | Scaffolder completion |
 
 ---
 
 ### Worker Management
 
-| Queue | DTO | Initiator | Consumer | Purpose |
-|-------|-----|-----------|----------|---------|
-| `worker:commands` | WorkerCommand | langgraph, telegram-bot | worker-manager | Create/Delete worker containers |
-| `worker:responses:po` | WorkerResponse | worker-manager | telegram-bot | PO worker command responses |
-| `worker:responses:developer` | WorkerResponse | worker-manager | langgraph | Developer worker command responses |
-| `worker:lifecycle` | WorkerLifecycleEvent | worker-wrapper | worker-manager | Container lifecycle events |
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `worker:commands` | `worker_manager` | WorkerCommand | langgraph, telegram-bot | worker-manager | Create/Delete worker containers |
+| `worker:responses:po` | — | WorkerResponse | worker-manager | telegram-bot | PO worker command responses |
+| `worker:responses:developer` | — | WorkerResponse | worker-manager | langgraph | Developer worker command responses |
+| `worker:lifecycle` | — | WorkerLifecycleEvent | worker-wrapper | worker-manager | Container lifecycle events |
 
 ---
 
 ### Worker I/O
 
-| Queue | DTO | Initiator | Consumer | Purpose |
-|-------|-----|-----------|----------|---------|
-| `worker:po:{worker_id}:input` | POWorkerInput | telegram-bot | worker-wrapper (PO) | User messages to PO |
-| `worker:po:{worker_id}:output` | POWorkerOutput | worker-wrapper (PO) | telegram-bot | PO responses to user |
-| `worker:developer:input` | DeveloperWorkerInput | langgraph | worker-wrapper (Dev) | Tasks for Developer |
-| `worker:developer:output` | DeveloperWorkerOutput | worker-wrapper (Dev), worker-manager | langgraph | Developer results (incl. crash reports) |
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `worker:{worker_id}:input` | — | POWorkerInput | telegram-bot | worker-wrapper (PO) | User messages to PO |
+| `worker:{worker_id}:output` | — | POWorkerOutput | worker-wrapper (PO) | telegram-bot | PO responses to user |
+
+> **Note:** Worker I/O streams use `worker:{worker_id}:input/output` pattern (no `po:` or `developer:` prefix in stream name). Each worker gets unique streams identified by `worker_id`.
 
 ---
 
 ### Infrastructure
 
-| Queue | DTO | Initiator | Consumer | Purpose |
-|-------|-----|-----------|----------|---------|
-| `provisioner:queue` | ProvisionerMessage | scheduler | infra-service | Provision server |
-| `provisioner:results` | ProvisionerResult | infra-service | scheduler, telegram-bot | Provisioning result |
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `provisioner:queue` | `infrastructure-workers` | ProvisionerMessage | scheduler | infra-service | Provision server |
+| `ansible:deploy:queue` | `infrastructure-workers` | — | langgraph | infra-service | Ansible deployments |
+| `provisioner:results` | `scheduler-consumers` | ProvisionerResult | infra-service | scheduler | Provisioning result |
+| `provisioner:results` | `telegram-bot` | ProvisionerResult | infra-service | telegram-bot | Provisioning notifications |
 
 ---
 
 ### Events & Progress
 
-| Queue | DTO | Initiator | Consumer | Purpose |
-|-------|-----|-----------|----------|---------|
-| `task_progress:{task_id}` | ProgressEvent | All services | telegram-bot | Task progress notifications |
-| `workflow:status` | WorkflowStatusEvent | langgraph (poller) | telegram-bot | Deploy progress updates |
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `task_progress:{task_id}` | — | ProgressEvent | All services | telegram-bot | Task progress notifications |
+| `workflow:status` | — | WorkflowStatusEvent | langgraph (poller) | telegram-bot | Deploy progress updates |
 
 ### Transport Layer Note
 
@@ -228,30 +232,50 @@ class ProjectStatus(str, Enum):
 
 
 class ServiceModule(str, Enum):
-    """Available project modules for scaffolding."""
+    """Available project modules for scaffolding.
+
+    Must match module names in service-template/copier.yml.
+    """
     BACKEND = "backend"
-    TELEGRAM = "telegram"
+    TG_BOT = "tg_bot"
+    NOTIFICATIONS = "notifications"
     FRONTEND = "frontend"
 
 
 class ProjectCreate(BaseModel):
     """Create project request."""
+    id: str | None = None
     name: str
     description: str | None = None
     modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
+    github_repo_id: int | None = None
+    status: ProjectStatus | None = None
+
+
+class ProjectUpdate(BaseModel):
+    """Update project request."""
+    name: str | None = None
+    description: str | None = None
+    status: ProjectStatus | None = None
+    modules: list[ServiceModule] | None = None
+    github_repo_id: int | None = None
+    owner_id: int | None = None
+    project_spec: dict | None = None
 
 
 class ProjectDTO(BaseModel):
     """Project response."""
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: str
     name: str
     description: str | None = None
     status: ProjectStatus
     modules: list[ServiceModule] = []
     repository_url: str | None = None
+    github_repo_id: int | None = None
     owner_id: int | None = None
+    project_spec: dict | None = None
 ```
 
 ## TaskDTO
@@ -330,21 +354,62 @@ from datetime import datetime
 class ServerStatus(str, Enum):
     NEW = "new"
     PENDING_SETUP = "pending_setup"
+    PROVISIONING = "provisioning"
     ACTIVE = "active"
     UNREACHABLE = "unreachable"
     MAINTENANCE = "maintenance"
+    FORCE_REBUILD = "force_rebuild"
+    DISCOVERED = "discovered"
+
+
+class ServerCreate(BaseModel):
+    """Create server request."""
+    handle: str
+    host: str
+    public_ip: str
+    is_managed: bool = True
+    status: str = "discovered"
+    labels: dict = {}
+
+
+class ServerUpdate(BaseModel):
+    """Update server request."""
+    handle: str | None = None
+    host: str | None = None
+    public_ip: str | None = None
+    status: ServerStatus | None = None
+    labels: dict | None = None
+    is_managed: bool | None = None
+    provider_id: str | None = None
+    capacity_cpu: int | None = None
+    capacity_ram_mb: int | None = None
+    capacity_disk_mb: int | None = None
+    used_ram_mb: int | None = None
+    used_disk_mb: int | None = None
+    os_template: str | None = None
+    provisioning_started_at: datetime | None = None
+
 
 class ServerDTO(BaseModel):
     """Server response."""
     model_config = ConfigDict(from_attributes=True)
-    
-    id: int
-    name: str
-    ip_address: str
-    status: ServerStatus
-    provider_id: str
-    specs: dict = {}
+
+    handle: str
+    host: str
+    public_ip: str
+    status: str
+    provider_id: str | None = None
+    is_managed: bool
+    labels: dict = {}
+    capacity_cpu: int = 0
+    capacity_ram_mb: int = 0
+    capacity_disk_mb: int = 0
+    used_ram_mb: int = 0
+    used_disk_mb: int = 0
+    os_template: str | None = None
     last_health_check: datetime | None = None
+    provisioning_started_at: datetime | None = None
+    provisioning_attempts: int = 0
 ```
 
 ## IncidentDTO
@@ -420,6 +485,21 @@ class AgentConfigDTO(BaseModel):
     model: str
     system_prompt: str
     is_active: bool = True
+```
+
+## APIKeyDTO
+
+```python
+# shared/contracts/dto/api_key.py
+
+class APIKeyDTO(BaseModel):
+    """API Key response."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    service: str
+    key_enc: str
+    created_at: str | None = None
 ```
 
 ## AllocationDTO
@@ -709,6 +789,14 @@ class WorkerCapability(str, Enum):
     DOCKER = "docker"          # dind mount
 
 
+class WorkerChannels(str, Enum):
+    """Redis stream channels and patterns."""
+    COMMANDS = "worker:commands"
+    LIFECYCLE = "worker:lifecycle"
+    INPUT_PATTERN = "worker:{worker_id}:input"
+    OUTPUT_PATTERN = "worker:{worker_id}:output"
+
+
 class WorkerConfig(BaseModel):
     """Worker container configuration."""
     name: str
@@ -719,6 +807,9 @@ class WorkerConfig(BaseModel):
     allowed_commands: list[str]               # ["project.*", "engineering.start"]
     capabilities: list[WorkerCapability]      # ["git", "copier"]
     env_vars: dict[str, str] = {}
+    auth_mode: Literal["host_session", "api_key"] = "host_session"
+    host_claude_dir: str | None = None
+    api_key: str | None = None
 
 
 class CreateWorkerCommand(QueueMeta):
@@ -828,12 +919,12 @@ class WorkerLifecycleEvent(BaseModel):
 
 Коммуникация между Telegram Bot и Product Owner Worker.
 
-**Queue (input):** `worker:po:{worker_id}:input`  
-**Initiator:** telegram-bot  
+**Queue (input):** `worker:{worker_id}:input`
+**Initiator:** telegram-bot
 **Consumer:** worker-wrapper (inside PO container)
 
-**Queue (output):** `worker:po:{worker_id}:output`  
-**Initiator:** worker-wrapper (inside PO container)  
+**Queue (output):** `worker:{worker_id}:output`
+**Initiator:** worker-wrapper (inside PO container)
 **Consumer:** telegram-bot
 
 ```python
@@ -846,10 +937,11 @@ import uuid
 
 class POWorkerInput(BaseModel):
     """Message from Telegram user to PO Worker."""
-    
+
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: int                    # Telegram user ID
     prompt: str                     # User's message text
+    callback_stream: str | None = None  # Redis stream for progress events
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -876,16 +968,16 @@ class POWorkerOutput(BaseModel):
 **Design Decision:** Developer Workers are **ephemeral** (stateless). Each task spawns a fresh worker.
 Context is the code in repo + error messages — no session persistence needed.
 
-**Queue (input):** `worker:developer:input` (Shared Queue)
+**Queue (input):** `worker:{worker_id}:input`
 **Initiator:** langgraph (DeveloperNode)
 **Consumer:** worker-wrapper (inside Developer container)
 
-**Queue (output):** `worker:developer:output` (Shared Queue)
+**Queue (output):** `worker:{worker_id}:output`
 **Initiator:** worker-wrapper (inside Developer container)
 **Consumer:** langgraph (DeveloperNode)
 
-> **Note**: Unlike PO workers which use unique queues per user (`worker:po:{id}:*`), Developer workers use a single shared queue pair.
-> Responses are correlated via `task_id` or `request_id`.
+> **Note**: Both PO and Developer workers use the same `worker:{worker_id}:input/output` pattern.
+> Each worker gets unique streams identified by `worker_id`.
 
 ```python
 # shared/contracts/queues/developer_worker.py
