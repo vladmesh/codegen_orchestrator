@@ -22,7 +22,7 @@ You'll find:
 2. **Read `AGENTS.md`** if present — for framework patterns and conventions
 3. Understand existing code before making changes
 4. Implement changes according to your task
-5. Ensure all tests pass
+5. Commit and push — CI will validate tests
 
 ## Commit and Push
 

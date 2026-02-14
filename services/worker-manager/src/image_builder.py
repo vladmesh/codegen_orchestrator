@@ -49,7 +49,7 @@ CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
         "    rm -rf /var/lib/apt/lists/*",
     ],
     "DOCKER": [
-        # Docker CLI + Compose plugin + make (for pre-push hooks)
+        # Docker CLI + Compose plugin + make (for deploy workers that need Docker)
         # Note: docker.io package on Debian doesn't include CLI, only daemon
         # Socket is mounted at runtime; worker needs docker group access
         "RUN apt-get update && apt-get install -y --no-install-recommends make curl && rm -rf /var/lib/apt/lists/* && \\",

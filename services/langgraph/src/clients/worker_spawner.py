@@ -152,7 +152,7 @@ async def request_spawn(
                 instructions=instructions,
                 task_content=task_content,
                 allowed_commands=["*"],
-                capabilities=[WorkerCapability.GIT, WorkerCapability.DOCKER],
+                capabilities=[WorkerCapability.GIT],
                 env_vars={
                     "GITHUB_TOKEN": github_token,
                     "REPO_NAME": repo,

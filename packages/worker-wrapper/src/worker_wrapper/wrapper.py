@@ -163,6 +163,7 @@ class WorkerWrapper:
             )
             try:
                 proc.kill()
+                await proc.wait()
             except ProcessLookupError:
                 pass
             raise RuntimeError(
