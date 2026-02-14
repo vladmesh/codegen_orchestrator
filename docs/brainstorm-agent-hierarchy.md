@@ -1,7 +1,7 @@
-# Brainstorm: Иерархия агентов и роль LangGraph
+# Brainstorm: Иерархия агентов, роль LangGraph и Incident Response
 
 > **Дата**: 2026-02-14
-> **Контекст**: Обсуждение вызвано конкретным кейсом — `update-framework` был реализован через scaffolder (механический сервис), но по факту требует интеллектуального агента (developer), способного починить ошибки после обновления. Это привело к более широкому обсуждению архитектуры оркестрации.
+> **Контекст**: `update-framework` реализован через scaffolder (механический сервис), но требует интеллектуального агента, способного починить ошибки после обновления. Это привело к обсуждению архитектуры оркестрации, структуры общения между агентами и автоматического реагирования на инциденты.
 
 ---
 
@@ -9,275 +9,286 @@
 
 ### PO — перегруженный центр
 
-PO-воркер сейчас — единственный "умный" агент, через которого проходит всё. У него растёт набор CLI-команд (project, engineering, deploy, update-framework, respond). Каждая новая возможность = новая команда в его промпт. При 20+ командах агент начнёт путаться, выбирать не те инструменты, или игнорировать часть возможностей.
+PO-воркер — единственный "умный" агент. Каждая новая возможность = новая CLI-команда в промпт. При 20+ командах агент начнёт путаться.
+
+**Решение**: единая точка входа `orchestrator task submit --type=X`. Маршрутизация внутри LangGraph, не в голове PO. Промпт не растёт с каждым новым типом задачи.
 
 ### Механические сервисы не справляются с неожиданностями
 
-Scaffolder — механический: `copier update → commit → push`. Он не может запустить `sync-services`, прогнать тесты, починить если что-то сломалось. Когда задача требует итерации (попробовал → проверил → починил → повторил), нужен агент, а не скрипт.
-
-Конкретный пример: `copier update` обновил шаблон, но `make sync-services` показывает рассинхрон compose-файлов и Dockerfile'ов. Scaffolder не может это починить. Developer-воркер — может.
+Scaffolder механический: `copier update → commit → push`. Не может прогнать тесты, починить если сломалось. Когда задача требует итерации — нужен агент, а не скрипт. Пример: `copier update` обновил шаблон, но `make sync-services` показывает рассинхрон. Scaffolder не починит, developer-воркер — может.
 
 ### Нет разделения ответственности
 
-PO одновременно:
-- Общается с пользователем (UX)
-- Принимает технические решения (какой action вызвать)
-- Знает про infrastructure (deploy, provisioning)
-- Управляет жизненным циклом проектов
+PO одновременно общается с пользователем, принимает технические решения, знает про infrastructure, управляет жизненным циклом проектов. В реальной команде это 3-4 разные роли.
 
-В реальной команде это 3-4 разные роли.
+### Нет реакции на сбои за пределами retry
+
+Когда retry'и исчерпаны — задача помечается FAILED. Никто не анализирует причину, не адаптируется, не уведомляет оператора с контекстом.
 
 ---
 
-## Идея: Иерархия агентов по ролям
+## Иерархия агентов по ролям
 
-### Аналогия с реальной командой
+### Целевая модель
 
 ```
 Пользователь (Telegram)
-  └── Product Owner — понимает что нужно, общается с пользователем, делегирует
-        ├── Tech Lead — декомпозирует техническую задачу, координирует
+  └── Product Owner — общается с пользователем, делегирует
+        ├── Tech Lead — декомпозирует задачу, координирует
         │     ├── Developer(s) — пишет код, фиксит баги
         │     ├── Tester — прогоняет тесты, репортит
         │     └── DevOps — деплоит, настраивает инфру
-        └── Analyst — уточняет требования, ресёрчит (Phase 3)
+        └── Analyst — уточняет требования (Phase 3)
 ```
 
 ### Принципы
 
-- **Каждый агент — CLI agent** (Claude Code, Codex, Factory.ai) со своей ролью, инструкциями и набором инструментов.
-- **PO не знает про copier, sync-services, Dockerfile'ы.** Он говорит Tech Lead'у: "обнови фреймворк для reverse-bot". Всё.
-- **Делегация вниз, отчёт вверх.** PO делегирует Tech Lead'у, Tech Lead делегирует Developer'у. Developer не вызывает PO и не деплоит.
-- **Уровни не могут быть перепрыгнуты.** Developer не общается с пользователем. PO не пишет код.
-
-### Что это даёт
-
-- **Фокусированный контекст**: каждый агент — эксперт в узкой области с коротким точным промптом.
-- **Масштабируемость**: новый специалист (Security Auditor, DB Migration Agent) = новая роль, а не +20 команд в промпт PO.
-- **Параллелизм**: Tech Lead может одновременно запустить Developer на фичу и Tester на регрессию.
-- **Устойчивость к ошибкам**: Developer упал → Tech Lead перезапустит или передаст другому, не нужно объяснять от пользователя заново.
+- Каждый агент — CLI agent со своей ролью, инструкциями и набором инструментов
+- Делегация вниз, отчёт вверх. Уровни не перепрыгиваются
+- PO не знает про copier, sync-services, Dockerfile'ы — только "обнови фреймворк"
 
 ### Критика и риски
 
-- **Латентность**: каждый уровень = спаун контейнера + LLM-вызовы. "Поправь тайпо" идёт через PO → Tech Lead → Developer — три хопа.
-- **Стоимость**: больше агентов = больше LLM-вызовов. За "обнови фреймворк" платишь за 3 мозга.
-- **Испорченный телефон**: "сделай быстрее" → PO: "оптимизация" → Tech Lead: "кэширование" → Developer: закэшировал не то.
-- **Отладка**: цепочка из 4 контейнеров, 4 стримов, 4 conversation history. Где сломалось?
-- **Over-engineering**: при 1-2 пользователях и 5-10 проектах — иерархия из 5 ролей избыточна.
+- **Латентность**: каждый уровень = спаун контейнера + LLM-вызовы, три хопа на "поправь тайпо"
+- **Стоимость**: за "обнови фреймворк" платишь за 3 мозга
+- **Испорченный телефон**: "сделай быстрее" → "оптимизация" → "кэширование" → закэшировал не то
+- **Over-engineering**: при 1-2 пользователях иерархия из 5 ролей избыточна
+
+### Предпочтительный подход: эволюция, не революция
+
+PO остаётся один, сложность — в subgraph'ах LangGraph. Новый тип задачи = новый subgraph, не новая роль.
+
+```
+PO → orchestrator task submit --type=X
+       │
+       ▼
+LangGraph Router (детерминированный, по type)
+  ├── create_project_subgraph: scaffold → develop → test → deploy
+  ├── update_framework_subgraph: develop(copier+sync+test)
+  ├── fix_bug_subgraph: develop → test
+  ├── deploy_subgraph: provision → deploy → verify
+  └── add_feature_subgraph: develop → test → deploy
+```
+
+Tech Lead как отдельный agent — только когда >15 типов задач и PO путается.
 
 ---
 
 ## Роль LangGraph
 
-### Что LangGraph делает хорошо
+### Сильные стороны
 
-- **Multi-step workflows с branching**: scaffold → develop → test → retry → deploy
-- **State management**: TypedDict state течёт между нодами
-- **Tracing**: LangSmith видит каждый шаг, каждое решение
-- **Conditional routing**: если тесты упали — retry, если 3 retry — escalate
-- **Визуализация**: граф буквально рисуется
+Multi-step workflows, state management (TypedDict), LangSmith tracing, conditional routing, визуализация графа.
 
-### Что LangGraph делает плохо
+### Слабые стороны
 
-- **Persistent agents**: PO живёт часами, LangGraph заточен под "запрос → обработка → результат"
-- **Real-time communication**: не для стриминга апдейтов пользователю
-- **Простые задачи**: один хоп через граф для "передай задачу developer'у" — overhead
+Persistent agents (PO живёт часами), real-time communication, overhead на простых задачах.
 
-### Три варианта позиционирования LangGraph
+### Выбранный подход: LangGraph = router + изолированные subgraph'ы
 
-**Вариант A: LangGraph = единственный оркестратор**
+Всё проходит через LangGraph, но с умной маршрутизацией. Простые задачи = лёгкий subgraph из 1-2 нод. Сложные = полный pipeline. Единая точка, полный трейсинг, минимальный overhead.
 
-Всё проходит через граф. PO не вызывает ничего напрямую.
+Типичная структура subgraph'а:
 
 ```
-PO → Redis → LangGraph → { Developer, Tester, DevOps }
+route_task (детерминированная) → agent_node (worker автономно) →
+check_result (детерминированная) → decide_next (retry? deploy? escalate?)
 ```
 
-(+) Полная трассировка, единая точка координации, retry/error handling.
-(−) Overhead на простых задачах, граф разрастается, SPOF.
-
-**Вариант B: LangGraph только для сложных workflow**
-
-Простые задачи идут напрямую (PO → Developer), сложные — через граф.
-
-```
-PO → Developer (простая задача, напрямую)
-PO → LangGraph → {Developer → Tester → Deployer} (сложный workflow)
-```
-
-(+) Быстрый путь для простых задач, LangGraph не blocker.
-(−) Два пути оркестрации, неконсистентный трейсинг.
-
-**Вариант C (предпочтительный): LangGraph = router + изолированные subgraph'ы**
-
-Всё проходит через LangGraph, но с умной маршрутизацией. Простые задачи = лёгкий subgraph из 1-2 нод. Сложные = полный pipeline.
-
-```
-PO → Redis → LangGraph Router:
-  ├── update_framework_subgraph: [spawn developer with task] (1 нода)
-  ├── engineering_create_subgraph: scaffold → develop → test → deploy
-  ├── engineering_fix_subgraph: develop → test → deploy
-  └── deploy_subgraph: provision → configure → deploy → verify
-```
-
-(+) Единая точка, полный трейсинг, минимальный overhead для простых задач.
-(−) Всё ещё зависимость от LangGraph процесса.
-
-### Вопрос: кто такой "Tech Lead" — агент или граф?
-
-**Tech Lead = LangGraph граф (текущий подход)**
-
-Граф сам принимает решения через LLM-ноды. "Tech Lead" — это не контейнер с Claude, а логика маршрутизации и координации внутри графа.
-
-```
-LangGraph:
-  classify_task(LLM) → "это update-framework"
-  plan_execution(LLM) → "нужен 1 developer"
-  spawn_developer → wait → check_result → retry/report
-```
-
-(+) Простота, один процесс, полный контроль.
-(−) Ограничен предопределёнными путями. Непредвиденная ситуация = ступор.
-
-**Tech Lead = CLI agent со своими инструментами**
-
-Полноценный Claude/Codex в контейнере. Сам решает что вызывать.
-
-(+) Гибкость, может обрабатывать edge cases.
-(−) Непредсказуемость, трудно отлаживать, может зациклиться.
-
-**Гибрид (предпочтительный вариант)**
-
-Граф определяет высокоуровневый flow. Некоторые ноды — вызовы агентов, которые автономно решают задачу внутри scope.
-
-```
-LangGraph:
-  → route_task (детерминированная нода)
-  → [agent_node: developer решает задачу автономно]
-  → check_result (детерминированная нода)
-  → decide_next (LLM: retry? deploy? escalate?)
-```
-
----
-
-## Тонкое место: Access Control
-
-### Проблема
-
-Сейчас "иерархия" — это чисто **промпт + набор CLI-команд**. Никакого реального enforcement нет.
-
-Три рубежа "контроля":
-1. **Промпт** — "ты developer, не делай deploy". Самый хрупкий, LLM может проигнорировать.
-2. **CLI-команды** — orchestrator-cli ставится целиком, все команды доступны всем.
-3. **`require_permission`** — проверяет `allowed_commands` в конфиге. Но мы ставим `["*"]`.
-
-Если developer-воркер вызовет `orchestrator deploy trigger` — оно сработает. Иерархия — иллюзия.
-
-### Варианты решения
-
-**Convention-based (текущее)**: промпт + tool availability. Просто, но хрупко. Достаточно на ранних этапах.
-
-**Enforced at system level (будущее)**:
-- worker-manager при спауне записывает роль в Redis (`worker:role:{id} = developer`)
-- CLI-команды проверяют роль отправителя, а не конфиг-файл
-- Redis-очереди валидируют: "developer не может писать в `deploy:queue`"
-
-Это отдельная задача. На текущем этапе convention + правильные промпты достаточны. Но при масштабировании (много пользователей, автономная работа) — нужен enforcement.
-
----
-
-## Архитектура графов
-
-### Один граф vs несколько
-
-**Один монолитный граф** — становится нечитаемым на 10+ типах задач. Одна бага в routing ломает всё.
-
-**Граф на каждый тип задачи** — изолированные, тестируемые. Но как координировать между ними?
-
-**Предпочтительный вариант: Router + изолированные subgraph'ы**
-
-```
-Top-level router:
-  → определяет тип задачи (по action в сообщении)
-  → запускает нужный subgraph
-  → собирает результат
-  → уведомляет инициатора
-
-Subgraph'ы (изолированные, каждый тестируется отдельно):
-  engineering_create: scaffold → develop → test → deploy
-  engineering_fix: develop → test → deploy
-  update_framework: develop(copier+sync+lint+test)
-  deploy_only: provision → deploy → verify
-  ...новые типы добавляются как новые subgraph'ы
-```
+Типы нод: **agent** (CLI-агент в контейнере), **mechanical** (скрипт/сервис), **decision** (LLM/rule-based), **check** (детерминированная валидация). Гетерогенность — сила.
 
 ### Кто может инвоукать граф
 
-**Иерархический доступ** — каждый уровень может вызывать только уровень ниже:
+Иерархический доступ, рекурсия невозможна by design:
 - PO может: engineering, deploy, update-framework
-- Tech Lead / граф может: spawn-developer, spawn-tester, run-ci
-- Developer может: ничего (только отчитывается)
+- Subgraph может: spawn-developer, spawn-tester, run-ci
+- Developer может: request_help, отчитываться
 
-Рекурсия невозможна by design. Агент не может триггернуть граф, который спаунит агента, который триггерит граф.
+---
+
+## Access Control
+
+### Проблема
+
+Иерархия — иллюзия. `orchestrator-cli` ставится целиком, `allowed_commands = ["*"]`. Developer может вызвать `deploy trigger`.
+
+### Решение (поэтапно)
+
+1. **Сейчас**: convention-based (промпт + tool availability). Хрупко, но достаточно
+2. **Следующий шаг**: `allowed_commands` в agent_configs — реальный whitelist. Или subset CLI per role
+3. **Будущее**: worker-manager записывает роль в Redis, CLI проверяет роль, очереди валидируют права
+
+---
+
+## Incident Response Pipeline
+
+### Мотивация
+
+Агенты могут решить 90% проблем без человека. Но "дать агентам шариться по системе" — дорого, небезопасно. Нужен pipeline, который реагирует на сбои, анализирует причину, адаптирует систему, помогает застрявшим агентам, эскалирует с готовым отчётом — и при этом не жжёт токены.
+
+### Три слоя с нарастающей стоимостью
+
+```
+Ошибка / аномалия / request_help от агента
+       │
+       ▼
+┌─────────────────────────┐
+│     Watchdog (service)   │  ← детерминированный, $0, 24/7
+│  DLQ, Docker events,     │
+│  stuck tasks, health,    │
+│  request_help            │
+└──────────┬──────────────┘
+           │
+     Есть playbook?
+      ╱          ╲
+    Да            Нет
+     ▼              ▼
+  Executor(fn)   Diagnostician (LLM, read-only, ~$0.03)
+                       │
+                  ┌────┼────┐
+                  ▼    ▼    ▼
+              простое  сложное  неясно/critical
+                 ▼       ▼         ▼
+           Executor  Ops Agent  Incident Report
+            (fn)    (≤10 мин)   → Telegram
+```
+
+### Слой 0: Watchdog (без LLM)
+
+Расширение `scheduler/health_checker`. Playbooks — детерминированные сценарии:
+
+| Сигнал | Действие |
+|--------|----------|
+| Container exit code 137 | Перезапуск с увеличенным лимитом |
+| Container crash (повторный) | Эскалация к Diagnostician |
+| Task RUNNING > 30 min | Kill, mark FAILED, notify |
+| GitHub workflow failed | `gh run rerun --failed`, если повторно — эскалация |
+| DLQ message | Эскалация к Diagnostician |
+| `request_help` от агента | Эскалация к Diagnostician с контекстом |
+
+Покрывает 70-80% инцидентов за $0.
+
+### Слой 1: Diagnostician (LLM, read-only)
+
+Одноразовый LLM-вызов (не agent в контейнере). Read-only доступ: логи, Redis state, Docker, GitHub, API. Выдаёт `{ diagnosis, confidence, action, boundaries }`.
+
+| Confidence | Исполнитель |
+|------------|-------------|
+| > 0.8, простое действие | Executor-функция |
+| > 0.6, нужна итерация | Ops Executor (агент) |
+| < 0.6 или CRITICAL | Incident Report → Telegram |
+
+### Слой 2: Executor
+
+**Executor-функция**: whitelist предопределённых действий (restart_worker, retry_github_job, kill_stuck_task, grant_permission, scale_memory, upgrade_model, drain_dlq, notify_admin).
+
+**Ops Executor (агент)**: для случаев, требующих итерации. Тот же механизм, что developer-воркер, но роль ops. Получает INCIDENT.md с диагнозом, рекомендациями и жёсткими boundaries. Время жизни ≤ 10 мин. Не принимает решений — выполняет план Diagnostician'а.
+
+### request_help: агент зовёт на помощь
+
+Не все проблемы — инциденты. Иногда всё зелёное, но задача не решается: прав не хватает, инструмент не установлен, pipeline не учёл edge case.
+
+Tool в orchestrator-cli: `request_help(description, what_tried, what_blocked)`. Публикует в `incident:queue`, Watchdog подхватывает → Diagnostician. **Асинхронный** — агент паузит задачу, ответ приходит в worker input queue.
+
+**Защиты**: max 2 вызова за task; Ops Executor не имеет `request_help` (нет рекурсии); бюджет инцидента ≤ $0.50.
+
+---
+
+## Динамические конфигурации агентов
+
+### Почему полные динамические ноды (как в проекте Assistant) не подходят
+
+В Assistant ноды хранятся в БД. Но: tool types всё равно хардкод в коде (ложная гибкость); ноды в оркестраторе гетерогенны (из 8-10 нод только 2-3 — "LLM + промпт + tools", остальные — механика); дебаг БД-конфигов сложнее чем `git blame`.
+
+### Что имеет смысл: agent_configs в БД
+
+Ноды остаются в коде. **Конфигурации** LLM-agent нод — в БД. Код определяет ЧТО нода делает, БД — КАК (промпт, модель, tools, лимиты).
+
+```
+agent_configs:
+  id, name, role, system_prompt, model,
+  allowed_commands[], container_config (JSONB),
+  is_default, project_id (NULL = глобальный)
+```
+
+### Killer feature: Incident Response + dynamic configs
+
+Resolver может адаптировать конфигурации на лету — главная причина хранить конфиги в БД.
+
+- **Developer не справляется (слабая модель)**: Diagnostician видит 3 failed retry → Executor создаёт temporary override `model = 'claude-sonnet-4-5'` → respawn → retry
+- **Developer'у не хватает инструмента**: Diagnostician оценивает безопасность → Executor добавляет temporary `allowed_commands += ["redis-cli --readonly"]`
+
+### Границы изменений
+
+| Изменение | Кто может |
+|-----------|-----------|
+| Модель, CLI-команда, container limits | Resolver (temporary, auto-expire) |
+| Промпт (мелкие правки) | Ops Executor (temporary) |
+| Убрать ограничение, новый тип агента, base image | **Только человек** |
+
+**Temporary** = откатывается после task'а или по `expires_at`.
 
 ---
 
 ## Конкретный кейс: update-framework
 
-### Как было (сломано)
+### Было (сломано)
 
 ```
-PO → orchestrator engineering update-framework
-  → scaffolder:queue (механический сервис)
-  → copier update → commit → push
-  → CI падает (sync-services out of sync)
-  → никто не чинит
+PO → scaffolder:queue → copier update → commit → push → CI падает → никто не чинит
 ```
 
-### Как должно быть
+### Должно быть
 
 ```
-PO → orchestrator engineering trigger --action update-framework
-  → engineering:queue → LangGraph router
-  → update_framework_subgraph:
-    → spawn developer с task:
-      "1. copier update --defaults --trust --vcs-ref=HEAD
-       2. make sync-services create
-       3. make generate-from-spec
-       4. make format && make lint
-       5. make tests
-       6. Если что-то падает — почини
-       7. Когда всё зелёное — commit и push"
-    → wait for result
-    → report to PO
+PO → engineering:queue → update_framework_subgraph → spawn developer:
+  "1. copier update  2. make sync-services create  3. make generate-from-spec
+   4. make format && make lint  5. make tests
+   6. Если падает — почини  7. Когда зелёное — commit и push"
+→ wait → report to PO
 ```
-
-Developer — полноценный CLI agent с copier, Docker, git. Может итерировать, фиксить, проверять.
 
 ---
 
-## Что нужно для реализации (не план, а направления)
+## Направления реализации
 
-1. **Добавить copier в worker-base-common** — чтобы developer мог запускать `copier update` (уже сделано в этой сессии).
+### Базовая инфраструктура (без LLM, покрывает 80%)
 
-2. **Переделать `update-framework`** — вместо scaffolder:queue отправлять в engineering:queue с `action=update-framework`. Добавить subgraph или route в LangGraph.
+1. **DockerEventsListener** — blocker для Watchdog. Уже в бэклоге
+2. **DLQ consumer** в scheduler
+3. **Watchdog + 5-6 playbooks** — расширение health_checker
+4. **Admin Telegram chat** для incident reports
+5. **`request_help` tool** в orchestrator-cli
+6. **`agent_configs` в БД** — уже частично существует в API
 
-3. **Разделить CLI-команды по ролям** — не все команды доступны всем. PO-набор, Developer-набор, DevOps-набор. Как минимум на уровне промптов и инструкций.
+### Интеллектуальная надстройка (когда накопится статистика)
 
-4. **Реализовать DockerEventsListener** — без него "иерархия" ломается на первом же убитом контейнере (worker:status протухает, бот шлёт сообщения мёртвому воркеру). См. backlog.
+7. **Diagnostician** — LLM read-only, вызывается когда Watchdog не знает что делать
+8. **Ops Executor** — agent для сложных инцидентов, scoped write, ≤10 мин
+9. **Dynamic config changes** — temporary overrides в agent_configs
 
-5. **Observability** — без трейсинга через всю цепочку (PO → граф → developer → результат) любая иерархия — чёрная дыра. LangSmith для LangGraph части, структурированные логи + correlation ID для остального.
+### Расширение оркестрации
+
+10. **Переделать `update-framework`** → engineering:queue + subgraph
+11. **Единая точка входа** `task submit --type=X` для PO
+12. **CLI-команды по ролям** — whitelist вместо `["*"]`
+13. **Observability** — LangSmith + structlog + correlation ID
 
 ---
 
 ## Открытые вопросы
 
-- **Persistent vs per-task agents**: PO — persistent (один на пользователя). Developer — per-task. Tech Lead — persistent или per-task? Если persistent — нужен отдельный контейнер, session management. Если per-task — overhead на каждую задачу.
+### С предварительными ответами
 
-- **Стоимость иерархии**: Сколько стоит один уровень делегации в токенах/деньгах? При каком объёме задач это окупается?
+- **Persistent vs per-task**: PO — persistent. Developer — per-task. Subgraph'ы stateless. Persistent Tech Lead не нужен.
+- **Fallback при поломке LangGraph**: Redis не зависит от LangGraph. Restart — подхватит из stream.
+- **Human escalation**: PO → пользователь (бизнес), Incident Pipeline → Telegram (техника). Внутренние агенты не общаются с человеком напрямую.
+- **Multi-project**: Один subgraph instance на task, изоляция по correlation_id.
 
-- **Fallback при поломке**: Если LangGraph упал — PO не может делегировать. Нужен ли fallback (PO напрямую спаунит developer)?
+### Без ответа
 
-- **Human escalation**: На каком уровне иерархии агент должен эскалировать к человеку? Только PO → пользователь? Или Tech Lead тоже может?
-
-- **Multi-project coordination**: Один Tech Lead на все проекты пользователя или один на проект?
+- **Ops Executor scope**: whitelist операций или sandbox?
+- **Playbook expansion**: Diagnostician предлагает новые playbooks или только человек?
+- **Incident deduplication**: 5 crash за минуту = 1 инцидент? Нужен debounce.
+- **Cross-incident learning**: повторяющийся инцидент → предлагать permanent fix?
+- **Budget caps**: макс. бюджет Incident Response за час/день?
