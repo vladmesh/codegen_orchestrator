@@ -303,6 +303,11 @@ class WorkerManager:
         )
         container_env.update(env_vars)
 
+        # Propagate GH_TOKEN for GitHub CLI (gh) authentication
+        github_token = env_vars.get("GITHUB_TOKEN")
+        if github_token:
+            container_env["GH_TOKEN"] = github_token
+
         # Volumes
         volumes = config.to_volume_mounts()
 
