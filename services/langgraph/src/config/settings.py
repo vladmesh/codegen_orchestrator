@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     # Falls back to MemorySaver (in-memory) if not set
     checkpoint_database_url: str | None = None
 
+    # Summarization config (used by SummarizationNode)
+    summarization_model: str | None = None  # None = fallback to po_llm_model
+    summarization_max_tokens: int
+    summarization_trigger_tokens: int
+    summarization_max_summary_tokens: int
+
 
 @lru_cache
 def get_settings() -> Settings:

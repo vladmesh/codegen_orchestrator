@@ -51,6 +51,10 @@ services:
       PO_LLM_BASE_URL: ${PO_LLM_BASE_URL:-}
       PO_LLM_API_KEY: ${PO_LLM_API_KEY:-}
       CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?options=-c%20search_path%3Dlanggraph
+      SUMMARIZATION_MODEL: ${SUMMARIZATION_MODEL}
+      SUMMARIZATION_MAX_TOKENS: ${SUMMARIZATION_MAX_TOKENS}
+      SUMMARIZATION_TRIGGER_TOKENS: ${SUMMARIZATION_TRIGGER_TOKENS}
+      SUMMARIZATION_MAX_SUMMARY_TOKENS: ${SUMMARIZATION_MAX_SUMMARY_TOKENS}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated

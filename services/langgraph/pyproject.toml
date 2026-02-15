@@ -27,6 +27,9 @@ dependencies = [
     # LangGraph PostgreSQL checkpointer (psycopg[binary] needed for slim images)
     "langgraph-checkpoint-postgres>=2.0.0",
     "psycopg[binary]>=3.1.0",
+
+    # Conversation summarization (SummarizationNode for context management)
+    "langmem>=0.0.30",
 ]
 
 [build-system]

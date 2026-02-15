@@ -2,94 +2,143 @@
 
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from unittest.mock import MagicMock, patch
+
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt.chat_agent_executor import AgentState
+from langmem.short_term import SummarizationNode
+import pytest
 
 from src.po.graph import (
-    CHARS_PER_TOKEN,
-    MAX_CONTEXT_TOKENS,
-    _estimate_tokens,
-    prompt_with_trimming,
+    POState,
+    _create_summarization_hook,
+    create_po_graph,
 )
 from src.po.prompts import SYSTEM_PROMPT
 
 
-class TestEstimateTokens:
-    def test_short_message(self):
-        msg = HumanMessage(content="hello")
-        tokens = _estimate_tokens(msg)
-        assert tokens == len("hello") // CHARS_PER_TOKEN + 1
+class TestPOState:
+    def test_po_state_has_context_field(self):
+        annotations = POState.__annotations__
+        assert "context" in annotations
 
-    def test_empty_message(self):
-        msg = HumanMessage(content="")
-        assert _estimate_tokens(msg) == 1  # minimum 1
-
-    def test_long_message(self):
-        content = "x" * 1000
-        msg = HumanMessage(content=content)
-        assert _estimate_tokens(msg) == 1000 // CHARS_PER_TOKEN + 1
+    def test_po_state_extends_agent_state(self):
+        # TypedDict uses __orig_bases__ for inheritance tracking
+        assert AgentState in getattr(POState, "__orig_bases__", ())
 
 
-class TestPromptWithTrimming:
-    def test_prepends_system_prompt(self):
-        state = {"messages": [HumanMessage(content="hello")]}
-        result = prompt_with_trimming(state)
+class TestCreateSummarizationHook:
+    def setup_method(self):
+        self.llm = ChatOpenAI(
+            model="test-model",
+            base_url="https://example.com/v1",
+            api_key="test-key",
+        )
 
-        # system prompt + 1 user message
-        assert isinstance(result[0], SystemMessage)
-        assert result[0].content == SYSTEM_PROMPT
-        assert result[1].content == "hello"
-        assert len(result) == len(state["messages"]) + 1
+    def test_creates_summarization_node(self):
+        hook = _create_summarization_hook(
+            llm=self.llm,
+            summarization_model=None,
+            base_url="https://example.com/v1",
+            api_key="test-key",
+            max_tokens=50_000,
+            trigger_tokens=60_000,
+            max_summary_tokens=2_000,
+        )
+        assert isinstance(hook, SummarizationNode)
 
-    def test_empty_messages(self):
-        state = {"messages": []}
-        result = prompt_with_trimming(state)
+    def test_uses_separate_model_when_configured(self):
+        hook = _create_summarization_hook(
+            llm=self.llm,
+            summarization_model="cheap-model",
+            base_url="https://example.com/v1",
+            api_key="test-key",
+            max_tokens=50_000,
+            trigger_tokens=60_000,
+            max_summary_tokens=2_000,
+        )
+        assert isinstance(hook, SummarizationNode)
+        # The hook's model should be bound with max_tokens (a RunnableBinding)
+        # and the underlying model should be the cheap model
+        bound_model = hook.model
+        assert bound_model.kwargs.get("max_tokens") == 2_000  # noqa: PLR2004
+        assert bound_model.bound.model_name == "cheap-model"
 
-        assert len(result) == 1
-        assert isinstance(result[0], SystemMessage)
+    def test_falls_back_to_main_model(self):
+        hook = _create_summarization_hook(
+            llm=self.llm,
+            summarization_model=None,
+            base_url="https://example.com/v1",
+            api_key="test-key",
+            max_tokens=50_000,
+            trigger_tokens=60_000,
+            max_summary_tokens=2_000,
+        )
+        # Should use the main LLM bound with max_tokens
+        bound_model = hook.model
+        assert bound_model.kwargs.get("max_tokens") == 2_000  # noqa: PLR2004
+        assert bound_model.bound.model_name == "test-model"
 
-    def test_trims_old_messages(self):
-        # Create messages that exceed token budget
-        big_content = "x" * (MAX_CONTEXT_TOKENS * CHARS_PER_TOKEN)
-        messages = [
-            HumanMessage(content=big_content),
-            HumanMessage(content="recent message"),
-        ]
-        state = {"messages": messages}
-        result = prompt_with_trimming(state)
+    def test_respects_token_parameters(self):
+        hook = _create_summarization_hook(
+            llm=self.llm,
+            summarization_model=None,
+            base_url="https://example.com/v1",
+            api_key="test-key",
+            max_tokens=10_000,
+            trigger_tokens=15_000,
+            max_summary_tokens=500,
+        )
+        assert hook.max_tokens == 10_000  # noqa: PLR2004
+        assert hook.max_tokens_before_summary == 15_000  # noqa: PLR2004
+        assert hook.max_summary_tokens == 500  # noqa: PLR2004
 
-        # Should have system prompt + only the recent message (big one trimmed)
-        assert isinstance(result[0], SystemMessage)
-        assert any(m.content == "recent message" for m in result[1:])
-        assert not any(m.content == big_content for m in result[1:])
+    def test_output_key_is_llm_input_messages(self):
+        hook = _create_summarization_hook(
+            llm=self.llm,
+            summarization_model=None,
+            base_url="https://example.com/v1",
+            api_key="test-key",
+            max_tokens=50_000,
+            trigger_tokens=60_000,
+            max_summary_tokens=2_000,
+        )
+        assert hook.output_messages_key == "llm_input_messages"
 
-    def test_strips_existing_system_messages(self):
-        messages = [
-            SystemMessage(content="old system"),
-            HumanMessage(content="hello"),
-            AIMessage(content="hi"),
-        ]
-        state = {"messages": messages}
-        result = prompt_with_trimming(state)
 
-        # Only our system prompt, not the old one
-        system_msgs = [m for m in result if isinstance(m, SystemMessage)]
-        assert len(system_msgs) == 1
-        assert system_msgs[0].content == SYSTEM_PROMPT
+class TestCreatePOGraph:
+    @pytest.mark.asyncio
+    @patch("src.po.graph.get_all_tools", return_value=[])
+    @patch("src.po.graph.create_react_agent")
+    async def test_creates_graph_with_summarization(self, mock_create_agent, mock_tools):
+        mock_create_agent.return_value = MagicMock()
 
-    def test_keeps_all_messages_within_budget(self):
-        messages = [
-            HumanMessage(content="msg1"),
-            AIMessage(content="msg2"),
-            HumanMessage(content="msg3"),
-        ]
-        state = {"messages": messages}
-        result = prompt_with_trimming(state)
+        await create_po_graph(
+            model="test-model",
+            base_url="https://example.com/v1",
+            api_key="test-key",
+        )
 
-        # System + all 3 messages should fit
-        expected = len(messages) + 1  # +1 for system prompt
-        assert len(result) == expected
+        mock_create_agent.assert_called_once()
+        call_kwargs = mock_create_agent.call_args[1]
+        assert call_kwargs["prompt"] == SYSTEM_PROMPT
+        assert isinstance(call_kwargs["pre_model_hook"], SummarizationNode)
+        assert call_kwargs["state_schema"] is POState
 
-    def test_missing_messages_key(self):
-        result = prompt_with_trimming({})
-        assert len(result) == 1
-        assert isinstance(result[0], SystemMessage)
+    @pytest.mark.asyncio
+    @patch("src.po.graph.get_all_tools", return_value=[])
+    @patch("src.po.graph.create_react_agent")
+    async def test_creates_graph_with_memory_saver_fallback(self, mock_create_agent, mock_tools):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        mock_create_agent.return_value = MagicMock()
+
+        await create_po_graph(
+            model="test-model",
+            base_url="https://example.com/v1",
+            api_key="test-key",
+            checkpoint_database_url=None,
+        )
+
+        call_kwargs = mock_create_agent.call_args[1]
+        assert isinstance(call_kwargs["checkpointer"], MemorySaver)

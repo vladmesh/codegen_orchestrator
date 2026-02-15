@@ -1,17 +1,20 @@
 """PO ReactAgent graph.
 
 Creates a LangGraph ReactAgent with PO tools, ChatOpenAI (OpenRouter-compatible),
-PostgreSQL or MemorySaver checkpointer, and message trimming.
+PostgreSQL or MemorySaver checkpointer, and conversation summarization.
 """
 
 from __future__ import annotations
 
-from langchain_core.messages import AnyMessage, SystemMessage
+from typing import Any
+
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import create_react_agent
+from langgraph.prebuilt.chat_agent_executor import AgentState
+from langmem.short_term import SummarizationNode
 import structlog
 
 from .prompts import SYSTEM_PROMPT
@@ -19,40 +22,43 @@ from .tools import get_all_tools
 
 logger = structlog.get_logger(__name__)
 
-# Token budget for conversation history trimming
-MAX_CONTEXT_TOKENS = 50_000
-# Rough estimate: 1 token ≈ 4 chars
-CHARS_PER_TOKEN = 4
+
+class POState(AgentState):
+    """PO agent state with context for running summary persistence."""
+
+    context: dict[str, Any]
 
 
-def _estimate_tokens(msg: AnyMessage) -> int:
-    """Rough token estimate for a message."""
-    content = msg.content if isinstance(msg.content, str) else str(msg.content)
-    return len(content) // CHARS_PER_TOKEN + 1
+def _create_summarization_hook(
+    llm: ChatOpenAI,
+    summarization_model: str | None,
+    base_url: str,
+    api_key: str,
+    max_tokens: int,
+    trigger_tokens: int,
+    max_summary_tokens: int,
+) -> SummarizationNode:
+    """Create SummarizationNode for pre_model_hook.
 
-
-def prompt_with_trimming(state: dict) -> list[AnyMessage]:
-    """Prepend system prompt and trim conversation history to fit token budget.
-
-    Used as `prompt` callable for create_react_agent:
-    receives full state, returns messages list for the LLM.
+    Uses a separate cheap model for summarization if configured,
+    otherwise falls back to the main LLM.
     """
-    messages: list[AnyMessage] = state.get("messages", [])
+    if summarization_model:
+        summary_llm = ChatOpenAI(
+            model=summarization_model,
+            base_url=base_url,
+            api_key=api_key,
+        ).bind(max_tokens=max_summary_tokens)
+    else:
+        summary_llm = llm.bind(max_tokens=max_summary_tokens)
 
-    system_msg = SystemMessage(content=SYSTEM_PROMPT)
-    non_system = [m for m in messages if m.type != "system"]
-
-    kept: list[AnyMessage] = []
-    tokens = _estimate_tokens(system_msg)
-
-    for msg in reversed(non_system):
-        msg_tokens = _estimate_tokens(msg)
-        if tokens + msg_tokens > MAX_CONTEXT_TOKENS:
-            break
-        kept.insert(0, msg)
-        tokens += msg_tokens
-
-    return [system_msg, *kept]
+    return SummarizationNode(
+        model=summary_llm,
+        max_tokens=max_tokens,
+        max_tokens_before_summary=trigger_tokens,
+        max_summary_tokens=max_summary_tokens,
+        output_messages_key="llm_input_messages",
+    )
 
 
 async def _create_postgres_checkpointer(checkpoint_database_url: str) -> BaseCheckpointSaver:
@@ -84,6 +90,10 @@ async def create_po_graph(
     base_url: str,
     api_key: str,
     checkpoint_database_url: str | None = None,
+    summarization_model: str | None = None,
+    summarization_max_tokens: int = 50_000,
+    summarization_trigger_tokens: int = 60_000,
+    summarization_max_summary_tokens: int = 2_000,
 ) -> CompiledStateGraph:
     """Create and compile the PO ReactAgent graph.
 
@@ -93,6 +103,11 @@ async def create_po_graph(
         api_key: LLM API key.
         checkpoint_database_url: PostgreSQL URL for persistent checkpointer.
             Falls back to MemorySaver if not provided.
+        summarization_model: Separate model for summarization (e.g. "anthropic/claude-haiku-4-5").
+            Falls back to main model if not provided.
+        summarization_max_tokens: Token budget after summarization.
+        summarization_trigger_tokens: Threshold to trigger summarization.
+        summarization_max_summary_tokens: Max tokens for the summary itself.
     """
     llm = ChatOpenAI(
         model=model,
@@ -106,9 +121,21 @@ async def create_po_graph(
         logger.warning("po_checkpointer_memory", reason="CHECKPOINT_DATABASE_URL not set")
         checkpointer = MemorySaver()
 
+    summarization_hook = _create_summarization_hook(
+        llm=llm,
+        summarization_model=summarization_model,
+        base_url=base_url,
+        api_key=api_key,
+        max_tokens=summarization_max_tokens,
+        trigger_tokens=summarization_trigger_tokens,
+        max_summary_tokens=summarization_max_summary_tokens,
+    )
+
     return create_react_agent(
         model=llm,
         tools=get_all_tools(),
-        prompt=prompt_with_trimming,
+        prompt=SYSTEM_PROMPT,
+        pre_model_hook=summarization_hook,
+        state_schema=POState,
         checkpointer=checkpointer,
     )

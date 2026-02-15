@@ -815,9 +815,70 @@ PO consumer обрабатывает как любой другой system event
 
 ## Future
 
-### Summarization (Post-MVP)
+### Summarization
 
-Вместо тупой обрезки старых сообщений — сворачивать в summary. Раз в N сообщений (или при приближении к лимиту) отдельный LLM-вызов сжимает историю, сохраняя ключевые решения, факты о проекте и предпочтения пользователя. Summary пиннится как `SystemMessage` в начале контекста.
+**Статус**: Реализовано. `langmem.SummarizationNode` заменил `prompt_with_trimming`.
+
+**Как работает**:
+1. `SummarizationNode` как `pre_model_hook` проверяет при каждом вызове LLM: превышен ли порог токенов?
+2. Если да — отдельный LLM-вызов (дешёвая модель, настраивается через `SUMMARIZATION_MODEL`) сжимает старые сообщения в running summary
+3. Summary хранится в `state["context"]["running_summary"]` (персистится через чекпоинтер)
+4. На следующих вызовах: `[summary + недавние сообщения]` → LLM
+5. Summary инкрементальный — расширяется, не пересоздаётся с нуля
+6. `output_messages_key="llm_input_messages"` — полная история сохраняется в чекпоинте, LLM получает сжатую версию
+
+**Реализация**:
+- `langmem>=0.0.30` в `services/langgraph/pyproject.toml`
+- `POState(MessagesState)` с полем `context: dict[str, Any]` в `po/graph.py`
+- `_create_summarization_hook()` создаёт `SummarizationNode`
+- `create_react_agent(prompt=SYSTEM_PROMPT, pre_model_hook=summarization_hook, state_schema=POState)`
+- Удалены: `prompt_with_trimming`, `_estimate_tokens`, `MAX_CONTEXT_TOKENS`, `CHARS_PER_TOKEN`
+
+**Конфигурация** (env vars):
+```
+SUMMARIZATION_MODEL=anthropic/claude-haiku-4-5   # дешёвая модель (опционально, fallback на основную)
+SUMMARIZATION_MAX_TOKENS=50000                    # бюджет после суммаризации
+SUMMARIZATION_TRIGGER_TOKENS=60000                # порог срабатывания
+SUMMARIZATION_MAX_SUMMARY_TOKENS=2000             # лимит на summary
+```
+
+---
+
+### Checkpoint Cleanup
+
+**Статус**: Не реализовано. Чекпоинты накапливаются бесконечно в PostgreSQL (`langgraph` schema).
+
+**Проблема**: `AsyncPostgresSaver` хранит каждый super-step графа (LLM → tool → result → LLM = 4+ строки на одно сообщение пользователя). Таблицы `checkpoints`, `checkpoint_blobs`, `checkpoint_writes` растут без ограничений. TTL есть только в LangGraph Platform (коммерческий продукт), в OSS — нет.
+
+**Единственный встроенный API**: `await checkpointer.adelete_thread(thread_id)` — удаляет **всё** для треда. Слишком грубо для живого юзера (один тред = `po-user-{user_id}` навсегда).
+
+**Решение**: Периодическая задача в `scheduler` сервисе — прямой SQL по таблицам `langgraph` schema.
+
+**Стратегия очистки**:
+- Оставлять последние N чекпоинтов на каждый тред (e.g. 50)
+- Удалять старые checkpoint-версии, сохраняя текущий state
+- Суммаризация (см. выше) уменьшает размер блобов, cleanup уменьшает количество строк
+
+**Реализация**:
+```sql
+-- Для каждого thread: оставить последние 50 чекпоинтов, остальные удалить
+WITH ranked AS (
+    SELECT thread_id, checkpoint_id,
+           ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY checkpoint_id DESC) AS rn
+    FROM langgraph.checkpoints
+)
+DELETE FROM langgraph.checkpoints
+WHERE (thread_id, checkpoint_id) IN (
+    SELECT thread_id, checkpoint_id FROM ranked WHERE rn > 50
+);
+-- Аналогично для checkpoint_blobs и checkpoint_writes
+```
+
+- Добавить как background task в `services/scheduler/` (рядом с `github_sync`, `server_sync`)
+- Интервал: раз в сутки
+- Конфигурация: `CHECKPOINT_RETENTION_COUNT` env var (default 50)
+
+---
 
 ### RAG: доступ к документации и логам
 
@@ -868,9 +929,9 @@ Middleware в LangGraph, считает tokens per user. Базовая защи
 
 ### 3. Conversation compaction
 
-**Риск**: Нужно самим управлять длиной контекста.
+**Риск**: Нужно самим управлять длиной контекста + чекпоинты растут бесконечно.
 
-**Митигация**: `trim_messages` в state_modifier. Для PO достаточно последних 20-30 сообщений. Summarization — future.
+**Митигация**: `langmem.SummarizationNode` через `pre_model_hook` (см. Future → Summarization). Checkpoint cleanup job в scheduler (см. Future → Checkpoint Cleanup).
 
 ### 4. Потеря Claude Code features
 
@@ -921,6 +982,7 @@ Middleware в LangGraph, считает tokens per user. Базовая защи
 | ProactiveListener | Follows ProvisionerNotifier pattern | Consumer group, XREADGROUP, same startup/shutdown lifecycle. Proven pattern in codebase. |
 | Reminder poller (Phase 2.4) | Standalone async coroutine with `_poll_once` + loop | `_poll_once` is testable independently. Own Redis connection (separate from consumer). `ZRANGEBYSCORE` + `ZREM` not atomic — acceptable for single-process; Lua/ZPOPMIN if we scale. `PO_REMINDERS_KEY` constant extracted to `shared/queues.py`. |
 | Message type for system events/reminders | `HumanMessage` with `[system: {type}]` prefix | `prompt_with_trimming` filters out `SystemMessage` (to avoid duplicate system prompts). Using `SystemMessage` for events/reminders caused them to be silently dropped — LLM returned empty content. `HumanMessage` with prefix passes through trimming and LLM responds properly. |
+| Summarization | `langmem.SummarizationNode` as `pre_model_hook` | Replaces manual `prompt_with_trimming`. `output_messages_key="llm_input_messages"` preserves full history in checkpointer (avoids issue #111). Separate cheap model via `SUMMARIZATION_MODEL` env var. `POState(MessagesState)` with `context` field for running summary persistence. `prompt=SYSTEM_PROMPT` (string) auto-converted by `create_react_agent`. |
 | Empty response fallback | `"Бот вернул пустой ответ"` for sync messages (has `request_id`) | LLM sometimes returns empty content after tool calls. Telegram bot waits on `po:response:{request_id}` — empty = timeout error. Fallback prevents user-facing errors. For async messages (no `request_id`), empty = intentional silence — no fallback. |
 | PO response routing | Auto-forward to `po:proactive` for non-request_id messages | PO's final text response is always delivered: sync via `po:response:{request_id}`, async via `po:proactive`. `notify_user` tool is only for intermediate messages while continuing tool calls. |
 | Phase 2.5 migration | Direct: `orchestrator respond` → `po:input` (no bridge) | Not in production — no backward compatibility needed. `cli-agent:user-messages` stream is dead (no readers). One-line change in respond.py. |
