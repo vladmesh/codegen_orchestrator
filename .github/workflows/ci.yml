@@ -16,6 +16,9 @@ jobs:
   detect-changes:
     name: Detect Changed Services
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       api: ${{ steps.filter.outputs.api }}
       langgraph: ${{ steps.filter.outputs.langgraph }}
