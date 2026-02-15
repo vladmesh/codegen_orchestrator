@@ -30,7 +30,7 @@ Docker-контейнер с CLI coding agent внутри. Использует
 **Developer Worker** — Эфемерный. Выполняет одну задачу и завершается. Stateless — контекст это код в репо + ошибки.
 
 **Управляется:** `worker-manager`
-**Конфигурация:** Промпты хранятся в `shared/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory → `AGENTS.md`. Также инжектится `TASK.md` с конкретной задачей.
+**Конфигурация:** Промпты хранятся в `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory → `AGENTS.md`. Также инжектится `TASK.md` с конкретной задачей.
 
 ### Product Owner (PO)
 LangGraph ReactAgent в langgraph-сервисе (`services/langgraph/src/po/`).

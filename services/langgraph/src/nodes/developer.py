@@ -275,7 +275,7 @@ class DeveloperNode(FunctionalNode):
         """Build TASK.md content for the developer worker.
 
         Contains only project-specific information. Generic role instructions
-        are in shared/prompts/developer_worker/INSTRUCTIONS.md.
+        are in services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md.
 
         For action=create: scaffolded project build task.
         For action=feature/fix: targeted change task for existing project.

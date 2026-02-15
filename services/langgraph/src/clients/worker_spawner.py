@@ -137,9 +137,9 @@ async def request_spawn(
         worker_name = f"dev-{repo.split('/')[-1][:20]}-{request_id[:8]}"
 
         # Load static developer instructions from INSTRUCTIONS.md
-        from shared.schemas.tool_groups import _load_worker_instructions
+        from src.prompts import load_developer_instructions
 
-        instructions = _load_worker_instructions("developer_worker")
+        instructions = load_developer_instructions()
         if not instructions:
             instructions = "Read TASK.md for your implementation task."
 

@@ -46,7 +46,7 @@ Developer node в Engineering Subgraph использует coding agents чер
 
 1. Worker-manager создаёт контейнер из worker-base образа
 2. Контейнер клонирует репозиторий
-3. Инжектит статические инструкции из `shared/prompts/developer_worker/INSTRUCTIONS.md` → agent-specific file (`CLAUDE.md` / `AGENTS.md`)
+3. Инжектит статические инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` → agent-specific file (`CLAUDE.md` / `AGENTS.md`)
 4. Инжектит динамический `TASK.md` с project-specific задачей
 5. Запускает coding agent (Droid или Claude Code)
 6. Агент коммитит и пушит изменения
