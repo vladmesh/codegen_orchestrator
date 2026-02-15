@@ -136,7 +136,12 @@ async def _handle_message(graph, redis: aioredis.Redis, user_id: str, data: dict
 
     result = await graph.ainvoke(
         {"messages": [msg]},
-        config={"configurable": {"thread_id": f"po-user-{user_id}"}},
+        config={
+            "configurable": {
+                "thread_id": f"po-user-{user_id}",
+                "user_id": user_id,
+            }
+        },
     )
 
     response_text = result["messages"][-1].content

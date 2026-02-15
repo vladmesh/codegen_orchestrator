@@ -12,11 +12,12 @@ import time
 from typing import TYPE_CHECKING
 import uuid
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
-from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 
 if TYPE_CHECKING:
     import httpx
@@ -153,6 +154,8 @@ async def trigger_engineering(
     action: str = "create",
     description: str | None = None,
     skip_deploy: bool = False,
+    *,
+    config: RunnableConfig,
 ) -> str:
     """Trigger engineering task (scaffold + develop + deploy).
 
@@ -168,8 +171,9 @@ async def trigger_engineering(
     api = _get_api()
     redis = _get_redis()
 
+    user_id = config["configurable"].get("user_id", "unknown")
     task_id = f"eng-{uuid.uuid4().hex[:12]}"
-    callback_stream = f"po:events:{task_id}"
+    callback_stream = PO_INPUT_QUEUE
 
     task_data = {
         "id": task_id,
@@ -185,7 +189,7 @@ async def trigger_engineering(
     queue_msg = {
         "task_id": task_id,
         "project_id": project_id,
-        "user_id": "po",
+        "user_id": user_id,
         "callback_stream": callback_stream,
         "action": action,
         "description": description,
@@ -198,7 +202,7 @@ async def trigger_engineering(
 
 
 @tool
-async def trigger_deploy(project_id: str) -> str:
+async def trigger_deploy(project_id: str, *, config: RunnableConfig) -> str:
     """Trigger deploy-only task (no code changes, just deploy existing code).
 
     Args:
@@ -207,8 +211,9 @@ async def trigger_deploy(project_id: str) -> str:
     api = _get_api()
     redis = _get_redis()
 
+    user_id = config["configurable"].get("user_id", "unknown")
     task_id = f"deploy-{uuid.uuid4().hex[:12]}"
-    callback_stream = f"po:events:{task_id}"
+    callback_stream = PO_INPUT_QUEUE
 
     task_data = {
         "id": task_id,
@@ -224,7 +229,7 @@ async def trigger_deploy(project_id: str) -> str:
     queue_msg = {
         "task_id": task_id,
         "project_id": project_id,
-        "user_id": "po",
+        "user_id": user_id,
         "callback_stream": callback_stream,
     }
     await redis.xadd(DEPLOY_QUEUE, {"data": json.dumps(queue_msg)})
@@ -275,6 +280,25 @@ async def set_reminder(user_id: str, delay_minutes: int, reason: str) -> str:
     return f"Reminder set for {delay_minutes} minutes: {reason}"
 
 
+@tool
+async def notify_user(message: str, *, config: RunnableConfig) -> str:
+    """Send a proactive message to the user.
+
+    Use this to inform the user about important events like task completion,
+    deployment success, or errors. Do NOT use for replying to user messages —
+    those are sent automatically.
+
+    Args:
+        message: Text to send to the user.
+    """
+    redis = _get_redis()
+    user_id = config["configurable"].get("user_id", "unknown")
+    await redis.xadd(PO_PROACTIVE_QUEUE, {"text": message, "user_id": user_id})
+
+    logger.info("po_notify_user", user_id=user_id, text_length=len(message))
+    return "Message sent to user."
+
+
 def get_all_tools() -> list:
     """Return all PO tools for the ReactAgent."""
     return [
@@ -286,4 +310,5 @@ def get_all_tools() -> list:
         trigger_deploy,
         get_task_status,
         set_reminder,
+        notify_user,
     ]

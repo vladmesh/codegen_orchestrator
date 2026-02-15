@@ -12,6 +12,8 @@ from shared.queues import (
     INFRA_GROUP,
     PO_CONSUMER_GROUP,
     PO_INPUT_QUEUE,
+    PO_PROACTIVE_GROUP,
+    PO_PROACTIVE_QUEUE,
     PROVISIONER_QUEUE,
     PROVISIONER_RESULTS,
     QUEUE_TOPOLOGY,
@@ -43,7 +45,7 @@ class TestQueueBinding:
 
 class TestQueueTopology:
     def test_has_expected_binding_count(self):
-        expected_count = 9  # noqa: PLR2004
+        expected_count = 10  # noqa: PLR2004
         assert len(QUEUE_TOPOLOGY) == expected_count
 
     def test_all_streams_present(self):
@@ -56,6 +58,7 @@ class TestQueueTopology:
         assert PROVISIONER_RESULTS in streams
         assert WORKER_COMMANDS in streams
         assert PO_INPUT_QUEUE in streams
+        assert PO_PROACTIVE_QUEUE in streams
 
     def test_all_groups_present(self):
         groups = {b.group for b in QUEUE_TOPOLOGY}
@@ -66,6 +69,7 @@ class TestQueueTopology:
         assert TELEGRAM_BOT_GROUP in groups
         assert WORKER_MANAGER_GROUP in groups
         assert PO_CONSUMER_GROUP in groups
+        assert PO_PROACTIVE_GROUP in groups
 
     def test_provisioner_results_has_two_consumers(self):
         pr_bindings = [b for b in QUEUE_TOPOLOGY if b.stream == PROVISIONER_RESULTS]

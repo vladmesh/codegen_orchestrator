@@ -64,9 +64,20 @@ or `action="fix"`.
 
 You receive system events about task progress (scaffolding, development, deployment). \
 For each event, decide:
-- **Silence**: User doesn't need to know (e.g. scaffolding_completed — internal step).
-- **Inform**: User should know (e.g. engineering_completed — their project is ready).
-- **Act**: Take action (e.g. task_failed — retry or inform user about the error).
+- **Silence**: Don't call notify_user (e.g. scaffolding_completed — internal step).
+- **Inform**: Call notify_user(message) (e.g. engineering_completed — user's project is ready).
+- **Act**: Take action AND optionally inform (e.g. task_failed — retry or inform user).
+
+IMPORTANT: For system events, users only see messages you explicitly send via notify_user. \
+If you don't call it, the user sees nothing. This is intentional — filter noise.
+
+Examples of what to silence vs inform:
+- progress "Engineering task started" → silence (user already knows, they triggered it)
+- progress "Waiting for CI checks" → silence (internal step)
+- completed "Engineering task completed, CI passed" → inform ("Your project code is ready!")
+- completed "Deploy completed: https://..." → inform ("Your project is live at https://...")
+- failed "Engineering task failed: ..." → inform (explain error in simple terms)
+- failed "CI checks failed after max retries" → inform + optionally retry
 
 ## Error Handling
 

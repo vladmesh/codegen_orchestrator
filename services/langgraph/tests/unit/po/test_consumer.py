@@ -114,6 +114,45 @@ class TestHandleMessage:
         msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
         assert msg.content == "no timestamp"
 
+    @pytest.mark.asyncio
+    async def test_user_message_includes_user_id_in_config(self, mock_graph, mock_redis):
+        """user_id should be passed in configurable for tools to read."""
+        data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
+
+        await _handle_message(mock_graph, mock_redis, "user-42", data)
+
+        config = mock_graph.ainvoke.call_args[1]["config"]
+        assert config["configurable"]["user_id"] == "user-42"
+
+    @pytest.mark.asyncio
+    async def test_system_event_includes_user_id_in_config(self, mock_graph, mock_redis):
+        """System events should also pass user_id in config."""
+        data = {
+            "type": "system_event",
+            "text": "engineering_completed",
+            "user_id": "user-99",
+        }
+
+        await _handle_message(mock_graph, mock_redis, "user-99", data)
+
+        config = mock_graph.ainvoke.call_args[1]["config"]
+        assert config["configurable"]["user_id"] == "user-99"
+
+    @pytest.mark.asyncio
+    async def test_system_event_without_request_id_skips_response(self, mock_graph, mock_redis):
+        """System events without request_id should not write to po:response:*."""
+        data = {
+            "type": "system_event",
+            "text": "engineering_completed",
+        }
+
+        await _handle_message(mock_graph, mock_redis, "user-1", data)
+
+        # Graph should be invoked
+        mock_graph.ainvoke.assert_called_once()
+        # But no response written
+        mock_redis.xadd.assert_not_called()
+
 
 class TestProcessMessage:
     @pytest.mark.asyncio

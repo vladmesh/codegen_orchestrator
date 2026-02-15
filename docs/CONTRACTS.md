@@ -922,8 +922,11 @@ class WorkerLifecycleEvent(BaseModel):
 
 | Queue | Group | Initiator | Consumer | Purpose |
 |-------|-------|-----------|----------|---------|
-| `po:input` | `po-consumer` | telegram-bot | langgraph (PO consumer) | User messages and system events to PO |
+| `po:input` | `po-consumer` | telegram-bot, workers | langgraph (PO consumer) | User messages and system events to PO |
 | `po:response:{request_id}` | — | langgraph (PO consumer) | telegram-bot | PO response for specific request |
+| `po:proactive` | `tg-bot-proactive` | langgraph (PO `notify_user` tool) | telegram-bot (ProactiveListener) | PO proactive messages to users |
+
+**System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`.
 
 ---
 

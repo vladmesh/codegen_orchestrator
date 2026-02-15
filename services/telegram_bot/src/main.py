@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from shared.queues import PO_INPUT_QUEUE
+from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -41,6 +41,7 @@ logger = structlog.get_logger()
 
 # Globals (initialized in post_init)
 _provisioner_notifier_task: asyncio.Task | None = None
+_proactive_listener_task: asyncio.Task | None = None
 _redis_client: redis_lib.Redis | None = None
 
 # PO response settings
@@ -320,19 +321,88 @@ async def handle_message(update: Update, context) -> None:
         await update.message.reply_text(f"Ошибка: {e!s}")
 
 
+async def _send_message_to_chat(bot, chat_id: int, text: str) -> None:
+    """Send text to a Telegram chat with markdown fallback."""
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
+    except Exception:
+        await bot.send_message(chat_id=chat_id, text=text)
+
+
+class ProactiveListener:
+    """Listens to po:proactive stream and sends messages to users."""
+
+    def __init__(self, redis: redis_lib.Redis):
+        self.redis = redis
+        self._running = False
+
+    async def start(self, bot) -> asyncio.Task:
+        """Start the listener background task."""
+        self._running = True
+        return asyncio.create_task(self._listen_loop(bot))
+
+    async def stop(self) -> None:
+        """Stop the listener."""
+        self._running = False
+
+    async def _listen_loop(self, bot) -> None:
+        """Main loop: read po:proactive, send messages to users."""
+        try:
+            await self.redis.xgroup_create(
+                PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, id="0", mkstream=True
+            )
+        except Exception as e:
+            if "BUSYGROUP" not in str(e):
+                raise
+
+        logger.info("proactive_listener_started")
+
+        while self._running:
+            try:
+                entries = await self.redis.xreadgroup(
+                    PO_PROACTIVE_GROUP,
+                    "bot-0",
+                    {PO_PROACTIVE_QUEUE: ">"},
+                    count=10,
+                    block=5000,
+                )
+                if not entries:
+                    continue
+                for _, messages in entries:
+                    for msg_id, data in messages:
+                        try:
+                            chat_id = int(data["user_id"])
+                            await _send_message_to_chat(bot, chat_id, data["text"])
+                            logger.info(
+                                "proactive_message_sent",
+                                user_id=chat_id,
+                                text_length=len(data.get("text", "")),
+                            )
+                        except Exception as e:
+                            logger.error(
+                                "proactive_message_send_failed",
+                                error=str(e),
+                                user_id=data.get("user_id"),
+                            )
+                        await self.redis.xack(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, msg_id)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("proactive_listener_error", error=str(e))
+                await asyncio.sleep(1)
+
+        logger.info("proactive_listener_stopped")
+
+
 async def _send_response_to_user(app: Application, user_id: int, text: str) -> None:
     """Send response text to Telegram user with markdown fallback."""
-    try:
-        await app.bot.send_message(chat_id=user_id, text=text, parse_mode=ParseMode.MARKDOWN)
-    except Exception:
-        await app.bot.send_message(chat_id=user_id, text=text)
-
+    await _send_message_to_chat(app.bot, user_id, text)
     logger.info("worker_response_sent", user_id=user_id, text_length=len(text))
 
 
 async def post_init(app: Application) -> None:
     """Post-initialization: connect Redis and start listeners."""
-    global _provisioner_notifier_task, _redis_client
+    global _provisioner_notifier_task, _proactive_listener_task, _redis_client
 
     settings = get_settings()
     _redis_client = redis_lib.from_url(settings.redis_url, decode_responses=True)
@@ -342,12 +412,16 @@ async def post_init(app: Application) -> None:
     notifier = ProvisionerNotifier(redis=_redis_client, admin_ids=admin_ids)
     _provisioner_notifier_task = await notifier.start(app.bot)
 
+    # Start proactive PO messages listener
+    proactive = ProactiveListener(redis=_redis_client)
+    _proactive_listener_task = await proactive.start(app.bot)
+
     logger.info("telegram_bot_initialized", admin_count=len(admin_ids))
 
 
 async def post_shutdown(app: Application) -> None:
     """Cleanup on shutdown."""
-    global _provisioner_notifier_task, _redis_client
+    global _provisioner_notifier_task, _proactive_listener_task, _redis_client
 
     # Stop provisioner notifier
     if _provisioner_notifier_task:
@@ -357,6 +431,15 @@ async def post_shutdown(app: Application) -> None:
         except asyncio.CancelledError:
             pass
         _provisioner_notifier_task = None
+
+    # Stop proactive listener
+    if _proactive_listener_task:
+        _proactive_listener_task.cancel()
+        try:
+            await _proactive_listener_task
+        except asyncio.CancelledError:
+            pass
+        _proactive_listener_task = None
 
     # Close Redis
     if _redis_client:

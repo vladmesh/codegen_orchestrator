@@ -35,6 +35,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     task_id = job_data.get("task_id", "unknown")
     project_id = job_data.get("project_id")
     callback_stream = job_data.get("callback_stream")
+    user_id = job_data.get("user_id", "")
 
     logger.info("deploy_job_started", task_id=task_id, project_id=project_id)
 
@@ -44,7 +45,13 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
         # Publish progress event
         await publish_callback_event(
-            redis, callback_stream, "progress", task_id, "Deploy task started"
+            redis,
+            callback_stream,
+            "progress",
+            task_id,
+            "Deploy task started",
+            user_id=user_id,
+            project_id=project_id or "",
         )
 
         # Fetch project details
@@ -141,6 +148,8 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 "completed",
                 task_id,
                 f"Deploy completed: {result['deployed_url']}",
+                user_id=user_id,
+                project_id=project_id or "",
             )
 
             return {
@@ -157,7 +166,15 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 json={"status": "failed", "error_message": error_msg},
             )
 
-            await publish_callback_event(redis, callback_stream, "failed", task_id, error_msg)
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "failed",
+                task_id,
+                error_msg,
+                user_id=user_id,
+                project_id=project_id or "",
+            )
 
             return {
                 "status": "failed",
@@ -174,7 +191,15 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 json={"status": "failed", "error_message": error_msg},
             )
 
-            await publish_callback_event(redis, callback_stream, "failed", task_id, error_msg)
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "failed",
+                task_id,
+                error_msg,
+                user_id=user_id,
+                project_id=project_id or "",
+            )
 
             return {
                 "status": "failed",
@@ -202,7 +227,13 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             )
 
         await publish_callback_event(
-            redis, callback_stream, "failed", task_id, f"Deploy task failed: {e!s}"
+            redis,
+            callback_stream,
+            "failed",
+            task_id,
+            f"Deploy task failed: {e!s}",
+            user_id=user_id,
+            project_id=project_id or "",
         )
 
         return {

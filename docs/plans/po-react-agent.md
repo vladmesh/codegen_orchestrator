@@ -1,7 +1,7 @@
 # Plan: PO как LangGraph ReactAgent (без контейнера)
 
 > **Дата**: 2026-02-15
-> **Статус**: Phase 2.1 Complete, Phase 2.2 next
+> **Статус**: Phase 2.3 Complete, Phase 2.4 next
 > **Контекст**: MVP работает, E2E проходят. PO — самый перегруженный компонент: Docker-контейнер, subprocess Claude CLI, orchestrator-cli как прокси к API/Redis. Каждая будущая фича упирается в эту архитектуру.
 
 ---
@@ -573,75 +573,123 @@ await context.bot.send_message(chat_id, response.text)
 - Между "Хочу бота" и "Вот токен" прошло 10 минут → пользователь ходил в BotFather
 - Между двумя сообщениями 2 секунды → пользователь дробит мысль
 
-### 2.2 Typing indicator
+### 2.2 Typing indicator (**Done** — merged into Phase 2.1)
 
-PO может думать 5-20 секунд (несколько tool calls через OpenRouter). Пользователь не должен видеть тишину.
-
-**Механизм**: Consumer публикует ACK при начале обработки. Telegram bot периодически обновляет typing пока ждёт ответ:
-
-```python
-# Consumer: сразу после получения сообщения с request_id
-await redis.xadd(f"po:ack:{data['request_id']}", {"status": "processing"})
-
-# Telegram bot: фоновая задача
-async def _keep_typing(chat_id, request_id):
-    """Refresh typing indicator every 5s until response arrives."""
-    while True:
-        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
-        await asyncio.sleep(5)
-```
-
-Typing indicator — часть UX, не "Post-MVP". Без него Telegram показывает тишину.
+Реализовано в `_send_to_po_and_wait()`: typing task стартует сразу после `XADD`, без отдельного ACK-стрима. Проще и быстрее для пользователя — typing виден мгновенно. `po:ack:{request_id}` не понадобился.
 
 ### 2.3 System events: PO как единый хаб
 
-**Все внутренние компоненты пишут события в `po:input` вместо прямой коммуникации с Telegram:**
+**Scope**: PO — единственная точка коммуникации с пользователем для событий о проектах. Есть два исключения, которые обходят PO и остаются без изменений:
+
+1. **Кнопки** (`handlers.py`) — прямые API calls (список проектов, детали, серверы). Экономят токены, результат возвращается как inline keyboard edit.
+2. **Admin notifications** (`ProvisionerNotifier`) — ops/infra уведомления (provisioning results). Пишутся напрямую в Telegram админам. PO про них знать не должен.
 
 ```
-Было:
-  Engineering subgraph → progress events → Telegram (напрямую)
-  Developer worker → orchestrator respond → cli-agent:user-messages → Telegram
-  PO → orchestrator respond → cli-agent:user-messages → Telegram
-
-Станет:
-  Engineering subgraph → po:input {type: "system_event"} → PO → (решает) → Telegram
-  Developer worker → po:input {type: "system_event"} → PO → (решает) → Telegram
+Через PO (проектные события):
+  Engineering worker → po:input {type: "system_event"} → PO → (решает) → Telegram
+  Deploy worker → po:input {type: "system_event"} → PO → (решает) → Telegram
   Timer → po:input {type: "reminder"} → PO → (решает) → Telegram
+
+Минуя PO (как есть):
+  Кнопки → handlers.py → API → edit_message (inline keyboard)
+  Provisioner → provisioner:results → ProvisionerNotifier → Telegram (админы)
 ```
 
-**Контракт system events** (`shared/contracts/queues/po_events.py`):
+#### Текущий callback_stream паттерн
+
+Workers уже пишут события через `publish_callback_event()` в `po:events:{task_id}`. PO tools при триггере задают `callback_stream = f"po:events:{task_id}"`. Проблема: **никто не слушает** эти стримы. PO полагается на `set_reminder` + `get_task_status` (polling).
+
+#### Решение: `callback_stream = "po:input"`
+
+Вместо per-task стримов (`po:events:{task_id}`) отправляем события прямо в `po:input`. Формат адаптируется под consumer:
 
 ```python
-@dataclass
-class POSystemEvent:
-    type: Literal["system_event"]
-    event: str              # "engineering_completed", "task_failed", "scaffolding_done", ...
-    user_id: str
-    project_id: str
-    timestamp: str          # ISO 8601 UTC
-    payload: dict           # event-specific data (status, error, url, ...)
+# _events.py — расширенный publish_callback_event
+async def publish_callback_event(
+    redis, callback_stream, event_type, task_id, message,
+    *,
+    user_id: str | None = None,
+    project_id: str | None = None,
+) -> None:
+    if not callback_stream:
+        return
+
+    data = {
+        "type": "system_event",
+        "event": event_type,           # "progress", "completed", "failed"
+        "task_id": task_id,
+        "text": message,               # human-readable
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    if user_id:
+        data["user_id"] = user_id
+    if project_id:
+        data["project_id"] = project_id
+
+    await redis.redis.xadd(callback_stream, data)
 ```
 
-Типы событий:
-- `scaffolding_completed` / `scaffolding_failed`
-- `developer_started` / `developer_completed` / `developer_failed`
-- `engineering_completed` / `engineering_failed`
-- `deploy_completed` / `deploy_failed`
-
-Engineering/deploy workers пишут в `po:input` после завершения задачи. PO получает событие, решает что делать: промолчать, сообщить пользователю, перезапустить задачу.
-
-**Proactive messages.** Для system events нет `request_id` — Telegram bot не ждёт ответ. PO пишет proactive сообщение в **один общий стрим `po:proactive`** с полем `user_id` (аналогично `po:input`). Telegram bot слушает через consumer group:
+Workers уже имеют `user_id` и `project_id` в `job_data` — прокидываем в `publish_callback_event`. PO tools меняют `callback_stream`:
 
 ```python
-# Consumer: PO решил сообщить пользователю о system event
-await redis.xadd("po:proactive", {
-    "text": response_text,
-    "user_id": user_id,
-})
+# tools.py — trigger_engineering
+callback_stream = PO_INPUT_QUEUE  # "po:input" вместо f"po:events:{task_id}"
 
-# Telegram bot: один listener на все proactive сообщения
-async def _listen_proactive():
-    """Listen for proactive PO messages to users via consumer group."""
+queue_msg = {
+    "task_id": task_id,
+    "project_id": project_id,
+    "user_id": user_id,          # прокидываем от PO
+    "callback_stream": callback_stream,
+    ...
+}
+```
+
+**Преимущества:**
+- Нет discovery проблемы (один стрим, один consumer)
+- Workers не знают про PO — пишут в generic `callback_stream`
+- Consumer уже умеет обрабатывать `type != "user_message"` как `SystemMessage`
+
+#### user_id в tools
+
+Сейчас PO tools не знают `user_id` — они вызываются из LLM как stateless функции. Варианты:
+
+1. **RunnableConfig injection** — LangGraph пробрасывает `config` в tools через `@tool`. Consumer ставит `user_id` в config, tools читают:
+   ```python
+   @tool
+   async def trigger_engineering(..., config: RunnableConfig) -> str:
+       user_id = config["configurable"]["user_id"]
+   ```
+
+2. **Добавить `user_id` как аргумент tool** — PO должен передать user_id из контекста. Хрупко — LLM может забыть.
+
+Вариант 1 (RunnableConfig) — надёжнее, user_id задаётся программно.
+
+#### Consumer: обработка system events
+
+Consumer (`_handle_message`) уже роутит по `type`: `user_message` → HumanMessage, всё остальное → SystemMessage. System events попадают в граф как SystemMessage, PO решает что делать.
+
+**Но**: для system events нет `request_id` — Telegram bot не ждёт ответ. PO нужен способ отправить proactive message.
+
+#### Proactive messages: `po:proactive` stream
+
+PO consumer проверяет ответ графа на system event. Если PO решил сообщить пользователю:
+
+```python
+# consumer.py — _handle_message, после ainvoke для system events
+if msg_type == "system_event" and response_text:
+    # PO решил что-то сказать — proactive message
+    await redis.xadd("po:proactive", {
+        "text": response_text,
+        "user_id": user_id,
+    })
+```
+
+Telegram bot слушает `po:proactive` через consumer group:
+
+```python
+# telegram_bot — новый listener
+async def _listen_proactive(redis, bot):
+    """Listen for proactive PO messages to users."""
     await redis.xgroup_create("po:proactive", "tg-bot", mkstream=True)
     while True:
         entries = await redis.xreadgroup(
@@ -649,12 +697,53 @@ async def _listen_proactive():
         )
         for _, messages in entries:
             for msg_id, data in messages:
-                chat_id = await get_chat_id(data["user_id"])
+                chat_id = int(data["user_id"])  # telegram user_id = chat_id for DMs
                 await bot.send_message(chat_id, data["text"])
                 await redis.xack("po:proactive", "tg-bot", msg_id)
 ```
 
-Один стрим вместо per-user (`po:proactive:{user_id}`) по тем же причинам, что и `po:input`: один XREADGROUP, нет discovery проблемы при рестарте, consumer group автоматически масштабируется на несколько инстансов Telegram bot'а.
+Один стрим `po:proactive` с полем `user_id` (как `po:input`): один XREADGROUP, нет discovery проблемы.
+
+#### Типы событий
+
+| Event | Source | Когда |
+|-------|--------|-------|
+| `progress` | engineering/deploy worker | Начало работы, ожидание CI, этапы |
+| `completed` | engineering/deploy worker | Задача успешно завершена |
+| `failed` | engineering/deploy worker | Задача провалилась |
+
+PO видит событие с контекстом (`task_id`, `project_id`, `message`) и решает:
+- **Промолчать** — progress events (пользователю неинтересны промежуточные шаги)
+- **Сообщить** — completed/failed (результат, который ждёт пользователь)
+- **Действовать** — failed → перезапустить задачу (future)
+
+#### Файлы
+
+```
+Изменения:
+  services/langgraph/src/workers/_events.py           — +user_id, +project_id params
+  services/langgraph/src/workers/engineering_worker.py — прокидывать user_id/project_id
+  services/langgraph/src/workers/deploy_worker.py     — прокидывать user_id/project_id
+  services/langgraph/src/po/tools.py                  — callback_stream = PO_INPUT_QUEUE, user_id из config
+  services/langgraph/src/po/consumer.py               — proactive messages для system events
+  services/telegram_bot/src/main.py                   — +_listen_proactive()
+  shared/queues.py                                    — +PO_PROACTIVE_QUEUE
+
+Новое:
+  (нет новых файлов)
+
+Без изменений:
+  services/telegram_bot/src/handlers.py               — кнопки работают как есть
+  services/telegram_bot/src/notifications.py           — admin notifications работают как есть
+  services/telegram_bot/src/keyboards.py              — без изменений
+```
+
+#### Тесты
+
+- **Unit**: mock graph, проверить что system event без request_id пишет в `po:proactive`
+- **Unit**: `publish_callback_event` с user_id/project_id
+- **Unit**: `_listen_proactive` в telegram bot
+- **Integration**: engineering trigger → po:input event → PO graph → po:proactive → telegram
 
 ### 2.4 Reminders: `set_reminder` tool
 
@@ -809,9 +898,14 @@ Middleware в LangGraph, считает tokens per user. Базовая защи
 | System events | Все через PO. PO — единственная точка коммуникации с пользователем | Фильтрация, перевод ошибок, автономные действия |
 | Proactive messages | Один общий стрим `po:proactive` с полем `user_id`, consumer group `tg-bot` | Консистентно с `po:input`, один XREADGROUP, нет discovery при рестарте, масштабируется на несколько bot-инстансов |
 | Reminders | `ZADD po:reminders` + poller каждые 30 сек | Простая реализация без внешних зависимостей (APScheduler, Celery) |
-| Telegram → PO (Phase 2.1) | Direct XADD/XREAD, no container | 4-hop path replaces 7-hop; typing indicator instead of progress message; clean cut (no feature flag) since not in production |
+| Telegram → PO (Phase 2.1) | Direct XADD/XREAD, no container | 4-hop path replaces 7-hop; typing indicator included (Phase 2.2 merged — starts immediately after XADD, no ACK stream needed); clean cut (no feature flag) since not in production |
 | Миграция сессий | Чистый лист | Мы не в проде |
 | Graceful shutdown | Перестаём читать, ждём текущие tasks, ACK | Сообщения не обработаются дважды при рестарте |
 | Checkpointer (Phase 1) | `MemorySaver` — in-memory | Быстрый старт, не нужен PostgreSQL для разработки |
 | Checkpointer (Phase 1.5) | `AsyncPostgresSaver` в отдельной schema `langgraph` (**implemented**) | Та же БД, Alembic не пересекается (работает с `public`), отдельный `CHECKPOINT_DATABASE_URL` env var. Schema создаётся psycopg3 sync перед `setup()`. MemorySaver fallback если env var не задан. |
 | `create_react_agent` prompt API | `prompt=callable` (не `state_modifier`) | langgraph-prebuilt 1.0.5 убрал `state_modifier`, `prompt` принимает callable(state) -> messages |
+| How PO notifies user on system events | `notify_user` tool (explicit) | PO calls it only when needed. No magic markers, no "always forward". PO can stay silent by simply not calling the tool. |
+| Event format in `publish_callback_event` | Flat fields (not JSON-wrapped `data`) | Matches `po:input` consumer expectations. Old JSON format was never consumed by anyone. |
+| user_id in PO tools | `RunnableConfig` injection via `config` kwarg | LangChain standard. Consumer sets `configurable.user_id`, tools read it. No `InjectedState`. |
+| callback_stream | `PO_INPUT_QUEUE` (constant) | Single stream, no discovery problem. Workers write same format as always — they don't know about PO. |
+| ProactiveListener | Follows ProvisionerNotifier pattern | Consumer group, XREADGROUP, same startup/shutdown lifecycle. Proven pattern in codebase. |

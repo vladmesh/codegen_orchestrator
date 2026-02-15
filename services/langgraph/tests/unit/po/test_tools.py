@@ -15,6 +15,7 @@ from src.po.tools import (
     get_task_status,
     init_po_clients,
     list_projects,
+    notify_user,
     set_project_secret,
     set_reminder,
     trigger_deploy,
@@ -48,6 +49,11 @@ def _make_response(data, status_code: int = 200) -> MagicMock:
     resp.status_code = status_code
     resp.json.return_value = data
     return resp
+
+
+def _make_config(user_id: str = "test-user") -> dict:
+    """Create a RunnableConfig with user_id."""
+    return {"configurable": {"thread_id": f"po-user-{user_id}", "user_id": user_id}}
 
 
 class TestCreateProject:
@@ -147,7 +153,9 @@ class TestTriggerEngineering:
     async def test_triggers_engineering(self, mock_api_client, mock_redis):
         mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
 
-        result = await trigger_engineering.ainvoke({"project_id": "abc"})
+        result = await trigger_engineering.ainvoke(
+            {"project_id": "abc"}, config=_make_config("user-42")
+        )
 
         assert "Engineering task queued" in result
         mock_api_client.post.assert_called_once()
@@ -161,10 +169,33 @@ class TestTriggerEngineering:
 
     @pytest.mark.asyncio
     async def test_requires_description_for_feature(self, mock_api_client, mock_redis):
-        result = await trigger_engineering.ainvoke({"project_id": "abc", "action": "feature"})
+        result = await trigger_engineering.ainvoke(
+            {"project_id": "abc", "action": "feature"},
+            config=_make_config("user-42"),
+        )
 
         assert "Error" in result
         mock_api_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_uses_po_input_as_callback(self, mock_api_client, mock_redis):
+        """callback_stream in queue message should be po:input (not po:events:*)."""
+        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
+
+        await trigger_engineering.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
+
+        queue_data = json.loads(mock_redis.xadd.call_args[0][1]["data"])
+        assert queue_data["callback_stream"] == "po:input"
+
+    @pytest.mark.asyncio
+    async def test_passes_real_user_id(self, mock_api_client, mock_redis):
+        """user_id in queue message should come from config, not hardcoded."""
+        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
+
+        await trigger_engineering.ainvoke({"project_id": "abc"}, config=_make_config("user-777"))
+
+        queue_data = json.loads(mock_redis.xadd.call_args[0][1]["data"])
+        assert queue_data["user_id"] == "user-777"
 
 
 class TestTriggerDeploy:
@@ -172,12 +203,32 @@ class TestTriggerDeploy:
     async def test_triggers_deploy(self, mock_api_client, mock_redis):
         mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
 
-        result = await trigger_deploy.ainvoke({"project_id": "abc"})
+        result = await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
 
         assert "Deploy task queued" in result
         mock_redis.xadd.assert_called_once()
         xadd_args = mock_redis.xadd.call_args
         assert xadd_args[0][0] == "deploy:queue"
+
+    @pytest.mark.asyncio
+    async def test_uses_po_input_as_callback(self, mock_api_client, mock_redis):
+        """callback_stream should be po:input."""
+        mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
+
+        await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
+
+        queue_data = json.loads(mock_redis.xadd.call_args[0][1]["data"])
+        assert queue_data["callback_stream"] == "po:input"
+
+    @pytest.mark.asyncio
+    async def test_passes_real_user_id(self, mock_api_client, mock_redis):
+        """user_id should come from config."""
+        mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
+
+        await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("user-999"))
+
+        queue_data = json.loads(mock_redis.xadd.call_args[0][1]["data"])
+        assert queue_data["user_id"] == "user-999"
 
 
 class TestGetTaskStatus:
@@ -205,10 +256,38 @@ class TestSetReminder:
         assert call_args[0][0] == "po:reminders"
 
 
+class TestNotifyUser:
+    @pytest.mark.asyncio
+    async def test_writes_to_proactive_stream(self, mock_redis):
+        """Should XADD to po:proactive with user_id and text."""
+        result = await notify_user.ainvoke(
+            {"message": "Your project is ready!"},
+            config=_make_config("user-123"),
+        )
+
+        assert "Message sent" in result
+        mock_redis.xadd.assert_called_once()
+        call_args = mock_redis.xadd.call_args
+        assert call_args[0][0] == "po:proactive"
+        assert call_args[0][1]["text"] == "Your project is ready!"
+        assert call_args[0][1]["user_id"] == "user-123"
+
+    @pytest.mark.asyncio
+    async def test_uses_user_id_from_config(self, mock_redis):
+        """user_id should come from RunnableConfig."""
+        await notify_user.ainvoke(
+            {"message": "test"},
+            config=_make_config("user-456"),
+        )
+
+        fields = mock_redis.xadd.call_args[0][1]
+        assert fields["user_id"] == "user-456"
+
+
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 8
+        expected_count = 9
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -223,4 +302,5 @@ class TestGetAllTools:
             "trigger_deploy",
             "get_task_status",
             "set_reminder",
+            "notify_user",
         }

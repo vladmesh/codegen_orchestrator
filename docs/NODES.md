@@ -16,8 +16,9 @@
 - `trigger_engineering`, `trigger_deploy`: запуск subgraphs через API + Redis
 - `get_task_status`: статус задач
 - `set_reminder`: отложенные проверки через Redis ZSET
+- `notify_user`: proactive message to user via `po:proactive` stream (Phase 2.3)
 
-**Communication**: Redis streams — `po:input` (inbound), `po:response:{request_id}` (outbound). Telegram bot publishes directly to `po:input` and reads responses via `XREAD` (Phase 2.1 complete).
+**Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). Workers write system events to `po:input` via `callback_stream`. PO uses `notify_user` tool to send proactive messages when handling system events.
 
 **Выход**: Действия через tools, сообщения пользователю через Telegram
 
