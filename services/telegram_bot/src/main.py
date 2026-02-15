@@ -1,14 +1,14 @@
 """Telegram Bot - Main entry point.
 
-Refactored to use POSessionManager with Redis Streams.
-Supports progress events display during message processing.
+Direct PO ReactAgent communication via Redis Streams.
+Messages flow: XADD po:input → PO consumer → XREAD po:response:{request_id}.
 """
 
 import asyncio
-import json
 import logging
 import os
 import sys
+import time
 import uuid
 
 import httpx
@@ -24,8 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from shared.contracts.events import ProgressEvent
-from shared.contracts.queues.worker import WorkerChannels
+from shared.queues import PO_INPUT_QUEUE
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -37,15 +36,16 @@ from .handlers import handle_callback_query  # noqa: E402
 from .keyboards import main_menu_keyboard  # noqa: E402
 from .middleware import auth_middleware, is_admin  # noqa: E402
 from .notifications import ProvisionerNotifier  # noqa: E402
-from .session import POSessionManager  # noqa: E402
 
 logger = structlog.get_logger()
 
-# Global session manager (initialized in post_init)
-_session_manager: POSessionManager | None = None
-_response_listener_task: asyncio.Task | None = None
+# Globals (initialized in post_init)
 _provisioner_notifier_task: asyncio.Task | None = None
 _redis_client: redis_lib.Redis | None = None
+
+# PO response settings
+PO_RESPONSE_TIMEOUT_S = 60
+TYPING_INTERVAL_S = 5
 
 
 async def _post_rag_message(payload: dict) -> None:
@@ -108,12 +108,162 @@ async def _ensure_user_registered(tg_user) -> None:
         logger.warning("user_registration_failed", error=str(e))
 
 
-async def handle_message(update: Update, context) -> None:
-    """Handle incoming messages - send to PO worker via Redis Streams.
+async def _keep_typing(bot, chat_id: int, max_duration_s: float = 120.0) -> None:
+    """Send typing indicator every TYPING_INTERVAL_S until cancelled.
 
-    This is the NEW implementation using POSessionManager with progress tracking.
+    Args:
+        bot: Telegram bot instance
+        chat_id: Chat to show typing in
+        max_duration_s: Safety limit to prevent infinite typing
     """
-    global _session_manager, _redis_client
+    start_time = time.monotonic()
+    try:
+        while (time.monotonic() - start_time) < max_duration_s:
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+            await asyncio.sleep(TYPING_INTERVAL_S)
+    except asyncio.CancelledError:
+        pass
+
+
+async def _read_po_response(
+    redis: redis_lib.Redis,
+    response_stream: str,
+    timeout_s: float,
+) -> dict | None:
+    """Read PO response from a per-request stream.
+
+    Uses id="0" to read from beginning — catches response even if
+    written before XREAD starts (no race condition).
+
+    Args:
+        redis: Redis client
+        response_stream: Stream name (po:response:{request_id})
+        timeout_s: Max wait time in seconds
+
+    Returns:
+        Response data dict or None on timeout
+    """
+    start_time = time.monotonic()
+
+    while True:
+        elapsed = time.monotonic() - start_time
+        remaining = timeout_s - elapsed
+
+        if remaining <= 0:
+            return None
+
+        block_ms = min(2000, int(remaining * 1000))
+
+        try:
+            messages = await redis.xread(
+                {response_stream: "0"},
+                count=1,
+                block=block_ms,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("po_response_xread_error", error=str(e))
+            await asyncio.sleep(0.5)
+            continue
+
+        if not messages:
+            continue
+
+        for _stream_name, stream_messages in messages:
+            if stream_messages:
+                _msg_id, data = stream_messages[0]
+                return data
+
+    return None
+
+
+async def _send_to_po_and_wait(
+    redis: redis_lib.Redis,
+    user_id: int,
+    text: str,
+    bot,
+    chat_id: int,
+) -> str:
+    """Send message to PO via po:input and wait for response.
+
+    Orchestrates: XADD → typing task → XREAD → cleanup.
+
+    Args:
+        redis: Redis client
+        user_id: Telegram user ID
+        text: User message text
+        bot: Telegram bot instance
+        chat_id: Chat ID for typing indicator
+
+    Returns:
+        PO response text
+
+    Raises:
+        TimeoutError: If no response within PO_RESPONSE_TIMEOUT_S
+        RuntimeError: If PO returned an error
+    """
+    request_id = str(uuid.uuid4())
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+    response_stream = f"po:response:{request_id}"
+
+    # Publish to PO input stream
+    await redis.xadd(
+        PO_INPUT_QUEUE,
+        {
+            "type": "user_message",
+            "text": text,
+            "user_id": str(user_id),
+            "request_id": request_id,
+            "timestamp": timestamp,
+        },
+    )
+
+    logger.info(
+        "po_message_sent",
+        user_id=user_id,
+        request_id=request_id,
+    )
+
+    # Start typing indicator in background
+    typing_task = asyncio.create_task(_keep_typing(bot, chat_id))
+
+    try:
+        # Wait for response
+        data = await _read_po_response(redis, response_stream, PO_RESPONSE_TIMEOUT_S)
+
+        if data is None:
+            raise TimeoutError(f"PO did not respond within {PO_RESPONSE_TIMEOUT_S}s")
+
+        # Check for error response
+        if data.get("error") == "true":
+            error_text = data.get("text", "Unknown error")
+            raise RuntimeError(error_text)
+
+        response_text = data.get("text", "")
+        if not response_text:
+            raise RuntimeError("PO returned empty response")
+
+        return response_text
+
+    finally:
+        # Cancel typing indicator
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+
+        # Cleanup response stream (best effort)
+        try:
+            await redis.delete(response_stream)
+        except Exception as e:
+            logger.debug("response_stream_cleanup_failed", error=str(e))
+
+
+async def handle_message(update: Update, context) -> None:
+    """Handle incoming messages - send to PO ReactAgent via Redis Streams."""
+    global _redis_client
 
     # Auth check
     if not await auth_middleware(update, context):
@@ -130,9 +280,6 @@ async def handle_message(update: Update, context) -> None:
 
     logger.info("message_received", user_id=user_id, text_length=len(text) if text else 0)
 
-    # Indicate typing status
-    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-
     try:
         # Log user message to RAG (fire and forget)
         asyncio.create_task(
@@ -147,116 +294,30 @@ async def handle_message(update: Update, context) -> None:
             )
         )
 
-        # Ensure we have a PO worker
-        if _session_manager is None:
-            raise RuntimeError("Session manager not initialized")
+        if _redis_client is None:
+            raise RuntimeError("Redis client not initialized")
 
-        await _session_manager.get_or_create_worker(user_id)
-
-        # Create callback stream for progress events
-        callback_stream = f"progress:po:{user_id}:{uuid.uuid4().hex[:8]}"
-
-        # Send progress message first
-        progress_msg = await update.message.reply_text(
-            "🚀 Начинаю обработку...",
-            parse_mode=ParseMode.MARKDOWN,
+        # Send to PO and wait for response
+        response_text = await _send_to_po_and_wait(
+            redis=_redis_client,
+            user_id=user_id,
+            text=text,
+            bot=context.bot,
+            chat_id=chat_id,
         )
 
-        # Send message to worker with callback stream
-        request_id = await _session_manager.send_message(
-            user_id, text, callback_stream=callback_stream
-        )
+        # Send response to user
+        await _send_response_to_user(context.application, user_id, response_text)
 
-        # Start background task to track progress events
-        # Note: Final response will still come via _listen_for_worker_responses
-        if _redis_client:
-            asyncio.create_task(
-                _track_progress_with_cleanup(
-                    redis=_redis_client,
-                    callback_stream=callback_stream,
-                    request_id=request_id,
-                    bot=context.bot,
-                    chat_id=chat_id,
-                    progress_message_id=progress_msg.message_id,
-                )
-            )
-
+    except TimeoutError:
+        logger.warning("po_response_timeout", user_id=user_id)
+        await update.message.reply_text("Таймаут ожидания ответа. Попробуйте позже.")
+    except RuntimeError as e:
+        logger.error("po_response_error", error=str(e), user_id=user_id)
+        await update.message.reply_text(f"Ошибка: {e!s}")
     except Exception as e:
         logger.error("message_handling_failed", error=str(e), user_id=user_id)
-        await update.message.reply_text(f"⚠️ Ошибка: {e!s}")
-
-
-async def _track_progress_with_cleanup(
-    redis: redis_lib.Redis,
-    callback_stream: str,
-    request_id: str,
-    bot,
-    chat_id: int,
-    progress_message_id: int,
-) -> None:
-    """Track progress events and cleanup callback stream after completion."""
-    try:
-        final_event = await _listen_progress_events(
-            redis=redis,
-            callback_stream=callback_stream,
-            request_id=request_id,
-            bot=bot,
-            chat_id=chat_id,
-            progress_message_id=progress_message_id,
-            timeout=300.0,  # 5 minutes max
-        )
-
-        if final_event is None:
-            # Timeout - update progress message
-            try:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=progress_message_id,
-                    text="⏰ Таймаут ожидания. Ответ может прийти позже.",
-                )
-            except Exception as e:
-                logger.debug("timeout_message_edit_failed", error=str(e))
-
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logger.error("progress_tracking_error", error=str(e), request_id=request_id)
-    finally:
-        # Cleanup: delete callback stream (best effort)
-        try:
-            await redis.delete(callback_stream)
-        except Exception as e:
-            logger.debug("callback_stream_cleanup_failed", error=str(e))
-
-
-async def _get_active_session_streams() -> tuple[dict[str, str], dict[str, int]]:
-    """Get all active worker output streams and their user mappings."""
-    global _redis_client
-
-    streams: dict[str, str] = {}
-    user_by_stream: dict[str, int] = {}
-
-    cursor = 0
-    session_keys: list[str] = []
-    while True:
-        cursor, keys = await _redis_client.scan(
-            cursor=cursor,
-            match="session:po:*",
-            count=100,  # noqa: PLR2004
-        )
-        session_keys.extend(keys)
-        if cursor == 0:
-            break
-
-    for session_key in session_keys:
-        worker_id = await _redis_client.get(session_key)
-        if worker_id:
-            stream_key = WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=worker_id)
-            streams[stream_key] = "$"
-            user_id_str = session_key.replace("session:po:", "")
-            user_by_stream[stream_key] = int(user_id_str)
-
-    return streams, user_by_stream
+        await update.message.reply_text(f"Ошибка: {e!s}")
 
 
 async def _send_response_to_user(app: Application, user_id: int, text: str) -> None:
@@ -269,247 +330,12 @@ async def _send_response_to_user(app: Application, user_id: int, text: str) -> N
     logger.info("worker_response_sent", user_id=user_id, text_length=len(text))
 
 
-def _format_progress_message(event: ProgressEvent) -> str:
-    """Format progress event for Telegram display."""
-    emoji_map = {
-        "started": "🚀",
-        "progress": "⏳",
-        "completed": "✅",
-        "failed": "❌",
-    }
-    emoji = emoji_map.get(event.type, "📌")
-
-    if event.type == "started":
-        return f"{emoji} Начинаю обработку..."
-
-    if event.type == "progress":
-        parts = [emoji]
-        if event.current_step:
-            parts.append(f"**{event.current_step}**")
-        if event.message:
-            parts.append(event.message)
-        if event.progress_pct is not None:
-            parts.append(f"({event.progress_pct}%)")
-        return " ".join(parts)
-
-    if event.type == "completed":
-        msg = event.message or "Готово!"
-        return f"{emoji} {msg}"
-
-    if event.type == "failed":
-        error = event.error or "Неизвестная ошибка"
-        return f"{emoji} Ошибка: {error}"
-
-    return f"{emoji} {event.message or ''}"
-
-
-async def _update_progress_message(
-    bot,
-    chat_id: int,
-    message_id: int,
-    event: ProgressEvent,
-) -> None:
-    """Update Telegram message with progress event."""
-    text = _format_progress_message(event)
-    try:
-        await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            parse_mode=ParseMode.MARKDOWN,
-        )
-    except Exception as e:
-        # Message might be the same, or other edit error
-        logger.debug("progress_message_edit_failed", error=str(e))
-
-
-async def _listen_progress_events(
-    redis: redis_lib.Redis,
-    callback_stream: str,
-    request_id: str,
-    bot,
-    chat_id: int,
-    progress_message_id: int,
-    timeout: float = 300.0,
-) -> ProgressEvent | None:
-    """Listen for progress events and update Telegram message.
-
-    Args:
-        redis: Redis client
-        callback_stream: Stream to listen for events
-        request_id: Request ID to filter events
-        bot: Telegram bot instance
-        chat_id: Chat to update
-        progress_message_id: Message ID to edit with progress
-        timeout: Max wait time in seconds
-
-    Returns:
-        Final event (completed/failed) or None on timeout
-    """
-    import time
-
-    start_time = time.monotonic()
-    last_id = "0"  # Read all messages from start
-
-    logger.debug(
-        "listening_progress_events",
-        callback_stream=callback_stream,
-        request_id=request_id,
-        timeout=timeout,
-    )
-
-    while True:
-        elapsed = time.monotonic() - start_time
-        remaining = timeout - elapsed
-
-        if remaining <= 0:
-            logger.warning("progress_listen_timeout", request_id=request_id)
-            return None
-
-        block_ms = min(2000, int(remaining * 1000))
-
-        try:
-            messages = await redis.xread(
-                {callback_stream: last_id},
-                count=10,
-                block=block_ms,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error("progress_xread_error", error=str(e))
-            await asyncio.sleep(0.5)
-            continue
-
-        if not messages:
-            continue
-
-        for _, stream_messages in messages:
-            for msg_id, msg_data in stream_messages:
-                last_id = msg_id
-
-                try:
-                    payload = json.loads(msg_data.get("data", "{}"))
-                    event = ProgressEvent.model_validate(payload)
-                except (json.JSONDecodeError, Exception) as e:
-                    logger.debug("invalid_progress_event", error=str(e))
-                    continue
-
-                # Filter by request_id
-                if event.request_id != request_id:
-                    continue
-
-                logger.info(
-                    "progress_event_received",
-                    event_type=event.type,
-                    request_id=request_id,
-                    message=event.message,
-                )
-
-                # Update progress message
-                await _update_progress_message(bot, chat_id, progress_message_id, event)
-
-                # Check for terminal events
-                if event.type in ("completed", "failed"):
-                    return event
-
-    return None
-
-
-async def _process_worker_message(app: Application, msg_data: dict, user_id: int) -> None:
-    """Process a single worker output message."""
-    payload = json.loads(msg_data.get("data", "{}"))
-    response_text = (
-        payload.get("content")
-        or payload.get("text")
-        or payload.get("response")
-        or payload.get("result")
-        or ""
-    )
-
-    # Fallback: extract text from raw_output (old worker images that lack extract_text)
-    if not response_text and payload.get("raw_output"):
-        try:
-            raw = json.loads(payload["raw_output"])
-            if isinstance(raw, dict) and raw.get("type") == "result":
-                response_text = raw.get("result", "")
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-    if response_text:
-        await _send_response_to_user(app, user_id, response_text)
-
-
-async def _listen_for_worker_responses(app: Application) -> None:
-    """Listen for PO worker responses and relay to Telegram users."""
-    global _redis_client, _session_manager
-
-    if _redis_client is None or _session_manager is None:
-        logger.error("Cannot start response listener: Redis/SessionManager not initialized")
-        return
-
-    logger.info("worker_response_listener_started")
-
-    # Track last-seen message ID per stream to avoid missing messages
-    # New streams start with "$" (only new messages) to prevent redelivery on restart
-    last_ids: dict[str, str] = {}
-
-    try:
-        while True:
-            try:
-                streams, user_by_stream = await _get_active_session_streams()
-
-                if not streams:
-                    await asyncio.sleep(1)
-                    continue
-
-                # Use tracked offsets; default to "$" for new streams so we
-                # only read NEW messages (not historical ones from before restart)
-                read_offsets = {}
-                for stream_key in streams:
-                    read_offsets[stream_key] = last_ids.get(stream_key, "$")
-
-                messages = await _redis_client.xread(read_offsets, count=10, block=1000)  # noqa: PLR2004
-
-                if not messages:
-                    continue
-
-                for stream_name, stream_messages in messages:
-                    user_id = user_by_stream.get(stream_name)
-                    if not user_id:
-                        continue
-
-                    for msg_id, msg_data in stream_messages:
-                        last_ids[stream_name] = msg_id
-                        try:
-                            await _process_worker_message(app, msg_data, user_id)
-                        except Exception as e:
-                            logger.error(
-                                "worker_response_processing_error",
-                                error=str(e),
-                                msg_id=msg_id,
-                            )
-
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.error("response_listener_error", error=str(e))
-                await asyncio.sleep(1)
-
-    except asyncio.CancelledError:
-        logger.info("worker_response_listener_stopped")
-
-
 async def post_init(app: Application) -> None:
-    """Post-initialization: connect clients and start listeners."""
-    global _session_manager, _response_listener_task, _provisioner_notifier_task, _redis_client
+    """Post-initialization: connect Redis and start listeners."""
+    global _provisioner_notifier_task, _redis_client
 
     settings = get_settings()
     _redis_client = redis_lib.from_url(settings.redis_url, decode_responses=True)
-    _session_manager = POSessionManager(redis=_redis_client)
-
-    # Start worker response listener
-    _response_listener_task = asyncio.create_task(_listen_for_worker_responses(app))
 
     # Start provisioner notifications listener
     admin_ids = settings.get_admin_ids()
@@ -521,16 +347,7 @@ async def post_init(app: Application) -> None:
 
 async def post_shutdown(app: Application) -> None:
     """Cleanup on shutdown."""
-    global _response_listener_task, _provisioner_notifier_task, _redis_client
-
-    # Stop response listener
-    if _response_listener_task:
-        _response_listener_task.cancel()
-        try:
-            await _response_listener_task
-        except asyncio.CancelledError:
-            pass
-        _response_listener_task = None
+    global _provisioner_notifier_task, _redis_client
 
     # Stop provisioner notifier
     if _provisioner_notifier_task:

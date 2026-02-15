@@ -131,26 +131,27 @@ See [github_client.md](./shared/github_client.md#8-rate-limiting) for implementa
 sequenceDiagram
     participant User
     participant TG as telegram-bot
-    participant PO as PO-Worker
-    participant CLI as orchestrator-cli
-    participant API
     participant Redis
+    participant PO as PO ReactAgent
+    participant API
     participant LG as langgraph
     participant Scaff as scaffolder
 
     User->>TG: "Сделай блог"
-    TG->>PO: Forward via worker:po:{worker_id}:input
-    PO->>CLI: orchestrator project create --name blog --modules backend,telegram
-    
-    Note over CLI: Atomic operation
-    CLI->>API: POST /api/projects {name, modules}
-    API-->>CLI: project_id
-    CLI->>API: POST /api/tasks {type=engineering}
-    API-->>CLI: task_id
-    CLI->>Redis: XADD engineering:queue
-    CLI-->>PO: "✓ Engineering started (project: abc123)"
-    
-    Redis-->>LG: Consumer reads
+    TG->>Redis: XADD po:input {text, user_id, request_id}
+    Redis-->>PO: Consumer reads (po-consumer group)
+
+    Note over PO: ReactAgent tool calls
+    PO->>API: create_project(name, modules)
+    API-->>PO: project_id
+    PO->>API: trigger_engineering(project_id)
+    API-->>PO: task_id
+    PO->>Redis: XADD engineering:queue
+    PO->>Redis: XADD po:response:{request_id} {text: "Начал разработку!"}
+    Redis-->>TG: XREAD po:response:{request_id}
+    TG->>User: "Начал разработку!"
+
+    Redis-->>LG: Consumer reads engineering:queue
     LG->>API: GET /api/projects/{id}
     API-->>LG: {status: CREATED, modules: [...]}
     LG->>Redis: XADD scaffolder:queue {project_id, modules}
@@ -915,7 +916,18 @@ class WorkerLifecycleEvent(BaseModel):
 
 ---
 
-## PO Worker I/O
+## PO ReactAgent I/O
+
+> **Migration note:** PO communication has migrated from `worker:{id}:input/output` (container-based) to `po:input` / `po:response:{request_id}` (direct ReactAgent). The old Worker I/O pattern below is kept for reference during Phase 3 cleanup.
+
+| Queue | Group | Initiator | Consumer | Purpose |
+|-------|-------|-----------|----------|---------|
+| `po:input` | `po-consumer` | telegram-bot | langgraph (PO consumer) | User messages and system events to PO |
+| `po:response:{request_id}` | — | langgraph (PO consumer) | telegram-bot | PO response for specific request |
+
+---
+
+## PO Worker I/O (Legacy — Phase 3 cleanup)
 
 Коммуникация между Telegram Bot и Product Owner Worker.
 

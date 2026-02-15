@@ -17,7 +17,7 @@
 - `get_task_status`: статус задач
 - `set_reminder`: отложенные проверки через Redis ZSET
 
-**Communication**: Redis streams — `po:input` (inbound), `po:response:{request_id}` (outbound).
+**Communication**: Redis streams — `po:input` (inbound), `po:response:{request_id}` (outbound). Telegram bot publishes directly to `po:input` and reads responses via `XREAD` (Phase 2.1 complete).
 
 **Выход**: Действия через tools, сообщения пользователю через Telegram
 

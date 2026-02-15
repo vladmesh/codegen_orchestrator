@@ -1,7 +1,7 @@
 # Plan: PO как LangGraph ReactAgent (без контейнера)
 
 > **Дата**: 2026-02-15
-> **Статус**: Phase 1.5 Complete, Phase 2 next
+> **Статус**: Phase 2.1 Complete, Phase 2.2 next
 > **Контекст**: MVP работает, E2E проходят. PO — самый перегруженный компонент: Docker-контейнер, subprocess Claude CLI, orchestrator-cli как прокси к API/Redis. Каждая будущая фича упирается в эту архитектуру.
 
 ---
@@ -809,6 +809,7 @@ Middleware в LangGraph, считает tokens per user. Базовая защи
 | System events | Все через PO. PO — единственная точка коммуникации с пользователем | Фильтрация, перевод ошибок, автономные действия |
 | Proactive messages | Один общий стрим `po:proactive` с полем `user_id`, consumer group `tg-bot` | Консистентно с `po:input`, один XREADGROUP, нет discovery при рестарте, масштабируется на несколько bot-инстансов |
 | Reminders | `ZADD po:reminders` + poller каждые 30 сек | Простая реализация без внешних зависимостей (APScheduler, Celery) |
+| Telegram → PO (Phase 2.1) | Direct XADD/XREAD, no container | 4-hop path replaces 7-hop; typing indicator instead of progress message; clean cut (no feature flag) since not in production |
 | Миграция сессий | Чистый лист | Мы не в проде |
 | Graceful shutdown | Перестаём читать, ждём текущие tasks, ACK | Сообщения не обработаются дважды при рестарте |
 | Checkpointer (Phase 1) | `MemorySaver` — in-memory | Быстрый старт, не нужен PostgreSQL для разработки |

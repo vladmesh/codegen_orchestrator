@@ -1,61 +1,22 @@
 # Project Status
 
-> **Current Phase**: Phase 4: System E2E & Final Polish
+> **Current Focus**: PO ReactAgent Migration
+> **Plan**: [po-react-agent.md](./plans/po-react-agent.md)
 
-## 🚀 Current Focus
+## PO ReactAgent Migration
 
-**Phase 4: System E2E Integration**
+Замена контейнерного PO (Docker + Claude CLI + orchestrator-cli) на LangGraph ReactAgent с прямым вызовом через Redis Streams.
 
-We have completed the core migration to the new architecture (Worker Manager, LangGraph, Infra Service). The focus is now on end-to-end system validation and CI integration.
+### ✅ Completed
 
-### ✅ Completed Milestones
+- **Phase 1**: PO Graph + Tools + Consumer (`services/langgraph/src/po/`)
+- **Phase 1.5**: PostgreSQL Checkpointer (`AsyncPostgresSaver`, schema `langgraph`)
+- **Phase 2.1**: Telegram Bot direct PO flow (`XADD po:input` → `XREAD po:response:{request_id}`)
 
-#### Phase 0: Foundation
-- **DTO Contracts**: `shared/contracts` implemented and verified.
-- **Shared Redis**: `shared/redis` with Pydantic support.
-- **Shared Logging**: `structlog` implementation.
-- **Github Client**: Token caching, rate limiting.
-- **Test Infra**: 4-layer test strategy (Unit/Service/Integration/Milestone).
+### 🚧 Remaining
 
-#### Phase 1: Base Components (Worker Management)
-- **API Refactor**: Pure DAL (no side effects).
-- **Orchestrator CLI**: Dual-write (API + Redis), Permissions.
-- **Worker Wrapper**: Headless agent execution, session management (Redis), result parsing.
-- **Infra Service**: Ansible runner, provisioning queue consumer.
-- **Worker Manager**:
-  - Docker container lifecycle management.
-  - Docker container lifecycle management.
-  - Dynamic image building with caching (hash-based).
-  - **Agent Integration**: Claude Code & Factory Droid support.
-  - **Capabilities**: Custom worker capabilities (git, curl, docker).
-
-#### Phase 2: Core Logic (Orchestration)
-- **Scaffolder**: Copier integration, GitHub repo creation.
-- **LangGraph**:
-  - Engineering Subgraph (Scaffolder -> Developer -> Tester).
-  - DevOps Subgraph (EnvAnalyzer -> Deployer).
-  - State persistence (Postgres).
-- **Scheduler**: Migrated to API client, Provisioner Result Listener loop.
-- **Template Tests**: Validated service-template integration.
-
-#### Phase 3: Access (Telegram Bot)
-- **POSessionManager**: Redis streams integration.
-- **User Interface**: Progress events, synchronous waiting mode.
-- **Admin Tools**: Provisioning notifications.
-
-#### Phase 4: E2E (Partial)
-- **Mock Anthropic**: E2E tests with deterministic LLM responses (Passed).
-- **Configurable Agents**: Support for switching default agent type via env var.
-- **Legacy Removal**: Dead code cleanup (analyst, zavhoz, graph_runner, legacy tests).
-
-### 🚧 Outstanding Tasks
-
-#### System E2E (P4.1)
-- [ ] Full system `docker-compose up` validation.
-- [ ] User -> Bot -> PO -> Spec -> Dev -> Deploy -> URL flow.
-
-#### CI/CD
-- [ ] Update CI workflows to run full E2E suite.
+- [ ] Phase 2.2-2.5: System events, reminders, proactive messages
+- [ ] Phase 3: Cleanup old container-based PO code
 
 ## 🔗 Quick Links
 
