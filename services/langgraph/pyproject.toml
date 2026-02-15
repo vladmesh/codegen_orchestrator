@@ -23,6 +23,10 @@ dependencies = [
 
     # GitHub secrets encryption
     "pynacl>=1.5.0",
+
+    # LangGraph PostgreSQL checkpointer (psycopg[binary] needed for slim images)
+    "langgraph-checkpoint-postgres>=2.0.0",
+    "psycopg[binary]>=3.1.0",
 ]
 
 [build-system]

@@ -75,7 +75,10 @@ langgraph==1.0.5
 langgraph-checkpoint==3.0.1
     # via
     #   langgraph
+    #   langgraph-checkpoint-postgres
     #   langgraph-prebuilt
+langgraph-checkpoint-postgres==3.0.4
+    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 langgraph-prebuilt==1.0.5
     # via langgraph
 langgraph-sdk==0.3.1
@@ -90,6 +93,7 @@ openai==2.14.0
     # via langchain-openai
 orjson==3.11.5
     # via
+    #   langgraph-checkpoint-postgres
     #   langgraph-sdk
     #   langsmith
 ormsgpack==1.12.1
@@ -102,6 +106,14 @@ propcache==0.4.1
     # via
     #   aiohttp
     #   yarl
+psycopg==3.3.2
+    # via
+    #   langgraph-orchestrator (services/langgraph/pyproject.toml)
+    #   langgraph-checkpoint-postgres
+psycopg-binary==3.3.2
+    # via psycopg
+psycopg-pool==3.3.0
+    # via langgraph-checkpoint-postgres
 pycparser==2.23
     # via cffi
 pydantic==2.12.5
@@ -151,6 +163,8 @@ typing-extensions==4.15.0
     #   anyio
     #   langchain-core
     #   openai
+    #   psycopg
+    #   psycopg-pool
     #   pydantic
     #   pydantic-core
     #   typing-inspection

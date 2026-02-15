@@ -1,7 +1,7 @@
 # Plan: PO как LangGraph ReactAgent (без контейнера)
 
 > **Дата**: 2026-02-15
-> **Статус**: Phase 1 Complete
+> **Статус**: Phase 1.5 Complete, Phase 2 next
 > **Контекст**: MVP работает, E2E проходят. PO — самый перегруженный компонент: Docker-контейнер, subprocess Claude CLI, orchestrator-cli как прокси к API/Redis. Каждая будущая фича упирается в эту архитектуру.
 
 ---
@@ -448,6 +448,92 @@ services/langgraph/tests/unit/po/
 
 ---
 
+## Фаза 1.5: Persistent Checkpointer (PostgreSQL)
+
+> **Зависимость**: Phase 2 без персистентности бессмысленна — рестарт контейнера = потеря всех разговоров.
+
+### Проблема
+
+Phase 1 использует `MemorySaver` — in-memory checkpointer. Каждый рестарт langgraph контейнера стирает всю conversation history. Reminder'ы (`po:reminders` в Redis) переживают рестарт, но контекст разговора, к которому они относятся — нет.
+
+### Решение: `AsyncPostgresSaver` + отдельная PostgreSQL schema
+
+Checkpointer пишет в ту же PostgreSQL базу (`orchestrator`), но в отдельную schema `langgraph`. Alembic работает с `public` schema по умолчанию — **пересечений нет**, фильтры в `env.py` не нужны.
+
+```
+orchestrator (database)
+├── public (schema)        ← Alembic, наши модели (projects, tasks, ...)
+└── langgraph (schema)     ← checkpoint_*, управляется AsyncPostgresSaver.setup()
+```
+
+### Что хранит checkpointer
+
+Каждый **super-step** графа (не только сообщения). Один запрос "создай бота" → 4-6 чекпоинтов:
+
+```
+User message → [checkpoint] → LLM думает → [checkpoint] → create_project() → [checkpoint]
+→ set_secret() → [checkpoint] → trigger_engineering() → [checkpoint] → ответ → [checkpoint]
+```
+
+В каждом — полный `state["messages"]` на тот момент. Даёт возможность replay, но стоит места.
+
+### Реализация
+
+**1. SQL-миграция для schema** (ручная, не через Alembic):
+
+```sql
+-- scripts/init_langgraph_schema.sql
+CREATE SCHEMA IF NOT EXISTS langgraph;
+```
+
+Вызывается при первом деплое или через `docker-entrypoint-initdb.d/`.
+
+**2. `AsyncPostgresSaver` с search_path**:
+
+```python
+# services/langgraph/src/po/graph.py
+
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+# Connection string с search_path на langgraph schema
+# postgresql+asyncpg://user:pass@db:5432/orchestrator → для asyncpg (без +asyncpg)
+CHECKPOINT_DB_URL = os.getenv("CHECKPOINT_DATABASE_URL")  # postgresql://user:pass@db:5432/orchestrator?options=-c%20search_path%3Dlanggraph
+
+async def create_po_graph(...) -> CompiledStateGraph:
+    checkpointer = AsyncPostgresSaver.from_conn_string(CHECKPOINT_DB_URL)
+    await checkpointer.setup()  # CREATE TABLE IF NOT EXISTS в langgraph schema
+    ...
+```
+
+**3. Env var в docker-compose.yml** для langgraph сервиса:
+
+```yaml
+CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?options=-c%20search_path%3Dlanggraph
+```
+
+Отдельный env var (не `DATABASE_URL`) чтобы явно разделить: API владеет `DATABASE_URL`, checkpointer — `CHECKPOINT_DATABASE_URL`.
+
+**4. Зависимость**: `langgraph-checkpoint-postgres` в requirements.
+
+**5. `create_po_graph` становится async** (из-за `checkpointer.setup()` и `from_conn_string`). Consumer вызывает его при старте.
+
+### Файлы
+
+```
+scripts/init_langgraph_schema.sql          — CREATE SCHEMA IF NOT EXISTS langgraph
+services/langgraph/src/po/graph.py         — MemorySaver → AsyncPostgresSaver
+services/langgraph/src/config/settings.py  — + checkpoint_database_url
+docker-compose.yml                         — + CHECKPOINT_DATABASE_URL для langgraph
+services/langgraph/requirements.in         — + langgraph-checkpoint-postgres
+```
+
+### Тесты
+
+- Unit-тесты графа продолжают использовать `MemorySaver` (не нужен PostgreSQL для unit-тестов)
+- Integration test: запись/чтение checkpoint через `AsyncPostgresSaver` с реальным PostgreSQL
+
+---
+
 ## Фаза 2: Telegram Integration + Event-Driven PO
 
 ### 2.1 Telegram bot: новый flow
@@ -725,5 +811,6 @@ Middleware в LangGraph, считает tokens per user. Базовая защи
 | Reminders | `ZADD po:reminders` + poller каждые 30 сек | Простая реализация без внешних зависимостей (APScheduler, Celery) |
 | Миграция сессий | Чистый лист | Мы не в проде |
 | Graceful shutdown | Перестаём читать, ждём текущие tasks, ACK | Сообщения не обработаются дважды при рестарте |
-| Checkpointer (Phase 1) | `MemorySaver` вместо `AsyncPostgresSaver` | langgraph-сервис не имеет DATABASE_URL — обращается к БД через API. PostgreSQL checkpointer — отдельный PR |
+| Checkpointer (Phase 1) | `MemorySaver` — in-memory | Быстрый старт, не нужен PostgreSQL для разработки |
+| Checkpointer (Phase 1.5) | `AsyncPostgresSaver` в отдельной schema `langgraph` (**implemented**) | Та же БД, Alembic не пересекается (работает с `public`), отдельный `CHECKPOINT_DATABASE_URL` env var. Schema создаётся psycopg3 sync перед `setup()`. MemorySaver fallback если env var не задан. |
 | `create_react_agent` prompt API | `prompt=callable` (не `state_modifier`) | langgraph-prebuilt 1.0.5 убрал `state_modifier`, `prompt` принимает callable(state) -> messages |

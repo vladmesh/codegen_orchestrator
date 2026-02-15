@@ -39,10 +39,11 @@ async def run_po_consumer() -> None:
 
     init_po_clients(api_client, redis)
 
-    graph = create_po_graph(
+    graph = await create_po_graph(
         model=settings.po_llm_model,
         base_url=settings.po_llm_base_url,
         api_key=settings.po_llm_api_key,
+        checkpoint_database_url=settings.checkpoint_database_url,
     )
 
     # Ensure consumer group exists

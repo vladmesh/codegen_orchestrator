@@ -1,7 +1,7 @@
 """LangGraph service configuration.
 
 Requires: REDIS_URL, API_BASE_URL
-Does NOT need DATABASE_URL (accesses DB via API)
+Optional: CHECKPOINT_DATABASE_URL (PostgreSQL for LangGraph checkpointer persistence)
 """
 
 from functools import lru_cache
@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     po_llm_model: str | None = None
     po_llm_base_url: str | None = None
     po_llm_api_key: str | None = None
+
+    # Optional: PostgreSQL URL for LangGraph checkpointer persistence
+    # Falls back to MemorySaver (in-memory) if not set
+    checkpoint_database_url: str | None = None
 
 
 @lru_cache

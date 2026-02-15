@@ -4,19 +4,20 @@
 
 ---
 
-## 🧭 Product Owner (CLI Agent)
+## 🧭 Product Owner (LangGraph ReactAgent)
 
-**Роль**: Центральный координатор на базе CLI-агента. Управляет всем жизненным циклом проекта через API tools.
+**Роль**: Центральный координатор. Управляет жизненным циклом проекта через API tools, единственная точка коммуникации с пользователем.
 
-**Реализация**: worker-manager создаёт Docker-контейнер с CLI агентом (Claude Code, Factory.ai или custom), который работает как Product Owner.
+**Реализация**: LangGraph `create_react_agent` в `services/langgraph/src/po/`. Runs as an async consumer inside the langgraph container — no separate Docker container needed. Conversation state persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); falls back to in-memory `MemorySaver` without `CHECKPOINT_DATABASE_URL`.
 
-**Инструменты**: Все инструменты из API предоставляются через OpenAPI и native tool calling:
-- `trigger_engineering`: запуск Engineering Subgraph
-- `trigger_deploy`: запуск DevOps Subgraph
-- `list_projects`, `get_project_status`: управление проектами
-- `list_managed_servers`, `allocate_port`: управление инфраструктурой
-- `save_project_secret`: сохранение секретов
-- И другие...
+**Инструменты** (`src/po/tools.py`):
+- `create_project`, `list_projects`, `get_project`: управление проектами через API
+- `set_project_secret`: сохранение секретов
+- `trigger_engineering`, `trigger_deploy`: запуск subgraphs через API + Redis
+- `get_task_status`: статус задач
+- `set_reminder`: отложенные проверки через Redis ZSET
+
+**Communication**: Redis streams — `po:input` (inbound), `po:response:{request_id}` (outbound).
 
 **Выход**: Действия через tools, сообщения пользователю через Telegram
 
@@ -170,18 +171,18 @@ infra-service
 
 ---
 
-## 🔄 Взаимодействие (CLI Agent Flow)
+## 🔄 Взаимодействие
 
 ```
 Пользователь (Telegram)
      │
      ▼
-Telegram Bot → worker-manager
+Telegram Bot → Redis (po:input)
      │
      ▼
-CLI Agent (Product Owner)
-     │ tool calls via OpenAPI
-     ├──────────────▶ respond (via Redis) ──▶ Пользователь
+PO ReactAgent (in langgraph container)
+     │ tool calls (httpx/Redis)
+     ├──────────────▶ po:response:{request_id} ──▶ Пользователь
      │
      ├──────────────▶ trigger_engineering
      │                     │
@@ -200,4 +201,4 @@ CLI Agent (Product Owner)
      └──────────────▶ (завершение) ◄─────────────────────────┘
 ```
 
-**Важно**: CLI Agent координирует весь flow через API tools. Scaffolder работает асинхронно (fire-and-forget), DeveloperNode ждёт готовности scaffolding.
+**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder работает асинхронно (fire-and-forget), DeveloperNode ждёт готовности scaffolding.
