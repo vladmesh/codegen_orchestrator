@@ -194,7 +194,6 @@ jobs:
           context: .
           file: services/worker-manager/images/worker-base-common/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:latest
             ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:${{ github.sha }}
@@ -202,12 +201,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build Claude Base
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: services/worker-manager/images/worker-base-claude/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
+          push: true
           build-args: |
             BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:${{ github.sha }}
           tags: |
@@ -217,12 +216,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build Factory Base
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: services/worker-manager/images/worker-base-factory/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
+          push: true
           build-args: |
             BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:${{ github.sha }}
           tags: |
