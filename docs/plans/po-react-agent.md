@@ -1,7 +1,7 @@
 # Plan: PO как LangGraph ReactAgent (без контейнера)
 
 > **Дата**: 2026-02-15
-> **Статус**: Phase 2.4 Complete (+ post-testing fixes), Phase 2.5 next
+> **Статус**: Phase 2.5 Complete (direct migration, no bridge), Phase 3 next
 > **Контекст**: MVP работает, E2E проходят. PO — самый перегруженный компонент: Docker-контейнер, subprocess Claude CLI, orchestrator-cli как прокси к API/Redis. Каждая будущая фича упирается в эту архитектуру.
 
 ---
@@ -414,15 +414,11 @@ if not all([PO_LLM_MODEL, PO_LLM_BASE_URL, PO_LLM_API_KEY]):
     raise RuntimeError("PO_LLM_MODEL, PO_LLM_BASE_URL, PO_LLM_API_KEY must be set")
 ```
 
-### 1.6 System prompt
+### 1.6 System prompt (**Done**)
 
-Адаптация `shared/prompts/po_worker/INSTRUCTIONS.md`:
-- Убрать CLI-команды (`orchestrator project create` → описание tools)
-- Добавить инструкции по обработке system events (когда молчать, когда сообщить, когда действовать)
-- Описать поведение при ошибках (retry vs уведомить пользователя)
-- Добавить инструкции по timestamps (PO видит временной контекст сообщений)
+Реализовано в `services/langgraph/src/po/prompts.py` — `SYSTEM_PROMPT` constant. Подключается через `prompt_with_trimming` callable в `create_react_agent(prompt=...)`.
 
-Файл: `services/langgraph/src/po/prompts.py`
+Старый промпт `shared/prompts/po_worker/INSTRUCTIONS.md` — legacy от контейнерного PO, не используется новым ReactAgent. Удаление в Phase 3.
 
 ### 1.7 Тесты
 
@@ -784,11 +780,22 @@ async def _poll_reminders():
         await asyncio.sleep(30)
 ```
 
-### 2.5 Переходный период: `cli-agent:user-messages`
+### 2.5 ~~Переходный период~~ → Direct migration
 
-Пока Developer ещё использует `orchestrator respond` → пишет в `cli-agent:user-messages`. На переходный период: listener маршрутизирует эти сообщения в `po:input` как system events, а не напрямую в Telegram.
+**Решение**: Bridge не нужен — не на проде. `orchestrator respond` теперь пишет напрямую в `po:input` как `system_event` с `event: "agent_message"`. `cli-agent:user-messages` стрим больше не используется.
 
-После полного перевода Developer на system events — `cli-agent:user-messages` удаляется (фаза 3).
+Формат сообщения:
+```python
+{
+    "type": "system_event",
+    "event": "agent_message",
+    "text": "[agent:{agent_id}] {message}",
+    "user_id": user_id,       # from ORCHESTRATOR_USER_ID env
+    "timestamp": "...",
+}
+```
+
+PO consumer обрабатывает как любой другой system event → решает переслать пользователю или промолчать.
 
 ---
 
@@ -796,10 +803,13 @@ async def _poll_reminders():
 
 1. Убрать PO-специфичный код из worker-manager (тип `po`)
 2. Убрать `session:po:{user_id}`, `worker:{id}:input/output` Redis keys
-3. orchestrator-cli: оставить только Developer/Tester tools
-4. Убрать `cli-agent:user-messages` stream (когда Developer перейдёт на events)
+3. orchestrator-cli: убрать PO-специфичные tools (если есть), оставить Developer/Tester
+4. Удалить `cli-agent:user-messages` stream и все ссылки (стрим полностью мёртв после Phase 2.5)
 5. Убрать `progress:po:{user_id}:{uuid}` streams (Telegram bot больше не слушает их напрямую)
-6. Обновить E2E тесты
+6. Удалить `shared/prompts/po_worker/INSTRUCTIONS.md` — мёртвый промпт старого контейнерного PO (новый PO использует `services/langgraph/src/po/prompts.py`)
+7. Перенести `shared/prompts/developer_worker/INSTRUCTIONS.md` → `services/langgraph/` (единственный потребитель — `worker_spawner.py` в langgraph)
+8. Убрать `shared/prompts/` каталог после переноса
+9. Обновить E2E тесты
 
 ---
 
@@ -913,3 +923,6 @@ Middleware в LangGraph, считает tokens per user. Базовая защи
 | Message type for system events/reminders | `HumanMessage` with `[system: {type}]` prefix | `prompt_with_trimming` filters out `SystemMessage` (to avoid duplicate system prompts). Using `SystemMessage` for events/reminders caused them to be silently dropped — LLM returned empty content. `HumanMessage` with prefix passes through trimming and LLM responds properly. |
 | Empty response fallback | `"Бот вернул пустой ответ"` for sync messages (has `request_id`) | LLM sometimes returns empty content after tool calls. Telegram bot waits on `po:response:{request_id}` — empty = timeout error. Fallback prevents user-facing errors. For async messages (no `request_id`), empty = intentional silence — no fallback. |
 | PO response routing | Auto-forward to `po:proactive` for non-request_id messages | PO's final text response is always delivered: sync via `po:response:{request_id}`, async via `po:proactive`. `notify_user` tool is only for intermediate messages while continuing tool calls. |
+| Phase 2.5 migration | Direct: `orchestrator respond` → `po:input` (no bridge) | Not in production — no backward compatibility needed. `cli-agent:user-messages` stream is dead (no readers). One-line change in respond.py. |
+| `expect_reply` flag | Removed from `orchestrator respond` | Only used by old container PO. New PO ReactAgent handles conversation natively via checkpointer. Developer agents never used `--expect-reply`. |
+| Prompt location | Промпты рядом с потребителем, не в `shared/` | PO prompt в `services/langgraph/src/po/prompts.py` (правильно). `shared/prompts/po_worker/` — мёртвый, удалить в Phase 3. Developer prompt тоже перенести в langgraph (единственный потребитель). |

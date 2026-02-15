@@ -1,4 +1,8 @@
-"""Respond command for agent-to-user communication via Redis."""
+"""Respond command for agent-to-user communication via Redis.
+
+Writes to po:input so the PO ReactAgent can decide how to forward
+the message to the user (via po:proactive stream).
+"""
 
 import asyncio
 from datetime import UTC, datetime
@@ -9,11 +13,9 @@ import typer
 
 from orchestrator_cli.client import get_redis_client
 from orchestrator_cli.permissions import require_permission
+from shared.queues import PO_INPUT_QUEUE
 
 console = Console()
-
-# Stream for user-facing messages
-USER_MESSAGE_STREAM = "cli-agent:user-messages"
 
 
 def _get_agent_id() -> str:
@@ -25,21 +27,25 @@ def _get_agent_id() -> str:
     return agent_id
 
 
-async def send_response_async(message: str, expect_reply: bool = False) -> None:
-    """Send message to user via Redis stream."""
-    agent_id = _get_agent_id()
-    redis_client = get_redis_client()
+def _get_user_id() -> str:
+    """Get user ID from environment."""
+    return os.getenv("ORCHESTRATOR_USER_ID", "unknown")
 
-    msg_type = "question" if expect_reply else "answer"
-    field_name = "question" if expect_reply else "message"
+
+async def send_response_async(message: str) -> None:
+    """Send message to user via PO input stream."""
+    agent_id = _get_agent_id()
+    user_id = _get_user_id()
+    redis_client = get_redis_client()
 
     try:
         await redis_client.xadd(
-            USER_MESSAGE_STREAM,
+            PO_INPUT_QUEUE,
             {
-                "agent_id": agent_id,
-                "type": msg_type,
-                field_name: message,
+                "type": "system_event",
+                "event": "agent_message",
+                "text": f"[agent:{agent_id}] {message}",
+                "user_id": user_id,
                 "timestamp": datetime.now(UTC).isoformat(),
             },
         )
@@ -50,29 +56,18 @@ async def send_response_async(message: str, expect_reply: bool = False) -> None:
 @require_permission("respond")
 def respond(
     message: str = typer.Argument(..., help="Message to send to user"),
-    expect_reply: bool = typer.Option(
-        False,
-        "--expect-reply",
-        "-q",
-        help="Indicates this is a question expecting user reply",
-    ),
 ):
     """Send message to user.
 
-    Use this to communicate results or ask questions.
-
     Examples:
         orchestrator respond "Task completed successfully"
-        orchestrator respond "Which database should I use?" --expect-reply
+        orchestrator respond "Which database should I use?"
     """
     try:
-        asyncio.run(send_response_async(message, expect_reply))
+        asyncio.run(send_response_async(message))
 
         agent_id = _get_agent_id()
-        if expect_reply:
-            console.print(f"[yellow]?[/yellow] Question sent to user (agent: {agent_id})")
-        else:
-            console.print(f"[green]✓[/green] Response sent (agent: {agent_id})")
+        console.print(f"[green]✓[/green] Response sent (agent: {agent_id})")
 
     except typer.Exit:
         raise

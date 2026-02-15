@@ -125,11 +125,7 @@ orchestrator diagnose run
 When you have completed your task or need user input, use this to communicate:
 
 ```bash
-# Send final response to user
 orchestrator respond "<message>"
-
-# Ask clarifying question (expects user reply)
-orchestrator respond "<question>" --expect-reply
 ```
 
 **Important**: Always use this command to report results or ask questions.

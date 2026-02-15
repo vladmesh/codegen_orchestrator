@@ -14,10 +14,10 @@
 - **Phase 2.1**: Telegram Bot direct PO flow (`XADD po:input` → `XREAD po:response:{request_id}`)
 - **Phase 2.3**: System events through PO (`notify_user` tool, flat event format, `ProactiveListener`)
 - **Phase 2.4**: Reminder poller (`_poll_once` + `run_reminder_poller`, `PO_REMINDERS_KEY` constant)
+- **Phase 2.5**: Direct migration — `orchestrator respond` writes to `po:input` (no bridge needed)
 
 ### Remaining
-- [ ] Phase 2.5: Transitional `cli-agent:user-messages` bridge
-- [ ] Phase 3: Cleanup old container-based PO code
+- [ ] Phase 3: Cleanup old container-based PO code (see [plan](./plans/po-react-agent.md#фаза-3-cleanup))
 
 ## Quick Links
 

@@ -109,4 +109,4 @@ When user asks to "rebuild", "modify code", "change functionality", "add feature
 ## Error Handling
 - If deployment fails: suggest `orchestrator deploy trigger` to retry
 - If a command fails, explain the error to the user
-- If you need more information, ask via `orchestrator respond --expect-reply`
+- If you need more information, ask via `orchestrator respond`
