@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 FROM python:3.12-slim AS test
 
 WORKDIR /app
@@ -18,7 +19,8 @@ COPY shared /app/shared
 COPY packages/worker-wrapper /app/packages/worker-wrapper
 
 # Install dependencies
-RUN uv pip install --system --no-cache-dir \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system \
     pytest \
     pytest-asyncio \
     respx \
@@ -29,7 +31,6 @@ RUN uv pip install --system --no-cache-dir \
 
 # Set Python path
 ENV PYTHONPATH=/app/packages/worker-wrapper/src:/app
-
 
 # Default command
 CMD ["pytest", "/app/tests/integration/worker_wrapper", "-v"]

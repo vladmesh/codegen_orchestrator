@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -12,7 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy and install dependencies
 COPY services/infra-service/pyproject.toml .
 COPY services/infra-service/ansible/requirements.yml /app/ansible/requirements.yml
-RUN pip install --no-cache-dir . && \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install . && \
     ansible-galaxy collection install -r /app/ansible/requirements.yml
 
 # Copy source code

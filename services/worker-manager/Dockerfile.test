@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # Multi-stage Dockerfile optimized for testing with caching
 
 FROM python:3.12-slim AS base
@@ -15,23 +16,23 @@ FROM base AS test-deps
 
 # Copy only dependency files first (for caching)
 COPY services/worker-manager/pyproject.toml ./
-COPY shared ./shared
-RUN pip install ./shared
 
-# Install runtime + test dependencies
-RUN pip install --no-cache-dir . && \
-    pip install --no-cache-dir pytest pytest-asyncio pytest-cov httpx docker fakeredis
+# Install service + test dependencies (shared is installed later in test stage)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install . && \
+    pip install pytest pytest-asyncio pytest-cov httpx docker fakeredis
 
 # === Test Stage ===
 FROM test-deps AS test
 
-# Copy shared modules
+# Copy and install shared module (changes more often than deps)
 COPY shared /app/shared
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install ./shared
 
 # Copy source code
 COPY services/worker-manager/src ./src
 COPY services/worker-manager/tests ./tests
-# COPY services/worker-manager/pytest.ini ./ # No pytest.ini yet
 
 # Run tests
 CMD ["pytest", "-v"]

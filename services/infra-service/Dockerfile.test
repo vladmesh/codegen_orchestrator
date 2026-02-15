@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -9,15 +10,18 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files
+# Install uv and test frameworks (rarely change)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install uv
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system "pytest" "pytest-asyncio" "pytest-mock" "fakeredis"
+
+# Copy and install service + shared
 COPY services/infra-service/pyproject.toml /app/services/infra-service/
 COPY shared/ /app/shared/
 COPY services/infra-service/src/ /app/services/infra-service/src/
-
-# Install dependencies
-RUN pip install --no-cache-dir uv && \
+RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system -e /app/shared && \
-    uv pip install --system "pytest" "pytest-asyncio" "pytest-mock" "fakeredis" && \
     uv pip install --system -e /app/services/infra-service
 
 # Set pythonpath

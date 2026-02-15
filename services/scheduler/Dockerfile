@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy and install service dependencies from lock file (faster, no resolution)
 COPY services/scheduler/requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir --prefix=/install -r requirements.lock
+    pip install --prefix=/install -r requirements.lock
 
 # === Stage 2: Production ===
 # Create minimal runtime image
