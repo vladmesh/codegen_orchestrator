@@ -47,6 +47,9 @@ services:
       PYTHONPATH: /app
       DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
       GITHUB_ORG: ${GITHUB_ORG}
+      PO_LLM_MODEL: ${PO_LLM_MODEL:-}
+      PO_LLM_BASE_URL: ${PO_LLM_BASE_URL:-}
+      PO_LLM_API_KEY: ${PO_LLM_API_KEY:-}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated

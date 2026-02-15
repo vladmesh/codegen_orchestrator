@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # When set, workers use this URL instead of api.anthropic.com
     anthropic_base_url: str | None = None
 
+    # Optional: PO ReactAgent LLM config (all three required to enable PO consumer)
+    po_llm_model: str | None = None
+    po_llm_base_url: str | None = None
+    po_llm_api_key: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

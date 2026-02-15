@@ -1,7 +1,7 @@
 # Plan: PO как LangGraph ReactAgent (без контейнера)
 
 > **Дата**: 2026-02-15
-> **Статус**: Design Ready
+> **Статус**: Phase 1 Complete
 > **Контекст**: MVP работает, E2E проходят. PO — самый перегруженный компонент: Docker-контейнер, subprocess Claude CLI, orchestrator-cli как прокси к API/Redis. Каждая будущая фича упирается в эту архитектуру.
 
 ---
@@ -544,19 +544,31 @@ class POSystemEvent:
 
 Engineering/deploy workers пишут в `po:input` после завершения задачи. PO получает событие, решает что делать: промолчать, сообщить пользователю, перезапустить задачу.
 
-**Proactive messages.** Для system events нет `request_id` — Telegram bot не ждёт ответ. PO пишет proactive сообщение в отдельный stream `po:proactive:{user_id}`. Telegram bot слушает его в фоне:
+**Proactive messages.** Для system events нет `request_id` — Telegram bot не ждёт ответ. PO пишет proactive сообщение в **один общий стрим `po:proactive`** с полем `user_id` (аналогично `po:input`). Telegram bot слушает через consumer group:
 
 ```python
 # Consumer: PO решил сообщить пользователю о system event
-await redis.xadd(f"po:proactive:{user_id}", {
+await redis.xadd("po:proactive", {
     "text": response_text,
+    "user_id": user_id,
 })
 
-# Telegram bot: фоновый listener
+# Telegram bot: один listener на все proactive сообщения
 async def _listen_proactive():
-    """Listen for proactive PO messages to users."""
-    # xread на po:proactive:* — или один стрим po:proactive с user_id полем
+    """Listen for proactive PO messages to users via consumer group."""
+    await redis.xgroup_create("po:proactive", "tg-bot", mkstream=True)
+    while True:
+        entries = await redis.xreadgroup(
+            "tg-bot", "bot-0", {"po:proactive": ">"}, count=10, block=5000
+        )
+        for _, messages in entries:
+            for msg_id, data in messages:
+                chat_id = await get_chat_id(data["user_id"])
+                await bot.send_message(chat_id, data["text"])
+                await redis.xack("po:proactive", "tg-bot", msg_id)
 ```
+
+Один стрим вместо per-user (`po:proactive:{user_id}`) по тем же причинам, что и `po:input`: один XREADGROUP, нет discovery проблемы при рестарте, consumer group автоматически масштабируется на несколько инстансов Telegram bot'а.
 
 ### 2.4 Reminders: `set_reminder` tool
 
@@ -709,6 +721,9 @@ Middleware в LangGraph, считает tokens per user. Базовая защи
 | Env vars | Без дефолтов, `RuntimeError` если не заданы | Правило проекта (CLAUDE.md) |
 | PO tools | Новые async-функции с shared httpx/redis client | orchestrator-cli остаётся для Developer/Tester |
 | System events | Все через PO. PO — единственная точка коммуникации с пользователем | Фильтрация, перевод ошибок, автономные действия |
+| Proactive messages | Один общий стрим `po:proactive` с полем `user_id`, consumer group `tg-bot` | Консистентно с `po:input`, один XREADGROUP, нет discovery при рестарте, масштабируется на несколько bot-инстансов |
 | Reminders | `ZADD po:reminders` + poller каждые 30 сек | Простая реализация без внешних зависимостей (APScheduler, Celery) |
 | Миграция сессий | Чистый лист | Мы не в проде |
 | Graceful shutdown | Перестаём читать, ждём текущие tasks, ACK | Сообщения не обработаются дважды при рестарте |
+| Checkpointer (Phase 1) | `MemorySaver` вместо `AsyncPostgresSaver` | langgraph-сервис не имеет DATABASE_URL — обращается к БД через API. PostgreSQL checkpointer — отдельный PR |
+| `create_react_agent` prompt API | `prompt=callable` (не `state_modifier`) | langgraph-prebuilt 1.0.5 убрал `state_modifier`, `prompt` принимает callable(state) -> messages |
