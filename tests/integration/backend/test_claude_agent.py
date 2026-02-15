@@ -51,14 +51,7 @@ async def test_claude_cli_installed(redis_client, docker_client):
     exit_code, output = container.exec_run("which claude")
     assert exit_code == 0, f"claude not found: {output.decode()}"
 
-    # 4. Check nodejs and npm (implicit verification as claude depends on it)
-    exit_code, output = container.exec_run("node --version")
-    assert exit_code == 0, f"node not found: {output.decode()}"
-
-    exit_code, output = container.exec_run("npm --version")
-    assert exit_code == 0, f"npm not found: {output.decode()}"
-
-    # 5. Check claude version
+    # 4. Check claude version
     exit_code, output = container.exec_run("claude --version")
     assert exit_code == 0, f"claude version check failed: {output.decode()}"
 

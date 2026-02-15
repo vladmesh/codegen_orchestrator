@@ -347,7 +347,13 @@ class WorkerManager:
 
             exit_code, output = await self.docker.exec_in_container(container_id, cmd)
             if exit_code != 0:
-                logger.error("instruction_injection_failed", worker_id=worker_id, error=output)
+                container_logs = await self.docker.get_container_logs(container_id)
+                logger.error(
+                    "instruction_injection_failed",
+                    worker_id=worker_id,
+                    error=output,
+                    container_logs=container_logs,
+                )
 
         # Inject task content as TASK.md (for task-driven workers like developer)
         if task_content:
@@ -361,7 +367,13 @@ class WorkerManager:
 
             exit_code, output = await self.docker.exec_in_container(container_id, cmd)
             if exit_code != 0:
-                logger.error("task_injection_failed", worker_id=worker_id, error=output)
+                container_logs = await self.docker.get_container_logs(container_id)
+                logger.error(
+                    "task_injection_failed",
+                    worker_id=worker_id,
+                    error=output,
+                    container_logs=container_logs,
+                )
 
         # Return the worker_id (name), not container_id (Docker hash)
         # This allows callers to reference the worker by its logical name

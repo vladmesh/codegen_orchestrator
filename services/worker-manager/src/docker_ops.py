@@ -138,6 +138,15 @@ class DockerClientWrapper:
         logger.info("building_image", tag=tag)
         return await self._run(_build)
 
+    async def get_container_logs(self, container_id: str, tail: int = 50) -> str:
+        """Get recent logs from a container."""
+        try:
+            container = await self.get_container(container_id)
+            logs = await self._run(container.logs, tail=tail)
+            return logs.decode(errors="replace")
+        except Exception as e:
+            return f"Failed to get logs: {e}"
+
     async def exec_in_container(
         self, container_id: str, command: str, user: str = "worker", timeout: int = 30
     ) -> Tuple[int, bytes]:
