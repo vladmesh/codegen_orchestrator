@@ -248,13 +248,28 @@ class TestSetReminder:
     @pytest.mark.asyncio
     async def test_sets_reminder(self, mock_redis):
         result = await set_reminder.ainvoke(
-            {"user_id": "user-1", "delay_minutes": 10, "reason": "check eng task"}
+            {"delay_minutes": 10, "reason": "check eng task"},
+            config=_make_config("user-1"),
         )
 
         assert "Reminder set" in result
         mock_redis.zadd.assert_called_once()
         call_args = mock_redis.zadd.call_args
         assert call_args[0][0] == PO_REMINDERS_KEY
+
+    @pytest.mark.asyncio
+    async def test_uses_user_id_from_config(self, mock_redis):
+        """user_id should come from RunnableConfig, not LLM arguments."""
+        await set_reminder.ainvoke(
+            {"delay_minutes": 5, "reason": "test"},
+            config=_make_config("user-777"),
+        )
+
+        reminder_json = list(mock_redis.zadd.call_args[0][1].keys())[0]
+        import json
+
+        reminder = json.loads(reminder_json)
+        assert reminder["user_id"] == "user-777"
 
 
 class TestNotifyUser:

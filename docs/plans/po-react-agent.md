@@ -1,7 +1,7 @@
 # Plan: PO как LangGraph ReactAgent (без контейнера)
 
 > **Дата**: 2026-02-15
-> **Статус**: Phase 2.4 Complete, Phase 2.5 next
+> **Статус**: Phase 2.4 Complete (+ post-testing fixes), Phase 2.5 next
 > **Контекст**: MVP работает, E2E проходят. PO — самый перегруженный компонент: Docker-контейнер, subprocess Claude CLI, orchestrator-cli как прокси к API/Redis. Каждая будущая фича упирается в эту архитектуру.
 
 ---
@@ -904,9 +904,12 @@ Middleware в LangGraph, считает tokens per user. Базовая защи
 | Checkpointer (Phase 1) | `MemorySaver` — in-memory | Быстрый старт, не нужен PostgreSQL для разработки |
 | Checkpointer (Phase 1.5) | `AsyncPostgresSaver` в отдельной schema `langgraph` (**implemented**) | Та же БД, Alembic не пересекается (работает с `public`), отдельный `CHECKPOINT_DATABASE_URL` env var. Schema создаётся psycopg3 sync перед `setup()`. MemorySaver fallback если env var не задан. |
 | `create_react_agent` prompt API | `prompt=callable` (не `state_modifier`) | langgraph-prebuilt 1.0.5 убрал `state_modifier`, `prompt` принимает callable(state) -> messages |
-| How PO notifies user on system events | `notify_user` tool (explicit) | PO calls it only when needed. No magic markers, no "always forward". PO can stay silent by simply not calling the tool. |
+| How PO notifies user on system events | Auto-forward final response + `notify_user` for intermediate | PO's final text is always delivered to user (via `po:response` or `po:proactive`). Empty response = silence. `notify_user` only for sending progress updates while continuing tool calls. |
 | Event format in `publish_callback_event` | Flat fields (not JSON-wrapped `data`) | Matches `po:input` consumer expectations. Old JSON format was never consumed by anyone. |
 | user_id in PO tools | `RunnableConfig` injection via `config` kwarg | LangChain standard. Consumer sets `configurable.user_id`, tools read it. No `InjectedState`. |
 | callback_stream | `PO_INPUT_QUEUE` (constant) | Single stream, no discovery problem. Workers write same format as always — they don't know about PO. |
 | ProactiveListener | Follows ProvisionerNotifier pattern | Consumer group, XREADGROUP, same startup/shutdown lifecycle. Proven pattern in codebase. |
 | Reminder poller (Phase 2.4) | Standalone async coroutine with `_poll_once` + loop | `_poll_once` is testable independently. Own Redis connection (separate from consumer). `ZRANGEBYSCORE` + `ZREM` not atomic — acceptable for single-process; Lua/ZPOPMIN if we scale. `PO_REMINDERS_KEY` constant extracted to `shared/queues.py`. |
+| Message type for system events/reminders | `HumanMessage` with `[system: {type}]` prefix | `prompt_with_trimming` filters out `SystemMessage` (to avoid duplicate system prompts). Using `SystemMessage` for events/reminders caused them to be silently dropped — LLM returned empty content. `HumanMessage` with prefix passes through trimming and LLM responds properly. |
+| Empty response fallback | `"Бот вернул пустой ответ"` for sync messages (has `request_id`) | LLM sometimes returns empty content after tool calls. Telegram bot waits on `po:response:{request_id}` — empty = timeout error. Fallback prevents user-facing errors. For async messages (no `request_id`), empty = intentional silence — no fallback. |
+| PO response routing | Auto-forward to `po:proactive` for non-request_id messages | PO's final text response is always delivered: sync via `po:response:{request_id}`, async via `po:proactive`. `notify_user` tool is only for intermediate messages while continuing tool calls. |

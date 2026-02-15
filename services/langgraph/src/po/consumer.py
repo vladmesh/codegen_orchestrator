@@ -10,11 +10,11 @@ import asyncio
 import os
 
 import httpx
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 import redis.asyncio as aioredis
 import structlog
 
-from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE
+from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 
 from ..config.settings import get_settings
 from .graph import create_po_graph
@@ -129,10 +129,9 @@ async def _handle_message(graph, redis: aioredis.Redis, user_id: str, data: dict
 
     formatted = f"[{timestamp} UTC] {text}" if timestamp else text
 
-    if msg_type == "user_message":
-        msg = HumanMessage(content=formatted)
-    else:
-        msg = SystemMessage(content=formatted)
+    if msg_type != "user_message":
+        formatted = f"[system: {msg_type}] {formatted}"
+    msg = HumanMessage(content=formatted)
 
     result = await graph.ainvoke(
         {"messages": [msg]},
@@ -144,12 +143,29 @@ async def _handle_message(graph, redis: aioredis.Redis, user_id: str, data: dict
         },
     )
 
-    response_text = result["messages"][-1].content
+    last_msg = result["messages"][-1]
+    response_text = last_msg.content
+    logger.debug(
+        "po_graph_result",
+        last_msg_type=type(last_msg).__name__,
+        content_length=len(response_text) if response_text else 0,
+        total_messages=len(result["messages"]),
+    )
 
     request_id = data.get("request_id")
     if request_id:
+        # Synchronous response — telegram bot is waiting
+        if not response_text:
+            response_text = "Бот вернул пустой ответ"
+            logger.warning("po_empty_response_fallback", user_id=user_id, request_id=request_id)
         await redis.xadd(
             f"po:response:{request_id}",
+            {"text": response_text, "user_id": user_id},
+        )
+    elif response_text:
+        # No request_id (reminder, system event) — forward to user via proactive stream
+        await redis.xadd(
+            PO_PROACTIVE_QUEUE,
             {"text": response_text, "user_id": user_id},
         )
 
@@ -157,5 +173,6 @@ async def _handle_message(graph, redis: aioredis.Redis, user_id: str, data: dict
         "po_message_handled",
         user_id=user_id,
         msg_type=msg_type,
+        response_empty=not bool(response_text),
         has_request_id=bool(request_id),
     )

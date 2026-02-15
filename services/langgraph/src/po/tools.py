@@ -259,7 +259,7 @@ async def get_task_status(task_id: str) -> str:
 
 
 @tool
-async def set_reminder(user_id: str, delay_minutes: int, reason: str) -> str:
+async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfig) -> str:
     """Set a reminder to wake up after a delay.
 
     Use this whenever you need to wait and follow up later — after triggering
@@ -267,11 +267,11 @@ async def set_reminder(user_id: str, delay_minutes: int, reason: str) -> str:
     should check back in the future.
 
     Args:
-        user_id: User ID this reminder is about.
         delay_minutes: Minutes until reminder fires.
         reason: Why you're setting this reminder (e.g. "check engineering task eng-abc123").
     """
     redis = _get_redis()
+    user_id = config["configurable"].get("user_id", "unknown")
     fire_at = time.time() + delay_minutes * 60
 
     reminder = json.dumps(
@@ -290,14 +290,15 @@ async def set_reminder(user_id: str, delay_minutes: int, reason: str) -> str:
 
 @tool
 async def notify_user(message: str, *, config: RunnableConfig) -> str:
-    """Send a proactive message to the user.
+    """Send an intermediate message to the user and continue working.
 
-    Use this to inform the user about important events like task completion,
-    deployment success, or errors. Do NOT use for replying to user messages —
-    those are sent automatically.
+    Use this ONLY when you need to send a progress update while continuing
+    to use more tools. For example: "Starting deployment..." before calling
+    trigger_deploy. Your final response is always delivered to the user
+    automatically — do NOT use this tool for final replies.
 
     Args:
-        message: Text to send to the user.
+        message: Text to send to the user right now.
     """
     redis = _get_redis()
     user_id = config["configurable"].get("user_id", "unknown")

@@ -13,10 +13,9 @@
 - **Phase 1.5**: PostgreSQL Checkpointer (`AsyncPostgresSaver`, schema `langgraph`)
 - **Phase 2.1**: Telegram Bot direct PO flow (`XADD po:input` → `XREAD po:response:{request_id}`)
 - **Phase 2.3**: System events through PO (`notify_user` tool, flat event format, `ProactiveListener`)
+- **Phase 2.4**: Reminder poller (`_poll_once` + `run_reminder_poller`, `PO_REMINDERS_KEY` constant)
 
 ### Remaining
-
-- [ ] Phase 2.4: Reminders (reminder poller in consumer)
 - [ ] Phase 2.5: Transitional `cli-agent:user-messages` bridge
 - [ ] Phase 3: Cleanup old container-based PO code
 

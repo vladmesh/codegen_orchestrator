@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 import pytest
 
 from src.po.consumer import _handle_message, _process_message
@@ -44,9 +44,10 @@ class TestHandleMessage:
         assert isinstance(msg, HumanMessage)
         assert "2026-02-15T10:00:00" in msg.content
         assert "hello" in msg.content
+        assert "[system:" not in msg.content
 
     @pytest.mark.asyncio
-    async def test_system_event_creates_system_message(self, mock_graph, mock_redis):
+    async def test_system_event_uses_human_message_with_prefix(self, mock_graph, mock_redis):
         data = {
             "type": "system_event",
             "text": "engineering_completed",
@@ -57,10 +58,12 @@ class TestHandleMessage:
         await _handle_message(mock_graph, mock_redis, "user-1", data)
 
         msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
-        assert isinstance(msg, SystemMessage)
+        assert isinstance(msg, HumanMessage)
+        assert msg.content.startswith("[system: system_event]")
+        assert "engineering_completed" in msg.content
 
     @pytest.mark.asyncio
-    async def test_reminder_creates_system_message(self, mock_graph, mock_redis):
+    async def test_reminder_uses_human_message_with_prefix(self, mock_graph, mock_redis):
         data = {
             "type": "reminder",
             "text": "check task eng-123",
@@ -70,7 +73,9 @@ class TestHandleMessage:
         await _handle_message(mock_graph, mock_redis, "user-1", data)
 
         msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
-        assert isinstance(msg, SystemMessage)
+        assert isinstance(msg, HumanMessage)
+        assert msg.content.startswith("[system: reminder]")
+        assert "check task eng-123" in msg.content
 
     @pytest.mark.asyncio
     async def test_uses_thread_id_per_user(self, mock_graph, mock_redis):
@@ -98,12 +103,34 @@ class TestHandleMessage:
         assert call_args[0][1]["user_id"] == "user-1"
 
     @pytest.mark.asyncio
-    async def test_no_response_without_request_id(self, mock_graph, mock_redis):
+    async def test_no_request_id_forwards_to_proactive(self, mock_graph, mock_redis):
+        """Without request_id, non-empty response should go to po:proactive."""
         data = {"type": "system_event", "text": "scaffolding_done"}
 
         await _handle_message(mock_graph, mock_redis, "user-1", data)
 
-        mock_redis.xadd.assert_not_called()
+        mock_redis.xadd.assert_called_once()
+        call_args = mock_redis.xadd.call_args
+        assert call_args[0][0] == "po:proactive"
+        assert call_args[0][1]["text"] == "Hello! How can I help?"
+        assert call_args[0][1]["user_id"] == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_empty_response_uses_fallback(self, mock_graph, mock_redis):
+        """If LLM returns empty content, consumer should write fallback to po:response."""
+        mock_graph.ainvoke.return_value = {"messages": [AIMessage(content="")]}
+        data = {
+            "type": "user_message",
+            "text": "don't respond",
+            "request_id": "req-empty",
+        }
+
+        await _handle_message(mock_graph, mock_redis, "user-1", data)
+
+        mock_redis.xadd.assert_called_once()
+        call_args = mock_redis.xadd.call_args
+        assert call_args[0][0] == "po:response:req-empty"
+        assert call_args[0][1]["text"] == "Бот вернул пустой ответ"
 
     @pytest.mark.asyncio
     async def test_handles_missing_timestamp(self, mock_graph, mock_redis):
@@ -139,18 +166,17 @@ class TestHandleMessage:
         assert config["configurable"]["user_id"] == "user-99"
 
     @pytest.mark.asyncio
-    async def test_system_event_without_request_id_skips_response(self, mock_graph, mock_redis):
-        """System events without request_id should not write to po:response:*."""
+    async def test_empty_response_without_request_id_stays_silent(self, mock_graph, mock_redis):
+        """Empty response without request_id should NOT write to po:proactive."""
+        mock_graph.ainvoke.return_value = {"messages": [AIMessage(content="")]}
         data = {
             "type": "system_event",
-            "text": "engineering_completed",
+            "text": "scaffolding_completed",
         }
 
         await _handle_message(mock_graph, mock_redis, "user-1", data)
 
-        # Graph should be invoked
         mock_graph.ainvoke.assert_called_once()
-        # But no response written
         mock_redis.xadd.assert_not_called()
 
 

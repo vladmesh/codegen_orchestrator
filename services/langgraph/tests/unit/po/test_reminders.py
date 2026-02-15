@@ -154,7 +154,10 @@ class TestSetReminderUsesConstant:
         mock_api = AsyncMock()
         init_po_clients(mock_api, mock_redis)
 
-        await set_reminder.ainvoke({"user_id": "user-1", "delay_minutes": 5, "reason": "test"})
+        await set_reminder.ainvoke(
+            {"delay_minutes": 5, "reason": "test"},
+            config={"configurable": {"thread_id": "po-user-user-1", "user_id": "user-1"}},
+        )
 
         call_args = mock_redis.zadd.call_args
         assert call_args[0][0] == PO_REMINDERS_KEY
