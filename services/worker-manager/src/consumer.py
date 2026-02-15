@@ -173,34 +173,7 @@ class WorkerCommandConsumer:
         return None
 
     async def publish_response(self, cmd: WorkerCommand, response: WorkerResponse):
-        """Publish response to appropriate queue."""
-        # Determine target queue based on who started it or config
-        # CreateWorkerCommand has config.worker_type (po/developer)
-        # Delete/Status don't have worker_type explicitly in command, but logic implies we know it.
-        # However, looking at CONTRACTS, `DeleteWorkerCommand` only has `worker_id`.
-        # We can default to `worker:responses:po` or `worker:responses:developer`?
-        # Or better: if we can't determine, send to both or a generic one?
-        # CONTRACTS say:
-        # worker:responses:po -> For PO
-        # worker:responses:developer -> For Developer.
-
-        # Strategy:
-        # If Create -> use config.worker_type
-        # If others -> we might not know.
-        # But maybe we can try to guess from prefix or broadcast.
-        # Let's send to `worker:responses:po` by default or checking context.
-        # Tests will verify specific queues.
-
-        queue = "worker:responses:po"  # Default
-        if isinstance(cmd, CreateWorkerCommand):
-            if cmd.config.worker_type == "developer":
-                queue = "worker:responses:developer"
-
-        # Logic for others? Delete/Status.
-        # The initiator knows where to listen.
-        # Ideally we should include reply_to or worker_type in all commands.
-        # Since we can't change contracts now without huge effort, let's assume specific routing logic
-        # OR implementation detail: maybe we map ID to type via Redis first?
-        # Assuming defaults for now.
+        """Publish response to developer response queue."""
+        queue = "worker:responses:developer"
 
         await self.redis.xadd(queue, {"data": response.model_dump_json()})

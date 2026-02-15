@@ -42,7 +42,7 @@ cat error.log | claude -p "Fix this error"
 
 ## Интеграция в проект
 
-Developer node в Engineering Subgraph использует coding agents через `worker-manager` сервис:
+Developer node в Engineering Subgraph использует coding agents через `worker-manager` сервис (PO не использует контейнеры — это LangGraph ReactAgent):
 
 1. Worker-manager создаёт контейнер из worker-base образа
 2. Контейнер клонирует репозиторий

@@ -1,9 +1,4 @@
-"""Service test fixtures for Telegram Bot.
-
-Tests the new event-driven architecture where:
-- POSessionManager publishes CreateWorkerCommand to Redis
-- Messages are relayed via Redis Streams (not HTTP)
-"""
+"""Service test fixtures for Telegram Bot."""
 
 import os
 

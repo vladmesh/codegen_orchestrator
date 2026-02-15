@@ -1,7 +1,7 @@
 # Plan: PO как LangGraph ReactAgent (без контейнера)
 
 > **Дата**: 2026-02-15
-> **Статус**: Phase 2.5 Complete (direct migration, no bridge), Phase 3 next
+> **Статус**: Phase 3 Complete
 > **Контекст**: MVP работает, E2E проходят. PO — самый перегруженный компонент: Docker-контейнер, subprocess Claude CLI, orchestrator-cli как прокси к API/Redis. Каждая будущая фича упирается в эту архитектуру.
 
 ---

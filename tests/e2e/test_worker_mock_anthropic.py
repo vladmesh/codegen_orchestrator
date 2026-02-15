@@ -51,7 +51,7 @@ class TestWorkerMockAnthropic:
             request_id=request_id,
             config=WorkerConfig(
                 name=worker_name,
-                worker_type="po",  # Use PO worker - responses go to worker:responses:po
+                worker_type="developer",
                 agent_type=AgentType.CLAUDE,
                 instructions="You are an assistant. Complete the requested task.",
                 auth_mode="api_key",  # Use API key mode for testing (no host session needed)
@@ -66,13 +66,14 @@ class TestWorkerMockAnthropic:
         )
         await redis.xadd("worker:commands", {"data": cmd.model_dump_json()})
 
-        # Wait for creation response on worker:responses:po (based on worker_type)
+        # Wait for creation response on worker:responses:developer (based on worker_type)
         # We need to filter by request_id since multiple responses may be on this stream
         start = time.time()
         timeout = 60
         last_id = "0"
         while time.time() - start < timeout:
-            messages = await redis.xread({"worker:responses:po": last_id}, count=10, block=1000)
+            response_stream = "worker:responses:developer"
+            messages = await redis.xread({response_stream: last_id}, count=10, block=1000)
             if messages:
                 for _, stream_msgs in messages:
                     for msg_id, msg_data in stream_msgs:

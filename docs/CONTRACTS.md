@@ -6,7 +6,7 @@
 
 1. **Schema-first** — все сообщения валидируются Pydantic схемами
 2. **1:1 Queues** — одна очередь = один Writer → один Consumer (+ optional observers)
-3. **Logical Actors** — указываем роль (PO-Worker, langgraph), не техническую прослойку
+3. **Logical Actors** — указываем роль (PO ReactAgent, Developer-Worker, langgraph), не техническую прослойку
 4. **Traceable** — `correlation_id` для сквозной трассировки
 
 ---
@@ -21,8 +21,8 @@
 
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
 |-------|-------|-----|-----------|----------|---------|
-| `engineering:queue` | `capability-workers` | EngineeringMessage | PO-Worker | langgraph | Start development task |
-| `deploy:queue` | `capability-workers` | DeployMessage | PO-Worker | langgraph | Start deploy task |
+| `engineering:queue` | `capability-workers` | EngineeringMessage | PO ReactAgent | langgraph | Start development task |
+| `deploy:queue` | `capability-workers` | DeployMessage | PO ReactAgent | langgraph | Start deploy task |
 | `scaffolder:queue` | `scaffolder-workers` | ScaffolderMessage | langgraph | scaffolder | Scaffold project |
 | `scaffolder:results` | — | ScaffolderResult | scaffolder | langgraph | Scaffolder completion |
 
@@ -32,21 +32,20 @@
 
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
 |-------|-------|-----|-----------|----------|---------|
-| `worker:commands` | `worker_manager` | WorkerCommand | langgraph, telegram-bot | worker-manager | Create/Delete worker containers |
-| `worker:responses:po` | — | WorkerResponse | worker-manager | telegram-bot | PO worker command responses |
+| `worker:commands` | `worker_manager` | WorkerCommand | langgraph | worker-manager | Create/Delete worker containers |
 | `worker:responses:developer` | — | WorkerResponse | worker-manager | langgraph | Developer worker command responses |
 | `worker:lifecycle` | — | WorkerLifecycleEvent | worker-wrapper | worker-manager | Container lifecycle events |
 
 ---
 
-### Worker I/O
+### Worker I/O (Developer only)
 
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
 |-------|-------|-----|-----------|----------|---------|
-| `worker:{worker_id}:input` | — | POWorkerInput | telegram-bot | worker-wrapper (PO) | User messages to PO |
-| `worker:{worker_id}:output` | — | POWorkerOutput | worker-wrapper (PO) | telegram-bot | PO responses to user |
+| `worker:{worker_id}:input` | — | DeveloperWorkerInput | langgraph (DeveloperNode) | worker-wrapper | Task input to Developer worker |
+| `worker:{worker_id}:output` | — | DeveloperWorkerOutput | worker-wrapper | langgraph (DeveloperNode) | Developer worker results |
 
-> **Note:** Worker I/O streams use `worker:{worker_id}:input/output` pattern (no `po:` or `developer:` prefix in stream name). Each worker gets unique streams identified by `worker_id`.
+> **Note:** Worker I/O streams use `worker:{worker_id}:input/output` pattern. Used only for Developer workers. PO communicates via `po:input` / `po:response:{request_id}` (see PO ReactAgent I/O below).
 
 ---
 
@@ -72,9 +71,11 @@
 
 > **Important:** The "Initiator" column shows the **logical actor** — who makes the decision to publish.
 >
-> For **Worker-initiated** messages (PO-Worker, Developer-Worker), the actual transport is:
+> PO ReactAgent calls tools directly (Python functions → API/Redis). No CLI proxy needed.
+>
+> For **Developer-Worker** messages, the actual transport is:
 > ```
-> Worker (AI Agent) → orchestrator-cli → Redis/API
+> Developer Worker (AI Agent) → orchestrator-cli → Redis/API
 > ```
 > The CLI is a permission-checked proxy, not an independent actor.
 > See [cli_orchestrator.md](../packages/cli_orchestrator.md) for details.
@@ -83,7 +84,7 @@
 
 | Actor | Type | Description |
 |-------|------|-------------|
-| **PO-Worker** | Worker | Product Owner agent, talks to user |
+| **PO ReactAgent** | LangGraph Agent | Product Owner, communicates via Redis streams `po:input`/`po:response` |
 | **Developer-Worker** | Worker | Developer agent (inside engineering flow) |
 | **langgraph** | Service | Workflow orchestrator |
 | **worker-manager** | Service | Container lifecycle manager |
@@ -166,16 +167,22 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant PO as PO-Worker
-    participant CLI as orchestrator-cli
-    participant API
+    participant User
+    participant TG as telegram-bot
     participant Redis
+    participant PO as PO ReactAgent
+    participant API
     participant LG as langgraph
     participant GH as GitHub API
 
-    PO->>CLI: orchestrator deploy start --project {id}
-    CLI->>API: POST /api/tasks (type=deploy)
-    CLI->>Redis: XADD deploy:queue
+    User->>TG: "Задеплой проект X"
+    TG->>Redis: XADD po:input {text, user_id, request_id}
+    Redis-->>PO: Consumer reads (po-consumer group)
+    PO->>API: trigger_deploy(project_id)
+    PO->>Redis: XADD deploy:queue
+    PO->>Redis: XADD po:response:{request_id} {text: "Запускаю деплой!"}
+    Redis-->>TG: XREAD po:response:{request_id}
+    TG->>User: "Запускаю деплой!"
     Redis-->>LG: Consumer reads
     LG->>LG: DevOps Subgraph (EnvAnalyzer → SecretResolver)
     LG->>GH: POST /repos/{owner}/{repo}/actions/workflows/main.yml/dispatches
@@ -756,22 +763,17 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 
 | Queue | Initiator | Consumer | Purpose |
 |-------|-----------|----------|---------|
-| `worker:commands` | LangGraph, TelegramBot | worker-manager | Command to Create/Delete worker container. |
-| `worker:responses:po` | worker-manager | telegram-bot | Responses for PO worker commands (e.g. "PO container created"). |
+| `worker:commands` | LangGraph | worker-manager | Command to Create/Delete worker container. |
 | `worker:responses:developer` | worker-manager | langgraph | Responses for Developer worker commands (e.g. "Developer container created"). |
 
 ## WorkerCommand / WorkerResponse
 
-**Queue (commands):** `worker:commands`  
-**Initiator:** langgraph, telegram-bot  
+**Queue (commands):** `worker:commands`
+**Initiator:** langgraph
 **Consumer:** worker-manager
 
-**Queue (responses - PO):** `worker:responses:po`  
-**Initiator:** worker-manager  
-**Consumer:** telegram-bot
-
-**Queue (responses - Developer):** `worker:responses:developer`  
-**Initiator:** worker-manager  
+**Queue (responses):** `worker:responses:developer`
+**Initiator:** worker-manager
 **Consumer:** langgraph
 
 ```python
@@ -801,7 +803,7 @@ class WorkerChannels(str, Enum):
 class WorkerConfig(BaseModel):
     """Worker container configuration."""
     name: str
-    worker_type: Literal["po", "developer"]  # Worker type for queue naming
+    worker_type: Literal["developer"]         # Worker type for queue naming
     agent_type: AgentType                     # Which AI agent to use
     instructions: str                         # Content for instruction file (CLAUDE.md / AGENTS.md)
     task_content: str | None = None           # Content for TASK.md (optional, for task-driven workers)
@@ -864,7 +866,7 @@ class StatusWorkerResponse(BaseModel):
 WorkerResponse = CreateWorkerResponse | DeleteWorkerResponse | StatusWorkerResponse
 ```
 
-> **Note:** Message passing goes **directly** to worker queues (`worker:po:{id}:input`, etc.), 
+> **Note:** Message passing goes **directly** to worker queues (`worker:{id}:input`, etc.),
 > NOT through worker-manager. The manager handles only container lifecycle.
 
 ---
@@ -918,8 +920,6 @@ class WorkerLifecycleEvent(BaseModel):
 
 ## PO ReactAgent I/O
 
-> **Migration note:** PO communication has migrated from `worker:{id}:input/output` (container-based) to `po:input` / `po:response:{request_id}` (direct ReactAgent). The old Worker I/O pattern below is kept for reference during Phase 3 cleanup.
-
 | Queue | Group | Initiator | Consumer | Purpose |
 |-------|-------|-----------|----------|---------|
 | `po:input` | `po-consumer` | telegram-bot, workers | langgraph (PO consumer) | User messages and system events to PO |
@@ -929,46 +929,6 @@ class WorkerLifecycleEvent(BaseModel):
 **System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`.
 
 ---
-
-## PO Worker I/O (Legacy — Phase 3 cleanup)
-
-Коммуникация между Telegram Bot и Product Owner Worker.
-
-**Queue (input):** `worker:{worker_id}:input`
-**Initiator:** telegram-bot
-**Consumer:** worker-wrapper (inside PO container)
-
-**Queue (output):** `worker:{worker_id}:output`
-**Initiator:** worker-wrapper (inside PO container)
-**Consumer:** telegram-bot
-
-```python
-# shared/contracts/queues/po_worker.py
-
-from datetime import datetime
-from pydantic import BaseModel, Field
-import uuid
-
-
-class POWorkerInput(BaseModel):
-    """Message from Telegram user to PO Worker."""
-
-    request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: int                    # Telegram user ID
-    prompt: str                     # User's message text
-    callback_stream: str | None = None  # Redis stream for progress events
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-
-class POWorkerOutput(BaseModel):
-    """Response from PO Worker to Telegram user."""
-    
-    request_id: str                 # Matches input request_id
-    user_id: int                    # Telegram user ID (for routing)
-    text: str                       # PO's response text
-    is_final: bool = True           # False if streaming (post-MVP)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-```
 
 ---
 
@@ -991,7 +951,7 @@ Context is the code in repo + error messages — no session persistence needed.
 **Initiator:** worker-wrapper (inside Developer container)
 **Consumer:** langgraph (DeveloperNode)
 
-> **Note**: Both PO and Developer workers use the same `worker:{worker_id}:input/output` pattern.
+> **Note**: Developer workers use the `worker:{worker_id}:input/output` pattern.
 > Each worker gets unique streams identified by `worker_id`.
 
 ```python
@@ -1112,6 +1072,5 @@ shared/contracts/
     ├── provisioner.py
     ├── workflow.py
     ├── worker.py
-    ├── po_worker.py
     └── developer_worker.py
 ```

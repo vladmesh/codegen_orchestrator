@@ -8,7 +8,6 @@ from .orchestrator import (
     RepoInfo,
     TestResults,
 )
-from .po_state import MAX_PO_ITERATIONS, POSessionState
 from .project import EntryPoint, ProjectSpec
 from .tools import (
     DeploymentReadinessResult,
@@ -32,9 +31,6 @@ __all__ = [
     "ProvisioningResult",
     "TestResults",
     "EngineeringState",
-    # PO Session
-    "POSessionState",
-    "MAX_PO_ITERATIONS",
     # Tools
     "ProjectActivationResult",
     "RepositoryInspectionResult",

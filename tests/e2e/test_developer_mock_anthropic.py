@@ -49,7 +49,7 @@ class TestDeveloperWorkerMockAnthropic:
             request_id=request_id,
             config=WorkerConfig(
                 name=worker_name,
-                worker_type="po",  # Using PO type (known to work), focus is on testing prompt field
+                worker_type="developer",
                 agent_type=AgentType.CLAUDE,
                 instructions="You are a developer. Implement the requested features.",
                 auth_mode="api_key",
@@ -68,7 +68,8 @@ class TestDeveloperWorkerMockAnthropic:
         timeout = 90
         last_id = "0"
         while time.time() - start < timeout:
-            messages = await redis.xread({"worker:responses:po": last_id}, count=10, block=1000)
+            response_stream = "worker:responses:developer"
+            messages = await redis.xread({response_stream: last_id}, count=10, block=1000)
             if messages:
                 for _, stream_msgs in messages:
                     for msg_id, msg_data in stream_msgs:

@@ -172,8 +172,8 @@ def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
 
     sections: list[str] = []
 
-    # Load PO worker instructions from INSTRUCTIONS.md
-    worker_instructions = _load_worker_instructions("po_worker")
+    # Load developer worker instructions from INSTRUCTIONS.md
+    worker_instructions = _load_worker_instructions("developer_worker")
     if worker_instructions:
         sections.append(worker_instructions)
         sections.append("")
