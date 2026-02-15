@@ -260,14 +260,16 @@ async def get_task_status(task_id: str) -> str:
 
 @tool
 async def set_reminder(user_id: str, delay_minutes: int, reason: str) -> str:
-    """Set a reminder to check back after a delay.
+    """Set a reminder to wake up after a delay.
 
-    Use this after triggering engineering or deploy to check status later.
+    Use this whenever you need to wait and follow up later — after triggering
+    a task, when the user asks to be reminded, or any situation where you
+    should check back in the future.
 
     Args:
-        user_id: User ID to remind about.
+        user_id: User ID this reminder is about.
         delay_minutes: Minutes until reminder fires.
-        reason: What to check (e.g. "check engineering task eng-abc123").
+        reason: Why you're setting this reminder (e.g. "check engineering task eng-abc123").
     """
     redis = _get_redis()
     fire_at = time.time() + delay_minutes * 60
