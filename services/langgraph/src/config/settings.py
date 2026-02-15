@@ -42,9 +42,9 @@ class Settings(BaseSettings):
 
     # Summarization config (used by SummarizationNode)
     summarization_model: str | None = None  # None = fallback to po_llm_model
-    summarization_max_tokens: int
-    summarization_trigger_tokens: int
-    summarization_max_summary_tokens: int
+    summarization_max_tokens: int = 20000
+    summarization_trigger_tokens: int = 70000
+    summarization_max_summary_tokens: int = 2000
 
 
 @lru_cache
