@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from shared.queues import PO_REMINDERS_KEY
 from src.po.tools import (
     create_project,
     get_all_tools,
@@ -253,7 +254,7 @@ class TestSetReminder:
         assert "Reminder set" in result
         mock_redis.zadd.assert_called_once()
         call_args = mock_redis.zadd.call_args
-        assert call_args[0][0] == "po:reminders"
+        assert call_args[0][0] == PO_REMINDERS_KEY
 
 
 class TestNotifyUser:

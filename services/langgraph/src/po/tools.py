@@ -17,7 +17,13 @@ from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
-from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
+from shared.queues import (
+    DEPLOY_QUEUE,
+    ENGINEERING_QUEUE,
+    PO_INPUT_QUEUE,
+    PO_PROACTIVE_QUEUE,
+    PO_REMINDERS_KEY,
+)
 
 if TYPE_CHECKING:
     import httpx
@@ -274,7 +280,7 @@ async def set_reminder(user_id: str, delay_minutes: int, reason: str) -> str:
             "timestamp": datetime.now(UTC).isoformat(),
         }
     )
-    await redis.zadd("po:reminders", {reminder: fire_at})
+    await redis.zadd(PO_REMINDERS_KEY, {reminder: fire_at})
 
     logger.info("po_reminder_set", user_id=user_id, delay_minutes=delay_minutes)
     return f"Reminder set for {delay_minutes} minutes: {reason}"

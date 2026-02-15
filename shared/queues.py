@@ -28,6 +28,7 @@ ANSIBLE_DEPLOY_QUEUE = "ansible:deploy:queue"
 WORKER_COMMANDS = "worker:commands"
 PO_INPUT_QUEUE = "po:input"
 PO_PROACTIVE_QUEUE = "po:proactive"
+PO_REMINDERS_KEY = "po:reminders"
 
 # ---------------------------------------------------------------------------
 # Consumer group names

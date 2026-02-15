@@ -37,10 +37,17 @@ async def run_worker() -> None:
     ]
 
     if _po_enabled():
+        import redis.asyncio as aioredis
+
         from ..po.consumer import run_po_consumer
+        from ..po.reminders import run_reminder_poller
+
+        settings = get_settings()
+        poller_redis = aioredis.from_url(settings.redis_url, decode_responses=True)
 
         logger.info("po_consumer_enabled")
         tasks.append(run_po_consumer())
+        tasks.append(run_reminder_poller(poller_redis))
     else:
         logger.info("po_consumer_disabled", reason="PO_LLM_* env vars not set")
 

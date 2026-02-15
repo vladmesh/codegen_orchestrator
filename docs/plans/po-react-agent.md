@@ -1,7 +1,7 @@
 # Plan: PO как LangGraph ReactAgent (без контейнера)
 
 > **Дата**: 2026-02-15
-> **Статус**: Phase 2.3 Complete, Phase 2.4 next
+> **Статус**: Phase 2.4 Complete, Phase 2.5 next
 > **Контекст**: MVP работает, E2E проходят. PO — самый перегруженный компонент: Docker-контейнер, subprocess Claude CLI, orchestrator-cli как прокси к API/Redis. Каждая будущая фича упирается в эту архитектуру.
 
 ---
@@ -909,3 +909,4 @@ Middleware в LangGraph, считает tokens per user. Базовая защи
 | user_id in PO tools | `RunnableConfig` injection via `config` kwarg | LangChain standard. Consumer sets `configurable.user_id`, tools read it. No `InjectedState`. |
 | callback_stream | `PO_INPUT_QUEUE` (constant) | Single stream, no discovery problem. Workers write same format as always — they don't know about PO. |
 | ProactiveListener | Follows ProvisionerNotifier pattern | Consumer group, XREADGROUP, same startup/shutdown lifecycle. Proven pattern in codebase. |
+| Reminder poller (Phase 2.4) | Standalone async coroutine with `_poll_once` + loop | `_poll_once` is testable independently. Own Redis connection (separate from consumer). `ZRANGEBYSCORE` + `ZREM` not atomic — acceptable for single-process; Lua/ZPOPMIN if we scale. `PO_REMINDERS_KEY` constant extracted to `shared/queues.py`. |
