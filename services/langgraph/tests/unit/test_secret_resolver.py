@@ -1,5 +1,9 @@
 """Unit tests for SecretResolverNode."""
 
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
 from src.subgraphs.devops.nodes import SecretResolverNode
 
 
@@ -103,3 +107,59 @@ class TestSecretResolverComputeSecret:
 
         result = self.node._compute_secret("BACKEND_API_URL", project_spec, state)
         assert result == "http://localhost:8000"
+
+
+class TestSecretResolverEncryption:
+    """Tests for encryption integration in SecretResolverNode."""
+
+    def setup_method(self):
+        self.node = SecretResolverNode()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.nodes.encrypt_dict")
+    @patch("src.subgraphs.devops.nodes.decrypt_dict")
+    async def test_saves_encrypted_secrets(self, mock_decrypt, mock_encrypt, mock_api):
+        """encrypt_dict should be called before PATCH when saving secrets."""
+        mock_decrypt.return_value = {}
+        mock_encrypt.return_value = {"DB_URL": "gAAAAA-encrypted"}
+
+        mock_api.get_project = AsyncMock(return_value={"config": {"secrets": {}}})
+        mock_api.patch = AsyncMock()
+
+        state = {
+            "env_analysis": {"DB_URL": "infra"},
+            "provided_secrets": {},
+            "project_spec": {"name": "test", "config": {"secrets": {}}},
+            "project_id": "proj-123",
+        }
+
+        await self.node.run(state)
+
+        # encrypt_dict should have been called with the newly generated secrets
+        mock_encrypt.assert_called_once()
+        saved_config = mock_api.patch.call_args[1]["json"]["config"]
+        assert saved_config["secrets"] == {"DB_URL": "gAAAAA-encrypted"}
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.nodes.encrypt_dict")
+    @patch("src.subgraphs.devops.nodes.decrypt_dict")
+    async def test_decrypts_existing_secrets(self, mock_decrypt, mock_encrypt):
+        """decrypt_dict should be called on config_secrets from project_spec."""
+        mock_decrypt.return_value = {"EXISTING_KEY": "decrypted-value"}
+
+        state = {
+            "env_analysis": {"EXISTING_KEY": "infra"},
+            "provided_secrets": {},
+            "project_spec": {
+                "name": "test",
+                "config": {"secrets": {"EXISTING_KEY": "gAAAAA-encrypted"}},
+            },
+            "project_id": "proj-123",
+        }
+
+        result = await self.node.run(state)
+
+        mock_decrypt.assert_called_once_with({"EXISTING_KEY": "gAAAAA-encrypted"})
+        # Existing secret should be reused (decrypted)
+        assert result["resolved_secrets"]["EXISTING_KEY"] == "decrypted-value"

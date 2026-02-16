@@ -17,6 +17,7 @@ from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.crypto import decrypt_dict, encrypt_dict
 from shared.queues import (
     DEPLOY_QUEUE,
     ENGINEERING_QUEUE,
@@ -146,8 +147,9 @@ async def set_project_secret(project_id: str, key: str, value: str) -> str:
 
     config = project.get("config") or {}
     secrets = config.get("secrets") or {}
+    secrets = decrypt_dict(secrets) if secrets else {}
     secrets[key] = value
-    config["secrets"] = secrets
+    config["secrets"] = encrypt_dict(secrets)
 
     resp = await api.patch(f"/api/projects/{project_id}", json={"config": config})
     resp.raise_for_status()

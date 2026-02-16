@@ -31,26 +31,32 @@
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                   Secrets Storage                           │
-│  project.config.secrets (PostgreSQL)                       │
+│  project.config.secrets (PostgreSQL, Fernet-encrypted)     │
 │                                                             │
 │  telegram_bots:                                            │
 │    handle_abc123:                                          │
 │      name: "@weather_bot"                                  │
-│      token: "123456:ABC..."  ← реальный токен             │
+│      token: "gAAAAA..."  ← зашифрован Fernet at rest      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Текущая реализация: PostgreSQL
+## Текущая реализация: PostgreSQL + Fernet encryption
 
-Секреты хранятся в поле `config.secrets` модели `Project` и управляются через API:
+Секреты хранятся в поле `config.secrets` модели `Project`, зашифрованные Fernet at rest:
 
 ```python
-# Сохранение секрета через API
-await api_client.save_project_secret(project_id, "TELEGRAM_TOKEN", "123456:ABC...")
+from shared.crypto import decrypt_dict, encrypt_dict
 
-# DevOps subgraph читает секреты из project_spec.config.secrets
-secrets = project_spec.get("config", {}).get("secrets", {})
+# Чтение: decrypt после получения из API
+config_secrets = project_spec.get("config", {}).get("secrets", {})
+config_secrets = decrypt_dict(config_secrets) if config_secrets else {}
+
+# Запись: encrypt перед отправкой в API
+config["secrets"] = encrypt_dict(secrets)
+await api_client.patch(f"/projects/{project_id}", json={"config": config})
 ```
+
+Ключ шифрования: env var `SECRETS_ENCRYPTION_KEY` (Fernet key). При отсутствии — `RuntimeError` при первом вызове encrypt/decrypt.
 
 ## Типы секретов
 
@@ -104,4 +110,5 @@ DevOps subgraph классифицирует переменные окружен
 
 ## См. также
 
-- [secrets-vault-implementation.md](tasks/secrets-vault-implementation.md) — детальный план реализации хранилища секретов
+- [SECRETS.md](SECRETS.md) — архитектура управления секретами (уровни L1/L2/L3)
+- [secrets-vault-implementation.md](tasks/secrets-vault-implementation.md) — исторический план (superseded by Fernet encryption in `shared/crypto.py`)

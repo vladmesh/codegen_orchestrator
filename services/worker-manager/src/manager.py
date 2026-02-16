@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime
 from typing import Optional, Dict, List
 import structlog
@@ -307,6 +308,11 @@ class WorkerManager:
         github_token = env_vars.get("GITHUB_TOKEN")
         if github_token:
             container_env["GH_TOKEN"] = github_token
+
+        # Propagate secrets encryption key for orchestrator-cli
+        secrets_key = os.getenv("SECRETS_ENCRYPTION_KEY")
+        if secrets_key:
+            container_env["SECRETS_ENCRYPTION_KEY"] = secrets_key
 
         # Volumes
         volumes = config.to_volume_mounts()

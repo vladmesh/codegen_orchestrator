@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.crypto import decrypt_dict, encrypt_dict
 
 from ...clients.api import api_client
 from ...config.constants import Paths
@@ -42,8 +43,9 @@ class SecretResolverNode(FunctionalNode):
         # Normalize project_id for DB names
         safe_project_id = project_id.replace("-", "_").lower()
 
-        # Get previously saved secrets from project config
+        # Get previously saved secrets from project config (decrypt at rest)
         config_secrets = project_spec.get("config", {}).get("secrets", {})
+        config_secrets = decrypt_dict(config_secrets) if config_secrets else {}
 
         resolved = {}
         missing_user = []
@@ -190,7 +192,7 @@ class SecretResolverNode(FunctionalNode):
             config = project.get("config", {}) or {}
             config_secrets = config.get("secrets", {}) or {}
             config_secrets.update(secrets)
-            config["secrets"] = config_secrets
+            config["secrets"] = encrypt_dict(config_secrets)
 
             # Save back to project
             await api_client.patch(f"/projects/{project_id}", json={"config": config})

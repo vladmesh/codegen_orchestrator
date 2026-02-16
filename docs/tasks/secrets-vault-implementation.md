@@ -1,7 +1,14 @@
 # Проектирование секретницы (Secrets Vault)
 
 > Дата: 2025-12-30
-> Статус: Проектирование
+> Статус: **Superseded**
+
+> **⚠️ SUPERSEDED (2026-02-16)**: Этот план заменён более простым подходом — Fernet encryption at rest.
+> Реализация: `shared/crypto.py`, см. [deploy-architecture.md](../plans/deploy-architecture.md) Iteration 1.
+> Ключевое отличие: секреты хранятся encrypted в `project.config.secrets` (PostgreSQL JSONB),
+> а не как metadata-only с GitHub Secrets как source of truth.
+>
+> Документ ниже сохранён для исторического контекста.
 
 > **⚠️ UPDATE 2026-01-02**: Часть архитектуры изменилась после рефакторинга Deploy Worker.
 > - `run_ansible_deploy` удален, deployment теперь делегируется в `infrastructure-worker`

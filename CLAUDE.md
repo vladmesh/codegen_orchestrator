@@ -157,5 +157,5 @@ def deploy_to_server(server_handle: str):
 | Logging | structlog (JSON in prod, console in dev) |
 | Linting | Ruff |
 | Container Isolation | Sysbox runtime |
-| Secrets | project.config.secrets (PostgreSQL), GitHub Repository Secrets |
+| Secrets | project.config.secrets (PostgreSQL, Fernet-encrypted), GitHub Repository Secrets |
 

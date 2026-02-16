@@ -44,7 +44,10 @@ make test-langgraph-unit
 
 ---
 
-## Iteration 1: Fernet encryption для секретов
+## Iteration 1: Fernet encryption для секретов ✅
+
+> **Статус**: Done (2026-02-16)
+> **Детальный план реализации**: был в промпте к Claude Code, включал TDD порядок, точки интеграции, mock-стратегию
 
 **Цель:** Секреты в `project.config.secrets` зашифрованы at rest. Читающий/пишущий код работает через единый интерфейс.
 

@@ -9,6 +9,7 @@ import typer
 from orchestrator_cli.client import get_api_client
 from orchestrator_cli.permissions import require_permission
 from shared.contracts.dto.project import ProjectStatus
+from shared.crypto import decrypt_dict, encrypt_dict
 
 app = typer.Typer()
 console = Console()
@@ -100,8 +101,9 @@ async def set_secret_async(project_id: str, key: str, value: str) -> dict:
         # Update config.secrets
         config = project.get("config") or {}
         secrets = config.get("secrets") or {}
+        secrets = decrypt_dict(secrets) if secrets else {}
         secrets[key] = value
-        config["secrets"] = secrets
+        config["secrets"] = encrypt_dict(secrets)
 
         # PATCH project
         response = await api_client.patch(

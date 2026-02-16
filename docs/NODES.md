@@ -112,9 +112,10 @@ devops/
    - `user`: запрашиваются у пользователя (TELEGRAM_BOT_TOKEN)
 
 2. **SecretResolver (Functional)**:
-   - Генерирует infra секреты
-   - Подставляет computed значения
+   - Дешифрует существующие секреты из БД (`decrypt_dict`)
+   - Генерирует infra секреты, подставляет computed значения
    - Проверяет наличие user секретов
+   - Шифрует и сохраняет новые секреты обратно в БД (`encrypt_dict`)
 
 3. **ReadinessCheck (Functional)**:
    - Проверяет готовность к деплою

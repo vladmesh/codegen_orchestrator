@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -134,7 +134,9 @@ class TestGetProject:
 
 class TestSetProjectSecret:
     @pytest.mark.asyncio
-    async def test_sets_secret(self, mock_api_client):
+    @patch("src.po.tools.encrypt_dict", side_effect=lambda d: d)
+    @patch("src.po.tools.decrypt_dict", side_effect=lambda d: d)
+    async def test_sets_secret(self, _mock_decrypt, _mock_encrypt, mock_api_client):
         mock_api_client.get.return_value = _make_response(
             {"id": "abc", "config": {"modules": ["backend"]}}
         )

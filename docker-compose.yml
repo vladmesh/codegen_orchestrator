@@ -55,6 +55,7 @@ services:
       SUMMARIZATION_MAX_TOKENS: ${SUMMARIZATION_MAX_TOKENS}
       SUMMARIZATION_TRIGGER_TOKENS: ${SUMMARIZATION_TRIGGER_TOKENS}
       SUMMARIZATION_MAX_SUMMARY_TOKENS: ${SUMMARIZATION_MAX_SUMMARY_TOKENS}
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -82,6 +83,7 @@ services:
       API_BASE_URL: http://api:8000
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -108,6 +110,7 @@ services:
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
       GITHUB_ORG: ${GITHUB_ORG}
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -177,6 +180,7 @@ services:
       WORKER_REDIS_URL: redis://localhost:6379
       WORKER_API_URL: http://localhost:8000
       PYTHONPATH: /app
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       # Host path for mounting .claude dir into workers
       HOST_CLAUDE_DIR: ${HOST_CLAUDE_DIR:-/home/user/.claude}
     volumes:

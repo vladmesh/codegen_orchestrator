@@ -23,15 +23,17 @@
 *   **Repo**: Хранятся в `.env` (локально) или в Secret Manager платформы хостинга.
 
 ### Level 2: Project Secrets (The Generated App)
-Ключевой момент: **Оркестратор не хранит значения этих секретов в открытом виде**.
+Ключевой момент: **Секреты зашифрованы at rest в PostgreSQL** (Fernet encryption).
+*   **Storage**: `project.config.secrets` (JSONB) — все значения зашифрованы Fernet-токенами (`gAAAAA...`).
+*   **Encryption**: `shared/crypto.py` — `SecretsCipher` читает `SECRETS_ENCRYPTION_KEY` из env. `encrypt_dict`/`decrypt_dict` шифруют/дешифруют все значения в dict.
+*   **Graceful degradation**: При расшифровке plaintext-значений (legacy) — warning в лог, значение возвращается as-is. При следующей записи мигрирует в encrypted (encrypt-on-write).
 *   **Lifecycle**:
-    1.  Пользователь вводит токен (например, Telegram Token) в UI/Bot.
-    2.  Оркестратор (Scaffolder или Setup Service) сразу отправляет этот секрет в **GitHub Repository Secrets** созданного репозитория (через GitHub API).
-    3.  В базе данных оркестратора сохраняется только **Reference** (ссылка/флаг), подтверждающая наличие секрета:
-        *   `project_config = { "secrets": { "TELEGRAM_TOKEN": "present" } }`
+    1.  Пользователь вводит токен (например, Telegram Token) через PO в Telegram.
+    2.  PO tool `set_project_secret` → decrypt existing → add new → encrypt all → PATCH to API.
+    3.  DevOps subgraph `SecretResolverNode` → decrypt from DB → resolve → encrypt → save back.
 *   **Usage**:
-    *   **CI/CD**: GitHub Actions в репо пользователя используют `${{ secrets.TELEGRAM_TOKEN }}` для деплоя или внедрения в рантайм.
-    *   **Deployment (Ansible)**: Если деплой идет через Ansible (запускаемый из GitHub Actions), секреты пробрасываются как `extra-vars`.
+    *   Secrets доступны в расшифрованном виде только в runtime (при вызове `decrypt_dict`)
+    *   В БД всегда зашифрованы — даже при прямом SELECT видны только Fernet-токены
 
 ### Level 3: User Secrets (The Provider Accounts) - *Future/Complex*
 Если пользователю нужно провижить ресурсы на своём аккаунте (например, VPS на его DigitalOcean).

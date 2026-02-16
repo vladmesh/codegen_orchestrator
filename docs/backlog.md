@@ -1,13 +1,13 @@
 # Backlog
 
-> **Актуально на**: 2026-02-14
+> **Актуально на**: 2026-02-16
 
 ## Active Design & Implementation Plans
 
 | Feature | Plan | Status |
 |---------|------|--------|
 | **Worker Lifecycle** | [worker-lifecycle.md](./tasks/worker-lifecycle.md) | Planning (нужна переработка под worker-manager) |
-| **Secrets Vault** | [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) | Design Ready |
+| **Secrets Vault** | [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) | Superseded by [deploy-architecture.md](./plans/deploy-architecture.md) Iter 1 (Fernet) |
 
 ---
 
@@ -98,12 +98,13 @@ Telegram-бот видит `RUNNING` → шлёт сообщения в стри
 
 ---
 
-### Secrets Vault
-**Статус**: Design Ready — план в [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md)
+### Secrets Encryption
+**Статус**: Done (Iteration 1 of deploy-architecture)
 
-- GitHub Secrets как source of truth
-- Метаданные в БД, значения в GitHub
-- LLM не видит секреты
+- Fernet encryption at rest в `project.config.secrets` (`shared/crypto.py`)
+- Graceful degradation для legacy plaintext значений
+- Encrypt-on-write миграция
+- Старый план [secrets-vault-implementation.md](./tasks/secrets-vault-implementation.md) superseded
 
 ---
 

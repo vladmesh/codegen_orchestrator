@@ -18,7 +18,7 @@
 5. **CI secrets неполные** — `_setup_ci_secrets()` записывает только deploy-инфру (HOST/USER/KEY), application secrets (DATABASE_URL, TELEGRAM_BOT_TOKEN) не попадают в GitHub
 6. **`DATABASE_URL` и `POSTGRES_PASSWORD` рассогласованы** — `_generate_infra_secret()` генерирует каждый независимо с разными паролями → Postgres не подключается
 7. **Нет `.env.example` → тихий пропуск** — `env_analyzer` возвращает пустой `env_analysis` без ошибки, деплой идёт без `.env`
-8. **Секреты в БД без шифрования** — `project.config.secrets` = plaintext JSONB
+8. ~~**Секреты в БД без шифрования**~~ — **Решено**: Fernet encryption at rest (`shared/crypto.py`)
 9. **Нет single source of truth** — часть секретов в БД, часть только на сервере, часть в GitHub Secrets
 
 ---
