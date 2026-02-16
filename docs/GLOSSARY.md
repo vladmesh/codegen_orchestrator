@@ -21,33 +21,28 @@
 > **Важно:** Не путайте с именем сервиса. Нет сервиса `engineering-consumer` — есть сервис `langgraph`, который является consumer'ом очереди `engineering:queue`.
 
 ### Worker (Воркер)
-Контейнер с CLI-Agent внутри.
-
-**Типы:**
+Docker-контейнер с CLI coding agent внутри. Используется только для Developer workers.
 
 | Type | Lifecycle | Queue Pattern | Session |
 |------|-----------|---------------|---------|
-| **PO Worker** | Long-lived (per user) | `worker:po:{worker_id}:*` | Yes |
-| **Developer Worker** | Ephemeral (per task) | `worker:developer:*` | No (stateless) |
+| **Developer Worker** | Ephemeral (per task) | `worker:{worker_id}:*` | No (stateless) |
 
-1.  **Product Owner (PO)** — Единая точка входа. Общается с юзером, управляет проектами через CLI. Сессия сохраняется между сообщениями.
-2.  **Developer Worker** — Эфемерный. Выполняет одну задачу и завершается. Stateless — контекст это код в репо + ошибки.
+**Developer Worker** — Эфемерный. Выполняет одну задачу и завершается. Stateless — контекст это код в репо + ошибки.
 
 **Управляется:** `worker-manager`
-**Конфигурация:** Промпты хранятся в `shared/prompts/{worker_type}/INSTRUCTIONS.md` (общий формат). Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory → `AGENTS.md`. Для task-driven воркеров (Developer) также инжектится `TASK.md` с конкретной задачей.
+**Конфигурация:** Промпты хранятся в `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory → `AGENTS.md`. Также инжектится `TASK.md` с конкретной задачей.
 
 ### Product Owner (PO)
-Специализированный Worker, который:
-- Принимает сообщения от пользователя (Telegram).
-- Оркестрирует процесс через CLI (`orchestrator`).
+LangGraph ReactAgent в langgraph-сервисе (`services/langgraph/src/po/`).
+- Принимает сообщения через `po:input`, отвечает через `po:response:{request_id}`.
+- Использует Python @tool функции для вызова API и Redis.
+- PostgreSQL checkpointer для сохранения контекста между сообщениями (per-user thread).
 - Делегирует задачи в "отделы" (Engineering, DevOps).
-- Не знает внутренней кухни отделов (Black Box).
+- Не использует контейнер, CLI, Docker.
 
 ### CLI-Agent (CLI-Агент)
-AI который работает внутри Worker.
-**Реализации:**
-- **Product Owner Agent**: Умный, знает контекст проекта, рулит процессом.
-- **Coding Agent**: Узкоспециализированный (внутри Engineering Subgraph, если используется).
+AI который работает внутри Developer Worker контейнера.
+**Реализации:** Claude Code, Factory.ai Droid.
 
 **Отличие от LangGraph Agent:** CLI-Agent — это "личность" в контейнере. LangGraph Node — это "функция" в графе.
 
@@ -146,8 +141,7 @@ Redis Stream для асинхронной обработки. Consumer чита
 Redis Stream для управления Workers.
 
 **Очереди:**
-- `worker:commands` — команды для worker-manager (create, send_message, delete)
-- `worker:responses:po` — ответы от worker-manager для PO воркеров
+- `worker:commands` — команды для worker-manager (create, delete)
 - `worker:responses:developer` — ответы от worker-manager для Developer воркеров
 
 ### Callback Stream

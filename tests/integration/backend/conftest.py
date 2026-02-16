@@ -64,7 +64,6 @@ async def cleanup_redis_streams(redis_client):
     # Only clean response/output streams, NOT worker:commands (has consumer group)
     streams_to_clean = [
         "worker:responses:developer",
-        "worker:responses:po",
         "worker:lifecycle",
         "worker:developer:input",
         "worker:developer:output",
@@ -135,7 +134,7 @@ def setup_worker_base_images():
     """Build agent-specific worker base images in DIND.
 
     Builds two images:
-    - worker-base-claude: with Node.js + Claude CLI pre-installed
+    - worker-base-claude: with Claude CLI native binary pre-installed
     - worker-base-factory: with Factory CLI pre-installed
 
     This ensures fast worker image builds during tests (only capabilities added).

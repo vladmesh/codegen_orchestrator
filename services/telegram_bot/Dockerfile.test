@@ -1,17 +1,18 @@
+# syntax=docker/dockerfile:1.4
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install test dependencies
-RUN pip install pytest pytest-asyncio pytest-cov httpx respx
-
-# Copy shared module
-COPY shared /app/shared
-RUN pip install /app/shared
-
-# Copy requirements
+# Install dependencies from lock file + test deps first (change rarely)
 COPY services/telegram_bot/requirements.lock ./
-RUN pip install -r requirements.lock
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.lock && \
+    pip install pytest pytest-asyncio pytest-cov httpx respx
+
+# Install shared module (changes more often, but lightweight)
+COPY shared /app/shared
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install /app/shared
 
 # Copy source
 COPY services/telegram_bot/src ./src

@@ -46,7 +46,7 @@ async def test_consume_create_worker_command(redis_client, mock_worker_manager):
         request_id="req-123",
         config=WorkerConfig(
             name="test-worker",
-            worker_type="po",
+            worker_type="developer",
             agent_type=AgentType.CLAUDE,
             instructions="Do work",
             allowed_commands=[],
@@ -82,8 +82,8 @@ async def test_consume_create_worker_command(redis_client, mock_worker_manager):
     assert call_args, "Manager should be called"
 
     # 5. Verify Response
-    # Expect response in worker:responses:po
-    response_messages = await redis_client.xread(streams={"worker:responses:po": "0-0"}, count=1)
+    # Expect response in worker:responses:developer
+    response_messages = await redis_client.xread(streams={"worker:responses:developer": "0-0"}, count=1)
     assert response_messages, "Should have published response"
     _, msgs = response_messages[0]
     msg_id, msg_data = msgs[0]
@@ -116,12 +116,12 @@ async def test_consume_delete_worker_command(redis_client, mock_worker_manager):
     mock_worker_manager.delete_worker.assert_called_with("worker-to-del")
 
     # Verify Response in generic channel or specific?
-    # Spec: "worker:responses:po" or "developer".
+    # Spec: "worker:responses:developer" or "developer".
     # Delete command doesn't have worker_type effectively, but we probably want it in specific channel.
     # NOTE: DeleteWorkerCommand in CONTRACTS doesn't seem to have worker_type.
     # WorkerManager needs to know where to send response? Or does it send to both or global?
     # Contracts table says:
-    # worker:responses:po - Initiator: worker-manager.
+    # worker:responses:developer - Initiator: worker-manager.
     # If the initiator of command was PO (or bot acting as PO user), it expects response there.
     # But Delete might come from LangGraph (Dev flow).
     # Let's assume for now consumer tries to infer or defaults.
@@ -129,10 +129,10 @@ async def test_consume_delete_worker_command(redis_client, mock_worker_manager):
     # The response queue depends on who asked.
     # Maybe we should check if command has metadata or we broadcast?
     # For now let's assume it publishes to both or we check one.
-    # Let's check 'worker:responses:po' for simplicity or check code implementation plan.
+    # Let's check 'worker:responses:developer' for simplicity or check code implementation plan.
     # I will implement it sending to fixed or broadcast. Best effort: check both in test.
 
-    r1 = await redis_client.xlen("worker:responses:po")
+    r1 = await redis_client.xlen("worker:responses:developer")
     r2 = await redis_client.xlen("worker:responses:developer")
     assert r1 + r2 > 0, "Should publish response to one of the channels"
 

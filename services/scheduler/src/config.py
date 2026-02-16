@@ -1,6 +1,6 @@
 """Scheduler service configuration.
 
-Requires: DATABASE_URL, REDIS_URL, API_BASE_URL
+Requires: REDIS_URL, API_BASE_URL
 """
 
 from functools import lru_cache

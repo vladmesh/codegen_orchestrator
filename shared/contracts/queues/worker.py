@@ -35,7 +35,7 @@ class WorkerConfig(BaseModel):
     """Worker container configuration."""
 
     name: str
-    worker_type: Literal["po", "developer"]  # Worker type for queue naming
+    worker_type: Literal["developer"]  # Worker type for queue naming
     agent_type: AgentType  # Which AI agent to use
     instructions: str  # Content for instruction file (CLAUDE.md / AGENTS.md)
     task_content: str | None = None  # Content for TASK.md (optional, for task-driven workers)

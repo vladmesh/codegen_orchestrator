@@ -39,25 +39,22 @@ make test-clean            # Cleanup test containers
 ## Architecture
 
 ```
-Telegram Bot → worker-manager → CLI Agent (Product Owner)
-                        │
-        ┌───────────────┴────────────────┐
-        ▼                                ▼
-    Engineering Subgraph          DevOps Subgraph
-    Scaffolder → Developer → Tester     EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
+User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/Redis) → po:response → Telegram Bot → User
+                                                               ↕
+                                                  engineering:queue / deploy:queue → workers
 ```
 
 **Key Components:**
-- **CLI Agent**: Pluggable Product Owner (Claude Code, Factory.ai, custom) via worker-manager
-- **Tool System**: All API endpoints exposed via OpenAPI, native tool calling
-- **Session Management**: Redis-based locks (PROCESSING/AWAITING states)
+- **PO ReactAgent**: LangGraph agent (`services/langgraph/src/po/`), communicates via Redis Streams
+- **Tool System**: PO uses native Python tools; Developer workers use CLI tools via OpenAPI
+- **Session Management**: PostgreSQL checkpointer (per-user thread), Redis streams for I/O
 
 **Services** (in `services/`):
 - `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs (port 8000)
 - `langgraph`: LangGraph orchestration (Engineering, DevOps subgraphs)
 - `engineering-worker`: Consumes `engineering:queue`, runs Engineering subgraph
 - `deploy-worker`: Consumes `deploy:queue`, runs DevOps subgraph
-- `telegram_bot`: python-telegram-bot interface + PO session management
+- `telegram_bot`: python-telegram-bot interface (PO via Redis Streams)
 - `worker-manager`: Docker container lifecycle for CLI agents (replaces `workers-spawner`)
 - `scaffolder`: Runs copier for project scaffolding (async, before developer work)
 - `infra-service`: Ansible execution for provisioning (consumes `provisioner:queue`)

@@ -14,15 +14,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install shared module first
-COPY shared ./shared
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir --prefix=/install ./shared
-
-# Copy and install service dependencies from lock file (faster, no resolution)
+# Copy and install service dependencies from lock file first (changes rarely)
 COPY services/api/requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-cache-dir --prefix=/install -r requirements.lock
+    pip install --prefix=/install -r requirements.lock
+
+# Copy and install shared module (changes more often, but lightweight install)
+COPY shared ./shared
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --prefix=/install ./shared
 
 # === Stage 2: Production ===
 # Create minimal runtime image

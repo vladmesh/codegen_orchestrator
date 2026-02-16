@@ -26,6 +26,9 @@ PROVISIONER_QUEUE = "provisioner:queue"
 PROVISIONER_RESULTS = "provisioner:results"
 ANSIBLE_DEPLOY_QUEUE = "ansible:deploy:queue"
 WORKER_COMMANDS = "worker:commands"
+PO_INPUT_QUEUE = "po:input"
+PO_PROACTIVE_QUEUE = "po:proactive"
+PO_REMINDERS_KEY = "po:reminders"
 
 # ---------------------------------------------------------------------------
 # Consumer group names
@@ -36,6 +39,8 @@ INFRA_GROUP = "infrastructure-workers"
 SCHEDULER_CONSUMER_GROUP = "scheduler-consumers"
 TELEGRAM_BOT_GROUP = "telegram-bot"
 WORKER_MANAGER_GROUP = "worker_manager"
+PO_CONSUMER_GROUP = "po-consumer"
+PO_PROACTIVE_GROUP = "tg-bot-proactive"
 
 # ---------------------------------------------------------------------------
 # Job retention TTL in seconds (7 days)
@@ -64,6 +69,8 @@ QUEUE_TOPOLOGY: list[QueueBinding] = [
     QueueBinding(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, "Provisioner results → scheduler"),
     QueueBinding(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, "Provisioner results → telegram-bot"),
     QueueBinding(WORKER_COMMANDS, WORKER_MANAGER_GROUP, "Worker lifecycle commands"),
+    QueueBinding(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, "Product Owner input messages"),
+    QueueBinding(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, "PO proactive messages → telegram-bot"),
 ]
 
 

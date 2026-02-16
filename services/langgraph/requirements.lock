@@ -8,8 +8,11 @@ aiosignal==1.4.0
     # via aiohttp
 annotated-types==0.7.0
     # via pydantic
+anthropic==0.79.0
+    # via langchain-anthropic
 anyio==4.12.0
     # via
+    #   anthropic
     #   httpx
     #   openai
 attrs==25.4.0
@@ -28,7 +31,13 @@ charset-normalizer==3.4.4
 cryptography==46.0.3
     # via pyjwt
 distro==1.9.0
-    # via openai
+    # via
+    #   anthropic
+    #   openai
+docstring-parser==0.17.0
+    # via anthropic
+dydantic==0.0.8
+    # via trustcall
 frozenlist==1.8.0
     # via
     #   aiohttp
@@ -42,6 +51,7 @@ httpcore==1.0.9
 httpx==0.28.1
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
+    #   anthropic
     #   langgraph-sdk
     #   langsmith
     #   openai
@@ -52,36 +62,58 @@ idna==3.11
     #   requests
     #   yarl
 jiter==0.12.0
-    # via openai
+    # via
+    #   anthropic
+    #   openai
 jsonpatch==1.33
-    # via langchain-core
+    # via
+    #   langchain-core
+    #   trustcall
 jsonpointer==3.0.0
     # via jsonpatch
 langchain==1.2.0
-    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
+    # via
+    #   langgraph-orchestrator (services/langgraph/pyproject.toml)
+    #   langmem
+langchain-anthropic==1.3.0
+    # via langmem
 langchain-core==1.2.5
     # via
     #   langchain
+    #   langchain-anthropic
     #   langchain-openai
     #   langgraph
     #   langgraph-checkpoint
     #   langgraph-prebuilt
+    #   langmem
 langchain-openai==1.1.6
-    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
+    # via
+    #   langgraph-orchestrator (services/langgraph/pyproject.toml)
+    #   langmem
 langgraph==1.0.5
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
     #   langchain
+    #   langmem
+    #   trustcall
 langgraph-checkpoint==3.0.1
     # via
     #   langgraph
+    #   langgraph-checkpoint-postgres
     #   langgraph-prebuilt
+    #   langmem
+langgraph-checkpoint-postgres==3.0.4
+    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 langgraph-prebuilt==1.0.5
     # via langgraph
 langgraph-sdk==0.3.1
     # via langgraph
+langmem==0.0.30
+    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 langsmith==0.5.1
-    # via langchain-core
+    # via
+    #   langchain-core
+    #   langmem
 multidict==6.7.0
     # via
     #   aiohttp
@@ -90,6 +122,7 @@ openai==2.14.0
     # via langchain-openai
 orjson==3.11.5
     # via
+    #   langgraph-checkpoint-postgres
     #   langgraph-sdk
     #   langsmith
 ormsgpack==1.12.1
@@ -102,11 +135,22 @@ propcache==0.4.1
     # via
     #   aiohttp
     #   yarl
+psycopg==3.3.2
+    # via
+    #   langgraph-orchestrator (services/langgraph/pyproject.toml)
+    #   langgraph-checkpoint-postgres
+psycopg-binary==3.3.2
+    # via psycopg
+psycopg-pool==3.3.0
+    # via langgraph-checkpoint-postgres
 pycparser==2.23
     # via cffi
 pydantic==2.12.5
     # via
+    #   anthropic
+    #   dydantic
     #   langchain
+    #   langchain-anthropic
     #   langchain-core
     #   langgraph
     #   langsmith
@@ -136,7 +180,9 @@ requests==2.32.5
 requests-toolbelt==1.0.0
     # via langsmith
 sniffio==1.3.1
-    # via openai
+    # via
+    #   anthropic
+    #   openai
 structlog==25.5.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 tenacity==9.1.2
@@ -145,12 +191,17 @@ tiktoken==0.12.0
     # via langchain-openai
 tqdm==4.67.1
     # via openai
+trustcall==0.0.39
+    # via langmem
 typing-extensions==4.15.0
     # via
     #   aiosignal
+    #   anthropic
     #   anyio
     #   langchain-core
     #   openai
+    #   psycopg
+    #   psycopg-pool
     #   pydantic
     #   pydantic-core
     #   typing-inspection

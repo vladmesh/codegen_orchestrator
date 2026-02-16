@@ -5,7 +5,6 @@ Used by worker-manager to generate instruction files for agents.
 """
 
 from enum import Enum
-from pathlib import Path
 
 
 class ToolGroup(str, Enum):
@@ -125,11 +124,7 @@ orchestrator diagnose run
 When you have completed your task or need user input, use this to communicate:
 
 ```bash
-# Send final response to user
 orchestrator respond "<message>"
-
-# Ask clarifying question (expects user reply)
-orchestrator respond "<question>" --expect-reply
 ```
 
 **Important**: Always use this command to report results or ask questions.
@@ -137,27 +132,10 @@ orchestrator respond "<question>" --expect-reply
 }
 
 
-# Path to prompts directory (relative to this file)
-PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
-
-
-def _load_worker_instructions(worker_type: str) -> str:
-    """Load worker instructions from INSTRUCTIONS.md file.
-
-    Args:
-        worker_type: Worker type directory name (e.g., 'po_worker', 'developer_worker').
-
-    Returns:
-        Markdown content of INSTRUCTIONS.md, or empty string if not found.
-    """
-    instructions_file = PROMPTS_DIR / worker_type / "INSTRUCTIONS.md"
-    if not instructions_file.exists():
-        return ""
-
-    return instructions_file.read_text()
-
-
-def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
+def get_instructions_content(
+    allowed_tools: list[ToolGroup],
+    worker_instructions: str = "",
+) -> str:
     """Generate instruction file content for given tool groups.
 
     Loads static role instructions from INSTRUCTIONS.md and appends
@@ -165,6 +143,7 @@ def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
 
     Args:
         allowed_tools: List of tool groups the agent is allowed to use.
+        worker_instructions: Pre-loaded worker instructions markdown content.
 
     Returns:
         Markdown content with role instructions and documentation for allowed tools.
@@ -176,8 +155,6 @@ def get_instructions_content(allowed_tools: list[ToolGroup]) -> str:
 
     sections: list[str] = []
 
-    # Load PO worker instructions from INSTRUCTIONS.md
-    worker_instructions = _load_worker_instructions("po_worker")
     if worker_instructions:
         sections.append(worker_instructions)
         sections.append("")

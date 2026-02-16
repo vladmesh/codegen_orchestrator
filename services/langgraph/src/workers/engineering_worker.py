@@ -102,6 +102,8 @@ async def _wait_for_ci_and_fix(
     callback_stream: str | None,
     redis: RedisStreamClient,
     developer_started_at: datetime | None = None,
+    *,
+    user_id: str = "",
 ) -> bool:
     """Wait for CI workflow to pass, re-spawning developer on failure.
 
@@ -145,7 +147,15 @@ async def _wait_for_ci_and_fix(
             msg = "Waiting for CI checks..."
             if attempt > 0:
                 msg = f"Waiting for CI checks (retry {attempt})..."
-            await publish_callback_event(redis, callback_stream, "progress", task_id, msg)
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "progress",
+                task_id,
+                msg,
+                user_id=user_id,
+                project_id=project.get("id", ""),
+            )
 
             run_info = await github_client.wait_for_workflow_completion(
                 owner=owner,
@@ -315,6 +325,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     action = job_data.get("action", "create")
     description = job_data.get("description")
     skip_deploy = job_data.get("skip_deploy", False)
+    user_id = job_data.get("user_id", "")
 
     logger.info(
         "engineering_job_started",
@@ -329,7 +340,13 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
         # Publish progress event
         await publish_callback_event(
-            redis, callback_stream, "progress", task_id, "Engineering task started"
+            redis,
+            callback_stream,
+            "progress",
+            task_id,
+            "Engineering task started",
+            user_id=user_id,
+            project_id=project_id or "",
         )
 
         # Fetch project details
@@ -360,7 +377,15 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 f"tasks/{task_id}",
                 json={"status": "failed", "error_message": error_msg},
             )
-            await publish_callback_event(redis, callback_stream, "error", task_id, error_msg)
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "error",
+                task_id,
+                error_msg,
+                user_id=user_id,
+                project_id=project_id or "",
+            )
             return {"status": "failed", "error": error_msg}
 
         # Trigger scaffolding only for new project creation on draft projects
@@ -472,6 +497,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 redis=redis,
                 skip_deploy=skip_deploy,
                 developer_started_at=developer_started_at,
+                user_id=user_id,
             )
 
         elif result.get("engineering_status") == "blocked" or result.get("needs_human_approval"):
@@ -490,6 +516,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 "failed",
                 task_id,
                 "Engineering task blocked or needs approval",
+                user_id=user_id,
+                project_id=project_id or "",
             )
 
             return {
@@ -537,6 +565,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "failed",
             task_id,
             f"Engineering task failed: {e!s}",
+            user_id=user_id,
+            project_id=project_id or "",
         )
 
         return {
@@ -554,6 +584,8 @@ async def _handle_engineering_success(
     redis: RedisStreamClient,
     skip_deploy: bool,
     developer_started_at: datetime | None = None,
+    *,
+    user_id: str = "",
 ) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
     logger.info(
@@ -571,6 +603,7 @@ async def _handle_engineering_success(
         callback_stream=callback_stream,
         redis=redis,
         developer_started_at=developer_started_at,
+        user_id=user_id,
     )
 
     if not ci_passed:
@@ -588,6 +621,8 @@ async def _handle_engineering_success(
             "failed",
             task_id,
             "Engineering completed but CI checks failed",
+            user_id=user_id,
+            project_id=project_id,
         )
         return {
             "status": "failed",
@@ -615,6 +650,8 @@ async def _handle_engineering_success(
         "completed",
         task_id,
         "Engineering task completed, CI passed",
+        user_id=user_id,
+        project_id=project_id,
     )
 
     # Auto-trigger deploy after CI passes (unless skip_deploy)

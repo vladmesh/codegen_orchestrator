@@ -45,8 +45,7 @@ Telegram-бот видит `RUNNING` → шлёт сообщения в стри
 **Задачи:**
 1. Реализовать подписку на Docker events (`container die/stop/destroy`) через Docker SDK или API
 2. При `die`/`stop` — обновлять `worker:status:{id}` → `STOPPED` в Redis
-3. Очищать `session:po:{user_id}` при смерти PO-воркера (чтобы бот создал нового)
-4. Опционально: уведомлять пользователя через callback stream что воркер упал
+3. Опционально: уведомлять пользователя через callback stream что воркер упал
 
 **Связано с**: Worker Lifecycle (pause/unpause, cleanup)
 
@@ -89,15 +88,6 @@ Telegram-бот видит `RUNNING` → шлёт сообщения в стри
 2. Container cleanup при shutdown
 3. Token tracking из Claude Code JSON output
 4. Creation queue — очередь создания воркеров с приоритетами
-
----
-
-### PO: Ожидание завершения deploy
-**Статус**: TODO
-
-PO не ждёт завершения деплоя — сразу отдаёт job_id пользователю.
-
-**Решение**: Event-driven wake-up через Redis pub/sub.
 
 ---
 

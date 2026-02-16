@@ -81,7 +81,7 @@ codegen_orchestrator/
 │   │       ├── capabilities/   # Capability registry
 │   │       ├── subgraphs/      # Engineering, DevOps
 │   │       └── schemas/        # State schemas
-│   ├── telegram_bot/   # Telegram interface + PO sessions
+│   ├── telegram_bot/   # Telegram interface (PO via Redis Streams)
 │   ├── scheduler/      # Background jobs
 │   ├── worker-manager/ # Docker lifecycle for CLI agents
 │   ├── scaffolder/     # Copier runner (project scaffolding)
@@ -141,7 +141,13 @@ async def my_node(state: OrchestratorState) -> dict:
 7. Описать агента в `docs/NODES.md`
 8. Добавить тесты в `services/langgraph/tests/unit/`
 
-### Добавление новых Tools (CLI Agent)
+### Добавление новых Tools (PO ReactAgent)
+
+1. Создать Python функцию с `@tool` декоратором в `services/langgraph/src/po/tools.py`
+2. Добавить tool в список tools в `services/langgraph/src/po/graph.py`
+3. PO ReactAgent автоматически получит доступ к новому tool
+
+### Добавление новых Tools (Developer Worker CLI)
 
 1. Создать API endpoint в `services/api/src/routers/`
 2. Зарегистрировать tool в OpenAPI schema (автоматически через FastAPI)

@@ -56,6 +56,18 @@ def mock_redis():
                 "pending": 0,
                 "last-delivered-id": "6-0",
             },
+            {
+                "name": "po-consumer",
+                "consumers": 1,
+                "pending": 0,
+                "last-delivered-id": "7-0",
+            },
+            {
+                "name": "tg-bot-proactive",
+                "consumers": 1,
+                "pending": 0,
+                "last-delivered-id": "8-0",
+            },
         ]
 
     r.xinfo_groups = AsyncMock(side_effect=fake_xinfo_groups)
@@ -146,6 +158,18 @@ async def test_debug_queues_high_pending(mock_redis):
                 "consumers": 1,
                 "pending": 0,
                 "last-delivered-id": "6-0",
+            },
+            {
+                "name": "po-consumer",
+                "consumers": 1,
+                "pending": 0,
+                "last-delivered-id": "7-0",
+            },
+            {
+                "name": "tg-bot-proactive",
+                "consumers": 1,
+                "pending": 0,
+                "last-delivered-id": "8-0",
             },
         ]
 

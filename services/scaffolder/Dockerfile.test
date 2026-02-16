@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # Multi-stage Dockerfile for scaffolder testing
 
 FROM python:3.12-slim AS base
@@ -13,7 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 FROM base AS deps
 
 # Install copier and test dependencies
-RUN pip install --no-cache-dir \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install \
     copier==9.4.1 \
     redis[hiredis]==5.0.1 \
     httpx==0.27.0 \

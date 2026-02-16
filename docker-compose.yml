@@ -47,14 +47,26 @@ services:
       PYTHONPATH: /app
       DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
       GITHUB_ORG: ${GITHUB_ORG}
+      PO_LLM_MODEL: ${PO_LLM_MODEL:-}
+      PO_LLM_BASE_URL: ${PO_LLM_BASE_URL:-}
+      PO_LLM_API_KEY: ${PO_LLM_API_KEY:-}
+      CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?options=-c%20search_path%3Dlanggraph
+      SUMMARIZATION_MODEL: ${SUMMARIZATION_MODEL}
+      SUMMARIZATION_MAX_TOKENS: ${SUMMARIZATION_MAX_TOKENS}
+      SUMMARIZATION_TRIGGER_TOKENS: ${SUMMARIZATION_TRIGGER_TOKENS}
+      SUMMARIZATION_MAX_SUMMARY_TOKENS: ${SUMMARIZATION_MAX_SUMMARY_TOKENS}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ~/.ssh:/root/.ssh:ro
       - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
     depends_on:
-      - api
-      - redis
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - internal
 
@@ -189,7 +201,6 @@ services:
       - .env
     environment:
       API_BASE_URL: http://api:8000
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app

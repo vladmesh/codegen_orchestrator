@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # Multi-stage Dockerfile optimized for testing with caching
 
 FROM python:3.12-slim AS base
@@ -15,10 +16,9 @@ FROM base AS test-deps
 COPY services/api/pyproject.toml ./
 
 # Install runtime + test dependencies
-RUN pip install --no-cache-dir . && \
-    pip install --no-cache-dir pytest pytest-asyncio pytest-cov httpx respx rich typer fakeredis
-
-RUN pip install --no-cache-dir makefun
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install . && \
+    pip install pytest pytest-asyncio pytest-cov httpx respx rich typer fakeredis makefun
 
 # === Test Stage ===
 FROM test-deps AS test

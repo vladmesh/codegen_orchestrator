@@ -1,7 +1,7 @@
 """LangGraph service configuration.
 
 Requires: REDIS_URL, API_BASE_URL
-Does NOT need DATABASE_URL (accesses DB via API)
+Optional: CHECKPOINT_DATABASE_URL (PostgreSQL for LangGraph checkpointer persistence)
 """
 
 from functools import lru_cache
@@ -30,6 +30,21 @@ class Settings(BaseSettings):
     # Optional: Override Anthropic API URL for developer workers (E2E testing)
     # When set, workers use this URL instead of api.anthropic.com
     anthropic_base_url: str | None = None
+
+    # Optional: PO ReactAgent LLM config (all three required to enable PO consumer)
+    po_llm_model: str | None = None
+    po_llm_base_url: str | None = None
+    po_llm_api_key: str | None = None
+
+    # Optional: PostgreSQL URL for LangGraph checkpointer persistence
+    # Falls back to MemorySaver (in-memory) if not set
+    checkpoint_database_url: str | None = None
+
+    # Summarization config (used by SummarizationNode)
+    summarization_model: str | None = None  # None = fallback to po_llm_model
+    summarization_max_tokens: int = 20000
+    summarization_trigger_tokens: int = 70000
+    summarization_max_summary_tokens: int = 2000
 
 
 @lru_cache

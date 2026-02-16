@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -11,11 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy and install shared module
 COPY shared ./shared
-RUN pip install ./shared
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install ./shared
 
 # Install dependencies
 COPY services/worker-manager/pyproject.toml .
-RUN pip install .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install .
 
 # Copy source
 COPY services/worker-manager/src ./src

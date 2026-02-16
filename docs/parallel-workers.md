@@ -11,7 +11,7 @@
 └─────────────────────────────────────────────────────┘
                          │
                   Redis streams
-          (worker:commands / worker:po:{id}:*)
+          (worker:commands / worker:{id}:*)
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
@@ -34,7 +34,7 @@
                   Redis streams
                          │
                          ▼
-               worker:developer:output / worker:po:{id}:output
+               worker:{id}:output (Developer workers only)
 ```
 
 ## Docker-in-Docker с Sysbox

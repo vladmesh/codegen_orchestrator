@@ -10,8 +10,8 @@ Codegen Orchestrator — мультиагентная система для ав
 
 | Компонент | Технология |
 |-----------|------------|
-| **CLI Agents** | Claude Code, Factory.ai Droid |
-| **Agent Orchestration** | worker-manager (Docker + Redis) |
+| **PO** | LangGraph ReactAgent (direct API/Redis tool calls) |
+| **Developer Agents** | Claude Code, Factory.ai Droid via worker-manager (Docker + Redis) |
 | **Backend Orchestration** | LangGraph (subgraphs) |
 | **LLM** | Anthropic Claude (via CLI or API) |
 | **Интерфейс** | Telegram Bot |
@@ -21,98 +21,78 @@ Codegen Orchestrator — мультиагентная система для ав
 
 ## Ключевые концепции
 
-### Headless Mode
-CLI агенты работают в headless режиме — чистый JSON ввод/вывод без TUI. Это обеспечивает надёжный парсинг и session continuity.
-
 ### Capabilities
-Возможности агента конфигурируются через `WorkerConfig.capabilities`:
+Возможности Developer агента конфигурируются через `WorkerConfig.capabilities`:
 - `git`, `github` — работа с репозиториями
 - `python`, `node` — runtime environments
 - `docker` — Docker-in-Docker через Sysbox
-
-### Session Management
-Redis-based sessions с `--resume session_id` для сохранения контекста между сообщениями.
 
 ## Сервисы
 
 | Сервис | Описание |
 |--------|----------|
 | `api` | FastAPI + SQLAlchemy — проекты, серверы, users, configs |
-| `telegram_bot` | Telegram интерфейс + PO sessions |
+| `telegram_bot` | Telegram интерфейс (PO via Redis Streams) |
 | `worker-manager` | Docker контейнеры с CLI агентами |
 | `langgraph` | Engineering/DevOps subgraphs |
 | `scheduler` | Background tasks (sync, health checks) |
 | `scaffolder` | Copier runner для scaffolding (бывший preparer) |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
 
-## Граф (CLI Agent Architecture)
+## Граф
 
 ```mermaid
 graph TD
     User((User)) <--> |Telegram| Bot[Telegram Bot Service]
-    Bot <--> |Command Queue| PO[Product Owner Worker]
-    
-    subgraph "Worker Container"
-        PO -- "Claude/Factory" --> CLI[Orchestrator CLI]
-    end
-    
-    CLI --> |API Request| API[API Service]
-    
-    CLI --> |"push task"| EngQueue[engineering:queue]
-    CLI --> |"push task"| DeployQueue[deploy:queue]
-    
+    Bot --> |"XADD po:input"| POInput[po:input stream]
+    POInput --> POConsumer[PO Consumer]
+    POConsumer --> PO[PO ReactAgent]
+    PO --> |"XADD po:response:{req_id}"| POResp[po:response]
+    POResp --> Bot
+
+    PO --> |"tools: API calls"| API[API Service]
+    PO --> |"XADD engineering:queue"| EngQueue[engineering:queue]
+    PO --> |"XADD deploy:queue"| DeployQueue[deploy:queue]
+    PO -.-> |"po:proactive"| Bot
+
     API --> |"data"| DB[(PostgreSQL)]
-    
+
     EngQueue --> EngConsumer[Engineering Consumer]
     EngConsumer --> EngGraph[Engineering Subgraph]
-    
+
     DeployQueue --> DepConsumer[Deploy Consumer]
     DepConsumer --> DepGraph[DevOps Subgraph]
 
     %% Feedback Loops
-    EngGraph --> |"Result / Progress"| DB
-    DepGraph --> |"Result / Progress"| DB
+    EngGraph --> |"system events → po:input"| POInput
+    DepGraph --> |"system events → po:input"| POInput
 ```
 
 ### Потоки данных
 
 ```
-┌─────────┐     ┌──────────────────────┐     ┌─────────────────────────────┐
-│  START  │────▶│ Telegram Bot         │────▶│  worker-manager             │
-│  User   │     │                      │     │  (Docker isolation)         │
-└─────────┘     └──────────────────────┘     └──────────┬──────────────────┘
-                                                        │
-                                                        ▼
-                                             ┌────────────────────────────┐
-                                             │ CLI Agent (Product Owner)  │
-                                             │ (Claude/Factory/custom)    │
-                                             │                            │
-                                             │ • All API tools available  │
-                                             │ • Native tool calling      │
-                                             │ • Session via Redis        │
-                                             └──────────┬─────────────────┘
-                                                        │
-                                                        ▼ (tool calls)
-                              ┌─────────────────────────┴──────────────────────┐
-                              │                                                │
-                              ▼                                                ▼
-               ┌─────────────────────────┐                  ┌──────────────────────┐
-               │ Engineering Subgraph    │                  │ DevOps Subgraph      │
-               │ (trigger_engineering)   │                  │ (trigger_deploy)     │
-               └──────────┬──────────────┘                  └──────────┬───────────┘
-                          │                                            │
-                          ▼                                            ▼
-          ┌────────────────────────────┐              ┌──────────────────────────┐
-          │ Scaffolder → Developer →   │              │ EnvAnalyzer → Deployer   │
-          │ Tester                     │              │ (Ansible via infra-svc)  │
-          │ (max 3 iterations)         │              └──────────────────────────┘
-          └────────────────────────────┘
+User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
+                                  │
+                                  ▼
+                       PO ReactAgent (langgraph)
+                       │  • Python @tool functions
+                       │  • PostgreSQL checkpointer (per-user thread)
+                       │  • Reminder poller
+                       │
+                       ├──► API (create_project, set_secret, ...)
+                       ├──► XADD engineering:queue → Engineering Subgraph
+                       ├──► XADD deploy:queue → DevOps Subgraph
+                       └──► XADD po:response:{request_id} {text}
+                                  │
+                                  ▼
+                       Telegram Bot → User
+
+System events (worker callbacks, reminders) → po:input → PO decides → po:proactive → Bot → User
 ```
 
 **Key Features:**
-- **CLI Agent**: Product Owner as pluggable CLI worker (Claude Code, Factory.ai, custom)
-- **Native Tools**: All API endpoints exposed as tools via OpenAPI
-- **Session Management**: Redis-based locks (PROCESSING/AWAITING states)
+- **PO ReactAgent**: LangGraph agent with native Python tools, PostgreSQL checkpointer
+- **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager
 - **Engineering Subgraph**: Scaffolder → Developer → Tester (max 3 iterations)
 - **DevOps Subgraph**: LLM-based env analysis, Ansible deployment via infra-service
 

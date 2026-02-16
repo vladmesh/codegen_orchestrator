@@ -30,7 +30,6 @@ exclude = ["redis"]
 "log_config" = "shared/log_config"
 "models" = "shared/models"
 "notifications.py" = "shared/notifications.py"
-"prompts" = "shared/prompts"
 "queues.py" = "shared/queues.py"
 "redis" = "shared/redis"
 "redis_client.py" = "shared/redis_client.py"
