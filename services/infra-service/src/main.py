@@ -1,4 +1,4 @@
-"""Infrastructure Worker — consumes from provisioner:queue and ansible:deploy:queue.
+"""Infrastructure Worker — consumes from provisioner:queue.
 
 Run standalone: python -m src.main
 """
@@ -13,10 +13,9 @@ import signal
 import structlog
 
 from shared.log_config import setup_logging
-from shared.queues import ANSIBLE_DEPLOY_QUEUE, INFRA_GROUP, PROVISIONER_QUEUE, ensure_all_groups
+from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE, ensure_all_groups
 from shared.redis_client import RedisStreamClient
 
-from .deployer import deploy_project
 from .provisioner.node import ProvisionerNode
 
 logger = structlog.get_logger(__name__)
@@ -115,93 +114,8 @@ async def process_provisioner_job(job_data: dict) -> dict:
         }
 
 
-async def process_deploy_job(job_data: dict) -> dict:
-    """Process a single deploy job.
-
-    Args:
-        job_data: Job data from Redis queue with project deployment info
-
-    Returns:
-        Result dict with status and details
-    """
-    request_id = job_data.get("request_id", "unknown")
-    project_id = job_data.get("project_id")
-    project_name = job_data.get("project_name", "unknown")
-    server_ip = job_data.get("server_ip")
-    port = job_data.get("port")
-
-    logger.info(
-        "deploy_job_started",
-        request_id=request_id,
-        project_id=project_id,
-        project_name=project_name,
-        server_ip=server_ip,
-        port=port,
-    )
-
-    try:
-        success, message = await deploy_project(
-            project_name=project_name,
-            repo_full_name=job_data.get("repo_full_name", ""),
-            github_token=job_data.get("github_token", ""),
-            server_ip=server_ip,
-            port=port,
-            secrets=job_data.get("secrets", {}),
-            modules=job_data.get("modules"),
-        )
-
-        if success:
-            logger.info(
-                "deploy_job_success",
-                request_id=request_id,
-                project_id=project_id,
-                project_name=project_name,
-                server_ip=server_ip,
-                port=port,
-            )
-            return {
-                "status": "success",
-                "project_id": project_id,
-                "project_name": project_name,
-                "server_ip": server_ip,
-                "port": port,
-                "deployed_url": f"http://{server_ip}:{port}",
-                "message": message,
-            }
-        else:
-            logger.error(
-                "deploy_job_failed",
-                request_id=request_id,
-                project_id=project_id,
-                project_name=project_name,
-                error=message,
-            )
-            return {
-                "status": "failed",
-                "project_id": project_id,
-                "project_name": project_name,
-                "error": message,
-            }
-
-    except Exception as e:
-        logger.error(
-            "deploy_job_exception",
-            request_id=request_id,
-            project_id=project_id,
-            error=str(e),
-            error_type=type(e).__name__,
-            exc_info=True,
-        )
-        return {
-            "status": "failed",
-            "project_id": project_id,
-            "project_name": project_name,
-            "error": str(e),
-        }
-
-
 async def run_worker():
-    """Main worker loop handling provisioning and deploy queues."""
+    """Main worker loop handling provisioning queue."""
     setup_logging(service_name="infra-service")
 
     redis = RedisStreamClient()
@@ -215,11 +129,11 @@ async def run_worker():
     try:
         while not _shutdown:
             try:
-                # Read from both queues
+                # Read from provisioner queue
                 messages = await redis.redis.xreadgroup(
                     groupname=INFRA_GROUP,
                     consumername=CONSUMER_NAME,
-                    streams={PROVISIONER_QUEUE: ">", ANSIBLE_DEPLOY_QUEUE: ">"},
+                    streams={PROVISIONER_QUEUE: ">"},
                     count=1,
                     block=5000,  # 5 second block
                 )
@@ -245,9 +159,6 @@ async def run_worker():
                             if stream_name_str == PROVISIONER_QUEUE:
                                 result = await process_provisioner_job(job_data)
                                 result_stream = "provisioner:results"
-                            elif stream_name_str == ANSIBLE_DEPLOY_QUEUE:
-                                result = await process_deploy_job(job_data)
-                                result_stream = "deploy:results"
                             else:
                                 logger.warning("unknown_queue", stream=stream_name_str)
                                 continue

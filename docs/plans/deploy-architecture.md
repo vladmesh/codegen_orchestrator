@@ -319,7 +319,9 @@ E2E на живом стеке (выполнено):
 
 ---
 
-## Iteration 4: Очистка infra-service от deploy-кода
+## Iteration 4: Очистка infra-service от deploy-кода ✅
+
+> **Статус**: Done (2026-02-16)
 
 **Цель:** infra-service обслуживает только provisioning. Deploy-код и queue удаляются.
 
@@ -349,13 +351,9 @@ E2E на живом стеке (выполнено):
 
 ### E2E проверка итерации 4
 ```bash
-make test-unit  # все тесты зелёные
-make test-langgraph-unit
+make test-unit   # все тесты зелёные (272 passed)
+make lint        # All checks passed
 ```
-Ручная проверка:
-1. `make up` — infra-service стартует без ошибок
-2. В логах infra-service: `infrastructure_worker_started`, слушает только `provisioner:queue`
-3. Полный E2E: создание проекта → scaffolding → engineering → deploy → проверка на сервере
 
 ---
 
