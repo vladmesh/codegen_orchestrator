@@ -126,22 +126,23 @@ devops/
    - Если всё готово → Deployer
 
 4. **Deployer (Functional)**:
-   - Делегирует выполнение Ansible playbook в `infra-service` через Redis
-   - Polling результата из `deploy:result:{request_id}`
+   - Собирает DOTENV из resolved_secrets (`build_dotenv` → `encode_dotenv` → base64)
+   - Записывает GitHub Secrets: DOTENV, DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PORT, PROJECT_NAME
+   - Тригерит `deploy.yml` через `trigger_workflow_dispatch`
+   - Ждёт завершения через `wait_for_workflow_completion` (poll, timeout 600s)
    - Post-deployment операции:
-     * Создает service deployment record в БД
-     * Настраивает GitHub Actions CI secrets
+     * Создает service deployment record в БД (с `deployed_sha`)
      * Устанавливает статус проекта = active
 
 **Архитектура**:
 ```
-Deployer → delegate_ansible_deploy → Redis: deploy:queue
-                                           ↓
-                                    infra-service
-                                           ↓
-                                    Ansible Execution
-                                           ↓
-                                    Result in Redis
+Deployer → build_dotenv → set_repository_secrets (GitHub API)
+                        → trigger_workflow_dispatch (deploy.yml)
+                        → wait_for_workflow_completion (poll)
+                                       ↓
+                              GitHub Actions Runner
+                                       ↓
+                              Docker build + deploy to VPS
 ```
 
 **Выход**:

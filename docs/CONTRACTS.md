@@ -54,7 +54,6 @@
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
 |-------|-------|-----|-----------|----------|---------|
 | `provisioner:queue` | `infrastructure-workers` | ProvisionerMessage | scheduler | infra-service | Provision server |
-| `ansible:deploy:queue` | `infrastructure-workers` | — | langgraph | infra-service | Ansible deployments |
 | `provisioner:results` | `scheduler-consumers` | ProvisionerResult | infra-service | scheduler | Provisioning result |
 | `provisioner:results` | `telegram-bot` | ProvisionerResult | infra-service | telegram-bot | Provisioning notifications |
 

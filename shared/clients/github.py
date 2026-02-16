@@ -554,6 +554,55 @@ class GitHubAppClient:
                 )
         return count
 
+    async def trigger_workflow_dispatch(
+        self,
+        owner: str,
+        repo: str,
+        workflow_file: str,
+        ref: str = "main",
+        inputs: dict | None = None,
+    ) -> bool:
+        """Trigger a workflow_dispatch event.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            workflow_file: Workflow filename (e.g. "deploy.yml")
+            ref: Git ref to run the workflow on
+            inputs: Optional workflow inputs
+
+        Returns:
+            True if dispatch was accepted (204)
+
+        Raises:
+            httpx.HTTPStatusError: On 404 (workflow not found) or 422 (validation error)
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        payload: dict = {"ref": ref}
+        if inputs:
+            payload["inputs"] = inputs
+
+        await self._make_request(
+            "POST",
+            f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_file}/dispatches",
+            headers=headers,
+            json=payload,
+        )
+
+        logger.info(
+            "workflow_dispatch_triggered",
+            owner=owner,
+            repo=repo,
+            workflow=workflow_file,
+            ref=ref,
+        )
+        return True
+
     async def get_latest_workflow_run(
         self,
         owner: str,
@@ -604,6 +653,7 @@ class GitHubAppClient:
             "conclusion": run.get("conclusion"),  # success, failure, cancelled
             "html_url": run["html_url"],
             "created_at": run["created_at"],
+            "head_sha": run.get("head_sha"),
         }
 
     async def wait_for_workflow_completion(

@@ -2,15 +2,12 @@
 
 After engineering simplification:
 - Engineering subgraph uses unified Developer node (no Architect/Preparer)
-- DevOps subgraph (Deployer)
+- DevOps subgraph (Deployer) — deploys via GitHub Actions (deploy.yml)
 - Analyst node
 - Zavhoz node (resource allocation)
 
 PO capability tools are replaced by orchestrator-cli commands.
 """
-
-# DevOps tools (deployment) - moved to devops_delegation
-from .devops_delegation import delegate_ansible_deploy
 
 # GitHub tools
 from .github import create_file_in_repo, create_github_repo, get_github_token
@@ -66,6 +63,4 @@ __all__ = [
     "update_project_spec",
     "create_project_spec_yaml",
     "create_spec_md",
-    # DevOps tools
-    "delegate_ansible_deploy",
 ]

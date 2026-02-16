@@ -41,7 +41,8 @@ make test-clean            # Cleanup test containers
 ```
 User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/Redis) → po:response → Telegram Bot → User
                                                                ↕
-                                                  engineering:queue / deploy:queue → workers
+                                                  engineering:queue → workers
+                                                  deploy → GitHub Actions (deploy.yml)
 ```
 
 **Key Components:**
@@ -57,7 +58,7 @@ User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/
 - `telegram_bot`: python-telegram-bot interface (PO via Redis Streams)
 - `worker-manager`: Docker container lifecycle for CLI agents (replaces `workers-spawner`)
 - `scaffolder`: Runs copier for project scaffolding (async, before developer work)
-- `infra-service`: Ansible execution for provisioning (consumes `provisioner:queue`)
+- `infra-service`: Ansible execution for server provisioning only (consumes `provisioner:queue`)
 - `scheduler`: Background workers (github_sync, server_sync, health_checker)
 
 **Packages** (`packages/`): `orchestrator-cli` (CLI tools for agents), `worker-wrapper` (agent container entrypoint).
