@@ -42,7 +42,9 @@ make test-clean            # Cleanup test containers
 User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/Redis) → po:response → Telegram Bot → User
                                                                ↕
                                                   engineering:queue → workers
-                                                  deploy → GitHub Actions (deploy.yml)
+                                                  deploy:queue → deploy-worker → GitHub Actions (deploy.yml)
+
+GitHub (ci.yml success) → webhook → API → deploy:queue → deploy-worker → po:proactive → Telegram Bot → User
 ```
 
 **Key Components:**
@@ -51,7 +53,7 @@ User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/
 - **Session Management**: PostgreSQL checkpointer (per-user thread), Redis streams for I/O
 
 **Services** (in `services/`):
-- `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs (port 8000)
+- `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs, GitHub webhook receiver (port 8000)
 - `langgraph`: LangGraph orchestration (Engineering, DevOps subgraphs)
 - `engineering-worker`: Consumes `engineering:queue`, runs Engineering subgraph
 - `deploy-worker`: Consumes `deploy:queue`, runs DevOps subgraph

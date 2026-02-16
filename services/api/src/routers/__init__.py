@@ -16,6 +16,7 @@ from . import (
     service_deployments,
     tasks,
     users,
+    webhooks,
 )
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "service_deployments",
     "tasks",
     "users",
+    "webhooks",
 ]

@@ -162,7 +162,7 @@ sequenceDiagram
     LG->>LG: Continue to Developer node
 ```
 
-### Deploy Flow
+### Deploy Flow (PO-triggered)
 
 ```mermaid
 sequenceDiagram
@@ -184,14 +184,43 @@ sequenceDiagram
     TG->>User: "Запускаю деплой!"
     Redis-->>LG: Consumer reads
     LG->>LG: DevOps Subgraph (EnvAnalyzer → SecretResolver)
-    LG->>GH: POST /repos/{owner}/{repo}/actions/workflows/main.yml/dispatches
+    LG->>GH: POST /repos/{owner}/{repo}/actions/workflows/deploy.yml/dispatches
     Note over LG: Poll workflow status
     loop Every 15s
         LG->>GH: GET /repos/{owner}/{repo}/actions/runs?event=workflow_dispatch
         GH-->>LG: {status, conclusion}
     end
     LG->>API: PATCH /tasks/{id} {status: completed}
-    LG->>Redis: XADD task_progress:{id} {deployed_url}
+    LG->>Redis: XADD po:input {type: system_event, event: completed}
+```
+
+### Deploy Flow (Webhook-triggered)
+
+```mermaid
+sequenceDiagram
+    participant GH as GitHub
+    participant API as api service
+    participant DB as PostgreSQL
+    participant Redis
+    participant DW as deploy-worker
+    participant TG as telegram-bot
+
+    GH->>API: POST /webhooks/github (workflow_run: ci.yml success on main)
+    API->>API: Verify HMAC-SHA256 signature
+    API->>DB: Lookup project by repository.id
+    API->>DB: Lookup owner → telegram_id
+    API->>DB: Create Task (type=deploy, triggered_by=webhook)
+    API->>Redis: XADD deploy:queue {task_id, project_id, user_id=telegram_id, callback_stream=""}
+    API-->>GH: 200 {status: accepted}
+    Redis-->>DW: Consumer reads deploy:queue
+    DW->>DW: DevOps Subgraph (EnvAnalyzer → SecretResolver → Deployer)
+    alt Success
+        DW->>Redis: XADD po:proactive {text: "Deployed project: url"}
+    else Error
+        DW->>Redis: XADD po:proactive {text: "Deploy failed: error"}
+    end
+    Redis-->>TG: XREAD po:proactive (tg-bot-proactive group)
+    TG->>TG: Send Telegram message to user
 ```
 
 ---
@@ -923,7 +952,7 @@ class WorkerLifecycleEvent(BaseModel):
 |-------|-------|-----------|----------|---------|
 | `po:input` | `po-consumer` | telegram-bot, workers | langgraph (PO consumer) | User messages and system events to PO |
 | `po:response:{request_id}` | — | langgraph (PO consumer) | telegram-bot | PO response for specific request |
-| `po:proactive` | `tg-bot-proactive` | langgraph (PO `notify_user` tool) | telegram-bot (ProactiveListener) | PO proactive messages to users |
+| `po:proactive` | `tg-bot-proactive` | langgraph (PO `notify_user` tool, deploy-worker) | telegram-bot (ProactiveListener) | Proactive messages to users (PO notifications + webhook deploy results) |
 
 **System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`.
 

@@ -17,7 +17,7 @@ from ..clients.api import api_client
 from ..schemas.api_types import ProjectInfo
 from ..subgraphs.devops import create_devops_subgraph
 from ._base import start_worker
-from ._events import publish_callback_event
+from ._events import publish_callback_event, publish_proactive_message
 
 logger = structlog.get_logger(__name__)
 
@@ -54,7 +54,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             project_id=project_id or "",
         )
 
-        # Fetch project details
+        # Fetch project details (needed early for proactive notification name)
         project: ProjectInfo | None = await api_client.get_project(project_id)
         if not project:
             error_msg = f"Project {project_id} not found"
@@ -151,6 +151,11 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 user_id=user_id,
                 project_id=project_id or "",
             )
+            if not callback_stream:
+                project_name = project.get("name", project_id) if project else project_id
+                await publish_proactive_message(
+                    redis, user_id, f"Deployed {project_name}: {result['deployed_url']}"
+                )
 
             return {
                 "status": "success",
@@ -175,6 +180,14 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 user_id=user_id,
                 project_id=project_id or "",
             )
+            if not callback_stream:
+                project_name = project.get("name", project_id) if project else project_id
+                await publish_proactive_message(
+                    redis,
+                    user_id,
+                    f"Deploy blocked for {project_name} — missing: {', '.join(missing)}. "
+                    "Please provide via bot.",
+                )
 
             return {
                 "status": "failed",
@@ -200,6 +213,11 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 user_id=user_id,
                 project_id=project_id or "",
             )
+            if not callback_stream:
+                project_name = project.get("name", project_id) if project else project_id
+                await publish_proactive_message(
+                    redis, user_id, f"Deploy failed for {project_name}: {error_msg}"
+                )
 
             return {
                 "status": "failed",
@@ -235,6 +253,8 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             user_id=user_id,
             project_id=project_id or "",
         )
+        if not callback_stream:
+            await publish_proactive_message(redis, user_id, f"Deploy failed: {e!s}")
 
         return {
             "status": "failed",

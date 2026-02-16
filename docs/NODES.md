@@ -93,6 +93,7 @@
 **Когда вызывается**:
 - После Engineering Subgraph
 - При `trigger_deploy` от PO
+- При GitHub webhook (`workflow_run: ci.yml success on main`) → API → deploy:queue
 
 **Структура пакета** (`src/subgraphs/devops/`):
 ```
@@ -148,6 +149,9 @@ Deployer → build_dotenv → set_repository_secrets (GitHub API)
 **Выход**:
 - `deployed_url` при успехе
 - `missing_user_secrets` если нужны секреты от пользователя
+
+**Proactive notifications** (webhook-triggered deploys):
+Когда deploy запущен через webhook (нет `callback_stream`), deploy-worker отправляет результат напрямую в `po:proactive` → telegram-bot → пользователь. Сообщения: успех (deployed URL), missing secrets, ошибка.
 
 ---
 
@@ -205,6 +209,18 @@ PO ReactAgent (in langgraph container)
      │               EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
      │                                                      │
      └──────────────▶ (завершение) ◄─────────────────────────┘
+
+
+GitHub (webhook: ci.yml success on main)
+     │
+     ▼
+API: POST /webhooks/github
+     │ verify HMAC → lookup project → create Task
+     ▼
+Redis (deploy:queue) → deploy-worker → DevOps Subgraph
+     │
+     ▼
+Redis (po:proactive) → Telegram Bot → Пользователь
 ```
 
-**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder работает асинхронно (fire-and-forget), DeveloperNode ждёт готовности scaffolding.
+**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder работает асинхронно (fire-and-forget), DeveloperNode ждёт готовности scaffolding. Webhook-triggered deploys обходят PO — API публикует напрямую в deploy:queue, результат уходит через po:proactive.

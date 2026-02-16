@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from shared.queues import PO_PROACTIVE_QUEUE
 from shared.redis_client import RedisStreamClient
 
 
@@ -46,3 +47,25 @@ async def publish_callback_event(
     if project_id:
         fields["project_id"] = project_id
     await redis.redis.xadd(callback_stream, fields)
+
+
+async def publish_proactive_message(
+    redis: RedisStreamClient,
+    user_id: str,
+    message: str,
+) -> None:
+    """Send a proactive notification to the user via Telegram bot.
+
+    Used when there is no callback_stream (e.g. webhook-triggered deploys).
+
+    Args:
+        redis: Redis stream client
+        user_id: Telegram user ID (chat_id) as string.
+        message: Text message to send.
+    """
+    if not user_id:
+        return
+    await redis.redis.xadd(
+        PO_PROACTIVE_QUEUE,
+        {"text": message, "user_id": user_id},
+    )

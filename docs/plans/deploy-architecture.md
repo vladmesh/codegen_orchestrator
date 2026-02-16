@@ -357,66 +357,50 @@ make lint        # All checks passed
 
 ---
 
-## Iteration 5: Feature deploy flow
+## Iteration 5: Feature deploy via GitHub webhook ✅
 
-**Цель:** При пуше в main после CI → оркестратор проверяет новые env vars → обновляет DOTENV → тригерит deploy.yml.
+> **Статус**: Done (2026-02-16)
 
-### 5.1 Research: механизм обнаружения push
+**Цель:** GitHub webhook (workflow_run event) → API endpoint → deploy:queue → DevOps subgraph (idempotent, re-resolves env vars). Proactive notifications via po:proactive when no callback_stream.
 
-Исследовать как оркестратор узнаёт о пуше:
-- Вариант A: GitHub webhook → endpoint в API → кидает в deploy:queue
-- Вариант B: Polling через scheduler (проверять latest commit SHA)
-- Вариант C: CI workflow сам нотифицирует (workflow_dispatch callback)
+### 5.1 Webhook signature verification
+- `services/api/src/utils/webhook_security.py`: HMAC-SHA256 verification
+- 5 unit tests
 
-<!-- Рекомендация: webhook (вариант A) — самый надёжный и real-time. Но требует публичный endpoint. Для MVP можно polling (B). -->
+### 5.2 Webhook endpoint
+- `services/api/src/routers/webhooks.py`: `POST /webhooks/github`
+- Filters: workflow_run + completed + success + ci.yml + main branch
+- Looks up project by `repository.id` → `project.github_repo_id`
+- Guards: project must be active
+- Creates Task record, publishes to deploy:queue
+- 8 unit tests
 
-Результат research определит реализацию 5.2-5.4.
+### 5.3 Register webhook router
+- `services/api/src/routers/__init__.py`: added webhooks import
+- `services/api/src/main.py`: registered without /api prefix
 
-### 5.2 Реализовать обнаружение
+### 5.4 Deploy worker proactive notifications
+- `services/langgraph/src/workers/_events.py`: added `publish_proactive_message()`
+- `services/langgraph/src/workers/deploy_worker.py`: sends po:proactive when no callback_stream
+- 4 unit tests (success, missing_secrets, error, callback_stream preserved)
 
-По результатам 5.1.
-
-### 5.3 Env diff логика
-
-Новая функция (в env_analyzer или отдельный модуль):
-```python
-async def check_env_changes(project_id: str, owner: str, repo: str) -> set[str]:
-    """Fetch .env.example, сравнить keys с БД, вернуть new_vars."""
-```
-- `keys_in_example - keys_in_db = new_vars`
-- Если `new_vars` пустой → DOTENV не изменился, можно деплоить
-- Если есть новые → запустить env resolver только для них
-
-### 5.4 Обновить deploy worker
-
-При получении feature-deploy задачи:
-1. Fetch `.env.example` → compare keys → resolve new vars
-2. Rebuild DOTENV → update GitHub Secret
-3. Trigger deploy.yml → wait → update status
-
-### 5.5 Тесты
-- `test_check_env_changes_no_new_vars`
-- `test_check_env_changes_with_new_vars`
-- `test_feature_deploy_updates_dotenv`
-- `test_feature_deploy_skips_dotenv_when_no_changes`
+### 5.5 Environment configuration
+- `.env.example`: added `GITHUB_WEBHOOK_SECRET`
+- `docker-compose.yml`: added `GITHUB_WEBHOOK_SECRET` to api service
 
 ### E2E проверка итерации 5
 ```bash
-make test-unit
-make test-langgraph-unit
+make test-unit           # 306 passed
+make lint                # All checks passed
 ```
-Ручная проверка:
-1. Задеплоенный проект — пушнуть изменение в main (без новых env vars)
-2. **Ожидаемые логи:**
-   - `check_env_changes new_vars=0`
-   - `workflow_dispatch_triggered workflow_file=deploy.yml`
-   - `workflow_completed conclusion=success`
-3. Пушнуть изменение с новой переменной в `.env.example`
-4. **Ожидаемые логи:**
-   - `check_env_changes new_vars=1 vars=['NEW_VAR']`
-   - `env_resolver_start` (только для NEW_VAR)
-   - `dotenv_updated`
-   - `workflow_dispatch_triggered`
+
+Ручная проверка на живом стеке (выполнена):
+1. curl: no signature → 401, bad signature → 401
+2. curl: push event → ignored, deploy.yml → ignored, unknown repo → ignored, non-active project → ignored
+3. Полный webhook flow: accepted → Task created → deploy:queue → deploy-worker → DevOps subgraph (env analysis 16 vars, secret resolution 16 resolved, 6 GitHub secrets written)
+4. 422 на dispatch deploy.yml (ожидаемо: reverse-bot не имеет deploy.yml)
+5. Guard: повторный webhook во время deploying → корректно ignored
+6. Proactive notification: `po:proactive` → telegram-bot → Telegram (сообщение об ошибке деплоя дошло)
 
 ---
 
