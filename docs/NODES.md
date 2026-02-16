@@ -100,6 +100,7 @@ devops/
 ├── __init__.py          # Экспорты
 ├── state.py             # DevOpsState TypedDict
 ├── env_analyzer.py      # EnvAnalyzer + helper функции
+├── env_groups.py        # EnvGroup ABC, PostgresGroup, RedisGroup, resolve_with_groups
 ├── nodes.py             # SecretResolver, ReadinessCheck, Deployer
 └── graph.py             # Routing + create_devops_subgraph
 ```
@@ -113,8 +114,10 @@ devops/
 
 2. **SecretResolver (Functional)**:
    - Дешифрует существующие секреты из БД (`decrypt_dict`)
-   - Генерирует infra секреты, подставляет computed значения
-   - Проверяет наличие user секретов
+   - Двухфазная резолюция infra-переменных:
+     * Фаза 1: cached secrets из `config_secrets` (приоритет)
+     * Фаза 2: uncached → `resolve_with_groups()` (когерентные пароли для связанных переменных, например DATABASE_URL + POSTGRES_PASSWORD) → fallback `_generate_infra_secret()` для остальных
+   - Подставляет computed значения, проверяет наличие user секретов
    - Шифрует и сохраняет новые секреты обратно в БД (`encrypt_dict`)
 
 3. **ReadinessCheck (Functional)**:

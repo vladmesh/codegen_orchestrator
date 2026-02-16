@@ -17,6 +17,7 @@ from ...config.constants import Paths
 from ...nodes.base import FunctionalNode
 from ...schemas.api_types import AllocationInfo, get_repo_url
 from ...tools.devops_delegation import delegate_ansible_deploy
+from .env_groups import resolve_with_groups
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -51,19 +52,32 @@ class SecretResolverNode(FunctionalNode):
         missing_user = []
         newly_generated = {}  # Track new infra secrets to save
 
+        # Phase 1: Split infra vars into cached vs uncached
+        uncached_infra: set[str] = set()
         for var, var_type in env_analysis.items():
             if var_type == "infra":
-                # First check if secret already exists in project config
                 if var in config_secrets:
                     resolved[var] = config_secrets[var]
                     logger.debug("secret_reused", var=var)
                 else:
-                    # Generate new secret and mark for saving
-                    resolved[var] = self._generate_infra_secret(var, safe_project_id)
-                    newly_generated[var] = resolved[var]
-                    logger.debug("secret_generated", var=var)
+                    uncached_infra.add(var)
 
-            elif var_type == "computed":
+        # Phase 2: Resolve uncached infra via groups (coherent passwords)
+        if uncached_infra:
+            grouped, remaining = resolve_with_groups(uncached_infra, safe_project_id)
+            resolved.update(grouped)
+            newly_generated.update(grouped)
+            logger.debug("secrets_grouped", count=len(grouped), vars=sorted(grouped))
+
+            # Fallback for remaining vars not covered by any group
+            for var in remaining:
+                resolved[var] = self._generate_infra_secret(var, safe_project_id)
+                newly_generated[var] = resolved[var]
+                logger.debug("secret_generated", var=var)
+
+        # Phase 3: Computed and user secrets (unchanged)
+        for var, var_type in env_analysis.items():
+            if var_type == "computed":
                 resolved[var] = self._compute_secret(var, project_spec, state)
 
             elif var_type == "user":
@@ -95,28 +109,11 @@ class SecretResolverNode(FunctionalNode):
         }
 
     def _generate_infra_secret(self, key: str, project_id: str) -> str:
-        """Generate infrastructure secret value."""
+        """Generate infrastructure secret value (fallback for vars not covered by groups)."""
         key_upper = key.upper()
 
-        if key_upper == "REDIS_URL":
-            return "redis://redis:6379/0"
-
-        elif key_upper == "DATABASE_URL":
-            db_pass = secrets_module.token_urlsafe(16)
-            db_name = f"db_{project_id}"
-            return f"postgresql://postgres:{db_pass}@postgres:5432/{db_name}"
-
-        elif "SECRET" in key_upper or ("KEY" in key_upper and "API" not in key_upper):
+        if "SECRET" in key_upper or ("KEY" in key_upper and "API" not in key_upper):
             return secrets_module.token_urlsafe(32)
-
-        elif key_upper == "POSTGRES_USER":
-            return "postgres"
-
-        elif key_upper == "POSTGRES_PASSWORD":
-            return secrets_module.token_urlsafe(16)
-
-        elif key_upper == "POSTGRES_DB":
-            return f"db_{project_id}"
 
         # Default random for unknown infra
         return secrets_module.token_urlsafe(32)

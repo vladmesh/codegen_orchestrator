@@ -109,7 +109,10 @@ make test-langgraph-unit  # все тесты зелёные
 
 ---
 
-## Iteration 2: Env Resolver с группами
+## Iteration 2: Env Resolver с группами ✅
+
+> **Статус**: Done (2026-02-16)
+> **Scope**: пункты 2.1–2.4 реализованы. Пункты 2.5–2.6 (парсинг комментариев .env.example, контекст compose для LLM) отложены — независимы от групп.
 
 **Цель:** Связанные переменные (POSTGRES_PASSWORD, DATABASE_URL, ASYNC_DATABASE_URL) генерируются согласованно через группы. LLM fallback только для неизвестных переменных.
 
@@ -181,15 +184,15 @@ class EnvGroup(ABC):
 
 ### E2E проверка итерации 2
 ```bash
-make test-unit  # все тесты зелёные
-make test-langgraph-unit  # все тесты зелёные
+make test-unit  # все тесты зелёные (272 passed)
+make test-langgraph-unit  # все тесты зелёные (94 passed: 81 existing + 9 env_groups + 4 integration)
+make lint  # без ошибок
 ```
-Ручная проверка:
-1. Создать проект с `.env.example` содержащим `DATABASE_URL`, `POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`
-2. Тригернуть деплой
-3. В логах: `secret_generated` для DATABASE_URL и POSTGRES_PASSWORD
-4. Проверить в БД: пароль в `DATABASE_URL` совпадает с `POSTGRES_PASSWORD`
-5. `TELEGRAM_BOT_TOKEN` — в `missing_user_secrets`
+Ручная проверка на живом стеке (выполнена):
+1. First deploy: DATABASE_URL, ASYNC_DATABASE_URL, POSTGRES_PASSWORD — один пароль (когерентно)
+2. Redeploy (partial cache): cached secrets сохраняются, uncached генерируются
+3. Mixed scenario (infra+computed+user): группы + fallback + computed + missing_user — всё корректно
+4. В логах: `secrets_grouped count=N vars=[...]` для групповых, `secret_generated` для fallback
 
 ---
 
