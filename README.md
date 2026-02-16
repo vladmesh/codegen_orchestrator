@@ -8,7 +8,8 @@
 ## Философия
 
 - **Автономность**: Человек заходит раз в несколько дней, смотрит отчёты, докидывает деньги
-- **Агенты как узлы графа**: Каждый агент — специалист со своими инструментами
+- **Агенты как узлы графа**: Product Owner — это агент LangGraph, управляющий процессом.
+- **Worker Manager**: Запускает изолированные контейнеры для Engineering/DevOps задач (Claude Code, Factory.ai).
 - **Нелинейность**: Агенты могут вызывать друг друга в любом порядке
 - **Spec-first**: Используем [service-template](https://github.com/vladmesh/service-template) для генерации кода
 
@@ -17,35 +18,40 @@
 ```mermaid
 graph TD
     User((User)) <--> |Telegram| Bot[Telegram Bot Service]
-    Bot <--> |Command Queue| PO[Product Owner Worker]
+    Bot <--> |"Redis Stream"| PO[Product Owner Agent]
     
-    subgraph "Worker Container"
-        PO -- "Claude/Factory" --> CLI[Orchestrator CLI]
+    subgraph "LangGraph Service"
+        PO
+        EngGraph[Engineering Subgraph]
+        DepGraph[DevOps Subgraph]
     end
     
-    CLI --> |API Request| API[API Service]
+    PO --> |"tools"| API[API Service]
+    PO --> |"push task"| EngQueue[engineering:queue]
+    PO --> |"push task"| DeployQueue[deploy:queue]
     
-    CLI --> |"push task"| EngQueue[engineering:queue]
-    CLI --> |"push task"| DeployQueue[deploy:queue]
+    subgraph "Worker Manager"
+        Worker[Developer Worker Containers]
+    end
+    
+    EngGraph --> |"Manage"| Worker
     
     API --> |"data"| DB[(PostgreSQL)]
     
-    EngQueue --> EngConsumer[Engineering Consumer]
-    EngConsumer --> EngGraph[Engineering Subgraph]
-    
-    DeployQueue --> DepConsumer[Deploy Consumer]
-    DepConsumer --> DepGraph[DevOps Subgraph]
+    EngQueue --> EngGraph
+    DeployQueue --> DepGraph
 
     %% Feedback Loops
-    EngGraph --> |"Result / Progress"| DB
-    DepGraph --> |"Result / Progress"| DB
+    EngGraph --> |"Result / Progress"| PO
+    DepGraph --> |"Result / Progress"| PO
 ```
 
 ### Основные компоненты
 
 - **API**: FastAPI сервис, единственный источник правды (DAL) для PostgreSQL.
 - **Telegram Bot**: Интерфейс для пользователя, управляет PO сессиями.
-- **Worker Manager**: Управляет Docker контейнерами с AI агентами (Claude/Factory).
+- **Product Owner (PO)**: LangGraph ReactAgent, общающийся с пользователем и ставящий задачи.
+- **Worker Manager**: Управляет Docker контейнерами с исполнителями задач (Engineering/Deploy Workers).
 - **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps).
 - **Scaffolder**: Сервис генерации кода через Copier (бывший `preparer`).
 - **Infra Service**: Ansible runner для настройки серверов (бывший `infrastructure-worker`).
