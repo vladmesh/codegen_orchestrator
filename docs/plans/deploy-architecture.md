@@ -24,7 +24,7 @@
 **Что НЕ входит:**
 - Multi-project resource limits / мониторинг (вопрос 7 — отложен)
 - Автоматический rollback и откат миграций
-- Reverse proxy (Caddy/Traefik) — когда понадобятся домены
+- ~~Reverse proxy (Caddy/Traefik)~~ — вошло в Iteration 7 (registry + TLS)
 
 ---
 
@@ -486,6 +486,162 @@ gh pr create --title "feat: deploy via GitHub Actions, Fernet secrets, env group
 ```bash
 gh pr merge
 ```
+
+---
+
+## Iteration 7: Self-hosted Docker Registry + Caddy TLS
+
+> **Статус**: TODO
+> **Контекст**: GHCR не работает с GitHub App installation tokens — подтверждено экспериментально (см. [docs/investigations/ghcr-403-app-token.md](../investigations/ghcr-403-app-token.md)). Ошибка `installation not allowed to Create organization package` — ограничение платформы, не конфигурации. Нужен собственный registry.
+
+**Цель:** Развернуть Docker registry как часть оркестратора. CI пушит образы в наш registry, deploy.yml пуллит оттуда. Caddy обеспечивает TLS (обязательно для Docker registry) и попутно закрывает webhook endpoint.
+
+### Почему self-hosted registry, а не альтернативы
+
+| Вариант | Проблема |
+|---------|----------|
+| GHCR | App tokens не могут создавать пакеты в org namespace |
+| PAT (classic) | Привязан к человеку, не масштабируется на чужие org |
+| tar+SCP | Нет layer caching, большие артефакты, сложнее CI |
+| Build on server | Исходники на проде, каждый проект тяжёлый |
+| **Self-hosted registry** | Универсален: работает с любым GitHub (наш, чужой, вообще без GitHub) |
+
+### 7.1 Caddy как reverse proxy с auto-TLS
+
+Добавить в `docker-compose.yml`:
+
+```yaml
+caddy:
+  image: caddy:2-alpine
+  ports:
+    - "80:80"    # HTTP → redirect to HTTPS + Let's Encrypt ACME challenge
+    - "443:443"  # HTTPS
+  volumes:
+    - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+    - caddy-data:/data        # сертификаты
+    - caddy-config:/config
+```
+
+Создать `infra/Caddyfile`:
+```
+{$ORCHESTRATOR_HOSTNAME} {
+    # Docker Registry V2 API
+    handle /v2/* {
+        basic_auth {
+            {$REGISTRY_USER} {$REGISTRY_PASSWORD_HASH}
+        }
+        reverse_proxy registry:5000
+    }
+
+    # GitHub webhook
+    handle /webhooks/* {
+        reverse_proxy api:8000
+    }
+}
+```
+
+**Prerequisite**: переменная `ORCHESTRATOR_HOSTNAME` (напр. `5oxt.l.time4vps.cloud`). Caddy автоматически получает Let's Encrypt сертификат через HTTP-01 challenge.
+
+**Миграция на домен позже**: заменить hostname в `.env`, Caddy перевыпустит сертификат. ~1 час работы.
+
+### 7.2 Docker Registry
+
+Добавить в `docker-compose.yml`:
+
+```yaml
+registry:
+  image: registry:2
+  environment:
+    REGISTRY_STORAGE_DELETE_ENABLED: "true"
+  volumes:
+    - registry-data:/var/lib/registry
+```
+
+Registry не торчит наружу (нет `ports:`), доступен только через Caddy. Auth на уровне Caddy (basic auth).
+
+### 7.3 Registry credentials management
+
+При создании проекта (scaffolder или DeployerNode):
+1. Сгенерировать или использовать shared credentials для registry
+2. Записать как GitHub repo secrets: `REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD`
+
+Варианты:
+- **Shared credentials** (MVP): один user/password для всех проектов, хранится в `.env` оркестратора. Проще, достаточно для нашей org.
+- **Per-project credentials** (позже): htpasswd с отдельным user на проект. Изоляция, но сложнее.
+
+### 7.4 Обновить ci.yml.jinja в service-template
+
+Заменить GHCR на наш registry:
+
+```yaml
+# Было:
+#   registry: ghcr.io
+#   username: ${{ github.actor }}
+#   password: ${{ secrets.GITHUB_TOKEN }}
+
+# Стало:
+env:
+  REGISTRY: ${{ secrets.REGISTRY_URL }}
+
+steps:
+  - uses: docker/login-action@v3
+    with:
+      registry: ${{ secrets.REGISTRY_URL }}
+      username: ${{ secrets.REGISTRY_USER }}
+      password: ${{ secrets.REGISTRY_PASSWORD }}
+```
+
+Убрать `permissions: packages: write` (больше не нужно).
+
+Убрать `docker/metadata-action` (OCI labels для GHCR linking не нужны с нашим registry; теги формировать напрямую).
+
+### 7.5 Обновить deploy.yml.jinja в service-template
+
+```yaml
+# docker compose pull теперь тянет из нашего registry
+# Credentials для pull нужны на сервере:
+- name: Deploy via SSH
+  script: |
+    echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_URL" -u "$REGISTRY_USER" --password-stdin
+    docker compose pull
+    docker compose up -d --remove-orphans
+```
+
+### 7.6 Обновить DeployerNode — записывать registry secrets
+
+Файл: `services/langgraph/src/subgraphs/devops/nodes.py`
+
+В `_write_deploy_secrets()` добавить:
+- `REGISTRY_URL` — hostname оркестратора + path
+- `REGISTRY_USER` — из env
+- `REGISTRY_PASSWORD` — из env
+
+### 7.7 Обновить compose.prod.yml.jinja в service-template
+
+Image names: `${REGISTRY_URL}/{{ project_name }}-<service>:latest` вместо `ghcr.io/...`.
+
+### 7.8 Storage cleanup policy
+
+Реестр накапливает образы. Варианты:
+- Cron job: `registry garbage-collect` + удаление старых тегов через Registry API
+- Ограничение: хранить только N последних тегов на проект
+
+Для MVP: ручная очистка или простой cron. Автоматизация позже.
+
+### 7.9 Тесты
+
+- Unit: `_write_deploy_secrets()` включает `REGISTRY_URL/USER/PASSWORD`
+- Integration: `docker login` → `docker push` → `docker pull` через Caddy (локально или на стейдже)
+- E2E: полный pipeline — scaffolding → CI builds → push to registry → deploy pulls → containers running
+
+### E2E проверка итерации 7
+
+1. `make up` — Caddy + registry стартуют, сертификат получен
+2. Локальный `docker login <hostname>/v2/` — успешно
+3. Локальный `docker push <hostname>/test:latest` — успешно
+4. Создать проект через Telegram → scaffolding → CI → push to registry → deploy → containers running
+5. Webhook endpoint доступен по HTTPS (`https://<hostname>/webhooks/github`)
+6. Повторный push → CI → push (layer caching работает) → deploy
 
 ---
 

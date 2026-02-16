@@ -80,6 +80,78 @@ Telegram-бот видит `RUNNING` → шлёт сообщения в стри
 
 ## 🟡 MEDIUM Priority
 
+### Redis Streams: унификация consumer'ов и PEL recovery
+**Статус**: TODO
+
+**Проблема:**
+`RedisStreamClient` в `shared/redis/client.py` уже имеет полноценный `consume()` async iterator с NOGROUP recovery, auto-ACK и connection management. Но из 7 consumer'ов в системе его использует **один** (`worker-wrapper`). Остальные 6 реализуют свой while-loop с xreadgroup/xack, каждый со своими багами и особенностями.
+
+**Текущее состояние (9 мест создают raw redis подключение мимо RedisStreamClient):**
+
+| Consumer | Файл | Паттерн | NOGROUP recovery |
+|----------|------|---------|-----------------|
+| `_base.py` (eng/deploy workers) | `services/langgraph/src/workers/_base.py` | ACK-on-success | да (через `ensure_consumer_groups`) |
+| PO consumer | `services/langgraph/src/po/consumer.py` | concurrent + manual ACK + semaphore + per-user lock | да (добавлено 2026-02-16) |
+| Telegram notifications | `services/telegram_bot/src/notifications.py` | auto-ACK | да |
+| Scheduler | `services/scheduler/src/main.py` | ACK-on-success | да |
+| Scaffolder | `services/scaffolder/src/main.py` | свой цикл | да |
+| Worker-manager | `services/worker-manager/src/consumer.py` | свой класс + ensure_group() | да |
+| Worker spawner | `services/langgraph/src/clients/worker_spawner.py` | request/response, id="$" | да |
+
+**Ключевые несоответствия:**
+- 3 разных паттерна ACK: auto, on-success, concurrent manual
+- `id="0"` vs `id="$"` при создании групп
+- Часть использует `ensure_all_groups()`, часть — inline `xgroup_create()`
+- `decode_responses=True` vs `False` vs не указан
+- **Ни один consumer не делает PEL recovery** — сообщения, не получившие ACK (crash, transient error), навсегда зависают в Pending Entries List
+
+**Что нужно сделать:**
+
+1. **Добавить PEL recovery в `consume()`** (~5 строк):
+   При старте читать pending сообщения (`id="0"`) перед переключением на новые (`id=">"`). Это гарантирует повторную обработку задач, упавших из-за transient errors.
+
+2. **Добавить manual ACK mode** в `consume()`:
+   Текущий `consume()` всегда делает auto-ACK после yield. Для workers нужен ACK-on-success. Варианты:
+   - Параметр `auto_ack=True/False` + метод `StreamMessage.ack()`
+   - Отдельный `consume_manual()` метод
+   - Callback-based API вместо iterator: `consumer.run(handler=process_fn)`
+
+3. **Мигрировать consumer'ов** на `RedisStreamClient.consume()`:
+   - Простые (scheduler, notifications): прямая замена
+   - Средние (_base.py, scaffolder, worker-manager): адаптация ACK-стратегии
+   - Сложные (PO consumer): нужен batch-read + dispatch паттерн, не iterator
+
+4. **Унифицировать publish** — заменить прямые `xadd` вызовы (webhooks, reminders, redis_publisher) на `RedisStreamClient.publish()`.
+
+**Варианты решения:**
+
+**Вариант A — Эволюционный (рекомендуемый):**
+Расширить существующий `RedisStreamClient`:
+- Добавить `auto_ack` параметр и `StreamMessage.ack()`
+- Добавить PEL recovery
+- Мигрировать consumer'ов по одному, начиная с простых
+- PO consumer — последний, возможно останется со своим паттерном
+
+**Вариант B — Новая абстракция `StreamConsumer`:**
+Отдельный класс поверх `RedisStreamClient`:
+```python
+consumer = StreamConsumer(
+    stream="engineering:queue",
+    group="capability-workers",
+    handler=process_fn,       # async callable
+    ack_strategy="on_success", # auto | on_success | manual
+    concurrency=1,             # >1 для PO-like паттерна
+)
+await consumer.run()
+```
+Больше API surface, но чище для сложных кейсов.
+
+**Оценка**: 2-3 дня. 7 файлов consumer'ов + shared/redis/client.py + тесты.
+
+**Обнаружено при**: E2E тестировании deploy-architecture (2026-02-16). PO consumer падал без recovery при потере Redis streams.
+
+---
+
 ### Worker Lifecycle (Pause/Unpause, Cleanup, Token Tracking)
 **Статус**: TODO — план в [worker-lifecycle.md](./tasks/worker-lifecycle.md), требует переработки
 

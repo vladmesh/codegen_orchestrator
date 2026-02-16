@@ -84,6 +84,19 @@ async def run_po_consumer() -> None:
             except asyncio.CancelledError:
                 logger.info("po_consumer_cancelled")
                 break
+            except Exception as e:
+                if "NOGROUP" in str(e):
+                    logger.warning("po_consumer_nogroup_recovering")
+                    try:
+                        await redis.xgroup_create(
+                            PO_INPUT_QUEUE, PO_CONSUMER_GROUP, id="0", mkstream=True
+                        )
+                    except Exception as create_err:
+                        if "BUSYGROUP" not in str(create_err):
+                            raise
+                    await asyncio.sleep(1)
+                    continue
+                raise
 
             if not entries:
                 continue
