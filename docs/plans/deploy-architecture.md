@@ -112,7 +112,7 @@ make test-langgraph-unit  # все тесты зелёные
 ## Iteration 2: Env Resolver с группами ✅
 
 > **Статус**: Done (2026-02-16)
-> **Scope**: пункты 2.1–2.4 реализованы. Пункты 2.5–2.6 (парсинг комментариев .env.example, контекст compose для LLM) отложены — независимы от групп.
+> **Scope**: пункты 2.1–2.4 реализованы в iter 2. Пункты 2.5–2.6 реализованы в iter 6 (deploy-arch iter 6 commit).
 
 **Цель:** Связанные переменные (POSTGRES_PASSWORD, DATABASE_URL, ASYNC_DATABASE_URL) генерируются согласованно через группы. LLM fallback только для неизвестных переменных.
 
@@ -166,7 +166,7 @@ class EnvGroup(ABC):
 - Удалить/обновить тесты которые проверяли независимую генерацию DATABASE_URL и POSTGRES_PASSWORD
 - Добавить интеграционный тест: полный pipeline с `env_analysis = {"DATABASE_URL": "infra", "POSTGRES_PASSWORD": "infra", ...}` → проверить что пароли совпадают
 
-### 2.5 Контекст для LLM fallback (env_analyzer)
+### 2.5 Контекст для LLM fallback (env_analyzer) ✅
 
 Файл: `services/langgraph/src/subgraphs/devops/env_analyzer.py`
 
@@ -178,7 +178,7 @@ class EnvGroup(ABC):
 
 Обновить `_parse_env_variables()` → возвращать `list[tuple[str, str | None]]` (name, comment).
 
-### 2.6 Обновить тесты env_analyzer
+### 2.6 Обновить тесты env_analyzer ✅
 - Тест парсинга комментариев из `.env.example`
 - Тест что контекст из compose включается в LLM prompt
 
