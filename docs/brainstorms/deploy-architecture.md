@@ -1,222 +1,199 @@
-# Brainstorm: Архитектура деплоя — проблемы и решения
+# Brainstorm: Архитектура деплоя
 
-> **Дата**: 2026-02-15
-> **Контекст**: E2E тест полного цикла (PO → Engineering → Deploy) выявил, что задеплоенный бот `reverse-bot` не работал, несмотря на зелёные CI-джобы в GitHub. Расследование вскрыло системные проблемы в деплой-инфраструктуре.
+> **Начато**: 2026-02-15
+> **Обновлено**: 2026-02-16
+> **Контекст**: E2E тест (PO → Engineering → Deploy) выявил что `reverse-bot` не работал несмотря на зелёные CI-джобы. Расследование вскрыло системные проблемы.
 
 ---
 
 ## Обнаруженные проблемы
 
-### 1. Ansible использует dev-compose вместо prod
+### Деплой
+1. **Ansible использует `compose.dev.yml` + `--build`** вместо `compose.prod.yml` + `pull` — билд падает на VPS, контейнеры не стартуют
+2. **Два конкурирующих деплой-пути** — Ansible (через оркестратор) и GitHub Actions (`main.yml`) — потенциальный конфликт
+3. **Несовпадение путей**: Ansible → `/opt/apps/`, CI secrets → `/opt/services/`, БД → `/opt/services/`
+4. **Health check маскирует ошибки**: `status_code: [200, 404]` + `ignore_errors: yes` → оркестратор пишет `active` для мёртвого бота
 
-**Файл**: `services/infra-service/ansible/playbooks/deploy_project.yml:119`
-
-```yaml
-cmd: "{{ compose_cmd_dev }} up -d --build"
-```
-
-`compose_cmd_dev` = `docker compose -f compose.base.yml -f compose.dev.yml --build`
-
-**Что происходит**:
-- Ansible пытается собрать Docker-образы из исходников прямо на VPS (`--build`)
-- Вместо `compose.prod.yml` (pull готовых образов из GHCR) используется `compose.dev.yml`
-- Сборка `tg_bot` на сервере падает (`exit_code=2`) из-за нехватки ресурсов / отсутствия build context
-- Контейнеры не стартуют, бот мёртв
-
-**Факт**: ручной запуск с `compose.prod.yml` без `--build` поднял всё за секунды — образы уже были в GHCR.
-
-### 2. Двойной деплой
-
-После CI оркестратор запускает **два** деплой-процесса:
-
-| # | Путь | Триггер | Когда |
-|---|------|---------|-------|
-| 1 | **Ansible** (DevOps subgraph → infra-service) | engineering_worker auto-triggers после CI | Всегда (если `skip_deploy=False`) |
-| 2 | **GitHub Actions** (`main.yml` deploy job) | `workflow_dispatch` с `deploy_host` | Если CI secrets настроены |
-
-Текущая ситуация: второй путь не срабатывает на `push` events (только на `workflow_dispatch`), но `_setup_ci_secrets()` записывает `DEPLOY_HOST` в GitHub — создавая потенциал для конфликта при ручном запуске.
-
-### 3. Несовпадение путей
-
-| Источник | Путь на сервере |
-|----------|----------------|
-| Ansible playbook (`deploy_dir`) | `/opt/apps/{{ project_name }}` |
-| `_setup_ci_secrets()` (`DEPLOY_PROJECT_PATH`) | `/opt/services/{{ project_name }}` |
-| `deployment_info` в БД | `/opt/services/reverse-bot` |
-
-GitHub Actions deploy (если запустится) сделает `cd /opt/services/reverse-bot` — директории не существует. Ansible деплоит в `/opt/apps/`.
-
-### 4. CI secrets неполные для GitHub Actions deploy
-
-`_setup_ci_secrets()` записывает 5 секретов:
-```
-DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PROJECT_PATH, DEPLOY_COMPOSE_FILES
-```
-
-`main.yml` ожидает ещё: `APP_SECRET_KEY`, `POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `REDIS_URL` и т.д. Они пустые → `.env` на сервере будет без критических значений → бот стартует но не работает.
-
-### 5. Health check маскирует ошибки
-
-```yaml
-# deploy_project.yml:174-181
-- name: Check if service responds
-  uri:
-    url: "http://localhost:{{ service_port }}/health"
-    status_code: [200, 404]  # 404 = "ок"?!
-  ignore_errors: yes          # даже если упал — не ошибка
-```
-
-Ansible **всегда** возвращает success. Оркестратор записывает `status: active` даже если бот мёртв.
-
-### 6. Секреты нельзя полностью предсказать
-
-Шаблон генерирует известные секреты (`POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`). Но developer agent может добавить новые (`OPENAI_API_KEY`, `SENTRY_DSN`, `WEBHOOK_SECRET`). Кто классифицирует — infra / user / computed — и откуда брать значение?
-
-Текущий `env_analyzer.py` решает это через LLM при полном DevOps-прогоне. Но для `action=feature` (доработка) полный DevOps-прогон — overkill.
+### Секреты
+5. **CI secrets неполные** — `_setup_ci_secrets()` записывает только deploy-инфру (HOST/USER/KEY), application secrets (DATABASE_URL, TELEGRAM_BOT_TOKEN) не попадают в GitHub
+6. **`DATABASE_URL` и `POSTGRES_PASSWORD` рассогласованы** — `_generate_infra_secret()` генерирует каждый независимо с разными паролями → Postgres не подключается
+7. **Нет `.env.example` → тихий пропуск** — `env_analyzer` возвращает пустой `env_analysis` без ошибки, деплой идёт без `.env`
+8. **Секреты в БД без шифрования** — `project.config.secrets` = plaintext JSONB
+9. **Нет single source of truth** — часть секретов в БД, часть только на сервере, часть в GitHub Secrets
 
 ---
 
-## Анализ двух деплой-путей
+## Принятые решения
 
-### Путь A: Ansible (текущий основной)
+### Source of truth для секретов — БД оркестратора
 
-```
-Engineering Worker → DEPLOY_QUEUE → Deploy Worker → DevOps Subgraph:
-  ResourceAllocator → EnvAnalyzer → SecretResolver → ReadinessCheck → DeployerNode
-    → wait for CI (main.yml build) → delegate_ansible_deploy → infra-service
-    → Ansible: clone repo, write .env, docker compose up
-```
+- Все секреты хранятся в `project.config.secrets` (PostgreSQL)
+- **Fernet encryption** at rest — шифруем перед записью, дешифруем при чтении
+- Ключ шифрования: env var `SECRETS_ENCRYPTION_KEY` на langgraph сервисе
+- Бэкап ключа: в `prod_infra` Ansible vault (зашифрован паролем из головы)
+- Восстановление: `ansible-vault decrypt` → скопировал ключ → поднял оркестратор
 
-**Плюсы**: полный контроль, может резолвить секреты, создавать DNS, firewall
-**Минусы**: overkill для feature updates, баги с compose.dev/prod, медленный
+### Деплой только через GitHub Actions (Ansible убираем)
 
-### Путь B: GitHub Actions (`main.yml`)
+**Ключевая идея**: на сервере не нужен исходный код — только compose файлы + `.env` + docker images из GHCR.
 
-```
-Push to main → GitHub Actions:
-  build-and-push: build Docker images → GHCR
-  deploy: SSH to server → generate .env → docker compose pull && up -d
-```
+**Трюк с `DOTENV`**: оркестратор собирает весь `.env` в одну строку → base64 → один GitHub Secret. Workflow декодирует и пишет файл. Не нужно перечислять переменные поимённо, шаблон никогда не устаревает.
 
-**Плюсы**: стандартный CI/CD, видно в GitHub UI, не требует оркестратора
-**Минусы**: секреты должны быть в GitHub (не все известны), `.env` генерится из шаблона (хрупко)
-
----
-
-## Варианты решения
-
-### Вариант 1: Разделить config и deploy
-
-**Принцип**: `.env` на сервере — source of truth, управляется только оркестратором. CI/CD только тянет образы и перезапускает.
-
-**`action=create` (первый деплой)**:
-```
-DevOps subgraph (полный):
-  1. Allocate server
-  2. Resolve secrets (env_analyzer + SecretResolver)
-  3. SSH: write .env to server
-  4. SSH: docker compose pull && up -d
-  5. Setup CI secrets (только DEPLOY_HOST/USER/KEY/PATH — без сервисных секретов)
-```
-
-**`action=feature` (доработка)**:
-```
-Engineering Worker → Developer push → CI green →
-  1. Diff .env.example (old vs new commit) → новые переменные?
-     - Нет → skip, деплой через main.yml (pull + restart, .env не трогаем)
-     - Да → callback в PO: "Нужен OPENAI_API_KEY" → user provides → orchestrator SSH writes .env → deploy
-  2. main.yml deploy: cd project && docker compose pull && up -d
-     (НЕ генерирует .env — он уже на сервере)
-```
-
-**`main.yml` упрощается до**:
+**CI workflow (идемпотентный, одинаковый для первого и последующих деплоев)**:
 ```yaml
 deploy:
   steps:
+    - uses: actions/checkout@v4
+    - name: Copy compose files
+      uses: appleboy/scp-action@v1
+      with:
+        source: "infra/compose.base.yml,infra/compose.prod.yml"
+        target: "/opt/services/${{ secrets.PROJECT_NAME }}/infra"
     - name: Deploy
       uses: appleboy/ssh-action@v1
       with:
+        envs: DOTENV_B64
         script: |
-          cd "${{ secrets.DEPLOY_PROJECT_PATH }}"
-          docker compose -f infra/compose.base.yml -f infra/compose.prod.yml pull
-          docker compose -f infra/compose.base.yml -f infra/compose.prod.yml up -d --remove-orphans
+          mkdir -p /opt/services/${{ secrets.PROJECT_NAME }}/infra
+          printf '%s' "$DOTENV_B64" | base64 -d > /opt/services/${{ secrets.PROJECT_NAME }}/.env
+          ufw allow ${{ secrets.DEPLOY_PORT }}/tcp
+          cd /opt/services/${{ secrets.PROJECT_NAME }}/infra
+          docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml pull
+          docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml up -d --remove-orphans
+          sleep 15
+          docker compose -f compose.base.yml -f compose.prod.yml ps --format json | python3 -c "
+          import sys, json
+          containers = json.loads(sys.stdin.read())
+          if not isinstance(containers, list): containers = [containers]
+          failed = [c['Name'] for c in containers if c.get('State') != 'running']
+          if failed: print(f'FAILED: {failed}'); sys.exit(1)
+          print(f'All {len(containers)} containers running')
+          "
+      env:
+        DOTENV_B64: ${{ secrets.DOTENV }}
 ```
 
-**Плюсы**:
-- Чистое разделение: config (orchestrator) vs deploy (CI/CD)
-- Новые секреты обнаруживаются через diff, а не через гадание
-- `main.yml` тупой и надёжный — не может сломать `.env`
-- Ansible нужен только для провижинга сервера (Docker, firewall, users)
+**Что убирается**: Ansible deploy playbook, infra-service (для деплоя), Redis deploy queue, `delegate_ansible_deploy`, DeployerNode в текущем виде.
 
-**Минусы**:
-- Нужен механизм diff `.env.example` в engineering worker
-- `.env` на сервере можно случайно сломать при SSH-доступе
+**Ansible остаётся только для провижинга серверов** (Docker, firewall, users) — это `prod_infra`, не оркестратор.
 
-### Вариант 2: Всё через GitHub Actions
+### Workflow оркестратора для деплоя
 
-**Принцип**: все секреты в GitHub Secrets. `main.yml` генерит `.env` и деплоит.
-
-**`action=create`**:
-```
-DevOps subgraph → resolve ALL secrets → write ALL to GitHub Secrets →
-  trigger workflow_dispatch(main.yml) → build + deploy
-```
-
-**`action=feature`**:
-```
-Engineering Worker → skip_deploy=True → main.yml auto-deploy on push
-```
-
-**Обнаружение новых секретов**: env_analyzer при каждом деплое читает `.env.example` из repo, классифицирует, резолвит.
-
-**Плюсы**: один путь деплоя, всё в GitHub UI
-**Минусы**:
-- Нужно знать ВСЕ секреты заранее и класть в GitHub
-- `main.yml` шаблон хрупкий — Jinja рендерит его при scaffold, потом не меняется
-- Если developer добавил переменную — она не появится в `main.yml` автоматически
-- Каждый push в main = полный деплой (может быть нежелательно)
-
-### Вариант 3: Всё через Ansible (оркестратор)
-
-**Принцип**: GitHub Actions только билдит образы. Деплой всегда через оркестратор.
-
-**`action=create`**: полный DevOps subgraph (как сейчас, но с исправлениями)
-**`action=feature`**: облегчённый деплой — SSH: `pull + restart` (без полного Ansible playbook)
-
-**Плюсы**: полный контроль, secrets resolution в одном месте
-**Минусы**: engineering worker должен тригерить деплой даже для мелких изменений, зависимость от оркестратора для каждого деплоя
+Оркестратор не деплоит, а подготавливает:
+1. Резолвит все секреты → сохраняет в БД (encrypted)
+2. Собирает полный `.env` → base64 → GitHub Secret `DOTENV`
+3. Пишет deploy-инфру в GitHub Secrets (`DEPLOY_HOST`, `DEPLOY_PORT`, `PROJECT_NAME`, etc.)
+4. CI триггерится (push / workflow_dispatch) → деплоит
+5. Оркестратор ждёт `gh wait_for_workflow` → читает результат → обновляет статус
 
 ---
 
-## Рекомендация: Вариант 1
+## Целевой flow секретов
 
-Разделение config и deploy — самый чистый подход:
-
-1. **Оркестратор владеет `.env`** на сервере (SSH write)
-2. **CI/CD владеет деплоем** (pull + restart)
-3. **Новые секреты** обнаруживаются через diff `.env.example`, а не через анализ всего кода
-4. **Ansible** остаётся только для первоначального провижинга серверов
-
-### Что нужно сделать
-
-**Немедленные фиксы (баги)**:
-- [ ] `deploy_project.yml`: `compose.dev.yml` → `compose.prod.yml`, убрать `--build`, добавить `pull`
-- [ ] `deploy_project.yml`: убрать `ignore_errors: yes` с health check
-- [ ] `_setup_ci_secrets()`: `/opt/services/` → `/opt/apps/` (или наоборот, но одинаково)
-- [ ] `engineering_worker.py`: `skip_deploy=True` для `action=feature` (пока не реализован CI deploy)
-
-**Архитектурные изменения**:
-- [ ] Упростить `main.yml` deploy job: только `pull + up -d`, без генерации `.env`
-- [ ] Добавить `main.yml` deploy trigger на `push` (сейчас только `workflow_dispatch`)
-- [ ] Engineering worker: diff `.env.example` для обнаружения новых секретов
-- [ ] PO tool: `update_project_env` — обновить `.env` на сервере через SSH
-- [ ] DevOps subgraph: отдельный lightweight path для feature deploy (без полного прогона)
+```
+1. PO спрашивает user secrets (TELEGRAM_BOT_TOKEN и т.д.) → БД
+2. Scaffolding → .env.example (имена переменных, без значений)
+3. Developer работает, может добавить новые env vars в .env.example
+4. [Валидация]: developer добавил все env vars в .env.example?
+5. Env resolver: читает .env.example, классифицирует, генерит/вычисляет/спрашивает
+   - Уже заполненные в БД → пропускает
+   - Infra → генерит (СОГЛАСОВАННО — postgres password один раз)
+   - Computed → вычисляет из контекста проекта
+   - User → спрашивает через PO → Telegram
+6. [Валидация]: каждый ключ из .env.example имеет значение в БД?
+7. Allocator: сервер + порт → БД
+8. Оркестратор: собирает полный .env из БД → DOTENV → GitHub Secret
+9. CI: deploy workflow
+10. Оркестратор: ждёт результат → обновляет статус
+```
 
 ---
 
-## Текущее состояние после расследования
+## Открытые вопросы
+
+### ~~1. Env resolver~~ → решено
+
+**Архитектура**: детерминированный pipeline, LLM только для классификации неизвестных.
+
+**Три уровня**:
+1. **Группы связанных переменных** (PostgresGroup, RedisGroup и т.д.) — генерят согласованный набор. Например PostgresGroup генерит password один раз и прокидывает в DATABASE_URL, ASYNC_DATABASE_URL, POSTGRES_PASSWORD.
+2. **Паттерны** (`*_SECRET` → random, `TELEGRAM_*` → user, `APP_NAME` → computed) — как сейчас, но без генерации значений, только классификация.
+3. **LLM fallback** для неизвестных — один вызов на все неизвестные переменные разом.
+
+**LLM не генерирует значения**, а выбирает стратегию из конечного списка:
+- `random_token(length)`, `random_uuid`, `random_password(length)`
+- `static_value("production")`, `from_context(field)`
+- `ask_po(hint)` — для user secrets
+
+**Контекст для LLM** (собирается автоматически до вызова):
+1. Комментарии из `.env.example` (строка над переменной)
+2. Compose файлы — `environment:` секции (GitHub API fetch)
+3. Code search — `os.getenv("VAR_NAME")` через GitHub Search API (один call на переменную)
+
+Всё через GitHub API, код на диск не клонируется.
+
+### ~~2. Feature deploy flow~~ → решено
+### ~~3. CI trigger~~ → решено
+
+**Два отдельных workflow**:
+- `ci.yml` — on push: lint → test → build images → push to GHCR с тегами `${{ github.sha }}` + `latest` (автоматический)
+- `deploy.yml` — on workflow_dispatch: scp compose → write .env → pull → up (только по команде оркестратора)
+
+**Flow для feature deploy**:
+```
+Developer push → ci.yml (автоматически) → green →
+  Оркестратор:
+    fetch .env.example → сравнить keys с БД →
+    new vars? → env resolver (только для новых) →
+    update DOTENV в GitHub Secrets →
+    gh workflow run deploy.yml →
+    wait for completion → update status
+```
+
+Обнаружение новых переменных: `keys_in_example - keys_in_db = new_vars`. Не diff, а сравнение с source of truth.
+
+Деплой **только** через `workflow_dispatch` — оркестратор единственный кто его тригерит. Это даёт ему время проверить и обновить env между build и deploy.
+
+### ~~4. Health check~~ → решено
+
+SSH в deploy.yml: `sleep 15` → `docker compose ps --format json` → если есть контейнер не в `running` → workflow fails. Оркестратор видит failed workflow → ставит `status: error`. MVP достаточно.
+
+### ~~5. Docker profiles~~ → решено
+
+Профили — dev-удобство (не стартовать tg_bot без `--profile tg`). В проде всё должно стартовать всегда. Решение: профили только в `compose.dev.yml`, не в `compose.base.yml`. Тогда `compose.base.yml + compose.prod.yml` поднимает всё без `--profile`. Deploy workflow не нужно знать про профили.
+
+**Доработка в service-template** (не в оркестраторе): `framework/lib/compose_blocks.py` — `_render_profiles()` / `_apply_placeholders()` ставят профили только в dev overlay.
+
+### ~~6. `main.yml.jinja` в service-template~~ → решено
+
+**Доработка в service-template**: разделить `main.yml.jinja` на два шаблона:
+- `ci.yml.jinja` — on push: lint → test → build images → push to GHCR (теги: `$SHA` + `latest`)
+- `deploy.yml.jinja` — on workflow_dispatch: scp compose → write DOTENV → pull → up → health check
+
+`deploy.yml` универсальный, не перечисляет env-переменные поимённо (DOTENV трюк).
+
+### 7. Multi-project сервер (отложено)
+
+- Resource limits (docker `mem_limit`, `cpus`) — не настроены
+- Мониторинг — `health_checker.py` это заглушка
+- Один проект может сожрать всю RAM и уронить соседей
+- Allocator есть, но нет runtime-проверки ресурсов
+
+### ~~8. Rollback~~ → решено (MVP)
+
+**MVP**: возможность ручного отката, не автоматика.
+1. `ci.yml` пушит образы с тегом `${{ github.sha }}` (помимо `latest`)
+2. Записывать `deployed_sha` (git commit SHA) в `service_deployments` при каждом деплое
+3. В deploy.yml: `cp .env .env.bak` перед перезаписью
+4. Ручной rollback: оркестратор тригерит deploy.yml с конкретным SHA тегом вместо `latest`
+
+Автооткат и откат миграций БД — за пределами MVP.
+
+---
+
+## Текущее состояние
 
 - `reverse-bot` вручную поднят на `176.223.131.124` (`/opt/apps/reverse-bot`)
-- Использована правильная команда: `compose.prod.yml` + `--profile tg` без `--build`
+- Использована: `compose.prod.yml` + `--profile tg` без `--build`
 - Все 4 контейнера работают (backend, tg_bot, db, redis)
 - Проект в БД оркестратора в статусе `error` (нужно обновить на `active`)
