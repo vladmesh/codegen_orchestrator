@@ -1,21 +1,21 @@
 # Project Status
 
-> **Current Focus**: PO ReactAgent Migration
-> **Plan**: [po-react-agent.md](./plans/po-react-agent.md)
+> **Current Focus**: Deploy Architecture (GitHub Actions + Fernet secrets + env groups)
+> **Plan**: [deploy-architecture.md](./plans/deploy-architecture.md)
 
-## PO ReactAgent Migration
+## Previous: PO ReactAgent Migration — Done
 
-Замена контейнерного PO (Docker + Claude CLI + orchestrator-cli) на LangGraph ReactAgent с прямым вызовом через Redis Streams.
+Plan: [po-react-agent.md](./plans/po-react-agent.md) — fully implemented and merged.
 
-### Completed
+## Current: Deploy Architecture
 
-- **Phase 1**: PO Graph + Tools + Consumer (`services/langgraph/src/po/`)
-- **Phase 1.5**: PostgreSQL Checkpointer (`AsyncPostgresSaver`, schema `langgraph`)
-- **Phase 2.1**: Telegram Bot direct PO flow (`XADD po:input` → `XREAD po:response:{request_id}`)
-- **Phase 2.3**: System events through PO (`notify_user` tool, flat event format, `ProactiveListener`)
-- **Phase 2.4**: Reminder poller (`_poll_once` + `run_reminder_poller`, `PO_REMINDERS_KEY` constant)
-- **Phase 2.5**: Direct migration — `orchestrator respond` writes to `po:input` (no bridge needed)
-- **Phase 3**: Cleanup — removed legacy container-based PO code (POSessionManager, PO worker contracts, PO state schema, dead tests, updated docs)
+E2E тест выявил что Ansible-деплой не работает. Переходим на GitHub Actions deploy + Fernet-шифрование секретов + env resolver pipeline.
+
+6 итераций: Fernet crypto → Env groups → DeployerNode via GH Actions → Cleanup infra-service → Feature deploy flow → Final E2E.
+
+### Status
+
+- Starting Iteration 1: Fernet encryption для секретов
 
 ## Quick Links
 
