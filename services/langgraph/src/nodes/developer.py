@@ -125,9 +125,28 @@ class DeveloperNode(FunctionalNode):
             )
 
             if worker_result.success:
+                if not worker_result.commit_sha:
+                    logger.error(
+                        "developer_node_no_commit",
+                        project_name=project_name,
+                        output=worker_result.output[:500],
+                    )
+                    return {
+                        "messages": [
+                            AIMessage(
+                                content=f"❌ Worker completed but made no commit"
+                                f" in '{project_name}'."
+                            )
+                        ],
+                        "engineering_status": "blocked",
+                        "errors": state.get("errors", [])
+                        + ["Worker reported success but no commit was made"],
+                    }
+
                 logger.info(
                     "developer_node_success",
                     project_name=project_name,
+                    commit_sha=worker_result.commit_sha,
                     output_length=len(worker_result.output),
                 )
 

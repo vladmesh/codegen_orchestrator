@@ -120,8 +120,8 @@ async def _wait_for_ci_and_fix(
 
     repo_url = project.get("repository_url", "")
     if not repo_url or "github.com/" not in repo_url:
-        logger.warning("ci_check_skip_no_repo_url", task_id=task_id)
-        return True  # Can't check CI without repo URL; proceed anyway
+        logger.error("ci_check_fail_no_repo_url", task_id=task_id)
+        return False
 
     repo_full_name = repo_url.split("github.com/")[-1].rstrip("/")
     owner, repo_name = repo_full_name.split("/", 1)
@@ -588,13 +588,43 @@ async def _handle_engineering_success(
     user_id: str = "",
 ) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
+    project_id = project["id"]
+
+    # --- commit_sha gate: fail fast if no code was committed ---
+    if not result.get("commit_sha"):
+        logger.error("no_commit_sha", task_id=task_id, project_id=project_id)
+        await api_client.patch(
+            f"tasks/{task_id}",
+            json={
+                "status": "failed",
+                "error_message": "Developer completed but no commit was made",
+            },
+        )
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "failed",
+            task_id,
+            "Development completed but no code was committed",
+            user_id=user_id,
+            project_id=project_id,
+        )
+        return {
+            "status": "failed",
+            "error": "No commit_sha",
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+
     logger.info(
         "engineering_job_success",
         task_id=task_id,
         commit_sha=result.get("commit_sha"),
     )
 
-    project_id = project["id"]
+    # --- Refresh project before CI check (scaffolder may have updated repo_url) ---
+    fresh_project = await api_client.get_project(project_id)
+    if fresh_project:
+        project = fresh_project
 
     # --- CI Gate: wait for ci.yml before triggering deploy ---
     ci_passed = await _wait_for_ci_and_fix(
