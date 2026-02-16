@@ -68,19 +68,28 @@ make test-langgraph-unit
 Файл: `services/langgraph/src/subgraphs/devops/nodes.py`
 - `_save_secrets_to_project()`: шифровать перед записью (`encrypt_dict`)
 - При чтении `config_secrets`: дешифровать (`decrypt_dict`)
-- Все остальные места, читающие `project.config.secrets` — аналогично
 
-### 1.4 Обновить тесты SecretResolverNode
+### 1.4 Интегрировать в PO tools (set_project_secret)
+Файл: `services/langgraph/src/po/tools.py`
+- `set_project_secret()` (строки ~147-149): читает `config.secrets`, добавляет новый секрет, пишет обратно
+- Decrypt перед чтением, encrypt перед записью
+
+### 1.5 Интегрировать в orchestrator-cli (set_secret_async)
+Файл: `packages/orchestrator-cli/src/orchestrator_cli/commands/project.py`
+- `set_secret_async()` (строки ~101-104): аналогичный паттерн — read → update → write
+- Decrypt перед чтением, encrypt перед записью
+
+### 1.6 Обновить тесты SecretResolverNode
 Файл: `services/langgraph/tests/unit/test_secret_resolver.py`
 - Мокать `SecretsCipher` — тесты не должны зависеть от реального ключа
 - Добавить тест: зашифрованные секреты корректно дешифруются при повторном резолве
 
-### 1.5 Добавить `SECRETS_ENCRYPTION_KEY` в docker-compose
+### 1.7 Добавить `SECRETS_ENCRYPTION_KEY` в docker-compose
 - `docker-compose.yml`: передать env var в langgraph и deploy-worker сервисы
 - `.env.example`: добавить `SECRETS_ENCRYPTION_KEY=` с комментарием как сгенерировать (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`)
 
-### 1.6 Добавить `cryptography` в зависимости
-- `shared/requirements.in` (или где хранятся shared-зависимости)
+### 1.8 Добавить `cryptography` в зависимости
+- `shared/pyproject.toml` (секция `dependencies`)
 - `make lock-deps`
 
 ### E2E проверка итерации 1
@@ -517,6 +526,8 @@ gh pr merge
 | Файл | Итерация | Что меняется |
 |------|----------|--------------|
 | `services/langgraph/src/subgraphs/devops/nodes.py` | 1, 2, 3 | Encryption, groups, GH Actions deploy |
+| `services/langgraph/src/po/tools.py` | 1 | Encrypt/decrypt в `set_project_secret()` |
+| `packages/orchestrator-cli/src/orchestrator_cli/commands/project.py` | 1 | Encrypt/decrypt в `set_secret_async()` |
 | `services/langgraph/src/subgraphs/devops/env_analyzer.py` | 2 | Парсинг комментариев, контекст для LLM |
 | `services/langgraph/tests/unit/test_secret_resolver.py` | 1, 2 | Обновить под новую логику |
 | `services/langgraph/tests/unit/test_env_analyzer.py` | 2 | Тесты комментариев |
@@ -524,7 +535,9 @@ gh pr merge
 | `shared/models/service_deployment.py` | 3 | `deployed_sha` колонка |
 | `services/infra-service/src/main.py` | 4 | Убрать deploy handler |
 | `shared/queues.py` | 4 | Убрать `ansible:deploy:queue` |
+| `shared/pyproject.toml` | 1 | Добавить `cryptography` |
 | `docker-compose.yml` | 1 | `SECRETS_ENCRYPTION_KEY` env |
+| `.env.example` | 1 | `SECRETS_ENCRYPTION_KEY` |
 | `docs/NODES.md` | 4, 6 | Обновить DevOps описание |
 | `docs/CONTRACTS.md` | 4 | Убрать ansible queue |
 | `CLAUDE.md` | 6 | Обновить architecture |
