@@ -128,14 +128,13 @@ async def _wait_for_ci_and_fix(
 
     github_client = GitHubAppClient()
 
-    for attempt in range(CI.MAX_FIX_RETRIES + 1):  # 0 = initial check, 1..N = retries
-        # attempt 0: use pre-developer timestamp (CI was triggered during dev)
-        # attempt 1+: use fresh timestamp (CI triggered by respawned fix worker)
-        if attempt == 0 and developer_started_at:
-            created_after = developer_started_at
-        else:
-            created_after = datetime.now(UTC)
+    # Initialize before loop: for attempt 0, use pre-developer timestamp so the
+    # CI run created during development is visible to the filter.
+    # Updated in the except block BEFORE respawning — after the failed run is
+    # observed but before the new developer pushes (so the new CI run is visible).
+    created_after = developer_started_at or datetime.now(UTC)
 
+    for attempt in range(CI.MAX_FIX_RETRIES + 1):  # 0 = initial check, 1..N = retries
         try:
             logger.info(
                 "ci_check_waiting",
@@ -202,6 +201,11 @@ async def _wait_for_ci_and_fix(
                     )
                 except Exception as log_err:
                     logger.warning("ci_log_fetch_failed", error=str(log_err))
+
+            # Capture timestamp BEFORE respawn: after the failed run is observed
+            # (so it gets filtered out) but before the new push (so the new CI
+            # run created_at will be >= this timestamp).
+            created_after = datetime.now(UTC)
 
             # Re-spawn developer worker with fix context
             logger.info(

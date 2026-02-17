@@ -115,6 +115,8 @@ Additionally, GitHub's `created` filter uses the GitHub-side `created_at` timest
 
 **Fix**: Don't use `datetime.now(UTC)` for retry iterations. Instead, capture the timestamp **after** the developer worker finishes (right before starting to poll), or better yet, use the commit SHA to find the right CI run instead of relying on timestamps.
 
+**Status**: **FIXED** (2026-02-17). Moved `created_after` initialization before the loop (uses `developer_started_at` for attempt 0), and captures `datetime.now(UTC)` in the `except` block AFTER the failed run is observed but BEFORE the respawn — so the new CI run's `created_at` will always be >= the filter timestamp.
+
 ### BUG 4: PO Triple Hallucination — Fabricated System Events + URL + Cover-Up
 
 **Severity**: Critical — user receives fabricated success messages, PO lies about their origin
@@ -190,6 +192,11 @@ The system prompt examples also act as a **hallucination template**: the LLM saw
 3. **Output validation in consumer**: before publishing PO response, regex-check for URLs — if any URL is not present in the original event data or project record, block the message
 4. **Event gating at consumer level**: consumer filters events — only pass `completed` and `failed` to LLM, silently drop `progress` events without invoking LLM at all
 
+**Status**: **FIXED** (2026-02-17). Three-layer defense-in-depth:
+- **Layer 1** (`consumer.py`): Format tag now includes event type — `[system: system_event:completed]` instead of `[system: system_event]`. LLM can distinguish event types.
+- **Layer 2** (`prompts.py`): Rewrote system events section — removed URL template that acted as hallucination slot, added strict anti-hallucination rules (never fabricate URLs, never invent events).
+- **Layer 3** (`consumer.py`): `progress` events dropped at consumer level before LLM invocation — saves tokens and eliminates hallucination opportunity entirely.
+
 ### BUG 5: Provisioner Proxy Timeout (Stale Jobs)
 
 **Severity**: Low — doesn't affect pipeline, just noisy logs
@@ -224,24 +231,24 @@ PO → scaffold → OK
 
 ## Fix Priority
 
-| Bug | Priority | Effort | Impact |
-|-----|----------|--------|--------|
+| Bug | Priority | Effort | Impact | Status |
+|-----|----------|--------|--------|--------|
 | BUG 1: Registry secrets timing | **P0** | Small | Blocks all new projects | **FIXED** |
-| BUG 3: created_after race | **P0** | Small | Infinite loop, resource waste |
-| BUG 4: PO hallucination | **P0** | Medium | User trust destruction |
-| BUG 2: CI fix misdiagnosis | P1 | Large | Wasted retries (future: CI Monitor Node) |
-| BUG 5: Provisioner proxy timeout | P2 | Small | Noise only |
+| BUG 3: created_after race | **P0** | Small | Infinite loop, resource waste | **FIXED** |
+| BUG 4: PO hallucination | **P0** | Medium | User trust destruction | **FIXED** |
+| BUG 2: CI fix misdiagnosis | P1 | Large | Wasted retries (future: CI Monitor Node) | Open |
+| BUG 5: Provisioner proxy timeout | P2 | Small | Noise only | Open |
 
 ## Recommended Fix Plan
 
-### Immediate (BUG 1 — unblocks new projects)
+### ~~Immediate (BUG 1 — unblocks new projects)~~ FIXED
 Set `REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD` as GitHub repository secrets right after repo creation, before the first push triggers CI. Best place: **scaffolder service** (it creates the repo and has GitHub App access).
 
-### Immediate (BUG 3 — stop infinite loops)
-Change CI retry logic to capture `created_after` timestamp AFTER the developer worker finishes, not before. Or switch to commit SHA-based CI run lookup instead of timestamp-based.
+### ~~Immediate (BUG 3 — stop infinite loops)~~ FIXED
+Changed CI retry logic: `created_after` initialized before loop from `developer_started_at`, then updated in `except` block AFTER the failed run is observed but BEFORE the respawn.
 
-### Immediate (BUG 4 — stop PO hallucinations)
-Three-layer fix:
-1. **consumer.py**: Include `event` field in formatted message — `[system: system_event:progress]` instead of `[system: system_event]`. LLM sees the event type and knows to stay silent on `progress`. 2-line change.
-2. **prompts.py**: Remove URL template from examples (eliminates hallucination template), add strict anti-hallucination rules.
-3. **consumer.py**: Drop `progress` events at consumer level — don't invoke LLM for events that should produce no output. Saves tokens and eliminates hallucination opportunity.
+### ~~Immediate (BUG 4 — stop PO hallucinations)~~ FIXED
+Three-layer defense-in-depth:
+1. **consumer.py**: Include `event` field in formatted message — `[system: system_event:completed]`. LLM sees the event type.
+2. **prompts.py**: Removed URL template from examples, added strict anti-hallucination rules.
+3. **consumer.py**: Drop `progress` events at consumer level — don't invoke LLM at all.

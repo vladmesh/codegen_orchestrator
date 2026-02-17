@@ -6,6 +6,7 @@ CI gate fail-closed behavior in _wait_for_ci_and_fix.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
@@ -237,3 +238,63 @@ class TestCIGateFailClosed:
         )
 
         assert result is False
+
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch("src.workers.engineering_worker._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    async def test_ci_retry_uses_pre_respawn_timestamp(
+        self, mock_publish, mock_respawn, mock_gh_cls, mock_redis
+    ):
+        """On retry, created_after must be from BEFORE respawn, not after.
+
+        Regression test for BUG 3: if created_after is captured at the top of
+        the next iteration (after the respawned developer already pushed),
+        the new CI run is invisible → infinite poll.
+        """
+        from src.workers.engineering_worker import _wait_for_ci_and_fix
+
+        # Track created_after values passed to wait_for_workflow_completion
+        captured_timestamps: list[datetime] = []
+        respawn_started_at: list[datetime] = []
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+
+        # attempt 0: CI fails → RuntimeError with run_id
+        # attempt 1: CI passes
+        async def fake_wait(**kwargs):
+            captured_timestamps.append(kwargs["created_after"])
+            if len(captured_timestamps) == 1:
+                raise RuntimeError("CI failed (run_id=12345)")
+            return {"id": 99, "conclusion": "success"}
+
+        mock_gh.wait_for_workflow_completion = AsyncMock(side_effect=fake_wait)
+        mock_gh.get_workflow_failure_logs = AsyncMock(return_value="error log")
+
+        # Respawn takes a small delay to simulate the developer working
+        async def fake_respawn(**kwargs):
+            respawn_started_at.append(datetime.now(UTC))
+            await asyncio.sleep(0.05)
+            return True
+
+        mock_respawn.side_effect = fake_respawn
+
+        result = await _wait_for_ci_and_fix(
+            project=_project(repo_url="https://github.com/org/repo"),
+            task_id="eng-1",
+            callback_stream="po:response:abc",
+            redis=mock_redis,
+            developer_started_at=datetime(2025, 1, 1, tzinfo=UTC),
+            user_id="u1",
+        )
+
+        expected_attempts = 2  # attempt 0 (initial) + attempt 1 (retry)
+        assert result is True
+        assert len(captured_timestamps) == expected_attempts
+
+        # attempt 0: should use the developer_started_at we passed in
+        assert captured_timestamps[0] == datetime(2025, 1, 1, tzinfo=UTC)
+
+        # attempt 1: created_after must be from BEFORE the respawn started
+        assert captured_timestamps[1] < respawn_started_at[0]
