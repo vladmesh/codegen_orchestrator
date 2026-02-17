@@ -467,6 +467,7 @@ class GitHubAppClient:
         repo: str,
         secret_name: str,
         secret_value: str,
+        token: str | None = None,
     ) -> None:
         """Set an encrypted repository secret for GitHub Actions.
 
@@ -478,11 +479,13 @@ class GitHubAppClient:
             repo: Repository name
             secret_name: Name of the secret (e.g., DEPLOY_HOST)
             secret_value: Plain text value to encrypt and store
+            token: Optional pre-obtained token (e.g. org-level). Falls back to per-repo lookup.
         """
         # Lazy import: pynacl only needed when this method is called
         from nacl import public
 
-        token = await self.get_token(owner, repo)
+        if not token:
+            token = await self.get_token(owner, repo)
         headers = {
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github+json",
@@ -528,6 +531,7 @@ class GitHubAppClient:
         owner: str,
         repo: str,
         secrets: dict[str, str],
+        token: str | None = None,
     ) -> int:
         """Set multiple repository secrets at once.
 
@@ -535,6 +539,7 @@ class GitHubAppClient:
             owner: Repository owner
             repo: Repository name
             secrets: Dictionary of secret_name -> secret_value
+            token: Optional pre-obtained token (e.g. org-level). Falls back to per-repo lookup.
 
         Returns:
             Number of secrets successfully set
@@ -542,7 +547,7 @@ class GitHubAppClient:
         count = 0
         for name, value in secrets.items():
             try:
-                await self.set_repository_secret(owner, repo, name, value)
+                await self.set_repository_secret(owner, repo, name, value, token=token)
                 count += 1
             except Exception as e:
                 logger.error(

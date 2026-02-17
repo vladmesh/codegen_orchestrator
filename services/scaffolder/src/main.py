@@ -123,6 +123,43 @@ def _run_git(
     return result
 
 
+EXPECTED_REGISTRY_SECRETS_COUNT = 3
+
+
+async def _set_registry_secrets(org: str, repo_name: str) -> bool:
+    """Set registry secrets on GitHub repo so CI can push Docker images."""
+    registry_url = os.getenv("ORCHESTRATOR_HOSTNAME")
+    registry_user = os.getenv("REGISTRY_USER")
+    registry_password = os.getenv("REGISTRY_PASSWORD")
+
+    if not all([registry_url, registry_user, registry_password]):
+        logger.warning(
+            "registry_secrets_env_missing",
+            has_url=bool(registry_url),
+            has_user=bool(registry_user),
+            has_password=bool(registry_password),
+        )
+        return False
+
+    try:
+        token = await github_client.get_org_token(org)
+        count = await github_client.set_repository_secrets(
+            org,
+            repo_name,
+            {
+                "REGISTRY_URL": registry_url,
+                "REGISTRY_USER": registry_user,
+                "REGISTRY_PASSWORD": registry_password,
+            },
+            token=token,
+        )
+        logger.info("registry_secrets_set", org=org, repo=repo_name, count=count)
+        return count == EXPECTED_REGISTRY_SECRETS_COUNT
+    except Exception as e:
+        logger.error("registry_secrets_failed", org=org, repo=repo_name, error=str(e))
+        return False
+
+
 async def scaffold_project(
     repo_full_name: str,
     project_name: str,
@@ -163,6 +200,9 @@ async def scaffold_project(
             else:
                 logger.error("repo_creation_failed", error=str(e))
                 raise
+
+        # Set registry secrets before first push triggers CI
+        await _set_registry_secrets(org, repo_name)
 
         # Get GitHub token for git operations
         token = await get_github_token(org)

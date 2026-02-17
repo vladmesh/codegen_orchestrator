@@ -139,6 +139,7 @@ class MockGitHubClient:
         repo: str,
         secret_name: str,
         secret_value: str,
+        token: str | None = None,
     ) -> None:
         self._check_failure()
         if repo in self.secrets:
@@ -149,6 +150,7 @@ class MockGitHubClient:
         owner: str,
         repo: str,
         secrets: dict[str, str],
+        token: str | None = None,
     ) -> int:
         self._check_failure()
         count = 0

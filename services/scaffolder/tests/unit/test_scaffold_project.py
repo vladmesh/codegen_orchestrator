@@ -166,3 +166,52 @@ class TestScaffoldProject:
                         assert "my-test-project" in name_arg.lower()
                         assert "_" not in name_arg.split("=")[1]
                         assert "!" not in name_arg
+
+    @pytest.mark.asyncio
+    async def test_sets_registry_secrets_before_push(
+        self, mock_github, mock_git, mock_copier, mock_shutil_which
+    ):
+        """Registry secrets should be set after repo creation, before git push."""
+        from main import scaffold_project
+
+        call_order = []
+        original_set_secrets = mock_github.set_repository_secrets
+
+        async def tracking_set_secrets(*args, **kwargs):
+            call_order.append("set_repository_secrets")
+            return await original_set_secrets(*args, **kwargs)
+
+        mock_github.set_repository_secrets = tracking_set_secrets
+
+        def tracking_run_git(*args, **kwargs):
+            if args and "push" in args[0]:
+                call_order.append("git_push")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_git.side_effect = tracking_run_git
+
+        with (
+            patch("tempfile.TemporaryDirectory") as mock_tmpdir,
+            patch.dict(
+                "os.environ",
+                {
+                    "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+                    "REGISTRY_USER": "user",
+                    "REGISTRY_PASSWORD": "pass",
+                },
+            ),
+        ):
+            mock_tmpdir.return_value.__enter__ = MagicMock(return_value="/tmp/scaffold_test")  # noqa: S108
+            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = await scaffold_project(
+                repo_full_name="vladmesh/test-repo",
+                project_name="test-project",
+                project_id="proj-123",
+                modules="backend",
+            )
+
+            assert result is True
+            assert "set_repository_secrets" in call_order
+            assert "git_push" in call_order
+            assert call_order.index("set_repository_secrets") < call_order.index("git_push")

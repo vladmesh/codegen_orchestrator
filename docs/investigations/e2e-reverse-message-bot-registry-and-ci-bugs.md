@@ -70,6 +70,12 @@ These secrets are set by `_write_deploy_secrets()` in the **DeployerNode** — b
 2. Split secrets: set `REGISTRY_*` in engineering_worker before developer starts (after scaffolding confirms repo exists)
 3. Make `build-and-push` CI job conditional on secrets existing (graceful skip)
 
+**Status**: **FIXED** (2026-02-17). Option 1 implemented:
+- Added `_set_registry_secrets()` in `services/scaffolder/src/main.py` — called after repo creation, before first `git push`
+- Uses org-level GitHub App token (added optional `token` param to `GitHubAppClient.set_repository_secret{,s}()`)
+- Warning-only if env vars missing (doesn't break scaffolding in dev/test)
+- Verified on live stack: 3 secrets set successfully on `reverse-message-bot`
+
 ### BUG 2: CI Fix Agent Can't Diagnose Infrastructure Failures
 
 **Severity**: Medium — wastes a retry cycle
@@ -220,7 +226,7 @@ PO → scaffold → OK
 
 | Bug | Priority | Effort | Impact |
 |-----|----------|--------|--------|
-| BUG 1: Registry secrets timing | **P0** | Small | Blocks all new projects |
+| BUG 1: Registry secrets timing | **P0** | Small | Blocks all new projects | **FIXED** |
 | BUG 3: created_after race | **P0** | Small | Infinite loop, resource waste |
 | BUG 4: PO hallucination | **P0** | Medium | User trust destruction |
 | BUG 2: CI fix misdiagnosis | P1 | Large | Wasted retries (future: CI Monitor Node) |
