@@ -44,7 +44,10 @@ User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/
                                                   engineering:queue → workers
                                                   deploy:queue → deploy-worker → GitHub Actions (deploy.yml)
 
-GitHub (ci.yml success) → webhook → API → deploy:queue → deploy-worker → po:proactive → Telegram Bot → User
+GitHub (ci.yml success) → webhook → Caddy (HTTPS) → API → deploy:queue → deploy-worker → po:proactive → Telegram Bot → User
+
+Caddy (/v2/*) → Docker Registry (self-hosted, basic auth)
+Caddy (/webhooks/*) → API
 ```
 
 **Key Components:**
@@ -62,6 +65,8 @@ GitHub (ci.yml success) → webhook → API → deploy:queue → deploy-worker �
 - `scaffolder`: Runs copier for project scaffolding (async, before developer work)
 - `infra-service`: Ansible execution for server provisioning only (consumes `provisioner:queue`)
 - `scheduler`: Background workers (github_sync, server_sync, health_checker)
+- `caddy`: Reverse proxy + TLS termination (HTTPS for webhook + registry endpoints)
+- `registry`: Self-hosted Docker Registry (v2, accessible via Caddy basic auth)
 
 **Packages** (`packages/`): `orchestrator-cli` (CLI tools for agents), `worker-wrapper` (agent container entrypoint).
 

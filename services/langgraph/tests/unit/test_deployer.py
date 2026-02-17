@@ -1,6 +1,7 @@
 """Unit tests for DeployerNode."""
 
 from datetime import datetime
+import os
 from unittest.mock import AsyncMock, mock_open, patch
 
 import pytest
@@ -64,7 +65,32 @@ class TestDeployerNodeErrors:
         assert result["errors"]
         assert "No project_id" in result["errors"][0]
 
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
+    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.nodes.os.path.exists", return_value=True)
+    @patch("builtins.open", mock_open(read_data="ssh-key-content"))
+    async def test_deploy_fails_when_registry_env_missing(
+        self, mock_exists, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """Deploy should fail when ORCHESTRATOR_HOSTNAME/REGISTRY_USER/PASSWORD are missing."""
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
 
+        await deployer.run(base_state)
+
+        # _write_deploy_secrets should have returned False (secrets not written)
+        gh.set_repository_secrets.assert_not_called()
+
+
+@patch.dict(
+    os.environ,
+    {
+        "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+        "REGISTRY_USER": "testuser",
+        "REGISTRY_PASSWORD": "testpass",  # noqa: S105
+    },
+)
 class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
@@ -74,7 +100,7 @@ class TestDeployerNodeHappyPath:
     async def test_writes_deploy_secrets(
         self, mock_exists, mock_api, mock_gh_cls, deployer, base_state
     ):
-        """set_repository_secrets should be called with DOTENV, DEPLOY_HOST, etc."""
+        """set_repository_secrets should be called with DOTENV, DEPLOY_HOST, registry creds, etc."""
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
 
         await deployer.run(base_state)
@@ -87,6 +113,9 @@ class TestDeployerNodeHappyPath:
         assert "DEPLOY_SSH_KEY" in secrets_arg
         assert secrets_arg["DEPLOY_PORT"] == "8080"
         assert secrets_arg["PROJECT_NAME"] == "my_project"
+        assert secrets_arg["REGISTRY_URL"] == "registry.example.com"
+        assert secrets_arg["REGISTRY_USER"] == "testuser"
+        assert secrets_arg["REGISTRY_PASSWORD"] == "testpass"  # noqa: S105
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")

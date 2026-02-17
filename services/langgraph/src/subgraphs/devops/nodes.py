@@ -154,8 +154,11 @@ class SecretResolverNode(FunctionalNode):
                     return f"http://{ip}:{port}"
             return "http://localhost:8000"
 
-        # Docker images from GHCR
+        # Docker images from self-hosted registry
         elif key_upper.endswith("_IMAGE"):
+            registry_host = os.getenv("ORCHESTRATOR_HOSTNAME")
+            if not registry_host:
+                raise RuntimeError("ORCHESTRATOR_HOSTNAME is not set")
             repo_url = get_repo_url(project_spec)
             if repo_url:
                 # Parse: https://github.com/org/repo -> org/repo
@@ -166,8 +169,8 @@ class SecretResolverNode(FunctionalNode):
                 # Derive service name: BACKEND_IMAGE -> backend, TG_BOT_IMAGE -> tg-bot
                 service = key_upper.replace("_IMAGE", "").lower().replace("_", "-")
 
-                return f"ghcr.io/{owner}/{repo}-{service}:latest"
-            return "ghcr.io/unknown/unknown-service:latest"
+                return f"{registry_host}/{owner}/{repo}-{service}:latest"
+            return f"{registry_host}/unknown/unknown-service:latest"
 
         # Default: project name
         return project_spec.get("name", "value")
@@ -295,6 +298,20 @@ async def _write_deploy_secrets(
         logger.error("ssh_key_read_failed", error=str(e))
         return False
 
+    # Registry credentials for CI docker push
+    registry_url = os.getenv("ORCHESTRATOR_HOSTNAME")
+    if not registry_url:
+        logger.error("registry_env_missing", var="ORCHESTRATOR_HOSTNAME")
+        return False
+    registry_user = os.getenv("REGISTRY_USER")
+    if not registry_user:
+        logger.error("registry_env_missing", var="REGISTRY_USER")
+        return False
+    registry_password = os.getenv("REGISTRY_PASSWORD")
+    if not registry_password:
+        logger.error("registry_env_missing", var="REGISTRY_PASSWORD")
+        return False
+
     secrets_map = {
         "DOTENV": dotenv_b64,
         "DEPLOY_HOST": server_ip,
@@ -302,6 +319,9 @@ async def _write_deploy_secrets(
         "DEPLOY_SSH_KEY": ssh_key,
         "DEPLOY_PORT": str(port),
         "PROJECT_NAME": project_name,
+        "REGISTRY_URL": registry_url,
+        "REGISTRY_USER": registry_user,
+        "REGISTRY_PASSWORD": registry_password,
     }
 
     try:

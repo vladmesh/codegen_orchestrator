@@ -1,5 +1,6 @@
 """Unit tests for SecretResolverNode."""
 
+import os
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlparse
 
@@ -15,8 +16,9 @@ class TestSecretResolverComputeSecret:
         """Create a fresh node instance for each test."""
         self.node = SecretResolverNode()
 
+    @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
     def test_compute_image_value_with_repo_url(self):
-        """Image variables should generate GHCR URLs from repository URL."""
+        """Image variables should generate registry URLs from repository URL."""
         project_spec = {
             "name": "reverse-bot",
             "repository_url": "https://github.com/project-factory-org/reverse-bot",
@@ -24,11 +26,12 @@ class TestSecretResolverComputeSecret:
         state = {}
 
         result = self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
-        assert result == "ghcr.io/project-factory-org/reverse-bot-backend:latest"
+        assert result == "testhost.example.com/project-factory-org/reverse-bot-backend:latest"
 
         result = self.node._compute_secret("TG_BOT_IMAGE", project_spec, state)
-        assert result == "ghcr.io/project-factory-org/reverse-bot-tg-bot:latest"
+        assert result == "testhost.example.com/project-factory-org/reverse-bot-tg-bot:latest"
 
+    @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
     def test_compute_image_value_with_config_repo_url(self):
         """Image variables should work with config.repository_url as well."""
         project_spec = {
@@ -40,15 +43,28 @@ class TestSecretResolverComputeSecret:
         state = {}
 
         result = self.node._compute_secret("FRONTEND_IMAGE", project_spec, state)
-        assert result == "ghcr.io/my-org/my-app-frontend:latest"
+        assert result == "testhost.example.com/my-org/my-app-frontend:latest"
 
+    @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
     def test_compute_image_value_without_repo_url(self):
         """Image variables should fallback when no repo URL is available."""
         project_spec = {"name": "orphan-project"}
         state = {}
 
         result = self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
-        assert result == "ghcr.io/unknown/unknown-service:latest"
+        assert result == "testhost.example.com/unknown/unknown-service:latest"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_compute_image_without_hostname_raises(self):
+        """Image variables should raise RuntimeError when ORCHESTRATOR_HOSTNAME is not set."""
+        project_spec = {
+            "name": "test",
+            "repository_url": "https://github.com/org/repo",
+        }
+        state = {}
+
+        with pytest.raises(RuntimeError, match="ORCHESTRATOR_HOSTNAME"):
+            self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
 
     def test_compute_app_name(self):
         """APP_NAME should be derived from project name."""

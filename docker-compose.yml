@@ -85,6 +85,9 @@ services:
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
+      REGISTRY_USER: ${REGISTRY_USER}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -248,6 +251,38 @@ services:
       - internal
     restart: unless-stopped
 
+  # === Reverse Proxy + Registry ===
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
+      REGISTRY_USER: ${REGISTRY_USER}
+      REGISTRY_PASSWORD_HASH: ${REGISTRY_PASSWORD_HASH}
+    depends_on:
+      - api
+      - registry
+    networks:
+      - internal
+    restart: unless-stopped
+
+  registry:
+    image: registry:2
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - registry-data:/var/lib/registry
+    networks:
+      - internal
+    restart: unless-stopped
+
   # === Infrastructure ===
 
   db:
@@ -287,3 +322,6 @@ networks:
 volumes:
   db_data:
   redis_data:
+  caddy-data:
+  caddy-config:
+  registry-data:
