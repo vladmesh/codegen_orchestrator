@@ -674,15 +674,28 @@ async def _handle_engineering_success(
         },
     )
 
-    await publish_callback_event(
-        redis,
-        callback_stream,
-        "completed",
-        task_id,
-        "Engineering task completed, CI passed",
-        user_id=user_id,
-        project_id=project_id,
-    )
+    if skip_deploy:
+        # This IS the final step — tell user we're done
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "completed",
+            task_id,
+            "Engineering task completed, CI passed",
+            user_id=user_id,
+            project_id=project_id,
+        )
+    else:
+        # Deploy is next — only send progress, deploy worker sends "completed" on success
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "progress",
+            task_id,
+            "CI passed, deploying...",
+            user_id=user_id,
+            project_id=project_id,
+        )
 
     # Auto-trigger deploy after CI passes (unless skip_deploy)
     if not skip_deploy:
@@ -722,6 +735,15 @@ async def _handle_engineering_success(
                 "deploy_auto_trigger_failed",
                 task_id=task_id,
                 error=str(e),
+            )
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "failed",
+                task_id,
+                f"CI passed but deploy trigger failed: {e}",
+                user_id=user_id,
+                project_id=project_id,
             )
     else:
         deploy_task_id = None

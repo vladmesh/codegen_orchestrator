@@ -100,13 +100,15 @@ class TestHarness:
         msg_data = await self._wait_for_message("worker:developer:input", timeout)
         return DeveloperWorkerInput.model_validate_json(msg_data["data"])
 
-    async def simulate_worker_success(self, task_id: str, request_id: str):
+    async def simulate_worker_success(
+        self, task_id: str, request_id: str, commit_sha: str | None = "abc1234"
+    ):
         """Simulates Worker completing the task successfully."""
         output = DeveloperWorkerOutput(
             request_id=request_id,
             status="success",
             task_id=task_id,
-            commit_sha="abc1234",
+            commit_sha=commit_sha,
         )
         await self.redis.xadd("worker:developer:output", {"data": output.model_dump_json()})
 

@@ -34,6 +34,12 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+# Prevent user-site packages (~/.local/lib/python3.12/site-packages) from shadowing
+# system packages. Without this, `pip install --user shared` by the agent would shadow
+# the wrapper's `shared` package, causing ModuleNotFoundError on wrapper restart.
+# System site-packages (/usr/local/lib/...) are already protected by root ownership.
+# Agents should use virtual environments for project dependencies.
+ENV PYTHONNOUSERSITE=1
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
