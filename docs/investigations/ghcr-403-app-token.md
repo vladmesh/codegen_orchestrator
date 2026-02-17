@@ -1,7 +1,7 @@
 # GHCR 403 Forbidden: GitHub App + Organization
 
 > **Дата**: 2026-02-16
-> **Статус**: Открыто — требуется дополнительная проверка
+> **Статус**: Решено — выбран вариант D (self-hosted registry), реализован в Iteration 7
 > **Проект**: codegen_orchestrator (deploy-architecture epic)
 
 ## Контекст

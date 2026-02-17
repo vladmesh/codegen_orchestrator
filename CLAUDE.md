@@ -130,8 +130,8 @@ LLM never sees actual secrets. Use handles in state, Python code reads secrets d
 @tool
 def deploy_to_server(server_handle: str):
     """LLM calls with handle only."""
-    server = secret_storage.get_server(server_handle)  # Python reads secret
-    subprocess.run(["ansible-playbook", ...], env={"SSH_KEY": server.ssh_key})
+    server = api_client.get_server(server_handle)  # Python reads secret
+    github.set_repository_secrets(repo, {"DEPLOY_HOST": server.public_ip, ...})
 ```
 
 ## Adding New Agents

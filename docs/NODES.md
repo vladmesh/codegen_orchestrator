@@ -38,10 +38,11 @@
 
 **Действия**:
 1. Слушает `scaffolder:queue` (Redis Stream)
-2. Клонирует репозиторий
-3. `copier copy` с выбранными модулями
-4. Git commit + push
-5. Обновляет `project.status = "scaffolded"` через API
+2. Создаёт GitHub-репозиторий (если не существует)
+3. Устанавливает registry secrets (`REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD`) — до первого push, чтобы CI мог пушить образы
+4. `copier copy` с выбранными модулями
+5. Git commit + push
+6. Обновляет `project.status = "scaffolded"` через API
 
 **Выход**: `project.status = "scaffolded"` → DeveloperNode может начинать работу
 
@@ -128,7 +129,7 @@ devops/
 
 4. **Deployer (Functional)**:
    - Собирает DOTENV из resolved_secrets (`build_dotenv` → `encode_dotenv` → base64)
-   - Записывает GitHub Secrets: DOTENV, DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PORT, PROJECT_NAME
+   - Записывает 9 GitHub Secrets: DOTENV, DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PORT, PROJECT_NAME, REGISTRY_URL, REGISTRY_USER, REGISTRY_PASSWORD
    - Тригерит `deploy.yml` через `trigger_workflow_dispatch`
    - Ждёт завершения через `wait_for_workflow_completion` (poll, timeout 600s)
    - Post-deployment операции:

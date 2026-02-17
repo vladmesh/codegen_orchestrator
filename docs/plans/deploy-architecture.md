@@ -415,7 +415,7 @@ make lint                # All checks passed
 3. Пользователь отвечает токеном
 4. Scaffolding → engineering → deploy
 5. **Проверки:**
-   - GitHub repo → Actions → `ci.yml` зелёный, образы в GHCR с SHA-тегом
+   - GitHub repo → Actions → `ci.yml` зелёный, образы в self-hosted registry с SHA-тегом
    - GitHub repo → Actions → `deploy.yml` зелёный
    - SSH на сервер → `docker compose ps` → все контейнеры running
    - `.env` на сервере содержит все переменные

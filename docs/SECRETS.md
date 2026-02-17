@@ -57,28 +57,26 @@ It does **NOT** handle Project (L2) secrets. It does not deploy applications.
 
 Application deployment is fully delegated to GitHub Actions. This allows secure usage of L2 secrets without exposing them to the Orchestrator's backend.
 
-1.  **Secret Injection**: When a project is configured, Orchestrator pushes L2 secrets (Telegram Token, DB Password) to **GitHub Repository Secrets**.
-2.  **Execution**: The workflow runs in GitHub's environment.
-3.  **Access**: The workflow uses `${{ secrets.MY_SECRET }}` to inject values into:
-    *   Docker Compose `.env` files.
-    *   Build arguments.
-    *   Runtime environments.
+1.  **DOTENV trick**: Orchestrator collects ALL env vars → builds `.env` content → base64-encodes → stores as single GitHub Secret `DOTENV`. The deploy workflow decodes and writes the file. No per-variable enumeration needed.
+2.  **Secret Injection** (two stages):
+    *   **Scaffolder**: Sets `REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD` immediately after repo creation (before first CI push)
+    *   **DeployerNode**: Sets 9 secrets total — `DOTENV`, `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `DEPLOY_PORT`, `PROJECT_NAME`, `REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD`
+3.  **CI workflow** (`ci.yml`, on push): lint → test → build images → push to self-hosted Docker registry
+4.  **Deploy workflow** (`deploy.yml`, on `workflow_dispatch` from Orchestrator): SCP compose files → write `.env` from DOTENV → pull images → `docker compose up`
 
 **Privilege Separation:**
-*   **Infra Service**: Can create/destroy servers (Root access). Cannot see App Secrets.
+*   **Infra Service**: Can create/destroy servers (Root access via Ansible). Cannot see App Secrets.
 *   **GitHub Actions**: Can deploy apps (SSH User access). Can access App Secrets. Cannot destroy servers.
 
-### Ref definition in Contracts
-В `CONTRACTS.md` поле `secrets_ref`:
-*   Это словарь, мапящий абстрактные ключи на ключи в GitHub Secrets или Vault.
-*   Пример: `{"bot_token": "TELEGRAM_TOKEN_SECRET_NAME"}`.
-*   Для L1 секретов (GitHub Token для клонирования): Infra Service генерирует Installation Token "на лету".
+**Docker Registry**: Self-hosted (`registry:2`) behind Caddy with TLS and basic auth. CI pushes images there, deploy pulls from there. GHCR is not used (GitHub App tokens cannot create org packages — see [investigation](./investigations/ghcr-403-app-token.md)).
 
 ---
 
 ## 4. Summary of Flows
 
-1.  **User creates Project** -> Orchestrator creates GitHub Repo.
-2.  **User provides Bot Token** -> Orchestrator puts it into GitHub Repo Secrets `TELEGRAM_TOKEN`.
-3.  **Infra Service provisions Server** -> Uses L1 Keys (Cloudflare/DigitalOcean) to buy server and setup DNS. Puts SSH Key into GitHub Repo Secrets.
-4.  **GitHub Actions (triggered by commit)** -> Builds Docker Image -> SSH to Server -> Runs Container with `-e BOT_TOKEN=${{ secrets.TELEGRAM_TOKEN }}`.
+1.  **User creates Project** → Orchestrator creates GitHub Repo + sets registry secrets (`REGISTRY_*`).
+2.  **User provides Bot Token** → PO tool `set_project_secret` → encrypted in DB (Fernet).
+3.  **Infra Service provisions Server** → Uses L1 Keys (Time4VPS API) for server setup. Ansible playbooks for Docker/firewall/users.
+4.  **Scaffolder pushes code** → CI (`ci.yml`, auto on push) → builds Docker images → pushes to self-hosted registry.
+5.  **Orchestrator triggers deploy** → DevOps subgraph: env analysis → secret resolution → DOTENV → GitHub Secrets → `workflow_dispatch deploy.yml` → pull images from registry → `docker compose up`.
+6.  **Feature deploy** → Developer pushes → CI passes → GitHub webhook → API → `deploy:queue` → re-resolve env → deploy.

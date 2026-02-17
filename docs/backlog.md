@@ -1,6 +1,6 @@
 # Backlog
 
-> **Актуально на**: 2026-02-16
+> **Актуально на**: 2026-02-17
 
 ## Active Design & Implementation Plans
 
@@ -215,9 +215,12 @@ await consumer.run()
 ---
 
 ### Caddy Reverse Proxy
-**Статус**: TODO
+**Статус**: Done (Iteration 7 of deploy-architecture)
 
-Убрать port management, использовать Caddy для routing по доменам.
+- Caddy (`caddy:2-alpine`) + Docker Registry (`registry:2`) в docker-compose
+- Auto-TLS (Let's Encrypt) через `ORCHESTRATOR_HOSTNAME`
+- Routes: `/v2/*` → registry (basic auth), `/webhooks/*` → api
+- Registry secrets (`REGISTRY_URL/USER/PASSWORD`) устанавливаются scaffolder'ом до первого CI push
 
 ---
 

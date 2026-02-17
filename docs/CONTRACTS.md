@@ -492,7 +492,7 @@ from datetime import datetime
 class ServiceDeploymentDTO(BaseModel):
     """Service Deployment response."""
     model_config = ConfigDict(from_attributes=True)
-    
+
     id: int
     project_id: str
     server_id: int
@@ -500,6 +500,7 @@ class ServiceDeploymentDTO(BaseModel):
     port: int
     status: str
     url: str | None = None
+    deployed_sha: str | None = None
     deployed_at: datetime
 ```
 
