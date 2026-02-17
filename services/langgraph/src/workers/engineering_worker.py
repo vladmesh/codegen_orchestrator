@@ -6,7 +6,6 @@ Run standalone: python -m src.workers.engineering_worker
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import json
 import os
 import re
 from typing import TYPE_CHECKING
@@ -18,6 +17,8 @@ if TYPE_CHECKING:
     from shared.clients.github import GitHubAppClient
 
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
+from shared.contracts.dto.task import TaskStatus, TaskType
+from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.scaffolder import ScaffolderMessage
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLDER_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -710,23 +711,21 @@ async def _handle_engineering_success(
                 "tasks/",
                 json={
                     "id": deploy_task_id,
-                    "type": "deploy",
+                    "type": TaskType.DEPLOY.value,
                     "project_id": project_id,
-                    "status": "pending",
+                    "status": TaskStatus.QUEUED.value,
                 },
             )
             # Queue deploy job
+            deploy_msg = DeployMessage(
+                task_id=deploy_task_id,
+                project_id=project_id,
+                callback_stream=callback_stream,
+                triggered_by=DeployTrigger.ENGINEERING,
+            )
             await redis.redis.xadd(
                 DEPLOY_QUEUE,
-                {
-                    "data": json.dumps(
-                        {
-                            "task_id": deploy_task_id,
-                            "project_id": project_id,
-                            "callback_stream": callback_stream,
-                        }
-                    )
-                },
+                {"data": deploy_msg.model_dump_json()},
             )
             logger.info(
                 "deploy_auto_triggered",

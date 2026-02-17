@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.models import Project, Task, User
 from shared.queues import DEPLOY_QUEUE
 
@@ -143,16 +144,17 @@ async def github_webhook(
     if not redis_url:
         raise RuntimeError("REDIS_URL is not set")
 
+    deploy_msg = DeployMessage(
+        task_id=task_id,
+        project_id=project.id,
+        user_id=str(telegram_id or ""),
+        triggered_by=DeployTrigger.WEBHOOK,
+    )
     r = aioredis.from_url(redis_url)
     try:
         await r.xadd(
             DEPLOY_QUEUE,
-            {
-                "task_id": task_id,
-                "project_id": project.id,
-                "user_id": str(telegram_id or ""),
-                "callback_stream": "",
-            },
+            {"data": deploy_msg.model_dump_json()},
         )
     finally:
         await r.aclose()

@@ -17,6 +17,7 @@ from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.queues import (
     DEPLOY_QUEUE,
@@ -234,13 +235,14 @@ async def trigger_deploy(project_id: str, *, config: RunnableConfig) -> str:
     resp = await api.post("/api/tasks/", json=task_data)
     resp.raise_for_status()
 
-    queue_msg = {
-        "task_id": task_id,
-        "project_id": project_id,
-        "user_id": user_id,
-        "callback_stream": callback_stream,
-    }
-    await redis.xadd(DEPLOY_QUEUE, {"data": json.dumps(queue_msg)})
+    deploy_msg = DeployMessage(
+        task_id=task_id,
+        project_id=project_id,
+        user_id=user_id,
+        callback_stream=callback_stream,
+        triggered_by=DeployTrigger.PO,
+    )
+    await redis.xadd(DEPLOY_QUEUE, {"data": deploy_msg.model_dump_json()})
 
     logger.info("po_deploy_triggered", task_id=task_id, project_id=project_id)
     return f"Deploy task queued. Task ID: {task_id}"

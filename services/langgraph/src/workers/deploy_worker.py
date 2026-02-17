@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.task import TaskStatus, TaskType
+from shared.contracts.queues.deploy import DeployMessage
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -22,6 +24,39 @@ from ._events import publish_callback_event, publish_proactive_message
 logger = structlog.get_logger(__name__)
 
 
+async def _check_duplicate_deploy(task_id: str, project_id: str) -> dict | None:
+    """Check if another deploy is already running for this project.
+
+    Returns cancel result dict if duplicate found, None otherwise.
+    """
+    existing = await api_client.get(
+        "tasks/",
+        params={
+            "project_id": project_id,
+            "task_type": TaskType.DEPLOY.value,
+            "status": TaskStatus.RUNNING.value,
+        },
+    )
+    if not existing:
+        return None
+
+    running_id = existing[0]["id"]
+    logger.info(
+        "deploy_skipped_already_running",
+        task_id=task_id,
+        project_id=project_id,
+        running_task_id=running_id,
+    )
+    await api_client.patch(
+        f"tasks/{task_id}",
+        json={
+            "status": TaskStatus.CANCELLED.value,
+            "error_message": (f"Skipped: deploy {running_id} is already running for this project"),
+        },
+    )
+    return {"status": "cancelled", "existing_task_id": running_id}
+
+
 async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single deploy job by running DevOps Subgraph.
 
@@ -32,16 +67,27 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     Returns:
         Result dict with status and details
     """
-    task_id = job_data.get("task_id", "unknown")
-    project_id = job_data.get("project_id")
-    callback_stream = job_data.get("callback_stream")
-    user_id = job_data.get("user_id", "")
+    msg = DeployMessage.model_validate(job_data)
+    task_id = msg.task_id
+    project_id = msg.project_id
+    callback_stream = msg.callback_stream
+    user_id = msg.user_id
 
-    logger.info("deploy_job_started", task_id=task_id, project_id=project_id)
+    logger.info(
+        "deploy_job_started",
+        task_id=task_id,
+        project_id=project_id,
+        triggered_by=msg.triggered_by.value,
+    )
 
     try:
+        # Deduplication guard: skip if another deploy is already running for this project
+        cancel_result = await _check_duplicate_deploy(task_id, project_id)
+        if cancel_result:
+            return cancel_result
+
         # Update task status to running
-        await api_client.patch(f"tasks/{task_id}", json={"status": "running"})
+        await api_client.patch(f"tasks/{task_id}", json={"status": TaskStatus.RUNNING.value})
 
         # Publish progress event
         await publish_callback_event(

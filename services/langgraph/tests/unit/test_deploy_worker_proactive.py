@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import PO_PROACTIVE_QUEUE
 
 
@@ -27,6 +28,7 @@ def mock_api():
     """Patch api_client methods used by the worker."""
     with patch("src.workers.deploy_worker.api_client") as api:
         api.patch = AsyncMock()
+        api.get = AsyncMock(return_value=[])  # no existing running deploys (dedup)
         api.get_project = AsyncMock(
             return_value={
                 "name": "my-project",
@@ -57,12 +59,13 @@ def mock_devops_subgraph():
         yield graph
 
 
-def _job(*, callback_stream=None, user_id="12345"):
+def _job(*, callback_stream=None, user_id="12345", triggered_by=DeployTrigger.WEBHOOK):
     return {
         "task_id": "deploy-wh-abc",
         "project_id": "proj-1",
         "user_id": user_id,
         "callback_stream": callback_stream or "",
+        "triggered_by": triggered_by.value,
     }
 
 
@@ -160,3 +163,22 @@ async def test_deploy_worker_uses_callback_stream_when_present(
         c for c in mock_redis.redis.xadd.call_args_list if c[0][0] == "po:response:abc"
     ]
     assert len(callback_calls) >= 1
+
+
+@pytest.mark.asyncio
+async def test_deploy_worker_skips_when_already_running(mock_redis, mock_api):
+    """When another deploy is already running for the same project, cancel this one."""
+    # Mock API returns an existing running task
+    mock_api.get = AsyncMock(return_value=[{"id": "deploy-existing-123"}])
+
+    from src.workers.deploy_worker import process_deploy_job
+
+    result = await process_deploy_job(_job(), mock_redis)
+
+    assert result["status"] == "cancelled"
+    assert result["existing_task_id"] == "deploy-existing-123"
+
+    # Should have cancelled the new task via API
+    mock_api.patch.assert_called_once()
+    patch_args = mock_api.patch.call_args
+    assert "cancelled" in str(patch_args)

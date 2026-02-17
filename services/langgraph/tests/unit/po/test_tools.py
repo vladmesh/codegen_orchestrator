@@ -212,6 +212,8 @@ class TestTriggerDeploy:
         mock_redis.xadd.assert_called_once()
         xadd_args = mock_redis.xadd.call_args
         assert xadd_args[0][0] == "deploy:queue"
+        deploy_data = json.loads(xadd_args[0][1]["data"])
+        assert deploy_data["triggered_by"] == "po"
 
     @pytest.mark.asyncio
     async def test_uses_po_input_as_callback(self, mock_api_client, mock_redis):

@@ -125,6 +125,26 @@ Telegram-бот видит `RUNNING` → шлёт сообщения в стри
 
 ## 🟡 MEDIUM Priority
 
+### Queue Contract Enforcement
+**Статус**: TODO
+
+**Проблема:**
+Queue messages между сервисами передаются как raw dict/json без валидации. Pydantic-контракты (`shared/contracts/queues/`) существуют, но не все producers/consumers их используют. Это приводит к рассогласованию полей, тихим ошибкам парсинга и дублям (BUG 7).
+
+**Целевое состояние:**
+- Все producers используют `msg.model_dump_json()` при публикации
+- Все consumers используют `Model.model_validate(job_data)` при чтении
+- Единый формат `{"data": json_string}` для всех очередей
+
+**Прогресс:**
+- [x] `deploy:queue` — DeployMessage (этот PR)
+- [ ] `engineering:queue` — EngineeringMessage
+- [ ] `scaffolder:queue` — ScaffolderMessage (уже используется)
+- [ ] `provisioner:queue` — ProvisionerMessage
+- [ ] `po:input` / `po:proactive` — PO messages
+
+---
+
 ### Redis Streams: унификация consumer'ов и PEL recovery
 **Статус**: TODO
 
