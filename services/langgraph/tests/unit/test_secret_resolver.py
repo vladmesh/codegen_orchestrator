@@ -159,6 +159,37 @@ class TestSecretResolverEncryption:
         assert saved_config["secrets"] == {"DB_URL": "gAAAAA-encrypted"}
 
     @pytest.mark.asyncio
+    async def test_save_secrets_decrypts_before_merge(self):
+        """_save_secrets_to_project must decrypt existing secrets before re-encrypting (BUG 12).
+
+        Without decrypt, existing encrypted secrets get double-encrypted on each save.
+        """
+        with (
+            patch("src.subgraphs.devops.nodes.api_client") as mock_api,
+            patch("src.subgraphs.devops.nodes.decrypt_dict") as mock_decrypt,
+            patch("src.subgraphs.devops.nodes.encrypt_dict") as mock_encrypt,
+        ):
+            mock_api.get_project = AsyncMock(
+                return_value={"config": {"secrets": {"OLD_KEY": "gAAAAA-old-encrypted"}}}
+            )
+            mock_api.patch = AsyncMock()
+            mock_decrypt.return_value = {"OLD_KEY": "old-plaintext"}
+            mock_encrypt.return_value = {
+                "OLD_KEY": "gAAAAA-old-reencrypted",
+                "NEW_KEY": "gAAAAA-new-encrypted",
+            }
+
+            await self.node._save_secrets_to_project("proj-123", {"NEW_KEY": "new-plaintext"})
+
+            # decrypt_dict must be called on existing secrets from DB
+            mock_decrypt.assert_called_once_with({"OLD_KEY": "gAAAAA-old-encrypted"})
+
+            # encrypt_dict should receive merged plaintext values (not already-encrypted)
+            encrypt_call_args = mock_encrypt.call_args[0][0]
+            assert encrypt_call_args["OLD_KEY"] == "old-plaintext"  # decrypted, not gAAAAA...
+            assert encrypt_call_args["NEW_KEY"] == "new-plaintext"
+
+    @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.encrypt_dict")
     @patch("src.subgraphs.devops.nodes.decrypt_dict")
     async def test_decrypts_existing_secrets(self, mock_decrypt, mock_encrypt):

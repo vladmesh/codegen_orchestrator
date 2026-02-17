@@ -168,7 +168,7 @@ async def test_deploy_worker_uses_callback_stream_when_present(
 @pytest.mark.asyncio
 async def test_deploy_worker_skips_when_already_running(mock_redis, mock_api):
     """When another deploy is already running for the same project, cancel this one."""
-    # Mock API returns an existing running task
+    # Mock API: running query returns existing task, queued query not reached
     mock_api.get = AsyncMock(return_value=[{"id": "deploy-existing-123"}])
 
     from src.workers.deploy_worker import process_deploy_job
@@ -182,3 +182,46 @@ async def test_deploy_worker_skips_when_already_running(mock_redis, mock_api):
     mock_api.patch.assert_called_once()
     patch_args = mock_api.patch.call_args
     assert "cancelled" in str(patch_args)
+
+
+@pytest.mark.asyncio
+async def test_deploy_worker_skips_when_another_queued(mock_redis, mock_api):
+    """When another deploy is queued for the same project, cancel this one (BUG 13)."""
+    # Mock API: running query returns nothing, queued query returns existing task
+    mock_api.get = AsyncMock(
+        side_effect=[
+            [],  # no running tasks
+            [{"id": "deploy-queued-456"}],  # queued task found
+        ]
+    )
+
+    from src.workers.deploy_worker import process_deploy_job
+
+    result = await process_deploy_job(_job(), mock_redis)
+
+    assert result["status"] == "cancelled"
+    assert result["existing_task_id"] == "deploy-queued-456"
+
+
+@pytest.mark.asyncio
+async def test_deploy_worker_dedup_ignores_self(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    """Dedup guard should not cancel itself if its own task_id appears in queued results."""
+    # Mock API: running=empty, queued returns only self
+    mock_api.get = AsyncMock(
+        side_effect=[
+            [],  # no running tasks
+            [{"id": "deploy-wh-abc"}],  # self is queued (same task_id as _job())
+        ]
+    )
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        return_value={"deployed_url": "http://1.2.3.4:8080", "deployment_result": {}}
+    )
+
+    from src.workers.deploy_worker import process_deploy_job
+
+    result = await process_deploy_job(_job(), mock_redis)
+
+    # Should NOT be cancelled — the only queued task is itself
+    assert result["status"] == "success"

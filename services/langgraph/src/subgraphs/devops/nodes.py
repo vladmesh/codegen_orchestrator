@@ -192,6 +192,7 @@ class SecretResolverNode(FunctionalNode):
             # Merge new secrets with existing config
             config = project.get("config", {}) or {}
             config_secrets = config.get("secrets", {}) or {}
+            config_secrets = decrypt_dict(config_secrets) if config_secrets else {}
             config_secrets.update(secrets)
             config["secrets"] = encrypt_dict(config_secrets)
 

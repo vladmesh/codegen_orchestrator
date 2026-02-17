@@ -25,36 +25,44 @@ logger = structlog.get_logger(__name__)
 
 
 async def _check_duplicate_deploy(task_id: str, project_id: str) -> dict | None:
-    """Check if another deploy is already running for this project.
+    """Check if another deploy is already running or queued for this project.
 
     Returns cancel result dict if duplicate found, None otherwise.
     """
-    existing = await api_client.get(
-        "tasks/",
-        params={
-            "project_id": project_id,
-            "task_type": TaskType.DEPLOY.value,
-            "status": TaskStatus.RUNNING.value,
-        },
-    )
-    if not existing:
-        return None
+    # API only supports single status filter, so check both running and queued
+    for check_status in (TaskStatus.RUNNING, TaskStatus.QUEUED):
+        existing = await api_client.get(
+            "tasks/",
+            params={
+                "project_id": project_id,
+                "task_type": TaskType.DEPLOY.value,
+                "status": check_status.value,
+            },
+        )
+        # Filter out self (current task may already be queued)
+        existing = [t for t in existing if t["id"] != task_id]
+        if existing:
+            existing_id = existing[0]["id"]
+            logger.info(
+                "deploy_skipped_duplicate",
+                task_id=task_id,
+                project_id=project_id,
+                existing_task_id=existing_id,
+                existing_status=check_status.value,
+            )
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={
+                    "status": TaskStatus.CANCELLED.value,
+                    "error_message": (
+                        f"Skipped: deploy {existing_id} is already"
+                        f" {check_status.value} for this project"
+                    ),
+                },
+            )
+            return {"status": "cancelled", "existing_task_id": existing_id}
 
-    running_id = existing[0]["id"]
-    logger.info(
-        "deploy_skipped_already_running",
-        task_id=task_id,
-        project_id=project_id,
-        running_task_id=running_id,
-    )
-    await api_client.patch(
-        f"tasks/{task_id}",
-        json={
-            "status": TaskStatus.CANCELLED.value,
-            "error_message": (f"Skipped: deploy {running_id} is already running for this project"),
-        },
-    )
-    return {"status": "cancelled", "existing_task_id": running_id}
+    return None
 
 
 async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
