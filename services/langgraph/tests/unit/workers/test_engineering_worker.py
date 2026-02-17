@@ -298,3 +298,135 @@ class TestCIGateFailClosed:
 
         # attempt 1: created_after must be from BEFORE the respawn started
         assert captured_timestamps[1] < respawn_started_at[0]
+
+
+class TestCIFailureClassification:
+    """Tests for _is_infra_failure classification (BUG 15)."""
+
+    def test_registry_login_is_infra(self):
+        from src.workers.engineering_worker import _is_infra_failure
+
+        ctx = (
+            "Job 'build-and-push (backend, ., services/backend/Dockerfile, backend)' failed:\n"
+            "  Step 'Log in to Docker Registry' failed"
+        )
+        assert _is_infra_failure(ctx) is True
+
+    def test_docker_login_is_infra(self):
+        from src.workers.engineering_worker import _is_infra_failure
+
+        assert _is_infra_failure("docker login failed: connection refused") is True
+
+    def test_tls_handshake_is_infra(self):
+        from src.workers.engineering_worker import _is_infra_failure
+
+        assert _is_infra_failure("TLS handshake error on registry:5000") is True
+
+    def test_deploy_step_is_infra(self):
+        from src.workers.engineering_worker import _is_infra_failure
+
+        ctx = "Job 'deploy' failed:\n  Step 'Deploy to server via SSH' failed"
+        assert _is_infra_failure(ctx) is True
+
+    def test_ruff_lint_is_not_infra(self):
+        from src.workers.engineering_worker import _is_infra_failure
+
+        ctx = "Job 'lint-and-test' failed:\n" "  Step 'Run ruff check' failed"
+        assert _is_infra_failure(ctx) is False
+
+    def test_pytest_is_not_infra(self):
+        from src.workers.engineering_worker import _is_infra_failure
+
+        ctx = "Job 'lint-and-test' failed:\n" "  Step 'Run tests' failed"
+        assert _is_infra_failure(ctx) is False
+
+    def test_empty_context_is_not_infra(self):
+        from src.workers.engineering_worker import _is_infra_failure
+
+        assert _is_infra_failure("") is False
+
+
+class TestCIInfraFailFast:
+    """Tests that infra CI failures don't respawn developer (BUG 15)."""
+
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch("src.workers.engineering_worker._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    async def test_infra_failure_skips_respawn(
+        self, mock_publish, mock_respawn, mock_gh_cls, mock_redis
+    ):
+        """Infra CI failure must return False without spawning a developer."""
+        from src.workers.engineering_worker import _wait_for_ci_and_fix
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+
+        # CI fails with registry error
+        mock_gh.wait_for_workflow_completion = AsyncMock(
+            side_effect=RuntimeError(
+                "Workflow ci.yml failed: failure. "
+                "See: https://github.com/org/repo/actions/runs/12345"
+            )
+        )
+        mock_gh.get_workflow_failure_logs = AsyncMock(
+            return_value=(
+                "Job 'build-and-push (backend)' failed:\n"
+                "  Step 'Log in to Docker Registry' failed"
+            )
+        )
+
+        result = await _wait_for_ci_and_fix(
+            project=_project(repo_url="https://github.com/org/repo"),
+            task_id="eng-1",
+            callback_stream="po:response:abc",
+            redis=mock_redis,
+            developer_started_at=datetime(2025, 1, 1, tzinfo=UTC),
+            user_id="u1",
+        )
+
+        assert result is False
+        mock_respawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch("src.workers.engineering_worker._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    async def test_code_failure_does_respawn(
+        self, mock_publish, mock_respawn, mock_gh_cls, mock_redis
+    ):
+        """Code CI failure (lint/test) must respawn developer as before."""
+        from src.workers.engineering_worker import _wait_for_ci_and_fix
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+
+        call_count = 0
+
+        async def fake_wait(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError(
+                    "Workflow ci.yml failed: failure. "
+                    "See: https://github.com/org/repo/actions/runs/12345"
+                )
+            return {"id": 99, "conclusion": "success"}
+
+        mock_gh.wait_for_workflow_completion = AsyncMock(side_effect=fake_wait)
+        mock_gh.get_workflow_failure_logs = AsyncMock(
+            return_value=("Job 'lint-and-test' failed:\n" "  Step 'Run ruff check' failed")
+        )
+        mock_respawn.return_value = True
+
+        result = await _wait_for_ci_and_fix(
+            project=_project(repo_url="https://github.com/org/repo"),
+            task_id="eng-1",
+            callback_stream="po:response:abc",
+            redis=mock_redis,
+            developer_started_at=datetime(2025, 1, 1, tzinfo=UTC),
+            user_id="u1",
+        )
+
+        assert result is True
+        mock_respawn.assert_awaited_once()

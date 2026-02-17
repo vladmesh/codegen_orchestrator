@@ -31,6 +31,33 @@ from ._events import publish_callback_event
 logger = structlog.get_logger(__name__)
 
 
+# Markers indicating infrastructure / config CI failures that a developer worker cannot fix.
+_INFRA_FAILURE_MARKERS = [
+    "Docker Registry",
+    "Log in to",
+    "docker login",
+    "connection refused",
+    "registry",
+    "TLS handshake",
+    "certificate",
+    "REGISTRY_",
+    "DEPLOY_",
+    "SSH",
+    "deploy",
+    "Could not resolve host",
+]
+
+
+def _is_infra_failure(failure_context: str) -> bool:
+    """Return True if the CI failure is an infrastructure/config issue.
+
+    Infrastructure failures (registry auth, TLS, deploy secrets, network)
+    cannot be fixed by a developer worker — only by an admin.
+    """
+    ctx_lower = failure_context.lower()
+    return any(marker.lower() in ctx_lower for marker in _INFRA_FAILURE_MARKERS)
+
+
 def _extract_run_id_from_error(error_msg: str) -> int | None:
     """Extract workflow run ID from URL in RuntimeError message.
 
@@ -63,27 +90,22 @@ async def _respawn_developer_for_ci_fix(
 
     task_message = f"""# Task: Fix CI Failures (Attempt {attempt})
 
-## Context
-
-The code was pushed but CI failed. Your job is to fix the issues and push again.
-
 ## CI Failure Details
 
-{failure_context or "CI workflow failed. Run `ruff check .` and fix any linting errors."}
+{failure_context or "CI workflow failed. Check the CI logs for details."}
 
 ## Instructions
 
 1. The repository is already cloned to `/workspace`. Pull latest changes with `git pull`.
-2. Run `ruff check .` to see current linting errors
-3. Run `ruff format --exclude 'services/**/migrations' --exclude '.venv' .` to auto-format
-4. Run `ruff check --fix --exclude 'services/**/migrations' --exclude '.venv' .` to auto-fix
-5. For remaining errors that can't be auto-fixed, manually fix them
-6. Commit and push your fixes
+2. Analyze the CI failure details above to understand the root cause.
+3. Fix the root cause of the failure.
+4. Run any relevant checks locally (linting, tests) to verify your fix.
+5. Commit and push your fixes.
 
 ## Important
 
-- Focus ONLY on fixing the CI failures, do not add new features
-- Make a descriptive commit message like "fix: resolve CI linting errors"
+- Focus ONLY on fixing the CI failures, do not add new features.
+- Make a descriptive commit message explaining what you fixed.
 """
 
     worker_result = await request_spawn(
@@ -202,6 +224,15 @@ async def _wait_for_ci_and_fix(
                     )
                 except Exception as log_err:
                     logger.warning("ci_log_fetch_failed", error=str(log_err))
+
+            # Classify failure: infra issues can't be fixed by a developer
+            if failure_context and _is_infra_failure(failure_context):
+                logger.error(
+                    "ci_infra_failure",
+                    task_id=task_id,
+                    failure_context=failure_context,
+                )
+                return False
 
             # Capture timestamp BEFORE respawn: after the failed run is observed
             # (so it gets filtered out) but before the new push (so the new CI
