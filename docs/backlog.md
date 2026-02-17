@@ -80,6 +80,36 @@ API endpoints не защищены (только x-telegram-id header).
 
 ---
 
+### Security Audit: серверный провизионинг и деплой
+**Статус**: TODO
+
+**Проблема:**
+Текущий pipeline провизионинга и деплоя имеет ряд проблем с безопасностью:
+
+1. **SSH как root** — `infra-service` и `deploy.yml` подключаются к managed-серверам как `root`. Нет выделенного deploy-пользователя с ограниченными правами.
+2. **Провизионинг без hardening** — managed-серверы (`vps-267179`, `vps-267180`) получают Docker и SSH-ключ, но не проходят через security-роли (`prod_infra/ansible/roles/security`): нет firewall, fail2ban, sshd hardening.
+3. **Нет cleanup** — после удаления проекта контейнеры и образы остаются на серверах до ручной очистки (обнаружено: `reverse-bot` работал 37+ часов после завершения E2E тестов).
+4. **Секреты в GitHub Actions** — `deploy.yml` получает SSH-ключ и хост как repository secrets. При компрометации репозитория — полный доступ к серверу как root.
+
+**Задачи:**
+
+**Провизионинг (cross-project с `prod_infra`):**
+1. Создавать `deploy` пользователя на managed-серверах (как на основном VPS)
+2. Применять security-роль: firewall (ufw), fail2ban, sshd hardening, отключение root login
+3. Ограничить `deploy` пользователя: только docker compose up/down + доступ к `/opt/apps/`
+
+**Деплой (`service_template` + `codegen_orchestrator`):**
+4. `deploy.yml` — подключаться как `deploy`, не `root`
+5. Добавить cleanup: `docker image prune` после каждого деплоя
+6. Рассмотреть ротацию SSH-ключей (per-deployment ephemeral keys vs long-lived)
+
+**Мониторинг:**
+7. Периодическая проверка: нет ли "забытых" контейнеров от удалённых проектов (scheduler job)
+
+**Обнаружено при**: ручной чистке серверов после E2E тестов (2026-02-18).
+
+---
+
 ### Docker Events Listener: Обновление статуса воркеров
 **Статус**: TODO
 
