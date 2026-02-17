@@ -211,12 +211,19 @@ Two provisioner proxy nodes waited 1200 seconds (20 minutes) for results that ha
 
 This appears to be a leftover from the old architecture — provisioner results are now handled by `infra-service` + `scheduler`, but the LangGraph provisioner proxy nodes still run and timeout.
 
+**Root cause**: Provisioner proxy polled `provisioner:result:{request_id}` key, but infra-service wrote to `deploy:result:{request_id}` — key prefix mismatch. Additionally, the wait was pointless: graph goes `START → provisioner → END`, nobody reads the result.
+
+**Status**: **FIXED** (2026-02-17). Made provisioner proxy fire-and-forget:
+- `provisioner_proxy.py`: Queue job and return immediately (no more 20-min wait)
+- `provisioner_client.py`: Removed dead `wait_for_result()` and `get_result()` polling functions (had key mismatch bug)
+- Results continue to be handled by infra-service → `provisioner:results` stream → scheduler
+
 ## Pipeline Summary
 
 ```
 PO → scaffold → OK
          ↓
-    provisioner → OK (but proxy nodes timeout later — BUG 5)
+    provisioner → OK
          ↓
     developer → OK (commit_sha=d0cab783, 9 min)
          ↓
@@ -237,7 +244,7 @@ PO → scaffold → OK
 | BUG 3: created_after race | **P0** | Small | Infinite loop, resource waste | **FIXED** |
 | BUG 4: PO hallucination | **P0** | Medium | User trust destruction | **FIXED** |
 | BUG 2: CI fix misdiagnosis | P1 | Large | Wasted retries (future: CI Monitor Node) | Open |
-| BUG 5: Provisioner proxy timeout | P2 | Small | Noise only | Open |
+| BUG 5: Provisioner proxy timeout | P2 | Small | Noise only | **FIXED** |
 
 ## Recommended Fix Plan
 
