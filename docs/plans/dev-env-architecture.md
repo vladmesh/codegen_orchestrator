@@ -1,220 +1,142 @@
-# Plan: Dev Environment Architecture — Iteration 1
+# Plan: Dev Environment Architecture Migration
 
-> **Дата**: 2026-02-20
-> **Ветка**: `dev-env-architecture`
-> **Контекст**: Миграция воркеров с host networking + DinD на изолированные bridge-сети + compose-прокси. Полный вертикальный срез: workspace на хосте, dual-network, HTTP API для docker compose, CLI-обёртка, правильный cleanup.
-> **Источник**: `docs/brainstorms/dev-env-architecture.md`
+> **Дата**: 2026-02-19
+> **Контекст**: Миграция архитектуры воркеров с Docker-in-Docker на нативную разработку (sidecar-инфраструктура по запросу) для надежности пайплайнов и ускорения работы LLM-агентов. Вариант инфры: flat dev environment с честным `docker compose up` базы на каждый проект (Per-Worker) и нативным запуском остального кода через `uv`.
 
 ---
 
-## Scope
+## Фаза 1: Подготовка инфраструктуры (Workspace Bind-Mount & Изоляция) — ✅ DONE
 
-**В итерацию входит:**
-- Workspace bind-mount: хостовый `/tmp/codegen/workspaces/<id>/workspace` → `/workspace` в контейнере
-- Dual-network: воркер подключён к `codegen_internal` + `dev_proj_<id>`
-- Compose proxy: HTTP endpoint `POST /api/worker/{id}/infra/compose` на worker-manager
-- CLI команды `orchestrator dev-env compose/start-infra/stop-infra/reset-infra`
-- Full cleanup при удалении воркера: compose down, dev network, workspace, Redis keys
+> **Реализовано**: Iteration 1 (`dev-env-architecture` branch, 2026-02-20)
+> **Ветка**: `dev-env-architecture`, коммит `feat: dev-env iteration 1`
 
-**Не входит в итерацию:**
-- GC осиротевших ресурсов в scheduler
-- Адаптация service-template Makefile
-- Удаление DOCKER capability
-- Обновление промптов агентов
+Для того чтобы оркестратор (находящийся на хосте) мог корректно вызывать `docker compose` для проектов агента, файлы пространства имен воркера должны быть доступны на хосте.
 
----
+1. **Per-Worker директории на хосте**:
+   - Обновить логику `worker_manager.create_worker` (`services/worker-manager/src/manager.py`).
+   - Создавать директорию `/tmp/codegen/workspaces/<worker_id>/workspace/` на хосте.
+   - Монтировать (bind-mount) эту директорию как `/workspace` в контейнер воркера.
+   - Клонирование репозитория продолжает происходить **внутри контейнера** через существующий `auto_setup_git_repository()` — файлы попадают на хост автоматически через bind-mount.
 
-## Реализованные шаги
+2. **Миграция с Host Networking на Dual-Network**:
 
-### ✅ Шаг 1: Network-операции в DockerClientWrapper
+   **Текущее состояние**: Воркеры запускаются в `network_mode: "host"` (настройка по умолчанию в `manager.py`). Доступ к API и Redis — через `localhost:8000` / `localhost:6379`.
 
-**Файл**: `services/worker-manager/src/docker_ops.py`
+   **Целевое состояние**: Каждый воркер подключён к **двум bridge-сетям**:
+   - `internal` (существующая сеть compose-стека оркестратора) — доступ к API (`http://api:8000`) и Redis (`redis://redis:6379`).
+   - `dev_proj_<worker_id>` (новая изолированная сеть) — сюда попадают sidecar-сервисы проекта (db, redis и т.д.), имена вроде `db:5432` работают без конфликтов между воркерами.
 
-Добавлены 4 метода:
-- `create_network(name, driver="bridge")` — создаёт Docker-сеть
-- `remove_network(name)` — удаляет сеть, игнорирует NotFound
-- `connect_network(network_name, container_id)` — подключает контейнер к сети
-- `disconnect_network(network_name, container_id)` — отключает, игнорирует NotFound
+   **Необходимые изменения**:
+   - В `manager.py`: заменить `network_mode: "host"` на подключение к двум именованным сетям.
+   - Создавать сеть `dev_proj_<worker_id>` при создании воркера, подключать контейнер воркера к обеим сетям.
+   - Обновить `WORKER_API_URL` с `http://localhost:8000` → `http://api:8000`.
+   - Обновить `WORKER_REDIS_URL` с `redis://localhost:6379` → `redis://redis:6379`.
+   - Убедиться, что Redis и API доступны из `internal` сети (уже работает в docker-compose).
 
-**Тесты**: `services/worker-manager/tests/unit/test_docker_ops.py` — 5 новых тестов в `TestDockerNetworks`
+3. **Жизненный цикл данных sidecar'ов**:
+   - Volumes **персистентны на время жизни воркера**. `stop-infra` останавливает контейнеры, но **не удаляет volumes** (используется `docker compose stop`, не `down -v`). Это позволяет агенту поднять БД, накатить миграции, и при повторном `start-infra` данные сохраняются.
+   - Агент может явно очистить данные через `orchestrator dev-env compose down -v`, если хочет начать с чистого состояния.
+   - Полная очистка происходит только при `delete_worker`.
 
----
-
-### ✅ Шаг 2: Workspace-модуль
-
-**Файл**: `services/worker-manager/src/workspace.py`
-
-Чистые функции:
-- `create_workspace(base_path, worker_id)` → `Path`
-- `get_workspace_host_path(base_path, worker_id)` → `str`
-- `remove_workspace(base_path, worker_id)` — `shutil.rmtree(..., ignore_errors=True)`
-
-**Тесты**: `services/worker-manager/tests/unit/test_workspace.py` — 5 тестов с `tmp_path`
+4. **Автоматический и Фоновый Cleanup (Garbage Collector)**:
+   - Обновить логику `worker_manager.delete_worker`:
+     - Останавливать инфраструктуру проекта через `docker compose down -v` (с удалением volumes).
+     - Удалять сеть `dev_proj_<worker_id>`.
+     - Удалять директорию `/tmp/codegen/workspaces/<worker_id>/`.
+   - В сервисе `scheduler` добавить фоновую джобу для периодической очистки "осиротевших" сетей `dev_proj_*`, volumes `worker_*` и воркспейсов на диске (на случай OOM или хард-рестарта оркестратора).
 
 ---
 
-### ✅ Шаг 3: Compose Validator
+## Фаза 2: API и CLI для управления инфраструктурой — ✅ DONE
 
-**Файл**: `services/worker-manager/src/compose_validator.py`
+> **Реализовано**: Iteration 1 (`dev-env-architecture` branch, 2026-02-20)
 
-- `ALLOWED_COMMANDS = {"up", "down", "build", "run", "ps", "logs", "stop"}`
-- `BLOCKED_FLAGS = {"-it", "--interactive", "--tty", "-i", "-t"}`
-- `validate_command(args)` — whitelist + blocked flags
-- `validate_compose_file(content)` — блокирует ports, absolute volume mounts
-- `resolve_compose_path(compose_file, workspace_path)` — проверяет path traversal
+Оркестратор должен предоставлять агенту возможность управлять Docker через API + CLI-обёртку, так как у самого агента прав на запуск Docker не будет.
 
-**Тесты**: `services/worker-manager/tests/unit/test_compose_validator.py` — 12 тестов
+> **Примечание**: API-эндпоинт (Фаза 2) и CLI-обёртка (ранее Фаза 4) объединены, так как эндпоинт бесполезен без клиента, а CLI — без бэкенда.
 
----
+1. **API Endpoint: `POST /api/worker/{worker_id}/infra/compose`**:
+   - Единый эндпоинт для проксирования команд `docker compose`.
+   - Принимает команду (например: `["up", "-d", "db", "redis"]` или `["-f", "infra/compose.tests.integration.yml", "run", "integration-tests"]`).
+   - **Whitelist команд**: Разрешены только `up`, `down`, `build`, `run`, `ps`, `logs` (без интерактивного режима `-it` / stdin). Остальные — отклоняются с 400.
+   - **Валидация путей и безопасности Compose-файлов**:
+     - Compose-файлы (`-f`) резолвятся относительно workspace и не могут выходить за его пределы (защита от path traversal).
+     - **Анализ манифеста**: API жестко блокирует запуск, если в compose-файле найдены маунты абсолютных путей (защита от Filesystem Escape вида `/:/host_root`). Разрешены только относительные `./` и именованные volumes.
+     - **Запрет проброса портов**: Директива `ports` блокируется для предотвращения конфликтов портов на хосту между воркерами (доступ к сервисам только по именам внутри `dev_proj_<worker_id>`).
+   - **Трансляция путей**: Worker-manager запускает `docker compose` с:
+     - `--project-directory` = `/tmp/codegen/workspaces/<worker_id>/workspace/<cwd>` (абсолютный путь на хосте).
+     - `--project-name` = `worker_<worker_id>` (изоляция имён контейнеров между воркерами).
+   - **Подключение к сети**: Все поднимаемые сервисы подключаются к `dev_proj_<worker_id>` (через `--network` или `COMPOSE_PROJECT_NETWORK` env).
+   - **Порты**: Sidecar-сервисы **не публикуют порты** на хост. Доступ только по имени сервиса через общую сеть `dev_proj_<worker_id>`.
+   - **Сценарий Persistent sidecars (`up -d`)**: Worker-manager выполняет `docker compose up --wait` с timeout (по умолчанию 60s) и возвращает статус об успехе. Магии с генерацией Connection Strings нет: агент сам управляет `.env` файлом и устанавливает доступы, обращаясь к сервисам по хостнеймам. Compose-файлы проекта должны содержать `healthcheck` для корректной работы `--wait`.
+   - **Решение проблемы прав файлов**: Worker-manager передаёт в `docker compose` переменные `HOST_UID` и `HOST_GID` (совпадающие с UID/GID агента внутри контейнера, обычно 1000:1000), чтобы генерируемые Docker'ом файлы не становились `root`-owned.
 
-### ✅ Шаг 4: Compose Runner
+2. **CLI-обёртка (`orchestrator-cli`)**:
+   - `orchestrator dev-env compose [...]` — прямой проброс в API-эндпоинт.
+   - `orchestrator dev-env start-infra [services...]` — сахар: `compose up -d --wait <services>` (ожидает запуска и healthcheck'ов баз).
+   - `orchestrator dev-env stop-infra` — сахар: `compose stop` (останавливает контейнеры, volumes сохраняются).
+   - `orchestrator dev-env reset-infra` — сахар: `compose down -v` (полная очистка данных, агент вызывает явно).
 
-**Файл**: `services/worker-manager/src/compose_runner.py`
-
-- `ComposeRunner(workspace_base_path)`
-- `run(worker_id, args, cwd=".", timeout=120, env=None)` → `(exit_code, stdout, stderr)`
-- `--project-name worker_<id>` — изоляция имён
-- `--project-directory <host_path>` — абсолютный путь на хосте
-- Для `up`/`run`/`build` — генерирует `.codegen-network.yml` с override для dev network
-- Path traversal protection в cwd
-- `HOST_UID=1000`, `HOST_GID=1000` в env
-
-**Тесты**: `services/worker-manager/tests/unit/test_compose_runner.py` — 5 тестов
-
----
-
-### ✅ Шаг 5: Настройки + Container Config
-
-**`services/worker-manager/src/config.py`** — добавлено:
-```python
-WORKSPACE_BASE_PATH: str = "/tmp/codegen/workspaces"
-INTERNAL_NETWORK: str = "codegen_internal"
-WORKER_MANAGER_URL: str = "http://worker-manager:8000"
-```
-
-**`services/worker-manager/src/container_config.py`** — добавлено:
-- Поле `workspace_host_path: Optional[str] = None`
-- В `to_volume_mounts()`: bind-mount `workspace_host_path` → `/workspace`
-- В `to_env_vars()`: параметр `worker_manager_url`, пробрасывает `ORCHESTRATOR_WORKER_MANAGER_URL`
-
-**Тесты**: 2 новых теста в `test_container_config.py`
+3. **Граница нативного vs Docker-выполнения**:
+   - `docker compose` (через `orchestrator dev-env`) используется **только** для:
+     - Поднятия инфраструктурных sidecar-зависимостей (`start-infra db redis`).
+     - Запуска интеграционных тестов, завязанных на compose-оркестрацию (`compose -f infra/compose.tests.integration.yml run integration-tests`).
+     - Сборки Dockerfile'ов (`compose build`).
+   - Нативно (внутри контейнера воркера через `uv run` или fallback `make`) выполняются:
+     - Линтеры (`ruff`).
+     - Юнит-тесты (`pytest tests/unit`).
+     - Кодогенерация (`framework generate`, `sync_services`).
 
 ---
 
-### ✅ Шаг 6: WorkerManager — Dual-Network + Workspace + Cleanup
+## Фаза 3: Адаптация Шаблонов (`service_template`)
 
-**Файл**: `services/worker-manager/src/manager.py`
+Шаблоны должны быть готовы к нативному выполнению большей части операций. Интеграционные тесты остаются в Docker Compose.
 
-`create_worker()`:
-1. Создаёт `dev_proj_<id>` сеть
-2. Запускает контейнер на `network_name` (= `codegen_internal`)
-3. Подключает ко второй сети
-4. Сохраняет `worker:meta:<id>` → `{dev_network, workspace_path}`
+1. **Рефакторинг `Makefile` в `service_template`**:
+   - Ввести переменную `EXEC_MODE ?= docker` (по умолчанию — Docker для обратной совместимости, воркеры выставляют `EXEC_MODE=native`).
+   - Адаптировать цели:
+     - `make format` → `uv run ruff format .` (вместо `docker compose run tooling ruff format .`).
+     - `make lint` → `uv run ruff check .`.
+     - `make test-unit` → `uv run pytest tests/unit`.
+     - `make generate-from-spec` → `uv run python -m framework.sync_services create && uv run python -m framework generate`.
+   - Сохранить запуск интеграционных тестов через Docker Compose (`make test-integration` всегда через compose).
 
-`create_worker_with_capabilities()`:
-1. `workspace.create_workspace(...)` — создаёт workspace на хосте
-2. Фиксированный `network_name = settings.INTERNAL_NETWORK`
-3. Bridge URLs: `redis://redis:6379`, `http://api:8000`
-
-`delete_worker()`:
-1. Получает `dev_network`, `workspace_path` из `worker:meta:*`
-2. `compose down -v` — убирает sidecar'ы
-3. Удаляет контейнер воркера
-4. Удаляет dev network
-5. `workspace.remove_workspace(...)` — удаляет workspace на хосте
-6. Удаляет Redis keys: `status`, `meta`, `error`, `last_activity`
-
-**Тесты**: 5 новых тестов в `test_manager_logic.py`
+2. **Совместимость кодогенерации и безопасности**:
+   - Убедиться, что `uv run python -m framework.sync_services create` запускается корректно в native-режиме без ошибок монтирования.
+   - Добавить `healthcheck` ко всем инфраструктурным сервисам в compose-файлах шаблона (для корректной работы `--wait`).
+   - Во всех compose-файлах шаблона `docker-compose.yml` явно прописать директиву `user: "${HOST_UID:-1000}:${HOST_GID:-1000}"` для баз данных, чтобы генерируемые ими файлы (dbs, кэши) не становились `root`-owned.
 
 ---
 
-### ✅ Шаг 7: HTTP Endpoint на Worker-Manager
+## Фаза 4: Удаление Docker-in-Docker и обновление промптов
 
-**`services/worker-manager/src/routers/compose.py`**:
-```
-POST /api/worker/{worker_id}/infra/compose
-```
-- Валидирует команду через `validate_command()`
-- Валидирует `docker-compose.yml` через `validate_compose_file()`
-- Проверяет path traversal в `cwd`
-- Запускает через `ComposeRunner`
+Изменение рабочего окружения агента внутри контейнера. Эту фазу можно активировать только после завершения Фаз 2 и 3.
 
-**`services/worker-manager/src/main.py`**: `ComposeRunner` в `app.state`, роутер подключён
+1. **Удаление Docker-in-Docker (Hard Boundary)**:
+   - В `worker-manager/src/container_config.py`: убрать маунт `/var/run/docker.sock` из конфигурации capability `DOCKER`.
+   - В `shared/contracts/queues/worker.py`: удалить `DOCKER` из enum `WorkerCapability`.
+   - В `worker-manager/src/image_builder.py`: удалить Docker CLI/Compose из capability install map.
+   - Обновить все `agent_configs` в БД, убрав `DOCKER` из списка capabilities (миграция или seed-скрипт).
 
-**Тесты**: `tests/service/test_compose_api.py` — 5 тестов
-
----
-
-### ✅ Шаг 8: CLI-команды `orchestrator dev-env`
-
-**`packages/orchestrator-cli/src/orchestrator_cli/config.py`**:
-```python
-worker_manager_url: str = Field(..., alias="ORCHESTRATOR_WORKER_MANAGER_URL")
-```
-
-**`packages/orchestrator-cli/src/orchestrator_cli/client.py`**:
-```python
-def get_worker_manager_client() -> httpx.AsyncClient
-```
-
-**`packages/orchestrator-cli/src/orchestrator_cli/commands/dev_env.py`**:
-
-| Команда | Описание |
-|---------|----------|
-| `compose <args...>` | Прямой проброс в compose endpoint |
-| `start-infra [services...]` | `compose up -d --wait <services>` |
-| `stop-infra` | `compose stop` |
-| `reset-infra` | `compose down -v` |
-
-**`packages/orchestrator-cli/src/orchestrator_cli/main.py`**: зарегистрирован `dev-env`
-
-**Тесты**: `packages/orchestrator-cli/tests/unit/test_dev_env.py` — 6 тестов
+2. **Обновление системных промптов (INSTRUCTIONS.md)**:
+   - Запретить агентам вызывать `docker` или `docker compose` напрямую.
+   - Инструктировать использовать `orchestrator dev-env start-infra db redis` для работы с персистентными sidecar-сервисами, сохраняя доступы в `.env` файл (через обращения к хостнеймам `db:5432` без публикаций портов `ports`).
+   - Явно запретить добавлять директиву `ports` в свои `docker-compose.yml`, так как публикация портов на хосте будет конфликтовать между изолированными агентами.
+   - Инструктировать использовать `orchestrator dev-env compose` для интеграционных тестов.
+   - Указать, что линтеры, генерация и юнит-тесты должны запускаться нативно через `uv run` / `make`.
 
 ---
 
-### ✅ Шаг 9: Dockerfile + docker-compose.yml
+## Фаза 5: E2E Тестирование нового пайплайна
 
-**`services/worker-manager/Dockerfile`** — установка Docker CLI 26.1.4 + Compose plugin 2.27.1
-
-**`services/worker-manager/pyproject.toml`** — добавлен `pyyaml`
-
-**`docker-compose.yml`**:
-- Именованная сеть: `networks.internal.name: codegen_internal`
-- worker-manager: `WORKSPACE_BASE_PATH`, `INTERNAL_NETWORK`, `WORKER_MANAGER_URL`; volume `/tmp/codegen/workspaces`; убраны `WORKER_REDIS_URL`/`WORKER_API_URL` (bridge mode)
-- redis: убран `ports: "6379:6379"` (воркеры теперь через bridge)
-
----
-
-### ✅ Шаг 10: Integration тест
-
-**Файл**: `tests/integration/backend/test_dev_env.py`
-
-- `test_workspace_bind_mount` — создаём воркер, тачим файл в /workspace, проверяем на хосте
-- `test_dual_network_created` — инспектируем контейнер, проверяем 2 сети
-- `test_compose_rejects_ports` — compose с ports → 400
-- `test_delete_cleans_everything` — полный цикл cleanup
-
----
-
-### ✅ Шаг 11: E2E Smoke тест
-
-**Файл**: `tests/e2e/test_dev_env_smoke.py`
-
-Полный вертикальный срез:
-1. CreateWorker → wait RUNNING
-2. Пишем `docker-compose.yml` (postgres) в workspace
-3. `POST /api/worker/{id}/infra/compose {"args": ["up", "-d", "--wait", "db"]}`
-4. `exec pg_isready` в воркере — проверяем доступность postgres через dev network
-5. DeleteWorker → проверяем: нет контейнеров, нет сети, нет workspace
-
----
-
-## Результаты
-
-| Категория | Результат |
-|-----------|-----------|
-| worker-manager unit tests | ✅ 86 passed |
-| orchestrator-cli unit tests | ✅ 16 passed |
-| Lint (ruff) | ✅ clean |
-| Integration tests | написаны, требуют DinD |
-| E2E smoke test | написан, требует полного стека |
+1. **Сценарии проверки**:
+   - Агент scaffold'ит проект → `start-infra db` → миграции → `make test-unit` → push. Проверить полный цикл.
+   - Агент запускает `compose -f ... run integration-tests`. Проверить, что тесты проходят через API-прокси.
+   - Параллельная работа 2+ воркеров: нет конфликтов портов, сетей, имён контейнеров.
+   - Cleanup: `delete_worker` корректно убирает сеть, workspace, sidecar-контейнеры.
+   - GC в scheduler: осиротевшие ресурсы (после OOM/restart) очищаются.
+2. **Критерии успеха**:
+   - Девелопер-агент завершает задачу без `/var/run/docker.sock`.
+   - Все E2E-тесты оркестратора в CI проходят стабильно.
+   - Нет `root`-owned файлов в workspace после работы sidecar'ов.
