@@ -751,6 +751,7 @@ async def _handle_engineering_success(
             deploy_msg = DeployMessage(
                 task_id=deploy_task_id,
                 project_id=project_id,
+                user_id=user_id,
                 callback_stream=callback_stream,
                 triggered_by=DeployTrigger.ENGINEERING,
             )

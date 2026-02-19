@@ -110,6 +110,44 @@ class TestHandleEngineeringSuccess:
         assert out["commit_sha"] == "abc123"
         mock_ci_gate.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    async def test_deploy_message_includes_user_id(self, mock_ci_gate, mock_redis, mock_api):
+        """DeployMessage queued after CI must include user_id (BUG 17)."""
+        mock_ci_gate.return_value = True
+
+        from src.workers.engineering_worker import _handle_engineering_success
+
+        result_data = {"engineering_status": "done", "commit_sha": "abc123"}
+
+        await _handle_engineering_success(
+            result=result_data,
+            task_id="eng-1",
+            project=_project(repo_url="https://github.com/org/test-project"),
+            callback_stream="po:response:abc",
+            redis=mock_redis,
+            skip_deploy=False,
+            developer_started_at=datetime.now(UTC),
+            user_id="625038902",
+        )
+
+        # Find the deploy queue xadd call
+        import json
+
+        from shared.queues import DEPLOY_QUEUE
+
+        xadd_calls = mock_redis.redis.xadd.call_args_list
+        deploy_calls = [c for c in xadd_calls if c[0][0] == DEPLOY_QUEUE]
+        assert len(deploy_calls) == 1, (
+            f"Expected 1 deploy queue call, got {len(deploy_calls)}. "
+            f"All xadd streams: {[c[0][0] for c in xadd_calls]}"
+        )
+
+        deploy_data = json.loads(deploy_calls[0][0][1]["data"])
+        assert (
+            deploy_data["user_id"] == "625038902"
+        ), f"user_id mismatch. Full deploy_data: {deploy_data}"
+
 
 class TestNotificationDecoupling:
     """Tests that notification type is decoupled from deploy trigger."""
