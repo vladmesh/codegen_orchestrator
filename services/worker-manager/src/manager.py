@@ -9,6 +9,8 @@ from .config import settings
 from .docker_ops import DockerClientWrapper
 from .image_builder import ImageBuilder
 from .container_config import WorkerContainerConfig
+from . import workspace as workspace_mod
+from .compose_runner import ComposeRunner
 
 logger = structlog.get_logger()
 
@@ -41,12 +43,17 @@ class WorkerManager:
         env_vars: Dict[str, str] = None,
         volumes: Dict[str, Dict[str, str]] = None,
         network_name: Optional[str] = None,
+        create_dev_network: bool = True,
+        workspace_path: Optional[str] = None,
     ) -> str:
         """
         Create and start a new worker container.
 
         Args:
-            network_name: Docker network to attach to. If None, uses host networking.
+            network_name: Primary Docker network to attach to. If None, uses host networking.
+            create_dev_network: If True, also create a dev_proj_<worker_id> network and
+                                connect the container to it as a second network.
+            workspace_path: Host path to the worker workspace (stored in Redis metadata).
         """
         env_vars = env_vars or {}
 
@@ -59,6 +66,7 @@ class WorkerManager:
         labels["com.codegen.type"] = "worker"
 
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
+        dev_network = f"dev_proj_{worker_id}"
 
         logger.info(
             "creating_worker",
@@ -66,11 +74,16 @@ class WorkerManager:
             image=image,
             container_name=container_name,
             network=network_name or "host",
+            dev_network=dev_network if create_dev_network else None,
         )
 
         try:
             # Remove stale container with the same name (if any)
             await self.docker.remove_container(container_name, force=True)
+
+            # Create dev network before starting container
+            if create_dev_network:
+                await self.docker.create_network(dev_network)
 
             # Update Redis status
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "STARTING"})
@@ -93,6 +106,16 @@ class WorkerManager:
 
             container = await self.docker.run_container(**run_kwargs)
 
+            # Connect to dev network as second network
+            if create_dev_network:
+                await self.docker.connect_network(dev_network, container.id)
+
+            # Persist metadata in Redis
+            meta: Dict[str, str] = {"dev_network": dev_network}
+            if workspace_path:
+                meta["workspace_path"] = workspace_path
+            await self.redis.hset(f"worker:meta:{worker_id}", mapping=meta)
+
             # Update Redis status
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
 
@@ -105,20 +128,52 @@ class WorkerManager:
             raise
 
     async def delete_worker(self, worker_id: str) -> None:
-        """Stop and remove a worker."""
+        """Stop and remove a worker, its dev network, workspace, and Redis keys."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         logger.info("deleting_worker", worker_id=worker_id)
 
+        # Retrieve metadata stored at creation time
+        meta = await self.redis.hgetall(f"worker:meta:{worker_id}")
+        dev_network = meta.get("dev_network") if meta else None
+        stored_workspace = meta.get("workspace_path") if meta else None
+
         try:
-            # We try to remove by name or lookup ID?
-            # docker-py remove accepts name or ID.
+            # Tear down sidecar containers launched via compose before removing worker
+            if stored_workspace:
+                try:
+                    runner = ComposeRunner(settings.WORKSPACE_BASE_PATH)
+                    exit_code, stdout, stderr = await runner.run(worker_id, ["down", "-v"], timeout=60)
+                    if exit_code != 0:
+                        logger.warning(
+                            "compose_down_nonzero",
+                            worker_id=worker_id,
+                            exit_code=exit_code,
+                            stderr=stderr,
+                        )
+                except Exception as e:
+                    logger.warning("compose_down_failed", worker_id=worker_id, error=str(e))
+
+            # Remove worker container
             await self.docker.remove_container(container_name, force=True)
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "STOPPED"})
+
+            # Remove dev network
+            if dev_network:
+                await self.docker.remove_network(dev_network)
+
+            # Remove workspace directory from host
+            workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
+
+            # Clean up all Redis keys for this worker
+            keys_to_delete = [
+                f"worker:status:{worker_id}",
+                f"worker:meta:{worker_id}",
+                f"worker:error:{worker_id}",
+                f"worker:last_activity:{worker_id}",
+            ]
+            await self.redis.delete(*keys_to_delete)
 
         except Exception as e:
             logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
-            # Even if failed, we mark stopped? Or FAILED?
-            # If container doesn't exist, remove_container handles NotFound.
             await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "STOPPED"})
 
     async def pause_worker(self, worker_id: str) -> None:
@@ -293,14 +348,19 @@ class WorkerManager:
             api_key=api_key,
         )
 
+        # Create workspace on the host
+        ws_path = workspace_mod.create_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
+        config.workspace_host_path = workspace_mod.get_workspace_host_path(settings.WORKSPACE_BASE_PATH, worker_id)
+
         # Generate container params
-        # Env vars - use WORKER_* URLs if set (for DIND where DNS doesn't work)
-        worker_redis_url = settings.WORKER_REDIS_URL or settings.REDIS_URL
-        worker_api_url = settings.WORKER_API_URL or "http://api:8000"
+        # Use bridge-network URLs (services reachable via Docker DNS in bridge mode)
+        worker_redis_url = "redis://redis:6379"
+        worker_api_url = "http://api:8000"
         container_env = config.to_env_vars(
             redis_url=worker_redis_url,
             api_url=worker_api_url,
             subprocess_timeout_seconds=settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS,
+            worker_manager_url=settings.WORKER_MANAGER_URL,
         )
         container_env.update(env_vars)
 
@@ -317,16 +377,18 @@ class WorkerManager:
         # Volumes
         volumes = config.to_volume_mounts()
 
-        # Network: use DOCKER_NETWORK from settings if set, else None (host mode)
-        network_name = settings.DOCKER_NETWORK if settings.DOCKER_NETWORK else None
+        # Always use INTERNAL_NETWORK for the primary network
+        network_name = settings.INTERNAL_NETWORK
 
-        # Create container
+        # Create container with dual-network setup
         container_id = await self.create_worker(
             worker_id=worker_id,
             image=image_tag,
             env_vars=container_env,
             volumes=volumes,
             network_name=network_name,
+            create_dev_network=True,
+            workspace_path=str(ws_path),
         )
 
         # Auto-setup git repository FIRST (before instructions)

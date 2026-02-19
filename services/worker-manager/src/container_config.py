@@ -13,8 +13,15 @@ class WorkerContainerConfig:
     auth_mode: str = "host_session"  # "host_session" or "api_key"
     host_claude_dir: Optional[str] = None
     api_key: Optional[str] = None
+    workspace_host_path: Optional[str] = None
 
-    def to_env_vars(self, redis_url: str, api_url: str, subprocess_timeout_seconds: int = 300) -> Dict[str, str]:
+    def to_env_vars(
+        self,
+        redis_url: str,
+        api_url: str,
+        subprocess_timeout_seconds: int = 300,
+        worker_manager_url: Optional[str] = None,
+    ) -> Dict[str, str]:
         """Generate environment variables for the container.
 
         Note: worker-wrapper uses WORKER_ prefix for pydantic-settings,
@@ -46,6 +53,9 @@ class WorkerContainerConfig:
             else:
                 env["ANTHROPIC_API_KEY"] = self.api_key
 
+        if worker_manager_url:
+            env["ORCHESTRATOR_WORKER_MANAGER_URL"] = worker_manager_url
+
         return env
 
     def to_volume_mounts(self) -> Dict[str, Dict[str, str]]:
@@ -62,6 +72,10 @@ class WorkerContainerConfig:
         if self.auth_mode == "host_session" and self.host_claude_dir:
             # Mount to /home/worker/.claude inside container
             volumes[self.host_claude_dir] = {"bind": "/home/worker/.claude", "mode": "rw"}
+
+        # Mount workspace directory if provided
+        if self.workspace_host_path:
+            volumes[self.workspace_host_path] = {"bind": "/workspace", "mode": "rw"}
 
         return volumes
 

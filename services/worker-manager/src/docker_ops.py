@@ -147,6 +147,31 @@ class DockerClientWrapper:
         except Exception as e:
             return f"Failed to get logs: {e}"
 
+    async def create_network(self, name: str, driver: str = "bridge") -> Any:
+        """Create a Docker network."""
+        return await self._run(self._client.networks.create, name, driver=driver)
+
+    async def remove_network(self, name: str) -> None:
+        """Remove a Docker network, ignoring NotFound."""
+        try:
+            network = await self._run(self._client.networks.get, name)
+            await self._run(network.remove)
+        except docker.errors.NotFound:
+            pass
+
+    async def connect_network(self, network_name: str, container_id: str) -> None:
+        """Connect a container to a network."""
+        network = await self._run(self._client.networks.get, network_name)
+        await self._run(network.connect, container_id)
+
+    async def disconnect_network(self, network_name: str, container_id: str) -> None:
+        """Disconnect a container from a network, ignoring NotFound."""
+        try:
+            network = await self._run(self._client.networks.get, network_name)
+            await self._run(network.disconnect, container_id)
+        except docker.errors.NotFound:
+            pass
+
     async def exec_in_container(
         self, container_id: str, command: str, user: str = "worker", timeout: int = 30
     ) -> Tuple[int, bytes]:

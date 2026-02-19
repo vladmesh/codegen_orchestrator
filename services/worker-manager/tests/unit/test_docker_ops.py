@@ -85,3 +85,74 @@ class TestDockerExec:
 
         assert exit_code == 1
         assert "error" in output.decode()
+
+
+class TestDockerNetworks:
+    @pytest.mark.asyncio
+    async def test_create_network(self, mock_docker):
+        """create_network should call networks.create with name and driver."""
+        client_mock = MagicMock()
+        mock_docker.return_value = client_mock
+        network_mock = MagicMock()
+        client_mock.networks.create.return_value = network_mock
+
+        wrapper = DockerClientWrapper()
+        result = await wrapper.create_network("dev_proj_worker1")
+
+        assert result == network_mock
+        client_mock.networks.create.assert_called_once_with("dev_proj_worker1", driver="bridge")
+
+    @pytest.mark.asyncio
+    async def test_remove_network(self, mock_docker):
+        """remove_network should get and remove the network."""
+
+        client_mock = MagicMock()
+        mock_docker.return_value = client_mock
+        network_mock = MagicMock()
+        client_mock.networks.get.return_value = network_mock
+
+        wrapper = DockerClientWrapper()
+        await wrapper.remove_network("dev_proj_worker1")
+
+        client_mock.networks.get.assert_called_once_with("dev_proj_worker1")
+        network_mock.remove.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_remove_network_ignores_not_found(self, mock_docker):
+        """remove_network should silently ignore NotFound errors."""
+        import docker
+
+        client_mock = MagicMock()
+        mock_docker.return_value = client_mock
+        client_mock.networks.get.side_effect = docker.errors.NotFound("not found")
+
+        wrapper = DockerClientWrapper()
+        # Should not raise
+        await wrapper.remove_network("nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_connect_network(self, mock_docker):
+        """connect_network should get the network and connect the container."""
+        client_mock = MagicMock()
+        mock_docker.return_value = client_mock
+        network_mock = MagicMock()
+        client_mock.networks.get.return_value = network_mock
+
+        wrapper = DockerClientWrapper()
+        await wrapper.connect_network("dev_proj_worker1", "container-abc")
+
+        client_mock.networks.get.assert_called_once_with("dev_proj_worker1")
+        network_mock.connect.assert_called_once_with("container-abc")
+
+    @pytest.mark.asyncio
+    async def test_disconnect_network_ignores_not_found(self, mock_docker):
+        """disconnect_network should silently ignore NotFound errors."""
+        import docker
+
+        client_mock = MagicMock()
+        mock_docker.return_value = client_mock
+        client_mock.networks.get.side_effect = docker.errors.NotFound("not found")
+
+        wrapper = DockerClientWrapper()
+        # Should not raise
+        await wrapper.disconnect_network("nonexistent", "container-abc")

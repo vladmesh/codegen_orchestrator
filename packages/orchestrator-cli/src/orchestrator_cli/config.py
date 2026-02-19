@@ -13,3 +13,9 @@ class Config(BaseSettings):
     redis_url: str = Field(
         ..., alias="ORCHESTRATOR_REDIS_URL", description="URL of the Redis instance"
     )
+
+    worker_manager_url: str = Field(
+        ...,
+        alias="ORCHESTRATOR_WORKER_MANAGER_URL",
+        description="URL of the Worker Manager service",
+    )

@@ -180,15 +180,17 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       API_BASE_URL: http://api:8000
-      # Worker URLs for containers in host network mode
-      WORKER_REDIS_URL: redis://localhost:6379
-      WORKER_API_URL: http://localhost:8000
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       # Host path for mounting .claude dir into workers
       HOST_CLAUDE_DIR: ${HOST_CLAUDE_DIR:-/home/user/.claude}
+      # Dev environment settings
+      WORKSPACE_BASE_PATH: /tmp/codegen/workspaces
+      INTERNAL_NETWORK: codegen_internal
+      WORKER_MANAGER_URL: http://worker-manager:8000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/codegen/workspaces:/tmp/codegen/workspaces
       - ${HOST_CLAUDE_DIR:-/home/user/.claude}:/host-claude:ro
     depends_on:
       redis:
@@ -303,8 +305,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379" # Expose for worker containers in host network mode
     volumes:
       - redis_data:/data
     healthcheck:
@@ -317,6 +317,7 @@ services:
 
 networks:
   internal:
+    name: codegen_internal
 
 
 volumes:
