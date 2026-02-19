@@ -41,7 +41,13 @@ make test-clean            # Cleanup test containers
 ```
 User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/Redis) → po:response → Telegram Bot → User
                                                                ↕
-                                                  engineering:queue / deploy:queue → workers
+                                                  engineering:queue → workers
+                                                  deploy:queue → deploy-worker → GitHub Actions (deploy.yml)
+
+GitHub (ci.yml success) → webhook → Caddy (HTTPS) → API → deploy:queue → deploy-worker → po:proactive → Telegram Bot → User
+
+Caddy (/v2/*) → Docker Registry (self-hosted, basic auth)
+Caddy (/webhooks/*) → API
 ```
 
 **Key Components:**
@@ -50,15 +56,17 @@ User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/
 - **Session Management**: PostgreSQL checkpointer (per-user thread), Redis streams for I/O
 
 **Services** (in `services/`):
-- `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs (port 8000)
+- `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs, GitHub webhook receiver (port 8000)
 - `langgraph`: LangGraph orchestration (Engineering, DevOps subgraphs)
 - `engineering-worker`: Consumes `engineering:queue`, runs Engineering subgraph
 - `deploy-worker`: Consumes `deploy:queue`, runs DevOps subgraph
 - `telegram_bot`: python-telegram-bot interface (PO via Redis Streams)
 - `worker-manager`: Docker container lifecycle for CLI agents (replaces `workers-spawner`)
 - `scaffolder`: Runs copier for project scaffolding (async, before developer work)
-- `infra-service`: Ansible execution for provisioning (consumes `provisioner:queue`)
+- `infra-service`: Ansible execution for server provisioning only (consumes `provisioner:queue`)
 - `scheduler`: Background workers (github_sync, server_sync, health_checker)
+- `caddy`: Reverse proxy + TLS termination (HTTPS for webhook + registry endpoints)
+- `registry`: Self-hosted Docker Registry (v2, accessible via Caddy basic auth)
 
 **Packages** (`packages/`): `orchestrator-cli` (CLI tools for agents), `worker-wrapper` (agent container entrypoint).
 
@@ -122,8 +130,8 @@ LLM never sees actual secrets. Use handles in state, Python code reads secrets d
 @tool
 def deploy_to_server(server_handle: str):
     """LLM calls with handle only."""
-    server = secret_storage.get_server(server_handle)  # Python reads secret
-    subprocess.run(["ansible-playbook", ...], env={"SSH_KEY": server.ssh_key})
+    server = api_client.get_server(server_handle)  # Python reads secret
+    github.set_repository_secrets(repo, {"DEPLOY_HOST": server.public_ip, ...})
 ```
 
 ## Adding New Agents
@@ -157,5 +165,5 @@ def deploy_to_server(server_handle: str):
 | Logging | structlog (JSON in prod, console in dev) |
 | Linting | Ruff |
 | Container Isolation | Sysbox runtime |
-| Secrets | project.config.secrets (PostgreSQL), GitHub Repository Secrets |
+| Secrets | project.config.secrets (PostgreSQL, Fernet-encrypted), GitHub Repository Secrets |
 

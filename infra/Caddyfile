@@ -1,0 +1,12 @@
+{$ORCHESTRATOR_HOSTNAME} {
+    handle /v2/* {
+        basic_auth {
+            {$REGISTRY_USER} {$REGISTRY_PASSWORD_HASH}
+        }
+        reverse_proxy registry:5000
+    }
+
+    handle /webhooks/* {
+        reverse_proxy api:8000
+    }
+}

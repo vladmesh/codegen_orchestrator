@@ -38,10 +38,11 @@
 
 **Действия**:
 1. Слушает `scaffolder:queue` (Redis Stream)
-2. Клонирует репозиторий
-3. `copier copy` с выбранными модулями
-4. Git commit + push
-5. Обновляет `project.status = "scaffolded"` через API
+2. Создаёт GitHub-репозиторий (если не существует)
+3. Устанавливает registry secrets (`REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD`) — до первого push, чтобы CI мог пушить образы
+4. `copier copy` с выбранными модулями
+5. Git commit + push
+6. Обновляет `project.status = "scaffolded"` через API
 
 **Выход**: `project.status = "scaffolded"` → DeveloperNode может начинать работу
 
@@ -93,6 +94,7 @@
 **Когда вызывается**:
 - После Engineering Subgraph
 - При `trigger_deploy` от PO
+- При GitHub webhook (`workflow_run: ci.yml success on main`) → API → deploy:queue
 
 **Структура пакета** (`src/subgraphs/devops/`):
 ```
@@ -100,6 +102,7 @@ devops/
 ├── __init__.py          # Экспорты
 ├── state.py             # DevOpsState TypedDict
 ├── env_analyzer.py      # EnvAnalyzer + helper функции
+├── env_groups.py        # EnvGroup ABC, PostgresGroup, RedisGroup, resolve_with_groups
 ├── nodes.py             # SecretResolver, ReadinessCheck, Deployer
 └── graph.py             # Routing + create_devops_subgraph
 ```
@@ -112,9 +115,12 @@ devops/
    - `user`: запрашиваются у пользователя (TELEGRAM_BOT_TOKEN)
 
 2. **SecretResolver (Functional)**:
-   - Генерирует infra секреты
-   - Подставляет computed значения
-   - Проверяет наличие user секретов
+   - Дешифрует существующие секреты из БД (`decrypt_dict`)
+   - Двухфазная резолюция infra-переменных:
+     * Фаза 1: cached secrets из `config_secrets` (приоритет)
+     * Фаза 2: uncached → `resolve_with_groups()` (когерентные пароли для связанных переменных, например DATABASE_URL + POSTGRES_PASSWORD) → fallback `_generate_infra_secret()` для остальных
+   - Подставляет computed значения, проверяет наличие user секретов
+   - Шифрует и сохраняет новые секреты обратно в БД (`encrypt_dict`)
 
 3. **ReadinessCheck (Functional)**:
    - Проверяет готовность к деплою
@@ -122,27 +128,31 @@ devops/
    - Если всё готово → Deployer
 
 4. **Deployer (Functional)**:
-   - Делегирует выполнение Ansible playbook в `infra-service` через Redis
-   - Polling результата из `deploy:result:{request_id}`
+   - Собирает DOTENV из resolved_secrets (`build_dotenv` → `encode_dotenv` → base64)
+   - Записывает 9 GitHub Secrets: DOTENV, DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PORT, PROJECT_NAME, REGISTRY_URL, REGISTRY_USER, REGISTRY_PASSWORD
+   - Тригерит `deploy.yml` через `trigger_workflow_dispatch`
+   - Ждёт завершения через `wait_for_workflow_completion` (poll, timeout 600s)
    - Post-deployment операции:
-     * Создает service deployment record в БД
-     * Настраивает GitHub Actions CI secrets
+     * Создает service deployment record в БД (с `deployed_sha`)
      * Устанавливает статус проекта = active
 
 **Архитектура**:
 ```
-Deployer → delegate_ansible_deploy → Redis: deploy:queue
-                                           ↓
-                                    infra-service
-                                           ↓
-                                    Ansible Execution
-                                           ↓
-                                    Result in Redis
+Deployer → build_dotenv → set_repository_secrets (GitHub API)
+                        → trigger_workflow_dispatch (deploy.yml)
+                        → wait_for_workflow_completion (poll)
+                                       ↓
+                              GitHub Actions Runner
+                                       ↓
+                              Docker build + deploy to VPS
 ```
 
 **Выход**:
 - `deployed_url` при успехе
 - `missing_user_secrets` если нужны секреты от пользователя
+
+**Proactive notifications** (webhook-triggered deploys):
+Когда deploy запущен через webhook (нет `callback_stream`), deploy-worker отправляет результат напрямую в `po:proactive` → telegram-bot → пользователь. Сообщения: успех (deployed URL), missing secrets, ошибка.
 
 ---
 
@@ -200,6 +210,18 @@ PO ReactAgent (in langgraph container)
      │               EnvAnalyzer → SecretResolver → ReadinessCheck → Deployer
      │                                                      │
      └──────────────▶ (завершение) ◄─────────────────────────┘
+
+
+GitHub (webhook: ci.yml success on main)
+     │
+     ▼
+API: POST /webhooks/github
+     │ verify HMAC → lookup project → create Task
+     ▼
+Redis (deploy:queue) → deploy-worker → DevOps Subgraph
+     │
+     ▼
+Redis (po:proactive) → Telegram Bot → Пользователь
 ```
 
-**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder работает асинхронно (fire-and-forget), DeveloperNode ждёт готовности scaffolding.
+**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder работает асинхронно (fire-and-forget), DeveloperNode ждёт готовности scaffolding. Webhook-triggered deploys обходят PO — API публикует напрямую в deploy:queue, результат уходит через po:proactive.

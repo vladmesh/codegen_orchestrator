@@ -8,6 +8,7 @@ import re
 
 from langchain_core.messages import AIMessage, SystemMessage
 import structlog
+import yaml
 
 from shared.clients.github import GitHubAppClient
 
@@ -160,23 +161,29 @@ def _parse_repo_url(repo_url: str) -> tuple[str, str] | None:
         return None
 
 
-def _parse_env_variables(content: str) -> list[str]:
-    """Parse environment variable names from .env file content.
+def _parse_env_variables(content: str) -> list[tuple[str, str | None]]:
+    """Parse environment variable names and preceding comments from .env file content.
 
     Args:
         content: Raw content of .env.example file
 
     Returns:
-        List of variable names
+        List of (variable_name, comment_or_None) tuples
     """
     variables = []
+    prev_comment = None
     for line in content.splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line:
+            prev_comment = None
+            continue
+        if line.startswith("#"):
+            prev_comment = line.lstrip("# ").strip()
             continue
         if "=" in line:
             key = line.split("=", 1)[0].strip()
-            variables.append(key)
+            variables.append((key, prev_comment))
+            prev_comment = None
     return variables
 
 
@@ -195,6 +202,51 @@ async def _fetch_env_content(owner: str, repo: str) -> str | None:
     if not content:
         content = await github.get_file_contents(owner, repo, ".env.template")
     return content
+
+
+async def _fetch_compose_env_context(owner: str, repo: str) -> str | None:
+    """Fetch compose.base.yml and extract environment variable usage per service.
+
+    Args:
+        owner: Repository owner
+        repo: Repository name
+
+    Returns:
+        Formatted string of per-service env vars, or None on failure
+    """
+    try:
+        github = GitHubAppClient()
+        content = await github.get_file_contents(owner, repo, "infra/compose.base.yml")
+        if not content:
+            return None
+
+        compose = yaml.safe_load(content)
+        if not isinstance(compose, dict) or "services" not in compose:
+            return None
+
+        lines = []
+        for service_name, service_def in sorted(compose["services"].items()):
+            if not isinstance(service_def, dict):
+                continue
+            env = service_def.get("environment")
+            if not env:
+                continue
+
+            var_names = []
+            if isinstance(env, list):
+                for item in env:
+                    # Formats: "VAR_NAME" or "VAR_NAME=value"
+                    var_names.append(str(item).split("=", 1)[0])
+            elif isinstance(env, dict):
+                var_names = list(env.keys())
+
+            if var_names:
+                lines.append(f"Service '{service_name}' uses: {', '.join(sorted(var_names))}")
+
+        return "\n".join(lines) if lines else None
+    except Exception as e:
+        logger.debug("compose_env_context_fetch_failed", error=str(e))
+        return None
 
 
 def _parse_llm_response(response_text: str) -> dict | None:
@@ -229,12 +281,14 @@ def _parse_llm_response(response_text: str) -> dict | None:
 async def _classify_variables_with_llm(
     variables: list[str],
     project_context: str,
+    comments: dict[str, str] | None = None,
 ) -> tuple[dict, AIMessage | None]:
     """Classify environment variables using patterns first, LLM as fallback.
 
     Args:
         variables: List of variable names
         project_context: Context string for the LLM
+        comments: Optional mapping of variable name to preceding comment from .env.example
 
     Returns:
         Tuple of (analysis dict, AI message) or (fallback dict, None) on error
@@ -266,9 +320,17 @@ async def _classify_variables_with_llm(
         config = await agent_config_cache.get("devops")
         llm = LLMFactory.create_llm(config)
 
+        comments = comments or {}
+        var_lines = []
+        for v in unknown_vars:
+            line = f"- {v}"
+            if v in comments:
+                line += f"  # {comments[v]}"
+            var_lines.append(line)
+
         prompt = ENV_ANALYZER_PROMPT.format(
             project_context=project_context,
-            env_variables="\n".join(f"- {v}" for v in unknown_vars),
+            env_variables="\n".join(var_lines),
         )
 
         response = await llm.ainvoke([SystemMessage(content=prompt)])
@@ -354,7 +416,8 @@ async def env_analyzer_run(state: DevOpsState) -> dict:
         }
 
     # Parse variables
-    variables = _parse_env_variables(content)
+    variables_with_comments = _parse_env_variables(content)
+    variables = [name for name, _ in variables_with_comments]
     if not variables:
         logger.info("no_env_variables_found", project_id=project_id)
         return {
@@ -362,15 +425,25 @@ async def env_analyzer_run(state: DevOpsState) -> dict:
             "env_analysis": {},
         }
 
+    # Build comments dict for LLM context
+    comments = {name: comment for name, comment in variables_with_comments if comment}
+
+    # Fetch compose environment context (non-blocking)
+    compose_context = await _fetch_compose_env_context(owner, repo)
+
     # Build project context for LLM
     project_context = f"""
 Project Name: {project.get("name", "unknown")}
 Repository: {repo_url}
 Allocated Resources: {state.get("allocated_resources", {})}
 """
+    if compose_context:
+        project_context += f"\nDocker Compose services:\n{compose_context}\n"
 
     # Classify variables with LLM
-    env_analysis, response = await _classify_variables_with_llm(variables, project_context)
+    env_analysis, response = await _classify_variables_with_llm(
+        variables, project_context, comments
+    )
 
     logger.info(
         "env_analyzer_complete",

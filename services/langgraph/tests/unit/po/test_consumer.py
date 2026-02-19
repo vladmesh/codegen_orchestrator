@@ -50,6 +50,7 @@ class TestHandleMessage:
     async def test_system_event_uses_human_message_with_prefix(self, mock_graph, mock_redis):
         data = {
             "type": "system_event",
+            "event": "completed",
             "text": "engineering_completed",
             "timestamp": "2026-02-15T10:00:00",
             "request_id": "req-1",
@@ -59,7 +60,7 @@ class TestHandleMessage:
 
         msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
         assert isinstance(msg, HumanMessage)
-        assert msg.content.startswith("[system: system_event]")
+        assert msg.content.startswith("[system: system_event:completed]")
         assert "engineering_completed" in msg.content
 
     @pytest.mark.asyncio
@@ -105,7 +106,7 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_no_request_id_forwards_to_proactive(self, mock_graph, mock_redis):
         """Without request_id, non-empty response should go to po:proactive."""
-        data = {"type": "system_event", "text": "scaffolding_done"}
+        data = {"type": "system_event", "event": "completed", "text": "scaffolding_done"}
 
         await _handle_message(mock_graph, mock_redis, "user-1", data)
 
@@ -156,6 +157,7 @@ class TestHandleMessage:
         """System events should also pass user_id in config."""
         data = {
             "type": "system_event",
+            "event": "completed",
             "text": "engineering_completed",
             "user_id": "user-99",
         }
@@ -171,12 +173,72 @@ class TestHandleMessage:
         mock_graph.ainvoke.return_value = {"messages": [AIMessage(content="")]}
         data = {
             "type": "system_event",
+            "event": "completed",
             "text": "scaffolding_completed",
         }
 
         await _handle_message(mock_graph, mock_redis, "user-1", data)
 
         mock_graph.ainvoke.assert_called_once()
+        mock_redis.xadd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_progress_event_dropped(self, mock_graph, mock_redis):
+        """Progress system events should not invoke the LLM."""
+        data = {
+            "type": "system_event",
+            "event": "progress",
+            "text": "Waiting for CI checks...",
+            "timestamp": "2026-02-15T10:00:00",
+        }
+
+        await _handle_message(mock_graph, mock_redis, "user-1", data)
+
+        mock_graph.ainvoke.assert_not_called()
+        mock_redis.xadd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_completed_event_includes_event_type(self, mock_graph, mock_redis):
+        """Completed events should have event type in format tag."""
+        data = {
+            "type": "system_event",
+            "event": "completed",
+            "text": "Deploy completed",
+            "timestamp": "2026-02-15T10:00:00",
+        }
+
+        await _handle_message(mock_graph, mock_redis, "user-1", data)
+
+        msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
+        assert "[system: system_event:completed]" in msg.content
+
+    @pytest.mark.asyncio
+    async def test_failed_event_includes_event_type(self, mock_graph, mock_redis):
+        """Failed events should have event type in format tag."""
+        data = {
+            "type": "system_event",
+            "event": "failed",
+            "text": "Engineering failed: timeout",
+            "timestamp": "2026-02-15T10:00:00",
+        }
+
+        await _handle_message(mock_graph, mock_redis, "user-1", data)
+
+        msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
+        assert "[system: system_event:failed]" in msg.content
+
+    @pytest.mark.asyncio
+    async def test_system_event_without_event_field_dropped(self, mock_graph, mock_redis):
+        """System events without event field should be dropped."""
+        data = {
+            "type": "system_event",
+            "text": "legacy event",
+            "timestamp": "2026-02-15T10:00:00",
+        }
+
+        await _handle_message(mock_graph, mock_redis, "user-1", data)
+
+        mock_graph.ainvoke.assert_not_called()
         mock_redis.xadd.assert_not_called()
 
 

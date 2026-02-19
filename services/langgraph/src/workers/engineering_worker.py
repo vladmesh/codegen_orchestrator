@@ -6,7 +6,6 @@ Run standalone: python -m src.workers.engineering_worker
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import json
 import os
 import re
 from typing import TYPE_CHECKING
@@ -18,6 +17,8 @@ if TYPE_CHECKING:
     from shared.clients.github import GitHubAppClient
 
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
+from shared.contracts.dto.task import TaskStatus, TaskType
+from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.scaffolder import ScaffolderMessage
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLDER_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -28,6 +29,33 @@ from ._base import start_worker
 from ._events import publish_callback_event
 
 logger = structlog.get_logger(__name__)
+
+
+# Markers indicating infrastructure / config CI failures that a developer worker cannot fix.
+_INFRA_FAILURE_MARKERS = [
+    "Docker Registry",
+    "Log in to",
+    "docker login",
+    "connection refused",
+    "registry",
+    "TLS handshake",
+    "certificate",
+    "REGISTRY_",
+    "DEPLOY_",
+    "SSH",
+    "deploy",
+    "Could not resolve host",
+]
+
+
+def _is_infra_failure(failure_context: str) -> bool:
+    """Return True if the CI failure is an infrastructure/config issue.
+
+    Infrastructure failures (registry auth, TLS, deploy secrets, network)
+    cannot be fixed by a developer worker — only by an admin.
+    """
+    ctx_lower = failure_context.lower()
+    return any(marker.lower() in ctx_lower for marker in _INFRA_FAILURE_MARKERS)
 
 
 def _extract_run_id_from_error(error_msg: str) -> int | None:
@@ -62,27 +90,22 @@ async def _respawn_developer_for_ci_fix(
 
     task_message = f"""# Task: Fix CI Failures (Attempt {attempt})
 
-## Context
-
-The code was pushed but CI failed. Your job is to fix the issues and push again.
-
 ## CI Failure Details
 
-{failure_context or "CI workflow failed. Run `ruff check .` and fix any linting errors."}
+{failure_context or "CI workflow failed. Check the CI logs for details."}
 
 ## Instructions
 
 1. The repository is already cloned to `/workspace`. Pull latest changes with `git pull`.
-2. Run `ruff check .` to see current linting errors
-3. Run `ruff format --exclude 'services/**/migrations' --exclude '.venv' .` to auto-format
-4. Run `ruff check --fix --exclude 'services/**/migrations' --exclude '.venv' .` to auto-fix
-5. For remaining errors that can't be auto-fixed, manually fix them
-6. Commit and push your fixes
+2. Analyze the CI failure details above to understand the root cause.
+3. Fix the root cause of the failure.
+4. Run any relevant checks locally (linting, tests) to verify your fix.
+5. Commit and push your fixes.
 
 ## Important
 
-- Focus ONLY on fixing the CI failures, do not add new features
-- Make a descriptive commit message like "fix: resolve CI linting errors"
+- Focus ONLY on fixing the CI failures, do not add new features.
+- Make a descriptive commit message explaining what you fixed.
 """
 
     worker_result = await request_spawn(
@@ -120,22 +143,21 @@ async def _wait_for_ci_and_fix(
 
     repo_url = project.get("repository_url", "")
     if not repo_url or "github.com/" not in repo_url:
-        logger.warning("ci_check_skip_no_repo_url", task_id=task_id)
-        return True  # Can't check CI without repo URL; proceed anyway
+        logger.error("ci_check_fail_no_repo_url", task_id=task_id)
+        return False
 
     repo_full_name = repo_url.split("github.com/")[-1].rstrip("/")
     owner, repo_name = repo_full_name.split("/", 1)
 
     github_client = GitHubAppClient()
 
-    for attempt in range(CI.MAX_FIX_RETRIES + 1):  # 0 = initial check, 1..N = retries
-        # attempt 0: use pre-developer timestamp (CI was triggered during dev)
-        # attempt 1+: use fresh timestamp (CI triggered by respawned fix worker)
-        if attempt == 0 and developer_started_at:
-            created_after = developer_started_at
-        else:
-            created_after = datetime.now(UTC)
+    # Initialize before loop: for attempt 0, use pre-developer timestamp so the
+    # CI run created during development is visible to the filter.
+    # Updated in the except block BEFORE respawning — after the failed run is
+    # observed but before the new developer pushes (so the new CI run is visible).
+    created_after = developer_started_at or datetime.now(UTC)
 
+    for attempt in range(CI.MAX_FIX_RETRIES + 1):  # 0 = initial check, 1..N = retries
         try:
             logger.info(
                 "ci_check_waiting",
@@ -202,6 +224,20 @@ async def _wait_for_ci_and_fix(
                     )
                 except Exception as log_err:
                     logger.warning("ci_log_fetch_failed", error=str(log_err))
+
+            # Classify failure: infra issues can't be fixed by a developer
+            if failure_context and _is_infra_failure(failure_context):
+                logger.error(
+                    "ci_infra_failure",
+                    task_id=task_id,
+                    failure_context=failure_context,
+                )
+                return False
+
+            # Capture timestamp BEFORE respawn: after the failed run is observed
+            # (so it gets filtered out) but before the new push (so the new CI
+            # run created_at will be >= this timestamp).
+            created_after = datetime.now(UTC)
 
             # Re-spawn developer worker with fix context
             logger.info(
@@ -588,13 +624,43 @@ async def _handle_engineering_success(
     user_id: str = "",
 ) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
+    project_id = project["id"]
+
+    # --- commit_sha gate: fail fast if no code was committed ---
+    if not result.get("commit_sha"):
+        logger.error("no_commit_sha", task_id=task_id, project_id=project_id)
+        await api_client.patch(
+            f"tasks/{task_id}",
+            json={
+                "status": "failed",
+                "error_message": "Developer completed but no commit was made",
+            },
+        )
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "failed",
+            task_id,
+            "Development completed but no code was committed",
+            user_id=user_id,
+            project_id=project_id,
+        )
+        return {
+            "status": "failed",
+            "error": "No commit_sha",
+            "finished_at": datetime.now(UTC).isoformat(),
+        }
+
     logger.info(
         "engineering_job_success",
         task_id=task_id,
         commit_sha=result.get("commit_sha"),
     )
 
-    project_id = project["id"]
+    # --- Refresh project before CI check (scaffolder may have updated repo_url) ---
+    fresh_project = await api_client.get_project(project_id)
+    if fresh_project:
+        project = fresh_project
 
     # --- CI Gate: wait for ci.yml before triggering deploy ---
     ci_passed = await _wait_for_ci_and_fix(
@@ -644,15 +710,28 @@ async def _handle_engineering_success(
         },
     )
 
-    await publish_callback_event(
-        redis,
-        callback_stream,
-        "completed",
-        task_id,
-        "Engineering task completed, CI passed",
-        user_id=user_id,
-        project_id=project_id,
-    )
+    if skip_deploy:
+        # This IS the final step — tell user we're done
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "completed",
+            task_id,
+            "Engineering task completed, CI passed",
+            user_id=user_id,
+            project_id=project_id,
+        )
+    else:
+        # Deploy is next — only send progress, deploy worker sends "completed" on success
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "progress",
+            task_id,
+            "CI passed, deploying...",
+            user_id=user_id,
+            project_id=project_id,
+        )
 
     # Auto-trigger deploy after CI passes (unless skip_deploy)
     if not skip_deploy:
@@ -663,23 +742,22 @@ async def _handle_engineering_success(
                 "tasks/",
                 json={
                     "id": deploy_task_id,
-                    "type": "deploy",
+                    "type": TaskType.DEPLOY.value,
                     "project_id": project_id,
-                    "status": "pending",
+                    "status": TaskStatus.QUEUED.value,
                 },
             )
             # Queue deploy job
+            deploy_msg = DeployMessage(
+                task_id=deploy_task_id,
+                project_id=project_id,
+                user_id=user_id,
+                callback_stream=callback_stream,
+                triggered_by=DeployTrigger.ENGINEERING,
+            )
             await redis.redis.xadd(
                 DEPLOY_QUEUE,
-                {
-                    "data": json.dumps(
-                        {
-                            "task_id": deploy_task_id,
-                            "project_id": project_id,
-                            "callback_stream": callback_stream,
-                        }
-                    )
-                },
+                {"data": deploy_msg.model_dump_json()},
             )
             logger.info(
                 "deploy_auto_triggered",
@@ -692,6 +770,15 @@ async def _handle_engineering_success(
                 "deploy_auto_trigger_failed",
                 task_id=task_id,
                 error=str(e),
+            )
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                "failed",
+                task_id,
+                f"CI passed but deploy trigger failed: {e}",
+                user_id=user_id,
+                project_id=project_id,
             )
     else:
         deploy_task_id = None

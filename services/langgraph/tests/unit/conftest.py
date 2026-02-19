@@ -1,5 +1,6 @@
 """Unit test configuration."""
 
+import os
 from pathlib import Path
 import sys
 
@@ -8,3 +9,6 @@ import sys
 app_path = Path("/app")
 if app_path.exists() and str(app_path) not in sys.path:
     sys.path.insert(0, str(app_path))
+
+# Provide required env vars for Settings validation in unit tests
+os.environ.setdefault("API_BASE_URL", "http://api:8000")

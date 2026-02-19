@@ -1,7 +1,8 @@
-"""Provisioner proxy node - delegates to infrastructure-worker.
+"""Provisioner proxy node - queues jobs to infrastructure-worker.
 
-Lightweight node that maintains the provisioner interface in the graph
-while delegating actual provisioning work to the infrastructure-worker service.
+Fire-and-forget: queues a provisioning job to provisioner:queue and returns
+immediately. Actual processing is handled by infra-service, results are
+consumed by scheduler via provisioner:results stream.
 """
 
 from langchain_core.messages import AIMessage
@@ -14,14 +15,17 @@ logger = structlog.get_logger(__name__)
 
 
 class ProvisionerProxyNode(FunctionalNode):
-    """Proxy node that delegates provisioning to infrastructure-worker."""
+    """Proxy node that queues provisioning to infrastructure-worker (fire-and-forget)."""
 
     def __init__(self):
         super().__init__(node_id="provisioner_proxy")
 
     @log_node_execution("provisioner")
     async def run(self, state: dict) -> dict:
-        """Delegate provisioning to infrastructure-worker via Redis.
+        """Queue provisioning job to infrastructure-worker via Redis.
+
+        Fire-and-forget: queues the job and returns immediately.
+        Results are handled by infra-service → scheduler pipeline.
 
         Args:
             state: Graph state containing:
@@ -30,7 +34,7 @@ class ProvisionerProxyNode(FunctionalNode):
                 - force_reinstall: Force OS reinstall flag
 
         Returns:
-            Updated state with provisioning result
+            Updated state with queued status
         """
         server_handle = state.get("server_to_provision")
         is_recovery = state.get("is_incident_recovery", False)
@@ -39,19 +43,11 @@ class ProvisionerProxyNode(FunctionalNode):
 
         if not server_handle:
             return {
-                "messages": [AIMessage(content="⚠️ No server specified for provisioning")],
+                "messages": [AIMessage(content="No server specified for provisioning")],
                 "errors": state.get("errors", []) + ["No server_to_provision in state"],
             }
 
-        logger.info(
-            "provisioner_proxy_queueing",
-            server_handle=server_handle,
-            is_recovery=is_recovery,
-            force_reinstall=force_reinstall,
-        )
-
         try:
-            # Queue provisioning job to infrastructure-worker
             request_id = await provisioner_client.trigger_provisioning(
                 server_handle=server_handle,
                 force_reinstall=force_reinstall,
@@ -60,44 +56,17 @@ class ProvisionerProxyNode(FunctionalNode):
             )
 
             logger.info(
-                "provisioner_proxy_waiting",
+                "provisioner_proxy_queued",
                 request_id=request_id,
                 server_handle=server_handle,
+                is_recovery=is_recovery,
             )
 
-            # Wait for result (timeout: 20 minutes)
-            result = await provisioner_client.wait_for_result(request_id, timeout=1200)
-
-            if not result:
-                logger.error(
-                    "provisioner_proxy_timeout",
-                    request_id=request_id,
-                    server_handle=server_handle,
-                )
-                return {
-                    "messages": [
-                        AIMessage(
-                            content=f"❌ Provisioning timeout for {server_handle} after 20 minutes"
-                        )
-                    ],
-                    "errors": state.get("errors", []) + ["Provisioning timeout"],
-                    "provisioning_result": {"status": "timeout"},
-                    "current_agent": "provisioner",
-                }
-
-            logger.info(
-                "provisioner_proxy_complete",
-                request_id=request_id,
-                server_handle=server_handle,
-                status=result.get("status"),
-            )
-
-            # Return result from infrastructure-worker
-            # The worker returns the same state format as the old ProvisionerNode
             return {
-                "messages": result.get("messages", []),
-                "provisioning_result": result.get("provisioning_result"),
-                "errors": state.get("errors", []) + result.get("errors", []),
+                "messages": [
+                    AIMessage(content=f"Provisioning queued for {server_handle} ({request_id})")
+                ],
+                "provisioning_result": {"status": "queued", "request_id": request_id},
                 "current_agent": "provisioner",
             }
 
@@ -110,7 +79,7 @@ class ProvisionerProxyNode(FunctionalNode):
                 exc_info=True,
             )
             return {
-                "messages": [AIMessage(content=f"❌ Provisioning error: {e!s}")],
+                "messages": [AIMessage(content=f"Provisioning error: {e!s}")],
                 "errors": state.get("errors", []) + [f"Provisioner proxy error: {e!s}"],
                 "provisioning_result": {"status": "error"},
                 "current_agent": "provisioner",

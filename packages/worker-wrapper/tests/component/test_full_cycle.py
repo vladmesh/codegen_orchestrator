@@ -61,7 +61,11 @@ class TestWorkerWrapperComponent:
         )
         mock_process = MockProcess(stdout=mock_stdout, stderr=b"", returncode=0)
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch.object(wrapper, "_get_git_head", return_value=None),
+            patch.object(wrapper, "_extract_git_commit_sha", return_value=None),
+        ):
             mock_exec.return_value = mock_process
 
             result = await wrapper.execute_agent(data)
@@ -93,7 +97,11 @@ class TestWorkerWrapperComponent:
 
         mock_process = MockProcess(stdout=b"", stderr=b"Error occurred", returncode=1)
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch.object(wrapper, "_get_git_head", return_value=None),
+            patch.object(wrapper, "_extract_git_commit_sha", return_value=None),
+        ):
             mock_exec.return_value = mock_process
 
             with pytest.raises(RuntimeError) as exc:

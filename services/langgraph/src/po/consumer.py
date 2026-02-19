@@ -84,6 +84,19 @@ async def run_po_consumer() -> None:
             except asyncio.CancelledError:
                 logger.info("po_consumer_cancelled")
                 break
+            except Exception as e:
+                if "NOGROUP" in str(e):
+                    logger.warning("po_consumer_nogroup_recovering")
+                    try:
+                        await redis.xgroup_create(
+                            PO_INPUT_QUEUE, PO_CONSUMER_GROUP, id="0", mkstream=True
+                        )
+                    except Exception as create_err:
+                        if "BUSYGROUP" not in str(create_err):
+                            raise
+                    await asyncio.sleep(1)
+                    continue
+                raise
 
             if not entries:
                 continue
@@ -136,11 +149,22 @@ async def _handle_message(graph, redis: aioredis.Redis, user_id: str, data: dict
     timestamp = data.get("timestamp", "")
     text = data.get("text", "")
     msg_type = data.get("type", "user_message")
+    event = data.get("event", "")
+
+    # Drop system events that should not reach the LLM.
+    if msg_type == "system_event":
+        if not event:
+            logger.warning("po_system_event_missing_type", user_id=user_id, text=text)
+            return
+        if event == "progress":
+            logger.info("po_progress_event_dropped", user_id=user_id, text=text)
+            return
 
     formatted = f"[{timestamp} UTC] {text}" if timestamp else text
 
     if msg_type != "user_message":
-        formatted = f"[system: {msg_type}] {formatted}"
+        tag = f"{msg_type}:{event}" if event else msg_type
+        formatted = f"[system: {tag}] {formatted}"
     msg = HumanMessage(content=formatted)
 
     result = await graph.ainvoke(

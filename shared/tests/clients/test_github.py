@@ -142,3 +142,65 @@ async def test_get_file_contents_404(client, mock_jwt):
 
             content = await client.get_file_contents(owner, repo, path)
             assert content is None
+
+
+# --- trigger_workflow_dispatch tests ---
+
+
+@pytest.fixture
+def authed_client(client, mock_jwt):
+    """Client with a pre-cached installation token."""
+    client._token_cache[111] = ("token", datetime.now(UTC) + timedelta(hours=1))
+    return client
+
+
+@pytest.mark.asyncio
+async def test_trigger_workflow_dispatch_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.post(
+                f"/repos/{owner}/{repo}/actions/workflows/deploy.yml/dispatches"
+            ).mock(return_value=httpx.Response(204))
+
+            result = await authed_client.trigger_workflow_dispatch(
+                owner, repo, "deploy.yml", inputs={"env": "prod"}
+            )
+
+            assert result is True
+            assert route.called
+            request = route.calls[0].request
+            import json
+
+            body = json.loads(request.content)
+            assert body["ref"] == "main"
+            assert body["inputs"] == {"env": "prod"}
+
+
+@pytest.mark.asyncio
+async def test_trigger_workflow_dispatch_not_found(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.post(f"/repos/{owner}/{repo}/actions/workflows/missing.yml/dispatches").mock(
+                return_value=httpx.Response(404)
+            )
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await authed_client.trigger_workflow_dispatch(owner, repo, "missing.yml")
+
+
+@pytest.mark.asyncio
+async def test_trigger_workflow_dispatch_unprocessable(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.post(f"/repos/{owner}/{repo}/actions/workflows/deploy.yml/dispatches").mock(
+                return_value=httpx.Response(422)
+            )
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await authed_client.trigger_workflow_dispatch(owner, repo, "deploy.yml")

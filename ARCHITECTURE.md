@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-02-14
+> **Актуально на**: 2026-02-16
 
 ## Обзор
 
@@ -94,7 +94,7 @@ System events (worker callbacks, reminders) → po:input → PO decides → po:p
 - **PO ReactAgent**: LangGraph agent with native Python tools, PostgreSQL checkpointer
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager
 - **Engineering Subgraph**: Scaffolder → Developer → Tester (max 3 iterations)
-- **DevOps Subgraph**: LLM-based env analysis, Ansible deployment via infra-service
+- **DevOps Subgraph**: LLM-based env analysis, env groups for coherent secrets, Ansible deployment via infra-service
 
 ## Внешние зависимости
 

@@ -6,7 +6,6 @@ from fakeredis import aioredis
 import pytest
 
 from shared.queues import (
-    ANSIBLE_DEPLOY_QUEUE,
     DEPLOY_QUEUE,
     ENGINEERING_QUEUE,
     INFRA_GROUP,
@@ -45,7 +44,7 @@ class TestQueueBinding:
 
 class TestQueueTopology:
     def test_has_expected_binding_count(self):
-        expected_count = 10  # noqa: PLR2004
+        expected_count = 9  # noqa: PLR2004
         assert len(QUEUE_TOPOLOGY) == expected_count
 
     def test_all_streams_present(self):
@@ -54,7 +53,6 @@ class TestQueueTopology:
         assert DEPLOY_QUEUE in streams
         assert SCAFFOLDER_QUEUE in streams
         assert PROVISIONER_QUEUE in streams
-        assert ANSIBLE_DEPLOY_QUEUE in streams
         assert PROVISIONER_RESULTS in streams
         assert WORKER_COMMANDS in streams
         assert PO_INPUT_QUEUE in streams

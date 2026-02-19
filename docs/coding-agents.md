@@ -60,4 +60,4 @@ Developer node в Engineering Subgraph использует coding agents чер
 | **Scaffolder** | Copier template | ✅ Реализовано |
 | **Developer** | Factory.ai Droid / Claude Code | ✅ Реализовано |
 | **Tester** | Функциональный узел (запуск тестов) | ⚠️ Заглушка |
-| **DevOps** | Ansible wrapper | ✅ Реализовано |
+| **DevOps** | GitHub Actions (deploy.yml) | ✅ Реализовано |

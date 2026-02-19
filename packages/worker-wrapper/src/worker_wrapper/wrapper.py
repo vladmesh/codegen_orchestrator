@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 from typing import Any
 
 import structlog
@@ -9,6 +10,8 @@ from shared.redis.client import RedisStreamClient
 from .config import WorkerWrapperConfig
 
 logger = structlog.get_logger(__name__)
+
+WORKSPACE_DIR = "/workspace"
 
 
 class WorkerWrapper:
@@ -107,6 +110,55 @@ class WorkerWrapper:
         # 4. Lifecycle: Completed/Failed
         await self.publish_lifecycle(status, msg_id, result=result, error=error)
 
+    def _get_git_head(self) -> str | None:
+        """Get current HEAD SHA in workspace. Returns None if not a git repo or on error."""
+        try:
+            result = subprocess.run(
+                ["/usr/bin/git", "rev-parse", "HEAD"],  # noqa: S603
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                logger.warning("git_head_not_available", stderr=result.stderr.strip())
+                return None
+            return result.stdout.strip()
+        except Exception as e:
+            logger.warning("git_head_failed", error=str(e))
+            return None
+
+    def _extract_git_commit_sha(self, initial_head: str | None) -> str | None:
+        """Compare current HEAD with initial_head to detect new commits.
+
+        Returns new SHA only if HEAD changed (agent made a commit).
+        All failures return None (warning log, no crash).
+        """
+        try:
+            result = subprocess.run(
+                ["/usr/bin/git", "log", "-1", "--format=%H"],  # noqa: S603
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                logger.warning("git_log_failed", stderr=result.stderr.strip())
+                return None
+            current_head = result.stdout.strip()
+            if not current_head:
+                return None
+            # If initial_head is None (empty repo before agent), any commit is new
+            if initial_head is None:
+                return current_head
+            # HEAD changed → new commit detected
+            if current_head != initial_head:
+                return current_head
+            return None
+        except Exception as e:
+            logger.warning("git_commit_sha_extraction_failed", error=str(e))
+            return None
+
     async def execute_agent(self, data: dict[str, Any]) -> dict[str, Any] | None:
         """
         Execute the agent using the configured runner and parsing logic.
@@ -144,6 +196,9 @@ class WorkerWrapper:
 
         cmd = runner.build_command(prompt=prompt)
         logger.info("executing_agent_command", cmd=cmd)
+
+        # 3.5. Snapshot initial HEAD before agent runs
+        initial_head = self._get_git_head()
 
         # 4. Execute Subprocess
         proc = await asyncio.create_subprocess_exec(
@@ -190,18 +245,28 @@ class WorkerWrapper:
         from .result_parser import ResultParseError, ResultParser
 
         try:
-            result = ResultParser.parse(stdout)
-            if result is None:
+            parsed = ResultParser.parse(stdout)
+            if parsed is None:
                 # No <result> tags — try extracting plain text from Claude CLI JSON
                 content = ResultParser.extract_text(stdout)
                 if content:
-                    return {"content": content, "status": "success"}
-                logger.warning("no_result_tags_found", stdout=stdout[:500])
-                return {"raw_output": stdout, "status": "no_structured_result"}
-            return result
+                    result = {"content": content, "status": "success"}
+                else:
+                    logger.warning("no_result_tags_found", stdout=stdout[:500])
+                    result = {"raw_output": stdout, "status": "no_structured_result"}
+            else:
+                result = parsed
         except ResultParseError as e:
             logger.error("result_parsing_failed", error=str(e), stdout=stdout)
             raise
+
+        # 7. Enrich with git SHA — git is the authoritative source
+        git_sha = self._extract_git_commit_sha(initial_head)
+        if git_sha:
+            logger.info("git_commit_sha_detected", sha=git_sha, source="git")
+            result["commit_sha"] = git_sha
+
+        return result
 
     def _extract_session_id_from_output(self, stdout: str) -> str | None:
         """

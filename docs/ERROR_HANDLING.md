@@ -43,7 +43,7 @@
 | **API Request** (Internal) | 10s | Retry (Transient) |
 | **Redis Command** (XADD/XREAD) | 5s | Retry (Transient) |
 | **Worker Container Spawn** | 60s | Fail (Permanent) |
-| **GitHub Workflow** | 30 min | Cancel Workflow, Fail Task |
+| **GitHub Workflow** (deploy.yml) | 10 min | Fail Task (DeployerNode `wait_for_workflow_completion` timeout) |
 | **Ansible Provisioning** | 15 min | Kill Process, Fail Task |
 | **Developer Worker Task** | 30 min | Kill Container, Fail Task (or Retry if supported) |
 

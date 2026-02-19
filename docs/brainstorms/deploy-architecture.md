@@ -2,6 +2,7 @@
 
 > **Начато**: 2026-02-15
 > **Обновлено**: 2026-02-16
+> **Статус**: Реализовано (iterations 1-9). См. [план](../plans/deploy-architecture.md) и [статус](../STATUS.md).
 > **Контекст**: E2E тест (PO → Engineering → Deploy) выявил что `reverse-bot` не работал несмотря на зелёные CI-джобы. Расследование вскрыло системные проблемы.
 
 ---
@@ -18,7 +19,7 @@
 5. **CI secrets неполные** — `_setup_ci_secrets()` записывает только deploy-инфру (HOST/USER/KEY), application secrets (DATABASE_URL, TELEGRAM_BOT_TOKEN) не попадают в GitHub
 6. **`DATABASE_URL` и `POSTGRES_PASSWORD` рассогласованы** — `_generate_infra_secret()` генерирует каждый независимо с разными паролями → Postgres не подключается
 7. **Нет `.env.example` → тихий пропуск** — `env_analyzer` возвращает пустой `env_analysis` без ошибки, деплой идёт без `.env`
-8. **Секреты в БД без шифрования** — `project.config.secrets` = plaintext JSONB
+8. ~~**Секреты в БД без шифрования**~~ — **Решено**: Fernet encryption at rest (`shared/crypto.py`)
 9. **Нет single source of truth** — часть секретов в БД, часть только на сервере, часть в GitHub Secrets
 
 ---
@@ -35,7 +36,7 @@
 
 ### Деплой только через GitHub Actions (Ansible убираем)
 
-**Ключевая идея**: на сервере не нужен исходный код — только compose файлы + `.env` + docker images из GHCR.
+**Ключевая идея**: на сервере не нужен исходный код — только compose файлы + `.env` + docker images из registry.
 
 **Трюк с `DOTENV`**: оркестратор собирает весь `.env` в одну строку → base64 → один GitHub Secret. Workflow декодирует и пишет файл. Не нужно перечислять переменные поимённо, шаблон никогда не устаревает.
 
@@ -136,8 +137,8 @@ deploy:
 ### ~~3. CI trigger~~ → решено
 
 **Два отдельных workflow**:
-- `ci.yml` — on push: lint → test → build images → push to GHCR с тегами `${{ github.sha }}` + `latest` (автоматический)
-- `deploy.yml` — on workflow_dispatch: scp compose → write .env → pull → up (только по команде оркестратора)
+- `ci.yml` — on push: lint → test → build images → push to self-hosted registry с тегами `${{ github.sha }}` + `latest` (автоматический)
+- `deploy.yml` — on workflow_dispatch: scp compose → write .env → pull from registry → up (только по команде оркестратора)
 
 **Flow для feature deploy**:
 ```
@@ -167,7 +168,7 @@ SSH в deploy.yml: `sleep 15` → `docker compose ps --format json` → если
 ### ~~6. `main.yml.jinja` в service-template~~ → решено
 
 **Доработка в service-template**: разделить `main.yml.jinja` на два шаблона:
-- `ci.yml.jinja` — on push: lint → test → build images → push to GHCR (теги: `$SHA` + `latest`)
+- `ci.yml.jinja` — on push: lint → test → build images → push to registry (теги: `$SHA` + `latest`)
 - `deploy.yml.jinja` — on workflow_dispatch: scp compose → write DOTENV → pull → up → health check
 
 `deploy.yml` универсальный, не перечисляет env-переменные поимённо (DOTENV трюк).
@@ -191,9 +192,13 @@ SSH в deploy.yml: `sleep 15` → `docker compose ps --format json` → если
 
 ---
 
-## Текущее состояние
+## Текущее состояние (2026-02-17)
 
-- `reverse-bot` вручную поднят на `176.223.131.124` (`/opt/apps/reverse-bot`)
-- Использована: `compose.prod.yml` + `--profile tg` без `--build`
-- Все 4 контейнера работают (backend, tg_bot, db, redis)
-- Проект в БД оркестратора в статусе `error` (нужно обновить на `active`)
+Все 9 итераций реализованы. Pipeline прошёл два E2E-теста (`reverse-bot`, `reverse-message-bot`), каждый из которых выявил и исправил баги. Подробности:
+- [E2E cascade failure post-mortem](../investigations/e2e-reverse-bot-cascade-failure.md) (iter 8)
+- [E2E registry & CI bugs post-mortem](../investigations/e2e-reverse-message-bot-registry-and-ci-bugs.md) (iter 9)
+
+Ключевые решения из E2E:
+- GHCR заменён на self-hosted Docker Registry + Caddy TLS (GHCR не работает с GitHub App tokens)
+- Registry secrets устанавливаются scaffolder'ом до первого push (а не DeployerNode после CI)
+- PO consumer дропает `progress` события, включает event type в формат сообщения

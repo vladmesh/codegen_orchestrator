@@ -48,6 +48,9 @@ class ServiceDeployment(Base):
     # Expected keys: repo_url, branch, docker_compose_path, env_vars, etc.
     deployment_info: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    # Git SHA of the deployed commit (from GitHub Actions workflow run)
+    deployed_sha: Mapped[str | None] = mapped_column(nullable=True)
+
     def __repr__(self) -> str:
         return (
             f"<ServiceDeployment(id={self.id}, project={self.project_id}, "

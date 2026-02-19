@@ -1,11 +1,10 @@
 """Simplified Engineering Subgraph.
 
 Unified Developer node handles architecture, scaffolding, and coding.
-Tester is a stub that always passes (for now).
 
 Flow:
     START → Developer ─┬─ (error) → Blocked → END
-                       └─ (ok) → Tester → Done/Blocked → END
+                       └─ (ok) → Done → END
 """
 
 from typing import Annotated
@@ -27,10 +26,6 @@ def _merge_errors(left: list[str], right: list[str]) -> list[str]:
             result.append(err)
             seen.add(err)
     return result
-
-
-# Maximum iterations before escalating to PO
-MAX_ITERATIONS = 3
 
 
 class EngineeringState(TypedDict):
@@ -67,8 +62,8 @@ class EngineeringState(TypedDict):
 def route_after_developer(state: EngineeringState) -> str:
     """Route after developer node.
 
-    If developer returned 'blocked' (error/exception), skip tester and go to blocked.
-    Otherwise proceed to tester for validation.
+    If developer returned 'blocked' (error/exception), go to blocked.
+    Otherwise proceed to done.
     """
     status = state.get("engineering_status", "idle")
 
@@ -80,58 +75,7 @@ def route_after_developer(state: EngineeringState) -> str:
     if errors:
         return "blocked"
 
-    return "tester"
-
-
-def route_after_tester(state: EngineeringState) -> str:
-    """Route after tester node.
-
-    - If tests pass → done
-    - If tests fail and iterations < MAX → back to developer
-    - If iterations >= MAX → blocked (needs human)
-    """
-    test_results = state.get("test_results", {})
-    iteration_count = state.get("iteration_count", 0)
-
-    if test_results.get("passed", False):
-        return "done"
-
-    if iteration_count >= MAX_ITERATIONS:
-        return "blocked"
-
-    return "developer"
-
-
-class TesterNode(FunctionalNode):
-    """Tester node - stub that always passes for MVP."""
-
-    def __init__(self):
-        super().__init__(node_id="tester")
-
-    async def run(self, state: EngineeringState) -> dict:
-        """Run tests and update engineering state."""
-        import structlog
-
-        logger = structlog.get_logger()
-        logger.info("tester_node_run_start", iteration_count=state.get("iteration_count", 0))
-
-        iteration_count = state.get("iteration_count", 0) + 1
-
-        # Stub: always pass for MVP
-        # Real testing tracked in docs/backlog.md
-        test_passed = True
-
-        if test_passed:
-            return {
-                "test_results": {"passed": True, "output": "All tests passed"},
-                "iteration_count": iteration_count,
-                "engineering_status": "done",
-            }
-        return {
-            "test_results": {"passed": False, "output": "Tests failed"},
-            "iteration_count": iteration_count,
-            "engineering_status": "reviewing",
-        }
+    return "done"
 
 
 class DoneNode(FunctionalNode):
@@ -157,13 +101,10 @@ class BlockedNode(FunctionalNode):
         return {
             "engineering_status": "blocked",
             "needs_human_approval": True,
-            "human_approval_reason": (
-                f"Max iterations ({MAX_ITERATIONS}) reached. Tests still failing."
-            ),
+            "human_approval_reason": "Developer failed to complete the task.",
         }
 
 
-tester_node = TesterNode()
 done_node = DoneNode()
 blocked_node = BlockedNode()
 
@@ -173,45 +114,31 @@ def create_engineering_subgraph() -> StateGraph:
 
     Topology:
         START → developer ─┬─ (blocked) → blocked → END
-                           └─ (ok) → tester ─┬─ (pass) → done → END
-                                             ├─ (fail, retries left) → developer
-                                             └─ (fail, max retries) → blocked → END
+                           └─ (ok) → done → END
 
-    Changes from old architecture:
-    - Removed architect, architect_tools, preparer nodes
-    - Developer is now unified (architecture + scaffolding + coding)
-    - Tester is a stub (always passes)
-    - Developer errors skip tester and go directly to blocked
+    Tester node removed — was a stub (always passed). Future tester will be
+    added after deploy (staging or prod validation). See docs/backlog.md.
+
+    CI checks are handled by _wait_for_ci_and_fix in engineering_worker.py,
+    which runs after this subgraph completes.
     """
     graph = StateGraph(EngineeringState)
 
     # Add nodes
     graph.add_node("developer", developer_node.run)
-    graph.add_node("tester", tester_node.run)
     graph.add_node("done", done_node.run)
     graph.add_node("blocked", blocked_node.run)
 
     # Edges
     graph.add_edge(START, "developer")
 
-    # Developer → tester OR blocked (if developer failed)
+    # Developer → done OR blocked (if developer failed)
     graph.add_conditional_edges(
         "developer",
         route_after_developer,
         {
-            "tester": "tester",
-            "blocked": "blocked",
-        },
-    )
-
-    # Tester → done, blocked, or back to developer
-    graph.add_conditional_edges(
-        "tester",
-        route_after_tester,
-        {
             "done": "done",
             "blocked": "blocked",
-            "developer": "developer",
         },
     )
 

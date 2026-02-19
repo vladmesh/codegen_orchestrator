@@ -19,6 +19,7 @@ class ServiceDeploymentCreate(ServiceDeploymentBase):
     """Schema for creating a service deployment."""
 
     status: str = "running"
+    deployed_sha: str | None = None
 
 
 class ServiceDeploymentUpdate(BaseModel):
@@ -26,6 +27,7 @@ class ServiceDeploymentUpdate(BaseModel):
 
     status: str | None = None
     deployment_info: dict | None = None
+    deployed_sha: str | None = None
 
 
 class ServiceDeploymentRead(ServiceDeploymentBase):
@@ -35,5 +37,6 @@ class ServiceDeploymentRead(ServiceDeploymentBase):
 
     id: int
     status: str
+    deployed_sha: str | None = None
     deployed_at: datetime
     updated_at: datetime

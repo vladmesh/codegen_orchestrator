@@ -25,6 +25,7 @@ async def create_service_deployment(
         port=deployment_in.port,
         status=deployment_in.status,
         deployment_info=deployment_in.deployment_info,
+        deployed_sha=deployment_in.deployed_sha,
     )
     db.add(deployment)
     await db.commit()
@@ -87,6 +88,9 @@ async def update_service_deployment(
 
     if deployment_update.deployment_info is not None:
         deployment.deployment_info = deployment_update.deployment_info
+
+    if deployment_update.deployed_sha is not None:
+        deployment.deployed_sha = deployment_update.deployed_sha
 
     await db.commit()
     await db.refresh(deployment)

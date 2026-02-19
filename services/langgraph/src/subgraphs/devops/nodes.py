@@ -3,6 +3,7 @@
 Contains functional nodes for secret resolution, readiness check, and deployment.
 """
 
+from datetime import UTC, datetime
 import os
 import secrets as secrets_module
 
@@ -10,12 +11,14 @@ from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.crypto import decrypt_dict, encrypt_dict
 
 from ...clients.api import api_client
 from ...config.constants import Paths
 from ...nodes.base import FunctionalNode
 from ...schemas.api_types import AllocationInfo, get_repo_url
-from ...tools.devops_delegation import delegate_ansible_deploy
+from .dotenv_builder import build_dotenv, encode_dotenv
+from .env_groups import resolve_with_groups
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -42,26 +45,40 @@ class SecretResolverNode(FunctionalNode):
         # Normalize project_id for DB names
         safe_project_id = project_id.replace("-", "_").lower()
 
-        # Get previously saved secrets from project config
+        # Get previously saved secrets from project config (decrypt at rest)
         config_secrets = project_spec.get("config", {}).get("secrets", {})
+        config_secrets = decrypt_dict(config_secrets) if config_secrets else {}
 
         resolved = {}
         missing_user = []
         newly_generated = {}  # Track new infra secrets to save
 
+        # Phase 1: Split infra vars into cached vs uncached
+        uncached_infra: set[str] = set()
         for var, var_type in env_analysis.items():
             if var_type == "infra":
-                # First check if secret already exists in project config
                 if var in config_secrets:
                     resolved[var] = config_secrets[var]
                     logger.debug("secret_reused", var=var)
                 else:
-                    # Generate new secret and mark for saving
-                    resolved[var] = self._generate_infra_secret(var, safe_project_id)
-                    newly_generated[var] = resolved[var]
-                    logger.debug("secret_generated", var=var)
+                    uncached_infra.add(var)
 
-            elif var_type == "computed":
+        # Phase 2: Resolve uncached infra via groups (coherent passwords)
+        if uncached_infra:
+            grouped, remaining = resolve_with_groups(uncached_infra, safe_project_id)
+            resolved.update(grouped)
+            newly_generated.update(grouped)
+            logger.debug("secrets_grouped", count=len(grouped), vars=sorted(grouped))
+
+            # Fallback for remaining vars not covered by any group
+            for var in remaining:
+                resolved[var] = self._generate_infra_secret(var, safe_project_id)
+                newly_generated[var] = resolved[var]
+                logger.debug("secret_generated", var=var)
+
+        # Phase 3: Computed and user secrets (unchanged)
+        for var, var_type in env_analysis.items():
+            if var_type == "computed":
                 resolved[var] = self._compute_secret(var, project_spec, state)
 
             elif var_type == "user":
@@ -93,28 +110,11 @@ class SecretResolverNode(FunctionalNode):
         }
 
     def _generate_infra_secret(self, key: str, project_id: str) -> str:
-        """Generate infrastructure secret value."""
+        """Generate infrastructure secret value (fallback for vars not covered by groups)."""
         key_upper = key.upper()
 
-        if key_upper == "REDIS_URL":
-            return "redis://redis:6379/0"
-
-        elif key_upper == "DATABASE_URL":
-            db_pass = secrets_module.token_urlsafe(16)
-            db_name = f"db_{project_id}"
-            return f"postgresql://postgres:{db_pass}@postgres:5432/{db_name}"
-
-        elif "SECRET" in key_upper or ("KEY" in key_upper and "API" not in key_upper):
+        if "SECRET" in key_upper or ("KEY" in key_upper and "API" not in key_upper):
             return secrets_module.token_urlsafe(32)
-
-        elif key_upper == "POSTGRES_USER":
-            return "postgres"
-
-        elif key_upper == "POSTGRES_PASSWORD":
-            return secrets_module.token_urlsafe(16)
-
-        elif key_upper == "POSTGRES_DB":
-            return f"db_{project_id}"
 
         # Default random for unknown infra
         return secrets_module.token_urlsafe(32)
@@ -154,8 +154,11 @@ class SecretResolverNode(FunctionalNode):
                     return f"http://{ip}:{port}"
             return "http://localhost:8000"
 
-        # Docker images from GHCR
+        # Docker images from self-hosted registry
         elif key_upper.endswith("_IMAGE"):
+            registry_host = os.getenv("ORCHESTRATOR_HOSTNAME")
+            if not registry_host:
+                raise RuntimeError("ORCHESTRATOR_HOSTNAME is not set")
             repo_url = get_repo_url(project_spec)
             if repo_url:
                 # Parse: https://github.com/org/repo -> org/repo
@@ -166,8 +169,8 @@ class SecretResolverNode(FunctionalNode):
                 # Derive service name: BACKEND_IMAGE -> backend, TG_BOT_IMAGE -> tg-bot
                 service = key_upper.replace("_IMAGE", "").lower().replace("_", "-")
 
-                return f"ghcr.io/{owner}/{repo}-{service}:latest"
-            return "ghcr.io/unknown/unknown-service:latest"
+                return f"{registry_host}/{owner}/{repo}-{service}:latest"
+            return f"{registry_host}/unknown/unknown-service:latest"
 
         # Default: project name
         return project_spec.get("name", "value")
@@ -189,8 +192,9 @@ class SecretResolverNode(FunctionalNode):
             # Merge new secrets with existing config
             config = project.get("config", {}) or {}
             config_secrets = config.get("secrets", {}) or {}
+            config_secrets = decrypt_dict(config_secrets) if config_secrets else {}
             config_secrets.update(secrets)
-            config["secrets"] = config_secrets
+            config["secrets"] = encrypt_dict(config_secrets)
 
             # Save back to project
             await api_client.patch(f"/projects/{project_id}", json={"config": config})
@@ -245,6 +249,7 @@ async def _create_service_deployment_record(
     server_handle: str,
     port: int,
     deployment_info: dict,
+    deployed_sha: str | None = None,
 ) -> bool:
     """Create a service deployment record via API."""
     payload = {
@@ -255,6 +260,8 @@ async def _create_service_deployment_record(
         "status": "running",
         "deployment_info": deployment_info,
     }
+    if deployed_sha:
+        payload["deployed_sha"] = deployed_sha
 
     try:
         await api_client.create_service_deployment(payload)
@@ -270,14 +277,16 @@ async def _create_service_deployment_record(
         return False
 
 
-async def _setup_ci_secrets(
+async def _write_deploy_secrets(
     github_client: GitHubAppClient,
     owner: str,
     repo: str,
     server_ip: str,
+    port: int,
     project_name: str,
+    dotenv_b64: str,
 ) -> bool:
-    """Configure GitHub Actions secrets for CI/CD deployment."""
+    """Write deployment secrets to GitHub repository for deploy.yml workflow."""
     # Read SSH private key from mounted volume
     if not os.path.exists(SSH_KEY_PATH):
         logger.warning("ssh_key_not_found", path=SSH_KEY_PATH)
@@ -290,18 +299,36 @@ async def _setup_ci_secrets(
         logger.error("ssh_key_read_failed", error=str(e))
         return False
 
+    # Registry credentials for CI docker push
+    registry_url = os.getenv("ORCHESTRATOR_HOSTNAME")
+    if not registry_url:
+        logger.error("registry_env_missing", var="ORCHESTRATOR_HOSTNAME")
+        return False
+    registry_user = os.getenv("REGISTRY_USER")
+    if not registry_user:
+        logger.error("registry_env_missing", var="REGISTRY_USER")
+        return False
+    registry_password = os.getenv("REGISTRY_PASSWORD")
+    if not registry_password:
+        logger.error("registry_env_missing", var="REGISTRY_PASSWORD")
+        return False
+
     secrets_map = {
+        "DOTENV": dotenv_b64,
         "DEPLOY_HOST": server_ip,
         "DEPLOY_USER": "root",
         "DEPLOY_SSH_KEY": ssh_key,
-        "DEPLOY_PROJECT_PATH": f"/opt/services/{project_name}",
-        "DEPLOY_COMPOSE_FILES": "infra/compose.base.yml infra/compose.prod.yml",
+        "DEPLOY_PORT": str(port),
+        "PROJECT_NAME": project_name,
+        "REGISTRY_URL": registry_url,
+        "REGISTRY_USER": registry_user,
+        "REGISTRY_PASSWORD": registry_password,
     }
 
     try:
         count = await github_client.set_repository_secrets(owner, repo, secrets_map)
         logger.info(
-            "ci_secrets_configured",
+            "deploy_secrets_configured",
             owner=owner,
             repo=repo,
             secrets_count=count,
@@ -310,7 +337,7 @@ async def _setup_ci_secrets(
         return count == len(secrets_map)
     except Exception as e:
         logger.error(
-            "ci_secrets_setup_failed",
+            "deploy_secrets_setup_failed",
             owner=owner,
             repo=repo,
             error=str(e),
@@ -320,18 +347,18 @@ async def _setup_ci_secrets(
 
 
 class DeployerNode(FunctionalNode):
-    """Execute Ansible deployment via delegation to infrastructure-worker."""
+    """Deploy via GitHub Actions: write secrets, dispatch deploy.yml, wait for completion."""
 
     def __init__(self):
         super().__init__(node_id="deployer")
 
     async def run(self, state: DevOpsState) -> dict:
-        """Execute deployment by delegating to infrastructure-worker."""
+        """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
         project_spec = state.get("project_spec") or {}
-        logger.info("deployer_start", project_id=project_id)
-
         resolved_secrets = state.get("resolved_secrets", {})
+        allocated_resources = state.get("allocated_resources", {})
+        logger.info("deployer_start", project_id=project_id)
 
         if not project_id:
             return {
@@ -339,135 +366,133 @@ class DeployerNode(FunctionalNode):
                 "errors": ["No project_id for deployment"],
             }
 
-        # Wait for CI to build Docker images
+        # Extract repo owner/name
         repo_url = get_repo_url(project_spec)
-        if repo_url:
-            parts = repo_url.rstrip("/").split("/")
-            owner, repo = parts[-2], parts[-1]
+        if not repo_url:
+            return {
+                "deployment_result": {"status": "failed", "error": "No repository URL"},
+                "errors": ["No repository URL found in project spec"],
+            }
 
-            try:
-                github = GitHubAppClient()
-                logger.info("waiting_for_ci", owner=owner, repo=repo)
+        parts = repo_url.rstrip("/").split("/")
+        owner, repo = parts[-2], parts[-1]
+        project_name = project_spec.get("name", "project").replace(" ", "_").lower()
 
-                run_info = await github.wait_for_workflow_completion(
-                    owner=owner,
-                    repo=repo,
-                    workflow_file="main.yml",
-                    branch="main",
-                    timeout_seconds=600,  # 10 minutes
-                )
+        # Extract server_ip and port from allocated_resources
+        first_resource = next(iter(allocated_resources.values()), {}) if allocated_resources else {}
+        server_ip = first_resource.get("server_ip")
+        port = first_resource.get("port")
 
-                logger.info(
-                    "ci_completed",
-                    owner=owner,
-                    repo=repo,
-                    run_id=run_info["id"],
-                )
-            except TimeoutError as e:
-                logger.error("ci_timeout", error=str(e))
-                return {
-                    "deployment_result": {"status": "failed", "error": str(e)},
-                    "errors": [f"CI build timeout: {e}"],
-                }
-            except RuntimeError as e:
-                logger.error("ci_failed", error=str(e))
-                return {
-                    "deployment_result": {"status": "failed", "error": str(e)},
-                    "errors": [f"CI build failed: {e}"],
-                }
+        if not server_ip or not port:
+            return {
+                "deployment_result": {"status": "failed", "error": "No allocated resources"},
+                "errors": ["No server_ip/port in allocated_resources"],
+            }
 
         try:
-            # Delegate deployment to infrastructure-worker
-            result = await delegate_ansible_deploy.ainvoke(
-                {
-                    "project_id": project_id,
-                    "secrets": resolved_secrets,
-                }
+            github = GitHubAppClient()
+
+            # 1. Build and encode DOTENV
+            dotenv_content = build_dotenv(resolved_secrets)
+            dotenv_b64 = encode_dotenv(dotenv_content)
+
+            # 2. Write deploy secrets to GitHub
+            await _write_deploy_secrets(
+                github_client=github,
+                owner=owner,
+                repo=repo,
+                server_ip=server_ip,
+                port=port,
+                project_name=project_name,
+                dotenv_b64=dotenv_b64,
+            )
+
+            # 3. Record dispatch time BEFORE triggering (for race condition safety)
+            dispatch_time = datetime.now(UTC)
+
+            # 4. Trigger deploy workflow
+            await github.trigger_workflow_dispatch(owner, repo, "deploy.yml")
+
+            # 5. Wait for workflow completion
+            run_info = await github.wait_for_workflow_completion(
+                owner=owner,
+                repo=repo,
+                workflow_file="deploy.yml",
+                branch="main",
+                timeout_seconds=600,
+                created_after=dispatch_time,
             )
 
             logger.info(
-                "deployer_complete",
-                project_id=project_id,
-                status=result.get("status"),
-                deployed_url=result.get("deployed_url"),
+                "deploy_completed",
+                owner=owner,
+                repo=repo,
+                run_id=run_info["id"],
+                head_sha=run_info.get("head_sha"),
             )
 
-            if result.get("status") == "success":
-                # Post-deployment operations (kept in langgraph)
-                deployed_url = result.get("deployed_url")
-                server_ip = result.get("server_ip")
-                port = result.get("port")
+            # 6. Create service deployment record
+            allocations: list[AllocationInfo] = await api_client.get_project_allocations(project_id)
+            target_alloc = allocations[0] if allocations else None
 
-                # Get allocation and repo info for post-deployment
-                allocations: list[AllocationInfo] = await api_client.get_project_allocations(
-                    project_id
-                )
-                target_alloc = allocations[0] if allocations else None
+            config = project_spec.get("config") or {}
+            modules = config.get("modules", "backend")
+            if isinstance(modules, list):
+                modules = ",".join(modules)
 
-                repo_url = get_repo_url(project_spec)
-                if repo_url:
-                    parts = repo_url.rstrip("/").split("/")
-                    repo = parts[-1] if len(parts) > 0 else "repo"
-                    owner = parts[-2] if len(parts) > 1 else "owner"
-                    repo_full_name = f"{owner}/{repo}"
-                else:
-                    repo_full_name = "unknown/unknown"
-                    owner = "unknown"
-                    repo = "unknown"
-
-                project_name = project_spec.get("name", "project").replace(" ", "_").lower()
-                config = project_spec.get("config") or {}
-                modules = config.get("modules", "backend")
-                if isinstance(modules, list):
-                    modules = ",".join(modules)
-
-                # Create service deployment record
-                if target_alloc:
-                    await _create_service_deployment_record(
-                        project_id=project_id,
-                        service_name=project_name,
-                        server_handle=target_alloc.get("server_handle"),
-                        port=port,
-                        deployment_info={
-                            "repo_full_name": repo_full_name,
-                            "branch": "main",
-                            "project_dir": f"/opt/services/{project_name}",
-                            "compose_files": "infra/compose.base.yml infra/compose.prod.yml",
-                            "modules": modules,
-                        },
-                    )
-
-                # Setup CI secrets
-                github_client = GitHubAppClient()
-                await _setup_ci_secrets(
-                    github_client=github_client,
-                    owner=owner,
-                    repo=repo,
-                    server_ip=server_ip,
-                    project_name=project_name,
+            if target_alloc:
+                await _create_service_deployment_record(
+                    project_id=project_id,
+                    service_name=project_name,
+                    server_handle=target_alloc.get("server_handle"),
+                    port=port,
+                    deployment_info={
+                        "repo_full_name": f"{owner}/{repo}",
+                        "branch": "main",
+                        "modules": modules,
+                    },
+                    deployed_sha=run_info.get("head_sha"),
                 )
 
-                # Update project status
-                await api_client.patch(
-                    f"/projects/{project_id}",
-                    json={"status": "active"},
-                )
-
-                return {
-                    "deployment_result": result,
-                    "deployed_url": deployed_url,
-                    "messages": [AIMessage(content=f"Deployment successful! URL: {deployed_url}")],
-                }
-
-            # Deployment failed
+            # 7. Update project status to active
             await api_client.patch(
                 f"/projects/{project_id}",
-                json={"status": "error"},
+                json={"status": "active"},
             )
+
+            deployed_url = f"http://{server_ip}:{port}"
             return {
-                "deployment_result": result,
-                "errors": [result.get("error", "Deployment failed")],
-                "messages": [AIMessage(content=f"Deployment failed: {result.get('error')}")],
+                "deployment_result": {"status": "success", "run_id": run_info["id"]},
+                "deployed_url": deployed_url,
+                "messages": [AIMessage(content=f"Deployment successful! URL: {deployed_url}")],
+            }
+
+        except RuntimeError as e:
+            logger.error("deploy_workflow_failed", error=str(e))
+            try:
+                await api_client.patch(
+                    f"/projects/{project_id}",
+                    json={"status": "error"},
+                )
+            except Exception as status_err:
+                logger.warning("status_update_failed", error=str(status_err))
+            return {
+                "deployment_result": {"status": "failed", "error": str(e)},
+                "errors": [f"Deploy workflow failed: {e}"],
+            }
+
+        except TimeoutError as e:
+            logger.error("deploy_timeout", error=str(e))
+            try:
+                await api_client.patch(
+                    f"/projects/{project_id}",
+                    json={"status": "error"},
+                )
+            except Exception as status_err:
+                logger.warning("status_update_failed", error=str(status_err))
+            return {
+                "deployment_result": {"status": "failed", "error": str(e)},
+                "errors": [f"Deploy timeout: {e}"],
             }
 
         except Exception as e:

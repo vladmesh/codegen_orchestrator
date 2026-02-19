@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.task import TaskStatus, TaskType
+from shared.contracts.queues.deploy import DeployMessage
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -17,9 +19,50 @@ from ..clients.api import api_client
 from ..schemas.api_types import ProjectInfo
 from ..subgraphs.devops import create_devops_subgraph
 from ._base import start_worker
-from ._events import publish_callback_event
+from ._events import publish_callback_event, publish_proactive_message
 
 logger = structlog.get_logger(__name__)
+
+
+async def _check_duplicate_deploy(task_id: str, project_id: str) -> dict | None:
+    """Check if another deploy is already running or queued for this project.
+
+    Returns cancel result dict if duplicate found, None otherwise.
+    """
+    # API only supports single status filter, so check both running and queued
+    for check_status in (TaskStatus.RUNNING, TaskStatus.QUEUED):
+        existing = await api_client.get(
+            "tasks/",
+            params={
+                "project_id": project_id,
+                "task_type": TaskType.DEPLOY.value,
+                "status": check_status.value,
+            },
+        )
+        # Filter out self (current task may already be queued)
+        existing = [t for t in existing if t["id"] != task_id]
+        if existing:
+            existing_id = existing[0]["id"]
+            logger.info(
+                "deploy_skipped_duplicate",
+                task_id=task_id,
+                project_id=project_id,
+                existing_task_id=existing_id,
+                existing_status=check_status.value,
+            )
+            await api_client.patch(
+                f"tasks/{task_id}",
+                json={
+                    "status": TaskStatus.CANCELLED.value,
+                    "error_message": (
+                        f"Skipped: deploy {existing_id} is already"
+                        f" {check_status.value} for this project"
+                    ),
+                },
+            )
+            return {"status": "cancelled", "existing_task_id": existing_id}
+
+    return None
 
 
 async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
@@ -32,16 +75,27 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     Returns:
         Result dict with status and details
     """
-    task_id = job_data.get("task_id", "unknown")
-    project_id = job_data.get("project_id")
-    callback_stream = job_data.get("callback_stream")
-    user_id = job_data.get("user_id", "")
+    msg = DeployMessage.model_validate(job_data)
+    task_id = msg.task_id
+    project_id = msg.project_id
+    callback_stream = msg.callback_stream
+    user_id = msg.user_id
 
-    logger.info("deploy_job_started", task_id=task_id, project_id=project_id)
+    logger.info(
+        "deploy_job_started",
+        task_id=task_id,
+        project_id=project_id,
+        triggered_by=msg.triggered_by.value,
+    )
 
     try:
+        # Deduplication guard: skip if another deploy is already running for this project
+        cancel_result = await _check_duplicate_deploy(task_id, project_id)
+        if cancel_result:
+            return cancel_result
+
         # Update task status to running
-        await api_client.patch(f"tasks/{task_id}", json={"status": "running"})
+        await api_client.patch(f"tasks/{task_id}", json={"status": TaskStatus.RUNNING.value})
 
         # Publish progress event
         await publish_callback_event(
@@ -54,7 +108,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             project_id=project_id or "",
         )
 
-        # Fetch project details
+        # Fetch project details (needed early for proactive notification name)
         project: ProjectInfo | None = await api_client.get_project(project_id)
         if not project:
             error_msg = f"Project {project_id} not found"
@@ -151,6 +205,11 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 user_id=user_id,
                 project_id=project_id or "",
             )
+            if not callback_stream:
+                project_name = project.get("name", project_id) if project else project_id
+                await publish_proactive_message(
+                    redis, user_id, f"Deployed {project_name}: {result['deployed_url']}"
+                )
 
             return {
                 "status": "success",
@@ -175,6 +234,14 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 user_id=user_id,
                 project_id=project_id or "",
             )
+            if not callback_stream:
+                project_name = project.get("name", project_id) if project else project_id
+                await publish_proactive_message(
+                    redis,
+                    user_id,
+                    f"Deploy blocked for {project_name} — missing: {', '.join(missing)}. "
+                    "Please provide via bot.",
+                )
 
             return {
                 "status": "failed",
@@ -200,6 +267,11 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 user_id=user_id,
                 project_id=project_id or "",
             )
+            if not callback_stream:
+                project_name = project.get("name", project_id) if project else project_id
+                await publish_proactive_message(
+                    redis, user_id, f"Deploy failed for {project_name}: {error_msg}"
+                )
 
             return {
                 "status": "failed",
@@ -235,6 +307,8 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             user_id=user_id,
             project_id=project_id or "",
         )
+        if not callback_stream:
+            await publish_proactive_message(redis, user_id, f"Deploy failed: {e!s}")
 
         return {
             "status": "failed",

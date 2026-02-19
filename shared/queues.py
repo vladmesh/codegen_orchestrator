@@ -24,7 +24,6 @@ ENGINEERING_QUEUE = "engineering:queue"
 SCAFFOLDER_QUEUE = "scaffolder:queue"
 PROVISIONER_QUEUE = "provisioner:queue"
 PROVISIONER_RESULTS = "provisioner:results"
-ANSIBLE_DEPLOY_QUEUE = "ansible:deploy:queue"
 WORKER_COMMANDS = "worker:commands"
 PO_INPUT_QUEUE = "po:input"
 PO_PROACTIVE_QUEUE = "po:proactive"
@@ -65,7 +64,6 @@ QUEUE_TOPOLOGY: list[QueueBinding] = [
     QueueBinding(DEPLOY_QUEUE, WORKER_GROUP, "Deploy tasks"),
     QueueBinding(SCAFFOLDER_QUEUE, SCAFFOLDER_GROUP, "Project scaffolding"),
     QueueBinding(PROVISIONER_QUEUE, INFRA_GROUP, "Server provisioning"),
-    QueueBinding(ANSIBLE_DEPLOY_QUEUE, INFRA_GROUP, "Ansible deployments"),
     QueueBinding(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, "Provisioner results → scheduler"),
     QueueBinding(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, "Provisioner results → telegram-bot"),
     QueueBinding(WORKER_COMMANDS, WORKER_MANAGER_GROUP, "Worker lifecycle commands"),

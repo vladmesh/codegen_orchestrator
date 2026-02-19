@@ -80,7 +80,8 @@ up:
 	$(DOCKER_COMPOSE) up -d 
 
 down:
-	$(DOCKER_COMPOSE) down 
+	$(DOCKER_COMPOSE) down
+	@docker rm -f $$(docker ps -aq --filter "name=worker-dev-") 2>/dev/null || true
 
 stop:
 	@echo "🛑 Stopping stack and killing workers..."
@@ -399,7 +400,11 @@ nuke-hard: .nuke-common
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
 	@echo "🧹 Cleaning up worker images..."
 	@docker images --filter "reference=worker*" -q | xargs -r docker rmi -f 2>/dev/null || true
-	$(DOCKER_COMPOSE) down -v
+	$(DOCKER_COMPOSE) down
+	@echo "🧹 Removing volumes (preserving caddy-data for TLS certificates)..."
+	@for vol in db_data redis_data caddy-config registry-data; do \
+		docker volume rm codegen_orchestrator_$$vol 2>/dev/null || true; \
+	done
 	$(DOCKER_COMPOSE) --profile build build $(BUILD_OPTS)
 	@echo "🔨 Rebuilding worker base images..."
 	@$(MAKE) rebuild-worker-images
