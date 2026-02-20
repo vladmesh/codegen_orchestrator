@@ -5,6 +5,8 @@ import yaml
 
 ALLOWED_COMMANDS = {"up", "down", "build", "run", "ps", "logs", "stop"}
 BLOCKED_FLAGS = {"-it", "--interactive", "--tty", "-i", "-t"}
+# Flags that consume the next argument as a value (skip it when scanning for subcommand)
+VALUE_FLAGS = {"-f", "--file", "--project-directory", "--project-name", "--env-file", "-p", "--profile"}
 
 
 @dataclass
@@ -20,12 +22,20 @@ def validate_command(args: list[str]) -> ValidationResult:
     """
     errors = []
 
-    # Find first non-flag argument as subcommand
+    # Find first non-flag argument as subcommand, skipping flag values
     subcommand = None
+    skip_next = False
     for arg in args:
-        if not arg.startswith("-"):
-            subcommand = arg
-            break
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in VALUE_FLAGS:
+            skip_next = True
+            continue
+        if arg.startswith("-"):
+            continue
+        subcommand = arg
+        break
 
     if subcommand is None:
         errors.append("No subcommand found in args")
@@ -63,12 +73,12 @@ def validate_compose_file(content: str) -> ValidationResult:
         if not isinstance(service_config, dict):
             continue
 
-        # Block ports directive
-        if "ports" in service_config:
-            errors.append(
-                f"Service '{service_name}': 'ports' directive is not allowed "
-                "(use service names for inter-service communication)"
-            )
+        # NOTE: ports are NOT blocked here. Port conflicts between workers are handled
+        # naturally by docker compose (bind error). Phase 4 agent instructions will
+        # tell agents not to use ports (inter-service communication via Docker DNS).
+        # Blocking here is too strict since compose files from templates may include
+        # ports for services the agent isn't even starting (e.g. backend has ports,
+        # but agent only starts db).
 
         # Block absolute volume mounts
         volumes = service_config.get("volumes", [])

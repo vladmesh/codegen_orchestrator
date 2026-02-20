@@ -34,6 +34,15 @@ class TestValidateCommand:
         result = validate_command(["up", "-d", "--wait", "db", "redis"])
         assert result.valid
 
+    def test_file_flag_skipped_when_finding_subcommand(self):
+        """The -f flag value should not be mistaken for a subcommand."""
+        result = validate_command(["-f", "infra/compose.base.yml", "up", "-d", "db"])
+        assert result.valid, f"Expected valid, got errors: {result.errors}"
+
+    def test_multiple_file_flags(self):
+        result = validate_command(["-f", "compose.yml", "-f", "compose.override.yml", "up", "-d"])
+        assert result.valid
+
 
 class TestValidateComposeFile:
     def test_relative_volume_allowed(self):
@@ -83,7 +92,8 @@ services:
         result = validate_compose_file(content)
         assert not result.valid
 
-    def test_ports_blocked(self):
+    def test_ports_allowed(self):
+        """Ports are no longer blocked — conflicts are handled by docker compose naturally."""
         content = """
 services:
   db:
@@ -92,8 +102,7 @@ services:
       - "5432:5432"
 """
         result = validate_compose_file(content)
-        assert not result.valid
-        assert any("ports" in e for e in result.errors)
+        assert result.valid
 
     def test_invalid_yaml_error(self):
         result = validate_compose_file("not: valid: yaml: [\n")

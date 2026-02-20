@@ -1,4 +1,5 @@
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 
@@ -9,14 +10,19 @@ logger = structlog.get_logger()
 # Commands that trigger network injection
 _NETWORK_INJECTION_COMMANDS = {"up", "run", "build"}
 
-# Network override file written next to the compose file
+# Network override file written in the workspace
 _NETWORK_OVERRIDE_FILENAME = ".codegen-network.yml"
 
 
 def _generate_network_override(worker_id: str) -> str:
-    """Generate a compose network override that attaches services to the worker dev network."""
+    """Generate a compose network override that routes the default network to the worker dev network.
+
+    Convention: compose files from service-template do NOT define custom networks,
+    so all services use the implicit 'default' network. This override redirects it
+    to the pre-created external dev network for the worker.
+    """
     network_name = f"dev_proj_{worker_id}"
-    return f"networks:\n" f"  default:\n" f"    name: {network_name}\n" f"    external: true\n"
+    return f"networks:\n  default:\n    name: {network_name}\n    external: true\n"
 
 
 class ComposeRunner:
@@ -57,36 +63,74 @@ class ComposeRunner:
 
         project_name = f"worker_{worker_id}"
 
-        # Determine subcommand for network injection
-        subcommand = next((a for a in args if not a.startswith("-")), None)
+        # Determine subcommand for network injection (skip flag values like -f <file>)
+        from .compose_validator import VALUE_FLAGS
 
-        # Inject network override for commands that start containers
-        extra_args: list[str] = []
+        subcommand = None
+        skip_next = False
+        for a in args:
+            if skip_next:
+                skip_next = False
+                continue
+            if a in VALUE_FLAGS:
+                skip_next = True
+                continue
+            if not a.startswith("-"):
+                subcommand = a
+                break
+
+        # Split user args into file-flags and command args.
+        # File flags are placed first, then network override, then the command.
+        file_args: list[str] = []
+        command_args: list[str] = list(args)
+        i = 0
+        while i < len(command_args):
+            if command_args[i] in ("-f", "--file"):
+                file_args.extend(command_args[i : i + 2])
+                command_args = command_args[:i] + command_args[i + 2 :]
+            else:
+                i += 1
+
+        # Inject network override for commands that start containers.
+        # The override file is placed in effective_cwd and referenced by absolute path
+        # so it works regardless of --project-directory / compose file location.
+        network_args: list[str] = []
         if subcommand in _NETWORK_INJECTION_COMMANDS:
             override_path = effective_cwd / _NETWORK_OVERRIDE_FILENAME
             override_content = _generate_network_override(worker_id)
             override_path.write_text(override_content)
-            extra_args = [
-                "-f",
-                "docker-compose.yml",
-                "-f",
-                _NETWORK_OVERRIDE_FILENAME,
-            ]
+            abs_override = str(override_path)
+            network_args = ["-f", abs_override]
+
+            # If user didn't pass -f, add default docker-compose.yml explicitly
+            # (because adding any -f disables auto-discovery)
+            if not file_args:
+                network_args = ["-f", "docker-compose.yml"] + network_args
+
+        # NOTE: We don't pass --project-directory. Docker compose uses the directory
+        # of the first compose file by default, which preserves relative env_file
+        # paths inside compose manifests (e.g. env_file: ../.env).
+        # The subprocess runs with cwd=effective_cwd for default file discovery.
+        #
+        # We pass --env-file if a .env exists in the workspace root (docker compose
+        # auto-discovers .env from the project directory, which may differ from cwd).
+        env_file_args: list[str] = []
+        dot_env = worker_workspace_resolved / ".env"
+        if dot_env.exists():
+            env_file_args = ["--env-file", str(dot_env)]
 
         cmd = [
             "docker",
             "compose",
             "--project-name",
             project_name,
-            "--project-directory",
-            str(effective_cwd),
-            *extra_args,
-            *args,
+            *env_file_args,
+            *file_args,
+            *network_args,
+            *command_args,
         ]
 
         # Build environment: HOST_UID/GID + caller-supplied overrides
-        import os
-
         run_env = dict(os.environ)
         run_env["HOST_UID"] = "1000"
         run_env["HOST_GID"] = "1000"

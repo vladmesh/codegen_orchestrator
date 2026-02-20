@@ -62,12 +62,13 @@
    - **Валидация путей и безопасности Compose-файлов**:
      - Compose-файлы (`-f`) резолвятся относительно workspace и не могут выходить за его пределы (защита от path traversal).
      - **Анализ манифеста**: API жестко блокирует запуск, если в compose-файле найдены маунты абсолютных путей (защита от Filesystem Escape вида `/:/host_root`). Разрешены только относительные `./` и именованные volumes.
-     - **Запрет проброса портов**: Директива `ports` блокируется для предотвращения конфликтов портов на хосту между воркерами (доступ к сервисам только по именам внутри `dev_proj_<worker_id>`).
+     - **Порты**: Не блокируются на уровне валидатора — конфликты обрабатываются docker compose естественно (bind error). Фаза 4 запретит агентам добавлять `ports` через промпты.
    - **Трансляция путей**: Worker-manager запускает `docker compose` с:
-     - `--project-directory` = `/tmp/codegen/workspaces/<worker_id>/workspace/<cwd>` (абсолютный путь на хосте).
      - `--project-name` = `worker_<worker_id>` (изоляция имён контейнеров между воркерами).
-   - **Подключение к сети**: Все поднимаемые сервисы подключаются к `dev_proj_<worker_id>` (через `--network` или `COMPOSE_PROJECT_NETWORK` env).
-   - **Порты**: Sidecar-сервисы **не публикуют порты** на хост. Доступ только по имени сервиса через общую сеть `dev_proj_<worker_id>`.
+     - `--env-file` = `/tmp/codegen/workspaces/<worker_id>/workspace/.env` (если существует).
+     - Subprocess запускается с `cwd=<workspace>/<cwd>` для auto-discovery compose-файлов.
+   - **Подключение к сети**: Compose runner инжектирует override-файл (`.codegen-network.yml`), который перенаправляет `default` сеть на `dev_proj_<worker_id>` (external). Конвенция: compose-файлы из service-template **не определяют кастомных сетей**, все сервисы попадают в `default`.
+   - **Порты**: Sidecar-сервисы **не публикуют порты** на хост (конвенция, enforced через промпты). Доступ только по имени сервиса через общую сеть `dev_proj_<worker_id>`.
    - **Сценарий Persistent sidecars (`up -d`)**: Worker-manager выполняет `docker compose up --wait` с timeout (по умолчанию 60s) и возвращает статус об успехе. Магии с генерацией Connection Strings нет: агент сам управляет `.env` файлом и устанавливает доступы, обращаясь к сервисам по хостнеймам. Compose-файлы проекта должны содержать `healthcheck` для корректной работы `--wait`.
    - **Решение проблемы прав файлов**: Worker-manager передаёт в `docker compose` переменные `HOST_UID` и `HOST_GID` (совпадающие с UID/GID агента внутри контейнера, обычно 1000:1000), чтобы генерируемые Docker'ом файлы не становились `root`-owned.
 
@@ -93,7 +94,12 @@
 
 Шаблоны должны быть готовы к нативному выполнению большей части операций. Интеграционные тесты остаются в Docker Compose.
 
-1. **Рефакторинг `Makefile` в `service_template`**:
+1. **Удаление кастомной сети `internal` из compose-файлов** — ✅ DONE:
+   - Конвенция: compose-файлы шаблона **не определяют кастомных сетей**. Все сервисы попадают в `default` (стандартное поведение docker compose).
+   - Это позволяет оркестратору подменять только `default` → `dev_proj_<worker_id>` одним простым override-файлом, без парсинга compose YAML.
+   - Удалено из: `compose.base.yml.jinja`, `compose.tests.integration.yml.jinja`, `compose_blocks.py` (все шаблоны сервисов).
+
+2. **Рефакторинг `Makefile` в `service_template`**:
    - Ввести переменную `EXEC_MODE ?= docker` (по умолчанию — Docker для обратной совместимости, воркеры выставляют `EXEC_MODE=native`).
    - Адаптировать цели:
      - `make format` → `uv run ruff format .` (вместо `docker compose run tooling ruff format .`).
@@ -102,10 +108,10 @@
      - `make generate-from-spec` → `uv run python -m framework.sync_services create && uv run python -m framework generate`.
    - Сохранить запуск интеграционных тестов через Docker Compose (`make test-integration` всегда через compose).
 
-2. **Совместимость кодогенерации и безопасности**:
+3. **Совместимость кодогенерации и безопасности**:
    - Убедиться, что `uv run python -m framework.sync_services create` запускается корректно в native-режиме без ошибок монтирования.
    - Добавить `healthcheck` ко всем инфраструктурным сервисам в compose-файлах шаблона (для корректной работы `--wait`).
-   - Во всех compose-файлах шаблона `docker-compose.yml` явно прописать директиву `user: "${HOST_UID:-1000}:${HOST_GID:-1000}"` для баз данных, чтобы генерируемые ими файлы (dbs, кэши) не становились `root`-owned.
+   - ~~Во всех compose-файлах шаблона прописать `user: "${HOST_UID:-1000}:${HOST_GID:-1000}"` для баз данных~~ — **НЕТ**: postgres не может работать под uid 1000 (ему нужен свой пользователь для инициализации). Директиву `user` оставить только на сервисах приложения.
 
 ---
 

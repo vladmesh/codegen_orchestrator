@@ -32,21 +32,7 @@ def _mock_compose_response(exit_code: int = 0, stdout: str = "", stderr: str = "
 
 
 class TestDevEnvCompose:
-    def test_compose_sends_correct_request(self):
-        """compose command should POST args to the worker manager."""
-        with patch("orchestrator_cli.commands.dev_env._compose_async") as mock_fn:
-            mock_fn.return_value = _mock_compose_response(stdout="service list\n")
-            # Wrap in asyncio (CliRunner is sync)
-            import asyncio
-
-            mock_fn.side_effect = lambda *a, **kw: asyncio.coroutine(
-                lambda: _mock_compose_response(stdout="service list\n")
-            )()
-
-            # Use the real async function via patch of get_worker_manager_client
-            pass
-
-    def test_start_infra_calls_up_with_wait(self, monkeypatch):
+    def test_start_infra_calls_up_with_wait(self):
         """start-infra should issue 'up -d --wait' to the compose endpoint."""
         captured = {}
 
@@ -62,7 +48,21 @@ class TestDevEnvCompose:
         assert captured["args"] == ["up", "-d", "--wait", "db", "redis"]
         assert captured["worker_id"] == "worker-test-123"
 
-    def test_stop_infra_calls_stop(self, monkeypatch):
+    def test_start_infra_with_file_option(self):
+        """start-infra -f should prepend file flags."""
+        captured = {}
+
+        async def fake_compose(worker_id, args, cwd=".", timeout=120):
+            captured["args"] = args
+            return _mock_compose_response()
+
+        with patch("orchestrator_cli.commands.dev_env._compose_async", new=fake_compose):
+            result = runner.invoke(app, ["start-infra", "-f", "infra/compose.base.yml", "db"])
+
+        assert result.exit_code == 0
+        assert captured["args"] == ["-f", "infra/compose.base.yml", "up", "-d", "--wait", "db"]
+
+    def test_stop_infra_calls_stop(self):
         """stop-infra should issue 'stop' to the compose endpoint."""
         captured = {}
 
@@ -76,7 +76,7 @@ class TestDevEnvCompose:
         assert result.exit_code == 0
         assert captured["args"] == ["stop"]
 
-    def test_reset_infra_calls_down_v(self, monkeypatch):
+    def test_reset_infra_calls_down_v(self):
         """reset-infra should issue 'down -v' to the compose endpoint."""
         captured = {}
 
@@ -90,7 +90,21 @@ class TestDevEnvCompose:
         assert result.exit_code == 0
         assert captured["args"] == ["down", "-v"]
 
-    def test_compose_passes_worker_id_from_env(self, monkeypatch):
+    def test_reset_infra_with_file_option(self):
+        """reset-infra -f should prepend file flags."""
+        captured = {}
+
+        async def fake_compose(worker_id, args, cwd=".", timeout=120):
+            captured["args"] = args
+            return _mock_compose_response()
+
+        with patch("orchestrator_cli.commands.dev_env._compose_async", new=fake_compose):
+            result = runner.invoke(app, ["reset-infra", "-f", "infra/compose.base.yml"])
+
+        assert result.exit_code == 0
+        assert captured["args"] == ["-f", "infra/compose.base.yml", "down", "-v"]
+
+    def test_compose_passes_worker_id_from_env(self):
         """compose should use WORKER_ID env var."""
         captured = {}
 
@@ -103,7 +117,7 @@ class TestDevEnvCompose:
 
         assert captured["worker_id"] == "worker-test-123"
 
-    def test_compose_nonzero_exit_propagates(self, monkeypatch):
+    def test_compose_nonzero_exit_propagates(self):
         """A non-zero compose exit code should exit with that code."""
         expected_exit_code = 2
 

@@ -32,22 +32,39 @@ async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> 
     # 2. Get compose runner from app state
     runner: ComposeRunner = req.app.state.compose_runner
 
-    # 3. Resolve and validate compose file if present
+    # 3. Resolve and validate compose file(s)
     from pathlib import Path
     from ..config import settings
 
     workspace_path = Path(settings.WORKSPACE_BASE_PATH) / worker_id / "workspace"
     if workspace_path.exists():
-        compose_file = workspace_path / "docker-compose.yml"
-        if compose_file.exists():
-            file_result = validate_compose_file(compose_file.read_text())
-            if not file_result.valid:
-                raise HTTPException(status_code=400, detail="; ".join(file_result.errors))
+        # Collect compose file paths from -f/--file flags, or default to docker-compose.yml
+        compose_files: list[str] = []
+        args_iter = iter(request.args)
+        for arg in args_iter:
+            if arg in ("-f", "--file"):
+                try:
+                    compose_files.append(next(args_iter))
+                except StopIteration:
+                    break
+        if not compose_files:
+            compose_files = ["docker-compose.yml"]
+
+        for cf in compose_files:
+            # Resolve and check path traversal
+            resolved, path_result = resolve_compose_path(cf, workspace_path)
+            if not path_result.valid:
+                raise HTTPException(status_code=400, detail="; ".join(path_result.errors))
+            # Validate compose file content if it exists
+            if resolved.exists():
+                file_result = validate_compose_file(resolved.read_text())
+                if not file_result.valid:
+                    raise HTTPException(status_code=400, detail="; ".join(file_result.errors))
 
         # Check path traversal in cwd
-        _, path_result = resolve_compose_path(request.cwd, workspace_path)
-        if not path_result.valid:
-            raise HTTPException(status_code=400, detail="; ".join(path_result.errors))
+        _, cwd_result = resolve_compose_path(request.cwd, workspace_path)
+        if not cwd_result.valid:
+            raise HTTPException(status_code=400, detail="; ".join(cwd_result.errors))
 
     # 4. Run compose
     try:
