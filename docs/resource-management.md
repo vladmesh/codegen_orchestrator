@@ -7,25 +7,25 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    LangGraph State                          │
-│  (это видит LLM)                                           │
+│  (это видят агенты - Product Owner)                        │
 │                                                             │
 │  allocated_resources: {                                    │
-│      "telegram_bot": "handle_abc123",  ← handle, не токен  │
-│      "server": "prod_vps_1"            ← имя, не IP/SSH    │
+│      "server_handle:8000": {                               │
+│          "port": 8000,                                     │
+│          "server_handle": "prod_vps_1",  ← имя, не IP/SSH  │
+│          "service_name": "backend"                         │
+│      }                                                     │
 │  }                                                          │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                  Завхоз (узел LangGraph)                    │
+│                  Выделение ресурсов                         │
 │                                                             │
-│  LLM-часть:                                                │
-│  - Решает КАКОЙ ресурс нужен                               │
-│  - Возвращает handle/имя в state                           │
-│                                                             │
-│  Python-часть (вне видимости LLM):                         │
-│  - Читает реальные секреты из storage                      │
-│  - Передаёт в subprocess через env vars                    │
+│  Functional-часть (ResourceAllocatorNode в Engineering):   │
+│  - Автоматически выделяет порты и сервера через API        │
+│  - Переиспользует логику из `tools/allocator.py`           │
+│  - НЕ использует LLM (полностью детерминировано)           │
 └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -33,10 +33,8 @@
 │                   Secrets Storage                           │
 │  project.config.secrets (PostgreSQL, Fernet-encrypted)     │
 │                                                             │
-│  telegram_bots:                                            │
-│    handle_abc123:                                          │
-│      name: "@weather_bot"                                  │
-│      token: "gAAAAA..."  ← зашифрован Fernet at rest      │
+│  Пример (телеграм токен):                                  │
+│  В БД: "gAAAAA..."  ← зашифрован Fernet at rest            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,14 +66,10 @@ DevOps subgraph классифицирует переменные окружен
 | `computed` | Вычисляются из контекста | `APP_NAME`, `PORT` |
 | `user` | Требуются от пользователя | `TELEGRAM_BOT_TOKEN`, `API_KEY` |
 
-## Что хранит Завхоз
+## Взаимодействие Product Owner'а с секретами
 
-| Категория | Handle пример | Реальные данные |
-|-----------|---------------|-----------------|
-| Telegram боты | `handle_abc123` | token, username |
-| Серверы | `prod_vps_1` | IP, SSH key |
-| API ключи | `openai_main` | API key |
-| Домены | `example.com` | Cloudflare credentials |
+Агент Product Owner напрямую запрашивает у пользователя секреты (например, `TELEGRAM_BOT_TOKEN`), если они требуются для выбранных модулей.
+PO вызывает tool `set_project_secret`, который сохраняет токен в БД, сразу шифруя его через Fernet. Никакие инфраструктурные ключи (SSH, БД) PO не видит и не генерирует.
 
 ## Управление Инфраструктурой (Server Management)
 
@@ -89,7 +83,7 @@ DevOps subgraph классифицирует переменные окружен
 2.  **Ghost Servers & Filtering**:
     *   Сервера, которые нужно игнорировать (личные машины разработчиков), прописываются в `GHOST_SERVERS`.
     *   В базе они помечаются как `is_managed=False`.
-    *   Zavhoz использует инструмент `list_managed_servers`, который возвращает только `is_managed=True`.
+    *   `ResourceAllocator` использует функцию `list_managed_servers`, которая возвращает только `is_managed=True`.
 
 ## GitHub App & Secrets
 
@@ -107,6 +101,17 @@ DevOps subgraph классифицирует переменные окружен
 **Production:**
 - Secrets записываются на сервер через CI/CD workflow
 - Путь на проде: `/opt/secrets/github_app.pem`
+
+## Worker Garbage Collection (Управление мусором)
+
+Для параллельных воркеров (см. [docs/parallel-workers.md](parallel-workers.md)) система создает временные ресурсы (workspaces, networks, containers) на хосте.
+
+1. **Жизненный цикл**:
+   * Воркер получает выделенный workspace директорию в `/tmp/codegen/workspaces/<worker_id>` и изолированную Docker сеть `dev_proj_<worker_id>`.
+   * Агент вызывает `orchestrator dev-env compose up`/`down` для управления sidecar'ами внутри этого пространства имён.
+2. **Очистка (Garbage Collection)**:
+   * Явное удаление: при завершении LangGraph вызывает `worker-manager` `delete_worker`, который удаляет контейнеры, сеть, и пространство на диске.
+   * Фоновый сбор мусора (GC): `scheduler` раз в 30 минут триггерит GC в `worker-manager`. Метод `WorkerManager.garbage_collect_orphaned_resources()` находит "осиротевшие" контейнеры воркеров, сети `dev_proj_*` и директории на диске (сопоставляя с активными ключами `worker:status:*` в Redis) и удаляет их, защищая систему от утечек после крэшей или OOM-событий.
 
 ## См. также
 

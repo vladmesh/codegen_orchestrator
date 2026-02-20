@@ -16,61 +16,43 @@
                          ▼
 ┌─────────────────────────────────────────────────────┐
 │              worker-manager Service                 │
-│    (слушает worker:commands Redis stream)           │
+│    (API / Docker Client / Compose Proxy)            │
 └─────────────────────────────────────────────────────┘
-                         │
-                  Docker API
                          │
                          ▼
 ┌─────────────────────────────────────────────────────┐
 │        Worker Container (ephemeral)                 │
-│  - Базовый образ: worker-base-claude / droid       │
-│  - worker-wrapper: entrypoint + session mgmt       │
-│  - git clone репозитория                           │
-│  - Выполняет coding task                           │
-│  - git commit + git push                           │
+│  - Образ: worker-base-common + тулинг               │
+│  - Нативные утилиты: ruff, pytest, make, python     │
+│  - Выполняет coding task                            │
+│  - Запрашивает инфраструктуру через CLI             │
 └─────────────────────────────────────────────────────┘
-                         │
-                  Redis streams
-                         │
-                         ▼
-               worker:{id}:output (Developer workers only)
 ```
 
-## Docker-in-Docker с Sysbox
+## Изоляция и Flat Dev Environment
 
-Для запуска `docker compose` внутри контейнера используем [Sysbox](https://github.com/nestybox/sysbox) — безопасный Docker-in-Docker без privileged mode.
+Вместо Docker-in-Docker (Sysbox), система использует парадигму **Flat Dev Environment**, управляемую с хоста через `worker-manager`. Это решает проблемы с RAM, кэшами слоёв и стабильностью.
 
-**Установка на хост:**
-```bash
-wget https://downloads.nestybox.com/sysbox/releases/v0.6.4/sysbox-ce_0.6.4-0.linux_amd64.deb
-sudo dpkg -i sysbox-ce_0.6.4-0.linux_amd64.deb
-```
+1. **Dual-Network Setup**:
+   Каждый воркер подключён к двум сетям:
+   - `internal` (shared codegen network) — для связи с `api`, `redis` и `worker-manager`.
+   - `dev_proj_<worker_id>` — изолированная сеть для конкретного проекта.
 
-**Внутри контейнера доступно:**
-- Полноценный Docker daemon (при Docker capability)
-- `git clone`, `git push`
-- `docker compose up -d`
-- Factory.ai Droid CLI или Claude Code CLI
+2. **Compose Proxy**:
+   Воркеры (инжектированные AI-агенты) **не имеют доступа к Docker**. Для запуска инфраструктурных зависимостей (DB, Redis) агенты вызывают `orchestrator dev-env start-infra db`, который проксирует запрос в `worker-manager`.
+
+3. **Workspace Bind-Mount**:
+   Код клонируется агентом внутрь `/workspace` директории в контейнере, которая примонтирована на хост в `/tmp/codegen/workspaces/<worker_id>/workspace`. `docker compose` на хосте использует файлы из этого воркспейса для поднятия сайдкар-контейнеров.
+
+## Запрет портов и конвенции
+
+- **Никаких `ports:` в compose**: Сервисы шаблона не публикуют порты на хост, так как это вызовет конфликты при параллельной работе воркеров.
+- Агенты обращаются к сайдкар-БД по именам хостов (`db:5432`) внутри изолированной сети `dev_proj_<worker_id>`.
 
 ## Worker Образы
 
-Worker-base образы находятся в `services/worker-manager/`:
-- `worker-base-claude` — образ с Claude Code CLI
-- `worker-base-droid` — образ с Factory.ai Droid
-
-Основные характеристики:
-- Ubuntu 24.04 + Python 3.12 + Node.js
-- Non-root user `worker` (uid 1000)
-- Pre-installed `orchestrator-cli` + `worker-wrapper`
-- Динамическая настройка через ENV (`AGENT_TYPE`)
-- Hash-based image caching в worker-manager
-
-## Ограничения
-
-| Аспект | Ограничение |
-|--------|-------------|
-| RAM | ~2-4GB на worker (Docker daemon + контейнеры) |
-| Startup | Docker daemon стартует 5-10 сек |
-| Disk | Образы качаются в каждый worker (кэшировать через volumes) |
-| GitHub API | Rate limits — добавить throttling |
+Worker-base образ `worker-base-common` унифицирован:
+- Ubuntu + Python 3.12 + Node.js
+- **Shared Tooling Layer**: `ruff`, `pytest`, `mypy`, `copier`, и т.д. установлены на уровне образа (не дублируются на каждый воркер).
+- Non-root user `worker` (uid 1000). Код на хосте через bind-mount не становится `root`-owned.
+- Выполнение тестов и линтеров происходит **нативно** без запуска дополнительных эфемерных контейнеров (`EXEC_MODE=native`).

@@ -51,11 +51,11 @@ graph TD
 - **API**: FastAPI сервис, единственный источник правды (DAL) для PostgreSQL.
 - **Telegram Bot**: Интерфейс для пользователя, управляет PO сессиями.
 - **Product Owner (PO)**: LangGraph ReactAgent, общающийся с пользователем и ставящий задачи.
-- **Worker Manager**: Управляет Docker контейнерами с исполнителями задач (Engineering/Deploy Workers).
+- **Worker Manager**: Управляет Docker контейнерами с проксированием `docker compose` для инфраструктурных сервисов (Engineering/Deploy Workers, Flat Dev Environment).
 - **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps).
 - **Scaffolder**: Сервис генерации кода через Copier (бывший `preparer`).
 - **Infra Service**: Ansible runner для настройки серверов (бывший `infrastructure-worker`).
-- **Scheduler**: Фоновые задачи (синхронизация, проверка здоровья).
+- **Scheduler**: Фоновые задачи (синхронизация, проверка здоровья, сборка мусора).
 
 ### Связанные проекты
 

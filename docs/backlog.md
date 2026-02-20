@@ -70,6 +70,19 @@
 
 ---
 
+### Remove obsolete Zavhoz code and mentions
+**Статус**: TODO
+
+**Проблема**: В кодовой базе остался LLM-агент `Zavhoz` (например, в `scripts/agent_configs.yaml`), который планировался для управления ресурсами инфраструктуры. Фактически эта функциональность полностью заменена детерминированным `ResourceAllocatorNode` в Engineering-субграфе. Мертвый код и конфиги агента создают значительную путаницу в архитектуре оркестратора.
+
+**Задачи:**
+1. Удалить определение `Zavhoz` из `scripts/agent_configs.yaml` и `scripts/cli_agent_configs.yaml`.
+2. Вычистить комментарии и упоминания Zavhoz в `services/langgraph/src/tools/__init__.py` и других файлах.
+3. Проверить инструменты (`tools/servers.py`, `tools/ports.py`) на предмет завязок на агента, оставить их только для `ResourceAllocatorNode`.
+4. Удалить остаточные упоминания в документации (кроме уже очищенного `docs/resource-management.md`).
+
+---
+
 ### API Authentication
 **Статус**: TODO
 
