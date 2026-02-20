@@ -1,7 +1,7 @@
 # Plan: Dev Environment Architecture Migration
 
 > **Дата**: 2026-02-19
-> **Контекст**: Миграция архитектуры воркеров с Docker-in-Docker на нативную разработку (sidecar-инфраструктура по запросу) для надежности пайплайнов и ускорения работы LLM-агентов. Вариант инфры: flat dev environment с честным `docker compose up` базы на каждый проект (Per-Worker) и нативным запуском остального кода через `uv`.
+> **Контекст**: Миграция архитектуры воркеров с Docker-in-Docker на нативную разработку (sidecar-инфраструктура по запросу) для надежности пайплайнов и ускорения работы LLM-агентов. Вариант инфры: flat dev environment с честным `docker compose up` базы на каждый проект (Per-Worker) и нативным запуском остального кода напрямую (tools предустановлены в образе воркера).
 
 ---
 
@@ -83,14 +83,18 @@
      - Поднятия инфраструктурных sidecar-зависимостей (`start-infra db redis`).
      - Запуска интеграционных тестов, завязанных на compose-оркестрацию (`compose -f infra/compose.tests.integration.yml run integration-tests`).
      - Сборки Dockerfile'ов (`compose build`).
-   - Нативно (внутри контейнера воркера через `uv run` или fallback `make`) выполняются:
-     - Линтеры (`ruff`).
+   - Нативно (внутри контейнера воркера через `make EXEC_MODE=native`) выполняются:
+     - Линтеры (`ruff`, `xenon`).
      - Юнит-тесты (`pytest tests/unit`).
      - Кодогенерация (`framework generate`, `sync_services`).
+   - Все необходимые инструменты (ruff, xenon, pytest, mypy, PyYAML, jinja2 и др.) предустановлены в образе `worker-base-common`. Docker-слои шарятся между всеми воркерами (не дублируются ×N).
 
 ---
 
-## Фаза 3: Адаптация Шаблонов (`service_template`)
+## Фаза 3: Адаптация Шаблонов (`service_template`) — ✅ DONE
+
+> **Реализовано**: 2026-02-20, коммиты `b6c2685`, `173db20` в `service-template/main`
+> **Образ воркера**: `worker-base-common/Dockerfile` обновлён в `codegen_orchestrator/dev-env-architecture`
 
 Шаблоны должны быть готовы к нативному выполнению большей части операций. Интеграционные тесты остаются в Docker Compose.
 
@@ -99,23 +103,86 @@
    - Это позволяет оркестратору подменять только `default` → `dev_proj_<worker_id>` одним простым override-файлом, без парсинга compose YAML.
    - Удалено из: `compose.base.yml.jinja`, `compose.tests.integration.yml.jinja`, `compose_blocks.py` (все шаблоны сервисов).
 
-2. **Рефакторинг `Makefile` в `service_template`**:
-   - Ввести переменную `EXEC_MODE ?= docker` (по умолчанию — Docker для обратной совместимости, воркеры выставляют `EXEC_MODE=native`).
-   - Адаптировать цели:
-     - `make format` → `uv run ruff format .` (вместо `docker compose run tooling ruff format .`).
-     - `make lint` → `uv run ruff check .`.
-     - `make test-unit` → `uv run pytest tests/unit`.
-     - `make generate-from-spec` → `uv run python -m framework.sync_services create && uv run python -m framework generate`.
-   - Сохранить запуск интеграционных тестов через Docker Compose (`make test-integration` всегда через compose).
+2. **Рефакторинг `Makefile` — прямые вызовы вместо Docker** — ✅ DONE:
+   - Введена переменная `EXEC_MODE ?= docker` (по умолчанию — Docker для обратной совместимости, воркеры выставляют `EXEC_MODE=native`).
+   - **Решение**: Прямые вызовы инструментов с `PYTHONPATH=.framework` вместо `uv run`.
+   - **Причина отказа от `uv run`**: uv создаёт изолированный `.venv` и не может переиспользовать пакеты, установленные в системном site-packages образа. При этом `poetry`-формат `pyproject.toml` сервисов (без `[project]` таблицы) несовместим с `[tool.uv.workspace]` — uv падает с `No 'project' table found`.
+   - **Реализация** в `template/Makefile.jinja`:
+     ```makefile
+     ifeq ($(EXEC_MODE),native)
+     RUN_TOOLING := PYTHONPATH=.framework
+     PYTHON_TOOLING := PYTHONPATH=.framework python3
+     else
+     RUN_TOOLING := $(COMPOSE_ENV_TOOLING) $(DOCKER_COMPOSE) $(COMPOSE_TEST_UNIT) run --build --rm tooling
+     PYTHON_TOOLING := $(RUN_TOOLING) python
+     endif
+     ```
+   - В native-режиме все инструменты (ruff, pytest, xenon, mypy, framework) вызываются напрямую из системного Python, а `PYTHONPATH=.framework` обеспечивает доступ к модулям фреймворка.
+   - Цель `tooling-tests` также адаптирована: `PYTHONPATH=.framework pytest -q ...` в native-режиме.
+   - Интеграционные тесты по-прежнему запускаются через Docker Compose (`make tests` с compose up/run).
 
-3. **Совместимость кодогенерации и безопасности**:
-   - Убедиться, что `uv run python -m framework.sync_services create` запускается корректно в native-режиме без ошибок монтирования.
-   - Добавить `healthcheck` ко всем инфраструктурным сервисам в compose-файлах шаблона (для корректной работы `--wait`).
-   - ~~Во всех compose-файлах шаблона прописать `user: "${HOST_UID:-1000}:${HOST_GID:-1000}"` для баз данных~~ — **НЕТ**: postgres не может работать под uid 1000 (ему нужен свой пользователь для инициализации). Директиву `user` оставить только на сервисах приложения.
+3. **Совместимость кодогенерации и безопасности** — ✅ DONE:
+
+   **a) Права файлов — `user:` в compose + `chown`/`USER` в Dockerfile:**
+   - В `framework/lib/compose_blocks.py` добавлена директива `user: "${HOST_UID:-1000}:${HOST_GID:-1000}"` ко всем 5 шаблонам сервисов (backend, frontend, tg_bot, notifications_worker, faststream).
+   - Из `compose.base.yml.jinja` директива `user:` убрана для `db` (postgres) — postgres не может работать под uid 1000 (ему нужен свой пользователь для инициализации).
+   - **Критический момент**: Статические `template/services/*/Dockerfile` **перезаписываются** командой `sync_services create` из Jinja2-шаблонов `framework/templates/docker/*.Dockerfile.j2`. Поэтому `chown`/`USER` добавлены именно в шаблоны фреймворка:
+     - `framework/templates/docker/python-fastapi.Dockerfile.j2` — `RUN chown -R 1000:1000 /app` + `USER 1000`
+     - `framework/templates/docker/python-faststream.Dockerfile.j2` — аналогично
+     - `framework/templates/docker/node.Dockerfile.j2` — аналогично
+   - Синхронизировано в `template/.framework/` через `scripts/sync-framework-to-template.sh`.
+
+   **b) `pyproject.toml` — убран uv workspace:**
+   - Из `template/pyproject.toml.jinja` удалена секция `[tool.uv.workspace]` с `members = ["services/*"]`.
+   - Причина: poetry-формат `pyproject.toml` сервисов несовместим с uv workspace resolution.
+   - Файл теперь содержит только минимальный `[project]` с метаданными.
+
+   **c) `ruff.toml` — добавлен exclude `.venv`:**
+   - В `template/ruff.toml` добавлен `.venv/**` в список `exclude`.
+   - Причина: если `uv` или другой инструмент создаёт `.venv`, ruff не должен линтить файлы внутри.
+
+   **d) Healthcheck'и**: Уже присутствуют в compose-файлах шаблона для инфраструктурных сервисов (db, redis). `--wait` корректно работает.
+
+4. **Tooling в образе воркера (`worker-base-common`)** — ✅ DONE:
+
+   Для нативного выполнения make-целей воркеру нужны все инструменты, которые раньше жили в tooling-контейнере.
+
+   **Решение**: Установка инструментов прямо в `worker-base-common` Docker-образ.
+
+   **Обоснование выбора**:
+   - Docker layer sharing: все N воркеров используют одни и те же слои образа — пакеты существуют на диске **один раз**, а не ×N.
+   - Слой с тулингом размещён **до** volatile-слоя с wheels (shared/packages) — изменения кода не инвалидируют кэш тулинга.
+   - Тулинг-слой пересобирается только при обновлении версий (раз в месяц), не при каждом изменении кода оркестратора.
+
+   **Изменения в `worker-base-common/Dockerfile`**:
+   - Добавлен `make` в apt-get install (нужен для `make lint`, `make format` и т.д.).
+   - Добавлен стабильный слой с pip-пакетами (до COPY wheels):
+     ```dockerfile
+     RUN pip install --no-cache-dir \
+         ruff==0.14.5 \
+         copier==9.4.1 \
+         xenon==0.9.1 \
+         pytest==8.2.0 \
+         pytest-cov==4.1.0 \
+         mypy==1.10.0 \
+         types-PyYAML \
+         PyYAML \
+         jinja2
+     ```
+   - Volatile wheels (shared, worker-wrapper, orchestrator-cli) устанавливаются **после** тулинга.
+
+   **E2E проверка** (воркер `test-native-v3`):
+   - `make format` — ✅ ruff format отработал, файлы отформатированы
+   - `make sync-services check` — ✅ "Everything is in sync"
+   - `make generate-from-spec` — ✅ без ошибок
+   - `make lint` — ✅ ruff check + xenon + validate_specs + enforce_spec_compliance + lint_controllers
+   - Compose proxy lifecycle — ✅ `start-infra db` → connectivity → `reset-infra`
 
 ---
 
-## Фаза 4: Удаление Docker-in-Docker и обновление промптов
+## Фаза 4: Удаление Docker-in-Docker и обновление промптов — ✅ DONE
+
+> **Реализовано**: 2026-02-20, ветка `dev-env-architecture`
 
 Изменение рабочего окружения агента внутри контейнера. Эту фазу можно активировать только после завершения Фаз 2 и 3.
 
@@ -130,7 +197,7 @@
    - Инструктировать использовать `orchestrator dev-env start-infra db redis` для работы с персистентными sidecar-сервисами, сохраняя доступы в `.env` файл (через обращения к хостнеймам `db:5432` без публикаций портов `ports`).
    - Явно запретить добавлять директиву `ports` в свои `docker-compose.yml`, так как публикация портов на хосте будет конфликтовать между изолированными агентами.
    - Инструктировать использовать `orchestrator dev-env compose` для интеграционных тестов.
-   - Указать, что линтеры, генерация и юнит-тесты должны запускаться нативно через `uv run` / `make`.
+   - Указать, что линтеры, генерация и юнит-тесты должны запускаться нативно через `make` с `EXEC_MODE=native`.
 
 ---
 

@@ -50,7 +50,7 @@ async def test_consume_create_worker_command(redis_client, mock_worker_manager):
             agent_type=AgentType.CLAUDE,
             instructions="Do work",
             allowed_commands=[],
-            capabilities=[WorkerCapability.DOCKER],
+            capabilities=[WorkerCapability.GIT],
         ),
     )
 

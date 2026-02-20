@@ -48,17 +48,6 @@ CAPABILITY_INSTALL_MAP: dict[str, list[str]] = {
         "    apt-get update && apt-get install -y --no-install-recommends gh && \\",
         "    rm -rf /var/lib/apt/lists/*",
     ],
-    "DOCKER": [
-        # Docker CLI + Compose plugin + make (for deploy workers that need Docker)
-        # Note: docker.io package on Debian doesn't include CLI, only daemon
-        # Socket is mounted at runtime; worker needs docker group access
-        "RUN apt-get update && apt-get install -y --no-install-recommends make curl && rm -rf /var/lib/apt/lists/* && \\",
-        "    curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-26.1.4.tgz | tar xz -C /usr/local/bin --strip-components=1 docker/docker && \\",
-        "    mkdir -p /usr/local/lib/docker/cli-plugins && \\",
-        "    curl -fsSL https://github.com/docker/compose/releases/download/v2.27.1/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose && \\",
-        "    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose && \\",
-        "    groupadd -g 988 docker && usermod -aG docker worker",
-    ],
 }
 
 # Packages that can be combined in a single apt-get install
@@ -73,7 +62,7 @@ def compute_image_hash(capabilities: list[str], agent_type: str = "claude") -> s
     Compute deterministic hash for a set of capabilities and agent type.
 
     Args:
-        capabilities: List of capability names (e.g., ["GIT", "DOCKER"])
+        capabilities: List of capability names (e.g., ["GIT", "GITHUB_CLI"])
         agent_type: Type of agent ("claude" or "factory"). Defaults to "claude".
 
     Returns:
@@ -167,7 +156,7 @@ class ImageBuilder:
                 f"RUN apt-get update && apt-get install -y --no-install-recommends {packages_str} && rm -rf /var/lib/apt/lists/*"
             )
 
-        # Add complex installations (GITHUB_CLI, DOCKER)
+        # Add complex installations (GITHUB_CLI)
         # Skip capabilities with empty install lists (pre-installed in worker-base)
         for cap in complex_caps:
             install_commands = CAPABILITY_INSTALL_MAP.get(cap, [])

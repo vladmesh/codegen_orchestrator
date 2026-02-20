@@ -16,7 +16,6 @@ class WorkerCapability(str, Enum):
     GITHUB_CLI = "github_cli"
     # Copier moved to dedicated service
     CURL = "curl"
-    DOCKER = "docker"  # dind mount
 
 
 class WorkerChannels(str, Enum):

@@ -48,19 +48,6 @@ class TestWorkerContainerConfig:
         env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
         assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
 
-    def test_docker_capability_adds_socket_mount(self):
-        """DOCKER capability should mount docker.sock."""
-        config = WorkerContainerConfig(
-            worker_id="test-1",
-            worker_type="developer",
-            agent_type="claude",
-            capabilities=["DOCKER"],
-            auth_mode="host_session",
-        )
-        volumes = config.to_volume_mounts()
-        assert "/var/run/docker.sock" in volumes
-        assert volumes["/var/run/docker.sock"]["bind"] == "/var/run/docker.sock"
-
     def test_to_docker_run_kwargs_defaults_to_host_network(self):
         """Without network_name, should use host networking."""
         config = WorkerContainerConfig(
