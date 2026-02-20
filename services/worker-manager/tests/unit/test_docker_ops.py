@@ -145,6 +145,23 @@ class TestDockerNetworks:
         network_mock.connect.assert_called_once_with("container-abc")
 
     @pytest.mark.asyncio
+    async def test_list_networks(self, mock_docker):
+        """list_networks should call networks.list and return results."""
+        client_mock = MagicMock()
+        mock_docker.return_value = client_mock
+        net1 = MagicMock()
+        net1.name = "dev_proj_abc"
+        net2 = MagicMock()
+        net2.name = "bridge"
+        client_mock.networks.list.return_value = [net1, net2]
+
+        wrapper = DockerClientWrapper()
+        result = await wrapper.list_networks()
+
+        assert result == [net1, net2]
+        client_mock.networks.list.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_disconnect_network_ignores_not_found(self, mock_docker):
         """disconnect_network should silently ignore NotFound errors."""
         import docker

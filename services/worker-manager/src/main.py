@@ -64,6 +64,15 @@ async def lifespan(app: FastAPI):
         run_periodic_task(lambda: worker_manager.check_and_pause_workers(), interval=60, name="auto_pause")
     )
 
+    # Orphaned resource GC every 30 minutes (1800s)
+    orphan_gc_task = asyncio.create_task(
+        run_periodic_task(
+            lambda: worker_manager.garbage_collect_orphaned_resources(),
+            interval=1800,
+            name="orphaned_gc",
+        )
+    )
+
     yield
 
     # Shutdown
@@ -76,9 +85,17 @@ async def lifespan(app: FastAPI):
 
     gc_task.cancel()
     pause_task.cancel()
+    orphan_gc_task.cancel()
 
     try:
-        await asyncio.gather(consumer_task, events_task, gc_task, pause_task, return_exceptions=True)
+        await asyncio.gather(
+            consumer_task,
+            events_task,
+            gc_task,
+            pause_task,
+            orphan_gc_task,
+            return_exceptions=True,
+        )
     except Exception:
         pass
 

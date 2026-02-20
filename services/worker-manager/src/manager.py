@@ -190,6 +190,77 @@ class WorkerManager:
         await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
         logger.info("worker_resumed", worker_id=worker_id)
 
+    async def garbage_collect_orphaned_resources(self) -> None:
+        """Find and remove orphaned containers, networks, and workspaces.
+
+        After a crash/OOM, resources may be left behind without corresponding
+        Redis state. This method collects the set of known worker IDs from Redis
+        and removes any Docker containers, dev networks, or workspace directories
+        that don't belong to a known worker.
+
+        Order: containers → networks → workspaces (networks can't be removed
+        while containers are connected).
+        """
+        # Collect known worker IDs from Redis
+        known_ids: set[str] = set()
+        async for key in self.redis.scan_iter(match="worker:status:*"):
+            known_ids.add(key.split(":")[-1])
+
+        logger.info("orphan_gc_start", known_workers=len(known_ids))
+
+        # --- Orphaned containers ---
+        try:
+            containers = await self.docker.list_containers(filters={"label": "com.codegen.type=worker"}, all=True)
+        except Exception as e:
+            logger.error("orphan_gc_list_containers_failed", error=str(e))
+            containers = []
+
+        for container in containers:
+            worker_id = container.labels.get("com.codegen.worker.id")
+            if worker_id and worker_id not in known_ids:
+                logger.info("orphan_gc_removing_container", worker_id=worker_id)
+                try:
+                    await self.delete_worker(worker_id)
+                except Exception as e:
+                    logger.error("orphan_gc_delete_worker_failed", worker_id=worker_id, error=str(e))
+
+        # --- Orphaned networks ---
+        try:
+            networks = await self.docker.list_networks()
+        except Exception as e:
+            logger.error("orphan_gc_list_networks_failed", error=str(e))
+            networks = []
+
+        for network in networks:
+            name = network.name
+            if name.startswith("dev_proj_"):
+                worker_id = name[len("dev_proj_") :]
+                if worker_id not in known_ids:
+                    logger.info("orphan_gc_removing_network", network=name, worker_id=worker_id)
+                    try:
+                        await self.docker.remove_network(name)
+                    except Exception as e:
+                        logger.error("orphan_gc_remove_network_failed", network=name, error=str(e))
+
+        # --- Orphaned workspaces ---
+        try:
+            entries = os.listdir(settings.WORKSPACE_BASE_PATH)
+        except FileNotFoundError:
+            entries = []
+        except Exception as e:
+            logger.error("orphan_gc_list_workspaces_failed", error=str(e))
+            entries = []
+
+        for entry in entries:
+            if entry not in known_ids:
+                logger.info("orphan_gc_removing_workspace", worker_id=entry)
+                try:
+                    workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, entry)
+                except Exception as e:
+                    logger.error("orphan_gc_remove_workspace_failed", worker_id=entry, error=str(e))
+
+        logger.info("orphan_gc_complete")
+
     async def garbage_collect_images(self, retention_seconds: int = 7 * 24 * 3600) -> None:
         """Remove unused images."""
         images = await self.docker.list_images()

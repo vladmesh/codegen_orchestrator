@@ -147,6 +147,10 @@ class DockerClientWrapper:
         except Exception as e:
             return f"Failed to get logs: {e}"
 
+    async def list_networks(self) -> List[Any]:
+        """List all Docker networks."""
+        return await self._run(self._client.networks.list)
+
     async def create_network(self, name: str, driver: str = "bridge") -> Any:
         """Create a Docker network."""
         return await self._run(self._client.networks.create, name, driver=driver)
