@@ -46,17 +46,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     jq \
+    make \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy wheels from builder
+# Tooling packages for native EXEC_MODE (stable layer — cached unless versions change).
+# Placed BEFORE volatile code-dependent wheels so code changes don't invalidate this layer.
+RUN pip install --no-cache-dir \
+    ruff==0.14.5 \
+    copier==9.4.1 \
+    xenon==0.9.1 \
+    pytest==8.2.0 \
+    pytest-cov==4.1.0 \
+    mypy==1.10.0 \
+    types-PyYAML \
+    PyYAML \
+    jinja2
+
+# Copy wheels from builder (volatile — changes on shared/packages code edits)
 COPY --from=builder /build/wheels /wheels
 
 # Install Python packages from wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
-
-# Install ruff for native git hook linting (matches service-template tooling version)
-# Install copier for framework updates (copier update)
-RUN pip install --no-cache-dir ruff==0.14.5 copier==9.4.1
 
 # Create non-root user
 RUN useradd -m -s /bin/bash worker

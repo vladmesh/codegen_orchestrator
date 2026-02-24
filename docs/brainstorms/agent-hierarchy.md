@@ -296,7 +296,9 @@ PO → engineering:queue → update_framework_subgraph → spawn developer:
 
 ---
 
-## PO без контейнера: переход на API-based ReactAgent
+### PO без контейнера: переход на API-based ReactAgent
+
+> **Status:** DONE (Implemented as LangGraph API node in `services/langgraph/src/po/graph.py`)
 
 ### Проблема
 

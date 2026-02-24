@@ -27,6 +27,15 @@ class WorkerManagerSettings(BaseSettings):
     # Worker subprocess timeout (seconds)
     WORKER_SUBPROCESS_TIMEOUT_SECONDS: int = 300
 
+    # Dev environment: workspace base path on the host
+    WORKSPACE_BASE_PATH: str = "/tmp/codegen/workspaces"
+
+    # Fixed name of the internal bridge network shared by all services
+    INTERNAL_NETWORK: str = "codegen_internal"
+
+    # URL of this worker-manager service (injected into worker containers)
+    WORKER_MANAGER_URL: str = "http://worker-manager:8000"
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

@@ -139,6 +139,7 @@ class WorkerCommandConsumer:
                 host_claude_dir=cmd.config.host_claude_dir or settings.HOST_CLAUDE_DIR,
                 api_key=cmd.config.api_key,
                 worker_type=cmd.config.worker_type,
+                project_id=cmd.config.project_id,
             )
             return CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
         except Exception as e:

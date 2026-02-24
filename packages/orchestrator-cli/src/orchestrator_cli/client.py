@@ -17,3 +17,8 @@ def get_api_client() -> httpx.AsyncClient:
 def get_redis_client() -> redis.Redis:
     config = get_config()
     return redis.from_url(config.redis_url, decode_responses=True)
+
+
+def get_worker_manager_client() -> httpx.AsyncClient:
+    config = get_config()
+    return httpx.AsyncClient(base_url=config.worker_manager_url)

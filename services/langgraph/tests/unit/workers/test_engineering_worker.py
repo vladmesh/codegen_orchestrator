@@ -44,7 +44,7 @@ class TestHandleEngineeringSuccess:
     @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_no_commit_sha_fails_fast(self, mock_ci_gate, mock_redis, mock_api):
         """commit_sha=None must return failed, not proceed to CI/deploy."""
-        mock_ci_gate.return_value = True  # Should never be reached
+        mock_ci_gate.return_value = (True, [])  # Should never be reached
 
         from src.workers.engineering_worker import _handle_engineering_success
 
@@ -86,7 +86,7 @@ class TestHandleEngineeringSuccess:
     @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_with_commit_sha_proceeds(self, mock_ci_gate, mock_redis, mock_api):
         """commit_sha present must proceed to CI gate and then deploy."""
-        mock_ci_gate.return_value = True
+        mock_ci_gate.return_value = (True, [])
 
         from src.workers.engineering_worker import _handle_engineering_success
 
@@ -114,7 +114,7 @@ class TestHandleEngineeringSuccess:
     @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_deploy_message_includes_user_id(self, mock_ci_gate, mock_redis, mock_api):
         """DeployMessage queued after CI must include user_id (BUG 17)."""
-        mock_ci_gate.return_value = True
+        mock_ci_gate.return_value = (True, [])
 
         from src.workers.engineering_worker import _handle_engineering_success
 
@@ -158,7 +158,7 @@ class TestNotificationDecoupling:
         self, mock_ci_gate, mock_redis, mock_api
     ):
         """skip_deploy=False → event type is 'progress', not 'completed'."""
-        mock_ci_gate.return_value = True
+        mock_ci_gate.return_value = (True, [])
 
         from src.workers.engineering_worker import _handle_engineering_success
 
@@ -196,7 +196,7 @@ class TestNotificationDecoupling:
         self, mock_ci_gate, mock_redis, mock_api
     ):
         """skip_deploy=True → event type is 'completed' (this IS the final step)."""
-        mock_ci_gate.return_value = True
+        mock_ci_gate.return_value = (True, [])
 
         from src.workers.engineering_worker import _handle_engineering_success
 
@@ -230,7 +230,7 @@ class TestNotificationDecoupling:
         self, mock_ci_gate, mock_redis, mock_api
     ):
         """When deploy queuing fails, user gets a 'failed' notification."""
-        mock_ci_gate.return_value = True
+        mock_ci_gate.return_value = (True, [])
         # Make deploy task creation fail
         mock_api.post.side_effect = RuntimeError("API unreachable")
 
@@ -267,7 +267,7 @@ class TestCIGateFailClosed:
         """CI gate must fail-closed (return False) when project has no repository_url."""
         from src.workers.engineering_worker import _wait_for_ci_and_fix
 
-        result = await _wait_for_ci_and_fix(
+        passed, ci_attempts = await _wait_for_ci_and_fix(
             project={"id": "p1"},
             task_id="eng-1",
             callback_stream="po:response:abc",
@@ -275,14 +275,16 @@ class TestCIGateFailClosed:
             user_id="u1",
         )
 
-        assert result is False
+        assert passed is False
+        assert ci_attempts == []
 
     @pytest.mark.asyncio
     @patch("shared.clients.github.GitHubAppClient")
     @patch("src.workers.engineering_worker._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._record_ci_attempts", new_callable=AsyncMock)
     @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
     async def test_ci_retry_uses_pre_respawn_timestamp(
-        self, mock_publish, mock_respawn, mock_gh_cls, mock_redis
+        self, mock_publish, mock_record, mock_respawn, mock_gh_cls, mock_redis
     ):
         """On retry, created_after must be from BEFORE respawn, not after.
 
@@ -318,7 +320,7 @@ class TestCIGateFailClosed:
 
         mock_respawn.side_effect = fake_respawn
 
-        result = await _wait_for_ci_and_fix(
+        passed, ci_attempts = await _wait_for_ci_and_fix(
             project=_project(repo_url="https://github.com/org/repo"),
             task_id="eng-1",
             callback_stream="po:response:abc",
@@ -328,8 +330,11 @@ class TestCIGateFailClosed:
         )
 
         expected_attempts = 2  # attempt 0 (initial) + attempt 1 (retry)
-        assert result is True
+        assert passed is True
         assert len(captured_timestamps) == expected_attempts
+        assert len(ci_attempts) == expected_attempts
+        assert ci_attempts[0]["status"] == "failed"
+        assert ci_attempts[1]["status"] == "passed"
 
         # attempt 0: should use the developer_started_at we passed in
         assert captured_timestamps[0] == datetime(2025, 1, 1, tzinfo=UTC)
@@ -390,9 +395,10 @@ class TestCIInfraFailFast:
     @pytest.mark.asyncio
     @patch("shared.clients.github.GitHubAppClient")
     @patch("src.workers.engineering_worker._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._record_ci_attempts", new_callable=AsyncMock)
     @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
     async def test_infra_failure_skips_respawn(
-        self, mock_publish, mock_respawn, mock_gh_cls, mock_redis
+        self, mock_publish, mock_record, mock_respawn, mock_gh_cls, mock_redis
     ):
         """Infra CI failure must return False without spawning a developer."""
         from src.workers.engineering_worker import _wait_for_ci_and_fix
@@ -414,7 +420,7 @@ class TestCIInfraFailFast:
             )
         )
 
-        result = await _wait_for_ci_and_fix(
+        passed, ci_attempts = await _wait_for_ci_and_fix(
             project=_project(repo_url="https://github.com/org/repo"),
             task_id="eng-1",
             callback_stream="po:response:abc",
@@ -423,15 +429,18 @@ class TestCIInfraFailFast:
             user_id="u1",
         )
 
-        assert result is False
+        assert passed is False
+        assert len(ci_attempts) == 1
+        assert ci_attempts[0]["status"] == "failed"
         mock_respawn.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("shared.clients.github.GitHubAppClient")
     @patch("src.workers.engineering_worker._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._record_ci_attempts", new_callable=AsyncMock)
     @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
     async def test_code_failure_does_respawn(
-        self, mock_publish, mock_respawn, mock_gh_cls, mock_redis
+        self, mock_publish, mock_record, mock_respawn, mock_gh_cls, mock_redis
     ):
         """Code CI failure (lint/test) must respawn developer as before."""
         from src.workers.engineering_worker import _wait_for_ci_and_fix
@@ -457,7 +466,7 @@ class TestCIInfraFailFast:
         )
         mock_respawn.return_value = True
 
-        result = await _wait_for_ci_and_fix(
+        passed, ci_attempts = await _wait_for_ci_and_fix(
             project=_project(repo_url="https://github.com/org/repo"),
             task_id="eng-1",
             callback_stream="po:response:abc",
@@ -466,5 +475,66 @@ class TestCIInfraFailFast:
             user_id="u1",
         )
 
-        assert result is True
+        expected_ci_attempts = 2  # 1 failed + 1 passed
+        assert passed is True
+        assert len(ci_attempts) == expected_ci_attempts
+        assert ci_attempts[0]["status"] == "failed"
+        assert ci_attempts[1]["status"] == "passed"
         mock_respawn.assert_awaited_once()
+
+
+class TestRespawnDeveloperForCIFix:
+    """Tests for _respawn_developer_for_ci_fix internals."""
+
+    @pytest.mark.asyncio
+    @patch("src.clients.worker_spawner.request_spawn", new_callable=AsyncMock)
+    async def test_passes_project_id_to_request_spawn(self, mock_spawn):
+        """project_id must be forwarded to request_spawn for workspace persistence."""
+        from src.workers.engineering_worker import _respawn_developer_for_ci_fix
+
+        mock_spawn.return_value = AsyncMock(success=True)
+
+        mock_gh = AsyncMock()
+        mock_gh.get_token = AsyncMock(return_value="ghp_token")
+
+        project = {"id": "proj-abc123", "name": "my-project"}
+
+        await _respawn_developer_for_ci_fix(
+            project=project,
+            owner="org",
+            repo_name="repo",
+            repo_full_name="org/repo",
+            github_client=mock_gh,
+            failure_context="Step 'Run tests' failed",
+            attempt=1,
+        )
+
+        mock_spawn.assert_awaited_once()
+        _, kwargs = mock_spawn.call_args
+        assert kwargs.get("project_id") == "proj-abc123"
+
+    @pytest.mark.asyncio
+    @patch("src.clients.worker_spawner.request_spawn", new_callable=AsyncMock)
+    async def test_project_id_none_when_missing(self, mock_spawn):
+        """project_id=None when project dict has no 'id' key (defensive)."""
+        from src.workers.engineering_worker import _respawn_developer_for_ci_fix
+
+        mock_spawn.return_value = AsyncMock(success=True)
+
+        mock_gh = AsyncMock()
+        mock_gh.get_token = AsyncMock(return_value="ghp_token")
+
+        project = {"name": "orphan-project"}  # no "id"
+
+        await _respawn_developer_for_ci_fix(
+            project=project,
+            owner="org",
+            repo_name="repo",
+            repo_full_name="org/repo",
+            github_client=mock_gh,
+            failure_context="error",
+            attempt=1,
+        )
+
+        _, kwargs = mock_spawn.call_args
+        assert kwargs.get("project_id") is None

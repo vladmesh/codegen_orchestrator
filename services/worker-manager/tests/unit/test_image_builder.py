@@ -18,14 +18,14 @@ class TestComputeImageHash:
 
     def test_same_capabilities_different_order_produce_same_hash(self):
         """Capabilities order should not affect hash."""
-        hash1 = compute_image_hash(["GIT", "DOCKER"])
-        hash2 = compute_image_hash(["DOCKER", "GIT"])
+        hash1 = compute_image_hash(["GIT", "GITHUB_CLI"])
+        hash2 = compute_image_hash(["GITHUB_CLI", "GIT"])
         assert hash1 == hash2
 
     def test_different_capabilities_produce_different_hash(self):
         """Different capability sets must have different hashes."""
         hash1 = compute_image_hash(["GIT"])
-        hash2 = compute_image_hash(["GIT", "DOCKER"])
+        hash2 = compute_image_hash(["GIT", "GITHUB_CLI"])
         assert hash1 != hash2
 
     def test_compute_image_hash_determinism(self):
@@ -101,12 +101,6 @@ class TestImageBuilderDockerfileGeneration:
         dockerfile = builder.generate_dockerfile(capabilities=["CURL"])
         # CURL is pre-installed
         assert "LABEL" in dockerfile
-
-    def test_dockerfile_docker_capability_installs_docker_cli(self, builder):
-        """DOCKER capability should install docker CLI."""
-        dockerfile = builder.generate_dockerfile(capabilities=["DOCKER"])
-        assert "docker" in dockerfile.lower()
-        assert "apt-get" in dockerfile
 
     def test_dockerfile_preinstalled_capabilities_no_apt_install(self, builder):
         """Pre-installed capabilities (GIT, CURL) should not add apt-get."""

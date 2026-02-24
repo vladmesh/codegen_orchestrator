@@ -1,6 +1,6 @@
 # Backlog
 
-> **Актуально на**: 2026-02-17
+> **Актуально на**: 2026-02-24
 
 ## Active Design & Implementation Plans
 
@@ -50,23 +50,39 @@
 ---
 
 ### CI Monitor Node: Проверка и триаж CI failures
-**Статус**: TODO
+**Статус**: TODO (частично реализовано — ci_attempts tracking)
 
 Отдельная нода между developer и deploy. Мониторит GitHub Actions по commit_sha.
 Сейчас эту роль выполняет `_wait_for_ci_and_fix` в `engineering_worker.py` — в будущем вынести в ноду субграфа.
 
 **Текущее поведение** (`_wait_for_ci_and_fix`):
 - Поллит GitHub Actions status checks по коммиту
-- При fail — отправляет обратно девелоперу
+- При fail — респаунит developer с `project_id` (workspace persistence)
+- Трекает `ci_attempts` в `task_metadata` через API (attempt, status, failure_context)
+- Fix-worker получает подсказку про `gh run view --log` для самостоятельного анализа логов
+- Финальные сообщения обогащены: "CI passed after N failed attempt(s)" / "CI failed after N attempt(s)"
+- ПО видит историю CI попыток через `get_task_status` → `task_metadata.ci_attempts`
 
-**Целевое поведение (нода):**
-1. Мониторит CI workflows (тесты + сборка образов) по commit_sha
-2. При fail — инвестигейшн: анализирует логи CI, определяет причину
-3. Триаж: делегирует исправление нужному агенту:
+**Что остаётся для полноценной ноды:**
+1. Классификация ошибок: code vs template vs infra (fail fast на нефиксируемых)
+2. Триаж: делегирование исправления нужному агенту:
    - Ошибки кода / тесты → обратно developer
    - Ошибки инфраструктуры (Dockerfile, compose, CI config) → devops
-   - Неустранимые ошибки → пометить как fail, уведомить PO
-4. При success — передаёт управление дальше (deploy или tester)
+   - Неустранимые ошибки (template bugs) → fail fast, уведомить PO
+3. Анализ логов CI на стороне оркестратора (сейчас делегировано fix-worker'у через `gh`)
+
+---
+
+### Remove obsolete Zavhoz code and mentions
+**Статус**: TODO
+
+**Проблема**: В кодовой базе остался LLM-агент `Zavhoz` (например, в `scripts/agent_configs.yaml`), который планировался для управления ресурсами инфраструктуры. Фактически эта функциональность полностью заменена детерминированным `ResourceAllocatorNode` в Engineering-субграфе. Мертвый код и конфиги агента создают значительную путаницу в архитектуре оркестратора.
+
+**Задачи:**
+1. Удалить определение `Zavhoz` из `scripts/agent_configs.yaml` и `scripts/cli_agent_configs.yaml`.
+2. Вычистить комментарии и упоминания Zavhoz в `services/langgraph/src/tools/__init__.py` и других файлах.
+3. Проверить инструменты (`tools/servers.py`, `tools/ports.py`) на предмет завязок на агента, оставить их только для `ResourceAllocatorNode`.
+4. Удалить остаточные упоминания в документации (кроме уже очищенного `docs/resource-management.md`).
 
 ---
 
@@ -107,6 +123,42 @@ API endpoints не защищены (только x-telegram-id header).
 7. Периодическая проверка: нет ли "забытых" контейнеров от удалённых проектов (scheduler job)
 
 **Обнаружено при**: ручной чистке серверов после E2E тестов (2026-02-18).
+
+---
+
+### Workspace Failure Counter + Force Clean + Retry Limit
+**Статус**: TODO (workspace-persistence фаза 6, отложена)
+
+**Контекст**: Фазы 1-5 workspace persistence реализованы. Workspace сохраняется между попытками, агент продолжает через PROGRESS.md. Но если workspace в сломанном состоянии (битый git state, конфликтующие файлы, испорченный код), resume будет бесконечно проваливаться. Нужен механизм: N попыток resume → wipe workspace → начать заново → после M попыток сдаться.
+
+**Какие случаи рассматриваем:**
+1. **Transient failure** — агент упал по таймауту, OOM, или сетевая ошибка. Workspace валидный, resume поможет.
+2. **Broken workspace** — агент сам сломал код до некомпилируемого состояния, git в detached HEAD, merge conflict. Resume бесполезен — нужен wipe.
+3. **Невыполнимая задача** — спецификация противоречива, зависимости несовместимы. Wipe тоже не поможет — нужно сдаться и эскалировать.
+
+**Запланированная логика:**
+- Попытка 1 (count=0): fresh workspace, clone
+- Попытка 2 (count=1): resume (workspace сохранён)
+- Попытка 3 (count=2): force wipe → fresh clone
+- Попытка 4+ (count>=3): reject spawn, эскалация к PO
+
+**Открытые вопросы — кто знает статус воркера?**
+
+Worker-manager не знает, успешно ли завершился воркер. `delete_worker()` убивает контейнер, а `worker:status` отражает lifecycle (RUNNING/STOPPED), не бизнес-результат. Реальный результат (PR создан / задача провалена) знает engineering-worker в langgraph.
+
+Подходы:
+
+**A. Exit code контейнера** — worker-manager читает exit code через `docker inspect` перед удалением. Exit 0 = success, non-zero = failure. Просто, но грубо: exit code не отличает "задача не решена" от "контейнер убит по OOM".
+
+**B. Параметр в `delete_worker()`** — caller (Docker events listener или consumer) передаёт `exit_status: str`. Требует, чтобы caller знал результат, а сейчас delete вызывается из разных мест.
+
+**C. Счётчик в engineering-worker (langgraph)** — engineering-worker знает результат (PR создан? CI прошёл?). Он ведёт счётчик в Redis и решает: retry с тем же project_id, retry с force_clean, или сдаться. Worker-manager остаётся stateless. Самый чистый по разделению ответственности, но логика retry размазана между двумя сервисами.
+
+**D. Отдельный Redis key от worker-wrapper** — worker-wrapper (entrypoint контейнера) пишет `workspace:{project_id}:last_result = success|failure` перед exit. Worker-manager читает при следующем create. Простая интеграция, не требует изменений в langgraph.
+
+**Рекомендация**: Начать с D (worker-wrapper пишет результат) + логика счётчика в manager. Если окажется недостаточно — мигрировать на C.
+
+**План (из workspace-persistence.md, фаза 6)**: [workspace-persistence.md](./plans/workspace-persistence.md#фаза-6-failure-counter--force-clean--retry-limit)
 
 ---
 

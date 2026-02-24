@@ -8,6 +8,8 @@ from .config import settings
 from .manager import WorkerManager
 from .consumer import WorkerCommandConsumer
 from .events import DockerEventsListener
+from .compose_runner import ComposeRunner
+from .routers.compose import router as compose_router
 
 logger = structlog.get_logger()
 
@@ -39,6 +41,10 @@ async def lifespan(app: FastAPI):
     redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     worker_manager = WorkerManager(redis)
 
+    # Shared state for HTTP handlers
+    app.state.compose_runner = ComposeRunner(settings.WORKSPACE_BASE_PATH)
+    app.state.docker = worker_manager.docker
+
     # Start Consumer
     consumer = WorkerCommandConsumer(redis, worker_manager)
     consumer_task = asyncio.create_task(consumer.run())
@@ -59,6 +65,24 @@ async def lifespan(app: FastAPI):
         run_periodic_task(lambda: worker_manager.check_and_pause_workers(), interval=60, name="auto_pause")
     )
 
+    # Orphaned resource GC every 30 minutes (1800s)
+    orphan_gc_task = asyncio.create_task(
+        run_periodic_task(
+            lambda: worker_manager.garbage_collect_orphaned_resources(),
+            interval=1800,
+            name="orphaned_gc",
+        )
+    )
+
+    # Workspace GC every 6 hours (21600s)
+    workspace_gc_task = asyncio.create_task(
+        run_periodic_task(
+            lambda: worker_manager.garbage_collect_workspaces(max_age_hours=24),
+            interval=21600,
+            name="workspace_gc",
+        )
+    )
+
     yield
 
     # Shutdown
@@ -71,9 +95,19 @@ async def lifespan(app: FastAPI):
 
     gc_task.cancel()
     pause_task.cancel()
+    orphan_gc_task.cancel()
+    workspace_gc_task.cancel()
 
     try:
-        await asyncio.gather(consumer_task, events_task, gc_task, pause_task, return_exceptions=True)
+        await asyncio.gather(
+            consumer_task,
+            events_task,
+            gc_task,
+            pause_task,
+            orphan_gc_task,
+            workspace_gc_task,
+            return_exceptions=True,
+        )
     except Exception:
         pass
 
@@ -82,6 +116,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Worker Manager", lifespan=lifespan)
+app.include_router(compose_router)
 
 
 @app.get("/health")

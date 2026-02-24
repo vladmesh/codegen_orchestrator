@@ -98,6 +98,7 @@ async def _respawn_developer_for_ci_fix(
 
 1. The repository is already cloned to `/workspace`. Pull latest changes with `git pull`.
 2. Analyze the CI failure details above to understand the root cause.
+   - Use `gh run list --branch main` and `gh run view <run-id> --log` for full CI logs.
 3. Fix the root cause of the failure.
 4. Run any relevant checks locally (linting, tests) to verify your fix.
 5. Commit and push your fixes.
@@ -114,6 +115,7 @@ async def _respawn_developer_for_ci_fix(
         task_content=task_message,
         task_title=f"Fix CI failures for {project_name} (attempt {attempt})",
         timeout_seconds=Timeouts.WORKER_SPAWN,
+        project_id=project.get("id"),
     )
 
     return worker_result.success
@@ -127,7 +129,7 @@ async def _wait_for_ci_and_fix(
     developer_started_at: datetime | None = None,
     *,
     user_id: str = "",
-) -> bool:
+) -> tuple[bool, list[dict]]:
     """Wait for CI workflow to pass, re-spawning developer on failure.
 
     After the developer pushes code, CI runs on GitHub. This function monitors
@@ -135,16 +137,19 @@ async def _wait_for_ci_and_fix(
     the issues. Retries up to CI.MAX_FIX_RETRIES times.
 
     Returns:
-        True if CI passed (proceed to deploy), False if max retries exhausted
+        Tuple of (passed, ci_attempts) where ci_attempts is a list of dicts
+        recording each CI attempt with status and failure context.
     """
     from shared.clients.github import GitHubAppClient
 
     from ..config.constants import CI
 
+    ci_attempts: list[dict] = []
+
     repo_url = project.get("repository_url", "")
     if not repo_url or "github.com/" not in repo_url:
         logger.error("ci_check_fail_no_repo_url", task_id=task_id)
-        return False
+        return False, ci_attempts
 
     repo_full_name = repo_url.split("github.com/")[-1].rstrip("/")
     owner, repo_name = repo_full_name.split("/", 1)
@@ -195,7 +200,9 @@ async def _wait_for_ci_and_fix(
                 attempt=attempt,
                 run_id=run_info["id"],
             )
-            return True
+            ci_attempts.append({"attempt": attempt, "status": "passed"})
+            await _record_ci_attempts(task_id, ci_attempts)
+            return True, ci_attempts
 
         except RuntimeError as e:
             # CI failed
@@ -207,14 +214,6 @@ async def _wait_for_ci_and_fix(
                 error=str(e),
             )
 
-            if attempt >= CI.MAX_FIX_RETRIES:
-                logger.error(
-                    "ci_fix_retries_exhausted",
-                    task_id=task_id,
-                    max_retries=CI.MAX_FIX_RETRIES,
-                )
-                return False
-
             # Fetch failure details for context
             failure_context = ""
             if run_id:
@@ -225,6 +224,23 @@ async def _wait_for_ci_and_fix(
                 except Exception as log_err:
                     logger.warning("ci_log_fetch_failed", error=str(log_err))
 
+            ci_attempts.append(
+                {
+                    "attempt": attempt,
+                    "status": "failed",
+                    "failure_context": failure_context[:500] if failure_context else "",
+                }
+            )
+            await _record_ci_attempts(task_id, ci_attempts)
+
+            if attempt >= CI.MAX_FIX_RETRIES:
+                logger.error(
+                    "ci_fix_retries_exhausted",
+                    task_id=task_id,
+                    max_retries=CI.MAX_FIX_RETRIES,
+                )
+                return False, ci_attempts
+
             # Classify failure: infra issues can't be fixed by a developer
             if failure_context and _is_infra_failure(failure_context):
                 logger.error(
@@ -232,7 +248,7 @@ async def _wait_for_ci_and_fix(
                     task_id=task_id,
                     failure_context=failure_context,
                 )
-                return False
+                return False, ci_attempts
 
             # Capture timestamp BEFORE respawn: after the failed run is observed
             # (so it gets filtered out) but before the new push (so the new CI
@@ -262,15 +278,28 @@ async def _wait_for_ci_and_fix(
                     task_id=task_id,
                     attempt=attempt + 1,
                 )
-                return False
+                return False, ci_attempts
 
             # Loop continues: will wait for CI again
 
         except TimeoutError:
             logger.error("ci_check_timeout", task_id=task_id, attempt=attempt)
-            return False
+            ci_attempts.append({"attempt": attempt, "status": "timeout"})
+            await _record_ci_attempts(task_id, ci_attempts)
+            return False, ci_attempts
 
-    return False
+    return False, ci_attempts
+
+
+async def _record_ci_attempts(task_id: str, ci_attempts: list[dict]) -> None:
+    """Persist CI attempts to task metadata via API."""
+    try:
+        await api_client.patch(
+            f"tasks/{task_id}",
+            json={"task_metadata": {"ci_attempts": ci_attempts}},
+        )
+    except Exception as e:
+        logger.warning("ci_attempts_record_failed", task_id=task_id, error=str(e))
 
 
 async def _trigger_scaffolding(project: dict, redis: RedisStreamClient) -> None:
@@ -663,7 +692,7 @@ async def _handle_engineering_success(
         project = fresh_project
 
     # --- CI Gate: wait for ci.yml before triggering deploy ---
-    ci_passed = await _wait_for_ci_and_fix(
+    ci_passed, ci_attempts = await _wait_for_ci_and_fix(
         project=project,
         task_id=task_id,
         callback_stream=callback_stream,
@@ -672,13 +701,16 @@ async def _handle_engineering_success(
         user_id=user_id,
     )
 
+    failed_count = sum(1 for a in ci_attempts if a["status"] == "failed")
+
     if not ci_passed:
+        fail_msg = f"CI failed after {len(ci_attempts)} attempt(s), retries exhausted"
         logger.error("ci_gate_failed", task_id=task_id, project_id=project_id)
         await api_client.patch(
             f"tasks/{task_id}",
             json={
                 "status": "failed",
-                "error_message": "CI checks failed after max retries",
+                "error_message": fail_msg,
             },
         )
         await publish_callback_event(
@@ -686,13 +718,13 @@ async def _handle_engineering_success(
             callback_stream,
             "failed",
             task_id,
-            "Engineering completed but CI checks failed",
+            fail_msg,
             user_id=user_id,
             project_id=project_id,
         )
         return {
             "status": "failed",
-            "error": "CI checks failed after max retries",
+            "error": fail_msg,
             "finished_at": datetime.now(UTC).isoformat(),
         }
 
@@ -710,6 +742,10 @@ async def _handle_engineering_success(
         },
     )
 
+    ci_summary = "CI passed"
+    if failed_count:
+        ci_summary = f"CI passed after {failed_count} failed attempt(s)"
+
     if skip_deploy:
         # This IS the final step — tell user we're done
         await publish_callback_event(
@@ -717,7 +753,7 @@ async def _handle_engineering_success(
             callback_stream,
             "completed",
             task_id,
-            "Engineering task completed, CI passed",
+            f"Engineering task completed, {ci_summary}",
             user_id=user_id,
             project_id=project_id,
         )
@@ -728,7 +764,7 @@ async def _handle_engineering_success(
             callback_stream,
             "progress",
             task_id,
-            "CI passed, deploying...",
+            f"{ci_summary}, deploying...",
             user_id=user_id,
             project_id=project_id,
         )

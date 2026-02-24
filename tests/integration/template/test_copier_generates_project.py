@@ -72,7 +72,7 @@ class TestCopierGeneratesProject:
             "mypy.ini",
             ".copier-answers.yml",
             "infra/compose.base.yml",
-            ".github/workflows/main.yml",
+            ".github/workflows/ci.yml",
         ]
 
         for file in required_files:

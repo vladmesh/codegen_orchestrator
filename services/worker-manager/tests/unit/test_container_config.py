@@ -48,19 +48,6 @@ class TestWorkerContainerConfig:
         env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
         assert env["ANTHROPIC_API_KEY"] == "sk-ant-test"
 
-    def test_docker_capability_adds_socket_mount(self):
-        """DOCKER capability should mount docker.sock."""
-        config = WorkerContainerConfig(
-            worker_id="test-1",
-            worker_type="developer",
-            agent_type="claude",
-            capabilities=["DOCKER"],
-            auth_mode="host_session",
-        )
-        volumes = config.to_volume_mounts()
-        assert "/var/run/docker.sock" in volumes
-        assert volumes["/var/run/docker.sock"]["bind"] == "/var/run/docker.sock"
-
     def test_to_docker_run_kwargs_defaults_to_host_network(self):
         """Without network_name, should use host networking."""
         config = WorkerContainerConfig(
@@ -84,3 +71,55 @@ class TestWorkerContainerConfig:
         kwargs = config.to_docker_run_kwargs(network_name="test-network")
         assert kwargs["network"] == "test-network"
         assert "network_mode" not in kwargs
+
+    def test_workspace_bind_mount(self):
+        """When workspace_host_path is set, should add bind mount to /workspace."""
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="claude",
+            capabilities=[],
+            workspace_host_path="/tmp/codegen/workspaces/test-1/workspace",
+        )
+        volumes = config.to_volume_mounts()
+        assert "/tmp/codegen/workspaces/test-1/workspace" in volumes
+        assert volumes["/tmp/codegen/workspaces/test-1/workspace"]["bind"] == "/workspace"
+        assert volumes["/tmp/codegen/workspaces/test-1/workspace"]["mode"] == "rw"
+
+    def test_no_workspace_when_path_not_set(self):
+        """When workspace_host_path is None, no /workspace mount should be added."""
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="claude",
+            capabilities=[],
+        )
+        volumes = config.to_volume_mounts()
+        # No workspace mount
+        assert all(v.get("bind") != "/workspace" for v in volumes.values())
+
+    def test_worker_manager_url_env_var(self):
+        """When worker_manager_url is provided, ORCHESTRATOR_WORKER_MANAGER_URL should be set."""
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="claude",
+            capabilities=[],
+        )
+        env = config.to_env_vars(
+            redis_url="redis://r",
+            api_url="http://api",
+            worker_manager_url="http://worker-manager:8000",
+        )
+        assert env["ORCHESTRATOR_WORKER_MANAGER_URL"] == "http://worker-manager:8000"
+
+    def test_worker_manager_url_absent_when_not_provided(self):
+        """When worker_manager_url is not provided, env var should not be set."""
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="claude",
+            capabilities=[],
+        )
+        env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
+        assert "ORCHESTRATOR_WORKER_MANAGER_URL" not in env

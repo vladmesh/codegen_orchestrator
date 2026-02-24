@@ -122,9 +122,14 @@ async def test_claude_instructions_injected(redis_client, docker_client):
 
     container = await wait_for_container()
 
-    # Check content
-    exit_code, output = container.exec_run("cat /workspace/CLAUDE.md")
-    assert exit_code == 0
+    # Check content (CLAUDE.md is written by worker-wrapper entrypoint after start — retry)
+    @retry(stop=stop_after_delay(TEST_TIMEOUT), wait=wait_fixed(1))
+    async def wait_for_claude_md():
+        ec, out = container.exec_run("cat /workspace/CLAUDE.md")
+        assert ec == 0, f"CLAUDE.md not found: {out.decode()}"
+        return out
+
+    output = await wait_for_claude_md()
     assert instructions in output.decode()
 
 

@@ -25,7 +25,7 @@ Codegen Orchestrator — мультиагентная система для ав
 Возможности Developer агента конфигурируются через `WorkerConfig.capabilities`:
 - `git`, `github` — работа с репозиториями
 - `python`, `node` — runtime environments
-- `docker` — Docker-in-Docker через Sysbox
+- Docker больше не предоставляется внутри контейнера (DinD удален). Инфраструктура поднимается через прокси-команды `orchestrator dev-env`.
 
 ## Сервисы
 
@@ -33,9 +33,9 @@ Codegen Orchestrator — мультиагентная система для ав
 |--------|----------|
 | `api` | FastAPI + SQLAlchemy — проекты, серверы, users, configs |
 | `telegram_bot` | Telegram интерфейс (PO via Redis Streams) |
-| `worker-manager` | Docker контейнеры с CLI агентами |
+| `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment) |
 | `langgraph` | Engineering/DevOps subgraphs |
-| `scheduler` | Background tasks (sync, health checks) |
+| `scheduler` | Background tasks (sync, health checks, garbage collection) |
 | `scaffolder` | Copier runner для scaffolding (бывший preparer) |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
 

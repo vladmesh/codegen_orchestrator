@@ -109,6 +109,7 @@ async def request_spawn(
     model: str = "claude-sonnet-4-5-20250929",
     agents_content: str | None = None,
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
+    project_id: str | None = None,
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 
@@ -157,8 +158,9 @@ async def request_spawn(
                     "GITHUB_TOKEN": github_token,
                     "REPO_NAME": repo,
                 },
+                project_id=project_id,
             ),
-            context={"source": "langgraph", "repo": repo},
+            context={"source": "langgraph", "repo": repo, "project_id": project_id or ""},
         )
 
         await redis_client.xadd(COMMAND_STREAM, {"data": create_cmd.model_dump_json()})
