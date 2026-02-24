@@ -68,11 +68,11 @@ _wait_for_ci_and_fix():
 
 ---
 
-## Iteration 1: Wrapper multi-turn support
+## Iteration 1: Wrapper multi-turn support ✅
 
 > Wrapper перестаёт завершаться после первого результата и ждёт следующий input.
 
-### 1.1 Wrapper: consume loop вместо one-shot
+### 1.1 Wrapper: consume loop вместо one-shot ✅
 
 **File**: `packages/worker-wrapper/src/worker_wrapper/wrapper.py`
 
@@ -80,115 +80,80 @@ Wrapper уже использует `async for message in self.redis.consume(...
 
 **Изменения**:
 - Нет изменений в wrapper. Он уже multi-turn по дизайну — `consume()` loop продолжается пока контейнер жив.
-- Убедиться что lifecycle event `completed` не триггерит delete.
+- Подтверждено: lifecycle event `completed` не триггерит delete (worker-manager consumer обрабатывает только Create/Delete/StatusWorkerCommand).
 
-**Тесты**:
-- Юнит-тест: wrapper обрабатывает 2+ сообщения последовательно
-- Юнит-тест: после publish output wrapper продолжает слушать input stream
+**Тесты**: `packages/worker-wrapper/tests/unit/test_multi_turn.py`
+- ✅ `test_wrapper_processes_multiple_messages` — wrapper обрабатывает 2+ сообщения последовательно
+- ✅ `test_wrapper_continues_after_publishing_output` — после publish output wrapper продолжает слушать
 
-### 1.2 Wrapper: git pull перед каждым turn
-
-**File**: `packages/worker-wrapper/src/worker_wrapper/wrapper.py`
-
-Между turns agent мог пушить код, а затем CI failed. Перед запуском agent в новом turn нужно обновить workspace.
-
-**Изменения** в `process_message()`:
-```python
-# Before execute_agent, pull latest changes
-await self._git_pull()
-```
-
-Метод `_git_pull()`:
-```python
-async def _git_pull(self):
-    """Pull latest changes before next agent turn."""
-    result = subprocess.run(
-        ["/usr/bin/git", "pull", "--rebase=false"],
-        cwd=WORKSPACE_DIR,
-        capture_output=True, text=True, timeout=60,
-    )
-    if result.returncode != 0:
-        logger.warning("git_pull_failed", stderr=result.stderr)
-```
-
-**Тесты**:
-- Юнит-тест: `_git_pull()` вызывается перед каждым `execute_agent()`
-
-### 1.3 Wrapper: обновление TASK.md перед каждым turn
+### 1.2 Wrapper: git pull перед каждым turn ✅
 
 **File**: `packages/worker-wrapper/src/worker_wrapper/wrapper.py`
 
-Новый prompt приходит в `data["prompt"]`. Нужно записать его в TASK.md чтобы agent видел актуальное задание.
+**Изменения**: добавлен метод `_git_pull()` и вызов в `process_message()` перед `execute_agent()`. Реализация совпадает с планом.
 
-**Изменения** в `process_message()`:
-```python
-# Update TASK.md with new prompt (CI fix context)
-prompt = data.get("prompt", "")
-if prompt:
-    self._write_task_md(prompt)
-```
+**Тесты**: `packages/worker-wrapper/tests/unit/test_multi_turn.py`
+- ✅ `test_git_pull_called_before_execute_agent`
+- ✅ `test_git_pull_called_before_each_turn`
+- ✅ `test_git_pull_runs_git_command`
+- ✅ `test_git_pull_failure_does_not_crash`
 
-**Тесты**:
-- Юнит-тест: TASK.md обновляется перед каждым execute_agent
+### 1.3 Wrapper: обновление TASK.md перед каждым turn ✅
+
+**File**: `packages/worker-wrapper/src/worker_wrapper/wrapper.py`
+
+**Изменения**: добавлен метод `_write_task_md(prompt)` и вызов в `process_message()`. Добавлена константа `TASK_MD_PATH = "/home/worker/TASK.md"`.
+
+<!-- Отклонение от плана: добавлен `_write_task_md` как отдельный метод (в плане был inline-код).
+     Также добавлена обработка OSError с логированием warning, чтобы ошибка записи TASK.md
+     не крашила весь wrapper. TASK.md обновляется только при наличии "prompt" в data —
+     content-based сообщения (PO workers) не перезаписывают TASK.md. -->
+
+**Тесты**: `packages/worker-wrapper/tests/unit/test_multi_turn.py`
+- ✅ `test_task_md_updated_before_execute_agent`
+- ✅ `test_task_md_updated_each_turn`
+- ✅ `test_write_task_md_writes_file`
+- ✅ `test_no_task_md_update_when_no_prompt`
 
 ---
 
-## Iteration 2: Spawner multi-turn API
+## Iteration 2: Spawner multi-turn API ✅
 
 > `request_spawn()` разделяется на create + send_task + wait_output + delete.
 
-### 2.1 Новый API: `send_task_to_worker()`
+### 2.1 Новый API: `send_task_to_worker()` ✅
 
 **File**: `services/langgraph/src/clients/worker_spawner.py`
 
-Новая функция — отправить задачу в существующий worker и дождаться результата:
+Реализована функция `send_task_to_worker()` по плану. Переиспользует `_wait_for_response()` для ожидания output.
 
-```python
-async def send_task_to_worker(
-    worker_id: str,
-    task_content: str,
-    timeout_seconds: int = Timeouts.WORKER_SPAWN,
-) -> SpawnResult:
-    """Send a new task to an existing worker and wait for output."""
-```
+<!-- Отклонение от плана: send_task_to_worker() также возвращает worker_id в SpawnResult
+     (для удобства caller'а), хотя в плане это не было явно указано. -->
 
-Логика:
-1. `XADD worker:{worker_id}:input {prompt: task_content}`
-2. Wait for output on `worker:{worker_id}:output`
-3. Return `SpawnResult`
+**Тесты**: `services/langgraph/tests/unit/test_worker_spawner_multi_turn.py`
+- ✅ `test_sends_prompt_to_input_stream_and_waits_output`
+- ✅ `test_returns_failure_on_timeout`
+- ✅ `test_returns_failure_on_worker_error` (доп. тест — worker отвечает status=failed)
 
-Не создаёт контейнер, не шлёт `CreateWorkerCommand`.
-
-**Тесты**:
-- Юнит-тест: `send_task_to_worker()` публикует в input stream и ждёт output
-- Юнит-тест: timeout возвращает `SpawnResult(success=False)`
-
-### 2.2 Новый API: `delete_worker()`
+### 2.2 Новый API: `delete_worker()` ✅
 
 **File**: `services/langgraph/src/clients/worker_spawner.py`
 
-Явное удаление worker по `worker_id`:
+Реализована по плану.
 
-```python
-async def delete_worker(worker_id: str) -> None:
-    """Send DeleteWorkerCommand for a worker."""
-```
+**Тесты**: `services/langgraph/tests/unit/test_worker_spawner_multi_turn.py`
+- ✅ `test_publishes_delete_command`
 
-Сейчас delete шлётся только при timeout в `request_spawn()`. Нужен явный вызов.
-
-**Тесты**:
-- Юнит-тест: `delete_worker()` публикует `DeleteWorkerCommand`
-
-### 2.3 Рефакторинг `request_spawn()`
+### 2.3 Рефакторинг `request_spawn()` ✅
 
 **File**: `services/langgraph/src/clients/worker_spawner.py`
 
-`request_spawn()` остаётся как есть для обратной совместимости (initial spawn). Но теперь возвращает `worker_id` в `SpawnResult` чтобы caller мог шлёт follow-up задачи.
+`SpawnResult` получил поле `worker_id: str | None = None`. `request_spawn()` заполняет его из creation response.
 
-**Изменение**: `SpawnResult` уже содержит `request_id`. Добавить `worker_id: str | None = None`.
-
-**Тесты**:
-- Юнит-тест: `SpawnResult` содержит `worker_id` после успешного spawn
+**Тесты**: `services/langgraph/tests/unit/test_worker_spawner_multi_turn.py`
+- ✅ `test_spawn_result_has_worker_id_field`
+- ✅ `test_spawn_result_accepts_worker_id`
+- ✅ `test_request_spawn_returns_worker_id`
 
 ---
 

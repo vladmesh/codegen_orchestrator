@@ -12,6 +12,7 @@ from .config import WorkerWrapperConfig
 logger = structlog.get_logger(__name__)
 
 WORKSPACE_DIR = "/workspace"
+TASK_MD_PATH = "/home/worker/TASK.md"
 
 
 class WorkerWrapper:
@@ -90,7 +91,14 @@ class WorkerWrapper:
         # 1. Lifecycle: Started
         await self.publish_lifecycle("started", msg_id)
 
-        # 2. Execute
+        # 2. Pre-turn: pull latest changes and update TASK.md
+        await self._git_pull()
+
+        prompt = data.get("prompt")
+        if prompt:
+            self._write_task_md(prompt)
+
+        # 3. Execute
         try:
             result = await self.execute_agent(data)
             status = "completed"
@@ -101,7 +109,7 @@ class WorkerWrapper:
             error = str(e)
             status = "failed"
 
-        # 3. Publish Result to output stream (success or error)
+        # 4. Publish Result to output stream (success or error)
         if result:
             await self.redis.publish(self.config.output_stream, result)
         elif error:
@@ -110,8 +118,29 @@ class WorkerWrapper:
                 {"status": "failed", "error": error},
             )
 
-        # 4. Lifecycle: Completed/Failed
+        # 5. Lifecycle: Completed/Failed
         await self.publish_lifecycle(status, msg_id, result=result, error=error)
+
+    async def _git_pull(self):
+        """Pull latest changes before next agent turn."""
+        result = subprocess.run(
+            ["/usr/bin/git", "pull", "--rebase=false"],  # noqa: S603
+            cwd=WORKSPACE_DIR,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            logger.warning("git_pull_failed", stderr=result.stderr)
+
+    def _write_task_md(self, prompt: str):
+        """Write prompt to TASK.md so agent sees the updated task."""
+        try:
+            with open(TASK_MD_PATH, "w") as f:
+                f.write(prompt)
+            logger.info("task_md_updated", path=TASK_MD_PATH)
+        except OSError as e:
+            logger.warning("task_md_write_failed", error=str(e))
 
     def _get_git_head(self) -> str | None:
         """Get current HEAD SHA in workspace. Returns None if not a git repo or on error."""

@@ -43,6 +43,7 @@ class SpawnResult:
     files_changed: list[str] | None = None
     error_message: str | None = None
     logs_tail: str | None = None
+    worker_id: str | None = None
 
 
 async def _wait_for_response(
@@ -221,6 +222,7 @@ async def request_spawn(
                 branch=output_resp.get("branch"),
                 files_changed=output_resp.get("files_changed"),
                 error_message=output_resp.get("error"),
+                worker_id=worker_id,
             )
         else:
             # Timeout - cleanup the zombie container
@@ -259,4 +261,102 @@ async def request_spawn(
                 await redis_client.xgroup_destroy(f"worker:{worker_id}:output", group_name)
             except Exception as e:
                 logger.debug("cleanup_output_group_failed", error=str(e))
+        await redis_client.aclose()
+
+
+async def send_task_to_worker(
+    worker_id: str,
+    task_content: str,
+    timeout_seconds: int = Timeouts.WORKER_SPAWN,
+) -> SpawnResult:
+    """Send a new task to an existing worker and wait for output.
+
+    Unlike request_spawn(), this does NOT create a new container.
+    It sends a prompt to the worker's input stream and waits for output.
+    """
+    request_id = str(uuid.uuid4())
+    settings = get_settings()
+    redis_client = redis.from_url(settings.redis_url)
+
+    consumer_id = f"langgraph-reuse-{request_id[:8]}"
+    group_name = f"langgraph-reuse-{request_id[:8]}"
+
+    input_stream = f"worker:{worker_id}:input"
+    output_stream = f"worker:{worker_id}:output"
+
+    try:
+        # 1. Set up output stream consumer group BEFORE sending task
+        try:
+            await redis_client.xgroup_create(output_stream, group_name, id="$", mkstream=True)
+        except redis.ResponseError as e:
+            if "BUSYGROUP" not in str(e):
+                raise
+
+        # 2. Send task to worker input stream
+        task_message = {
+            "request_id": request_id,
+            "prompt": task_content,
+        }
+        await redis_client.xadd(input_stream, {"data": json.dumps(task_message)})
+        logger.info(
+            "task_sent_to_existing_worker",
+            request_id=request_id,
+            worker_id=worker_id,
+        )
+
+        # 3. Wait for output
+        output_resp = await _wait_for_response(
+            redis_client, group_name, consumer_id, None, float(timeout_seconds), output_stream
+        )
+
+        if output_resp:
+            is_success = output_resp.get("status") == "success" or output_resp.get("success", False)
+            content = output_resp.get(
+                "content", output_resp.get("response", output_resp.get("output", ""))
+            )
+            return SpawnResult(
+                request_id=request_id,
+                success=is_success,
+                exit_code=0 if is_success else 1,
+                output=content,
+                commit_sha=output_resp.get("commit_sha"),
+                branch=output_resp.get("branch"),
+                files_changed=output_resp.get("files_changed"),
+                error_message=output_resp.get("error"),
+                worker_id=worker_id,
+            )
+        else:
+            return SpawnResult(
+                request_id=request_id,
+                success=False,
+                exit_code=-1,
+                output=f"Timeout after {timeout_seconds}s waiting for worker output.",
+                error_message="execution_timeout",
+                worker_id=worker_id,
+            )
+
+    except Exception as e:
+        logger.error("send_task_failed", error=str(e), worker_id=worker_id)
+        return SpawnResult(request_id, False, -1, str(e), worker_id=worker_id)
+    finally:
+        try:
+            await redis_client.xgroup_destroy(output_stream, group_name)
+        except Exception as e:
+            logger.debug("cleanup_output_group_failed", error=str(e))
+        await redis_client.aclose()
+
+
+async def delete_worker(worker_id: str) -> None:
+    """Send DeleteWorkerCommand for a worker."""
+    settings = get_settings()
+    redis_client = redis.from_url(settings.redis_url)
+
+    try:
+        delete_cmd = DeleteWorkerCommand(
+            request_id=f"delete-{worker_id}",
+            worker_id=worker_id,
+        )
+        await redis_client.xadd(COMMAND_STREAM, {"data": delete_cmd.model_dump_json()})
+        logger.info("worker_delete_requested", worker_id=worker_id)
+    finally:
         await redis_client.aclose()
