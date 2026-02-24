@@ -83,10 +83,10 @@ class TestDevEnvIntegration:
         exit_code, output = container.exec_run("ls /workspace/test.txt")
         assert exit_code == 0, f"File not found: {output.decode()}"
 
-    async def test_compose_rejects_ports(self, redis_client, docker_client):
-        """POST compose with ports in compose.yml should return 400."""
+    async def test_compose_rejects_absolute_volumes(self, redis_client, docker_client):
+        """POST compose with absolute volume mounts should return 400."""
         req_id = f"dev-env-{uuid4().hex[:6]}"
-        worker_name = f"test-ports-{req_id}"
+        worker_name = f"test-vols-{req_id}"
 
         cmd = CreateWorkerCommand(
             request_id=req_id,
@@ -104,17 +104,18 @@ class TestDevEnvIntegration:
         result = await wait_for_create_response(redis_client, req_id)
         assert result.success, f"Worker creation failed: {result.error}"
 
-        # Write compose file with ports inside the container workspace
+        # Write compose file with absolute volume mount inside the container
         container = docker_client.containers.get(f"worker-{worker_name}")
         compose_yml = (
-            "services:\\n  db:\\n    image: postgres:16\\n" "    ports:\\n      - '5432:5432'\\n"
+            "services:\\n  db:\\n    image: postgres:16\\n"
+            "    volumes:\\n      - /etc/passwd:/etc/passwd\\n"
         )
         exit_code, _ = container.exec_run(
             f"sh -c \"echo -e '{compose_yml}' > /workspace/docker-compose.yml\""
         )
         assert exit_code == 0
 
-        # POST to compose proxy should reject ports
+        # POST to compose proxy should reject absolute volume mounts
         async with httpx.AsyncClient(base_url=WORKER_MANAGER_URL) as client:
             response = await client.post(
                 f"/api/worker/{worker_name}/infra/compose",
@@ -122,7 +123,7 @@ class TestDevEnvIntegration:
             )
 
         assert response.status_code == 400
-        assert "ports" in response.json()["detail"].lower()
+        assert "absolute" in response.json()["detail"].lower()
 
     async def test_delete_cleans_everything(self, redis_client, docker_client):
         """Create worker -> delete -> verify container gone."""

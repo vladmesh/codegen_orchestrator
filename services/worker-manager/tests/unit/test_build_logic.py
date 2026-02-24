@@ -209,6 +209,7 @@ class TestWorkerManagerCreateWithCapabilities:
         docker.create_network = AsyncMock()
         docker.connect_network = AsyncMock()
         docker.run_container = AsyncMock()
+        docker.exec_in_container = AsyncMock(return_value=(0, b""))
         container = MagicMock()
         container.id = "container-123"
         docker.run_container.return_value = container

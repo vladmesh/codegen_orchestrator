@@ -41,8 +41,9 @@ async def lifespan(app: FastAPI):
     redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     worker_manager = WorkerManager(redis)
 
-    # Compose runner (shared across requests via app.state)
+    # Shared state for HTTP handlers
     app.state.compose_runner = ComposeRunner(settings.WORKSPACE_BASE_PATH)
+    app.state.docker = worker_manager.docker
 
     # Start Consumer
     consumer = WorkerCommandConsumer(redis, worker_manager)

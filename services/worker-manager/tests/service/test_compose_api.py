@@ -10,11 +10,15 @@ from src.compose_runner import ComposeRunner
 
 @pytest.fixture
 def client(tmp_path):
-    """Test client with a mocked compose runner in app state."""
+    """Test client with a mocked compose runner and docker client in app state."""
     runner = MagicMock(spec=ComposeRunner)
     runner.run = AsyncMock(return_value=(0, "output\n", ""))
 
+    docker = MagicMock()
+    docker.exec_in_container = AsyncMock(side_effect=Exception("no container"))
+
     app.state.compose_runner = runner
+    app.state.docker = docker
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c, runner
 

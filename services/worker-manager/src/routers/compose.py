@@ -29,42 +29,52 @@ async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> 
     if not cmd_result.valid:
         raise HTTPException(status_code=400, detail="; ".join(cmd_result.errors))
 
-    # 2. Get compose runner from app state
+    # 2. Get compose runner and docker client from app state
     runner: ComposeRunner = req.app.state.compose_runner
+    docker = req.app.state.docker
 
     # 3. Resolve and validate compose file(s)
     from pathlib import Path
     from ..config import settings
 
     workspace_path = Path(settings.WORKSPACE_BASE_PATH) / worker_id / "workspace"
-    if workspace_path.exists():
-        # Collect compose file paths from -f/--file flags, or default to docker-compose.yml
-        compose_files: list[str] = []
-        args_iter = iter(request.args)
-        for arg in args_iter:
-            if arg in ("-f", "--file"):
-                try:
-                    compose_files.append(next(args_iter))
-                except StopIteration:
-                    break
-        if not compose_files:
-            compose_files = ["docker-compose.yml"]
+    container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
 
-        for cf in compose_files:
-            # Resolve and check path traversal
-            resolved, path_result = resolve_compose_path(cf, workspace_path)
-            if not path_result.valid:
-                raise HTTPException(status_code=400, detail="; ".join(path_result.errors))
-            # Validate compose file content if it exists
-            if resolved.exists():
-                file_result = validate_compose_file(resolved.read_text())
+    # Collect compose file paths from -f/--file flags, or default to docker-compose.yml
+    compose_files: list[str] = []
+    args_iter = iter(request.args)
+    for arg in args_iter:
+        if arg in ("-f", "--file"):
+            try:
+                compose_files.append(next(args_iter))
+            except StopIteration:
+                break
+    if not compose_files:
+        compose_files = ["docker-compose.yml"]
+
+    for cf in compose_files:
+        # Check path traversal (works without filesystem access)
+        _, path_result = resolve_compose_path(cf, workspace_path)
+        if not path_result.valid:
+            raise HTTPException(status_code=400, detail="; ".join(path_result.errors))
+
+        # Read compose file from inside the worker container.
+        # This works in DinD where the host filesystem doesn't reflect container writes.
+        try:
+            exit_code, output = await docker.exec_in_container(container_name, f"cat /workspace/{cf}", user="root")
+            if exit_code == 0:
+                file_result = validate_compose_file(output.decode())
                 if not file_result.valid:
                     raise HTTPException(status_code=400, detail="; ".join(file_result.errors))
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # Container unreachable or file missing — compose will fail naturally
 
-        # Check path traversal in cwd
-        _, cwd_result = resolve_compose_path(request.cwd, workspace_path)
-        if not cwd_result.valid:
-            raise HTTPException(status_code=400, detail="; ".join(cwd_result.errors))
+    # Check path traversal in cwd
+    _, cwd_result = resolve_compose_path(request.cwd, workspace_path)
+    if not cwd_result.valid:
+        raise HTTPException(status_code=400, detail="; ".join(cwd_result.errors))
 
     # 4. Run compose
     try:
