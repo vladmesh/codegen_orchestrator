@@ -101,11 +101,14 @@ class WorkerWrapper:
             error = str(e)
             status = "failed"
 
-        # 3. Publish Result (if successful, or error result?)
-        # Convention: Output stream gets result or error wrapped?
-        # Usually output stream is for next step in graph.
+        # 3. Publish Result to output stream (success or error)
         if result:
             await self.redis.publish(self.config.output_stream, result)
+        elif error:
+            await self.redis.publish(
+                self.config.output_stream,
+                {"status": "failed", "error": error},
+            )
 
         # 4. Lifecycle: Completed/Failed
         await self.publish_lifecycle(status, msg_id, result=result, error=error)
