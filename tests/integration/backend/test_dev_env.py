@@ -107,11 +107,18 @@ class TestDevEnvIntegration:
         # Write compose file with absolute volume mount inside the container
         container = docker_client.containers.get(f"worker-{worker_name}")
         compose_yml = (
-            "services:\\n  db:\\n    image: postgres:16\\n"
-            "    volumes:\\n      - /etc/passwd:/etc/passwd\\n"
+            "services:\n"
+            "  db:\n"
+            "    image: postgres:16\n"
+            "    volumes:\n"
+            "      - /etc/passwd:/etc/passwd\n"
         )
         exit_code, _ = container.exec_run(
-            f"sh -c \"echo -e '{compose_yml}' > /workspace/docker-compose.yml\""
+            [
+                "sh",
+                "-c",
+                f"cat > /workspace/docker-compose.yml << 'EOFCOMPOSE'\n{compose_yml}EOFCOMPOSE",
+            ]
         )
         assert exit_code == 0
 

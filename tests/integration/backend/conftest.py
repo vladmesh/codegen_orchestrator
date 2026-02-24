@@ -85,19 +85,24 @@ async def cleanup_redis_streams(redis_client):
     await cleanup()
 
 
+_SKIP_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules"}
+
+
 def _content_hash(*paths: str) -> str:
     """SHA256 hash of file/directory contents for cache invalidation."""
     h = hashlib.sha256()
     for path in sorted(paths):
         if os.path.isfile(path):
-            h.update(open(path, "rb").read())
+            with open(path, "rb") as f:
+                h.update(f.read())
         elif os.path.isdir(path):
             for root, dirs, files in os.walk(path):
-                dirs.sort()
+                dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS)
                 for f in sorted(files):
                     fp = os.path.join(root, f)
                     h.update(fp.encode())
-                    h.update(open(fp, "rb").read())
+                    with open(fp, "rb") as fh:
+                        h.update(fh.read())
     return h.hexdigest()[:12]
 
 
