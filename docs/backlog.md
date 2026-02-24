@@ -123,6 +123,42 @@ API endpoints не защищены (только x-telegram-id header).
 
 ---
 
+### Workspace Failure Counter + Force Clean + Retry Limit
+**Статус**: TODO (workspace-persistence фаза 6, отложена)
+
+**Контекст**: Фазы 1-5 workspace persistence реализованы. Workspace сохраняется между попытками, агент продолжает через PROGRESS.md. Но если workspace в сломанном состоянии (битый git state, конфликтующие файлы, испорченный код), resume будет бесконечно проваливаться. Нужен механизм: N попыток resume → wipe workspace → начать заново → после M попыток сдаться.
+
+**Какие случаи рассматриваем:**
+1. **Transient failure** — агент упал по таймауту, OOM, или сетевая ошибка. Workspace валидный, resume поможет.
+2. **Broken workspace** — агент сам сломал код до некомпилируемого состояния, git в detached HEAD, merge conflict. Resume бесполезен — нужен wipe.
+3. **Невыполнимая задача** — спецификация противоречива, зависимости несовместимы. Wipe тоже не поможет — нужно сдаться и эскалировать.
+
+**Запланированная логика:**
+- Попытка 1 (count=0): fresh workspace, clone
+- Попытка 2 (count=1): resume (workspace сохранён)
+- Попытка 3 (count=2): force wipe → fresh clone
+- Попытка 4+ (count>=3): reject spawn, эскалация к PO
+
+**Открытые вопросы — кто знает статус воркера?**
+
+Worker-manager не знает, успешно ли завершился воркер. `delete_worker()` убивает контейнер, а `worker:status` отражает lifecycle (RUNNING/STOPPED), не бизнес-результат. Реальный результат (PR создан / задача провалена) знает engineering-worker в langgraph.
+
+Подходы:
+
+**A. Exit code контейнера** — worker-manager читает exit code через `docker inspect` перед удалением. Exit 0 = success, non-zero = failure. Просто, но грубо: exit code не отличает "задача не решена" от "контейнер убит по OOM".
+
+**B. Параметр в `delete_worker()`** — caller (Docker events listener или consumer) передаёт `exit_status: str`. Требует, чтобы caller знал результат, а сейчас delete вызывается из разных мест.
+
+**C. Счётчик в engineering-worker (langgraph)** — engineering-worker знает результат (PR создан? CI прошёл?). Он ведёт счётчик в Redis и решает: retry с тем же project_id, retry с force_clean, или сдаться. Worker-manager остаётся stateless. Самый чистый по разделению ответственности, но логика retry размазана между двумя сервисами.
+
+**D. Отдельный Redis key от worker-wrapper** — worker-wrapper (entrypoint контейнера) пишет `workspace:{project_id}:last_result = success|failure` перед exit. Worker-manager читает при следующем create. Простая интеграция, не требует изменений в langgraph.
+
+**Рекомендация**: Начать с D (worker-wrapper пишет результат) + логика счётчика в manager. Если окажется недостаточно — мигрировать на C.
+
+**План (из workspace-persistence.md, фаза 6)**: [workspace-persistence.md](./plans/workspace-persistence.md#фаза-6-failure-counter--force-clean--retry-limit)
+
+---
+
 ### Worker Reuse for CI Fix Loop
 **Статус**: TODO
 
