@@ -492,9 +492,10 @@ class WorkerManager:
             config.workspace_host_path = workspace_mod.get_workspace_host_path(settings.WORKSPACE_BASE_PATH, worker_id)
 
         # Generate container params
-        # Use bridge-network URLs (services reachable via Docker DNS in bridge mode)
-        worker_redis_url = "redis://redis:6379"
-        worker_api_url = "http://api:8000"
+        # WORKER_REDIS_URL/WORKER_API_URL override for DinD (workers can't resolve compose DNS).
+        # Default: bridge-network URLs (services reachable via Docker DNS in bridge mode).
+        worker_redis_url = settings.WORKER_REDIS_URL or "redis://redis:6379"
+        worker_api_url = settings.WORKER_API_URL or "http://api:8000"
         container_env = config.to_env_vars(
             redis_url=worker_redis_url,
             api_url=worker_api_url,

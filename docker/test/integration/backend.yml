@@ -31,6 +31,7 @@ services:
     build:
       context: ../../..
       dockerfile: services/worker-manager/Dockerfile
+    user: root  # Required for Docker daemon access and workspace chown (matches production)
     environment:
       - REDIS_URL=redis://172.29.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
