@@ -389,11 +389,17 @@ class WorkerManager:
         api_key: str | None = None,
         env_vars: Dict[str, str] = None,
         worker_type: str = "developer",
+        project_id: str | None = None,
     ) -> str:
         """
         Create worker with specified capabilities and agent config.
         Injects instructions (-> instruction file) and task_content (-> TASK.md) if provided.
         """
+        logger.info(
+            "create_worker_with_capabilities",
+            worker_id=worker_id,
+            project_id=project_id,
+        )
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
         env_vars = env_vars or {}
 

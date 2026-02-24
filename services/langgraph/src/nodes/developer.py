@@ -116,12 +116,14 @@ class DeveloperNode(FunctionalNode):
             task_title = self._get_task_title(action, project_name)
 
             # Spawn worker to implement business logic
+            project_id = project_spec.get("id")
             worker_result = await request_spawn(
                 repo=repo_full_name,
                 github_token=access_token,
                 task_content=task_message,
                 task_title=task_title,
                 timeout_seconds=Timeouts.WORKER_SPAWN,
+                project_id=project_id,
             )
 
             if worker_result.success:

@@ -44,6 +44,7 @@ class WorkerConfig(BaseModel):
     auth_mode: Literal["host_session", "api_key"] = "host_session"
     host_claude_dir: str | None = None
     api_key: str | None = None
+    project_id: str | None = None  # Project ID for workspace persistence
 
 
 class CreateWorkerCommand(QueueMeta):
