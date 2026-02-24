@@ -87,9 +87,19 @@ worker_result = await request_spawn(
 
 ---
 
-## Фаза 2: Workspace по project_id
+## Фаза 2: Workspace по project_id ✅
 
-### 2.1 Изменить workspace path
+> **Статус**: выполнена.
+> **Отклонения от плана**:
+> 1. `get_or_create_project_workspace()` — `mkdir(parents=True, exist_ok=True)` вызывается безусловно (идемпотентно), вместо ветвления `if not already_existed`. Проще, результат тот же.
+> 2. `_refresh_git_token()` — сигнатура `(self, container_id, repo, token, worker_id)` вместо `(self, container_id, repo_name, github_token)`. Добавлен `worker_id` для structured logging. Использует base64 encoding pattern (как `_setup_git_repo`), а не несуществующий `_exec_in_container`.
+> 3. Redis meta — по решению из обсуждения, `project_id` пишется в `create_worker_with_capabilities()` **после** `create_worker()` (а не внутри `create_worker()`), чтобы не прокидывать project_id в низкоуровневый метод. Также добавлен Redis set `workspace:active_projects` для защиты от orphan GC — это не было в оригинальном плане фазы 2, но необходимо для корректной работы существующего GC.
+> 4. Orphan GC (`garbage_collect_orphaned_resources`) дополнительно обновлён: читает `workspace:active_projects` и пропускает project workspace directories. Без этого GC удалял бы project workspaces как orphaned (они ведь не привязаны к worker_id).
+> 5. `workspace_key` переменная из плана не добавлена — нигде не использовалась.
+> 6. Извлечён `_chown_recursive()` хелпер из `create_workspace()` для переиспользования обеими функциями.
+> **Тесты**: 9 unit-тестов вместо 5 запланированных (более гранулярное покрытие: workspace routing, token refresh vs clone, Redis meta, active_projects set, delete preservation, orphan GC protection). Все зелёные, существующие не сломаны (108 total в worker-manager).
+
+### 2.1 Изменить workspace path ✅
 
 **Файл**: `services/worker-manager/src/workspace.py`
 
@@ -113,7 +123,7 @@ def get_or_create_project_workspace(base_path: str, project_id: str) -> tuple[Pa
     return workspace_path, already_existed
 ```
 
-### 2.2 create_worker_with_capabilities: использовать project_id для workspace
+### 2.2 create_worker_with_capabilities: использовать project_id для workspace ✅
 
 **Файл**: `services/worker-manager/src/manager.py`
 
@@ -137,7 +147,7 @@ else:
 config.workspace_host_path = str(ws_path)
 ```
 
-### 2.3 Git: clone или refresh token
+### 2.3 Git: clone или refresh token ✅
 
 **Файл**: `services/worker-manager/src/manager.py`
 
@@ -151,7 +161,7 @@ elif repo_name and github_token and workspace_existed:
     logger.info("workspace_reused", project_id=project_id, worker_id=worker_id)
 ```
 
-### 2.4 `_refresh_git_token()` для resume
+### 2.4 `_refresh_git_token()` для resume ✅
 
 **Файл**: `services/worker-manager/src/manager.py`
 
@@ -169,17 +179,19 @@ async def _refresh_git_token(
     logger.info("git_token_refreshed", repo=repo_name)
 ```
 
-### 2.5 Redis metadata: хранить project_id
+### 2.5 Redis metadata: хранить project_id ✅
 
-В `create_worker()` — добавить `project_id` в meta hash:
+В `create_worker_with_capabilities()` — после `create_worker()`, добавить `project_id` в meta hash + active_projects set:
 
 ```python
-meta["project_id"] = project_id
+if project_id:
+    await self.redis.hset(f"worker:meta:{worker_id}", "project_id", project_id)
+    await self.redis.sadd("workspace:active_projects", project_id)
 ```
 
 Это нужно для GC (фаза 4) и для связи worker → project.
 
-### 2.6 delete_worker: НЕ удалять workspace если есть project_id
+### 2.6 delete_worker: НЕ удалять workspace если есть project_id ✅
 
 **Файл**: `services/worker-manager/src/manager.py`
 
@@ -198,13 +210,39 @@ else:
     workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
 ```
 
-### Тесты фазы 2
+### 2.7 Orphan GC: защитить project workspaces ✅
 
-- `test_create_worker_with_project_id_reuses_workspace`: создать workspace для project_id, второй create_worker с тем же project_id — git clone НЕ вызывается
-- `test_resume_refreshes_git_token`: при workspace_existed=True вызывается `_refresh_git_token()` вместо `_setup_git_repo()`
-- `test_delete_worker_preserves_project_workspace`: delete_worker с project_id в meta — workspace не удаляется
-- `test_delete_worker_removes_orphan_workspace`: delete_worker без project_id — workspace удаляется (старое поведение)
-- `test_workspace_permissions_set_on_reuse`: при reuse chown всё равно вызывается
+> Добавлено при реализации (не было в оригинальном плане фазы 2).
+
+**Файл**: `services/worker-manager/src/manager.py`
+
+В `garbage_collect_orphaned_resources()`, секция workspace cleanup:
+
+```python
+active_projects = await self.redis.smembers("workspace:active_projects")
+# ...
+for entry in entries:
+    if entry not in known_ids and entry not in active_projects:
+        # remove...
+```
+
+### Тесты фазы 2 ✅
+
+**`tests/unit/test_workspace.py`** (3 теста):
+- `test_creates_new_workspace`: новый project_id → (path, False), директория создана
+- `test_reuses_existing_workspace`: существующая директория → (path, True)
+- `test_chown_recursive_called_in_*`: `_chown_recursive` вызывается в обеих workspace-функциях
+
+**`tests/unit/test_project_id_passthrough.py`** (6 тестов):
+- `test_create_worker_uses_project_workspace_when_project_id`: project_id → `get_or_create_project_workspace`, НЕ `create_workspace`
+- `test_create_worker_uses_worker_workspace_when_no_project_id`: без project_id → `create_workspace`, НЕ `get_or_create_project_workspace`
+- `test_reuse_workspace_calls_refresh_token_not_clone`: workspace_existed=True → `_refresh_git_token`, НЕ `_setup_git_repo`
+- `test_new_workspace_calls_clone_not_refresh`: workspace_existed=False → `_setup_git_repo`, НЕ `_refresh_git_token`
+- `test_project_id_saved_to_redis_meta`: FakeRedis, проверка `worker:meta:<id>` содержит project_id
+- `test_project_id_added_to_active_projects_set`: FakeRedis, проверка `workspace:active_projects` содержит project_id
+- `test_delete_worker_preserves_project_workspace`: meta с project_id → `remove_workspace` НЕ вызван
+- `test_delete_worker_removes_worker_workspace`: meta без project_id → `remove_workspace` вызван
+- `test_orphan_gc_skips_active_project_workspaces`: project_id в active_projects → workspace не удаляется GC
 
 ---
 

@@ -160,8 +160,12 @@ class WorkerManager:
             if dev_network:
                 await self.docker.remove_network(dev_network)
 
-            # Remove workspace directory from host
-            workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
+            # Remove workspace directory from host (preserve project workspaces)
+            project_id = meta.get("project_id") if meta else None
+            if project_id:
+                logger.info("workspace_preserved", project_id=project_id, worker_id=worker_id)
+            else:
+                workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
 
             # Clean up all Redis keys for this worker
             keys_to_delete = [
@@ -243,6 +247,8 @@ class WorkerManager:
                         logger.error("orphan_gc_remove_network_failed", network=name, error=str(e))
 
         # --- Orphaned workspaces ---
+        active_projects = await self.redis.smembers("workspace:active_projects")
+
         try:
             entries = os.listdir(settings.WORKSPACE_BASE_PATH)
         except FileNotFoundError:
@@ -252,7 +258,7 @@ class WorkerManager:
             entries = []
 
         for entry in entries:
-            if entry not in known_ids:
+            if entry not in known_ids and entry not in active_projects:
                 logger.info("orphan_gc_removing_workspace", worker_id=entry)
                 try:
                     workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, entry)
@@ -426,8 +432,15 @@ class WorkerManager:
         )
 
         # Create workspace on the host
-        ws_path = workspace_mod.create_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
-        config.workspace_host_path = workspace_mod.get_workspace_host_path(settings.WORKSPACE_BASE_PATH, worker_id)
+        if project_id:
+            ws_path, workspace_existed = workspace_mod.get_or_create_project_workspace(
+                settings.WORKSPACE_BASE_PATH, project_id
+            )
+            config.workspace_host_path = str(ws_path)
+        else:
+            ws_path = workspace_mod.create_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
+            workspace_existed = False
+            config.workspace_host_path = workspace_mod.get_workspace_host_path(settings.WORKSPACE_BASE_PATH, worker_id)
 
         # Generate container params
         # Use bridge-network URLs (services reachable via Docker DNS in bridge mode)
@@ -468,13 +481,22 @@ class WorkerManager:
             workspace_path=str(ws_path),
         )
 
+        # Persist project_id in Redis meta and active projects set
+        if project_id:
+            await self.redis.hset(f"worker:meta:{worker_id}", "project_id", project_id)
+            await self.redis.sadd("workspace:active_projects", project_id)
+
         # Auto-setup git repository FIRST (before instructions)
         # This is important because instructions go to /workspace/CLAUDE.md
         # and git clone requires empty directory
         repo_name = env_vars.get("REPO_NAME")
         github_token = env_vars.get("GITHUB_TOKEN")
         if repo_name and github_token:
-            await self._setup_git_repo(container_id, repo_name, github_token, worker_id)
+            if workspace_existed:
+                await self._refresh_git_token(container_id, repo_name, github_token, worker_id)
+                logger.info("workspace_reused", project_id=project_id, worker_id=worker_id)
+            else:
+                await self._setup_git_repo(container_id, repo_name, github_token, worker_id)
 
         # Inject instructions AFTER git clone (so instruction file doesn't block clone)
         if instructions:
@@ -523,6 +545,20 @@ class WorkerManager:
         # Return the worker_id (name), not container_id (Docker hash)
         # This allows callers to reference the worker by its logical name
         return worker_id
+
+    async def _refresh_git_token(self, container_id: str, repo: str, token: str, worker_id: str) -> bool:
+        """Update git remote URL with fresh token in existing workspace."""
+        import base64
+
+        script = f"cd /workspace && git remote set-url origin " f"'https://x-access-token:{token}@github.com/{repo}'"
+        encoded = base64.b64encode(script.encode()).decode()
+        cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"
+        exit_code, output = await self.docker.exec_in_container(container_id, cmd, timeout=30)
+        if exit_code != 0:
+            logger.error("git_token_refresh_failed", worker_id=worker_id, error=output)
+            return False
+        logger.info("git_token_refreshed", worker_id=worker_id, repo=repo)
+        return True
 
     async def _setup_git_repo(
         self,
