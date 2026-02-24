@@ -246,9 +246,12 @@ for entry in entries:
 
 ---
 
-## Фаза 3: PROGRESS.md и resume-промпт
+## Фаза 3: PROGRESS.md и resume-промпт ✅
 
-### 3.1 Добавить инструкцию про PROGRESS.md в INSTRUCTIONS.md
+> **Статус**: выполнена.
+> **Отклонения от плана**: секция "Before You Start" добавлена **перед** "Workflow" (а не после, как в плане) — логичнее по порядку чтения. Шаги Workflow обновлены: добавлены пункты 3 (create/update PROGRESS.md) и 5 (check off items). В примере PROGRESS.md использован более универсальный план вместо domain-specific (models.yaml, backend controller).
+
+### 3.1 Добавить инструкцию про PROGRESS.md в INSTRUCTIONS.md ✅
 
 **Файл**: `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`
 
@@ -279,7 +282,7 @@ Any important decisions or blockers.
 This file helps track progress and enables continuation if the task is interrupted.
 ```
 
-### 3.2 Два режима TASK.md: initial vs resume
+### 3.2 Два режима TASK.md: initial vs resume ✅
 
 **Файл**: `services/langgraph/src/nodes/developer.py`
 
@@ -302,7 +305,7 @@ Check if `/workspace/PROGRESS.md` exists:
 
 Это самый простой подход — не нужно менять промпт, не нужно прокидывать `is_resume`, Claude Code сам определяет по наличию файла.
 
-### Тесты фазы 3
+### Тесты фазы 3 ✅
 
 - Тестировать содержимое INSTRUCTIONS.md нет смысла (шаблон)
 - Ручная верификация: запустить e2e, убить воркер, проверить что новый видит PROGRESS.md
