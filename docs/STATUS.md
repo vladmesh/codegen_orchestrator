@@ -1,7 +1,22 @@
 # Project Status
 
-> **Current Focus**: Native Dev Environment + Workspace Persistence
-> **Plans**: [dev-env-architecture.md](./plans/dev-env-architecture.md), [workspace-persistence.md](./plans/workspace-persistence.md)
+> **Current Focus**: CI Fix Loop Improvements
+> **Investigation**: [e2e-iter13-ci-fix-loop-deficits.md](./investigations/e2e-iter13-ci-fix-loop-deficits.md)
+
+## Current: CI Fix Loop Improvements
+
+E2E iter 13 выявил каскадные проблемы в CI fix loop: скудный контекст для девелопера, накопление контейнеров, информационный вакуум для ПО. Подробный анализ: [e2e-iter13-ci-fix-loop-deficits.md](./investigations/e2e-iter13-ci-fix-loop-deficits.md).
+
+Приоритеты:
+- [ ] Передавать `project_id` в CI fix spawn (1 строка — останавливает накопление контейнеров)
+- [ ] Обогатить `failure_context` полными логами CI (девелопер фиксит правильную ошибку)
+- [ ] Progress-события для ПО при CI failures (пользователь в курсе, ПО может решать)
+- [ ] Классификация template bugs — fail fast на нефиксируемых ошибках
+- [x] Фикс conftest в service-template (`ef891c4`) — устранена первопричина iter 13
+
+## Previous: Native Dev Environment + Workspace Persistence — Done
+
+Plans: [dev-env-architecture.md](./plans/dev-env-architecture.md), [workspace-persistence.md](./plans/workspace-persistence.md)
 
 ## Previous: PO ReactAgent Migration — Done
 
