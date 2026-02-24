@@ -59,6 +59,7 @@ services:
     environment:
       ORCHESTRATOR_API_URL: http://api-service:8000
       ORCHESTRATOR_REDIS_URL: redis://redis-test:6379
+      ORCHESTRATOR_WORKER_MANAGER_URL: http://localhost:8000  # unused by CLI tests, required by Config
       PYTHONPATH: /app/packages/orchestrator-cli/src:/app
     depends_on:
       api-service:
