@@ -535,6 +535,12 @@ class WorkerManager:
             workspace_path=str(ws_path),
         )
 
+        # Fix workspace ownership inside the container.
+        # In DinD environments, bind-mount UID mapping can differ from the host,
+        # so the host-side chown may not take effect. This exec ensures /workspace
+        # is writable by the worker user regardless of the Docker environment.
+        await self.docker.exec_in_container(container_id, "chown -R worker:worker /workspace", user="root")
+
         # Persist project_id in Redis meta and active projects set
         if project_id:
             await self.redis.hset(f"worker:meta:{worker_id}", "project_id", project_id)

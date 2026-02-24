@@ -351,6 +351,7 @@ class TaskDTO(BaseModel):
     project_id: str
     type: TaskType
     status: TaskStatus
+    task_metadata: dict[str, Any] = {}
     spec: str | None = None
     result: dict | None = None
     created_at: datetime

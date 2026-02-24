@@ -175,7 +175,13 @@ async def update_task(
     # Update fields
     update_data = task_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
-        setattr(task, field, value)
+        if field == "task_metadata" and value is not None:
+            # Merge metadata instead of replacing to preserve existing keys
+            current = task.task_metadata or {}
+            current.update(value)
+            task.task_metadata = current
+        else:
+            setattr(task, field, value)
 
     await db.commit()
     await db.refresh(task)

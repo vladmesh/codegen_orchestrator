@@ -223,10 +223,10 @@ test-telegram-unit:
 # Any docker/test/integration/*.yml file automatically becomes test-integration-* target
 test-integration-%:
 	@echo "🧪 Running $* integration tests..."
-	@docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down -v --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down --remove-orphans 2>/dev/null || true
 	@docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
 	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down -v --remove-orphans; \
+	docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down --remove-orphans; \
 	exit $$EXIT_CODE
 
 # Note: Legacy aggregate targets (test-api, test-langgraph, etc.) were removed.

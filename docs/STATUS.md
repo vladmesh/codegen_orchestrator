@@ -8,9 +8,10 @@
 E2E iter 13 выявил каскадные проблемы в CI fix loop: скудный контекст для девелопера, накопление контейнеров, информационный вакуум для ПО. Подробный анализ: [e2e-iter13-ci-fix-loop-deficits.md](./investigations/e2e-iter13-ci-fix-loop-deficits.md).
 
 Приоритеты:
-- [ ] Передавать `project_id` в CI fix spawn (1 строка — останавливает накопление контейнеров)
-- [ ] Обогатить `failure_context` полными логами CI (девелопер фиксит правильную ошибку)
-- [ ] Progress-события для ПО при CI failures (пользователь в курсе, ПО может решать)
+- [x] Передавать `project_id` в CI fix spawn — останавливает накопление контейнеров
+- [x] CI контекст для девелопера — подсказка про `gh run view --log` в TASK.md
+- [x] CI attempts tracking — записываем в task_metadata, ПО видит через `get_task_status`
+- [x] Обогащение финальных сообщений — "CI passed after N failed attempt(s)"
 - [ ] Классификация template bugs — fail fast на нефиксируемых ошибках
 - [x] Фикс conftest в service-template (`ef891c4`) — устранена первопричина iter 13
 

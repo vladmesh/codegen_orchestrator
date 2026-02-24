@@ -194,15 +194,19 @@ Template bug (conftest mkdir at module level)
 
 ---
 
-## Возможные направления решения
+## Направления решения и статус
 
 ### 1. Обогатить контекст для fix-worker
 
 Передавать в TASK.md полные логи упавших job'ов (последние N строк), а не только имена step'ов. `get_workflow_failure_logs()` уже может запросить `/actions/jobs/{job_id}/logs` — данные доступны, просто не используются.
 
+> **Решение**: вместо обогащения `failure_context` на стороне engineering-worker — добавлена подсказка в TASK.md про `gh run list --branch main` и `gh run view <run-id> --log`. Fix-worker уже имеет `gh` CLI (capability `GITHUB_CLI`) и `GH_TOKEN` в env — может сам посмотреть полные логи. Это проще и надёжнее чем парсить/обрезать логи на стороне оркестратора. **DONE**
+
 ### 2. Классификация ошибок: code vs template vs infra
 
 Текущая `_is_infra_failure()` ищет маркеры типа "Docker Registry", "SSH". Нужна третья категория — **template/scaffold bugs**: PermissionError в стандартных путях, ошибки в сгенерированных Dockerfile/compose, проблемы с зависимостями из шаблона. На таких ошибках — fail fast, не тратить ретраи.
+
+> **Статус**: открыто. Имеет смысл реализовать когда ПО сможет принимать решение "стоп, это template bug" (нужен tool для остановки engineering).
 
 ### 3. Убрать информационный вакуум для ПО
 
@@ -211,22 +215,30 @@ Template bug (conftest mkdir at module level)
 - Принять решение продолжать ретраи или остановиться
 - Эскалировать template-баги
 
+> **Решение**: вместо real-time событий (которые жрут LLM-токены без пользы — у ПО нет tool'а остановить retry) — CI attempts записываются в `task_metadata` через API. ПО видит историю попыток при вызове `get_task_status`. Финальные callback-события обогащены: "CI passed after N failed attempt(s)" / "CI failed after N attempt(s), retries exhausted". **DONE**
+>
+> Изменения: `TaskUpdate` schema принимает `task_metadata`, router мержит (не заменяет) metadata, `_wait_for_ci_and_fix` возвращает `(bool, list[dict])` и пишет `ci_attempts` в task metadata при каждом failure/success.
+
 ### 4. Передавать project_id в CI fix spawn
 
 Однострочный фикс в `_respawn_developer_for_ci_fix()`: добавить `project_id=project.get("id")`. Это включит workspace persistence, мьютекс, и правильный cleanup. Предыдущий worker должен быть остановлен перед спавном нового.
+
+> **DONE**: добавлен `project_id=project.get("id")` в `request_spawn` вызов. Покрыто 2 unit-тестами.
 
 ### 5. CI-анализатор как отдельный шаг
 
 Между "CI failed" и "respawn developer" добавить шаг анализа: LLM или rule-based система читает полные логи, классифицирует ошибку, решает — ретраить, fail fast, или эскалировать. Это может быть отдельная нода или capability внутри engineering-worker.
 
+> **Статус**: открыто. Связано с пунктом 2 (классификация). Имеет смысл когда появятся повторяющиеся кейсы нефиксируемых ошибок помимо conftest.
+
 ---
 
 ## Приоритеты
 
-| Проблема | Severity | Усилие | Эффект |
-|----------|----------|--------|--------|
-| Нет project_id в CI fix spawn | HIGH | Низкое (1 строка) | Останавливает накопление контейнеров |
-| Скудный failure_context | HIGH | Среднее | Девелопер фиксит правильную ошибку |
-| Progress-события для ПО | MEDIUM | Среднее | Пользователь в курсе, ПО может решать |
-| Классификация template bugs | MEDIUM | Среднее | Fail fast на нефиксируемых ошибках |
-| ~~Фикс conftest в service-template~~ | ~~HIGH~~ | ~~Низкое~~ | ~~Устраняет первопричину этого конкретного кейса~~ — **DONE** (`ef891c4`) |
+| Проблема | Severity | Усилие | Эффект | Статус |
+|----------|----------|--------|--------|--------|
+| ~~Нет project_id в CI fix spawn~~ | HIGH | Низкое | Останавливает накопление контейнеров | **DONE** |
+| ~~Скудный failure_context~~ | HIGH | Низкое | Девелопер сам смотрит логи через `gh` | **DONE** (подсказка в TASK.md) |
+| ~~Progress-события для ПО~~ | MEDIUM | Среднее | ПО видит ci_attempts через get_task_status | **DONE** (task_metadata) |
+| Классификация template bugs | MEDIUM | Среднее | Fail fast на нефиксируемых ошибках | Открыто |
+| ~~Фикс conftest в service-template~~ | HIGH | Низкое | Устраняет первопричину iter 13 | **DONE** (`ef891c4`) |

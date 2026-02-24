@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
+import hashlib
 import os
 
 import pytest
@@ -83,14 +85,43 @@ async def cleanup_redis_streams(redis_client):
     await cleanup()
 
 
-def _build_base_image(client, dockerfile_path: str, tag: str, shared_path: str, packages_path: str):
-    """Build a worker base image with given Dockerfile."""
-    import os
+def _content_hash(*paths: str) -> str:
+    """SHA256 hash of file/directory contents for cache invalidation."""
+    h = hashlib.sha256()
+    for path in sorted(paths):
+        if os.path.isfile(path):
+            h.update(open(path, "rb").read())
+        elif os.path.isdir(path):
+            for root, dirs, files in os.walk(path):
+                dirs.sort()
+                for f in sorted(files):
+                    fp = os.path.join(root, f)
+                    h.update(fp.encode())
+                    h.update(open(fp, "rb").read())
+    return h.hexdigest()[:12]
+
+
+def _build_base_image(
+    client,
+    dockerfile_path: str,
+    tag: str,
+    shared_path: str,
+    packages_path: str,
+):
+    """Build a worker base image, skipping if a cached version exists."""
     import shutil
     import tempfile
 
+    # Check if image with this content hash already exists in DinD
+    try:
+        client.images.get(tag)
+        print(f"  {tag} found in cache, skipping build")
+        return
+    except docker.errors.ImageNotFound:
+        pass
+
     with tempfile.TemporaryDirectory() as tmp_dir:
-        print(f"Preparing build context for {tag} in {tmp_dir}...")
+        print(f"Building {tag}...")
 
         dest_dockerfile = os.path.join(tmp_dir, "Dockerfile")
         shutil.copy(dockerfile_path, dest_dockerfile)
@@ -99,7 +130,6 @@ def _build_base_image(client, dockerfile_path: str, tag: str, shared_path: str, 
         shutil.copytree(shared_path, os.path.join(tmp_dir, "shared"))
         shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"))
 
-        print(f"Building {tag}...")
         try:
             image, build_logs = client.images.build(
                 path=tmp_dir,
@@ -114,9 +144,8 @@ def _build_base_image(client, dockerfile_path: str, tag: str, shared_path: str, 
             print(f"{tag} built successfully.")
 
             # Verify worker user exists
-            print(f"Verifying worker user in {tag}...")
             output = client.containers.run(tag, "id worker", remove=True, entrypoint="/bin/sh -c")
-            print(f"Verification success: {output.decode().strip()}")
+            print(f"  Verified: {output.decode().strip()}")
 
         except docker.errors.BuildError as e:
             print(f"Build failed for {tag}!")
@@ -133,36 +162,62 @@ def _build_base_image(client, dockerfile_path: str, tag: str, shared_path: str, 
 def setup_worker_base_images():
     """Build agent-specific worker base images in DIND.
 
-    Builds two images:
-    - worker-base-claude: with Claude CLI native binary pre-installed
-    - worker-base-factory: with Factory CLI pre-installed
+    Uses content hashing to skip rebuilds when source files haven't changed.
+    DinD volume persists between runs, so cached images survive restarts.
 
-    This ensures fast worker image builds during tests (only capabilities added).
+    Build order: common (sequential) -> claude + factory (parallel).
     """
     client = docker.DockerClient(base_url=DOCKER_HOST)
 
     # Source paths mapped in integration-test-runner container
     shared_path = "/app/shared"
     packages_path = "/app/packages"
+    images_dir = "/app/services/worker-manager/images"
 
-    # Agent-specific Dockerfiles
-    images_to_build = [
-        (
-            "/app/services/worker-manager/images/worker-base-common/Dockerfile",
-            "worker-base-common:latest",
-        ),
-        (
-            "/app/services/worker-manager/images/worker-base-claude/Dockerfile",
-            "worker-base-claude:latest",
-        ),
-        (
-            "/app/services/worker-manager/images/worker-base-factory/Dockerfile",
-            "worker-base-factory:latest",
-        ),
-    ]
+    # Compute content hashes for cache invalidation
+    common_dockerfile = f"{images_dir}/worker-base-common/Dockerfile"
+    claude_dockerfile = f"{images_dir}/worker-base-claude/Dockerfile"
+    factory_dockerfile = f"{images_dir}/worker-base-factory/Dockerfile"
+
+    common_hash = _content_hash(common_dockerfile, shared_path, packages_path)
+    # Child images depend on common hash + their own Dockerfile
+    claude_hash = _content_hash(claude_dockerfile, common_hash)
+    factory_hash = _content_hash(factory_dockerfile, common_hash)
+
+    common_tag = f"worker-base-common:{common_hash}"
+    claude_tag = f"worker-base-claude:{claude_hash}"
+    factory_tag = f"worker-base-factory:{factory_hash}"
 
     try:
-        for dockerfile_path, tag in images_to_build:
-            _build_base_image(client, dockerfile_path, tag, shared_path, packages_path)
+        # Build common first (claude and factory depend on it)
+        _build_base_image(client, common_dockerfile, common_tag, shared_path, packages_path)
+        # Also tag as :latest so child Dockerfiles (FROM worker-base-common:latest) work
+        client.images.get(common_tag).tag("worker-base-common", "latest")
+
+        # Build claude + factory in parallel (independent of each other)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_claude = executor.submit(
+                _build_base_image,
+                client,
+                claude_dockerfile,
+                claude_tag,
+                shared_path,
+                packages_path,
+            )
+            f_factory = executor.submit(
+                _build_base_image,
+                client,
+                factory_dockerfile,
+                factory_tag,
+                shared_path,
+                packages_path,
+            )
+            f_claude.result()
+            f_factory.result()
+
+        # Tag as :latest for worker-manager image builder
+        client.images.get(claude_tag).tag("worker-base-claude", "latest")
+        client.images.get(factory_tag).tag("worker-base-factory", "latest")
+
     finally:
         client.close()

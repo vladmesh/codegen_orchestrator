@@ -46,6 +46,7 @@ class TaskUpdate(BaseModel):
     """Schema for updating a task."""
 
     status: str | None = None
+    task_metadata: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     error_message: str | None = None
     error_traceback: str | None = None

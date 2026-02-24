@@ -1,6 +1,6 @@
 # Backlog
 
-> **Актуально на**: 2026-02-17
+> **Актуально на**: 2026-02-24
 
 ## Active Design & Implementation Plans
 
@@ -50,23 +50,26 @@
 ---
 
 ### CI Monitor Node: Проверка и триаж CI failures
-**Статус**: TODO
+**Статус**: TODO (частично реализовано — ci_attempts tracking)
 
 Отдельная нода между developer и deploy. Мониторит GitHub Actions по commit_sha.
 Сейчас эту роль выполняет `_wait_for_ci_and_fix` в `engineering_worker.py` — в будущем вынести в ноду субграфа.
 
 **Текущее поведение** (`_wait_for_ci_and_fix`):
 - Поллит GitHub Actions status checks по коммиту
-- При fail — отправляет обратно девелоперу
+- При fail — респаунит developer с `project_id` (workspace persistence)
+- Трекает `ci_attempts` в `task_metadata` через API (attempt, status, failure_context)
+- Fix-worker получает подсказку про `gh run view --log` для самостоятельного анализа логов
+- Финальные сообщения обогащены: "CI passed after N failed attempt(s)" / "CI failed after N attempt(s)"
+- ПО видит историю CI попыток через `get_task_status` → `task_metadata.ci_attempts`
 
-**Целевое поведение (нода):**
-1. Мониторит CI workflows (тесты + сборка образов) по commit_sha
-2. При fail — инвестигейшн: анализирует логи CI, определяет причину
-3. Триаж: делегирует исправление нужному агенту:
+**Что остаётся для полноценной ноды:**
+1. Классификация ошибок: code vs template vs infra (fail fast на нефиксируемых)
+2. Триаж: делегирование исправления нужному агенту:
    - Ошибки кода / тесты → обратно developer
    - Ошибки инфраструктуры (Dockerfile, compose, CI config) → devops
-   - Неустранимые ошибки → пометить как fail, уведомить PO
-4. При success — передаёт управление дальше (deploy или tester)
+   - Неустранимые ошибки (template bugs) → fail fast, уведомить PO
+3. Анализ логов CI на стороне оркестратора (сейчас делегировано fix-worker'у через `gh`)
 
 ---
 
