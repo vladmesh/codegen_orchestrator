@@ -19,7 +19,7 @@ class TestLangGraphIntegration:
         task_id = "int-test-scaffold"
         project_id = "p-int-scaffold"
 
-        msg = EngineeringMessage(task_id=task_id, project_id=project_id, user_id=1)
+        msg = EngineeringMessage(task_id=task_id, project_id=project_id, user_id="1")
         await redis_client.xadd("engineering:queue", {"data": msg.model_dump_json()})
 
         # 2. Wait for Scaffolder Response (Result)
