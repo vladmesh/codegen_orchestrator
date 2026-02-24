@@ -516,8 +516,12 @@ class WorkerManager:
         # Volumes
         volumes = config.to_volume_mounts()
 
-        # Always use INTERNAL_NETWORK for the primary network
-        network_name = settings.INTERNAL_NETWORK
+        # DOCKER_NETWORK overrides INTERNAL_NETWORK (used in CI/integration tests).
+        # Empty DOCKER_NETWORK = use host networking (legacy), non-empty = explicit network.
+        if settings.DOCKER_NETWORK:
+            network_name = settings.DOCKER_NETWORK if settings.DOCKER_NETWORK != "host" else None
+        else:
+            network_name = settings.INTERNAL_NETWORK
 
         # Create container with dual-network setup
         container_id = await self.create_worker(
