@@ -73,5 +73,12 @@ Thumbs.db
 *.temp
 .cache/
 
+# Virtual environments
+.venv/
+venv/
+
 # Gemini artifacts (local development)
 .gemini/
+
+# uv
+uv.lock

@@ -30,9 +30,9 @@ if ! make lint; then
     exit 1
 fi
 
-# Run unit tests (fast, no external dependencies)
+# Run unit tests locally (fast, no Docker)
 echo "🧪 Running unit tests..."
-if ! make test-unit; then
+if ! make test-unit-local; then
     echo -e "${RED}❌ Unit tests failed!${NC}"
     echo -e "${YELLOW}💡 Fix failing tests before pushing${NC}"
     exit 1

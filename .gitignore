@@ -40,6 +40,9 @@ htmlcov/
 # Secrets (encrypted is ok, decrypted is not)
 /tmp/secrets.yaml
 
+# Distribution / packaging
+*.egg-info/
+
 # OS
 .DS_Store
 Thumbs.db
