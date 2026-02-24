@@ -3,6 +3,10 @@
 > **Current Focus**: CI Fix Loop Improvements
 > **Investigation**: [e2e-iter13-ci-fix-loop-deficits.md](./investigations/e2e-iter13-ci-fix-loop-deficits.md)
 
+## Previous: Redis Streams Unification (#3+#5) — Done
+
+Plan: [redis-streams-unification.md](plans/redis-streams-unification.md) — unified all 9 Redis Stream consumers to `RedisStreamClient.consume()` with PEL recovery, added Pydantic contracts to all queues (`po.py`).
+
 ## Current: CI Fix Loop Improvements
 
 E2E iter 13 выявил каскадные проблемы в CI fix loop: скудный контекст для девелопера, накопление контейнеров, информационный вакуум для ПО. Подробный анализ: [e2e-iter13-ci-fix-loop-deficits.md](./investigations/e2e-iter13-ci-fix-loop-deficits.md).

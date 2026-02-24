@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-02-16
+> **Актуально на**: 2026-02-25
 
 ## Обзор
 
@@ -95,6 +95,7 @@ System events (worker callbacks, reminders) → po:input → PO decides → po:p
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager
 - **Engineering Subgraph**: Scaffolder → Developer → Tester (max 3 iterations)
 - **DevOps Subgraph**: LLM-based env analysis, env groups for coherent secrets, Ansible deployment via infra-service
+- **Unified Redis Consumers**: All 9 consumers use `RedisStreamClient.consume()` with PEL recovery (`claim_pending=True`) — crashed messages are automatically re-delivered on restart. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns)
 
 ## Внешние зависимости
 

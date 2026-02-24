@@ -225,6 +225,56 @@ sequenceDiagram
 
 ---
 
+## Consumer Patterns
+
+> **Implemented in**: [redis-streams-unification.md](plans/redis-streams-unification.md)
+
+All Redis Stream consumers use unified `RedisStreamClient.consume()` API from `shared.redis_client`.
+
+### Unified consume() API
+
+```python
+async for msg in client.consume(
+    stream="engineering:queue",
+    group="capability-workers",
+    consumer="worker-1",
+    auto_ack=False,          # False = caller must call ack() after processing
+    claim_pending=True,      # Recover PEL (crashed messages) on startup
+    pending_timeout_ms=60_000,  # Min idle time before re-claiming pending message
+):
+    await process(msg.data)
+    await client.ack(stream, group, msg.message_id)
+```
+
+### ACK Modes
+
+| Mode | `auto_ack` | Use Case | Services |
+|------|-----------|----------|----------|
+| **Manual ACK** | `False` | At-least-once delivery, ack after successful processing | engineering-worker, deploy-worker, scaffolder, infra-service, worker-manager, scheduler |
+| **Auto ACK** | `True` | Fire-and-forget, ack on read | telegram-bot (ProactiveListener, ProvisionerNotifier) |
+
+### PEL Recovery
+
+On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim messages that were pending for longer than `pending_timeout_ms`. This handles the case where a consumer crashes mid-processing — on restart, the message is automatically re-delivered.
+
+**Special case:** PO Consumer (`services/langgraph/src/po/consumer.py`) uses a custom while-loop for concurrent dispatch but still implements PEL recovery via direct `XAUTOCLAIM` calls on startup.
+
+### Consumer Inventory
+
+| # | Consumer | File | Queue | ACK | PEL Recovery | Validation |
+|---|----------|------|-------|-----|-------------|------------|
+| 1 | Engineering Worker | `workers/_base.py` | `engineering:queue` | manual | `claim_pending` | in `process_fn` |
+| 2 | Deploy Worker | `workers/_base.py` | `deploy:queue` | manual | `claim_pending` | in `process_fn` |
+| 3 | PO Consumer | `po/consumer.py` | `po:input` | manual (finally) | `xautoclaim` | `TypeAdapter` |
+| 4 | Worker Manager | `worker-manager/consumer.py` | `worker:commands` | manual | `claim_pending` | `validate_python` |
+| 5 | Scaffolder | `scaffolder/main.py` | `scaffolder:queue` | manual | `claim_pending` | `model_validate` |
+| 6 | Infra Service | `infra-service/main.py` | `provisioner:queue` | manual | `claim_pending` | raw dict |
+| 7 | Scheduler | `scheduler/main.py` | `provisioner:results` | manual | `claim_pending` | `model_validate` |
+| 8 | Provisioner Notifier | `telegram_bot/notifications.py` | `provisioner:results` | auto | — | `model_validate` |
+| 9 | Proactive Listener | `telegram_bot/main.py` | `po:proactive` | auto | — | raw dict |
+
+---
+
 # Part 1: REST DTO
 
 ## ProjectDTO
@@ -950,11 +1000,13 @@ class WorkerLifecycleEvent(BaseModel):
 
 ## PO ReactAgent I/O
 
-| Queue | Group | Initiator | Consumer | Purpose |
-|-------|-------|-----------|----------|---------|
-| `po:input` | `po-consumer` | telegram-bot, workers | langgraph (PO consumer) | User messages and system events to PO |
-| `po:response:{request_id}` | — | langgraph (PO consumer) | telegram-bot | PO response for specific request |
-| `po:proactive` | `tg-bot-proactive` | langgraph (PO `notify_user` tool, deploy-worker) | telegram-bot (ProactiveListener) | Proactive messages to users (PO notifications + webhook deploy results) |
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `po:input` | `po-consumer` | `POInputMessage` (discriminated union: `POUserMessage` / `POSystemEvent` / `POReminderMessage`) | telegram-bot, workers | langgraph (PO consumer) | User messages and system events to PO |
+| `po:response:{request_id}` | — | `POResponse` | langgraph (PO consumer) | telegram-bot | PO response for specific request |
+| `po:proactive` | `tg-bot-proactive` | `POProactiveMessage` | langgraph (PO `notify_user` tool, deploy-worker) | telegram-bot (ProactiveListener) | Proactive messages to users (PO notifications + webhook deploy results) |
+
+> **Transport note:** PO streams use **flat Redis fields** (not JSON `data` wrapper). Use `to_flat_fields()` / `from_flat_fields()` helpers from `shared.contracts.queues.po` for serialization.
 
 **System events**: Workers write to `po:input` (via `callback_stream`) with `type: "system_event"`. PO decides whether to notify the user via `notify_user` tool → `po:proactive`. The old `po:events:{task_id}` pattern is replaced — events go directly to `po:input`.
 
@@ -1095,12 +1147,13 @@ shared/contracts/
 │   ├── allocation.py
 │   └── task_execution.py
 └── queues/
-    ├── __init__.py
+    ├── __init__.py           # Re-exports PO contracts
     ├── engineering.py
     ├── deploy.py
     ├── scaffolder.py
     ├── provisioner.py
     ├── workflow.py
     ├── worker.py
-    └── developer_worker.py
+    ├── developer_worker.py
+    └── po.py                 # POInputMessage, POResponse, POProactiveMessage, flat-field helpers
 ```

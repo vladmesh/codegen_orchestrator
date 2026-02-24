@@ -65,9 +65,29 @@
    - Публикует результат: `status="error", error="Exception message"`.
 
 ### C. Consumer Errors (Redis)
-1. **Processing Error:**
-   - Если ошибка `Transient` — NACK (не подтверждать), пусть Redis передоставит через `retry_time`.
-   - Если ошибка `Permanent` — XACK (подтвердить) + XADD в `dead-letter-queue`.
+
+All consumers use unified `RedisStreamClient.consume()` API with two ACK modes:
+
+**Manual ACK (`auto_ack=False`)** — используется большинством consumer'ов:
+1. Сообщение читается, но не ACK'ается автоматически.
+2. Consumer обрабатывает сообщение.
+3. При успехе — `await client.ack(stream, group, msg.message_id)`.
+4. При ошибке — ACK не вызывается, сообщение остаётся в PEL.
+
+**Auto ACK (`auto_ack=True`)** — для fire-and-forget (ProactiveListener, ProvisionerNotifier):
+1. Сообщение ACK'ается сразу при чтении.
+2. Потеря при краше допустима (уведомления, не критичные данные).
+
+**PEL Recovery** (`claim_pending=True`):
+- При старте consumer вызывает `XAUTOCLAIM` и подбирает сообщения, зависшие в PEL дольше `pending_timeout_ms` (default: 60s).
+- Это покрывает сценарий краша consumer'а mid-processing — после рестарта сообщение автоматически переобрабатывается.
+- PEL recovery идёт до основного `XREADGROUP` цикла.
+
+**Error handling flow:**
+1. **Processing Error (Transient):** Не вызываем ACK → сообщение остаётся в PEL → PEL recovery подхватит при рестарте.
+2. **Processing Error (Permanent):** ACK + XADD в DLQ (если реализован).
+3. **Consumer Crash:** Сообщение в PEL → другой инстанс или рестарт подхватит через `XAUTOCLAIM`.
+
 2. **DLQ Handling:** Отдельный процесс или админ ручками разбирает DLQ.
 
 ---

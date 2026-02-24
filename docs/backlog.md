@@ -1,6 +1,6 @@
 # Backlog
 
-> **Актуально на**: 2026-02-24
+> **Актуально на**: 2026-02-25
 
 Мы используем итеративный подход. Этот бэклог консолидирует задачи из предыдущих аудитов, брейнштормов и планов. Приоритет отдан архитектуре, стабильности процессов разработки и закрытию техдолга (DevEx). Продуктовые фичи вынесены в конец.
 
@@ -27,12 +27,8 @@
 - **Watchdog & Recovery**: Добавить DockerEventsListener и DLQ consumer в scheduler + простые рекавери-плейбуки. Добавить механизм `request_help` для агента.
 - **Shared Session Memory**: Транслировать ошибку и `stderr` от упавшего агента к новому процессу (retry) в `TASK.md` (предсмертная записка).
 
-### 3. Redis Streams: PEL Recovery & Унификация Consumer'ов
-**Документы**: `docs/backlog.md`
-**Проблема**: Различные консьюмеры реализуют свои while-loop и ACK. Нет восстановления PEL (вероятно тихие потери задач после краша системы).
-**Задачи**:
-- Перевести все 7 consumer'ов на единый интерфейс `RedisStreamClient.consume()`.
-- Добавить PEL (Pending Entries List) recovery и опцию manual ACK.
+### 3. ~~Redis Streams: PEL Recovery & Унификация Consumer'ов~~ → ✅ Done
+> Объединено с #5. См. [redis-streams-unification.md](plans/redis-streams-unification.md).
 
 ### 4. CI Pipeline Redesign & Integration Test Speedup
 **Документы**: `docs/brainstorms/ci-pipeline-redesign.md`, `docs/brainstorms/integration-test-speedup.md`
@@ -42,11 +38,8 @@
 - Разделить CI на PR (только выполнение тестов и билд для проверки, без пуша) и Publish (на `main`).
 - Запускать интеграционные тесты параллельно (Github Actions matrix).
 
-### 5. Queue Contract Enforcement
-**Документы**: `docs/backlog.md`
-**Проблема**: Из-за отсутствия строгих типов сообщений между очередями возникают тихие десериализационные ошибки.
-**Задачи**:
-- Перевести оставшиеся очереди `engineering`, `provisioner`, `po` на общие Pydantic-контракты (через `model_dump_json()` и `model_validate()`).
+### 5. ~~Queue Contract Enforcement~~ → ✅ Done
+> Объединено с #3. См. [redis-streams-unification.md](plans/redis-streams-unification.md).
 
 ### 6. Security Audit: Server Provisioning & Deploy
 **Документы**: `docs/backlog.md`
@@ -100,6 +93,19 @@
 
 ---
 
+### 13. Contract Consistency Improvements (Остаток #3+#5)
+**Документы**: [redis-streams-unification.md](plans/redis-streams-unification.md) → «Остаточные замечания»
+**Проблема**: После унификации consumer'ов остались мелкие несоответствия — часть publish-вызовов идёт через raw `redis.xadd`, а не через `client.publish_flat()`; несколько consumer'ов не валидируют входящие данные Pydantic-контрактом.
+**Задачи**:
+- ProactiveListener — добавить `POProactiveMessage` валидацию на consume
+- Infra Service consumer — добавить `ProvisionerMessage.model_validate()` на consume
+- Telegram bot PO publish — перевести с raw `redis.xadd` на `client.publish_flat()`
+- Reminders publish — перевести с raw `redis.xadd` на `client.publish_flat()`
+- PO tools `trigger_engineering` — перевести с raw `redis.xadd` на `client.publish_message()`
+- Infra service result publish — перевести на `client.publish_message()`
+
+---
+
 ## 🗑️ Completed / Superseded
 *Архив или уже имплементированные решения*
 
@@ -107,3 +113,4 @@
 - **Caddy Reverse Proxy**: Done in deploy-architecture *Iter 7*.
 - **PO ReactAgent без контейнера**: Done. Переход на API-based ReactAgent завершен.
 - **Dev Environment Docker-in-Docker Migration**: Фазы 1-4 завершены. (В планах осталось только E2E тестирование).
+- **Redis Streams: PEL Recovery & Consumer Unification (#3+#5)**: Done. 9 consumer'ов переведены на `RedisStreamClient.consume()` с PEL recovery. Pydantic контракты на все очереди. См. [redis-streams-unification.md](plans/redis-streams-unification.md).

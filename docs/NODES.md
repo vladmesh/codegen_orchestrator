@@ -18,7 +18,7 @@
 - `set_reminder`: отложенные проверки через Redis ZSET
 - `notify_user`: proactive message to user via `po:proactive` stream (Phase 2.3)
 
-**Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). Workers write system events to `po:input` via `callback_stream`. PO uses `notify_user` tool to send proactive messages when handling system events.
+**Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). All PO streams use Pydantic contracts from `shared.contracts.queues.po` (`POInputMessage`, `POResponse`, `POProactiveMessage`) with flat-field serialization (`to_flat_fields()` / `from_flat_fields()`). PO Consumer has PEL recovery via `XAUTOCLAIM` on startup. Workers write system events to `po:input` via `callback_stream`. PO uses `notify_user` tool to send proactive messages when handling system events.
 
 **Выход**: Действия через tools, сообщения пользователю через Telegram
 
@@ -37,12 +37,13 @@
 **Сервис**: `services/scaffolder/`
 
 **Действия**:
-1. Слушает `scaffolder:queue` (Redis Stream)
-2. Создаёт GitHub-репозиторий (если не существует)
-3. Устанавливает registry secrets (`REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD`) — до первого push, чтобы CI мог пушить образы
-4. `copier copy` с выбранными модулями
-5. Git commit + push
-6. Обновляет `project.status = "scaffolded"` через API
+1. Слушает `scaffolder:queue` через `RedisStreamClient.consume(auto_ack=False, claim_pending=True)` — manual ACK после обработки, PEL recovery при рестарте
+2. Валидирует сообщение через `ScaffolderMessage.model_validate()`
+3. Создаёт GitHub-репозиторий (если не существует)
+4. Устанавливает registry secrets (`REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD`) — до первого push, чтобы CI мог пушить образы
+5. `copier copy` с выбранными модулями
+6. Git commit + push
+7. Обновляет `project.status = "scaffolded"` через API
 
 **Выход**: `project.status = "scaffolded"` → DeveloperNode может начинать работу
 
@@ -172,7 +173,7 @@ Deployer → build_dotenv → set_repository_secrets (GitHub API)
 **Архитектура**:
 ```
 infra-service
-  ├── Listen: provisioner:queue
+  ├── Listen: provisioner:queue (RedisStreamClient.consume, auto_ack=False, claim_pending=True)
   ├── Handlers:
   │   └── process_provisioner_job() → ansible_runner.py
   └── Publish: provisioner:results
