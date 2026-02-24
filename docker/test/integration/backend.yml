@@ -1,3 +1,6 @@
+volumes:
+  workspaces:
+
 networks:
   backend-test:
     name: backend-test-network
@@ -35,6 +38,8 @@ services:
       # Worker URLs use IP because workers inside DIND can't resolve DNS
       - WORKER_REDIS_URL=redis://172.29.0.10:6379/0
       - WORKER_API_URL=http://172.29.0.20:8000
+    volumes:
+      - workspaces:/tmp/codegen/workspaces
     depends_on:
       redis:
         condition: service_healthy
@@ -98,6 +103,7 @@ services:
     # Workers inside DIND will mount /host-claude as their ~/.claude
     volumes:
       - ${HOST_CLAUDE_DIR:-/tmp/fake-claude}:/host-claude:rw
+      - workspaces:/tmp/codegen/workspaces
     # Pass DNS to Docker daemon for containers spawned inside DIND
     command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--dns=8.8.8.8", "--dns=8.8.4.4"]
     healthcheck:
