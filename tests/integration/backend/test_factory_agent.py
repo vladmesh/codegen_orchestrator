@@ -55,6 +55,12 @@ async def test_factory_cli_installed(redis_client, docker_client):
     assert "ANTHROPIC_API_KEY" not in output.decode()
 
     # Check instructions path (Factory agent uses AGENTS.md)
-    exit_code, output = container.exec_run("cat /workspace/AGENTS.md")
-    assert exit_code == 0, f"AGENTS.md not found: {output.decode()}"
+    # AGENTS.md is written by worker-wrapper entrypoint after container starts — retry
+    @retry(stop=stop_after_delay(TEST_TIMEOUT), wait=wait_fixed(1))
+    async def wait_for_agents_md():
+        ec, out = container.exec_run("cat /workspace/AGENTS.md")
+        assert ec == 0, f"AGENTS.md not found: {out.decode()}"
+        return out
+
+    output = await wait_for_agents_md()
     assert "Test" in output.decode()
