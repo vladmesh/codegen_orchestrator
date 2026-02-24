@@ -1,6 +1,8 @@
 import json
 import os
+import time
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict, List
 import structlog
 from redis.asyncio import Redis
@@ -164,6 +166,7 @@ class WorkerManager:
             project_id = meta.get("project_id") if meta else None
             if project_id:
                 logger.info("workspace_preserved", project_id=project_id, worker_id=worker_id)
+                await self.redis.srem("workspace:active_projects", project_id)
             else:
                 workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
 
@@ -266,6 +269,31 @@ class WorkerManager:
                     logger.error("orphan_gc_remove_workspace_failed", worker_id=entry, error=str(e))
 
         logger.info("orphan_gc_complete")
+
+    async def garbage_collect_workspaces(self, max_age_hours: int = 24) -> None:
+        """Remove project workspaces older than max_age_hours with no active workers."""
+        active_projects = await self.redis.smembers("workspace:active_projects")
+
+        try:
+            entries = os.listdir(settings.WORKSPACE_BASE_PATH)
+        except FileNotFoundError:
+            entries = []
+        except Exception as e:
+            logger.error("workspace_gc_list_failed", error=str(e))
+            return
+
+        now = time.time()
+        for entry in entries:
+            if entry in active_projects:
+                continue
+            ws_dir = Path(settings.WORKSPACE_BASE_PATH) / entry
+            try:
+                age_hours = (now - ws_dir.stat().st_mtime) / 3600
+            except OSError:
+                continue
+            if age_hours > max_age_hours:
+                workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, entry)
+                logger.info("workspace_gc_removed", project_id=entry, age_hours=round(age_hours, 1))
 
     async def garbage_collect_images(self, retention_seconds: int = 7 * 24 * 3600) -> None:
         """Remove unused images."""
@@ -380,6 +408,20 @@ class WorkerManager:
             return FactoryDroidAgent()
         return ClaudeCodeAgent()
 
+    async def _check_project_lock(self, project_id: str) -> str | None:
+        """Check if another worker is active for this project.
+
+        Returns worker_id if locked, None if free.
+        """
+        if not await self.redis.sismember("workspace:active_projects", project_id):
+            return None
+        # Find which worker holds the lock
+        async for key in self.redis.scan_iter(match="worker:meta:*"):
+            meta = await self.redis.hgetall(key)
+            if meta.get("project_id") == project_id:
+                return key.split(":")[-1]
+        return None  # stale set entry, safe to proceed
+
     async def create_worker_with_capabilities(
         self,
         worker_id: str,
@@ -406,6 +448,13 @@ class WorkerManager:
             worker_id=worker_id,
             project_id=project_id,
         )
+
+        # Check project mutex — only one worker per project at a time
+        if project_id:
+            existing_worker = await self._check_project_lock(project_id)
+            if existing_worker:
+                raise RuntimeError(f"Project {project_id} already has active worker {existing_worker}")
+
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
         env_vars = env_vars or {}
 

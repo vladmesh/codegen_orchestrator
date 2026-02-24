@@ -73,6 +73,15 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # Workspace GC every 6 hours (21600s)
+    workspace_gc_task = asyncio.create_task(
+        run_periodic_task(
+            lambda: worker_manager.garbage_collect_workspaces(max_age_hours=24),
+            interval=21600,
+            name="workspace_gc",
+        )
+    )
+
     yield
 
     # Shutdown
@@ -86,6 +95,7 @@ async def lifespan(app: FastAPI):
     gc_task.cancel()
     pause_task.cancel()
     orphan_gc_task.cancel()
+    workspace_gc_task.cancel()
 
     try:
         await asyncio.gather(
@@ -94,6 +104,7 @@ async def lifespan(app: FastAPI):
             gc_task,
             pause_task,
             orphan_gc_task,
+            workspace_gc_task,
             return_exceptions=True,
         )
     except Exception:

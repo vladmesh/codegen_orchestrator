@@ -13,6 +13,7 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
 )
 
+from src.config import settings
 from src.consumer import WorkerCommandConsumer
 from src.manager import WorkerManager
 
@@ -102,6 +103,7 @@ class TestWorkspaceByProjectId:
         redis.hset = AsyncMock()
         redis.hget = AsyncMock(return_value=None)
         redis.sadd = AsyncMock()
+        redis.sismember = AsyncMock(return_value=False)
         return redis
 
     @pytest.mark.asyncio
@@ -342,3 +344,209 @@ class TestOrphanGCProjectProtection:
             await manager.garbage_collect_orphaned_resources()
 
         mock_rm.assert_not_called()
+
+
+# --- Bugfix: srem on delete ---
+
+
+class TestDeleteWorkerRemovesFromActiveSet:
+    """Bug-fix: delete_worker must srem project_id from workspace:active_projects."""
+
+    @pytest.fixture
+    def mock_docker(self):
+        return _make_docker_mock()
+
+    @pytest.mark.asyncio
+    async def test_delete_worker_removes_from_active_projects_set(self, mock_docker):
+        """After delete_worker, project_id should no longer be in workspace:active_projects."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        await redis.sadd("workspace:active_projects", "proj-1")
+        await redis.hset(
+            "worker:meta:w-9",
+            mapping={
+                "dev_network": "dev_proj_w-9",
+                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "project_id": "proj-1",
+            },
+        )
+        await redis.hset("worker:status:w-9", mapping={"status": "RUNNING"})
+
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run = AsyncMock(return_value=(0, "", ""))
+            mock_runner_cls.return_value = mock_runner
+
+            await manager.delete_worker("w-9")
+
+        members = await redis.smembers("workspace:active_projects")
+        assert "proj-1" not in members
+
+
+# --- Phase 4: Workspace GC by age ---
+
+
+class TestWorkspaceGC:
+    """Tests for garbage_collect_workspaces (phase 4)."""
+
+    @pytest.fixture
+    def mock_docker(self):
+        return _make_docker_mock()
+
+    @pytest.mark.asyncio
+    async def test_workspace_gc_removes_old_workspaces(self, mock_docker):
+        """Workspaces older than max_age_hours and not active should be removed."""
+        import time
+
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        old_mtime = time.time() - (25 * 3600)  # 25 hours ago
+
+        mock_stat = MagicMock()
+        mock_stat.st_mtime = old_mtime
+
+        with (
+            patch("os.listdir", return_value=["old-proj"]),
+            patch("src.manager.Path") as mock_path_cls,
+            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+        ):
+            mock_ws_dir = MagicMock()
+            mock_ws_dir.stat.return_value = mock_stat
+            mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
+
+            await manager.garbage_collect_workspaces(max_age_hours=24)
+
+        mock_rm.assert_called_once_with(settings.WORKSPACE_BASE_PATH, "old-proj")
+
+    @pytest.mark.asyncio
+    async def test_workspace_gc_preserves_active_workspaces(self, mock_docker):
+        """Workspaces in active_projects set should not be removed regardless of age."""
+        import time
+
+        redis = aioredis.FakeRedis(decode_responses=True)
+        await redis.sadd("workspace:active_projects", "active-proj")
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        old_mtime = time.time() - (48 * 3600)  # 48 hours ago
+
+        mock_stat = MagicMock()
+        mock_stat.st_mtime = old_mtime
+
+        with (
+            patch("os.listdir", return_value=["active-proj"]),
+            patch("src.manager.Path") as mock_path_cls,
+            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+        ):
+            mock_ws_dir = MagicMock()
+            mock_ws_dir.stat.return_value = mock_stat
+            mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
+
+            await manager.garbage_collect_workspaces(max_age_hours=24)
+
+        mock_rm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workspace_gc_preserves_recent_workspaces(self, mock_docker):
+        """Workspaces younger than max_age_hours should not be removed."""
+        import time
+
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        recent_mtime = time.time() - (2 * 3600)  # 2 hours ago
+
+        mock_stat = MagicMock()
+        mock_stat.st_mtime = recent_mtime
+
+        with (
+            patch("os.listdir", return_value=["recent-proj"]),
+            patch("src.manager.Path") as mock_path_cls,
+            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+        ):
+            mock_ws_dir = MagicMock()
+            mock_ws_dir.stat.return_value = mock_stat
+            mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
+
+            await manager.garbage_collect_workspaces(max_age_hours=24)
+
+        mock_rm.assert_not_called()
+
+
+# --- Phase 5: Project mutex ---
+
+
+class TestProjectMutex:
+    """Tests for project lock / mutex (phase 5)."""
+
+    @pytest.fixture
+    def mock_docker(self):
+        return _make_docker_mock()
+
+    @pytest.mark.asyncio
+    async def test_project_lock_prevents_second_worker(self, mock_docker):
+        """Creating a second worker for the same project_id should raise RuntimeError."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch(
+            "src.manager.workspace_mod.get_or_create_project_workspace",
+            return_value=(Path("/tmp/ws/proj-1/workspace"), False),
+        ):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-first",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                project_id="proj-1",
+            )
+
+        with (
+            patch(
+                "src.manager.workspace_mod.get_or_create_project_workspace",
+                return_value=(Path("/tmp/ws/proj-1/workspace"), True),
+            ),
+            pytest.raises(RuntimeError, match="already has active worker"),
+        ):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-second",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                project_id="proj-1",
+            )
+
+    @pytest.mark.asyncio
+    async def test_project_lock_allows_after_delete(self, mock_docker):
+        """After deleting a worker, a new worker for the same project should be allowed."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch(
+            "src.manager.workspace_mod.get_or_create_project_workspace",
+            return_value=(Path("/tmp/ws/proj-1/workspace"), False),
+        ):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-first",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                project_id="proj-1",
+            )
+
+        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run = AsyncMock(return_value=(0, "", ""))
+            mock_runner_cls.return_value = mock_runner
+            await manager.delete_worker("w-first")
+
+        with patch(
+            "src.manager.workspace_mod.get_or_create_project_workspace",
+            return_value=(Path("/tmp/ws/proj-1/workspace"), True),
+        ):
+            # Should not raise
+            result = await manager.create_worker_with_capabilities(
+                worker_id="w-second",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                project_id="proj-1",
+            )
+            assert result == "w-second"

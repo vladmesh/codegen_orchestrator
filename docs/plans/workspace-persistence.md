@@ -312,95 +312,53 @@ Check if `/workspace/PROGRESS.md` exists:
 
 ---
 
-## Фаза 4: GC workspace'ов
+## Фаза 4: GC workspace'ов ✅
 
-### 4.1 Workspace GC по возрасту с последнего использования
+> **Статус**: выполнена.
+> **Отклонения от плана**:
+> 1. `garbage_collect_workspaces()` использует `workspace:active_projects` Redis set (O(1) lookup) вместо `scan_iter` по `worker:meta:*` (O(N)). Set уже поддерживается фазой 2 — нет смысла сканировать все meta-хэши.
+> 2. Добавлена обработка `FileNotFoundError` и generic `Exception` при `os.listdir`, а также `OSError` при `stat()` — graceful handling вместо крашей.
+> 3. **Баг-фикс**: `delete_worker()` теперь делает `srem("workspace:active_projects", project_id)` — без этого set рос бесконечно, блокируя как orphan GC, так и workspace GC.
+> **Тесты**: 4 теста (1 баг-фикс + 3 GC). Все зелёные, существующие не сломаны (114 total в worker-manager).
+
+### 4.1 Workspace GC по возрасту с последнего использования ✅
 
 **Файл**: `services/worker-manager/src/manager.py`
 
 mtime обновляется при каждом reuse (см. 2.1 `os.utime`), поэтому 24ч считаются от последнего запуска воркера, а не от создания workspace. Проект, который активно ретраят, никогда не попадёт под GC.
 
-Новый метод `garbage_collect_workspaces()`:
-
-```python
-async def garbage_collect_workspaces(self, max_age_hours: int = 24) -> None:
-    """Remove project workspaces older than max_age_hours with no active workers."""
-    # 1. Собрать project_id всех активных воркеров из Redis
-    active_projects: set[str] = set()
-    async for key in self.redis.scan_iter(match="worker:meta:*"):
-        meta = await self.redis.hgetall(key)
-        if pid := meta.get("project_id"):
-            active_projects.add(pid)
-
-    # 2. Пройтись по workspace директориям
-    for entry in os.listdir(settings.WORKSPACE_BASE_PATH):
-        if entry in active_projects:
-            continue
-        ws_dir = Path(settings.WORKSPACE_BASE_PATH) / entry
-        age_hours = (time.time() - ws_dir.stat().st_mtime) / 3600
-        if age_hours > max_age_hours:
-            workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, entry)
-            logger.info("workspace_gc_removed", project_id=entry, age_hours=age_hours)
-```
-
-### 4.2 Зарегистрировать периодический таск
+### 4.2 Зарегистрировать периодический таск ✅
 
 **Файл**: `services/worker-manager/src/main.py`
 
-```python
-# Workspace GC every 6 hours
-workspace_gc_task = asyncio.create_task(
-    run_periodic_task(
-        lambda: worker_manager.garbage_collect_workspaces(max_age_hours=24),
-        interval=21600,
-        name="workspace_gc",
-    )
-)
-```
+Workspace GC запускается каждые 6 часов (21600s).
 
-### Тесты фазы 4
+### Тесты фазы 4 ✅
 
+- `test_delete_worker_removes_from_active_projects_set`: FakeRedis, `srem` при delete
 - `test_workspace_gc_removes_old_workspaces`: workspace без активного воркера + старше 24ч → удаляется
 - `test_workspace_gc_preserves_active_workspaces`: workspace с активным воркером → не удаляется
 - `test_workspace_gc_preserves_recent_workspaces`: workspace моложе 24ч → не удаляется
 
 ---
 
-## Фаза 5: Mutex по project_id
+## Фаза 5: Mutex по project_id ✅
 
-### 5.1 Защита от параллельных воркеров
+> **Статус**: выполнена.
+> **Отклонения от плана**:
+> 1. `_check_project_lock()` использует `sismember("workspace:active_projects")` как fast-path (O(1)) перед `scan_iter`. Если project_id не в set — сразу возвращает `None`. scan нужен только для error message (какой worker держит lock).
+> 2. При stale set entry (project в set, но нет worker meta) — возвращает `None` (safe to proceed), а не блокирует.
+> 3. `create_worker_with_capabilities()` делает `raise RuntimeError(...)` вместо `logger.warning` + return. consumer.py ловит exceptions и оборачивает в `CreateWorkerResponse(success=False, error=...)`.
+> 4. Существующие тесты `TestWorkspaceByProjectId` обновлены: добавлен `sismember = AsyncMock(return_value=False)` в mock_redis fixture для совместимости с новой проверкой mutex.
+> **Тесты**: 2 теста. Все зелёные, существующие не сломаны (114 total в worker-manager).
+
+### 5.1 Защита от параллельных воркеров ✅
 
 **Файл**: `services/worker-manager/src/manager.py`
 
-Перед созданием воркера для project_id — проверить что нет другого активного воркера для этого проекта.
+### Тесты фазы 5 ✅
 
-```python
-async def _check_project_lock(self, project_id: str) -> str | None:
-    """Check if another worker is active for this project.
-    Returns worker_id if locked, None if free."""
-    async for key in self.redis.scan_iter(match="worker:meta:*"):
-        meta = await self.redis.hgetall(key)
-        if meta.get("project_id") == project_id:
-            worker_id = key.split(":")[-1]
-            status = await self.redis.hgetall(f"worker:status:{worker_id}")
-            if status:  # Worker still tracked
-                return worker_id
-    return None
-```
-
-В `create_worker_with_capabilities()`:
-
-```python
-if project_id:
-    existing_worker = await self._check_project_lock(project_id)
-    if existing_worker:
-        logger.warning("project_locked", project_id=project_id, existing_worker=existing_worker)
-        # Вернуть ошибку через Redis response
-```
-
-### Тесты фазы 5
-
-- `test_project_lock_prevents_second_worker`: два create_worker с одним project_id → второй отклоняется
+- `test_project_lock_prevents_second_worker`: два create_worker с одним project_id → второй получает RuntimeError
 - `test_project_lock_allows_after_delete`: create → delete → create → OK
 
 ---
