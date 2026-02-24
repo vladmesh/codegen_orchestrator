@@ -1,13 +1,37 @@
 # Project Status
 
-> **Current Focus**: Deploy Architecture (GitHub Actions + Fernet secrets + env groups)
-> **Plan**: [deploy-architecture.md](./plans/deploy-architecture.md)
+> **Current Focus**: Native Dev Environment + Workspace Persistence
+> **Plans**: [dev-env-architecture.md](./plans/dev-env-architecture.md), [workspace-persistence.md](./plans/workspace-persistence.md)
 
 ## Previous: PO ReactAgent Migration — Done
 
 Plan: [po-react-agent.md](./plans/po-react-agent.md) — fully implemented and merged.
 
-## Current: Deploy Architecture
+## Previous: Deploy Architecture — Done
+
+Plan: [deploy-architecture.md](./plans/deploy-architecture.md) — 9 iterations completed and merged.
+
+## Current: Native Dev Environment + Workspace Persistence
+
+Замена Docker-in-Docker на Flat Dev Environment (bind-mounted workspaces, dual-network, compose proxy). Workspace persistence по `project_id` для resume между попытками.
+
+### Dev Environment ([dev-env-architecture.md](./plans/dev-env-architecture.md))
+
+- [x] Phase 1: Workspace bind-mount + dual-network
+- [x] Phase 2: Compose proxy + validation hardening
+- [x] Phase 3: Remove DinD capability, native tooling in worker-base
+- [x] Phase 4: Orphaned resource GC
+
+### Workspace Persistence ([workspace-persistence.md](./plans/workspace-persistence.md))
+
+- [x] Phase 1: project_id passthrough (contract → DeveloperNode → worker-manager)
+- [x] Phase 2: Workspace by project_id + git token refresh
+- [x] Phase 3: PROGRESS.md instructions + resume detection
+- [x] Phase 4: Workspace GC by age (24h)
+- [x] Phase 5: Project mutex (one worker per project)
+- [ ] Phase 6: Failure counter + retry limit (backlog)
+
+## Previous: Deploy Architecture
 
 E2E тест выявил что Ansible-деплой не работает. Переходим на GitHub Actions deploy + Fernet-шифрование секретов + env resolver pipeline.
 

@@ -164,6 +164,6 @@ def deploy_to_server(server_handle: str):
 | Bot | python-telegram-bot |
 | Logging | structlog (JSON in prod, console in dev) |
 | Linting | Ruff |
-| Container Isolation | Sysbox runtime |
+| Container Isolation | Dual-network (internal + dev_proj), bind-mounted workspaces |
 | Secrets | project.config.secrets (PostgreSQL, Fernet-encrypted), GitHub Repository Secrets |
 

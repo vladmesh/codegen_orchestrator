@@ -174,7 +174,7 @@ services:
     build:
       context: .
       dockerfile: services/worker-manager/Dockerfile
-    user: root # Required for Docker socket access
+    user: root # Required for Docker daemon access (manages worker containers and networks on host)
     env_file:
       - .env
     environment:
