@@ -8,76 +8,77 @@ import yaml
 class TestWorkflowValidation:
     """Test that generated workflows are valid and meet orchestrator expectations."""
 
-    def test_generated_workflow_is_valid_yaml(self, generated_backend_project: Path) -> None:
-        """Test that main.yml is valid YAML.
+    def test_generated_ci_workflow_is_valid_yaml(self, generated_backend_project: Path) -> None:
+        """Test that ci.yml is valid YAML."""
+        workflow_path = generated_backend_project / ".github" / "workflows" / "ci.yml"
 
-        Verifies:
-        - File can be parsed as YAML
-        - No syntax errors
-        """
-        workflow_path = generated_backend_project / ".github" / "workflows" / "main.yml"
+        assert workflow_path.exists(), "ci.yml workflow not found"
 
-        assert workflow_path.exists(), "main.yml workflow not found"
-
-        # Should parse without errors
         with open(workflow_path) as f:
             content = yaml.safe_load(f)
 
         assert content is not None, "Empty workflow file"
         assert isinstance(content, dict), "Workflow should be a dict"
 
-    def test_workflow_has_expected_jobs(self, generated_backend_project: Path) -> None:
-        """Test that main.yml has the expected job structure.
+    def test_generated_deploy_workflow_is_valid_yaml(self, generated_backend_project: Path) -> None:
+        """Test that deploy.yml is valid YAML."""
+        workflow_path = generated_backend_project / ".github" / "workflows" / "deploy.yml"
 
-        The orchestrator expects these jobs to exist in the workflow.
-        """
-        workflow_path = generated_backend_project / ".github" / "workflows" / "main.yml"
+        assert workflow_path.exists(), "deploy.yml workflow not found"
 
         with open(workflow_path) as f:
             content = yaml.safe_load(f)
 
-        # Should have jobs section
+        assert content is not None, "Empty workflow file"
+        assert isinstance(content, dict), "Workflow should be a dict"
+
+    def test_ci_workflow_has_expected_jobs(self, generated_backend_project: Path) -> None:
+        """Test that ci.yml has the expected job structure."""
+        workflow_path = generated_backend_project / ".github" / "workflows" / "ci.yml"
+
+        with open(workflow_path) as f:
+            content = yaml.safe_load(f)
+
         assert "jobs" in content, "Missing 'jobs' section"
         jobs = content["jobs"]
 
-        # Expected jobs
+        assert "lint-and-test" in jobs, "Missing 'lint-and-test' job"
         assert "build-and-push" in jobs, "Missing 'build-and-push' job"
-        assert "deploy" in jobs, "Missing 'deploy' job"
 
-    def test_workflow_has_correct_triggers(self, generated_backend_project: Path) -> None:
-        """Test that workflow has expected triggers.
+    def test_ci_workflow_has_correct_triggers(self, generated_backend_project: Path) -> None:
+        """Test that ci workflow has expected triggers.
 
-        The orchestrator may trigger workflows via workflow_dispatch.
-        Note: YAML parses 'on' as boolean True, so we check for both.
+        YAML parses 'on' as boolean True, so we check for both.
         """
-        workflow_path = generated_backend_project / ".github" / "workflows" / "main.yml"
+        workflow_path = generated_backend_project / ".github" / "workflows" / "ci.yml"
 
         with open(workflow_path) as f:
             content = yaml.safe_load(f)
 
-        # YAML parses 'on' as boolean True, so check for both
         triggers = content.get("on") or content.get(True)
         assert triggers is not None, "Missing 'on' (triggers) section"
 
-        # Should support workflow_dispatch (for manual/orchestrator triggers)
         assert "workflow_dispatch" in triggers, "Missing 'workflow_dispatch' trigger"
-
-        # Should also support push to main
         assert "push" in triggers, "Missing 'push' trigger"
 
-    def test_workflow_uses_ghcr_registry(self, generated_backend_project: Path) -> None:
-        """Test that workflow uses GitHub Container Registry.
-
-        The orchestrator expects images to be pushed to ghcr.io.
-        """
-        workflow_path = generated_backend_project / ".github" / "workflows" / "main.yml"
+    def test_deploy_workflow_has_deploy_job(self, generated_backend_project: Path) -> None:
+        """Test that deploy.yml has the deploy job."""
+        workflow_path = generated_backend_project / ".github" / "workflows" / "deploy.yml"
 
         with open(workflow_path) as f:
             content = yaml.safe_load(f)
 
-        # Check env section for REGISTRY
-        if "env" in content:
-            assert content["env"].get("REGISTRY") == "ghcr.io", "Expected REGISTRY=ghcr.io"
+        assert "jobs" in content, "Missing 'jobs' section"
+        assert "deploy" in content["jobs"], "Missing 'deploy' job"
+
+    def test_ci_workflow_uses_registry_secret(self, generated_backend_project: Path) -> None:
+        """Test that CI workflow uses registry secrets for image push."""
+        workflow_path = generated_backend_project / ".github" / "workflows" / "ci.yml"
+
+        with open(workflow_path) as f:
+            content = f.read()
+
+        assert "secrets.REGISTRY_URL" in content, "Expected secrets.REGISTRY_URL in CI workflow"
 
     def test_multi_module_workflow_has_all_services(
         self, generated_multi_module_project: Path
@@ -87,18 +88,16 @@ class TestWorkflowValidation:
         When backend,tg_bot modules are requested, both should appear
         in the build matrix.
         """
-        workflow_path = generated_multi_module_project / ".github" / "workflows" / "main.yml"
+        workflow_path = generated_multi_module_project / ".github" / "workflows" / "ci.yml"
 
         with open(workflow_path) as f:
             content = yaml.safe_load(f)
 
-        # Get build-and-push job
         build_job = content["jobs"].get("build-and-push", {})
         strategy = build_job.get("strategy", {})
         matrix = strategy.get("matrix", {})
         includes = matrix.get("include", [])
 
-        # Extract service IDs from matrix
         service_ids = [item.get("id") for item in includes if "id" in item]
 
         assert "backend" in service_ids, "Backend not in build matrix"
