@@ -523,14 +523,14 @@ class WorkerManager:
         else:
             network_name = settings.INTERNAL_NETWORK
 
-        # Create container with dual-network setup
+        # Create container (dev network only when not in host mode)
         container_id = await self.create_worker(
             worker_id=worker_id,
             image=image_tag,
             env_vars=container_env,
             volumes=volumes,
             network_name=network_name,
-            create_dev_network=True,
+            create_dev_network=network_name is not None,
             workspace_path=str(ws_path),
         )
 
