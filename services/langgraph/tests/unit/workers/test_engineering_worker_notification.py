@@ -20,10 +20,11 @@ import pytest
 
 @pytest.fixture
 def mock_redis():
-    """Mock RedisStreamClient with xadd call recording."""
+    """Mock RedisStreamClient with xadd/publish_flat call recording."""
     r = AsyncMock()
     r.redis = AsyncMock()
     r.redis.xadd = AsyncMock()
+    r.publish_flat = AsyncMock()
     return r
 
 
@@ -45,9 +46,9 @@ def _project(*, repo_url=None):
 
 
 def _get_callback_events(mock_redis, stream="po:response:abc"):
-    """Extract callback events from xadd calls, returning list of field dicts."""
+    """Extract callback events from publish_flat calls, returning list of field dicts."""
     events = []
-    for call in mock_redis.redis.xadd.call_args_list:
+    for call in mock_redis.publish_flat.call_args_list:
         args = call[0]
         if args[0] == stream:
             events.append(args[1])

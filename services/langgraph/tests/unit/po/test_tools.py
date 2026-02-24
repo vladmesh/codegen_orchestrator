@@ -25,9 +25,9 @@ from src.po.tools import (
 
 
 @pytest.fixture(autouse=True)
-def _init_clients(mock_api_client, mock_redis):
+def _init_clients(mock_api_client, mock_stream_client):
     """Initialize PO tools with mock clients for every test."""
-    init_po_clients(mock_api_client, mock_redis)
+    init_po_clients(mock_api_client, mock_stream_client)
 
 
 @pytest.fixture
@@ -38,10 +38,13 @@ def mock_api_client():
 
 
 @pytest.fixture
-def mock_redis():
-    """Mock Redis client."""
-    redis = AsyncMock()
-    return redis
+def mock_stream_client():
+    """Mock RedisStreamClient."""
+    client = AsyncMock()
+    client.redis = AsyncMock()
+    client.publish_message = AsyncMock()
+    client.publish_flat = AsyncMock()
+    return client
 
 
 def _make_response(data, status_code: int = 200) -> MagicMock:
@@ -153,7 +156,7 @@ class TestSetProjectSecret:
 
 class TestTriggerEngineering:
     @pytest.mark.asyncio
-    async def test_triggers_engineering(self, mock_api_client, mock_redis):
+    async def test_triggers_engineering(self, mock_api_client, mock_stream_client):
         mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
 
         result = await trigger_engineering.ainvoke(
@@ -162,16 +165,16 @@ class TestTriggerEngineering:
 
         assert "Engineering task queued" in result
         mock_api_client.post.assert_called_once()
-        mock_redis.xadd.assert_called_once()
+        mock_stream_client.publish_message.assert_called_once()
 
         # Verify queue message
-        xadd_args = mock_redis.xadd.call_args
-        assert xadd_args[0][0] == "engineering:queue"
-        queue_data = json.loads(xadd_args[0][1]["data"])
-        assert queue_data["project_id"] == "abc"
+        call_args = mock_stream_client.publish_message.call_args
+        assert call_args[0][0] == "engineering:queue"
+        eng_msg = call_args[0][1]
+        assert eng_msg.project_id == "abc"
 
     @pytest.mark.asyncio
-    async def test_requires_description_for_feature(self, mock_api_client, mock_redis):
+    async def test_requires_description_for_feature(self, mock_api_client, mock_stream_client):
         result = await trigger_engineering.ainvoke(
             {"project_id": "abc", "action": "feature"},
             config=_make_config("user-42"),
@@ -181,59 +184,59 @@ class TestTriggerEngineering:
         mock_api_client.post.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_uses_po_input_as_callback(self, mock_api_client, mock_redis):
+    async def test_uses_po_input_as_callback(self, mock_api_client, mock_stream_client):
         """callback_stream in queue message should be po:input (not po:events:*)."""
         mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
 
         await trigger_engineering.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
 
-        queue_data = json.loads(mock_redis.xadd.call_args[0][1]["data"])
-        assert queue_data["callback_stream"] == "po:input"
+        eng_msg = mock_stream_client.publish_message.call_args[0][1]
+        assert eng_msg.callback_stream == "po:input"
 
     @pytest.mark.asyncio
-    async def test_passes_real_user_id(self, mock_api_client, mock_redis):
+    async def test_passes_real_user_id(self, mock_api_client, mock_stream_client):
         """user_id in queue message should come from config, not hardcoded."""
         mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
 
         await trigger_engineering.ainvoke({"project_id": "abc"}, config=_make_config("user-777"))
 
-        queue_data = json.loads(mock_redis.xadd.call_args[0][1]["data"])
-        assert queue_data["user_id"] == "user-777"
+        eng_msg = mock_stream_client.publish_message.call_args[0][1]
+        assert eng_msg.user_id == "user-777"
 
 
 class TestTriggerDeploy:
     @pytest.mark.asyncio
-    async def test_triggers_deploy(self, mock_api_client, mock_redis):
+    async def test_triggers_deploy(self, mock_api_client, mock_stream_client):
         mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
 
         result = await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
 
         assert "Deploy task queued" in result
-        mock_redis.xadd.assert_called_once()
-        xadd_args = mock_redis.xadd.call_args
-        assert xadd_args[0][0] == "deploy:queue"
-        deploy_data = json.loads(xadd_args[0][1]["data"])
-        assert deploy_data["triggered_by"] == "po"
+        mock_stream_client.publish_message.assert_called_once()
+        call_args = mock_stream_client.publish_message.call_args
+        assert call_args[0][0] == "deploy:queue"
+        deploy_msg = call_args[0][1]
+        assert deploy_msg.triggered_by == "po"
 
     @pytest.mark.asyncio
-    async def test_uses_po_input_as_callback(self, mock_api_client, mock_redis):
+    async def test_uses_po_input_as_callback(self, mock_api_client, mock_stream_client):
         """callback_stream should be po:input."""
         mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
 
         await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
 
-        queue_data = json.loads(mock_redis.xadd.call_args[0][1]["data"])
-        assert queue_data["callback_stream"] == "po:input"
+        deploy_msg = mock_stream_client.publish_message.call_args[0][1]
+        assert deploy_msg.callback_stream == "po:input"
 
     @pytest.mark.asyncio
-    async def test_passes_real_user_id(self, mock_api_client, mock_redis):
+    async def test_passes_real_user_id(self, mock_api_client, mock_stream_client):
         """user_id should come from config."""
         mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
 
         await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("user-999"))
 
-        queue_data = json.loads(mock_redis.xadd.call_args[0][1]["data"])
-        assert queue_data["user_id"] == "user-999"
+        deploy_msg = mock_stream_client.publish_message.call_args[0][1]
+        assert deploy_msg.user_id == "user-999"
 
 
 class TestGetTaskStatus:
@@ -250,26 +253,26 @@ class TestGetTaskStatus:
 
 class TestSetReminder:
     @pytest.mark.asyncio
-    async def test_sets_reminder(self, mock_redis):
+    async def test_sets_reminder(self, mock_stream_client):
         result = await set_reminder.ainvoke(
             {"delay_minutes": 10, "reason": "check eng task"},
             config=_make_config("user-1"),
         )
 
         assert "Reminder set" in result
-        mock_redis.zadd.assert_called_once()
-        call_args = mock_redis.zadd.call_args
+        mock_stream_client.redis.zadd.assert_called_once()
+        call_args = mock_stream_client.redis.zadd.call_args
         assert call_args[0][0] == PO_REMINDERS_KEY
 
     @pytest.mark.asyncio
-    async def test_uses_user_id_from_config(self, mock_redis):
+    async def test_uses_user_id_from_config(self, mock_stream_client):
         """user_id should come from RunnableConfig, not LLM arguments."""
         await set_reminder.ainvoke(
             {"delay_minutes": 5, "reason": "test"},
             config=_make_config("user-777"),
         )
 
-        reminder_json = list(mock_redis.zadd.call_args[0][1].keys())[0]
+        reminder_json = list(mock_stream_client.redis.zadd.call_args[0][1].keys())[0]
         import json
 
         reminder = json.loads(reminder_json)
@@ -278,29 +281,29 @@ class TestSetReminder:
 
 class TestNotifyUser:
     @pytest.mark.asyncio
-    async def test_writes_to_proactive_stream(self, mock_redis):
-        """Should XADD to po:proactive with user_id and text."""
+    async def test_writes_to_proactive_stream(self, mock_stream_client):
+        """Should publish_flat to po:proactive with user_id and text."""
         result = await notify_user.ainvoke(
             {"message": "Your project is ready!"},
             config=_make_config("user-123"),
         )
 
         assert "Message sent" in result
-        mock_redis.xadd.assert_called_once()
-        call_args = mock_redis.xadd.call_args
+        mock_stream_client.publish_flat.assert_called_once()
+        call_args = mock_stream_client.publish_flat.call_args
         assert call_args[0][0] == "po:proactive"
         assert call_args[0][1]["text"] == "Your project is ready!"
         assert call_args[0][1]["user_id"] == "user-123"
 
     @pytest.mark.asyncio
-    async def test_uses_user_id_from_config(self, mock_redis):
+    async def test_uses_user_id_from_config(self, mock_stream_client):
         """user_id should come from RunnableConfig."""
         await notify_user.ainvoke(
             {"message": "test"},
             config=_make_config("user-456"),
         )
 
-        fields = mock_redis.xadd.call_args[0][1]
+        fields = mock_stream_client.publish_flat.call_args[0][1]
         assert fields["user_id"] == "user-456"
 
 

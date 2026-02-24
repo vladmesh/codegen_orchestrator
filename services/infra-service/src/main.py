@@ -6,14 +6,14 @@ Run standalone: python -m src.main
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import signal
 
 import structlog
 
+from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisionerResult
 from shared.log_config import setup_logging
-from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE, ensure_all_groups
+from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from .provisioner.node import ProvisionerNode
@@ -34,17 +34,17 @@ def handle_shutdown(signum, frame):
     _shutdown = True
 
 
-async def process_provisioner_job(job_data: dict) -> dict:
+async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
     """Process a single provisioner job.
 
     Args:
         job_data: Job data from Redis queue
 
     Returns:
-        Result dict with status and details
+        ProvisionerResult with status and details
     """
     job_id = job_data.get("job_id") or job_data.get("request_id", "unknown")
-    server_handle = job_data.get("server_handle")
+    server_handle = job_data.get("server_handle", "")
 
     logger.info(
         "provisioner_job_started",
@@ -76,13 +76,13 @@ async def process_provisioner_job(job_data: dict) -> dict:
                 server_handle=server_handle,
                 server_ip=provisioning_result.get("server_ip"),
             )
-            return {
-                "request_id": job_id,
-                "status": "success",
-                "server_handle": server_handle,
-                "server_ip": provisioning_result.get("server_ip"),
-                "services_redeployed": provisioning_result.get("services_redeployed", 0),
-            }
+            return ProvisionerResult(
+                request_id=job_id,
+                status="success",
+                server_handle=server_handle,
+                server_ip=provisioning_result.get("server_ip"),
+                services_redeployed=provisioning_result.get("services_redeployed", 0),
+            )
         else:
             errors = result.get("errors", ["Unknown error"])
             logger.error(
@@ -91,12 +91,12 @@ async def process_provisioner_job(job_data: dict) -> dict:
                 server_handle=server_handle,
                 errors=errors,
             )
-            return {
-                "request_id": job_id,
-                "status": "failed",
-                "server_handle": server_handle,
-                "errors": errors,
-            }
+            return ProvisionerResult(
+                request_id=job_id,
+                status="failed",
+                server_handle=server_handle,
+                errors=errors,
+            )
 
     except Exception as e:
         logger.error(
@@ -106,111 +106,56 @@ async def process_provisioner_job(job_data: dict) -> dict:
             error_type=type(e).__name__,
             exc_info=True,
         )
-        return {
-            "request_id": job_id,
-            "status": "failed",
-            "server_handle": server_handle,
-            "error": str(e),
-        }
+        return ProvisionerResult(
+            request_id=job_id,
+            status="failed",
+            server_handle=server_handle,
+            error=str(e),
+        )
 
 
 async def run_worker():
     """Main worker loop handling provisioning queue."""
     setup_logging(service_name="infra-service")
 
-    redis = RedisStreamClient()
-    await redis.connect()
-
-    # Ensure consumer groups exist
-    await ensure_all_groups(redis.redis)
+    client = RedisStreamClient()
+    await client.connect()
 
     logger.info("infrastructure_worker_started", consumer=CONSUMER_NAME)
 
     try:
-        while not _shutdown:
-            try:
-                # Read from provisioner queue
-                messages = await redis.redis.xreadgroup(
-                    groupname=INFRA_GROUP,
-                    consumername=CONSUMER_NAME,
-                    streams={PROVISIONER_QUEUE: ">"},
-                    count=1,
-                    block=5000,  # 5 second block
-                )
-
-                if not messages:
-                    continue
-
-                for stream_name, entries in messages:
-                    # Normalize stream_name to string (Redis may return bytes or str)
-                    stream_name_str = (
-                        stream_name.decode() if isinstance(stream_name, bytes) else stream_name
-                    )
-
-                    for entry_id, raw_data in entries:
-                        try:
-                            # Parse JSON data
-                            if "data" in raw_data:
-                                job_data = json.loads(raw_data["data"])
-                            else:
-                                job_data = raw_data
-
-                            # Route to appropriate handler
-                            if stream_name_str == PROVISIONER_QUEUE:
-                                result = await process_provisioner_job(job_data)
-                                result_stream = "provisioner:results"
-                            else:
-                                logger.warning("unknown_queue", stream=stream_name_str)
-                                continue
-
-                            # Publish result
-                            request_id = job_data.get("job_id") or job_data.get("request_id")
-                            if request_id:
-                                # Store result in Redis key for polling
-                                result_key = f"deploy:result:{request_id}"
-                                await redis.redis.set(
-                                    result_key,
-                                    json.dumps(result),
-                                    ex=3600,  # 1 hour TTL
-                                )
-                                # Also publish to stream
-                                await redis.publish(result_stream, result)
-
-                            # ACK the message
-                            await redis.redis.xack(
-                                stream_name_str,
-                                INFRA_GROUP,
-                                entry_id,
-                            )
-                            logger.debug("job_acked", stream=stream_name_str, entry_id=entry_id)
-
-                        except Exception as e:
-                            logger.error(
-                                "job_processing_error",
-                                stream=stream_name_str,
-                                entry_id=entry_id,
-                                error=str(e),
-                                exc_info=True,
-                            )
-                            # Don't ACK — job will be redelivered
-
-            except asyncio.CancelledError:
-                logger.info("worker_cancelled")
+        async for msg in client.consume(
+            PROVISIONER_QUEUE,
+            INFRA_GROUP,
+            CONSUMER_NAME,
+            auto_ack=False,
+            claim_pending=True,
+        ):
+            if _shutdown:
                 break
-            except Exception as e:
-                if "NOGROUP" in str(e):
-                    logger.warning(
-                        "consumer_nogroup_recovering",
-                        stream=PROVISIONER_QUEUE,
-                        group=INFRA_GROUP,
-                    )
-                    await ensure_all_groups(redis.redis)
-                else:
-                    logger.error("worker_loop_error", error=str(e))
-                await asyncio.sleep(1)
+            if msg is None:
+                continue
+            try:
+                job = ProvisionerMessage.model_validate(msg.data)
+                result = await process_provisioner_job(job.model_dump(mode="json"))
 
+                # Publish result
+                result_key = f"deploy:result:{result.request_id}"
+                await client.redis.set(result_key, result.model_dump_json(), ex=3600)
+                await client.publish("provisioner:results", result.model_dump(mode="json"))
+
+                await client.ack(PROVISIONER_QUEUE, INFRA_GROUP, msg.message_id)
+                logger.debug("job_acked", entry_id=msg.message_id)
+
+            except Exception as e:
+                logger.error(
+                    "job_processing_error",
+                    entry_id=msg.message_id,
+                    error=str(e),
+                    exc_info=True,
+                )
     finally:
-        await redis.close()
+        await client.close()
         logger.info("infrastructure_worker_shutdown")
 
 

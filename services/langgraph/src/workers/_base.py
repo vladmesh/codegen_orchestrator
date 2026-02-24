@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-import json
 import os
 import signal
 
 import structlog
 
 from shared.log_config import setup_logging
-from shared.queues import WORKER_GROUP, ensure_consumer_groups
+from shared.queues import WORKER_GROUP
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
@@ -58,62 +57,32 @@ async def run_queue_worker(
     redis = RedisStreamClient()
     await redis.connect()
 
-    await ensure_consumer_groups(redis.redis)
-
     logger.info(f"{service_name}_started", consumer=consumer_name)
 
     try:
-        while not _shutdown:
-            try:
-                messages = await redis.redis.xreadgroup(
-                    groupname=WORKER_GROUP,
-                    consumername=consumer_name,
-                    streams={queue: ">"},
-                    count=1,
-                    block=5000,
-                )
-
-                if not messages:
-                    continue
-
-                for _stream_name, entries in messages:
-                    for entry_id, raw_data in entries:
-                        try:
-                            if "data" in raw_data:
-                                job_data = json.loads(raw_data["data"])
-                            else:
-                                job_data = raw_data
-
-                            result = await process_fn(job_data, redis)
-                            job_data.update(result)
-
-                            await redis.redis.xack(queue, WORKER_GROUP, entry_id)
-                            logger.debug("job_acked", entry_id=entry_id, worker=service_name)
-
-                        except Exception as e:
-                            logger.error(
-                                "job_processing_error",
-                                entry_id=entry_id,
-                                error=str(e),
-                                worker=service_name,
-                            )
-
-            except asyncio.CancelledError:
-                logger.info("worker_cancelled", worker=service_name)
+        async for msg in redis.consume(
+            queue,
+            WORKER_GROUP,
+            consumer_name,
+            auto_ack=False,
+            claim_pending=True,
+        ):
+            if _shutdown:
                 break
+            if msg is None:
+                continue
+            try:
+                result = await process_fn(msg.data, redis)
+                msg.data.update(result)
+                await redis.ack(queue, WORKER_GROUP, msg.message_id)
+                logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
             except Exception as e:
-                if "NOGROUP" in str(e):
-                    logger.warning(
-                        "consumer_nogroup_recovering",
-                        stream=queue,
-                        group=WORKER_GROUP,
-                        worker=service_name,
-                    )
-                    await ensure_consumer_groups(redis.redis)
-                else:
-                    logger.error("worker_loop_error", error=str(e), worker=service_name)
-                await asyncio.sleep(1)
-
+                logger.error(
+                    "job_processing_error",
+                    entry_id=msg.message_id,
+                    error=str(e),
+                    worker=service_name,
+                )
     finally:
         await redis.close()
         await api_client.close()

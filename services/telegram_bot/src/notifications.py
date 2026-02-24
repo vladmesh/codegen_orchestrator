@@ -4,14 +4,13 @@ Listens to provisioner:results stream and notifies admins about server status.
 """
 
 import asyncio
-import json
 
-from redis.asyncio import Redis
 import structlog
 from telegram import Bot
 
 from shared.contracts.queues.provisioner import ProvisionerResult
-from shared.queues import PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, ensure_all_groups
+from shared.queues import PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP
+from shared.redis_client import RedisStreamClient
 
 logger = structlog.get_logger()
 
@@ -21,8 +20,8 @@ CONSUMER_NAME = "notifier"
 class ProvisionerNotifier:
     """Notifies admins about provisioner results."""
 
-    def __init__(self, redis: Redis, admin_ids: set[int]):
-        self.redis = redis
+    def __init__(self, client: RedisStreamClient, admin_ids: set[int]):
+        self.client = client
         self.admin_ids = admin_ids
         self._running = False
 
@@ -37,63 +36,35 @@ class ProvisionerNotifier:
 
     async def _listen_loop(self, bot: Bot) -> None:
         """Main loop: listen for provisioner results."""
-        await ensure_all_groups(self.redis)
-
         logger.info("provisioner_notifier_started", admin_count=len(self.admin_ids))
 
-        while self._running:
-            try:
-                await self._process_messages(bot)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                if "NOGROUP" in str(e):
-                    logger.warning(
-                        "consumer_nogroup_recovering",
-                        stream=PROVISIONER_RESULTS,
-                        group=TELEGRAM_BOT_GROUP,
-                    )
-                    await ensure_all_groups(self.redis)
-                else:
-                    logger.error("provisioner_notifier_error", error=str(e))
-                await asyncio.sleep(1)
-
-        logger.info("provisioner_notifier_stopped")
-
-    async def _listen_once(self, bot: Bot) -> None:
-        """Process one batch of messages (for testing)."""
-        await ensure_all_groups(self.redis)
-        await self._process_messages(bot, block_ms=1000)
-
-    async def _process_messages(self, bot: Bot, block_ms: int = 2000) -> None:
-        """Read and process messages from stream."""
-        messages = await self.redis.xreadgroup(
-            groupname=TELEGRAM_BOT_GROUP,
-            consumername=CONSUMER_NAME,
-            streams={PROVISIONER_RESULTS: ">"},
-            count=10,
-            block=block_ms,
-        )
-
-        if not messages:
-            return
-
-        for _stream_name, stream_messages in messages:
-            for msg_id, msg_data in stream_messages:
+        try:
+            async for msg in self.client.consume(
+                PROVISIONER_RESULTS,
+                TELEGRAM_BOT_GROUP,
+                CONSUMER_NAME,
+                auto_ack=True,
+            ):
+                if not self._running:
+                    break
+                if msg is None:
+                    continue
                 try:
-                    await self._handle_message(bot, msg_id, msg_data)
-                    await self.redis.xack(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, msg_id)
+                    await self._handle_message(bot, msg.message_id, msg.data)
                 except Exception as e:
                     logger.error(
                         "provisioner_message_error",
-                        msg_id=msg_id,
+                        msg_id=msg.message_id,
                         error=str(e),
                     )
+        except asyncio.CancelledError:
+            pass
 
-    async def _handle_message(self, bot: Bot, msg_id: str, msg_data: dict) -> None:
+        logger.info("provisioner_notifier_stopped")
+
+    async def _handle_message(self, bot: Bot, msg_id: str, data: dict) -> None:
         """Handle single provisioner result message."""
-        payload = json.loads(msg_data.get("data", "{}"))
-        result = ProvisionerResult.model_validate(payload)
+        result = ProvisionerResult.model_validate(data)
 
         logger.info(
             "provisioner_result_received",

@@ -66,18 +66,27 @@ class RedisStreamClient:
         return self._redis
 
     async def publish(self, stream: str, data: dict[str, Any]) -> str:
-        """Publish a dict to a Redis Stream."""
-        # Serialize data to JSON string for Redis
+        """Publish a dict to a Redis Stream (wrapped in JSON 'data' field)."""
         message = {"data": json.dumps(data)}
         message_id = await self.redis.xadd(stream, message)
         logger.debug("message_published", stream=stream, message_id=message_id)
         return message_id
 
+    async def publish_flat(self, stream: str, fields: dict[str, str]) -> str:
+        """Publish flat key-value fields directly to a Redis Stream (no JSON wrapping)."""
+        message_id = await self.redis.xadd(stream, fields)
+        logger.debug("message_published_flat", stream=stream, message_id=message_id)
+        return message_id
+
     async def publish_message(self, stream: str, message: BaseMessage) -> str:
         """Publish a Pydantic DTO to a Redis Stream."""
-        # dump mode=json to serialized data correctly (e.g. datetimes)
         data = message.model_dump(mode="json")
         return await self.publish(stream, data)
+
+    async def ack(self, stream: str, group: str, message_id: str) -> None:
+        """Acknowledge a message, removing it from the pending entries list (PEL)."""
+        await self.redis.xack(stream, group, message_id)
+        logger.debug("message_acked", stream=stream, message_id=message_id)
 
     async def ensure_consumer_group(self, stream: str, group: str) -> None:
         """Ensure a consumer group exists for the stream.
@@ -94,6 +103,57 @@ class RedisStreamClient:
             else:
                 raise
 
+    @staticmethod
+    def _parse_fields(fields: dict[str, str]) -> dict[str, Any]:
+        """Parse Redis stream message fields into a data dict.
+
+        Handles two formats:
+        - Wrapped: {"data": "<JSON string>"} → parsed JSON dict
+        - Flat: {"key1": "val1", "key2": "val2"} → fields as-is
+        """
+        if "data" in fields:
+            try:
+                parsed = json.loads(fields["data"])
+                if isinstance(parsed, dict):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return dict(fields)
+
+    async def _recover_pending(
+        self,
+        stream: str,
+        group: str,
+        consumer: str,
+        pending_timeout_ms: int,
+        count: int,
+        auto_ack: bool,
+    ) -> AsyncIterator[StreamMessage]:
+        """Recover pending messages via XAUTOCLAIM before reading new ones."""
+        cursor = "0-0"
+        while True:
+            result = await self.redis.xautoclaim(
+                stream,
+                group,
+                consumer,
+                min_idle_time=pending_timeout_ms,
+                start_id=cursor,
+                count=count,
+            )
+            new_cursor = result[0]
+            claimed = result[1]
+            for message_id, fields in claimed:
+                if fields is None:
+                    continue
+                data = self._parse_fields(fields)
+                yield StreamMessage(message_id=message_id, data=data)
+                if auto_ack:
+                    await self.redis.xack(stream, group, message_id)
+                    logger.debug("message_acked", message_id=message_id)
+            if new_cursor == "0-0" or not claimed:
+                break
+            cursor = new_cursor
+
     async def consume(
         self,
         stream: str,
@@ -101,6 +161,9 @@ class RedisStreamClient:
         consumer: str,
         block_ms: int = 5000,
         count: int = 1,
+        auto_ack: bool = True,
+        claim_pending: bool = False,
+        pending_timeout_ms: int = 60_000,
     ) -> AsyncIterator[StreamMessage]:
         """Consume messages from a Redis Stream using consumer groups.
 
@@ -108,14 +171,23 @@ class RedisStreamClient:
             stream: Stream name to consume from.
             group: Consumer group name.
             consumer: Consumer name within the group.
-            block_ms: How long to block waiting for messages.
-            count: Number of messages to attempt reading (yielded one by one).
+            block_ms: How long to block waiting for messages (ms).
+            count: Number of messages to attempt reading per iteration.
+            auto_ack: If True, messages are ACKed immediately after yield.
+                      If False, caller must call ack() manually.
+            claim_pending: If True, recover pending messages (PEL) before reading new ones.
+            pending_timeout_ms: Min idle time (ms) for XAUTOCLAIM to claim pending messages.
         """
         await self.ensure_consumer_group(stream, group)
 
+        if claim_pending:
+            async for msg in self._recover_pending(
+                stream, group, consumer, pending_timeout_ms, count, auto_ack
+            ):
+                yield msg
+
         while True:
             try:
-                # Read from consumer group
                 messages = await self.redis.xreadgroup(
                     groupname=group,
                     consumername=consumer,
@@ -125,36 +197,16 @@ class RedisStreamClient:
                 )
 
                 if not messages:
-                    # Optional: Check for pending messages (not ACKed) logic could go here
-                    # For MVP '>', we only want new things.
-                    # Yield control to let caller decide to stop?
-                    # This implementation is an infinite loop that yields.
-                    # It relies on caller to break loop or timeout.
-                    # Since it's 'yield', we can't easily perform "idle" work here
-                    # unless we yield None or similar.
-                    # But standard pattern is:
-                    yield None  # type: ignore # Specific pattern to signal idle/timeout
+                    yield None  # type: ignore[misc]
                     continue
 
                 for _stream_name, stream_messages in messages:
                     for message_id, fields in stream_messages:
-                        try:
-                            data = json.loads(fields.get("data", "{}"))
-                            yield StreamMessage(message_id=message_id, data=data)
-
-                            # OLD Implementation: ACKed immediately.
-                            # BETTER Implementation for robustness: Caller ACKs.
-                            # BUT to match previous logic (and easy usage), we keep
-                            # Auto-ACK for now? Re-reading old file: Yes, it auto-acked.
-
+                        data = self._parse_fields(fields)
+                        yield StreamMessage(message_id=message_id, data=data)
+                        if auto_ack:
                             await self.redis.xack(stream, group, message_id)
                             logger.debug("message_acked", message_id=message_id)
-
-                        except json.JSONDecodeError as e:
-                            logger.error(
-                                "message_parse_failed", message_id=message_id, error=str(e)
-                            )
-                            await self.redis.xack(stream, group, message_id)
 
             except asyncio.CancelledError:
                 logger.info("consumer_cancelled", consumer=consumer)

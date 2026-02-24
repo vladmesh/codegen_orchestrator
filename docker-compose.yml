@@ -142,7 +142,7 @@ services:
       - ./services/infra-service/src:/app/src:delegated
       - ./services/infra-service/ansible:/app/ansible:delegated
       - ./shared:/app/shared:delegated
-      - ~/.ssh:/root/.ssh:ro
+      - ~/.ssh:/host-ssh:ro
     depends_on:
       - api
       - redis

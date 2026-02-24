@@ -9,25 +9,24 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import TYPE_CHECKING
 
 import structlog
 
+from shared.contracts.queues.po import POReminderMessage, to_flat_fields
 from shared.queues import PO_INPUT_QUEUE, PO_REMINDERS_KEY
-
-if TYPE_CHECKING:
-    from redis.asyncio import Redis
+from shared.redis_client import RedisStreamClient
 
 logger = structlog.get_logger(__name__)
 
 POLL_INTERVAL_S = 30
 
 
-async def _poll_once(redis: Redis) -> int:
+async def _poll_once(client: RedisStreamClient) -> int:
     """Run one poll cycle: move due reminders into po:input.
 
     Returns the number of reminders fired.
     """
+    redis = client.redis
     now = time.time()
     due: list[str] = await redis.zrangebyscore(PO_REMINDERS_KEY, 0, now)
 
@@ -40,15 +39,12 @@ async def _poll_once(redis: Redis) -> int:
             await redis.zrem(PO_REMINDERS_KEY, entry)
             continue
 
-        await redis.xadd(
-            PO_INPUT_QUEUE,
-            {
-                "type": data.get("type", "reminder"),
-                "user_id": data.get("user_id", "unknown"),
-                "text": data.get("text", ""),
-                "timestamp": data.get("timestamp", ""),
-            },
+        reminder = POReminderMessage(
+            text=data.get("text", ""),
+            user_id=data.get("user_id", "unknown"),
+            timestamp=data.get("timestamp", ""),
         )
+        await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(reminder))
         await redis.zrem(PO_REMINDERS_KEY, entry)
         fired += 1
 
@@ -61,13 +57,13 @@ async def _poll_once(redis: Redis) -> int:
     return fired
 
 
-async def run_reminder_poller(redis: Redis) -> None:
+async def run_reminder_poller(client: RedisStreamClient) -> None:
     """Poll po:reminders every POLL_INTERVAL_S and fire due reminders."""
     logger.info("reminder_poller_started", poll_interval_s=POLL_INTERVAL_S)
     try:
         while True:
             try:
-                fired = await _poll_once(redis)
+                fired = await _poll_once(client)
                 if fired:
                     logger.debug("reminder_poll_cycle", fired=fired)
             except asyncio.CancelledError:

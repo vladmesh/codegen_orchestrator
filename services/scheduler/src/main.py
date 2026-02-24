@@ -11,12 +11,12 @@ Runs all background workers:
 import asyncio
 import os
 
-import redis.asyncio as redis
 import structlog
 
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.log_config import setup_logging
-from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, ensure_all_groups
+from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
+from shared.redis_client import RedisStreamClient
 
 from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker
@@ -27,8 +27,6 @@ from .tasks.server_sync import sync_servers_worker
 
 logger = structlog.get_logger()
 
-# Redis configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CONSUMER_NAME = f"scheduler-{os.getpid()}"
 
 
@@ -38,86 +36,38 @@ async def provisioner_results_worker():
     Listens for ProvisionerResult messages from infra-service
     and updates server status via API.
     """
-    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+    client = RedisStreamClient()
+    await client.connect()
+
+    logger.info(
+        "provisioner_results_worker_started",
+        stream=PROVISIONER_RESULTS,
+        consumer=CONSUMER_NAME,
+    )
 
     try:
-        await ensure_all_groups(redis_client)
-
-        logger.info(
-            "provisioner_results_worker_started",
-            stream=PROVISIONER_RESULTS,
-            consumer=CONSUMER_NAME,
-        )
-
-        while True:
+        async for msg in client.consume(
+            PROVISIONER_RESULTS,
+            SCHEDULER_CONSUMER_GROUP,
+            CONSUMER_NAME,
+            auto_ack=False,
+            claim_pending=True,
+        ):
+            if msg is None:
+                continue
             try:
-                # Read from stream with blocking
-                messages = await redis_client.xreadgroup(
-                    groupname=SCHEDULER_CONSUMER_GROUP,
-                    consumername=CONSUMER_NAME,
-                    streams={PROVISIONER_RESULTS: ">"},
-                    count=1,
-                    block=5000,  # 5 second block
-                )
-
-                if not messages:
-                    continue
-
-                for _stream_name, entries in messages:
-                    for entry_id, raw_data in entries:
-                        try:
-                            # Parse ProvisionerResult from JSON
-                            if "data" in raw_data:
-                                result = ProvisionerResult.model_validate_json(raw_data["data"])
-                            else:
-                                logger.warning(
-                                    "invalid_message_format",
-                                    entry_id=entry_id,
-                                    keys=list(raw_data.keys()),
-                                )
-                                continue
-
-                            # Process the result
-                            await process_provisioner_result(result)
-
-                            # ACK the message
-                            await redis_client.xack(
-                                PROVISIONER_RESULTS,
-                                SCHEDULER_CONSUMER_GROUP,
-                                entry_id,
-                            )
-                            logger.debug("message_acked", entry_id=entry_id)
-
-                        except Exception as e:
-                            logger.error(
-                                "provisioner_result_processing_error",
-                                entry_id=entry_id,
-                                error=str(e),
-                                exc_info=True,
-                            )
-                            # Don't ACK - message will be redelivered
-
-            except asyncio.CancelledError:
-                logger.info("provisioner_results_worker_cancelled")
-                break
+                result = ProvisionerResult.model_validate(msg.data)
+                await process_provisioner_result(result)
+                await client.ack(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, msg.message_id)
             except Exception as e:
-                if "NOGROUP" in str(e):
-                    logger.warning(
-                        "consumer_nogroup_recovering",
-                        stream=PROVISIONER_RESULTS,
-                        group=SCHEDULER_CONSUMER_GROUP,
-                    )
-                    await ensure_all_groups(redis_client)
-                else:
-                    logger.error(
-                        "provisioner_results_worker_error",
-                        error=str(e),
-                        exc_info=True,
-                    )
-                await asyncio.sleep(1)  # Backoff on error
-
+                logger.error(
+                    "provisioner_result_processing_error",
+                    entry_id=msg.message_id,
+                    error=str(e),
+                    exc_info=True,
+                )
     finally:
-        await redis_client.aclose()
+        await client.close()
         logger.info("provisioner_results_worker_stopped")
 
 

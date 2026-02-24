@@ -6,8 +6,7 @@ to callback streams, eliminating the repeated boilerplate across workers.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
+from shared.contracts.queues.po import POProactiveMessage, POSystemEvent, to_flat_fields
 from shared.queues import PO_PROACTIVE_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -35,18 +34,14 @@ async def publish_callback_event(
     """
     if not callback_stream:
         return
-    fields = {
-        "type": "system_event",
-        "event": event_type,
-        "task_id": task_id,
-        "text": message,
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
-    if user_id:
-        fields["user_id"] = user_id
-    if project_id:
-        fields["project_id"] = project_id
-    await redis.redis.xadd(callback_stream, fields)
+    event = POSystemEvent(
+        event=event_type,
+        task_id=task_id,
+        text=message,
+        user_id=user_id,
+        project_id=project_id,
+    )
+    await redis.publish_flat(callback_stream, to_flat_fields(event))
 
 
 async def publish_proactive_message(
@@ -65,7 +60,5 @@ async def publish_proactive_message(
     """
     if not user_id:
         return
-    await redis.redis.xadd(
-        PO_PROACTIVE_QUEUE,
-        {"text": message, "user_id": user_id},
-    )
+    msg = POProactiveMessage(text=message, user_id=user_id)
+    await redis.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(msg))

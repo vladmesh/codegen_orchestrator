@@ -19,6 +19,7 @@ def mock_redis():
     r = AsyncMock()
     r.redis = AsyncMock()
     r.redis.xadd = AsyncMock()
+    r.publish_flat = AsyncMock()
     return r
 
 
@@ -73,12 +74,13 @@ class TestHandleEngineeringSuccess:
         patch_calls = [c for c in mock_api.patch.call_args_list if "tasks/" in str(c)]
         assert any("failed" in str(c) for c in patch_calls)
 
-        # Callback must be "failed"
-        xadd_calls = mock_redis.redis.xadd.call_args_list
-        failed_events = [c for c in xadd_calls if c[0][1].get("event") == "failed"]
+        # Callback must be "failed" (via publish_flat)
+        flat_calls = mock_redis.publish_flat.call_args_list
+        failed_events = [c for c in flat_calls if c[0][1].get("event") == "failed"]
         assert len(failed_events) >= 1
 
         # Deploy queue must NOT have been written to
+        xadd_calls = mock_redis.redis.xadd.call_args_list
         deploy_calls = [c for c in xadd_calls if "deploy" in str(c[0][0])]
         assert len(deploy_calls) == 0
 
@@ -178,9 +180,9 @@ class TestNotificationDecoupling:
             user_id="u1",
         )
 
-        # Find callback events on the callback stream
-        xadd_calls = mock_redis.redis.xadd.call_args_list
-        callback_events = [c for c in xadd_calls if c[0][0] == "po:response:abc"]
+        # Find callback events on the callback stream (via publish_flat)
+        flat_calls = mock_redis.publish_flat.call_args_list
+        callback_events = [c for c in flat_calls if c[0][0] == "po:response:abc"]
 
         # There should be a "progress" event with deploy message
         progress_events = [c for c in callback_events if c[0][1].get("event") == "progress"]
@@ -216,9 +218,9 @@ class TestNotificationDecoupling:
             user_id="u1",
         )
 
-        # Find callback events on the callback stream
-        xadd_calls = mock_redis.redis.xadd.call_args_list
-        callback_events = [c for c in xadd_calls if c[0][0] == "po:response:abc"]
+        # Find callback events on the callback stream (via publish_flat)
+        flat_calls = mock_redis.publish_flat.call_args_list
+        callback_events = [c for c in flat_calls if c[0][0] == "po:response:abc"]
 
         # There should be a "completed" event
         completed_events = [c for c in callback_events if c[0][1].get("event") == "completed"]
@@ -252,9 +254,9 @@ class TestNotificationDecoupling:
             user_id="u1",
         )
 
-        # Find callback events on the callback stream
-        xadd_calls = mock_redis.redis.xadd.call_args_list
-        callback_events = [c for c in xadd_calls if c[0][0] == "po:response:abc"]
+        # Find callback events on the callback stream (via publish_flat)
+        flat_calls = mock_redis.publish_flat.call_args_list
+        callback_events = [c for c in flat_calls if c[0][0] == "po:response:abc"]
 
         # There should be a "failed" event about deploy trigger
         failed_events = [c for c in callback_events if c[0][1].get("event") == "failed"]
@@ -312,10 +314,10 @@ class TestCIGateFailClosed:
         mock_gh.wait_for_workflow_completion = AsyncMock(side_effect=fake_wait)
         mock_gh.get_workflow_failure_logs = AsyncMock(return_value="error log")
 
-        # Respawn takes a small delay to simulate the developer working
+        # Respawn records its start timestamp for assertion
         async def fake_respawn(**kwargs):
             respawn_started_at.append(datetime.now(UTC))
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0)  # yield control without real delay
             return True
 
         mock_respawn.side_effect = fake_respawn

@@ -20,6 +20,7 @@ def mock_redis():
     r = AsyncMock()
     r.redis = AsyncMock()
     r.redis.xadd = AsyncMock()
+    r.publish_flat = AsyncMock()
     return r
 
 
@@ -83,9 +84,9 @@ async def test_deploy_worker_sends_proactive_on_success(
 
     assert result["status"] == "success"
 
-    # Should have sent proactive message (no callback_stream)
+    # Should have sent proactive message via publish_flat (no callback_stream)
     proactive_calls = [
-        c for c in mock_redis.redis.xadd.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
+        c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
     ]
     assert len(proactive_calls) == 1
     msg = proactive_calls[0][0][1]
@@ -109,7 +110,7 @@ async def test_deploy_worker_sends_proactive_on_missing_secrets(
     assert "STRIPE_KEY" in result["error"]
 
     proactive_calls = [
-        c for c in mock_redis.redis.xadd.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
+        c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
     ]
     assert len(proactive_calls) == 1
     msg = proactive_calls[0][0][1]
@@ -130,7 +131,7 @@ async def test_deploy_worker_sends_proactive_on_error(
     assert result["status"] == "failed"
 
     proactive_calls = [
-        c for c in mock_redis.redis.xadd.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
+        c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
     ]
     assert len(proactive_calls) == 1
     msg = proactive_calls[0][0][1]
@@ -154,13 +155,13 @@ async def test_deploy_worker_uses_callback_stream_when_present(
 
     # Should have used callback_stream, NOT proactive
     proactive_calls = [
-        c for c in mock_redis.redis.xadd.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
+        c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
     ]
     assert len(proactive_calls) == 0
 
-    # Should have callback stream messages
+    # Should have callback stream messages (via publish_flat)
     callback_calls = [
-        c for c in mock_redis.redis.xadd.call_args_list if c[0][0] == "po:response:abc"
+        c for c in mock_redis.publish_flat.call_args_list if c[0][0] == "po:response:abc"
     ]
     assert len(callback_calls) >= 1
 

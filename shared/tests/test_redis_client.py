@@ -134,13 +134,190 @@ class TestConsume:
             break
         assert got_none
 
-    async def test_invalid_json_acked_and_skipped(self, client, fake_redis):
+    async def test_invalid_json_in_data_field_treated_as_flat(self, client, fake_redis):
+        """If 'data' contains invalid JSON, fall back to flat fields."""
         await fake_redis.xadd("s", {"data": "{invalid"})
         received = []
         async for msg in client.consume("s", "g", "c1", block_ms=100):
             if msg is not None:
                 received.append(msg)
+                continue
+            break
+        assert len(received) == 1
+        assert received[0].data == {"data": "{invalid"}
+
+
+class TestAck:
+    async def test_ack_removes_from_pending(self, client, fake_redis):
+        """ack() should xack a message, removing it from the PEL."""
+        await client.publish("s", {"key": "val"})
+        msg_id = None
+        async for msg in client.consume("s", "g", "c1", block_ms=100, auto_ack=False):
+            if msg is not None:
+                msg_id = msg.message_id
+                break
+        # Message should be pending (not acked)
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 1
+        # Manual ack
+        await client.ack("s", "g", msg_id)
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 0
+
+    async def test_ack_idempotent(self, client, fake_redis):
+        """Calling ack() twice on the same message should not raise."""
+        await client.publish("s", {"key": "val"})
+        async for msg in client.consume("s", "g", "c1", block_ms=100, auto_ack=False):
+            if msg is not None:
+                await client.ack("s", "g", msg.message_id)
+                await client.ack("s", "g", msg.message_id)
+                break
+
+
+class TestConsumeManualAck:
+    async def test_auto_ack_false_leaves_pending(self, client, fake_redis):
+        """With auto_ack=False, messages stay in PEL after yield."""
+        await client.publish("s", {"key": "val"})
+        async for msg in client.consume("s", "g", "c1", block_ms=100, auto_ack=False):
+            if msg is not None:
+                break
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 1
+
+    async def test_manual_ack_after_processing(self, client, fake_redis):
+        """Manual ack after consume with auto_ack=False works correctly."""
+        await client.publish("s", {"key": "val"})
+        async for msg in client.consume("s", "g", "c1", block_ms=100, auto_ack=False):
+            if msg is not None:
+                # Simulate processing
+                await client.ack("s", "g", msg.message_id)
+                break
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 0
+
+    async def test_auto_ack_true_still_works(self, client, fake_redis):
+        """Default auto_ack=True still auto-acks (backwards compatible)."""
+        await client.publish("s", {"key": "val"})
+        async for msg in client.consume("s", "g", "c1", block_ms=100, auto_ack=True):
+            if msg is not None:
+                continue  # resume generator so xack runs
             break
         pending = await fake_redis.xpending("s", "g")
         assert pending["pending"] == 0
-        assert len(received) == 0
+
+
+class TestConsumePELRecovery:
+    async def test_claims_pending_messages(self, client, fake_redis):
+        """claim_pending=True should recover messages left in PEL by crashed consumer."""
+        # Simulate a crashed consumer: read but never ack
+        await fake_redis.xadd("s", {"data": json.dumps({"key": "recovered"})})
+        await fake_redis.xgroup_create("s", "g", id="0", mkstream=True)
+        await fake_redis.xreadgroup("g", "crashed-consumer", {"s": ">"}, count=1)
+        # Verify message is pending
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 1
+        # New consumer with claim_pending=True should recover it
+        recovered = []
+        async for msg in client.consume(
+            "s",
+            "g",
+            "new-consumer",
+            block_ms=100,
+            auto_ack=False,
+            claim_pending=True,
+            pending_timeout_ms=0,
+        ):
+            if msg is not None:
+                recovered.append(msg)
+                await client.ack("s", "g", msg.message_id)
+            else:
+                break
+        assert len(recovered) == 1
+        assert recovered[0].data == {"key": "recovered"}
+
+    async def test_claim_pending_false_skips_recovery(self, client, fake_redis):
+        """claim_pending=False should not recover pending messages."""
+        await fake_redis.xadd("s", {"data": json.dumps({"key": "lost"})})
+        await fake_redis.xgroup_create("s", "g", id="0", mkstream=True)
+        await fake_redis.xreadgroup("g", "crashed-consumer", {"s": ">"}, count=1)
+        # New consumer with claim_pending=False should NOT see the pending message
+        recovered = []
+        async for msg in client.consume(
+            "s",
+            "g",
+            "new-consumer",
+            block_ms=100,
+            auto_ack=False,
+            claim_pending=False,
+        ):
+            if msg is not None:
+                recovered.append(msg)
+            else:
+                break
+        assert len(recovered) == 0
+
+    async def test_pel_recovery_then_new_messages(self, client, fake_redis):
+        """After recovering pending, should continue reading new messages."""
+        # Simulate a crashed consumer
+        await fake_redis.xadd("s", {"data": json.dumps({"key": "old"})})
+        await fake_redis.xgroup_create("s", "g", id="0", mkstream=True)
+        await fake_redis.xreadgroup("g", "crashed", {"s": ">"}, count=1)
+        # Add a new message
+        await fake_redis.xadd("s", {"data": json.dumps({"key": "new"})})
+        # Recover + read new
+        all_msgs = []
+        async for msg in client.consume(
+            "s",
+            "g",
+            "fresh",
+            block_ms=100,
+            auto_ack=False,
+            claim_pending=True,
+            pending_timeout_ms=0,
+        ):
+            if msg is not None:
+                all_msgs.append(msg.data["key"])
+                await client.ack("s", "g", msg.message_id)
+            else:
+                break
+        assert "old" in all_msgs
+        assert "new" in all_msgs
+
+
+class TestConsumeFlatFields:
+    async def test_flat_fields_without_data_wrapper(self, client, fake_redis):
+        """Messages published as flat fields (no 'data' key) should be parsed correctly."""
+        await fake_redis.xadd("s", {"type": "user_message", "user_id": "42", "text": "hello"})
+        async for msg in client.consume("s", "g", "c1", block_ms=100):
+            if msg is not None:
+                assert msg.data == {"type": "user_message", "user_id": "42", "text": "hello"}
+                break
+
+    async def test_data_wrapper_still_works(self, client, fake_redis):
+        """Messages published with 'data' JSON wrapper should still work."""
+        await client.publish("s", {"key": "val"})
+        async for msg in client.consume("s", "g", "c1", block_ms=100):
+            if msg is not None:
+                assert msg.data == {"key": "val"}
+                break
+
+    async def test_data_field_that_is_not_json(self, client, fake_redis):
+        """If 'data' field exists but is not valid JSON, treat all fields as data."""
+        await fake_redis.xadd("s", {"data": "plain-text", "other": "field"})
+        async for msg in client.consume("s", "g", "c1", block_ms=100):
+            if msg is not None:
+                assert msg.data == {"data": "plain-text", "other": "field"}
+                break
+
+
+class TestPublishFlat:
+    async def test_publish_flat_writes_fields_directly(self, client, fake_redis):
+        """publish_flat() should write fields directly without JSON 'data' wrapper."""
+        await client.publish_flat("s", {"type": "test", "user_id": "42"})
+        messages = await fake_redis.xrange("s")
+        assert len(messages) == 1
+        fields = messages[0][1]
+        assert fields == {"type": "test", "user_id": "42"}
+        assert "data" not in fields or fields["data"] != json.dumps(
+            {"type": "test", "user_id": "42"}
+        )

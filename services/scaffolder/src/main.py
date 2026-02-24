@@ -17,7 +17,8 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.queues.scaffolder import ScaffolderAction, ScaffolderMessage, ScaffolderResult
-from shared.queues import SCAFFOLDER_GROUP, SCAFFOLDER_QUEUE, ensure_all_groups
+from shared.queues import SCAFFOLDER_GROUP, SCAFFOLDER_QUEUE
+from shared.redis_client import RedisStreamClient
 
 logger = structlog.get_logger()
 
@@ -492,59 +493,28 @@ async def main() -> None:
     """Main loop - consume jobs from Redis Stream."""
     logger.info("scaffolder_starting", queue=SCAFFOLDER_QUEUE)
 
-    redis_client = redis.Redis(
-        host=REDIS_HOST,
-        port=REDIS_PORT,
-        decode_responses=True,
-    )
+    client = RedisStreamClient()
+    await client.connect()
 
-    await ensure_all_groups(redis_client)
+    # Keep raw redis for process_job (publishes results via xadd)
+    raw_redis = client.redis
 
     logger.info("scaffolder_ready", consumer=CONSUMER_NAME)
 
-    while True:
+    async for msg in client.consume(
+        SCAFFOLDER_QUEUE,
+        SCAFFOLDER_GROUP,
+        CONSUMER_NAME,
+        auto_ack=False,
+        claim_pending=True,
+    ):
+        if msg is None:
+            continue
         try:
-            # Read from stream with blocking
-            messages = await redis_client.xreadgroup(
-                SCAFFOLDER_GROUP,
-                CONSUMER_NAME,
-                {SCAFFOLDER_QUEUE: ">"},
-                count=1,
-                block=5000,  # 5 second timeout
-            )
-
-            if not messages:
-                continue
-
-            for _stream, stream_messages in messages:
-                for message_id, data in stream_messages:
-                    try:
-                        # Handle RedisStreamClient JSON wrapper format
-                        if "data" in data and isinstance(data["data"], str):
-                            import json as json_lib
-
-                            job_data = json_lib.loads(data["data"])
-                        else:
-                            job_data = data
-                        await process_job(job_data, redis_client)
-                        # Acknowledge message
-                        await redis_client.xack(SCAFFOLDER_QUEUE, SCAFFOLDER_GROUP, message_id)
-                    except Exception as e:
-                        logger.exception(
-                            "job_processing_error", message_id=message_id, error=str(e)
-                        )
-
+            await process_job(msg.data, raw_redis)
+            await client.ack(SCAFFOLDER_QUEUE, SCAFFOLDER_GROUP, msg.message_id)
         except Exception as e:
-            if "NOGROUP" in str(e):
-                logger.warning(
-                    "consumer_nogroup_recovering",
-                    stream=SCAFFOLDER_QUEUE,
-                    group=SCAFFOLDER_GROUP,
-                )
-                await ensure_all_groups(redis_client)
-            else:
-                logger.exception("main_loop_error", error=str(e))
-            await asyncio.sleep(5)
+            logger.exception("job_processing_error", message_id=msg.message_id, error=str(e))
 
 
 if __name__ == "__main__":

@@ -18,6 +18,8 @@ import structlog
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
+from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.queues import (
     DEPLOY_QUEUE,
@@ -26,23 +28,23 @@ from shared.queues import (
     PO_PROACTIVE_QUEUE,
     PO_REMINDERS_KEY,
 )
+from shared.redis_client import RedisStreamClient
 
 if TYPE_CHECKING:
     import httpx
-    from redis.asyncio import Redis
 
 logger = structlog.get_logger(__name__)
 
 # Module-level clients — set by init_po_clients()
 _api_client: httpx.AsyncClient | None = None
-_redis: Redis | None = None
+_stream_client: RedisStreamClient | None = None
 
 
-def init_po_clients(api_client: httpx.AsyncClient, redis: Redis) -> None:
+def init_po_clients(api_client: httpx.AsyncClient, stream_client: RedisStreamClient) -> None:
     """Initialize shared clients for PO tools. Called once at consumer startup."""
-    global _api_client, _redis
+    global _api_client, _stream_client
     _api_client = api_client
-    _redis = redis
+    _stream_client = stream_client
 
 
 def _get_api() -> httpx.AsyncClient:
@@ -51,10 +53,10 @@ def _get_api() -> httpx.AsyncClient:
     return _api_client
 
 
-def _get_redis() -> Redis:
-    if _redis is None:
+def _get_stream_client() -> RedisStreamClient:
+    if _stream_client is None:
         raise RuntimeError("PO tools not initialized — call init_po_clients() first")
-    return _redis
+    return _stream_client
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +180,6 @@ async def trigger_engineering(
         return f"Error: --description is required for action '{action}'."
 
     api = _get_api()
-    redis = _get_redis()
 
     user_id = config["configurable"].get("user_id", "unknown")
     task_id = f"eng-{uuid.uuid4().hex[:12]}"
@@ -195,16 +196,16 @@ async def trigger_engineering(
     resp = await api.post("/api/tasks/", json=task_data)
     resp.raise_for_status()
 
-    queue_msg = {
-        "task_id": task_id,
-        "project_id": project_id,
-        "user_id": user_id,
-        "callback_stream": callback_stream,
-        "action": action,
-        "description": description,
-        "skip_deploy": skip_deploy,
-    }
-    await redis.xadd(ENGINEERING_QUEUE, {"data": json.dumps(queue_msg)})
+    eng_msg = EngineeringMessage(
+        task_id=task_id,
+        project_id=project_id,
+        user_id=user_id,
+        callback_stream=callback_stream,
+        action=action,
+        description=description,
+        skip_deploy=skip_deploy,
+    )
+    await _get_stream_client().publish_message(ENGINEERING_QUEUE, eng_msg)
 
     logger.info("po_engineering_triggered", task_id=task_id, project_id=project_id, action=action)
     return f"Engineering task queued. Task ID: {task_id}"
@@ -218,7 +219,6 @@ async def trigger_deploy(project_id: str, *, config: RunnableConfig) -> str:
         project_id: Project ID.
     """
     api = _get_api()
-    redis = _get_redis()
 
     user_id = config["configurable"].get("user_id", "unknown")
     task_id = f"deploy-{uuid.uuid4().hex[:12]}"
@@ -242,7 +242,7 @@ async def trigger_deploy(project_id: str, *, config: RunnableConfig) -> str:
         callback_stream=callback_stream,
         triggered_by=DeployTrigger.PO,
     )
-    await redis.xadd(DEPLOY_QUEUE, {"data": deploy_msg.model_dump_json()})
+    await _get_stream_client().publish_message(DEPLOY_QUEUE, deploy_msg)
 
     logger.info("po_deploy_triggered", task_id=task_id, project_id=project_id)
     return f"Deploy task queued. Task ID: {task_id}"
@@ -274,7 +274,7 @@ async def set_reminder(delay_minutes: int, reason: str, *, config: RunnableConfi
         delay_minutes: Minutes until reminder fires.
         reason: Why you're setting this reminder (e.g. "check engineering task eng-abc123").
     """
-    redis = _get_redis()
+    redis = _get_stream_client().redis
     user_id = config["configurable"].get("user_id", "unknown")
     fire_at = time.time() + delay_minutes * 60
 
@@ -304,9 +304,10 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
     Args:
         message: Text to send to the user right now.
     """
-    redis = _get_redis()
+    client = _get_stream_client()
     user_id = config["configurable"].get("user_id", "unknown")
-    await redis.xadd(PO_PROACTIVE_QUEUE, {"text": message, "user_id": user_id})
+    msg = POProactiveMessage(text=message, user_id=user_id)
+    await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(msg))
 
     logger.info("po_notify_user", user_id=user_id, text_length=len(message))
     return "Message sent to user."

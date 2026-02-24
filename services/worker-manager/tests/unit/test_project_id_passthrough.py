@@ -38,12 +38,13 @@ def _make_create_command(project_id: str | None = None) -> CreateWorkerCommand:
 
 @pytest.fixture
 def consumer():
-    """Consumer with mocked redis and manager."""
-    redis = MagicMock()
-    redis.xadd = AsyncMock()
+    """Consumer with mocked redis stream client and manager."""
+    client = MagicMock()
+    client.redis = MagicMock()
+    client.redis.xadd = AsyncMock()
     manager = MagicMock()
     manager.create_worker_with_capabilities = AsyncMock(return_value="test-worker")
-    return WorkerCommandConsumer(redis=redis, manager=manager)
+    return WorkerCommandConsumer(client=client, manager=manager)
 
 
 @pytest.mark.asyncio

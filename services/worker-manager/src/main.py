@@ -4,6 +4,8 @@ from fastapi import FastAPI
 from redis.asyncio import Redis
 import structlog
 
+from shared.redis_client import RedisStreamClient
+
 from .config import settings
 from .manager import WorkerManager
 from .consumer import WorkerCommandConsumer
@@ -46,7 +48,9 @@ async def lifespan(app: FastAPI):
     app.state.docker = worker_manager.docker
 
     # Start Consumer
-    consumer = WorkerCommandConsumer(redis, worker_manager)
+    stream_client = RedisStreamClient(redis_url=settings.REDIS_URL)
+    await stream_client.connect()
+    consumer = WorkerCommandConsumer(stream_client, worker_manager)
     consumer_task = asyncio.create_task(consumer.run())
 
     # Start Docker Events Listener

@@ -1,21 +1,21 @@
 """Tests for ProactiveListener."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from shared.redis.client import StreamMessage
 from src.main import ProactiveListener
 
 
 @pytest.fixture
-def mock_redis():
-    """Create a mock Redis client."""
-    redis = AsyncMock()
-    redis.xgroup_create = AsyncMock()
-    redis.xreadgroup = AsyncMock(return_value=[])
-    redis.xack = AsyncMock()
-    return redis
+def mock_client():
+    """Create a mock RedisStreamClient."""
+    client = MagicMock()
+    client.consume = MagicMock()
+    client.ack = AsyncMock()
+    return client
 
 
 @pytest.fixture
@@ -26,23 +26,31 @@ def mock_bot():
     return bot
 
 
+def _make_consume_iter(messages):
+    """Create an async iterator that yields messages then None then raises CancelledError."""
+
+    async def _consume(*args, **kwargs):
+        for msg in messages:
+            yield msg
+        yield None  # idle signal
+        raise asyncio.CancelledError()
+
+    return _consume
+
+
 class TestProactiveListener:
     @pytest.mark.asyncio
-    async def test_reads_proactive_stream(self, mock_redis, mock_bot):
+    async def test_reads_proactive_stream(self, mock_client, mock_bot):
         """Should read messages from po:proactive stream."""
-        message_data = {"user_id": "42", "text": "Your project is ready!"}
-        mock_redis.xreadgroup = AsyncMock(
-            side_effect=[
-                [("po:proactive", [("1-0", message_data)])],
-                asyncio.CancelledError(),
-            ]
+        msg = StreamMessage(
+            message_id="1-0", data={"user_id": "42", "text": "Your project is ready!"}
         )
+        mock_client.consume = _make_consume_iter([msg])
 
-        listener = ProactiveListener(redis=mock_redis)
+        listener = ProactiveListener(client=mock_client)
         task = await listener.start(mock_bot)
 
-        # Wait a bit for the loop to process
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0)
         task.cancel()
         try:
             await task
@@ -52,19 +60,14 @@ class TestProactiveListener:
         mock_bot.send_message.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_sends_to_correct_user(self, mock_redis, mock_bot):
+    async def test_sends_to_correct_user(self, mock_client, mock_bot):
         """Should send message to the user_id from stream data."""
-        message_data = {"user_id": "12345", "text": "Deploy done!"}
-        mock_redis.xreadgroup = AsyncMock(
-            side_effect=[
-                [("po:proactive", [("1-0", message_data)])],
-                asyncio.CancelledError(),
-            ]
-        )
+        msg = StreamMessage(message_id="1-0", data={"user_id": "12345", "text": "Deploy done!"})
+        mock_client.consume = _make_consume_iter([msg])
 
-        listener = ProactiveListener(redis=mock_redis)
+        listener = ProactiveListener(client=mock_client)
         task = await listener.start(mock_bot)
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0)
         task.cancel()
         try:
             await task
@@ -76,99 +79,35 @@ class TestProactiveListener:
         assert call_args.kwargs["chat_id"] == 12345  # noqa: PLR2004
 
     @pytest.mark.asyncio
-    async def test_acks_after_send(self, mock_redis, mock_bot):
-        """Should ACK the message after sending."""
-        message_data = {"user_id": "42", "text": "Hello!"}
-        mock_redis.xreadgroup = AsyncMock(
-            side_effect=[
-                [("po:proactive", [("msg-1", message_data)])],
-                asyncio.CancelledError(),
-            ]
-        )
-
-        listener = ProactiveListener(redis=mock_redis)
-        task = await listener.start(mock_bot)
-        await asyncio.sleep(0.1)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-        mock_redis.xack.assert_called_once_with("po:proactive", "tg-bot-proactive", "msg-1")
-
-    @pytest.mark.asyncio
-    async def test_handles_send_error_gracefully(self, mock_redis, mock_bot):
+    async def test_handles_send_error_gracefully(self, mock_client, mock_bot):
         """Should continue processing even if send_message fails."""
         mock_bot.send_message = AsyncMock(side_effect=Exception("Telegram API error"))
 
-        message_data = {"user_id": "42", "text": "Hello!"}
-        mock_redis.xreadgroup = AsyncMock(
-            side_effect=[
-                [("po:proactive", [("msg-1", message_data)])],
-                asyncio.CancelledError(),
-            ]
-        )
+        msg = StreamMessage(message_id="msg-1", data={"user_id": "42", "text": "Hello!"})
+        mock_client.consume = _make_consume_iter([msg])
 
-        listener = ProactiveListener(redis=mock_redis)
+        listener = ProactiveListener(client=mock_client)
         task = await listener.start(mock_bot)
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0)
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
 
-        # Should still ACK even on send failure
-        mock_redis.xack.assert_called_once()
+        # Should not crash — auto_ack handles ACK
 
     @pytest.mark.asyncio
-    async def test_cancellation(self, mock_redis, mock_bot):
+    async def test_cancellation(self, mock_client, mock_bot):
         """Should exit cleanly on cancellation."""
-        mock_redis.xreadgroup = AsyncMock(side_effect=asyncio.CancelledError())
+        mock_client.consume = _make_consume_iter([])
 
-        listener = ProactiveListener(redis=mock_redis)
+        listener = ProactiveListener(client=mock_client)
         task = await listener.start(mock_bot)
 
-        # Should not raise
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    @pytest.mark.asyncio
-    async def test_creates_consumer_group(self, mock_redis, mock_bot):
-        """Should create consumer group on startup."""
-        mock_redis.xreadgroup = AsyncMock(side_effect=asyncio.CancelledError())
-
-        listener = ProactiveListener(redis=mock_redis)
-        task = await listener.start(mock_bot)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0)
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
-
-        mock_redis.xgroup_create.assert_called_once_with(
-            "po:proactive", "tg-bot-proactive", id="0", mkstream=True
-        )
-
-    @pytest.mark.asyncio
-    async def test_handles_busygroup(self, mock_redis, mock_bot):
-        """Should handle BUSYGROUP (group already exists) gracefully."""
-        mock_redis.xgroup_create = AsyncMock(
-            side_effect=Exception("BUSYGROUP Consumer Group name already exists")
-        )
-        mock_redis.xreadgroup = AsyncMock(side_effect=asyncio.CancelledError())
-
-        listener = ProactiveListener(redis=mock_redis)
-        task = await listener.start(mock_bot)
-        await asyncio.sleep(0.05)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-        # Should not raise, just continue

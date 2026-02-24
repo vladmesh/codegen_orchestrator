@@ -2,6 +2,10 @@
 
 Reads messages from po:input, invokes the PO ReactAgent graph,
 writes responses to po:response:{request_id}.
+
+NOTE: This consumer keeps its own while-loop (instead of using
+RedisStreamClient.consume()) because it dispatches messages concurrently
+via asyncio.create_task() with a semaphore and per-user locks.
 """
 
 from __future__ import annotations
@@ -11,10 +15,17 @@ import os
 
 import httpx
 from langchain_core.messages import HumanMessage
-import redis.asyncio as aioredis
+from pydantic import TypeAdapter, ValidationError
 import structlog
 
+from shared.contracts.queues.po import (
+    POInputMessage,
+    POProactiveMessage,
+    POResponse,
+    to_flat_fields,
+)
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
+from shared.redis_client import RedisStreamClient
 
 from ..config.settings import get_settings
 from .graph import create_po_graph
@@ -24,12 +35,45 @@ logger = structlog.get_logger(__name__)
 
 MAX_CONCURRENT = 10
 CONSUMER_NAME = f"po-worker-{os.getpid()}"
+PEL_TIMEOUT_MS = 60_000
+
+_po_input_adapter = TypeAdapter(POInputMessage)
+
+
+async def _recover_pending(client: RedisStreamClient, sem, user_locks, graph) -> int:
+    """Recover pending messages from PEL via XAUTOCLAIM before reading new ones."""
+    recovered = 0
+    cursor = "0-0"
+    while True:
+        result = await client.redis.xautoclaim(
+            PO_INPUT_QUEUE,
+            PO_CONSUMER_GROUP,
+            CONSUMER_NAME,
+            min_idle_time=PEL_TIMEOUT_MS,
+            start_id=cursor,
+            count=10,
+        )
+        new_cursor = result[0]
+        claimed = result[1]
+        for msg_id, fields in claimed:
+            if fields is None:
+                continue
+            recovered += 1
+            asyncio.create_task(_process_message(graph, client, sem, user_locks, msg_id, fields))
+        if new_cursor == "0-0" or not claimed:
+            break
+        cursor = new_cursor
+    if recovered:
+        logger.info("po_pel_recovery_complete", recovered=recovered)
+    return recovered
 
 
 async def run_po_consumer() -> None:
     """Main loop: read po:input, invoke PO graph, write po:response:*."""
     settings = get_settings()
-    redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+    client = RedisStreamClient(redis_url=settings.redis_url)
+    await client.connect()
+    redis = client.redis
 
     api_client = httpx.AsyncClient(
         base_url=settings.api_base_url.rstrip("/"),
@@ -37,7 +81,7 @@ async def run_po_consumer() -> None:
         timeout=30.0,
     )
 
-    init_po_clients(api_client, redis)
+    init_po_clients(api_client, client)
 
     graph = await create_po_graph(
         model=settings.po_llm_model,
@@ -70,6 +114,9 @@ async def run_po_consumer() -> None:
 
     sem = asyncio.Semaphore(MAX_CONCURRENT)
     user_locks: dict[str, asyncio.Lock] = {}
+
+    # PEL recovery on startup
+    await _recover_pending(client, sem, user_locks, graph)
 
     try:
         while True:
@@ -104,47 +151,56 @@ async def run_po_consumer() -> None:
             for _stream_name, messages in entries:
                 for msg_id, data in messages:
                     asyncio.create_task(
-                        _process_message(graph, redis, sem, user_locks, msg_id, data)
+                        _process_message(graph, client, sem, user_locks, msg_id, data)
                     )
     finally:
         await api_client.aclose()
-        await redis.aclose()
+        await client.close()
         logger.info("po_consumer_shutdown")
 
 
 async def _process_message(
     graph,
-    redis: aioredis.Redis,
+    client: RedisStreamClient,
     sem: asyncio.Semaphore,
     user_locks: dict[str, asyncio.Lock],
     msg_id: str,
     data: dict,
 ) -> None:
     """Process a single message with concurrency control."""
+    # Validate incoming message
+    try:
+        _po_input_adapter.validate_python(data)
+    except ValidationError:
+        logger.warning("po_input_validation_failed", msg_id=msg_id, data=data)
+        await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
+        return
+
     user_id = data.get("user_id", "unknown")
     lock = user_locks.setdefault(user_id, asyncio.Lock())
 
     async with sem:
         async with lock:
             try:
-                await _handle_message(graph, redis, user_id, data)
+                await _handle_message(graph, client, user_id, data)
             except Exception:
                 logger.exception("po_invoke_failed", user_id=user_id, msg_id=msg_id)
                 request_id = data.get("request_id")
                 if request_id:
-                    await redis.xadd(
+                    error_resp = POResponse(
+                        text="An error occurred, please try again.",
+                        user_id=user_id,
+                        error="true",
+                    )
+                    await client.publish_flat(
                         f"po:response:{request_id}",
-                        {
-                            "text": "An error occurred, please try again.",
-                            "user_id": user_id,
-                            "error": "true",
-                        },
+                        to_flat_fields(error_resp),
                     )
             finally:
-                await redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
+                await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
 
 
-async def _handle_message(graph, redis: aioredis.Redis, user_id: str, data: dict) -> None:
+async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: dict) -> None:
     """Format message, invoke PO graph, write response."""
     timestamp = data.get("timestamp", "")
     text = data.get("text", "")
@@ -192,16 +248,12 @@ async def _handle_message(graph, redis: aioredis.Redis, user_id: str, data: dict
         if not response_text:
             response_text = "Бот вернул пустой ответ"
             logger.warning("po_empty_response_fallback", user_id=user_id, request_id=request_id)
-        await redis.xadd(
-            f"po:response:{request_id}",
-            {"text": response_text, "user_id": user_id},
-        )
+        resp = POResponse(text=response_text, user_id=user_id)
+        await client.publish_flat(f"po:response:{request_id}", to_flat_fields(resp))
     elif response_text:
         # No request_id (reminder, system event) — forward to user via proactive stream
-        await redis.xadd(
-            PO_PROACTIVE_QUEUE,
-            {"text": response_text, "user_id": user_id},
-        )
+        proactive = POProactiveMessage(text=response_text, user_id=user_id)
+        await client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
 
     logger.info(
         "po_message_handled",

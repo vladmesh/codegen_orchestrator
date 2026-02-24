@@ -6,11 +6,9 @@ Results are handled by infra-service → scheduler pipeline.
 
 from __future__ import annotations
 
-import json
-import uuid
-
 import structlog
 
+from shared.contracts.queues.provisioner import ProvisionerMessage
 from shared.redis_client import RedisStreamClient
 
 logger = structlog.get_logger(__name__)
@@ -35,26 +33,24 @@ async def trigger_provisioning(
     Returns:
         Request ID for tracing
     """
-    request_id = str(uuid.uuid4())
-
-    job_data = {
-        "request_id": request_id,
-        "server_handle": server_handle,
-        "force_reinstall": force_reinstall,
-        "is_recovery": is_recovery,
-        "correlation_id": correlation_id,
-    }
+    msg = ProvisionerMessage(
+        server_handle=server_handle,
+        force_reinstall=force_reinstall,
+        is_recovery=is_recovery,
+    )
+    if correlation_id:
+        msg.correlation_id = correlation_id
 
     redis = RedisStreamClient()
     await redis.connect()
 
     try:
-        await redis.redis.xadd(PROVISIONER_QUEUE, {"data": json.dumps(job_data)})
+        await redis.publish_message(PROVISIONER_QUEUE, msg)
         logger.info(
             "provisioning_job_queued",
-            request_id=request_id,
+            request_id=msg.request_id,
             server_handle=server_handle,
         )
-        return request_id
+        return msg.request_id
     finally:
         await redis.close()

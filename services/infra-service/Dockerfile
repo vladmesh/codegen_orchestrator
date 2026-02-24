@@ -24,4 +24,8 @@ COPY shared /app/shared
 
 ENV PYTHONPATH=/app
 
+COPY services/infra-service/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "src.main"]

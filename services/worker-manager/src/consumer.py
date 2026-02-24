@@ -1,6 +1,5 @@
 import asyncio
 import structlog
-from redis.asyncio import Redis
 from pydantic import ValidationError, TypeAdapter
 
 from shared.contracts.queues.worker import (
@@ -14,6 +13,7 @@ from shared.contracts.queues.worker import (
     WorkerResponse,
 )
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP
+from shared.redis_client import RedisStreamClient
 
 from .manager import WorkerManager
 
@@ -21,75 +21,47 @@ logger = structlog.get_logger()
 
 
 class WorkerCommandConsumer:
-    def __init__(self, redis: Redis, manager: WorkerManager):
-        self.redis = redis
+    def __init__(self, client: RedisStreamClient, manager: WorkerManager):
+        self.client = client
         self.manager = manager
         self.stream_name = WORKER_COMMANDS
         self.group_name = WORKER_MANAGER_GROUP
         self.consumer_name = "worker_manager_1"  # In prod, use hostname/podname
 
-    async def ensure_group(self):
-        """Ensure consumer group exists."""
-        try:
-            await self.redis.xgroup_create(self.stream_name, self.group_name, id="0", mkstream=True)
-        except Exception as e:
-            if "BUSYGROUP" not in str(e):
-                raise
-
     async def run(self):
         """Run consumer loop."""
-        await self.ensure_group()
         logger.info("worker_consumer_started")
 
-        while True:
+        async for msg in self.client.consume(
+            self.stream_name,
+            self.group_name,
+            self.consumer_name,
+            count=10,
+            auto_ack=False,
+            claim_pending=True,
+        ):
+            if msg is None:
+                continue
             try:
-                # Read new messages
-                resp = await self.redis.xreadgroup(
-                    groupname=self.group_name,
-                    consumername=self.consumer_name,
-                    streams={self.stream_name: ">"},
-                    count=10,
-                    block=5000,
-                )
-
-                if not resp:
-                    continue
-
-                for stream_name, messages in resp:
-                    for message_id, data in messages:
-                        await self.process_message(message_id, data)
-                        await self.redis.xack(stream_name, self.group_name, message_id)
-
+                await self.process_message(msg.message_id, msg.data)
+                await self.client.ack(self.stream_name, self.group_name, msg.message_id)
             except asyncio.CancelledError:
                 logger.info("worker_consumer_stopping")
                 break
             except Exception as e:
-                if "NOGROUP" in str(e):
-                    logger.warning("worker_consumer_nogroup", error=str(e))
-                    await self.ensure_group()
-                else:
-                    logger.error("worker_consumer_error", error=str(e))
-                await asyncio.sleep(1)
+                logger.error(
+                    "worker_consumer_message_error",
+                    message_id=msg.message_id,
+                    error=str(e),
+                )
 
     async def process_message(self, message_id: str, data: dict):
         """Process a single message."""
         logger.info("processing_message", message_id=message_id)
 
-        # Parse command
         try:
-            # Redis XREAD returns dict like {'data': 'json_string'} or just fields
-            # Our contract implies we send a pydantic model dump.
-            # Usually we send fields. If we used `model_dump_json()`, it might be in a field named 'data'
-            # or spread across fields if we used `mapping`.
-            # The test uses `{"data": command.model_dump_json()}`.
-
-            raw_data = data.get("data")
-            if not raw_data:
-                logger.error("missing_data_field", message_id=message_id)
-                return
-
             adapter = TypeAdapter(WorkerCommand)
-            command = adapter.validate_json(raw_data)
+            command = adapter.validate_python(data)
 
             response = await self.handle_command(command)
             if response:
@@ -177,4 +149,4 @@ class WorkerCommandConsumer:
         """Publish response to developer response queue."""
         queue = "worker:responses:developer"
 
-        await self.redis.xadd(queue, {"data": response.model_dump_json()})
+        await self.client.redis.xadd(queue, {"data": response.model_dump_json()})

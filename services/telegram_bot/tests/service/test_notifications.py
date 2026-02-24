@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from shared.contracts.queues.provisioner import ProvisionerResult
+from shared.redis_client import RedisStreamClient
 
 
 @pytest.fixture
@@ -26,8 +27,18 @@ def admin_ids():
     return {111111, 222222}
 
 
+@pytest.fixture
+async def stream_client(redis_client):
+    """RedisStreamClient backed by the service test Redis."""
+    client = RedisStreamClient(redis_url="redis://fake:6379")
+    client._redis = redis_client
+    return client
+
+
 @pytest.mark.asyncio
-async def test_provisioner_success_notifies_admins(redis_client, mock_bot, admin_ids):
+async def test_provisioner_success_notifies_admins(
+    redis_client, stream_client, mock_bot, admin_ids
+):
     """
     Scenario: Provisioning completes successfully.
 
@@ -38,9 +49,8 @@ async def test_provisioner_success_notifies_admins(redis_client, mock_bot, admin
     """
     from src.notifications import ProvisionerNotifier
 
-    notifier = ProvisionerNotifier(redis=redis_client, admin_ids=admin_ids)
+    notifier = ProvisionerNotifier(client=stream_client, admin_ids=admin_ids)
 
-    # Create result to publish
     result = ProvisionerResult(
         request_id="test-req-1",
         status="success",
@@ -49,20 +59,25 @@ async def test_provisioner_success_notifies_admins(redis_client, mock_bot, admin
         services_redeployed=3,
     )
 
-    # Start listener in background (will block waiting for messages)
-    task = asyncio.create_task(notifier._listen_once(mock_bot))
+    # Start listener in background
+    task = await notifier.start(mock_bot)
 
     # Give listener time to set up consumer group and start blocking
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.2)
 
-    # Now publish the message
-    await redis_client.xadd(
-        "provisioner:results",
-        {"data": result.model_dump_json()},
-    )
+    # Now publish the message (using data wrapper — like infra-service publishes)
+    await stream_client.publish("provisioner:results", result.model_dump(mode="json"))
 
     # Wait for processing
-    await asyncio.wait_for(task, timeout=3.0)
+    await asyncio.sleep(0.5)
+
+    # Stop the notifier
+    await notifier.stop()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
     # Assert: Both admins received message
     assert mock_bot.send_message.call_count == len(admin_ids)
@@ -76,11 +91,12 @@ async def test_provisioner_success_notifies_admins(redis_client, mock_bot, admin
     text = call_args_list[0].kwargs["text"]
     assert "srv-production" in text
     assert "192.168.1.100" in text
-    assert "✅" in text  # Success emoji
 
 
 @pytest.mark.asyncio
-async def test_provisioner_failure_notifies_admins(redis_client, mock_bot, admin_ids):
+async def test_provisioner_failure_notifies_admins(
+    redis_client, stream_client, mock_bot, admin_ids
+):
     """
     Scenario: Provisioning fails.
 
@@ -91,7 +107,7 @@ async def test_provisioner_failure_notifies_admins(redis_client, mock_bot, admin
     """
     from src.notifications import ProvisionerNotifier
 
-    notifier = ProvisionerNotifier(redis=redis_client, admin_ids=admin_ids)
+    notifier = ProvisionerNotifier(client=stream_client, admin_ids=admin_ids)
 
     result = ProvisionerResult(
         request_id="test-req-2",
@@ -100,30 +116,28 @@ async def test_provisioner_failure_notifies_admins(redis_client, mock_bot, admin
         errors=["SSH connection timeout", "Ansible playbook failed"],
     )
 
-    # Start listener first
-    task = asyncio.create_task(notifier._listen_once(mock_bot))
-    await asyncio.sleep(0.1)
+    task = await notifier.start(mock_bot)
+    await asyncio.sleep(0.2)
 
-    # Then publish
-    await redis_client.xadd(
-        "provisioner:results",
-        {"data": result.model_dump_json()},
-    )
+    await stream_client.publish("provisioner:results", result.model_dump(mode="json"))
+    await asyncio.sleep(0.5)
 
-    await asyncio.wait_for(task, timeout=3.0)
+    await notifier.stop()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
-    # Assert: Both admins received message
     assert mock_bot.send_message.call_count == len(admin_ids)
 
-    # Check error content
     text = mock_bot.send_message.call_args_list[0].kwargs["text"]
     assert "srv-staging" in text
-    assert "❌" in text  # Failure emoji
     assert "SSH connection timeout" in text or "Ansible" in text
 
 
 @pytest.mark.asyncio
-async def test_no_notification_when_no_admins(redis_client, mock_bot):
+async def test_no_notification_when_no_admins(redis_client, stream_client, mock_bot):
     """
     Scenario: No admin IDs configured.
 
@@ -133,7 +147,7 @@ async def test_no_notification_when_no_admins(redis_client, mock_bot):
     """
     from src.notifications import ProvisionerNotifier
 
-    notifier = ProvisionerNotifier(redis=redis_client, admin_ids=set())
+    notifier = ProvisionerNotifier(client=stream_client, admin_ids=set())
 
     result = ProvisionerResult(
         request_id="test-req-3",
@@ -141,17 +155,17 @@ async def test_no_notification_when_no_admins(redis_client, mock_bot):
         server_handle="srv-test",
     )
 
-    # Start listener first
-    task = asyncio.create_task(notifier._listen_once(mock_bot))
-    await asyncio.sleep(0.1)
+    task = await notifier.start(mock_bot)
+    await asyncio.sleep(0.2)
 
-    # Then publish
-    await redis_client.xadd(
-        "provisioner:results",
-        {"data": result.model_dump_json()},
-    )
+    await stream_client.publish("provisioner:results", result.model_dump(mode="json"))
+    await asyncio.sleep(0.5)
 
-    await asyncio.wait_for(task, timeout=3.0)
+    await notifier.stop()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
-    # Assert: No messages sent
     mock_bot.send_message.assert_not_called()

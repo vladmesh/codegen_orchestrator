@@ -24,7 +24,14 @@ from telegram.ext import (
     filters,
 )
 
+from shared.contracts.queues.po import (
+    POProactiveMessage,
+    POUserMessage,
+    from_flat_fields,
+    to_flat_fields,
+)
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
+from shared.redis_client import RedisStreamClient
 
 # Add shared to path
 sys.path.insert(0, "/app")
@@ -42,7 +49,7 @@ logger = structlog.get_logger()
 # Globals (initialized in post_init)
 _provisioner_notifier_task: asyncio.Task | None = None
 _proactive_listener_task: asyncio.Task | None = None
-_redis_client: redis_lib.Redis | None = None
+_stream_client: RedisStreamClient | None = None
 
 # PO response settings
 PO_RESPONSE_TIMEOUT_S = 60
@@ -180,7 +187,7 @@ async def _read_po_response(
 
 
 async def _send_to_po_and_wait(
-    redis: redis_lib.Redis,
+    client: RedisStreamClient,
     user_id: int,
     text: str,
     bot,
@@ -188,10 +195,10 @@ async def _send_to_po_and_wait(
 ) -> str:
     """Send message to PO via po:input and wait for response.
 
-    Orchestrates: XADD → typing task → XREAD → cleanup.
+    Orchestrates: publish → typing task → XREAD → cleanup.
 
     Args:
-        redis: Redis client
+        client: Redis stream client
         user_id: Telegram user ID
         text: User message text
         bot: Telegram bot instance
@@ -205,20 +212,11 @@ async def _send_to_po_and_wait(
         RuntimeError: If PO returned an error
     """
     request_id = str(uuid.uuid4())
-    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
     response_stream = f"po:response:{request_id}"
 
     # Publish to PO input stream
-    await redis.xadd(
-        PO_INPUT_QUEUE,
-        {
-            "type": "user_message",
-            "text": text,
-            "user_id": str(user_id),
-            "request_id": request_id,
-            "timestamp": timestamp,
-        },
-    )
+    msg = POUserMessage(text=text, user_id=str(user_id), request_id=request_id)
+    await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(msg))
 
     logger.info(
         "po_message_sent",
@@ -231,7 +229,7 @@ async def _send_to_po_and_wait(
 
     try:
         # Wait for response
-        data = await _read_po_response(redis, response_stream, PO_RESPONSE_TIMEOUT_S)
+        data = await _read_po_response(client.redis, response_stream, PO_RESPONSE_TIMEOUT_S)
 
         if data is None:
             raise TimeoutError(f"PO did not respond within {PO_RESPONSE_TIMEOUT_S}s")
@@ -257,14 +255,14 @@ async def _send_to_po_and_wait(
 
         # Cleanup response stream (best effort)
         try:
-            await redis.delete(response_stream)
+            await client.redis.delete(response_stream)
         except Exception as e:
             logger.debug("response_stream_cleanup_failed", error=str(e))
 
 
 async def handle_message(update: Update, context) -> None:
     """Handle incoming messages - send to PO ReactAgent via Redis Streams."""
-    global _redis_client
+    global _stream_client
 
     # Auth check
     if not await auth_middleware(update, context):
@@ -295,12 +293,12 @@ async def handle_message(update: Update, context) -> None:
             )
         )
 
-        if _redis_client is None:
+        if _stream_client is None:
             raise RuntimeError("Redis client not initialized")
 
         # Send to PO and wait for response
         response_text = await _send_to_po_and_wait(
-            redis=_redis_client,
+            client=_stream_client,
             user_id=user_id,
             text=text,
             bot=context.bot,
@@ -332,8 +330,8 @@ async def _send_message_to_chat(bot, chat_id: int, text: str) -> None:
 class ProactiveListener:
     """Listens to po:proactive stream and sends messages to users."""
 
-    def __init__(self, redis: redis_lib.Redis):
-        self.redis = redis
+    def __init__(self, client: RedisStreamClient):
+        self.client = client
         self._running = False
 
     async def start(self, bot) -> asyncio.Task:
@@ -347,49 +345,37 @@ class ProactiveListener:
 
     async def _listen_loop(self, bot) -> None:
         """Main loop: read po:proactive, send messages to users."""
-        try:
-            await self.redis.xgroup_create(
-                PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, id="0", mkstream=True
-            )
-        except Exception as e:
-            if "BUSYGROUP" not in str(e):
-                raise
-
         logger.info("proactive_listener_started")
 
-        while self._running:
-            try:
-                entries = await self.redis.xreadgroup(
-                    PO_PROACTIVE_GROUP,
-                    "bot-0",
-                    {PO_PROACTIVE_QUEUE: ">"},
-                    count=10,
-                    block=5000,
-                )
-                if not entries:
+        try:
+            async for msg in self.client.consume(
+                PO_PROACTIVE_QUEUE,
+                PO_PROACTIVE_GROUP,
+                "bot-0",
+                count=10,
+                auto_ack=True,
+            ):
+                if not self._running:
+                    break
+                if msg is None:
                     continue
-                for _, messages in entries:
-                    for msg_id, data in messages:
-                        try:
-                            chat_id = int(data["user_id"])
-                            await _send_message_to_chat(bot, chat_id, data["text"])
-                            logger.info(
-                                "proactive_message_sent",
-                                user_id=chat_id,
-                                text_length=len(data.get("text", "")),
-                            )
-                        except Exception as e:
-                            logger.error(
-                                "proactive_message_send_failed",
-                                error=str(e),
-                                user_id=data.get("user_id"),
-                            )
-                        await self.redis.xack(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, msg_id)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("proactive_listener_error", error=str(e))
-                await asyncio.sleep(1)
+                try:
+                    proactive = from_flat_fields(msg.data, POProactiveMessage)
+                    chat_id = int(proactive.user_id)
+                    await _send_message_to_chat(bot, chat_id, proactive.text)
+                    logger.info(
+                        "proactive_message_sent",
+                        user_id=chat_id,
+                        text_length=len(msg.data.get("text", "")),
+                    )
+                except Exception as e:
+                    logger.error(
+                        "proactive_message_send_failed",
+                        error=str(e),
+                        user_id=msg.data.get("user_id"),
+                    )
+        except asyncio.CancelledError:
+            pass
 
         logger.info("proactive_listener_stopped")
 
@@ -402,18 +388,21 @@ async def _send_response_to_user(app: Application, user_id: int, text: str) -> N
 
 async def post_init(app: Application) -> None:
     """Post-initialization: connect Redis and start listeners."""
-    global _provisioner_notifier_task, _proactive_listener_task, _redis_client
+    global _provisioner_notifier_task, _proactive_listener_task, _stream_client
 
     settings = get_settings()
-    _redis_client = redis_lib.from_url(settings.redis_url, decode_responses=True)
+
+    # Single RedisStreamClient for all operations (message handling + consumer listeners)
+    _stream_client = RedisStreamClient(redis_url=settings.redis_url)
+    await _stream_client.connect()
 
     # Start provisioner notifications listener
     admin_ids = settings.get_admin_ids()
-    notifier = ProvisionerNotifier(redis=_redis_client, admin_ids=admin_ids)
+    notifier = ProvisionerNotifier(client=_stream_client, admin_ids=admin_ids)
     _provisioner_notifier_task = await notifier.start(app.bot)
 
     # Start proactive PO messages listener
-    proactive = ProactiveListener(redis=_redis_client)
+    proactive = ProactiveListener(client=_stream_client)
     _proactive_listener_task = await proactive.start(app.bot)
 
     logger.info("telegram_bot_initialized", admin_count=len(admin_ids))
@@ -421,7 +410,7 @@ async def post_init(app: Application) -> None:
 
 async def post_shutdown(app: Application) -> None:
     """Cleanup on shutdown."""
-    global _provisioner_notifier_task, _proactive_listener_task, _redis_client
+    global _provisioner_notifier_task, _proactive_listener_task, _stream_client
 
     # Stop provisioner notifier
     if _provisioner_notifier_task:
@@ -442,9 +431,9 @@ async def post_shutdown(app: Application) -> None:
         _proactive_listener_task = None
 
     # Close Redis
-    if _redis_client:
-        await _redis_client.aclose()
-        _redis_client = None
+    if _stream_client:
+        await _stream_client.close()
+        _stream_client = None
 
     await api_client.close()
 

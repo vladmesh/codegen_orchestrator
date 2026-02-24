@@ -17,7 +17,7 @@ class EngineeringMessage(BaseMessage):
 
     task_id: str
     project_id: str
-    user_id: int
+    user_id: str
     action: Literal["create", "feature", "fix"] = "create"
     description: str | None = None
     skip_deploy: bool = False

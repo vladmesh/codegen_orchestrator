@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-all test-clean \
+.PHONY: lint format test test-unit test-unit-local test-integration test-all test-clean \
 	test-api test-api-unit test-api-integration \
 	test-langgraph test-langgraph-unit test-langgraph-integration \
 	test-scheduler test-scheduler-unit test-scheduler-integration \
@@ -307,7 +307,12 @@ test-shared-unit:
 		echo "⚠️  No unit tests found in shared/tests"; \
 	fi
 
-# Run all unit tests (fast)
+# Run all unit tests locally (no Docker, fast)
+# Requires: uv sync (once)
+test-unit-local:
+	@uv run bash scripts/test-unit-local.sh
+
+# Run all unit tests in Docker (slow, full isolation)
 test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit test-scaffolder-unit test-shared-unit
 
 # Run all integration tests (auto-discovered from docker/test/integration/*.yml)
