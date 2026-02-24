@@ -45,6 +45,9 @@ class CI:
     # Poll interval for CI status (seconds)
     POLL_INTERVAL = int(os.getenv("CI_POLL_INTERVAL", "15"))
 
+    # Total gate timeout for the entire CI fix loop (seconds)
+    TOTAL_GATE_TIMEOUT = int(os.getenv("CI_TOTAL_GATE_TIMEOUT", "3600"))  # 60 minutes
+
     # CI workflow filename
     CI_WORKFLOW_FILE = os.getenv("CI_WORKFLOW_FILE", "ci.yml")
 

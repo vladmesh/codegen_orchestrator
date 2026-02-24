@@ -24,6 +24,7 @@ from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLDER_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ..clients.worker_spawner import delete_worker, send_task_to_worker
 from ..nodes.resource_allocator import resource_allocator_node
 from ._base import start_worker
 from ._events import publish_callback_event
@@ -68,27 +69,9 @@ def _extract_run_id_from_error(error_msg: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-async def _respawn_developer_for_ci_fix(
-    project: dict,
-    owner: str,
-    repo_name: str,
-    repo_full_name: str,
-    github_client: GitHubAppClient,
-    failure_context: str,
-    attempt: int,
-) -> bool:
-    """Spawn a new developer worker to fix CI failures.
-
-    Returns:
-        True if developer completed successfully, False otherwise
-    """
-    from ..clients.worker_spawner import request_spawn
-    from ..config.constants import Timeouts
-
-    access_token = await github_client.get_token(owner, repo_name)
-    project_name = project.get("name", "project")
-
-    task_message = f"""# Task: Fix CI Failures (Attempt {attempt})
+def _build_ci_fix_prompt(failure_context: str, attempt: int) -> str:
+    """Build the prompt for CI fix task (used by both reuse and respawn paths)."""
+    return f"""# Task: Fix CI Failures (Attempt {attempt})
 
 ## CI Failure Details
 
@@ -108,6 +91,28 @@ async def _respawn_developer_for_ci_fix(
 - Focus ONLY on fixing the CI failures, do not add new features.
 - Make a descriptive commit message explaining what you fixed.
 """
+
+
+async def _respawn_developer_for_ci_fix(
+    project: dict,
+    owner: str,
+    repo_name: str,
+    repo_full_name: str,
+    github_client: GitHubAppClient,
+    failure_context: str,
+    attempt: int,
+) -> bool:
+    """Spawn a new developer worker to fix CI failures.
+
+    Returns:
+        True if developer completed successfully, False otherwise
+    """
+    from ..clients.worker_spawner import request_spawn
+    from ..config.constants import Timeouts
+
+    access_token = await github_client.get_token(owner, repo_name)
+    project_name = project.get("name", "project")
+    task_message = _build_ci_fix_prompt(failure_context, attempt)
 
     worker_result = await request_spawn(
         repo=repo_full_name,
@@ -129,6 +134,7 @@ async def _wait_for_ci_and_fix(
     developer_started_at: datetime | None = None,
     *,
     user_id: str = "",
+    worker_id: str | None = None,
 ) -> tuple[bool, list[dict]]:
     """Wait for CI workflow to pass, re-spawning developer on failure.
 
@@ -142,7 +148,7 @@ async def _wait_for_ci_and_fix(
     """
     from shared.clients.github import GitHubAppClient
 
-    from ..config.constants import CI
+    from ..config.constants import CI, Timeouts
 
     ci_attempts: list[dict] = []
 
@@ -162,7 +168,22 @@ async def _wait_for_ci_and_fix(
     # observed but before the new developer pushes (so the new CI run is visible).
     created_after = developer_started_at or datetime.now(UTC)
 
+    gate_start = datetime.now(UTC)
+
     for attempt in range(CI.MAX_FIX_RETRIES + 1):  # 0 = initial check, 1..N = retries
+        # Total gate timeout: abort if the entire CI fix loop has been running too long
+        elapsed = (datetime.now(UTC) - gate_start).total_seconds()
+        if elapsed > CI.TOTAL_GATE_TIMEOUT:
+            logger.error(
+                "ci_gate_total_timeout",
+                task_id=task_id,
+                elapsed_seconds=elapsed,
+                timeout=CI.TOTAL_GATE_TIMEOUT,
+            )
+            ci_attempts.append({"attempt": attempt, "status": "gate_timeout"})
+            await _record_ci_attempts(task_id, ci_attempts)
+            return False, ci_attempts
+
         try:
             logger.info(
                 "ci_check_waiting",
@@ -250,27 +271,64 @@ async def _wait_for_ci_and_fix(
                 )
                 return False, ci_attempts
 
-            # Capture timestamp BEFORE respawn: after the failed run is observed
+            # Capture timestamp BEFORE fix: after the failed run is observed
             # (so it gets filtered out) but before the new push (so the new CI
             # run created_at will be >= this timestamp).
             created_after = datetime.now(UTC)
 
-            # Re-spawn developer worker with fix context
-            logger.info(
-                "ci_fix_respawn_developer",
-                task_id=task_id,
-                attempt=attempt + 1,
-            )
+            task_message = _build_ci_fix_prompt(failure_context, attempt + 1)
 
-            fix_success = await _respawn_developer_for_ci_fix(
-                project=project,
-                owner=owner,
-                repo_name=repo_name,
-                repo_full_name=repo_full_name,
-                github_client=github_client,
-                failure_context=failure_context,
-                attempt=attempt + 1,
-            )
+            if worker_id:
+                # Reuse existing worker container
+                logger.info(
+                    "ci_fix_reuse_worker",
+                    task_id=task_id,
+                    worker_id=worker_id,
+                    attempt=attempt + 1,
+                )
+                fix_result = await send_task_to_worker(
+                    worker_id=worker_id,
+                    task_content=task_message,
+                    timeout_seconds=Timeouts.WORKER_SPAWN,
+                )
+                if fix_result.success:
+                    fix_success = True
+                elif fix_result.error_message == "execution_timeout":
+                    # Worker likely dead, fall back to respawn
+                    logger.warning(
+                        "worker_reuse_failed_fallback",
+                        task_id=task_id,
+                        worker_id=worker_id,
+                    )
+                    worker_id = None
+                    fix_success = await _respawn_developer_for_ci_fix(
+                        project=project,
+                        owner=owner,
+                        repo_name=repo_name,
+                        repo_full_name=repo_full_name,
+                        github_client=github_client,
+                        failure_context=failure_context,
+                        attempt=attempt + 1,
+                    )
+                else:
+                    # Worker alive but fix failed (agent error)
+                    fix_success = False
+            else:
+                # No worker to reuse — spawn new one
+                logger.info(
+                    "ci_fix_respawn_developer",
+                    task_id=task_id,
+                    attempt=attempt + 1,
+                )
+                fix_success = await _respawn_developer_for_ci_fix(
+                    project=project,
+                    owner=owner,
+                    repo_name=repo_name,
+                    repo_full_name=repo_full_name,
+                    github_client=github_client,
+                    failure_context=failure_context,
+                    attempt=attempt + 1,
+                )
 
             if not fix_success:
                 logger.error(
@@ -526,6 +584,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "action": action,
             "description": description,
             "commit_sha": None,
+            "worker_id": None,
             "engineering_status": "idle",
             "iteration_count": 0,
             "test_results": None,
@@ -692,14 +751,25 @@ async def _handle_engineering_success(
         project = fresh_project
 
     # --- CI Gate: wait for ci.yml before triggering deploy ---
-    ci_passed, ci_attempts = await _wait_for_ci_and_fix(
-        project=project,
-        task_id=task_id,
-        callback_stream=callback_stream,
-        redis=redis,
-        developer_started_at=developer_started_at,
-        user_id=user_id,
-    )
+    worker_id = result.get("worker_id")
+    try:
+        ci_passed, ci_attempts = await _wait_for_ci_and_fix(
+            project=project,
+            task_id=task_id,
+            callback_stream=callback_stream,
+            redis=redis,
+            developer_started_at=developer_started_at,
+            user_id=user_id,
+            worker_id=worker_id,
+        )
+    finally:
+        # Cleanup: delete worker container after CI gate (regardless of outcome)
+        if worker_id:
+            try:
+                await delete_worker(worker_id)
+                logger.info("worker_deleted_after_ci_gate", worker_id=worker_id)
+            except Exception as e:
+                logger.warning("worker_delete_failed", worker_id=worker_id, error=str(e))
 
     failed_count = sum(1 for a in ci_attempts if a["status"] == "failed")
 

@@ -2,7 +2,7 @@
 
 > **Backlog**: #8
 > **Создан**: 2026-02-25
-> **Статус**: В разработке
+> **Статус**: Готово
 
 ## Context
 
@@ -157,113 +157,88 @@ Wrapper уже использует `async for message in self.redis.consume(...
 
 ---
 
-## Iteration 3: Engineering worker — reuse вместо respawn
+## Iteration 3: Engineering worker — reuse вместо respawn ✅
 
 > `_wait_for_ci_and_fix()` использует existing worker для CI fix.
 
-### 3.1 `DeveloperNode` возвращает `worker_id`
+### 3.1 `DeveloperNode` возвращает `worker_id` ✅
 
 **File**: `services/langgraph/src/nodes/developer.py`
 
-Сейчас `DeveloperNode` вызывает `request_spawn()` и возвращает только `SpawnResult`. Нужно прокинуть `worker_id` наверх в engineering worker.
+**Изменения**: `DeveloperNode.run()` добавляет `worker_id: worker_result.worker_id` в return dict при success. Поле `worker_id: str | None` добавлено в `EngineeringState` (`services/langgraph/src/subgraphs/engineering.py`).
 
-**Изменение**: `request_spawn()` уже будет возвращать `worker_id` (iter 2.3). Прокинуть через return path developer → engineering_worker.
-
-### 3.2 `_wait_for_ci_and_fix()` принимает `worker_id`
+### 3.2 `_wait_for_ci_and_fix()` принимает `worker_id` ✅
 
 **File**: `services/langgraph/src/workers/engineering_worker.py`
 
-Новая сигнатура:
-```python
-async def _wait_for_ci_and_fix(
-    project: dict,
-    task_id: str,
-    callback_stream: str | None,
-    redis: RedisStreamClient,
-    developer_started_at: datetime | None = None,
-    *,
-    user_id: str = "",
-    worker_id: str | None = None,   # NEW
-) -> tuple[bool, list[dict]]:
-```
+Реализовано по плану.
 
-### 3.3 Замена `_respawn_developer_for_ci_fix` на `send_task_to_worker`
+### 3.3 Замена `_respawn_developer_for_ci_fix` на `send_task_to_worker` ✅
 
 **File**: `services/langgraph/src/workers/engineering_worker.py`
 
-Внутри CI fix loop:
-```python
-if worker_id:
-    # Reuse existing worker
-    fix_result = await send_task_to_worker(
-        worker_id=worker_id,
-        task_content=task_message,
-        timeout_seconds=Timeouts.WORKER_SPAWN,
-    )
-    fix_success = fix_result.success
-else:
-    # Fallback: spawn new worker (worker died or no worker_id)
-    fix_success = await _respawn_developer_for_ci_fix(...)
-```
+Реализовано по плану. Дополнительно извлечён `_build_ci_fix_prompt()` из `_respawn_developer_for_ci_fix` — оба пути (reuse и respawn) используют один и тот же промпт.
 
-### 3.4 Cleanup: delete worker после CI gate
+<!-- Отклонение от плана: извлечён _build_ci_fix_prompt() как отдельная функция для
+     DRY — и send_task_to_worker, и _respawn_developer_for_ci_fix используют один промпт.
+     В плане промпт строился только внутри _respawn. -->
+
+### 3.4 Cleanup: delete worker после CI gate ✅
 
 **File**: `services/langgraph/src/workers/engineering_worker.py`
 
-После выхода из `_wait_for_ci_and_fix()` — удалить worker:
-```python
-if worker_id:
-    await delete_worker(worker_id)
-```
+`_handle_engineering_success()` оборачивает `_wait_for_ci_and_fix()` в `try/finally` и вызывает `delete_worker(worker_id)` в `finally` блоке. Ошибки delete логируются как warning, не крашат процесс.
 
-### 3.5 Fallback при мёртвом worker
+<!-- Отклонение от плана: delete_worker вызывается в finally (не просто после вызова),
+     чтобы worker удалялся и при CI failure, и при success. Ошибки delete перехватываются. -->
 
-Если `send_task_to_worker()` получает timeout или error — worker мог умереть. Fallback:
-```python
-fix_result = await send_task_to_worker(worker_id, task_message, ...)
-if not fix_result.success and fix_result.error_message == "execution_timeout":
-    # Worker likely dead, fall back to respawn
-    worker_id = None  # Reset so next iteration uses respawn
-    fix_success = await _respawn_developer_for_ci_fix(...)
-```
+### 3.5 Fallback при мёртвом worker ✅
 
-**Тесты**:
-- Юнит-тест: CI fix использует `send_task_to_worker` при наличии `worker_id`
-- Юнит-тест: fallback на `_respawn_developer_for_ci_fix` при ошибке `send_task_to_worker`
-- Юнит-тест: `delete_worker` вызывается после CI gate
-- Юнит-тест: `worker_id=None` → старое поведение (полная совместимость)
+Реализовано по плану. При `execution_timeout` от `send_task_to_worker`:
+1. `worker_id = None` (reset для следующих итераций)
+2. Fallback на `_respawn_developer_for_ci_fix`
+3. При non-timeout failure (agent error, container alive) — `fix_success = False`, worker_id сохраняется
+
+**Тесты**: `services/langgraph/tests/unit/test_engineering_worker_reuse.py`
+- ✅ `test_success_includes_worker_id` — DeveloperNode возвращает worker_id
+- ✅ `test_reuses_worker_when_worker_id_available` — send_task_to_worker используется
+- ✅ `test_without_worker_id_uses_respawn` — backward compatibility
+- ✅ `test_delete_worker_called_after_ci_gate` — cleanup
+- ✅ `test_no_delete_when_no_worker_id` — нет cleanup без worker_id
+- ✅ `test_worker_id_passed_to_ci_fix` — pass-through из _handle_engineering_success
+- ✅ `test_fallback_on_send_task_timeout` — fallback при timeout
+- ✅ `test_fallback_resets_worker_id_for_next_iteration` — worker_id=None после fallback
 
 ---
 
-## Iteration 4: Project mutex и lifecycle
+## Iteration 4: Project mutex и lifecycle ✅
 
 > Worker живёт дольше — нужно корректно управлять mutex и cleanup.
 
-### 4.1 Project mutex: hold lock пока worker жив
+### 4.1 Project mutex: hold lock пока worker жив ✅ (verified)
 
 **File**: `services/worker-manager/src/manager.py`
 
-Сейчас mutex (`workspace:active_projects`) устанавливается при create и снимается при delete. Это уже работает правильно — worker не удаляется между turns, значит mutex держится.
+**Верифицировано**: mutex (`workspace:active_projects`) устанавливается при create (`manager.py:547`: `sadd`) и снимается при delete (`manager.py:169`: `srem`). Worker не удаляется между turns — mutex держится корректно.
 
-**Проверить**: что delete_worker корректно снимает mutex при финальном удалении.
-
-### 4.2 Lifecycle events: не триггерить delete на `completed`
+### 4.2 Lifecycle events: не триггерить delete на `completed` ✅ (verified)
 
 **File**: `services/worker-manager/src/consumer.py`
 
-Убедиться что lifecycle event `completed` от wrapper (после каждого turn) не триггерит auto-delete worker'а. Сейчас lifecycle events идут в `worker:lifecycle` stream и обрабатываются только worker-manager для мониторинга — delete не триггерится. Проверить что это так.
+**Верифицировано**: `consumer.py:75-84` — `handle_command()` обрабатывает только `CreateWorkerCommand`, `DeleteWorkerCommand`, `StatusWorkerCommand`. Lifecycle events (`completed`) публикуются в `worker:lifecycle` stream и не обрабатываются consumer — auto-delete не триггерится.
 
-### 4.3 Timeout safety
+### 4.3 Timeout safety ✅
 
-Общий таймаут на весь CI fix gate (не per-turn):
-- Сейчас: 30 мин per worker × 3 attempts = до 90 мин
-- С reuse: можно сократить per-turn timeout, т.к. нет warmup overhead
-- Или ввести общий gate timeout (например, 60 мин на весь CI gate)
+**File**: `services/langgraph/src/config/constants.py`, `services/langgraph/src/workers/engineering_worker.py`
 
-**Изменения**: Добавить `CI.TOTAL_GATE_TIMEOUT` в `constants.py`. Engineering worker проверяет общий elapsed time.
+**Изменения**: Добавлен `CI.TOTAL_GATE_TIMEOUT = 3600` (60 мин, env: `CI_TOTAL_GATE_TIMEOUT`). Проверка elapsed time в начале каждой итерации `_wait_for_ci_and_fix`.
 
-**Тесты**:
-- Юнит-тест: total gate timeout прерывает loop даже если individual turns не timeout'ятся
+<!-- Отклонение от плана: gate_start = datetime.now(UTC) вместо developer_started_at.
+     Timeout считает время CI fix loop, а не от начала developer phase —
+     у developer уже есть свой timeout (WORKER_SPAWN = 30 мин). -->
+
+**Тесты**: `services/langgraph/tests/unit/test_engineering_worker_reuse.py`
+- ✅ `test_total_gate_timeout_aborts_loop` — loop прерывается при TOTAL_GATE_TIMEOUT=0
 
 ---
 

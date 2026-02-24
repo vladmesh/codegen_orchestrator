@@ -162,6 +162,7 @@ class DeveloperNode(FunctionalNode):
                     ],
                     "engineering_status": "done",
                     "commit_sha": worker_result.commit_sha,
+                    "worker_id": worker_result.worker_id,
                 }
             else:
                 error_msg = worker_result.error_message or worker_result.output or "Unknown error"
