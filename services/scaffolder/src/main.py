@@ -23,9 +23,9 @@ from shared.redis_client import RedisStreamClient
 logger = structlog.get_logger()
 
 # Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-API_URL = os.getenv("API_URL", "http://api:8000")
+API_BASE_URL = os.getenv("API_BASE_URL")
+if not API_BASE_URL:
+    raise RuntimeError("API_BASE_URL is not set")
 SERVICE_TEMPLATE_REPO = os.getenv("SERVICE_TEMPLATE_REPO", "gh:vladmesh/service-template")
 
 RESULT_SCAFFOLDER_QUEUE = "scaffolder:results"
@@ -65,7 +65,7 @@ async def update_project(
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.patch(
-                    f"{API_URL}/api/projects/{project_id}",
+                    f"{API_BASE_URL}/api/projects/{project_id}",
                     json=payload,
                 )
                 if resp.is_success:
