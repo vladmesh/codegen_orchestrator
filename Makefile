@@ -3,7 +3,7 @@
 	test-langgraph test-langgraph-unit test-langgraph-integration \
 	test-scheduler test-scheduler-unit test-scheduler-integration \
 	test-telegram test-telegram-unit \
-	test-orchestrator-cli \
+	test-orchestrator-cli test-smoke \
 	build up down stop logs help nuke seed migrate makemigrations shell \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild
@@ -323,6 +323,23 @@ test-integration: $(INTEGRATION_TESTS)
 test-service: test-api-service test-langgraph-service test-scaffolder-service
 
 # Run E2E tests (requires real GitHub, Claude credentials)
+# Live smoke test: runs against running `make up` stack
+# Tests API/Redis/worker-manager health + worker spawn/delete lifecycle
+test-smoke:
+	@echo "🧪 Running live smoke test against running stack..."
+	@docker run --rm \
+		--network codegen_internal \
+		-v /var/run/docker.sock:/var/run/docker.sock \
+		-v $(PWD)/tests:/app/tests \
+		-v $(PWD)/shared:/app/shared \
+		-v $(PWD)/packages:/app/packages \
+		-w /app \
+		-e PYTHONPATH=/app \
+		-e PYTHONUNBUFFERED=1 \
+		python:3.12-slim \
+		bash -c "pip install -q pytest pytest-asyncio httpx redis docker pydantic structlog && \
+			pytest tests/e2e/test_live_smoke.py -v --tb=short --noconftest --override-ini='asyncio_mode=auto' -p no:cacheprovider"
+
 # Usage: HOST_CLAUDE_DIR=~/.claude make test-e2e
 test-e2e:
 	@echo "🧪 Running E2E tests..."
