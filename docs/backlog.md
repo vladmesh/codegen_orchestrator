@@ -57,9 +57,8 @@
 **Документы**: `docs/plans/workspace-persistence.md`
 Накопление числа падений воркера по `project_id`. Wipe workspace после 2 попыток (чтобы избежать застрявших merge conflicts / detached head). Отклонение после 3 попыток.
 
-### 8. Worker Reuse for CI Fix Loop — 🚧 В разработке
-**Документы**: [worker-reuse-ci-fix.md](plans/worker-reuse-ci-fix.md)
-Не перезапускать новый контейнер, когда интеграционные тесты CI падают. Отправлять задачу на фикс в *тот же* инстанс воркера, чтобы сохранить контекст агента и сэкономить время warmup.
+### 8. ~~Worker Reuse for CI Fix Loop~~ → ✅ Done
+> См. [worker-reuse-ci-fix.md](plans/worker-reuse-ci-fix.md). Wrapper multi-turn, spawner API (send_task/delete), engineering worker reuse с fallback, total gate timeout.
 
 ### 9. Worker Lifecycle (Pause/Unpause, Limits)
 **Документы**: `docs/tasks/worker-lifecycle.md`

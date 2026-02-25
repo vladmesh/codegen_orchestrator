@@ -1,13 +1,11 @@
 # Project Status
 
-> **Current Focus**: Worker Reuse for CI Fix Loop
-> **Plan**: [worker-reuse-ci-fix.md](plans/worker-reuse-ci-fix.md)
+> **Current Focus**: Next task from backlog
+> **Last completed**: Worker Reuse for CI Fix Loop (#8)
 
-## Current: Worker Reuse for CI Fix Loop (#8)
+## Previous: Worker Reuse for CI Fix Loop (#8) — Done
 
-При CI failure engineering-worker спавнит новый контейнер для каждого retry — теряется контекст агента и тратится ~30s на warmup. Переводим на reuse существующего контейнера: wrapper ждёт следующий input, spawner шлёт prompt напрямую.
-
-Plan: [worker-reuse-ci-fix.md](plans/worker-reuse-ci-fix.md)
+Plan: [worker-reuse-ci-fix.md](plans/worker-reuse-ci-fix.md) — wrapper multi-turn support, spawner multi-turn API (send_task_to_worker, delete_worker), engineering worker reuse with fallback on dead worker, total gate timeout (60 min).
 
 ## Previous: Redis Streams Unification (#3+#5) — Done
 
