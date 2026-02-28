@@ -49,18 +49,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     && rm -rf /var/lib/apt/lists/*
 
-# Tooling packages for native EXEC_MODE (stable layer — cached unless versions change).
-# Placed BEFORE volatile code-dependent wheels so code changes don't invalidate this layer.
-RUN pip install --no-cache-dir \
-    ruff==0.14.5 \
-    copier==9.4.1 \
-    xenon==0.9.1 \
-    pytest==8.2.0 \
-    pytest-cov==4.1.0 \
-    mypy==1.10.0 \
-    types-PyYAML \
-    PyYAML \
-    jinja2
+# Install uv for fast dependency management (copier, ruff etc. installed on-demand via uv tool)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Copy wheels from builder (volatile — changes on shared/packages code edits)
 COPY --from=builder /build/wheels /wheels
@@ -71,8 +61,9 @@ RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 # Create non-root user
 RUN useradd -m -s /bin/bash worker
 
-# Setup workspace
+# Setup workspace and uv cache directory
 RUN mkdir /workspace && chown worker:worker /workspace
+RUN mkdir -p /home/worker/.cache/uv && chown -R worker:worker /home/worker/.cache
 WORKDIR /workspace
 
 USER worker

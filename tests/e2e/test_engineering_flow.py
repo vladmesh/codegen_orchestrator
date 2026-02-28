@@ -4,10 +4,11 @@ E2E Test: Engineering Flow
 Tests the complete engineering flow:
 1. Create project via API
 2. Publish EngineeringMessage to Redis
-3. LangGraph consumes and delegates to Scaffolder
-4. Scaffolder creates GitHub repo with template
-5. Developer worker implements features
-6. Result published back
+3. Engineering worker creates repo + sets secrets
+4. Developer node spawns worker with ScaffoldConfig
+5. Worker-manager runs copier + make setup
+6. Developer worker implements features
+7. Result published back
 
 This test uses:
 - Real GitHub API (test org: project-factory-test)
@@ -16,7 +17,6 @@ This test uses:
 """
 
 import asyncio
-import json
 import os
 import time
 import uuid
@@ -72,23 +72,6 @@ async def wait_for_project_status(
     raise TimeoutError(f"Project {project_id} did not reach {target_status} within {timeout}s")
 
 
-async def wait_for_stream_message(
-    redis: Redis, stream: str, timeout: int = 60, last_id: str = "0"
-) -> tuple[str, dict]:
-    """Wait for a message on Redis stream."""
-    import asyncio
-
-    start = time.time()
-    while time.time() - start < timeout:
-        messages = await redis.xread({stream: last_id}, count=1, block=1000)
-        if messages:
-            msg_id = messages[0][1][0][0]
-            data = messages[0][1][0][1]
-            return msg_id, data
-        await asyncio.sleep(0.5)
-    raise TimeoutError(f"No message on {stream} within {timeout}s")
-
-
 @pytest.fixture
 def unique_project_name():
     """Generate unique project name for test."""
@@ -109,8 +92,11 @@ class TestEngineeringFlow:
         1. Create project in API (status: DRAFT)
         2. Create task in API
         3. Publish EngineeringMessage to engineering:queue
-        4. Wait for project status to become SCAFFOLDED
-        5. Verify GitHub repo was created
+        4. Engineering worker creates repo + sets secrets (status: SCAFFOLDING)
+        5. Developer node spawns worker with ScaffoldConfig
+        6. Worker-manager runs copier + make setup + git push
+        7. Developer node updates status to SCAFFOLDED
+        8. Developer worker implements business logic
         """
 
         # Step 1: Create project
@@ -161,111 +147,3 @@ class TestEngineeringFlow:
         finally:
             # Cleanup: Delete project (will cascade to task)
             await api_client.delete(f"/api/projects/{project_id}")
-
-    @pytest.mark.skip(reason="Phase 5 - requires full LangGraph integration")
-    async def test_scaffolder_receives_message(
-        self, redis: Redis, api_client: httpx.AsyncClient, unique_project_name: str
-    ):
-        """
-        Smoke test: Verify that messages reach the scaffolder queue.
-
-        This is a lighter test that doesn't require full Claude/GitHub setup.
-        """
-
-        # Create project
-        project_resp = await api_client.post(
-            "/api/projects",
-            json={
-                "name": unique_project_name,
-                "description": "Smoke test project",
-                "modules": [ServiceModule.BACKEND.value],
-            },
-        )
-        assert project_resp.status_code == 201
-        project_id = project_resp.json()["id"]
-
-        # Create task
-        task_resp = await api_client.post(
-            "/api/tasks",
-            json={"project_id": project_id, "type": "engineering"},
-        )
-        assert task_resp.status_code == 201
-        task_id = task_resp.json()["id"]
-
-        try:
-            # Publish engineering message
-            msg = EngineeringMessage(task_id=task_id, project_id=project_id, user_id=1)
-            await redis.xadd("engineering:queue", {"data": msg.model_dump_json()})
-
-            # Wait for scaffolder to receive delegated message
-            # LangGraph should publish to scaffolder:queue
-            try:
-                _, scaffolder_msg = await wait_for_stream_message(
-                    redis, "scaffolder:queue", timeout=60
-                )
-                data = json.loads(scaffolder_msg.get("data", "{}"))
-                assert data.get("project_id") == project_id
-            except TimeoutError:
-                # If scaffolder doesn't receive within timeout, check if langgraph is processing
-                pytest.skip("LangGraph may not be processing - check service logs")
-
-        finally:
-            await api_client.delete(f"/api/projects/{project_id}")
-
-
-class TestScaffolderIntegration:
-    """Tests for Scaffolder service with real GitHub."""
-
-    async def test_scaffolder_creates_github_repo(
-        self, redis: Redis, api_client: httpx.AsyncClient, unique_project_name: str
-    ):
-        """
-        Test that Scaffolder creates a real GitHub repository.
-
-        Requires:
-        - GITHUB_APP_ID
-        - GITHUB_PRIVATE_KEY
-        - E2E_TEST_ORG (project-factory-test)
-        """
-
-        from shared.contracts.queues.scaffolder import ScaffolderMessage
-
-        # Skip if no GitHub credentials
-        if not os.getenv("GITHUB_APP_ID"):
-            pytest.skip("Requires GITHUB_APP_ID")
-
-        # Create project in API first
-        project_resp = await api_client.post(
-            "/api/projects",
-            json={
-                "name": unique_project_name,
-                "modules": [ServiceModule.BACKEND.value],
-            },
-        )
-        assert project_resp.status_code == 201
-        project_id = project_resp.json()["id"]
-
-        repo_full_name = f"{GITHUB_ORG}/{unique_project_name}"
-
-        try:
-            # Publish directly to scaffolder:queue
-            msg = ScaffolderMessage(
-                project_id=project_id,
-                project_name=unique_project_name,
-                repo_full_name=repo_full_name,
-                modules=[ServiceModule.BACKEND],
-            )
-            await redis.xadd("scaffolder:queue", {"data": msg.model_dump_json()})
-
-            # Wait for scaffolder:results
-            _, result_msg = await wait_for_stream_message(redis, "scaffolder:results", timeout=120)
-            result = json.loads(result_msg.get("data", "{}"))
-
-            assert result.get("status") == "success", f"Scaffolder failed: {result}"
-            assert result.get("repo_url") is not None
-            assert unique_project_name in result.get("repo_url", "")
-
-        finally:
-            # Cleanup: delete project from API
-            await api_client.delete(f"/api/projects/{project_id}")
-            # Note: GitHub repo cleanup should be done separately if needed

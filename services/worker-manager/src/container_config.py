@@ -71,6 +71,9 @@ class WorkerContainerConfig:
         if self.workspace_host_path:
             volumes[self.workspace_host_path] = {"bind": "/workspace", "mode": "rw"}
 
+        # Shared uv cache for fast package installs across workers
+        volumes["uv-cache"] = {"bind": "/home/worker/.cache/uv", "mode": "rw"}
+
         return volumes
 
     def to_docker_run_kwargs(self, network_name: Optional[str] = None) -> Dict[str, Any]:

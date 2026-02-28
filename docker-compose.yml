@@ -115,6 +115,9 @@ services:
       PYTHONPATH: /app
       GITHUB_ORG: ${GITHUB_ORG}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
+      REGISTRY_USER: ${REGISTRY_USER}
+      REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -229,27 +232,6 @@ services:
     networks:
       - internal
 
-  scaffolder:
-    build:
-      context: .
-      dockerfile: services/scaffolder/Dockerfile
-    env_file:
-      - .env
-    environment:
-      GITHUB_APP_ID: ${GITHUB_APP_ID}
-      GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
-      GITHUB_ORG: ${GITHUB_ORG}
-    volumes:
-      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
-    depends_on:
-      api:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - internal
-    restart: unless-stopped
-
   # === Reverse Proxy + Registry ===
 
   caddy:
@@ -323,3 +305,4 @@ volumes:
   caddy-data:
   caddy-config:
   registry-data:
+  uv-cache:

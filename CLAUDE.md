@@ -41,7 +41,7 @@ make test-clean            # Cleanup test containers
 ```
 User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/Redis) → po:response → Telegram Bot → User
                                                                ↕
-                                                  engineering:queue → workers
+                                                  engineering:queue → engineering-worker → worker:commands → worker-manager
                                                   deploy:queue → deploy-worker → GitHub Actions (deploy.yml)
 
 GitHub (ci.yml success) → webhook → Caddy (HTTPS) → API → deploy:queue → deploy-worker → po:proactive → Telegram Bot → User
@@ -61,8 +61,7 @@ Caddy (/webhooks/*) → API
 - `engineering-worker`: Consumes `engineering:queue`, runs Engineering subgraph
 - `deploy-worker`: Consumes `deploy:queue`, runs DevOps subgraph
 - `telegram_bot`: python-telegram-bot interface (PO via Redis Streams)
-- `worker-manager`: Docker container lifecycle for CLI agents (replaces `workers-spawner`)
-- `scaffolder`: Runs copier for project scaffolding (async, before developer work)
+- `worker-manager`: Docker container lifecycle for CLI agents, runs scaffold phase (copier + make setup) via docker exec
 - `infra-service`: Ansible execution for server provisioning only (consumes `provisioner:queue`)
 - `scheduler`: Background workers (github_sync, server_sync, health_checker)
 - `caddy`: Reverse proxy + TLS termination (HTTPS for webhook + registry endpoints)

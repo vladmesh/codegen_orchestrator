@@ -282,22 +282,6 @@ test-worker-manager-service:
 	docker compose -p $(TEST_PROJECT)_worker_manager -f docker/test/service/worker-manager.yml down -v --remove-orphans; \
 	exit $$EXIT_CODE
 
-test-scaffolder-unit:
-	@echo "🧪 Running Scaffolder unit tests..."
-	@if [ -d "services/scaffolder/tests/unit" ] && [ "$$(ls -A services/scaffolder/tests/unit)" ]; then \
-		docker compose -p $(TEST_PROJECT)_scaffolder -f docker/test/service/scaffolder.yml run --rm --no-deps scaffolder-test-runner pytest tests/unit/ -v; \
-	else \
-		echo "⚠️  No unit tests found in services/scaffolder/tests/unit"; \
-	fi
-
-test-scaffolder-service:
-	@echo "🧪 Running Scaffolder service tests..."
-	@docker compose -p $(TEST_PROJECT)_scaffolder -f docker/test/service/scaffolder.yml down -v --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_scaffolder -f docker/test/service/scaffolder.yml up --build --abort-on-container-exit --exit-code-from scaffolder-test-runner; \
-	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_scaffolder -f docker/test/service/scaffolder.yml down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
 test-shared-unit:
 	@echo "🧪 Running Shared unit tests..."
 	@if [ -d "shared/tests" ] && [ "$$(ls -A shared/tests)" ]; then \
@@ -313,14 +297,14 @@ test-unit-local:
 	@uv run bash scripts/test-unit-local.sh
 
 # Run all unit tests in Docker (slow, full isolation)
-test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit test-scaffolder-unit test-shared-unit
+test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit test-shared-unit
 
 # Run all integration tests (auto-discovered from docker/test/integration/*.yml)
 test-integration: $(INTEGRATION_TESTS)
 	@echo "✅ All integration tests completed"
 
 # Run all service tests
-test-service: test-api-service test-langgraph-service test-scaffolder-service
+test-service: test-api-service test-langgraph-service
 
 # Run E2E tests (requires real GitHub, Claude credentials)
 # Live smoke test: runs against running `make up` stack

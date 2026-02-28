@@ -1,7 +1,6 @@
 """Test fixtures and harness for LangGraph service tests."""
 
 import asyncio
-import json
 import os
 import uuid
 
@@ -13,7 +12,6 @@ from shared.contracts.queues.developer_worker import (
     DeveloperWorkerOutput,
 )
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.contracts.queues.scaffolder import ScaffolderResult
 from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     CreateWorkerResponse,
@@ -63,23 +61,6 @@ class TestHarness:
         )
         await self.redis.xadd("deploy:queue", {"data": message.model_dump_json()})
         return task_id
-
-    async def expect_scaffold_request(self, timeout: int = 10) -> dict:
-        """Waits for message in scaffolder:queue."""
-        msg = await self._wait_for_message("scaffolder:queue", timeout)
-        data = json.loads(msg.get("data", "{}"))
-        return data
-
-    async def simulate_scaffolder_completion(self, project_id: str):
-        """Simulates Scaffolder success by publishing result."""
-        result = ScaffolderResult(
-            request_id=f"req-{uuid.uuid4()}",
-            status="success",
-            project_id=project_id,
-            repo_url=f"https://github.com/test-org/{project_id}",
-            files_generated=10,
-        )
-        await self.redis.xadd("scaffolder:results", {"data": result.model_dump_json()})
 
     async def expect_worker_creation(self, timeout: int = 10) -> CreateWorkerCommand:
         """Waits for worker:commands (create)."""

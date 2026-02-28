@@ -24,30 +24,6 @@
 
 ---
 
----
-
-## � Scaffolder Service (Async)
-
-**Роль**: Асинхронный scaffolding проекта через Copier.
-
-**Когда вызывается**:
-- Автоматически после создания проекта через API (fire-and-forget)
-- Отдельный Docker сервис, не часть LangGraph
-
-**Сервис**: `services/scaffolder/`
-
-**Действия**:
-1. Слушает `scaffolder:queue` через `RedisStreamClient.consume(auto_ack=False, claim_pending=True)` — manual ACK после обработки, PEL recovery при рестарте
-2. Валидирует сообщение через `ScaffolderMessage.model_validate()`
-3. Создаёт GitHub-репозиторий (если не существует)
-4. Устанавливает registry secrets (`REGISTRY_URL`, `REGISTRY_USER`, `REGISTRY_PASSWORD`) — до первого push, чтобы CI мог пушить образы
-5. `copier copy` с выбранными модулями
-6. Git commit + push
-7. Обновляет `project.status = "scaffolded"` через API
-
-**Выход**: `project.status = "scaffolded"` → DeveloperNode может начинать работу
-
----
 
 ## 👨‍💻 Developer (Engineering Subgraph)
 
@@ -58,10 +34,12 @@
 - При rework от Tester (до 3 итераций)
 
 **Реализация**:
-1. Ждёт `project.status == "scaffolded"` (макс 5 мин, poll каждые 10s)
-2. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai)
-3. Worker-manager инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` с project-specific задачей
-4. Агент клонирует scaffolded repo и пишет бизнес-логику
+1. Engineering worker создает GitHub-репозиторий и устанавливает registry secrets (`_create_repo_and_set_secrets()`)
+2. Developer node строит `ScaffoldConfig` (modules, project_name, task description) и передаёт worker spawner
+3. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai) с `scaffold_config` в команде
+4. Worker-manager выполняет scaffold phase внутри контейнера (`docker exec`: copier + make setup + git push), затем устанавливает `project.status = "scaffolded"`
+5. Worker-manager инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` с project-specific задачей
+6. Агент клонирует scaffolded repo и пишет бизнес-логику
 
 **Валидация**: Проверяет наличие commit SHA в результате.
 
@@ -198,11 +176,14 @@ PO ReactAgent (in langgraph container)
      │
      ├──────────────▶ trigger_engineering
      │                     │
-     │      ┌──────────────┴──────────────┐
-     │      ▼                              ▼
-     │  Scaffolder Service (async)   Engineering Subgraph
-     │  scaffolder:queue → copier    Developer (waits) → Tester
-     │  → status=scaffolded ─────────────▶│
+     │                     ▼
+     │               Engineering Subgraph
+     │               eng-worker: create repo + secrets
+     │                     │
+     │                     ▼
+     │               Developer node → worker-manager
+     │               scaffold phase (copier + make setup)
+     │               → agent writes code → Tester
      │                                     │
      ├──────────────▶ trigger_deploy ◄─────┘
      │                     │
@@ -225,4 +206,4 @@ Redis (deploy:queue) → deploy-worker → DevOps Subgraph
 Redis (po:proactive) → Telegram Bot → Пользователь
 ```
 
-**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder работает асинхронно (fire-and-forget), DeveloperNode ждёт готовности scaffolding. Webhook-triggered deploys обходят PO — API публикует напрямую в deploy:queue, результат уходит через po:proactive.
+**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Engineering worker создаёт репозиторий и устанавливает registry secrets inline. Worker-manager выполняет scaffold phase (copier + make setup + git push) внутри worker-контейнера через docker exec перед запуском агента. Webhook-triggered deploys обходят PO — API публикует напрямую в deploy:queue, результат уходит через po:proactive.

@@ -1,9 +1,10 @@
+import base64
 import json
 import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import TYPE_CHECKING, Optional, Dict, List
 import structlog
 from redis.asyncio import Redis
 
@@ -13,6 +14,9 @@ from .image_builder import ImageBuilder
 from .container_config import WorkerContainerConfig
 from . import workspace as workspace_mod
 from .compose_runner import ComposeRunner
+
+if TYPE_CHECKING:
+    from shared.contracts.queues.worker import ScaffoldConfig
 
 logger = structlog.get_logger()
 
@@ -438,6 +442,7 @@ class WorkerManager:
         env_vars: Dict[str, str] = None,
         worker_type: str = "developer",
         project_id: str | None = None,
+        scaffold_config: "ScaffoldConfig | None" = None,
     ) -> str:
         """
         Create worker with specified capabilities and agent config.
@@ -546,12 +551,25 @@ class WorkerManager:
             await self.redis.hset(f"worker:meta:{worker_id}", "project_id", project_id)
             await self.redis.sadd("workspace:active_projects", project_id)
 
-        # Auto-setup git repository FIRST (before instructions)
-        # This is important because instructions go to /workspace/CLAUDE.md
-        # and git clone requires empty directory
+        # Scaffold phase: copier + make setup + git push (replaces scaffolder service)
+        # Must run BEFORE git clone (scaffold creates the repo content and pushes it)
         repo_name = env_vars.get("REPO_NAME")
         github_token = env_vars.get("GITHUB_TOKEN")
-        if repo_name and github_token:
+
+        if scaffold_config and repo_name and github_token:
+            scaffold_ok = await self._run_scaffold_phase(
+                container_id, scaffold_config, repo_name, github_token, worker_id
+            )
+            if not scaffold_ok:
+                # Cleanup on failure
+                logger.error("scaffold_phase_failed_cleanup", worker_id=worker_id)
+                await self.delete_worker(worker_id)
+                raise RuntimeError(f"Scaffold phase failed for worker {worker_id}")
+            # After scaffold, workspace already has the repo — no need for git clone
+            # But we need to refresh the token in case it expired during scaffold
+            logger.info("scaffold_phase_done_skipping_clone", worker_id=worker_id)
+        elif repo_name and github_token:
+            # Normal path: clone existing repo
             if workspace_existed:
                 await self._refresh_git_token(container_id, repo_name, github_token, worker_id)
                 logger.info("workspace_reused", project_id=project_id, worker_id=worker_id)
@@ -679,4 +697,93 @@ git config user.email "ai@codegen.local"
             return False
 
         logger.info("git_repo_setup_complete", worker_id=worker_id, repo=repo)
+        return True
+
+    async def _run_scaffold_phase(
+        self,
+        container_id: str,
+        scaffold_config: "ScaffoldConfig",
+        repo: str,
+        token: str,
+        worker_id: str,
+    ) -> bool:
+        """Run copier + make setup + git push inside the worker container.
+
+        This replaces the old scaffolder service. Copier is installed via
+        `uv tool install copier` (cached in uv-cache volume after first run).
+
+        Args:
+            container_id: Docker container ID
+            scaffold_config: ScaffoldConfig with template, project name, modules
+            repo: Repository in "owner/repo" format
+            token: GitHub access token
+            worker_id: Worker ID for logging
+
+        Returns:
+            True if scaffold succeeded, False otherwise
+        """
+        logger.info(
+            "scaffold_phase_start",
+            worker_id=worker_id,
+            template=scaffold_config.template_repo,
+            project_name=scaffold_config.project_name,
+            modules=scaffold_config.modules,
+        )
+
+        # Build scaffold script (runs as worker user inside container)
+        scaffold_script = f"""set -e
+
+# Clone the repo (created via GitHub API with auto_init)
+cd /workspace
+git clone "https://x-access-token:{token}@github.com/{repo}" .tmp-clone
+# Move .git into workspace root (copier will overwrite files, not .git)
+mv .tmp-clone/.git /workspace/.git
+rm -rf .tmp-clone
+
+git config user.email "scaffolder@codegen.local"
+git config user.name "Scaffolder Bot"
+git config core.hooksPath /dev/null
+
+# Install copier via uv (cached after first run)
+uv tool install copier
+
+# Run copier to scaffold project
+copier copy {scaffold_config.template_repo} /workspace \
+    --data "project_name={scaffold_config.project_name}" \
+    --data "modules={scaffold_config.modules}" \
+    --data "task_description={scaffold_config.task_description}" \
+    --trust --defaults --overwrite --vcs-ref=HEAD
+
+# Setup project (install deps, generate code)
+cd /workspace
+make setup
+
+# Stage, commit, push
+git add .
+git commit --no-verify -m "feat: scaffold {scaffold_config.project_name} with modules: {scaffold_config.modules}" || true
+git push origin main
+
+# Re-enable hooks for the agent
+git config core.hooksPath .githooks
+"""
+
+        encoded = base64.b64encode(scaffold_script.encode()).decode()
+        cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"
+
+        exit_code, output = await self.docker.exec_in_container(
+            container_id,
+            cmd,
+            timeout=600,  # 10 min for copier + make setup
+        )
+
+        if exit_code != 0:
+            logger.error(
+                "scaffold_phase_failed",
+                worker_id=worker_id,
+                exit_code=exit_code,
+                error=output,
+            )
+            return False
+
+        logger.info("scaffold_phase_complete", worker_id=worker_id, repo=repo)
         return True

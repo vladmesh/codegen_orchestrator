@@ -15,6 +15,7 @@ from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
     DeleteWorkerCommand,
+    ScaffoldConfig,
     WorkerCapability,
     WorkerConfig,
 )
@@ -111,6 +112,7 @@ async def request_spawn(
     agents_content: str | None = None,
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
     project_id: str | None = None,
+    scaffold_config: ScaffoldConfig | None = None,
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 
@@ -160,6 +162,7 @@ async def request_spawn(
                     "REPO_NAME": repo,
                 },
                 project_id=project_id,
+                scaffold_config=scaffold_config,
             ),
             context={"source": "langgraph", "repo": repo, "project_id": project_id or ""},
         )

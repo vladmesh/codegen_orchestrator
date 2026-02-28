@@ -16,8 +16,6 @@ from shared.queues import (
     PROVISIONER_QUEUE,
     PROVISIONER_RESULTS,
     QUEUE_TOPOLOGY,
-    SCAFFOLDER_GROUP,
-    SCAFFOLDER_QUEUE,
     SCHEDULER_CONSUMER_GROUP,
     TELEGRAM_BOT_GROUP,
     WORKER_COMMANDS,
@@ -44,14 +42,13 @@ class TestQueueBinding:
 
 class TestQueueTopology:
     def test_has_expected_binding_count(self):
-        expected_count = 9  # noqa: PLR2004
+        expected_count = 8  # noqa: PLR2004
         assert len(QUEUE_TOPOLOGY) == expected_count
 
     def test_all_streams_present(self):
         streams = {b.stream for b in QUEUE_TOPOLOGY}
         assert ENGINEERING_QUEUE in streams
         assert DEPLOY_QUEUE in streams
-        assert SCAFFOLDER_QUEUE in streams
         assert PROVISIONER_QUEUE in streams
         assert PROVISIONER_RESULTS in streams
         assert WORKER_COMMANDS in streams
@@ -61,7 +58,6 @@ class TestQueueTopology:
     def test_all_groups_present(self):
         groups = {b.group for b in QUEUE_TOPOLOGY}
         assert WORKER_GROUP in groups
-        assert SCAFFOLDER_GROUP in groups
         assert INFRA_GROUP in groups
         assert SCHEDULER_CONSUMER_GROUP in groups
         assert TELEGRAM_BOT_GROUP in groups

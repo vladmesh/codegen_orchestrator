@@ -25,7 +25,6 @@ jobs:
       scheduler: ${{ steps.filter.outputs.scheduler }}
       telegram: ${{ steps.filter.outputs.telegram }}
       worker-manager: ${{ steps.filter.outputs.worker-manager }}
-      scaffolder: ${{ steps.filter.outputs.scaffolder }}
       cli: ${{ steps.filter.outputs.cli }}
       shared: ${{ steps.filter.outputs.shared }}
       packages: ${{ steps.filter.outputs.packages }}
@@ -48,8 +47,6 @@ jobs:
               - 'services/telegram_bot/**'
             worker-manager:
               - 'services/worker-manager/**'
-            scaffolder:
-              - 'services/scaffolder/**'
             cli:
               - 'packages/orchestrator-cli/**'
             shared:
@@ -103,8 +100,6 @@ jobs:
             changed: needs.detect-changes.outputs.cli
           - service: worker-wrapper
             changed: needs.detect-changes.outputs.packages
-          - service: scaffolder
-            changed: needs.detect-changes.outputs.scaffolder
           - service: shared
             changed: needs.detect-changes.outputs.shared
     steps:

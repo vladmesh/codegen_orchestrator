@@ -1,17 +1,19 @@
 """Unified Developer node.
 
-Waits for scaffolding completion (for new projects), then spawns a Claude Code
-worker to implement business logic. For feature/fix actions on existing projects,
-skips scaffolding and works directly with the existing repository.
+Spawns a Claude Code worker to implement business logic. For new projects
+(action=create), builds a ScaffoldConfig so the worker-manager runs copier +
+make setup inside the container. For feature/fix actions on existing projects,
+works directly with the existing repository.
 """
 
-import asyncio
 import os
+import re
 
 from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.queues.worker import ScaffoldConfig
 
 from ..clients.api import api_client
 from ..clients.worker_spawner import request_spawn
@@ -27,17 +29,16 @@ MAX_ERROR_MSG_LENGTH = 500
 class DeveloperNode(FunctionalNode):
     """Developer node - implements business logic in projects.
 
-    For new projects (action=create):
-        1. Wait for project status == 'scaffolded' (done by scaffolder service)
-        2. Spawn Claude Code worker to clone scaffolded repo
-        3. Implement business logic according to /home/worker/TASK.md
-        4. Commit and push changes
+    For new projects (action=create, status=scaffolding):
+        1. Build ScaffoldConfig from project spec
+        2. Spawn worker with scaffold_config (worker-manager runs copier + make setup)
+        3. Worker implements business logic according to /home/worker/TASK.md
+        4. Update project status to scaffolded
 
     For existing projects (action=feature/fix):
-        1. Skip scaffolding wait (repo already exists)
-        2. Spawn Claude Code worker to clone existing repo
-        3. Implement changes according to task description
-        4. Commit and push changes
+        1. Spawn Claude Code worker to clone existing repo
+        2. Implement changes according to task description
+        3. Commit and push changes
     """
 
     def __init__(self):
@@ -57,19 +58,19 @@ class DeveloperNode(FunctionalNode):
 
         if not project_spec:
             return {
-                "messages": [AIMessage(content="❌ No project specification found.")],
+                "messages": [AIMessage(content="No project specification found.")],
                 "engineering_status": "blocked",
                 "errors": state.get("errors", []) + ["No project specification"],
             }
 
         project_name = project_spec.get("name", "project")
         project_description = project_spec.get("description", "")
-        # Modules are stored in project.config.modules
         config = project_spec.get("config") or {}
         modules = config.get("modules", ["backend"])
 
         action = state.get("action", "create")
         feature_description = state.get("description")
+        project_id = project_spec.get("id")
 
         logger.info(
             "developer_node_start",
@@ -78,17 +79,19 @@ class DeveloperNode(FunctionalNode):
             action=action,
         )
 
-        # Handle scaffolding wait if needed
-        scaffold_result = await self._wait_for_scaffolding(project_spec, action, state)
-        if scaffold_result:
-            # If it returns a dict, it means error or updated project spec?
-            # Let's adjust the signature. If it returns a dict with "engineering_status",
-            # it's an error state.
-            # If it returns a project dict, it's successful update.
-            if "engineering_status" in scaffold_result:
-                return scaffold_result
-            # Otherwise it's the updated project_spec
-            project_spec = scaffold_result
+        # Build ScaffoldConfig for new projects in scaffolding status
+        scaffold_config = self._build_scaffold_config(project_spec, action)
+
+        # Refresh project spec if scaffolding (engineering worker just set repository_url)
+        if scaffold_config and project_id:
+            fresh = await api_client.get_project(project_id)
+            if fresh:
+                project_spec = fresh
+        elif action != "create" and project_id:
+            # Refresh project data for existing projects
+            fresh = await api_client.get_project(project_id)
+            if fresh:
+                project_spec = fresh
 
         try:
             # Determine repository details
@@ -116,7 +119,6 @@ class DeveloperNode(FunctionalNode):
             task_title = self._get_task_title(action, project_name)
 
             # Spawn worker to implement business logic
-            project_id = project_spec.get("id")
             worker_result = await request_spawn(
                 repo=repo_full_name,
                 github_token=access_token,
@@ -124,7 +126,27 @@ class DeveloperNode(FunctionalNode):
                 task_title=task_title,
                 timeout_seconds=Timeouts.WORKER_SPAWN,
                 project_id=project_id,
+                scaffold_config=scaffold_config,
             )
+
+            # Update project status based on scaffold result
+            if scaffold_config and project_id:
+                if worker_result.success:
+                    await api_client.patch(
+                        f"projects/{project_id}",
+                        json={"status": "scaffolded"},
+                    )
+                else:
+                    await api_client.patch(
+                        f"projects/{project_id}",
+                        json={"status": "scaffold_failed"},
+                    )
+                    error_msg = worker_result.error_message or "Scaffold phase failed"
+                    return {
+                        "messages": [AIMessage(content=f"Scaffolding failed: {error_msg}")],
+                        "engineering_status": "blocked",
+                        "errors": state.get("errors", []) + [f"Scaffold failed: {error_msg}"],
+                    }
 
             if worker_result.success:
                 if not worker_result.commit_sha:
@@ -136,7 +158,7 @@ class DeveloperNode(FunctionalNode):
                     return {
                         "messages": [
                             AIMessage(
-                                content=f"❌ Worker completed but made no commit"
+                                content=f"Worker completed but made no commit"
                                 f" in '{project_name}'."
                             )
                         ],
@@ -155,7 +177,7 @@ class DeveloperNode(FunctionalNode):
                 return {
                     "messages": [
                         AIMessage(
-                            content=f"✅ Project '{project_name}' developed successfully!\n\n"
+                            content=f"Project '{project_name}' developed successfully!\n\n"
                             f"Repository: https://github.com/{repo_full_name}\n"
                             f"Output:\n{worker_result.output[:500]}"
                         )
@@ -176,7 +198,7 @@ class DeveloperNode(FunctionalNode):
                 )
 
                 return {
-                    "messages": [AIMessage(content=f"❌ Development failed:\n{error_msg}")],
+                    "messages": [AIMessage(content=f"Development failed:\n{error_msg}")],
                     "engineering_status": "blocked",
                     "errors": state.get("errors", []) + [f"Development failed: {error_msg}"],
                 }
@@ -190,67 +212,46 @@ class DeveloperNode(FunctionalNode):
                 exc_info=True,
             )
             return {
-                "messages": [AIMessage(content=f"❌ Error in developer node: {str(e)}")],
+                "messages": [AIMessage(content=f"Error in developer node: {str(e)}")],
                 "engineering_status": "blocked",
                 "errors": state.get("errors", []) + [f"Developer error: {str(e)}"],
             }
 
-    async def _wait_for_scaffolding(
-        self, project_spec: dict, action: str, state: dict
-    ) -> dict | None:
-        """Wait for scaffolding completion if needed.
+    def _build_scaffold_config(self, project_spec: dict, action: str) -> ScaffoldConfig | None:
+        """Build ScaffoldConfig for new projects that need scaffolding.
 
-        Returns:
-            dict: Error state if failed/timeout.
-            dict: Updated project_spec if successful.
-            None: If waiting was not required or successful without update.
+        Returns ScaffoldConfig if scaffolding is needed, None otherwise.
         """
-        project_id = project_spec.get("id")
         project_status = project_spec.get("status", "draft")
 
-        if project_id and action == "create" and project_status in ("draft", "scaffolding"):
-            logger.info("waiting_for_scaffolding", project_id=project_id)
-            for attempt in range(30):  # 30 * 10s = 5 min
-                project = await api_client.get_project(project_id)
-                if project:
-                    status = project.get("status")
-                    if status == "scaffolded":
-                        logger.info("scaffolding_complete", project_id=project_id)
-                        return project  # Return updated spec
-                    if status == "scaffold_failed":
-                        logger.error("scaffolding_failed", project_id=project_id)
-                        return {
-                            "messages": [AIMessage(content="❌ Project scaffolding failed.")],
-                            "engineering_status": "blocked",
-                            "errors": state.get("errors", []) + ["Scaffolding failed"],
-                        }
-                if attempt > 0 and attempt % 6 == 0:
-                    logger.info(
-                        "waiting_for_scaffolding_progress", project_id=project_id, attempt=attempt
-                    )
-                await asyncio.sleep(10)
-            else:
-                logger.error("scaffolding_timeout", project_id=project_id)
-                return {
-                    "messages": [AIMessage(content="❌ Scaffolding timeout (5 min).")],
-                    "engineering_status": "blocked",
-                    "errors": state.get("errors", []) + ["Scaffolding timeout"],
-                }
+        if action != "create" or project_status != "scaffolding":
+            return None
 
-        elif action != "create":
-            logger.info(
-                "skipping_scaffolding_wait",
-                project_id=project_id,
-                action=action,
-                project_status=project_status,
-            )
-            # Refresh project data for existing projects
-            if project_id:
-                fresh_project = await api_client.get_project(project_id)
-                if fresh_project:
-                    return fresh_project
+        config = project_spec.get("config") or {}
+        modules = config.get("modules", ["backend"])
+        modules_str = ",".join(modules)
 
-        return None
+        # Sanitize project name for copier
+        project_name = project_spec.get("name", "project")
+        sanitized = project_name.lower().replace("_", "-").replace(" ", "-")
+        sanitized = re.sub(r"[^a-z0-9-]", "", sanitized)
+        sanitized = re.sub(r"-+", "-", sanitized).strip("-")
+        if not sanitized or not sanitized[0].isalpha():
+            sanitized = "project-" + sanitized
+
+        # Task description from config
+        task_description = config.get("description", "")
+        if not task_description:
+            task_description = config.get("detailed_spec", "")
+
+        template_repo = os.getenv("SERVICE_TEMPLATE_REPO", "gh:vladmesh/service-template")
+
+        return ScaffoldConfig(
+            template_repo=template_repo,
+            project_name=sanitized,
+            modules=modules_str,
+            task_description=task_description,
+        )
 
     def _determine_repository(self, project_spec: dict, project_name: str) -> dict:
         """Determine repository details (owner, name, full_name)."""

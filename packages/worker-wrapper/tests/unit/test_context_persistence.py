@@ -67,6 +67,7 @@ async def test_wrapper_saves_task_context_to_redis(fake_redis):
     # Mock execute_agent so we don't actually run anything
     wrapper.execute_agent = AsyncMock(return_value={"status": "success"})
     wrapper.publish_lifecycle = AsyncMock()
+    wrapper._git_pull = AsyncMock()
 
     # 2. Run
     await wrapper.run()
@@ -121,6 +122,7 @@ async def test_wrapper_publishes_error_to_output_stream_on_failure(fake_redis):
         side_effect=RuntimeError("Agent process timed out after 600 seconds")
     )
     wrapper.publish_lifecycle = AsyncMock()
+    wrapper._git_pull = AsyncMock()
 
     await wrapper.run()
 

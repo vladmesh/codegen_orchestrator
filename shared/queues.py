@@ -21,7 +21,6 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 DEPLOY_QUEUE = "deploy:queue"
 ENGINEERING_QUEUE = "engineering:queue"
-SCAFFOLDER_QUEUE = "scaffolder:queue"
 PROVISIONER_QUEUE = "provisioner:queue"
 PROVISIONER_RESULTS = "provisioner:results"
 WORKER_COMMANDS = "worker:commands"
@@ -33,7 +32,6 @@ PO_REMINDERS_KEY = "po:reminders"
 # Consumer group names
 # ---------------------------------------------------------------------------
 WORKER_GROUP = "capability-workers"
-SCAFFOLDER_GROUP = "scaffolder-workers"
 INFRA_GROUP = "infrastructure-workers"
 SCHEDULER_CONSUMER_GROUP = "scheduler-consumers"
 TELEGRAM_BOT_GROUP = "telegram-bot"
@@ -62,7 +60,6 @@ class QueueBinding:
 QUEUE_TOPOLOGY: list[QueueBinding] = [
     QueueBinding(ENGINEERING_QUEUE, WORKER_GROUP, "Engineering tasks"),
     QueueBinding(DEPLOY_QUEUE, WORKER_GROUP, "Deploy tasks"),
-    QueueBinding(SCAFFOLDER_QUEUE, SCAFFOLDER_GROUP, "Project scaffolding"),
     QueueBinding(PROVISIONER_QUEUE, INFRA_GROUP, "Server provisioning"),
     QueueBinding(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, "Provisioner results → scheduler"),
     QueueBinding(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, "Provisioner results → telegram-bot"),

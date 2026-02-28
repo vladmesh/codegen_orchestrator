@@ -23,8 +23,6 @@
 |-------|-------|-----|-----------|----------|---------|
 | `engineering:queue` | `capability-workers` | EngineeringMessage | PO ReactAgent | langgraph | Start development task |
 | `deploy:queue` | `capability-workers` | DeployMessage | PO ReactAgent | langgraph | Start deploy task |
-| `scaffolder:queue` | `scaffolder-workers` | ScaffolderMessage | langgraph | scaffolder | Scaffold project |
-| `scaffolder:results` | — | ScaffolderResult | scaffolder | langgraph | Scaffolder completion |
 
 ---
 
@@ -89,7 +87,6 @@
 | **worker-manager** | Service | Container lifecycle manager |
 | **worker-wrapper** | Process | Agent bridge inside container |
 | **telegram-bot** | Service | User interface |
-| **scaffolder** | Service | Project initialization |
 | **infra-service** | Service | Server provisioning only (no app deploy) |
 | **scheduler** | Service | Background tasks |
 
@@ -135,7 +132,7 @@ sequenceDiagram
     participant PO as PO ReactAgent
     participant API
     participant LG as langgraph
-    participant Scaff as scaffolder
+    participant WM as worker-manager
 
     User->>TG: "Сделай блог"
     TG->>Redis: XADD po:input {text, user_id, request_id}
@@ -154,11 +151,17 @@ sequenceDiagram
     Redis-->>LG: Consumer reads engineering:queue
     LG->>API: GET /api/projects/{id}
     API-->>LG: {status: CREATED, modules: [...]}
-    LG->>Redis: XADD scaffolder:queue {project_id, modules}
-    Redis-->>Scaff: Consumer reads
-    Scaff->>Scaff: copier + git push
-    Scaff->>API: PATCH /projects/{id} {status: SCAFFOLDED}
-    Note over LG: Polls or listens for status change
+    Note over LG: Engineering worker: _create_repo_and_set_secrets()
+    LG->>API: Create GitHub repo + set registry secrets
+    LG->>API: PATCH /projects/{id} {status: SCAFFOLDING}
+    Note over LG: Developer node builds ScaffoldConfig
+    LG->>Redis: XADD worker:commands {create, scaffold_config}
+    Redis-->>WM: Consumer reads worker:commands
+    WM->>WM: Create worker container
+    WM->>WM: docker exec: copier + make setup + git push
+    WM->>API: PATCH /projects/{id} {status: SCAFFOLDED}
+    WM->>Redis: XADD worker:responses:developer {ready}
+    Note over LG: Developer node sends task to worker
     LG->>LG: Continue to Developer node
 ```
 
@@ -250,7 +253,7 @@ async for msg in client.consume(
 
 | Mode | `auto_ack` | Use Case | Services |
 |------|-----------|----------|----------|
-| **Manual ACK** | `False` | At-least-once delivery, ack after successful processing | engineering-worker, deploy-worker, scaffolder, infra-service, worker-manager, scheduler |
+| **Manual ACK** | `False` | At-least-once delivery, ack after successful processing | engineering-worker, deploy-worker, infra-service, worker-manager, scheduler |
 | **Auto ACK** | `True` | Fire-and-forget, ack on read | telegram-bot (ProactiveListener, ProvisionerNotifier) |
 
 ### PEL Recovery
@@ -267,11 +270,10 @@ On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim
 | 2 | Deploy Worker | `workers/_base.py` | `deploy:queue` | manual | `claim_pending` | in `process_fn` |
 | 3 | PO Consumer | `po/consumer.py` | `po:input` | manual (finally) | `xautoclaim` | `TypeAdapter` |
 | 4 | Worker Manager | `worker-manager/consumer.py` | `worker:commands` | manual | `claim_pending` | `validate_python` |
-| 5 | Scaffolder | `scaffolder/main.py` | `scaffolder:queue` | manual | `claim_pending` | `model_validate` |
-| 6 | Infra Service | `infra-service/main.py` | `provisioner:queue` | manual | `claim_pending` | raw dict |
-| 7 | Scheduler | `scheduler/main.py` | `provisioner:results` | manual | `claim_pending` | `model_validate` |
-| 8 | Provisioner Notifier | `telegram_bot/notifications.py` | `provisioner:results` | auto | — | `model_validate` |
-| 9 | Proactive Listener | `telegram_bot/main.py` | `po:proactive` | auto | — | raw dict |
+| 5 | Infra Service | `infra-service/main.py` | `provisioner:queue` | manual | `claim_pending` | raw dict |
+| 6 | Scheduler | `scheduler/main.py` | `provisioner:results` | manual | `claim_pending` | `model_validate` |
+| 7 | Provisioner Notifier | `telegram_bot/notifications.py` | `provisioner:results` | auto | — | `model_validate` |
+| 8 | Proactive Listener | `telegram_bot/main.py` | `po:proactive` | auto | — | raw dict |
 
 ---
 
@@ -767,55 +769,6 @@ class WorkflowStatusEvent(BaseModel):
 
 ---
 
-## ScaffolderMessage
-
-**Queue:** `scaffolder:queue`  
-**Initiator:** langgraph (Engineering Subgraph)  
-**Consumer:** scaffolder
-
-```python
-# shared/contracts/queues/scaffolder.py
-
-class ScaffolderAction(str, Enum):
-    """Action type for scaffolder messages."""
-    CREATE = "create"
-    UPDATE = "update"
-
-
-class ScaffolderMessage(BaseMessage):
-    """
-    Scaffold or update project structure.
-
-    Responsibilities for CREATE:
-    1. Create remote repository (if not exists).
-    2. Generate .project.yml config.
-    3. Run copier template.
-    4. Push initial commit.
-
-    Responsibilities for UPDATE:
-    1. Clone existing repository.
-    2. Run copier update --defaults.
-    3. Commit and push changes.
-    """
-    action: ScaffolderAction = ScaffolderAction.CREATE
-    project_id: str
-    project_name: str
-    repo_full_name: str  # org/repo format, e.g. "vladmesh/my-project"
-    modules: list[ServiceModule] = []  # Not required for update action
-    task_description: str = ""  # Detailed task description for TASK.md
-
-
-class ScaffolderResult(BaseResult):
-    """
-    Scaffolder result.
-    Stream: scaffolder:results
-    """
-    project_id: str
-    repo_url: str
-    files_generated: int = 0
-```
-
-
 
 ---
 
@@ -867,7 +820,6 @@ class AgentType(str, Enum):
 class WorkerCapability(str, Enum):
     GIT = "git"
     GITHUB_CLI = "github_cli"
-    # Copier moved to dedicated service
     CURL = "curl"
     DOCKER = "docker"          # dind mount
 
@@ -1150,7 +1102,6 @@ shared/contracts/
     ├── __init__.py           # Re-exports PO contracts
     ├── engineering.py
     ├── deploy.py
-    ├── scaffolder.py
     ├── provisioner.py
     ├── workflow.py
     ├── worker.py

@@ -485,6 +485,120 @@ class TestCIInfraFailFast:
         mock_respawn.assert_awaited_once()
 
 
+class TestCreateRepoAndSetSecrets:
+    """Tests for _create_repo_and_set_secrets (replaced _trigger_scaffolding)."""
+
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch.dict(
+        "os.environ",
+        {
+            "GITHUB_ORG": "test-org",
+            "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+            "REGISTRY_USER": "admin",
+            "REGISTRY_PASSWORD": "secret",
+        },
+    )
+    async def test_happy_path(self, mock_gh_cls, mock_api):
+        """Creates repo, sets secrets, updates project status."""
+        from src.workers.engineering_worker import _create_repo_and_set_secrets
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+        mock_gh.create_repo = AsyncMock()
+        mock_gh.get_org_token = AsyncMock(return_value="ghs_token")
+        mock_gh.set_repository_secrets = AsyncMock(return_value=3)
+
+        project = {"id": "proj-1", "name": "My Project"}
+
+        await _create_repo_and_set_secrets(project)
+
+        # Repo was created
+        mock_gh.create_repo.assert_awaited_once_with(
+            org="test-org",
+            name="my-project",
+            description="Project: My Project",
+            private=True,
+        )
+
+        # Secrets were set
+        mock_gh.set_repository_secrets.assert_awaited_once()
+        secrets_arg = mock_gh.set_repository_secrets.call_args[0][2]
+        assert secrets_arg["REGISTRY_URL"] == "registry.example.com"
+        assert secrets_arg["REGISTRY_USER"] == "admin"
+        assert secrets_arg["REGISTRY_PASSWORD"] == "secret"  # noqa: S105
+
+        # Project status updated to scaffolding with repo URL
+        mock_api.patch.assert_called()
+        patch_calls = [c for c in mock_api.patch.call_args_list if "projects/" in str(c)]
+        assert any("scaffolding" in str(c) for c in patch_calls)
+
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch.dict(
+        "os.environ",
+        {
+            "GITHUB_ORG": "test-org",
+            "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+            "REGISTRY_USER": "admin",
+            "REGISTRY_PASSWORD": "secret",
+        },
+    )
+    async def test_repo_already_exists(self, mock_gh_cls, mock_api):
+        """Handles 'already exists' gracefully."""
+        from src.workers.engineering_worker import _create_repo_and_set_secrets
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+        mock_gh.create_repo = AsyncMock(side_effect=Exception("422: already exists"))
+        mock_gh.get_org_token = AsyncMock(return_value="ghs_token")
+        mock_gh.set_repository_secrets = AsyncMock(return_value=3)
+
+        project = {"id": "proj-1", "name": "existing-project"}
+
+        # Should not raise
+        await _create_repo_and_set_secrets(project)
+
+        # Secrets still set
+        mock_gh.set_repository_secrets.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch.dict("os.environ", {"GITHUB_ORG": "test-org"}, clear=False)
+    async def test_missing_registry_env_warns(self, mock_gh_cls, mock_api):
+        """Missing registry env vars logs warning but doesn't fail."""
+        import os
+
+        from src.workers.engineering_worker import _create_repo_and_set_secrets
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+        mock_gh.create_repo = AsyncMock()
+
+        # Clear registry env vars
+        env = os.environ.copy()
+        for key in ("ORCHESTRATOR_HOSTNAME", "REGISTRY_USER", "REGISTRY_PASSWORD"):
+            env.pop(key, None)
+
+        project = {"id": "proj-1", "name": "test"}
+
+        with patch.dict("os.environ", env, clear=True):
+            await _create_repo_and_set_secrets(project)
+
+        # Repo still created, but set_repository_secrets NOT called
+        mock_gh.create_repo.assert_awaited_once()
+        mock_gh.set_repository_secrets.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_github_org_raises(self, mock_api):
+        """Raises RuntimeError when GITHUB_ORG is not set."""
+        from src.workers.engineering_worker import _create_repo_and_set_secrets
+
+        with patch.dict("os.environ", {}, clear=True):
+            with pytest.raises(RuntimeError, match="GITHUB_ORG"):
+                await _create_repo_and_set_secrets({"id": "p1", "name": "x"})
+
+
 class TestRespawnDeveloperForCIFix:
     """Tests for _respawn_developer_for_ci_fix internals."""
 

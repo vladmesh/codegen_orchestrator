@@ -28,7 +28,7 @@ class RedisPublisher:
         """Publish message to a Redis Stream.
 
         Args:
-            stream: Stream name (e.g., "scaffolder:queue")
+            stream: Stream name (e.g., "engineering:queue")
             data: JSON string payload
 
         Returns:

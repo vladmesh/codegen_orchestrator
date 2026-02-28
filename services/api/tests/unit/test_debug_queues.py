@@ -27,12 +27,6 @@ def mock_redis():
                 "last-delivered-id": "1-0",
             },
             {
-                "name": "scaffolder-workers",
-                "consumers": 1,
-                "pending": 3,
-                "last-delivered-id": "2-0",
-            },
-            {
                 "name": "infrastructure-workers",
                 "consumers": 1,
                 "pending": 0,
@@ -128,12 +122,6 @@ async def test_debug_queues_high_pending(mock_redis):
                 "consumers": 2,
                 "pending": 150,
                 "last-delivered-id": "1-0",
-            },
-            {
-                "name": "scaffolder-workers",
-                "consumers": 1,
-                "pending": 0,
-                "last-delivered-id": "2-0",
             },
             {
                 "name": "infrastructure-workers",

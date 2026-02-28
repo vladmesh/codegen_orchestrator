@@ -67,7 +67,6 @@ run_tests "api"            "services/api/tests/unit"            "$ROOT/services/
 run_tests "langgraph"      "services/langgraph/tests/unit"      "$ROOT/services/langgraph"
 run_tests "telegram_bot"   "services/telegram_bot/tests/unit"   "$ROOT/services/telegram_bot"
 run_tests "scheduler"      "services/scheduler/tests/unit"      "$ROOT/services/scheduler"
-run_tests "scaffolder"     "services/scaffolder/tests/unit"     "$ROOT/services/scaffolder"
 run_tests "worker-manager" "services/worker-manager/tests/unit" "$ROOT/services/worker-manager"
 run_tests "infra-service"  "services/infra-service/tests/unit"  "$ROOT/services/infra-service"
 

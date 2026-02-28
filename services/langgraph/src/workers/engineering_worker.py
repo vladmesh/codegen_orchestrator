@@ -9,18 +9,16 @@ from datetime import UTC, datetime
 import os
 import re
 from typing import TYPE_CHECKING
-import uuid
 
 import structlog
 
 if TYPE_CHECKING:
     from shared.clients.github import GitHubAppClient
 
-from shared.contracts.dto.project import ProjectStatus, ServiceModule
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.task import TaskStatus, TaskType
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
-from shared.contracts.queues.scaffolder import ScaffolderMessage
-from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLDER_QUEUE
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
@@ -360,15 +358,21 @@ async def _record_ci_attempts(task_id: str, ci_attempts: list[dict]) -> None:
         logger.warning("ci_attempts_record_failed", task_id=task_id, error=str(e))
 
 
-async def _trigger_scaffolding(project: dict, redis: RedisStreamClient) -> None:
-    """Trigger scaffolding for a project in draft status.
+EXPECTED_REGISTRY_SECRETS_COUNT = 3
 
-    Sends ScaffolderMessage to scaffolder:queue and updates project status.
+
+async def _create_repo_and_set_secrets(project: dict) -> None:
+    """Create GitHub repo and set registry secrets for a draft project.
+
+    Replaces the old scaffolder queue approach: repo creation and secret
+    setup happen inline, while copier + make setup are deferred to
+    worker-manager's scaffold phase.
     """
+    from shared.clients.github import GitHubAppClient
+
     project_id = project["id"]
     project_name = project.get("name", project_id)
 
-    # Get GITHUB_ORG for repo name
     org_name = os.getenv("GITHUB_ORG")
     if not org_name:
         raise RuntimeError("GITHUB_ORG environment variable is not set")
@@ -381,52 +385,70 @@ async def _trigger_scaffolding(project: dict, redis: RedisStreamClient) -> None:
         repo_name = project_id[:8]
     repo_full_name = f"{org_name}/{repo_name}"
 
-    # Get modules from project config
-    project_config = project.get("config") or {}
-    modules_list = project_config.get("modules", ["backend"])
+    github_client = GitHubAppClient()
 
-    # Convert to ServiceModule enum
-    service_modules = []
-    for mod in modules_list:
-        try:
-            service_modules.append(ServiceModule(mod))
-        except ValueError:
-            logger.warning("unknown_module_skipped", module=mod)
-    if not service_modules:
-        service_modules = [ServiceModule.BACKEND]
+    # Step 1: Create repository (idempotent — handles "already exists")
+    logger.info("creating_repo", org=org_name, repo=repo_name)
+    try:
+        await github_client.create_repo(
+            org=org_name,
+            name=repo_name,
+            description=f"Project: {project_name}",
+            private=True,
+        )
+        logger.info("repo_created", repo=repo_full_name)
+    except Exception as e:
+        error_str = str(e).lower()
+        if "already exists" in error_str or "422" in error_str:
+            logger.info("repo_already_exists", repo=repo_full_name)
+        else:
+            raise
 
-    # Get task description
-    task_description = project_config.get("description", "")
-    if not task_description:
-        task_description = project_config.get("detailed_spec", "")
+    # Step 2: Set registry secrets so CI can push Docker images
+    registry_url = os.getenv("ORCHESTRATOR_HOSTNAME")
+    registry_user = os.getenv("REGISTRY_USER")
+    registry_password = os.getenv("REGISTRY_PASSWORD")
 
-    # Build scaffolder message
-    scaffolder_msg = ScaffolderMessage(
-        request_id=str(uuid.uuid4()),
-        project_id=project_id,
-        project_name=project_name,
-        repo_full_name=repo_full_name,
-        modules=service_modules,
-        task_description=task_description,
-    )
+    if all([registry_url, registry_user, registry_password]):
+        token = await github_client.get_org_token(org_name)
+        count = await github_client.set_repository_secrets(
+            org_name,
+            repo_name,
+            {
+                "REGISTRY_URL": registry_url,
+                "REGISTRY_USER": registry_user,
+                "REGISTRY_PASSWORD": registry_password,
+            },
+            token=token,
+        )
+        if count < EXPECTED_REGISTRY_SECRETS_COUNT:
+            logger.warning(
+                "registry_secrets_incomplete",
+                expected=EXPECTED_REGISTRY_SECRETS_COUNT,
+                actual=count,
+            )
+    else:
+        logger.warning(
+            "registry_secrets_env_missing",
+            has_url=bool(registry_url),
+            has_user=bool(registry_user),
+            has_password=bool(registry_password),
+        )
 
-    # Send to scaffolder queue
-    await redis.redis.xadd(
-        SCAFFOLDER_QUEUE,
-        {"data": scaffolder_msg.model_dump_json()},
-    )
-
-    # Update project status to scaffolding
+    # Step 3: Update project status and repository URL
+    repo_url = f"https://github.com/{repo_full_name}"
     await api_client.patch(
         f"projects/{project_id}",
-        json={"status": ProjectStatus.SCAFFOLDING.value},
+        json={
+            "status": ProjectStatus.SCAFFOLDING.value,
+            "repository_url": repo_url,
+        },
     )
 
     logger.info(
-        "scaffolding_triggered",
+        "repo_created_and_secrets_set",
         project_id=project_id,
         repo_full_name=repo_full_name,
-        modules=[m.value for m in service_modules],
     )
 
 
@@ -511,9 +533,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             )
             return {"status": "failed", "error": error_msg}
 
-        # Trigger scaffolding only for new project creation on draft projects
+        # Create repo and set secrets for new project creation on draft projects
         if project_status == "draft" and action == "create":
-            await _trigger_scaffolding(project, redis)
+            await _create_repo_and_set_secrets(project)
         elif project_status == "draft" and action != "create":
             logger.warning(
                 "feature_fix_on_draft_project",
@@ -745,7 +767,7 @@ async def _handle_engineering_success(
         commit_sha=result.get("commit_sha"),
     )
 
-    # --- Refresh project before CI check (scaffolder may have updated repo_url) ---
+    # --- Refresh project before CI check (repo_url may have been updated) ---
     fresh_project = await api_client.get_project(project_id)
     if fresh_project:
         project = fresh_project

@@ -15,7 +15,7 @@
 Сервис становится consumer'ом только в контексте конкретной очереди:
 - `langgraph` — consumer для `engineering:queue`, `deploy:queue`
 - `infra-service` — consumer для `provisioner:queue` (provisioning only)
-- `scaffolder` — consumer для `scaffolder:queue`
+- `worker-manager` — consumer для `worker:commands`
 - `worker-wrapper` — consumer для `worker:*:input` (внутри контейнера воркера)
 
 > **Важно:** Не путайте с именем сервиса. Нет сервиса `engineering-consumer` — есть сервис `langgraph`, который является consumer'ом очереди `engineering:queue`.
@@ -133,7 +133,6 @@ Redis Stream для асинхронной обработки. Consumer чита
 **Очереди:**
 - `engineering:queue` — задачи на разработку
 - `deploy:queue` — задачи на деплой
-- `scaffolder:queue` — scaffolding проектов
 - `provisioner:queue` — провизия серверов
 
 

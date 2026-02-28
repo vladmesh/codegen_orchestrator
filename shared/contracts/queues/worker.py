@@ -14,7 +14,6 @@ class AgentType(str, Enum):
 class WorkerCapability(str, Enum):
     GIT = "git"
     GITHUB_CLI = "github_cli"
-    # Copier moved to dedicated service
     CURL = "curl"
 
 
@@ -28,6 +27,15 @@ class WorkerChannels(str, Enum):
     # Patterns
     INPUT_PATTERN = "worker:{worker_id}:input"
     OUTPUT_PATTERN = "worker:{worker_id}:output"
+
+
+class ScaffoldConfig(BaseModel):
+    """Configuration for scaffolding a new project via copier."""
+
+    template_repo: str  # "gh:vladmesh/service-template"
+    project_name: str  # sanitized name for copier
+    modules: str  # "backend,tg_bot"
+    task_description: str = ""
 
 
 class WorkerConfig(BaseModel):
@@ -45,6 +53,7 @@ class WorkerConfig(BaseModel):
     host_claude_dir: str | None = None
     api_key: str | None = None
     project_id: str | None = None  # Project ID for workspace persistence
+    scaffold_config: ScaffoldConfig | None = None  # Scaffold phase config (copier + make setup)
 
 
 class CreateWorkerCommand(QueueMeta):
