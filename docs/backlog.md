@@ -1,6 +1,6 @@
 # Backlog
 
-> **Актуально на**: 2026-02-25
+> **Актуально на**: 2026-03-01
 
 Мы используем итеративный подход. Этот бэклог консолидирует задачи из предыдущих аудитов, брейнштормов и планов. Приоритет отдан архитектуре, стабильности процессов разработки и закрытию техдолга (DevEx). Продуктовые фичи вынесены в конец.
 
@@ -35,28 +35,20 @@
 **Проблема**: CI собирает и пушит образы в GitHub Container Registry даже если тесты упали. Тесты идут 10+ минут последовательно.
 **Задачи**:
 - Включить Branch Protection.
-- Разделить CI на PR (только выполнение тестов и билд для проверки, без пуша) и Publish (на `main`).
+- ~~Разделить CI на PR (только выполнение тестов и билд для проверки, без пуша) и Publish (на `main`).~~ → ✅ Done
 - Запускать интеграционные тесты параллельно (Github Actions matrix).
 
 ### 5. ~~Queue Contract Enforcement~~ → ✅ Done
 > Объединено с #3. См. [redis-streams-unification.md](plans/redis-streams-unification.md).
 
-### 6. Migrate Pre-push Tests from Docker to Local venv
-**Проблема**: Pre-push hook гоняет юнит-тесты в Docker-контейнерах (build image + install deps + run). Это добавляет минуты overhead на каждый пуш, хотя юнит-тесты не требуют изоляции.
-**Контекст**: 5 из 8 сервисов уже работают локально из `.venv`. Три (scheduler, telegram, worker-manager) падают из-за `from src.` импортов — они завязаны на `PYTHONPATH` внутри Docker.
-**Задачи**:
-- Перевести scheduler, telegram_bot, worker-manager на editable install (как api, langgraph, packages) чтобы `from src.` импорты работали локально.
-- Переписать `make test-unit` / pre-push hook на локальный запуск через `.venv/bin/pytest`.
-- Docker оставить только для integration тестов (где реально нужны Postgres/Redis).
-- Ожидаемый результат: pre-push с ~3 минут до ~15 секунд.
+### 6. ~~Migrate Pre-push Tests from Docker to Local venv~~ → ✅ Done
+> Реализовано скриптом локального запуска в pre-push hook.
 
-### 7. Security Audit: Server Provisioning & Deploy
-**Документы**: `docs/backlog.md`
-**Проблема**: Деплой от рута, незакрытые порты, отсутствие удаляющего cleanup.
+### 7. Security Audit: Project Deploy Cleanup
+**Проблема**: Отсутствие удаляющей очистки после деплоев.
 **Задачи**:
-- Создать пользователя `deploy` без root прав. Ограничить SSH.
-- Включить firewall, sshd hardening, fail2ban через ansible security роль.
 - Очищать зависшие контейнеры / образы после окончания деплоев проекта (`docker image prune`).
+> *Часть с пользователем `deploy`, SSH hardening, fail2ban и UFW уже выполнена в ansible ролях.*
 
 ---
 
@@ -101,16 +93,8 @@
 
 ---
 
-### 14. Contract Consistency Improvements (Остаток #3+#5)
-**Документы**: [redis-streams-unification.md](plans/redis-streams-unification.md) → «Остаточные замечания»
-**Проблема**: После унификации consumer'ов остались мелкие несоответствия — часть publish-вызовов идёт через raw `redis.xadd`, а не через `client.publish_flat()`; несколько consumer'ов не валидируют входящие данные Pydantic-контрактом.
-**Задачи**:
-- ProactiveListener — добавить `POProactiveMessage` валидацию на consume
-- Infra Service consumer — добавить `ProvisionerMessage.model_validate()` на consume
-- Telegram bot PO publish — перевести с raw `redis.xadd` на `client.publish_flat()`
-- Reminders publish — перевести с raw `redis.xadd` на `client.publish_flat()`
-- PO tools `trigger_engineering` — перевести с raw `redis.xadd` на `client.publish_message()`
-- Infra service result publish — перевести на `client.publish_message()`
+### 14. ~~Contract Consistency Improvements (Остаток #3+#5)~~ → ✅ Done
+> Вызовы `redis.xadd` заменены на `client.publish_message()`, pydantic контракты внедрены.
 
 ---
 
@@ -122,3 +106,6 @@
 - **PO ReactAgent без контейнера**: Done. Переход на API-based ReactAgent завершен.
 - **Dev Environment Docker-in-Docker Migration**: Фазы 1-4 завершены. (В планах осталось только E2E тестирование).
 - **Redis Streams: PEL Recovery & Consumer Unification (#3+#5)**: Done. 9 consumer'ов переведены на `RedisStreamClient.consume()` с PEL recovery. Pydantic контракты на все очереди. См. [redis-streams-unification.md](plans/redis-streams-unification.md).
+- **Pre-push Tests to Local venv (#6)**: Done. Интегрирован быстрый локальный pytest скрипт без Docker overhead.
+- **Security Audit Base (#7)**: Done. Пароли отключены, deploy юзер создан, fail2ban/UFW настроены.
+- **Contract Consistency (#14)**: Done. Избавились от сырых вызовов `xadd` в пользу методов клиента.
