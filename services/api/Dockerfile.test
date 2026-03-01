@@ -18,7 +18,7 @@ COPY services/api/pyproject.toml ./
 # Install runtime + test dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install . && \
-    pip install pytest pytest-asyncio pytest-cov httpx respx rich typer fakeredis makefun
+    pip install pytest pytest-asyncio pytest-cov httpx respx rich typer "fakeredis>=2.34.1" makefun
 
 # === Test Stage ===
 FROM test-deps AS test

@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     pytest \
     pytest-asyncio \
     respx \
-    fakeredis \
+    "fakeredis>=2.34.1" \
     structlog \
     -e /app/shared \
     -e /app/packages/worker-wrapper

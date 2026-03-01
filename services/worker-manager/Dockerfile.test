@@ -20,7 +20,7 @@ COPY services/worker-manager/pyproject.toml ./
 # Install service + test dependencies (shared is installed later in test stage)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install . && \
-    pip install pytest pytest-asyncio pytest-cov httpx docker fakeredis
+    pip install pytest pytest-asyncio pytest-cov httpx docker "fakeredis>=2.34.1"
 
 # === Test Stage ===
 FROM test-deps AS test

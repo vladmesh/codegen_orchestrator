@@ -15,7 +15,7 @@ dev = [
     "mypy>=1.13.0",
     "httpx",
     "respx>=0.21.1",
-    "fakeredis>=2.0.0",
+    "fakeredis>=2.34.1",
     "makefun",
     "copier>=9.4.0",
     # Workspace members (all services + packages)

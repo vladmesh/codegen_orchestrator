@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install uv
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system "pytest" "pytest-asyncio" "pytest-mock" "fakeredis"
+    uv pip install --system "pytest" "pytest-asyncio" "pytest-mock" "fakeredis>=2.34.1"
 
 # Copy and install service + shared
 COPY services/infra-service/pyproject.toml /app/services/infra-service/

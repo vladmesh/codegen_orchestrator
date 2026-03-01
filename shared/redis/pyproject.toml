@@ -15,6 +15,6 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "fakeredis>=2.0.0",
+    "fakeredis>=2.34.1",
     "pytest-asyncio",
 ]

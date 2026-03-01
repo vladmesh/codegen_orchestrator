@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     pytest-asyncio \
     respx \
     freezegun \
-    fakeredis \
+    "fakeredis>=2.34.1" \
     -e /app/shared \
     -e /app/packages/orchestrator-cli
 
