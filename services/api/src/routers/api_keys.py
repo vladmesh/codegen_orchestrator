@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.crypto import SecretsCipher
 from shared.models import APIKey
 
 from ..database import get_async_session
@@ -33,8 +34,7 @@ async def create_api_key(
     else:
         key_value = str(key_in.value)
 
-    # TODO: Add real encryption here
-    encrypted_value = key_value
+    encrypted_value = SecretsCipher().encrypt(key_value)
 
     if existing_key:
         existing_key.key_enc = encrypted_value
@@ -69,8 +69,7 @@ async def get_api_key(
     if not api_key:
         raise HTTPException(status_code=404, detail="API Key not found")
 
-    # TODO: Add real decryption here
-    decrypted_value = api_key.key_enc
+    decrypted_value = SecretsCipher().decrypt(api_key.key_enc)
 
     try:
         return {"value": json.loads(decrypted_value)}

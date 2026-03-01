@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.crypto import SecretsCipher
 from shared.models import PortAllocation, Server, ServiceDeployment, User
 from shared.models.server import ServerStatus
 from shared.models.service_deployment import DeploymentStatus
@@ -63,8 +64,7 @@ async def create_server(
             detail="Server with this handle already exists",
         )
 
-    # TODO: Encrypt ssh_key
-    ssh_key_encrypted = server_in.ssh_key  # Mock encryption
+    ssh_key_encrypted = SecretsCipher().encrypt(server_in.ssh_key) if server_in.ssh_key else None
 
     server = Server(
         handle=server_in.handle,
