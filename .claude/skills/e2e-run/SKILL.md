@@ -189,10 +189,10 @@ Save `TASK_ID`.
 
 ### Step 3: Verify scaffold started (CRITICAL — do immediately!)
 
-Wait 15 seconds, then check worker-manager logs:
+Wait 20 seconds, then check worker-manager logs:
 
 ```bash
-sleep 15
+sleep 20
 docker compose logs worker-manager --tail=30 --since=60s 2>&1 | grep -E "scaffold|copier|creating_worker"
 ```
 
@@ -210,6 +210,55 @@ docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$PROJECT_NAME" | xa
 ### Step 4: Monitor
 
 Poll based on level. Print status updates every check.
+
+**Worker log checks**: During polling, periodically check worker container logs to understand
+what the agent is doing (especially useful for long waits):
+
+```bash
+# Check worker progress (find container name from Step 3 logs)
+docker logs worker-dev-$PROJECT_NAME_SLUG-* --tail=10 2>&1
+# Also check engineering-worker for subgraph-level events
+docker compose logs engineering-worker --tail=10 --since=120s 2>&1 | grep -v "health"
+```
+
+**Level B CI fix tracking**: The worker may go through multiple CI fix cycles (push → CI fail →
+fix → push). Track each cycle by fetching all CI runs and commits when the task completes or
+when you need to understand progress:
+
+```bash
+ORG="project-factory-organization"
+docker compose exec -T langgraph python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+import httpx
+
+async def main():
+    gh = GitHubAppClient()
+    token = await gh.get_org_token('$ORG')
+    async with httpx.AsyncClient() as http:
+        # All commits
+        r = await http.get(
+            'https://api.github.com/repos/$ORG/$PROJECT_NAME/commits?per_page=10',
+            headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
+        )
+        print('=== Commits ===')
+        for c in r.json():
+            msg = c['commit']['message'].split(chr(10))[0]
+            print(f'{c[\"sha\"][:8]} {c[\"commit\"][\"author\"][\"date\"]} {msg}')
+        # All CI runs
+        r = await http.get(
+            'https://api.github.com/repos/$ORG/$PROJECT_NAME/actions/runs?per_page=10',
+            headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
+        )
+        print('=== CI Runs ===')
+        for run in r.json().get('workflow_runs', []):
+            print(f'Run #{run[\"id\"]}: status={run[\"status\"]}, conclusion={run.get(\"conclusion\")}, created={run[\"created_at\"]}')
+
+asyncio.run(main())
+" 2>/dev/null
+```
+
+This data is essential for the report — include each CI fix attempt in the Timeline.
 
 **Level A** — poll GitHub for code (don't wait for task completion):
 
@@ -482,3 +531,24 @@ Total: X passed, Y failed out of Z tests
 - If scaffold is skipped, abort that specific test but continue to the next test in batch.
 - If the API is unreachable, STOP everything — the stack is down.
 - Always attempt cleanup even if the test failed (unless --no-cleanup).
+
+## Abort & Collect (manual interruption)
+
+If the user asks to stop a running test early ("тормози", "stop", "abort"), follow this procedure:
+
+1. **Kill the worker container** immediately:
+   ```bash
+   docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$PROJECT_NAME" | xargs -r docker rm -f
+   ```
+
+2. **Stop the background poller** (if running via `run_in_background`).
+
+3. **Collect data** — run Steps 5-6 as normal (verify repo state, fetch audit report, fetch
+   commits and CI runs). The repo likely has partial results that are still valuable.
+
+4. **Write the report** (Step 7) with status "Failed (aborted manually)" and document:
+   - How far the worker got (commits pushed, CI attempts)
+   - Why the test was aborted
+   - Any findings from partial results
+
+5. **Cleanup** (Step 8) as normal unless the user says `--no-cleanup`.
