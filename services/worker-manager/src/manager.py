@@ -557,6 +557,13 @@ class WorkerManager:
         github_token = env_vars.get("GITHUB_TOKEN")
 
         if scaffold_config and repo_name and github_token:
+            logger.info(
+                "scaffold_phase_entering",
+                worker_id=worker_id,
+                template=scaffold_config.template_repo,
+                project_name=scaffold_config.project_name,
+                modules=scaffold_config.modules,
+            )
             scaffold_ok = await self._run_scaffold_phase(
                 container_id, scaffold_config, repo_name, github_token, worker_id
             )
@@ -565,11 +572,44 @@ class WorkerManager:
                 logger.error("scaffold_phase_failed_cleanup", worker_id=worker_id)
                 await self.delete_worker(worker_id)
                 raise RuntimeError(f"Scaffold phase failed for worker {worker_id}")
-            # After scaffold, workspace already has the repo — no need for git clone
-            # But we need to refresh the token in case it expired during scaffold
-            logger.info("scaffold_phase_done_skipping_clone", worker_id=worker_id)
+
+            # Verify scaffold produced expected markers
+            verify_cmd = (
+                "bash -c '"
+                "test -f /workspace/.copier-answers.yml "
+                "&& test -d /workspace/.github/workflows "
+                "&& echo SCAFFOLD_OK || echo SCAFFOLD_MISSING'"
+            )
+            exit_code, marker_output = await self.docker.exec_in_container(container_id, verify_cmd, timeout=10)
+            if isinstance(marker_output, bytes):
+                marker_output = marker_output.decode()
+            marker_output = marker_output.strip()
+            if marker_output != "SCAFFOLD_OK":
+                logger.error(
+                    "scaffold_markers_missing_after_scaffold",
+                    worker_id=worker_id,
+                    marker_check=marker_output,
+                    hint="copier ran but did not produce .copier-answers.yml or .github/workflows/",
+                )
+                await self.delete_worker(worker_id)
+                raise RuntimeError(
+                    f"Scaffold markers missing after scaffold phase for worker {worker_id}. "
+                    "copier may have failed silently."
+                )
+
+            logger.info(
+                "scaffold_phase_verified",
+                worker_id=worker_id,
+                markers="copier-answers + github-workflows present",
+            )
         elif repo_name and github_token:
-            # Normal path: clone existing repo
+            # Normal path: clone existing repo (feature/fix actions)
+            logger.info(
+                "scaffold_phase_skipped",
+                worker_id=worker_id,
+                reason="no scaffold_config — existing repo will be cloned",
+                has_scaffold_config=scaffold_config is not None,
+            )
             if workspace_existed:
                 await self._refresh_git_token(container_id, repo_name, github_token, worker_id)
                 logger.info("workspace_reused", project_id=project_id, worker_id=worker_id)

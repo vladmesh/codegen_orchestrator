@@ -82,6 +82,38 @@ class DeveloperNode(FunctionalNode):
         # Build ScaffoldConfig for new projects in scaffolding status
         scaffold_config = self._build_scaffold_config(project_spec, action)
 
+        # HARD FAIL: action=create + status=draft means scaffold was supposed to run
+        # but didn't (stale in-memory project dict). Refuse to spawn on empty repo.
+        # status=scaffolded/developing/deployed → scaffold already ran, proceed normally.
+        if action == "create" and scaffold_config is None:
+            project_status = project_spec.get("status", "unknown")
+            if project_status == "draft":
+                logger.error(
+                    "scaffold_required_but_missing",
+                    project_name=project_name,
+                    project_status=project_status,
+                    action=action,
+                    hint="action=create + status='draft' means the project dict was not "
+                    "refreshed after _create_repo_and_set_secrets() set DB status "
+                    "to 'scaffolding'. This is a bug in engineering_worker.",
+                )
+                return {
+                    "messages": [
+                        AIMessage(
+                            content="FATAL: action=create but project status is still 'draft'. "
+                            "Scaffold phase cannot trigger — refusing to spawn worker on empty "
+                            "repo. Check that engineering_worker refreshes the project dict "
+                            "after _create_repo_and_set_secrets()."
+                        )
+                    ],
+                    "engineering_status": "blocked",
+                    "errors": state.get("errors", [])
+                    + [
+                        "Scaffold required but project status is 'draft' "
+                        "(expected 'scaffolding'). Stale project_spec in state."
+                    ],
+                }
+
         # Refresh project spec if scaffolding (engineering worker just set repository_url)
         if scaffold_config and project_id:
             fresh = await api_client.get_project(project_id)
@@ -225,6 +257,15 @@ class DeveloperNode(FunctionalNode):
         project_status = project_spec.get("status", "draft")
 
         if action != "create" or project_status != "scaffolding":
+            logger.info(
+                "scaffold_config_decision",
+                result="skip",
+                action=action,
+                project_status=project_status,
+                reason="action != 'create'"
+                if action != "create"
+                else f"project_status='{project_status}' != 'scaffolding'",
+            )
             return None
 
         config = project_spec.get("config") or {}
@@ -245,6 +286,16 @@ class DeveloperNode(FunctionalNode):
             task_description = config.get("detailed_spec", "")
 
         template_repo = os.getenv("SERVICE_TEMPLATE_REPO", "gh:vladmesh/service-template")
+
+        logger.info(
+            "scaffold_config_decision",
+            result="will_scaffold",
+            action=action,
+            project_status=project_status,
+            template=template_repo,
+            project_name=sanitized,
+            modules=modules_str,
+        )
 
         return ScaffoldConfig(
             template_repo=template_repo,

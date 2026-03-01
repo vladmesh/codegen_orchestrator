@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import subprocess
 from typing import Any
 
@@ -98,7 +99,27 @@ class WorkerWrapper:
         if prompt:
             self._write_task_md(prompt)
 
-        # 3. Execute
+        # 3. Pre-flight: verify workspace has project files (not just README)
+        workspace_ok, workspace_detail = self._check_workspace_ready()
+        if not workspace_ok:
+            logger.error(
+                "workspace_preflight_failed",
+                detail=workspace_detail,
+                hint="Workspace appears empty — scaffold phase likely failed or was skipped. "
+                "Refusing to launch agent to avoid wasting credits.",
+            )
+            result = None
+            error = f"Workspace pre-flight failed: {workspace_detail}"
+            status = "failed"
+            await self.redis.publish(
+                self.config.output_stream,
+                {"status": "failed", "error": error},
+            )
+            await self.publish_lifecycle(status, msg_id, result=result, error=error)
+            return
+        logger.info("workspace_preflight_passed", detail=workspace_detail)
+
+        # 4. Execute
         try:
             result = await self.execute_agent(data)
             status = "completed"
@@ -120,6 +141,48 @@ class WorkerWrapper:
 
         # 5. Lifecycle: Completed/Failed
         await self.publish_lifecycle(status, msg_id, result=result, error=error)
+
+    def _check_workspace_ready(self) -> tuple[bool, str]:
+        """Check that workspace has real project files, not just an empty repo.
+
+        Returns (ok, detail) — detail is a human-readable summary for logging.
+        Only checks when WORKSPACE_DIR exists (inside a container). Outside
+        containers (tests), skips gracefully.
+        """
+        if not os.path.isdir(WORKSPACE_DIR):
+            return True, "workspace dir does not exist (not in container, skipping check)"
+
+        marker = os.path.join(WORKSPACE_DIR, ".copier-answers.yml")
+        makefile = os.path.join(WORKSPACE_DIR, "Makefile")
+        services_dir = os.path.join(WORKSPACE_DIR, "services")
+
+        has_copier = os.path.isfile(marker)
+        has_makefile = os.path.isfile(makefile)
+        has_services = os.path.isdir(services_dir)
+
+        # List top-level entries for diagnostics
+        try:
+            entries = sorted(os.listdir(WORKSPACE_DIR))
+            visible = [
+                e
+                for e in entries
+                if not e.startswith(".") or e in (".copier-answers.yml", ".github")
+            ]
+        except OSError:
+            return False, "workspace directory is unreadable"
+
+        detail = (
+            f"files={visible}, "
+            f"copier_marker={has_copier}, "
+            f"makefile={has_makefile}, "
+            f"services_dir={has_services}"
+        )
+
+        # Scaffold produces .copier-answers.yml — its absence means scaffold didn't run
+        if not has_copier:
+            return False, f"missing .copier-answers.yml (scaffold not run). {detail}"
+
+        return True, detail
 
     async def _git_pull(self):
         """Pull latest changes before next agent turn."""

@@ -1,65 +1,118 @@
-# Audit Report
+# Audit Report — todo_api
 
-## Environment & Setup Issues
+## Summary
 
-### 1. `make install` fails without `--system` or `--user` flag
-- **File**: `Makefile:7`
-- **Command**: `cd $(SERVICE_DIR) && uv pip install -e ".[dev]"`
-- **Error**: `error: No virtual environment found; run 'uv venv' to create an environment, or pass '--system' to install into a non-virtual environment`
-- **Workaround**: Used `pip install --user -e ".[dev]"` directly. The Makefile's `install` target assumes a virtualenv exists, but no venv is pre-created in the workspace.
-- **Suggestion**: Either pre-create a virtualenv in the workspace, or change the Makefile to use `uv pip install --system` or `pip install --user`.
+This report documents issues, workarounds, and suggestions encountered while building the `todo_api` project in the scaffolded framework environment.
 
-### 2. `pip install` (without `--user`) fails with permission denied
-- **Error**: `OSError: [Errno 13] Permission denied: '/usr/local/lib/python3.12/site-packages/...'`
-- **Context**: The workspace runs as a non-root user without write access to the system site-packages.
-- **Workaround**: Had to use `pip install --user`.
+---
 
-### 3. User site-packages not on default Python path
-- **Expected**: `pip install --user` packages should be importable by default.
-- **Actual**: After `pip install --user`, `python -m pytest` failed with `No module named pytest`. The user site-packages directory (`/home/worker/.local/lib/python3.12/site-packages`) was not in `sys.path`.
-- **Workaround**: Had to set `PYTHONPATH="/home/worker/.local/lib/python3.12/site-packages:$PYTHONPATH"` before running commands.
-- **Suggestion**: Either pre-install dependencies in the system site-packages, create a virtualenv, or ensure user site-packages is on the default path. This is a friction point for every developer starting work.
+## Critical Issues
 
-### 4. Makefile `tests` target doesn't set PYTHONPATH
-- **File**: `Makefile:19`
-- **Issue**: `make tests EXEC_MODE=native` runs `python -m pytest` but doesn't account for user-installed packages not being on `sys.path`.
-- **Suggestion**: Makefile targets should either use a virtualenv or set appropriate environment variables.
+### 1. Project Not Scaffolded
 
-## Code Quality Issues Found in Previous Implementation
+**Expected:** The task says "The project was scaffolded with copier from service-template" and references `services/backend/`, `shared/spec/`, `AGENTS.md`, and `Makefile`.
 
-### 5. Field naming mismatch between task spec and implementation
-- **Task spec**: Fields listed as `id, title, description, is_completed, created_at`
-- **Implementation (models.yaml, model, schema, routes)**: Used `completed` instead of `is_completed`
-- **Impact**: API response field name didn't match the spec. This was a naming inconsistency between the task requirements and the scaffolded `models.yaml`.
-- **Fix applied**: Renamed `completed` to `is_completed` across all layers (model, schema, repository, service, routes, tests).
+**Actual:** The workspace contained only `CLAUDE.md` and `README.md`. No `services/` directory, no `shared/`, no `AGENTS.md`, no `Makefile`.
 
-### 6. Repository update method silently skipped None values
-- **File**: `services/backend/src/repositories/todo.py:41-44`
-- **Issue**: The `update()` method had `if value is not None: setattr(todo, key, value)` which meant nullable fields like `description` could never be cleared (set to `None`) via a PATCH request.
-- **Fix applied**: Removed the `is not None` guard. The service layer already uses `model_dump(exclude_unset=True)` to filter out fields that weren't explicitly sent, so only explicitly-provided values (including `None`) are passed to the repository.
-- **Test added**: `test_update_todo_clear_description` to verify nullable fields can be cleared.
+**Impact:** Had to build the entire project structure from scratch, inferring conventions from paste-cache error logs and the system-installed `shared` package.
 
-## Framework & Template Observations
+**Suggestion:** Ensure the copier scaffolding step runs successfully before handing the repo to the developer agent. Add a preflight check that verifies expected directories exist.
 
-### 7. No AGENTS.md present
-- **Expected**: CLAUDE.md and TASK.md reference `AGENTS.md` for code structure patterns and conventions.
-- **Actual**: No `AGENTS.md` file exists in the repository.
-- **Impact**: Previous developer had to infer patterns without guidance. The template should either include an AGENTS.md or not reference it.
+### 2. `copier` Not Installed
 
-### 8. No code generation configured
-- **File**: `Makefile:9-10`
-- **Issue**: `make generate` just prints `"Spec files are in shared/spec/ - no code generation configured"`. The TASK.md instructs to "Run `make generate-from-spec` after modifying spec files to regenerate code", but there's no `generate-from-spec` target either.
-- **Suggestion**: Either implement actual code generation from the spec files, or remove the misleading instruction from TASK.md. Currently the `shared/spec/models.yaml` is informational only and not enforced by tooling.
+**Expected:** TASK.md references copier scaffolding.
 
-### 9. Copier scaffolding not available
-- **Context**: TASK.md mentions "The project was scaffolded with `copier` from `service-template`" but the previous developer noted copier was not available and had to create the structure manually.
-- **Impact**: Manual structure creation means potential deviation from the intended template patterns.
+**Actual:** `copier` binary is not available in the worker environment (`command not found`).
+
+**Impact:** Cannot run scaffolding manually even if the template were available.
+
+**Suggestion:** Either pre-install copier in the worker image or run scaffolding before the developer agent starts.
+
+### 3. AGENTS.md Missing
+
+**Expected:** CLAUDE.md says to "Read `AGENTS.md` if present — for framework patterns and conventions."
+
+**Actual:** File does not exist.
+
+**Impact:** No documented conventions available. Had to infer patterns from paste-cache files and the installed `shared` package.
+
+**Suggestion:** Either ensure AGENTS.md is generated during scaffolding or don't reference it in CLAUDE.md when it won't exist.
+
+---
+
+## Environment Issues
+
+### 4. `pip install` Permission Denied (system packages)
+
+**Error:** `ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied: '/usr/local/lib/python3.12/site-packages/uvicorn'`
+
+**Workaround:** Used `pip install --user` to install into `~/.local/`.
+
+**Impact:** Packages installed to `/home/worker/.local/lib/python3.12/site-packages/` instead of the system site-packages. Required `PYTHONPATH` manipulation to make `pytest` discoverable.
+
+**Suggestion:** Either grant write access to site-packages, pre-install common dependencies (fastapi, uvicorn, sqlalchemy, pytest, httpx), or provide a virtualenv.
+
+### 5. `ruff` Not Pre-installed
+
+**Expected:** CLAUDE.md says "Git hooks run native ruff" and references `make lint EXEC_MODE=native`.
+
+**Actual:** `ruff` was not found on PATH. No git hooks were configured.
+
+**Workaround:** Installed ruff via `pip install --user ruff`.
+
+**Suggestion:** Pre-install ruff in the worker image since it's referenced as a core tool.
+
+### 6. `shared` Package Namespace Conflict
+
+**Expected:** The framework pattern from paste-cache shows imports like `from shared.generated.schemas import ...`, suggesting generated schemas live in `shared/shared/generated/` in the workspace, mapping to `shared.generated` import path.
+
+**Actual:** The `shared` package is installed system-wide at `/usr/local/lib/python3.12/site-packages/shared/` (version 0.1.0). It does NOT contain a `generated/` subdirectory. Any local `shared/` directory in the workspace creates an import collision.
+
+**Workaround:** Created schemas as `services/backend/src/schemas.py` with import path `services.backend.src.schemas` to avoid the conflict entirely.
+
+**Suggestion:** Clarify the intended import strategy for generated schemas. Consider using a distinct package name (e.g., `project_shared`) or ensure the system `shared` package has a `generated/` directory that gets populated by `make generate-from-spec`.
+
+### 7. `pytest` Not Directly Runnable via `python -m pytest`
+
+**Detail:** Since pytest was installed with `--user`, `python -m pytest` failed because the system Python doesn't look at user site-packages by default in this environment. Required explicit `PYTHONPATH` including the user site-packages directory.
+
+**Suggestion:** Pre-install test dependencies in the worker image or provide a Makefile that handles PYTHONPATH.
+
+---
+
+## Minor Issues
+
+### 8. `make generate-from-spec` — No Codegen Tool
+
+**Expected:** TASK.md says "Run `make generate-from-spec` after modifying spec files to regenerate code."
+
+**Actual:** No code generation tool is available. There's no scaffolder, no Jinja templates, no codegen script.
+
+**Impact:** The `generate-from-spec` Makefile target is a no-op. All "generated" code was written manually.
+
+**Suggestion:** Either ship the codegen tool in the worker image or document that generated code must be written manually.
+
+### 9. No `.env` or Database Configuration
+
+**Detail:** No `.env` file or database configuration was provided. The app defaults to SQLite (`sqlite+aiosqlite:///./todos.db`) which works for development and testing but isn't production-ready.
+
+**Suggestion:** Include a `.env.example` or document the expected `DATABASE_URL` format in AGENTS.md.
+
+### 10. `orchestrator dev-env` Commands Not Tested
+
+**Detail:** CLAUDE.md documents `orchestrator dev-env start-infra db redis` for infrastructure, but since this is a simple SQLite-based API, these weren't needed. The orchestrator CLI is available but its backend connectivity wasn't verified.
+
+---
 
 ## Suggestions for Improvement
 
-1. **Pre-configure a working Python environment**: Either use a virtualenv or ensure system Python has the right paths configured. The current setup requires manual workarounds for every developer.
-2. **Add a `generate-from-spec` Make target**: If models.yaml is meant to drive code generation, implement it. Otherwise, remove references to it.
-3. **Include AGENTS.md in the template**: Provide clear patterns for the layered architecture (models, schemas, repositories, services, routes).
-4. **Validate spec consistency**: The task spec field names should be consistent with models.yaml. Either auto-generate models.yaml from the task spec or validate them against each other.
-5. **Add a health check endpoint**: The API has no `/health` or readiness endpoint, which is standard for production services.
+1. **Pre-flight validation:** Before handing a repo to the developer, verify that scaffolding completed successfully (check for `services/`, `Makefile`, `AGENTS.md`).
+
+2. **Worker image dependencies:** Pre-install the common stack: `fastapi`, `uvicorn`, `sqlalchemy`, `aiosqlite`, `pytest`, `httpx`, `ruff`, `pytest-asyncio`. These are needed for virtually every backend project.
+
+3. **Consistent import strategy:** Document whether generated schemas should use `shared.generated.schemas` or a service-local path. Resolve the system `shared` package conflict.
+
+4. **Makefile bootstrap:** If the Makefile isn't scaffolded, provide a default one that handles PYTHONPATH, test running, and linting with the correct paths.
+
+5. **Git hooks:** CLAUDE.md references git hooks for ruff, but no hooks were configured in `.git/hooks/`. Either scaffold them or remove the reference.
 

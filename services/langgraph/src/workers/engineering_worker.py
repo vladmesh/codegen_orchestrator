@@ -560,6 +560,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         # Create repo and set secrets for new project creation on draft projects
         if project_status == "draft" and action == "create":
             await _create_repo_and_set_secrets(project)
+            # Refresh in-memory dict — _create_repo_and_set_secrets sets DB status
+            # to "scaffolding". Developer node needs to see this to trigger copier.
+            project["status"] = ProjectStatus.SCAFFOLDING.value
         elif project_status == "draft" and action != "create":
             logger.warning(
                 "feature_fix_on_draft_project",

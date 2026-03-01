@@ -155,6 +155,44 @@ class TestScaffoldConfigConstruction:
         config = node._build_scaffold_config(project_spec, "create")
         assert config is None
 
+    @pytest.mark.asyncio
+    async def test_create_with_draft_status_hard_fails(self):
+        """action=create + status=draft → hard fail (stale project dict bug)."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="create", status="draft")
+        result = await node.run(state)
+
+        assert result["engineering_status"] == "blocked"
+        assert any("draft" in e for e in result["errors"])
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_create_with_scaffolded_status_proceeds(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """action=create + status=scaffolded → proceeds normally (scaffold already done)."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="create", status="scaffolded")
+        result = await node.run(state)
+
+        assert result["engineering_status"] == "done"
+        mock_spawn.assert_awaited_once()
+
     def test_sanitizes_project_name(self):
         """Project name is sanitized for copier."""
         from src.nodes.developer import DeveloperNode

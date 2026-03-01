@@ -136,6 +136,9 @@ class TestCreateWorkerWithScaffoldConfig:
         mock_workspace.create_workspace.return_value = "/tmp/ws/w-1"
         mock_workspace.get_workspace_host_path.return_value = "/tmp/ws/w-1"
 
+        # Marker verification exec returns SCAFFOLD_OK after scaffold phase
+        mock_docker.exec_in_container = AsyncMock(return_value=(0, "SCAFFOLD_OK"))
+
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
         manager._run_scaffold_phase = AsyncMock(return_value=True)
 
@@ -148,6 +151,38 @@ class TestCreateWorkerWithScaffoldConfig:
         )
 
         manager._run_scaffold_phase.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("src.manager.workspace_mod")
+    @patch("src.manager.ImageBuilder")
+    async def test_scaffold_markers_missing_raises(
+        self, mock_builder_cls, mock_workspace, mock_redis, mock_docker, scaffold_config
+    ):
+        """Scaffold ran OK but markers missing → RuntimeError."""
+        from src.manager import WorkerManager
+
+        mock_builder = MagicMock()
+        mock_builder.get_image_tag.return_value = "worker:test"
+        mock_builder.generate_dockerfile.return_value = "FROM base"
+        mock_builder_cls.return_value = mock_builder
+
+        mock_workspace.create_workspace.return_value = "/tmp/ws/w-1"
+        mock_workspace.get_workspace_host_path.return_value = "/tmp/ws/w-1"
+
+        # Scaffold succeeds but marker check fails
+        mock_docker.exec_in_container = AsyncMock(return_value=(0, "SCAFFOLD_MISSING"))
+
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+        manager._run_scaffold_phase = AsyncMock(return_value=True)
+
+        with pytest.raises(RuntimeError, match="Scaffold markers missing"):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-1",
+                capabilities=["git"],
+                base_image="worker-base:latest",
+                env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
+                scaffold_config=scaffold_config,
+            )
 
     @pytest.mark.asyncio
     @patch("src.manager.workspace_mod")
