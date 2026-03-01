@@ -275,3 +275,18 @@ class TestTaskMessageDescription:
         mock_spawn.assert_awaited_once()
         task_content = mock_spawn.call_args[1]["task_content"]
         assert "My specific task with audit" in task_content
+
+    def test_feature_task_falls_back_to_config_description(self):
+        """_build_feature_task falls back to description when feature_description is None."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        task_md = node._build_feature_task(
+            project_name="test-project",
+            description="Config description here",
+            modules=["backend"],
+            action="feature",
+            feature_description=None,
+            project_spec={},
+        )
+        assert "Config description here" in task_md

@@ -344,6 +344,37 @@ class TestCIGateFailClosed:
         # attempt 1: created_after must be from BEFORE the respawn started
         assert captured_timestamps[1] < respawn_started_at[0]
 
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch("src.workers.engineering_worker._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._record_ci_attempts", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    async def test_workflow_not_found_returns_false_immediately(
+        self, mock_publish, mock_record, mock_respawn, mock_gh_cls, mock_redis
+    ):
+        """WorkflowNotFoundError must fail-fast without respawning developer."""
+        from shared.clients.github import WorkflowNotFoundError
+        from src.workers.engineering_worker import _wait_for_ci_and_fix
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+        mock_gh.wait_for_workflow_completion = AsyncMock(
+            side_effect=WorkflowNotFoundError("ci.yml not found in org/repo"),
+        )
+
+        passed, ci_attempts = await _wait_for_ci_and_fix(
+            project=_project(repo_url="https://github.com/org/repo"),
+            task_id="eng-1",
+            callback_stream="po:response:abc",
+            redis=mock_redis,
+            user_id="u1",
+        )
+
+        assert passed is False
+        assert len(ci_attempts) == 1
+        assert ci_attempts[0]["status"] == "workflow_not_found"
+        mock_respawn.assert_not_awaited()
+
 
 class TestCIFailureClassification:
     """Tests for _is_infra_failure classification (BUG 15)."""

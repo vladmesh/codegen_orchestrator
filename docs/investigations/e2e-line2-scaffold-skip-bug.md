@@ -143,7 +143,7 @@ PATCH на строке 500 engineering_worker.py обновляет status на
 
 ## Рекомендации
 
-1. **Баг 1** — критический, блокирует всю Line 2. Убрать строки 619-622 из engineering_worker.py.
-2. **Баг 2** — добавить fallback: если `EngineeringMessage.description` пустой, брать из `project.config.description`.
-3. **Баг 3** — в `_wait_for_ci_and_fix` добавить проверку существования workflow перед polling. Fail-fast с понятным error message.
-4. **Баг 4** — minor, добавить `started_at` в PATCH при переходе в `running`.
+1. **Баг 1** — критический, блокирует всю Line 2. Убрать строки 619-622 из engineering_worker.py. → ✅ **DONE** (DEVELOPING status moved after `ainvoke()`)
+2. **Баг 2** — добавить fallback: если `EngineeringMessage.description` пустой, брать из `project.config.description`. → ✅ **DONE** (fallback в engineering_worker после project fetch)
+3. **Баг 3** — в `_wait_for_ci_and_fix` добавить проверку существования workflow перед polling. Fail-fast с понятным error message. → ✅ **DONE** (`except WorkflowNotFoundError` fail-fast)
+4. **Баг 4** — minor, добавить `started_at` в PATCH при переходе в `running`. → ✅ **DONE** (`started_at` included in PATCH)

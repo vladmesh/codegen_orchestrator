@@ -124,7 +124,7 @@ async def _respawn_developer_for_ci_fix(
     return worker_result.success
 
 
-async def _wait_for_ci_and_fix(
+async def _wait_for_ci_and_fix(  # noqa: PLR0915
     project: dict,
     task_id: str,
     callback_stream: str | None,
@@ -144,7 +144,7 @@ async def _wait_for_ci_and_fix(
         Tuple of (passed, ci_attempts) where ci_attempts is a list of dicts
         recording each CI attempt with status and failure context.
     """
-    from shared.clients.github import GitHubAppClient
+    from shared.clients.github import GitHubAppClient, WorkflowNotFoundError
 
     from ..config.constants import CI, Timeouts
 
@@ -222,6 +222,19 @@ async def _wait_for_ci_and_fix(
             ci_attempts.append({"attempt": attempt, "status": "passed"})
             await _record_ci_attempts(task_id, ci_attempts)
             return True, ci_attempts
+
+        except WorkflowNotFoundError as e:
+            # ci.yml doesn't exist — scaffold likely failed/skipped.
+            # Fail-fast: no developer can fix a missing workflow file.
+            logger.error(
+                "ci_workflow_not_found",
+                task_id=task_id,
+                attempt=attempt,
+                error=str(e),
+            )
+            ci_attempts.append({"attempt": attempt, "status": "workflow_not_found"})
+            await _record_ci_attempts(task_id, ci_attempts)
+            return False, ci_attempts
 
         except RuntimeError as e:
             # CI failed
@@ -506,6 +519,10 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 json={"status": "failed", "error_message": error_msg},
             )
             return {"status": "failed", "error": error_msg}
+
+        # Fallback: use project config description when queue message has none
+        if not description:
+            description = (project.get("config") or {}).get("description", "")
 
         # Fail fast if scaffold previously failed
         project_status = project.get("status")
