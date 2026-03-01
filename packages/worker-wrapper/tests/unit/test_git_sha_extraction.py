@@ -6,6 +6,7 @@ integration with git-based commit SHA detection.
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from conftest import MockProcess
 import pytest
 from worker_wrapper.wrapper import WorkerWrapper, WorkerWrapperConfig
 
@@ -30,16 +31,6 @@ def wrapper(wrapper_config):
     mock_redis = MagicMock()
     mock_redis.redis = AsyncMock()
     return WorkerWrapper(config=wrapper_config, redis_client=mock_redis)
-
-
-class MockProcess:
-    def __init__(self, stdout, stderr, returncode=0):
-        self.stdout = stdout
-        self.stderr = stderr
-        self.returncode = returncode
-
-    async def communicate(self):
-        return self.stdout, self.stderr
 
 
 class TestGetGitHead:

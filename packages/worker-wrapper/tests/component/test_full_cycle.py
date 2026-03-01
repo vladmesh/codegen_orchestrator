@@ -1,18 +1,9 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from conftest import MockProcess
 from fakeredis import FakeAsyncRedis
 import pytest
 from worker_wrapper.wrapper import WorkerWrapper, WorkerWrapperConfig
-
-
-class MockProcess:
-    def __init__(self, stdout, stderr, returncode=0):
-        self.stdout = stdout
-        self.stderr = stderr
-        self.returncode = returncode
-
-    async def communicate(self):
-        return self.stdout, self.stderr
 
 
 @pytest.fixture
