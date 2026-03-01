@@ -413,7 +413,11 @@ async def _create_repo_and_set_secrets(project: dict) -> None:
     except Exception as e:
         error_str = str(e).lower()
         if "already exists" in error_str or "422" in error_str:
-            logger.info("repo_already_exists", repo=repo_full_name)
+            raise RuntimeError(
+                f"Repository {repo_full_name} already exists. "
+                "This likely means a previous run was not cleaned up. "
+                "Delete the repo and retry, or use a different project name."
+            ) from e
         else:
             raise
 

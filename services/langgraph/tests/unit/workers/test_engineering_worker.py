@@ -575,23 +575,18 @@ class TestCreateRepoAndSetSecrets:
             "REGISTRY_PASSWORD": "secret",
         },
     )
-    async def test_repo_already_exists(self, mock_gh_cls, mock_api):
-        """Handles 'already exists' gracefully."""
+    async def test_repo_already_exists_fails_fast(self, mock_gh_cls, mock_api):
+        """Fails fast when repo already exists (stale state from previous run)."""
         from src.workers.engineering_worker import _create_repo_and_set_secrets
 
         mock_gh = AsyncMock()
         mock_gh_cls.return_value = mock_gh
         mock_gh.create_repo = AsyncMock(side_effect=Exception("422: already exists"))
-        mock_gh.get_org_token = AsyncMock(return_value="ghs_token")
-        mock_gh.set_repository_secrets = AsyncMock(return_value=3)
 
         project = {"id": "proj-1", "name": "existing-project"}
 
-        # Should not raise
-        await _create_repo_and_set_secrets(project)
-
-        # Secrets still set
-        mock_gh.set_repository_secrets.assert_awaited_once()
+        with pytest.raises(RuntimeError, match="already exists"):
+            await _create_repo_and_set_secrets(project)
 
     @pytest.mark.asyncio
     @patch("shared.clients.github.GitHubAppClient")
