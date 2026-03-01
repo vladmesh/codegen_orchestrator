@@ -1,11 +1,11 @@
 """Projects router."""
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.models import Project, User
+from shared.models import PortAllocation, Project, Task, User
 
 from ..database import get_async_session
 from ..schemas import ProjectCreate, ProjectRead, ProjectUpdate
@@ -233,3 +233,26 @@ async def patch_project(
     logger.info("project_patched", project_id=project.id, status=project.status)
 
     return project
+
+
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_project(
+    project_id: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Delete a project and its related records (tasks, port allocations)."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db)
+
+    # Delete FK-constrained related records
+    await db.execute(delete(Task).where(Task.project_id == project_id))
+    await db.execute(delete(PortAllocation).where(PortAllocation.project_id == project_id))
+
+    await db.delete(project)
+    await db.commit()
+
+    logger.info("project_deleted", project_id=project_id)
