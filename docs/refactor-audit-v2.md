@@ -11,8 +11,8 @@
 
 ## 1. Legacy & Dead Code
 
-### 1.1 Deprecated CLI Command
-`packages/orchestrator-cli/src/orchestrator_cli/commands/engineering.py:162` — команда `update_framework` помечена `deprecated=True` с предупреждением `[DEPRECATED] Update project framework using copier update.`
+### ~~1.1 Deprecated CLI Command~~ → ✅ Done
+~~`packages/orchestrator-cli/src/orchestrator_cli/commands/engineering.py:162` — команда `update_framework`~~ Удалена. Функционал copier update признан ненужным — service-template используется как one-shot template.
 
 ### 1.2 Deprecated CLI Argument
 `scripts/seed_agent_configs.py:162` — флаг `--api-url` deprecated в пользу `--api-base-url`.
@@ -152,8 +152,8 @@
 ## 8. Recommendations (по приоритету)
 
 ### Quick wins (< 30 мин)
-1. Удалить 3 мёртвые записи из `ruff.toml` per-file-ignores.
-2. Удалить deprecated `update_framework` CLI команду.
+1. ~~Удалить 3 мёртвые записи из `ruff.toml` per-file-ignores.~~ → ✅ Done
+2. ~~Удалить deprecated `update_framework` CLI команду.~~ → ✅ Done
 3. Убрать 4 redundant `import base64` в `manager.py`.
 
 ### Механическая работа (< 2 часа)

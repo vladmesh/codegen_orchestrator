@@ -157,23 +157,3 @@ def status(
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(code=1) from None
-
-
-@app.command(deprecated=True)
-def update_framework(
-    project_id: str = typer.Option(
-        ..., "--project-id", "-p", help="Project ID to update framework for"
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
-):
-    """[DEPRECATED] Update project framework using copier update.
-
-    The scaffolder service has been removed. Framework updates will be
-    reimplemented as a worker-manager scaffold phase in a future version.
-    """
-    console.print(
-        "[bold yellow]DEPRECATED:[/bold yellow] "
-        "update-framework is no longer available. "
-        "The scaffolder service has been removed."
-    )
-    raise typer.Exit(code=1)

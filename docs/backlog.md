@@ -101,7 +101,7 @@
 **Документы**: `docs/refactor-audit-v2.md` §1
 **Проблема**: Остатки прошлых рефакторингов, которые можно безопасно вычистить.
 **Задачи**:
-- Удалить deprecated команду `update_framework` из `orchestrator-cli/commands/engineering.py` (или перенести функционал — требует отдельного решения).
+- ~~Удалить deprecated команду `update_framework` из `orchestrator-cli/commands/engineering.py`.~~ → ✅ Done (удалена; copier update признан ненужным, service-template — one-shot template).
 - Удалить deprecated аргумент `--api-url` из `scripts/seed_agent_configs.py`.
 - Убрать 4 redundant `import base64` в `services/worker-manager/src/manager.py` (строки 586, 608, 629, 677 — top-level import на строке 1 остаётся).
 - Убрать legacy networking fallback в `manager.py:525-530` (если host networking больше не используется).
@@ -140,6 +140,7 @@
 - **Docker Python SDK**: Миграция вызовов docker cli в subprocess`ах worker-manager'а на официальный Docker SDK.
 - **Fix `sys.path` hack в telegram_bot**: `main.py:37` делает `sys.path.insert(0, "/app")` + 6 строк `noqa: E402`. Решить через PYTHONPATH в Docker или proper packaging.
 - **Split Tier 2 large files**: `devops/nodes.py` (516), `telegram_bot/main.py` (473), `env_analyzer.py` (462), `server_sync.py` (411), `developer.py` (405) — разбивать по мере касания.
+- **"Добавить батарейку" к существующему проекту**: Механизм добавления модулей (backend, notifications и т.д.) в уже развёрнутый проект. Подход: агент получает инструкцию сходить в service-template, посмотреть структуру нужного модуля и переиспользовать код/паттерны самостоятельно. `copier update` для этого не годится — шаблон не поддерживает инкрементальное добавление модулей.
 
 ---
 
