@@ -1,11 +1,11 @@
 """Project-related schemas."""
 
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class EntryPoint(str, Enum):
+class EntryPoint(StrEnum):
     """Available entry points for projects."""
 
     TELEGRAM = "telegram"

@@ -1,7 +1,7 @@
 """RAG index models."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class RAGScope(str, Enum):
+class RAGScope(StrEnum):
     """RAG access scopes."""
 
     PUBLIC = "public"

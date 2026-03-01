@@ -1,7 +1,7 @@
 """Task model for tracking asynchronous operations."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -9,14 +9,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     """Type of task."""
 
     ENGINEERING = "engineering"
     DEPLOY = "deploy"
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     """Task execution status."""
 
     QUEUED = "queued"  # Task published to queue, waiting to be picked up

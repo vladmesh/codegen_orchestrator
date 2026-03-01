@@ -4,10 +4,10 @@ This module defines the available tool groups and their documentation.
 Used by worker-manager to generate instruction files for agents.
 """
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ToolGroup(str, Enum):
+class ToolGroup(StrEnum):
     """Available orchestrator CLI tool groups.
 
     Each group corresponds to a subcommand in orchestrator-cli.

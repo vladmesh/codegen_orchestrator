@@ -1,7 +1,7 @@
 """Service deployment model for tracking deployed services on servers."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class DeploymentStatus(str, Enum):
+class DeploymentStatus(StrEnum):
     """Service deployment status lifecycle."""
 
     RUNNING = "running"

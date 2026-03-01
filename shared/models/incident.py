@@ -1,7 +1,7 @@
 """Incident model for tracking server incidents."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class IncidentStatus(str, Enum):
+class IncidentStatus(StrEnum):
     """Incident status lifecycle."""
 
     DETECTED = "detected"  # Инцидент обнаружен
@@ -18,7 +18,7 @@ class IncidentStatus(str, Enum):
     FAILED = "failed"  # Восстановление не удалось
 
 
-class IncidentType(str, Enum):
+class IncidentType(StrEnum):
     """Types of incidents."""
 
     SERVER_UNREACHABLE = "server_unreachable"  # Сервер недоступен по SSH

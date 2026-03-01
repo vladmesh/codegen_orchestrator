@@ -1,9 +1,9 @@
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
 
-class ProjectStatus(str, Enum):
+class ProjectStatus(StrEnum):
     """Project lifecycle status.
 
     Happy path: DRAFT → SCAFFOLDING → SCAFFOLDED → DEVELOPING → TESTING → DEPLOYING → ACTIVE
@@ -35,7 +35,7 @@ class ProjectStatus(str, Enum):
     ARCHIVED = "archived"
 
 
-class ServiceModule(str, Enum):
+class ServiceModule(StrEnum):
     """Available project modules for scaffolding.
 
     Must match module names in service-template/copier.yml.

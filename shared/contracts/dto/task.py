@@ -1,10 +1,10 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -12,7 +12,7 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     ENGINEERING = "engineering"
     DEPLOY = "deploy"
 

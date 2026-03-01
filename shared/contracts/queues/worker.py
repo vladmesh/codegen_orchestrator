@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel
@@ -6,18 +6,18 @@ from pydantic import BaseModel
 from shared.contracts.base import QueueMeta
 
 
-class AgentType(str, Enum):
+class AgentType(StrEnum):
     CLAUDE = "claude"  # Claude Code
     FACTORY = "factory"  # Factory.ai Droid
 
 
-class WorkerCapability(str, Enum):
+class WorkerCapability(StrEnum):
     GIT = "git"
     GITHUB_CLI = "github_cli"
     CURL = "curl"
 
 
-class WorkerChannels(str, Enum):
+class WorkerChannels(StrEnum):
     """Redis stream channels and patterns."""
 
     # Global streams

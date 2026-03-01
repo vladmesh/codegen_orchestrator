@@ -1,7 +1,7 @@
 """Server model."""
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from sqlalchemy import JSON, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base
 
 
-class ServerStatus(str, Enum):
+class ServerStatus(StrEnum):
     """Server status lifecycle."""
 
     # Discovery

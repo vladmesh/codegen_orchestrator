@@ -1,9 +1,9 @@
-from enum import Enum
+from enum import StrEnum
 
 from shared.contracts.base import BaseMessage, BaseResult
 
 
-class DeployTrigger(str, Enum):
+class DeployTrigger(StrEnum):
     """Origin of a deploy request."""
 
     ENGINEERING = "engineering"

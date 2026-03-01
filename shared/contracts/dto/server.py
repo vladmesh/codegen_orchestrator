@@ -1,10 +1,10 @@
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
 
-class ServerStatus(str, Enum):
+class ServerStatus(StrEnum):
     NEW = "new"
     PENDING_SETUP = "pending_setup"
     PROVISIONING = "provisioning"

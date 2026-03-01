@@ -3,10 +3,10 @@
 Defines available modules that can be scaffolded from service-template.
 """
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ServiceModule(str, Enum):
+class ServiceModule(StrEnum):
     """Available modules for project scaffolding.
 
     These correspond to modules in vladmesh/service-template.
