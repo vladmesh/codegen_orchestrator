@@ -3,7 +3,7 @@
 	test-langgraph test-langgraph-unit test-langgraph-integration \
 	test-scheduler test-scheduler-unit test-scheduler-integration \
 	test-telegram test-telegram-unit \
-	test-orchestrator-cli test-smoke \
+	test-orchestrator-cli test-smoke test-e2e-scaffold \
 	build up down stop logs help nuke seed migrate makemigrations shell \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild
@@ -323,6 +323,17 @@ test-smoke:
 		python:3.12-slim \
 		bash -c "pip install -q pytest pytest-asyncio httpx redis docker pydantic structlog && \
 			pytest tests/e2e/test_live_smoke.py -v --tb=short --noconftest --override-ini='asyncio_mode=auto' -p no:cacheprovider"
+
+# E2E Scaffold Test: runs against running `make up` stack
+# Creates GitHub repo, publishes CreateWorkerCommand with ScaffoldConfig,
+# verifies scaffold files pushed to GitHub, cleans up repo + worker container
+test-e2e-scaffold:
+	@echo "🧪 Running E2E scaffold test against running stack..."
+	@docker compose exec -T langgraph python < scripts/e2e_scaffold_test.py; \
+	EXIT_CODE=$$?; \
+	echo "🧹 Cleaning up scaffold test containers..."; \
+	docker ps -a --filter "name=dev-scaffold-e2e-" --format "{{.Names}}" | xargs -r docker rm -f 2>/dev/null || true; \
+	exit $$EXIT_CODE
 
 # Usage: HOST_CLAUDE_DIR=~/.claude make test-e2e
 test-e2e:

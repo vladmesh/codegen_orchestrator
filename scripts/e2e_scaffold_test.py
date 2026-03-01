@@ -1,11 +1,18 @@
-"""E2E Scaffold Test — Variant A.
+"""E2E Scaffold Test.
 
 Publishes a CreateWorkerCommand with ScaffoldConfig directly to worker:commands.
 Worker-manager picks it up, creates container, runs copier + make setup + git push.
-Claude Code will fail (no task sent / we don't wait for it) — we only verify scaffold.
+
+Verifies:
+  1. CreateWorkerResponse(success=true) from worker-manager
+  2. Scaffold pushed to GitHub (expected files exist in repo)
+  3. Cleanup: deletes GitHub repo, prints worker_id for container cleanup
 
 Run inside langgraph container:
   docker compose exec -T langgraph python < scripts/e2e_scaffold_test.py
+
+Or via Makefile (handles container cleanup):
+  make test-e2e-scaffold
 """
 
 import asyncio
@@ -33,6 +40,10 @@ TEST_REPO_NAME = "scaffold-e2e-test"
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 COMMAND_STREAM = "worker:commands"
 RESPONSE_STREAM = "worker:responses:developer"
+
+# Files that must exist after scaffold with "backend" module
+# .copier-answers.yml = copier ran; services = framework sync_services ran
+EXPECTED_FILES = ["Makefile", "pyproject.toml", ".github", ".copier-answers.yml", "services"]
 
 
 async def _create_repo(github):
@@ -66,6 +77,44 @@ async def _wait_for_response(r, group, consumer, request_id):
                     if data.get("request_id") == request_id:
                         return data
     return None
+
+
+async def _verify_scaffold(github, repo_full):
+    """Verify that scaffold pushed expected files to GitHub."""
+    owner, repo = repo_full.split("/")
+    print(f"[6] Verifying scaffold results in {repo_full} ...")
+
+    files = await github.list_repo_files(owner, repo)
+    print(f"    Root files: {files}")
+
+    missing = [f for f in EXPECTED_FILES if f not in files]
+    if missing:
+        print(f"    FAIL: missing expected files: {missing}")
+        return False
+
+    # Check .github/workflows exists
+    workflow_files = await github.list_repo_files(owner, repo, path=".github/workflows")
+    print(f"    Workflow files: {workflow_files}")
+    if not workflow_files:
+        print("    FAIL: .github/workflows is empty")
+        return False
+
+    print("    All expected files present")
+    return True
+
+
+async def _cleanup_repo(github, repo_full):
+    """Delete the test GitHub repo."""
+    owner, repo = repo_full.split("/")
+    print(f"[7] Deleting repo {repo_full} ...")
+    try:
+        deleted = await github.delete_repo(owner, repo)
+        if deleted:
+            print("    Repo deleted")
+        else:
+            print("    Repo not found (already deleted?)")
+    except Exception as e:
+        print(f"    WARNING: failed to delete repo: {e}")
 
 
 async def main():
@@ -111,6 +160,8 @@ async def main():
     print(f"    project={scaffold_config.project_name} modules={scaffold_config.modules}")
 
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    passed = False
+    worker_id = None
 
     try:
         await r.xadd(COMMAND_STREAM, {"data": cmd.model_dump_json()})
@@ -130,19 +181,13 @@ async def main():
 
         if not create_response:
             print("    TIMEOUT — no response from worker-manager")
-            return
-
-        worker_id = create_response.get("worker_id")
-        error = create_response.get("error")
-
-        if create_response.get("success"):
-            print(f"    SUCCESS! Worker created: {worker_id}")
-            print("[6] Scaffold phase completed. Check:")
-            print(f"    - GitHub: https://github.com/{repo_full}")
-            print("    - Worker manager logs: docker compose logs worker-manager --tail 50")
-            print(f"    - To clean up: docker stop {worker_id} && docker rm {worker_id}")
+        elif not create_response.get("success"):
+            print(f"    FAILED: {create_response.get('error')}")
         else:
-            print(f"    FAILED: {error}")
+            worker_id = create_response.get("worker_id")
+            print(f"    SUCCESS! Worker created: {worker_id}")
+
+            passed = await _verify_scaffold(github, repo_full)
 
         try:
             await r.xgroup_destroy(RESPONSE_STREAM, group)
@@ -151,6 +196,20 @@ async def main():
 
     finally:
         await r.aclose()
+
+    # Always cleanup GitHub repo
+    await _cleanup_repo(github, repo_full)
+
+    # Print worker_id for container cleanup by Makefile
+    if worker_id:
+        print(f"WORKER_ID={worker_id}")
+
+    # Final verdict
+    if passed:
+        print("\n=== E2E SCAFFOLD TEST: PASSED ===")
+    else:
+        print("\n=== E2E SCAFFOLD TEST: FAILED ===")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
