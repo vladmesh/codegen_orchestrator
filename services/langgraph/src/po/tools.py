@@ -16,7 +16,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectStatus, ServiceModule
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
@@ -60,9 +60,9 @@ def _get_stream_client() -> RedisStreamClient:
 
 
 # ---------------------------------------------------------------------------
-# Available modules (must match copier.yml in service-template)
+# Available modules (single source of truth: ServiceModule enum)
 # ---------------------------------------------------------------------------
-AVAILABLE_MODULES = {"backend", "tg_bot", "notifications", "frontend"}
+AVAILABLE_MODULES = {m.value for m in ServiceModule}
 
 
 @tool

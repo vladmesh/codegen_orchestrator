@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from shared.schemas.modules import ServiceModule
+from shared.contracts.dto.project import ServiceModule
 
 
 class ProjectBase(BaseModel):

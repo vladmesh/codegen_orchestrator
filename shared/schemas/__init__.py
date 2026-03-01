@@ -4,10 +4,9 @@ This module provides typed data structures for:
 - External API responses (Time4VPS, GitHub)
 - Orchestrator state components
 - Tool return values
-- Service modules for scaffolding
 
 Usage:
-    from shared.schemas import RepoInfo, AllocatedResource, Time4VPSServer, ServiceModule
+    from shared.schemas import RepoInfo, AllocatedResource, Time4VPSServer
 """
 
 from .github import (
@@ -15,7 +14,6 @@ from .github import (
     GitHubInstallation,
     GitHubRepository,
 )
-from .modules import ServiceModule
 from .project_spec import (
     EntryPointSpec,
     InfrastructureSpec,
@@ -62,8 +60,6 @@ __all__ = [
     "ProjectInfo",
     "EntryPointSpec",
     "InfrastructureSpec",
-    # Service Modules
-    "ServiceModule",
     # Worker events
     "WorkerEvent",
     "WorkerStarted",

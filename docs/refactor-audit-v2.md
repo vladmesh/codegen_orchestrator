@@ -14,8 +14,8 @@
 ### ~~1.1 Deprecated CLI Command~~ → ✅ Done
 ~~`packages/orchestrator-cli/src/orchestrator_cli/commands/engineering.py:162` — команда `update_framework`~~ Удалена. Функционал copier update признан ненужным — service-template используется как one-shot template.
 
-### 1.2 Deprecated CLI Argument
-`scripts/seed_agent_configs.py:162` — флаг `--api-url` deprecated в пользу `--api-base-url`.
+### ~~1.2 Deprecated CLI Argument~~ → ✅ Done
+~~`scripts/seed_agent_configs.py:162` — флаг `--api-url`~~ Удалён.
 
 ### 1.3 Legacy `(str, Enum)` синтаксис
 21 instance по всему проекту. Python 3.12 поддерживает `enum.StrEnum`. Распределение:
@@ -38,18 +38,15 @@
 - `services/worker-manager/src/manager.py:525-530` — legacy networking fallback (`Empty DOCKER_NETWORK = use host networking (legacy)`). Docstring (строка 28) упоминает замену "legacy ContainerService and LifecycleManager".
 - `services/scheduler/src/tasks/github_sync.py:213-226` — fallback поиска проектов по имени для "legacy projects or first sync".
 
-### 1.6 Redundant Imports
-`services/worker-manager/src/manager.py` — `import base64` на верхнем уровне (строка 1) и повторно внутри 4 методов (строки 586, 608, 629, 677). Внутренние импорты избыточны.
+### ~~1.6 Redundant Imports~~ → ✅ Done
+~~`services/worker-manager/src/manager.py` — 4 redundant `import base64`~~ Удалены, оставлен top-level import.
 
 ---
 
 ## 2. DRY Violations
 
-### 2.1 `ServiceModule` — три источника правды
-Одни и те же модули (`BACKEND`, `TG_BOT`, `NOTIFICATIONS`, `FRONTEND`) определены в трёх местах:
-1. `shared/contracts/dto/project.py` — как `ServiceModule(str, Enum)`
-2. `shared/schemas/modules.py` — как `ServiceModule(str, Enum)` (идентичный дубль)
-3. `packages/orchestrator-cli/src/orchestrator_cli/commands/project.py:22` — как hardcoded список строк: `AVAILABLE_MODULES = ["backend", "tg_bot", "notifications", "frontend"]` (с комментарием `must match copier.yml`)
+### ~~2.1 `ServiceModule` — три источника правды~~ → ✅ Done
+~~Три определения `ServiceModule`~~ Консолидировано: единый источник в `shared/contracts/dto/project.py`. Дубль `shared/schemas/modules.py` удалён, CLI и PO tools используют `ServiceModule` enum.
 
 ### 2.2 `MockProcess` в тестах worker-wrapper
 Идентичный класс `MockProcess` дублируется в:
@@ -154,7 +151,7 @@
 ### Quick wins (< 30 мин)
 1. ~~Удалить 3 мёртвые записи из `ruff.toml` per-file-ignores.~~ → ✅ Done
 2. ~~Удалить deprecated `update_framework` CLI команду.~~ → ✅ Done
-3. Убрать 4 redundant `import base64` в `manager.py`.
+3. ~~Убрать 4 redundant `import base64` в `manager.py`.~~ → ✅ Done
 
 ### Механическая работа (< 2 часа)
 4. StrEnum миграция: глобальная замена `(str, Enum)` → `(StrEnum)` + `from enum import StrEnum` (21 файл).

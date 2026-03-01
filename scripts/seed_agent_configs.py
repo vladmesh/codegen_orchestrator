@@ -160,11 +160,6 @@ def main():
         help="API base URL (no /api, default: http://localhost:8000)",
     )
     parser.add_argument(
-        "--api-url",
-        dest="api_base_url",
-        help="DEPRECATED: use --api-base-url (no /api)",
-    )
-    parser.add_argument(
         "--configs-path",
         default=str(CONFIG_PATH),
         help=f"Path to agent configs YAML (default: {CONFIG_PATH})",

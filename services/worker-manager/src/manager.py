@@ -583,8 +583,6 @@ class WorkerManager:
 
             # Use base64 encoding to avoid shell quoting issues
             # Worker base has python3 installed
-            import base64
-
             encoded = base64.b64encode(instructions.encode()).decode()
 
             # Python one-liner to decode base64 and write to file
@@ -605,8 +603,6 @@ class WorkerManager:
             task_path = "/home/worker/TASK.md"
             logger.info("injecting_task_content", worker_id=worker_id, path=task_path)
 
-            import base64
-
             encoded_task = base64.b64encode(task_content.encode()).decode()
             cmd = f"python3 -c \"import base64; open('{task_path}', 'w').write(base64.b64decode('{encoded_task}').decode())\""
 
@@ -626,8 +622,6 @@ class WorkerManager:
 
     async def _refresh_git_token(self, container_id: str, repo: str, token: str, worker_id: str) -> bool:
         """Update git remote URL with fresh token in existing workspace."""
-        import base64
-
         script = f"cd /workspace && git remote set-url origin " f"'https://x-access-token:{token}@github.com/{repo}'"
         encoded = base64.b64encode(script.encode()).decode()
         cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"
@@ -674,8 +668,6 @@ git config user.email "ai@codegen.local"
 """
 
         # Use base64 encoding to avoid shell quoting issues (same pattern as instructions)
-        import base64
-
         encoded = base64.b64encode(setup_script.encode()).decode()
         # Wrap in bash -c because docker exec_run doesn't use shell by default
         cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"

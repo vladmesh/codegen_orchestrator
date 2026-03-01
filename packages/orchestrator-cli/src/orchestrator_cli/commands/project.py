@@ -8,7 +8,7 @@ import typer
 
 from orchestrator_cli.client import get_api_client
 from orchestrator_cli.permissions import require_permission
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectStatus, ServiceModule
 from shared.crypto import decrypt_dict, encrypt_dict
 
 app = typer.Typer()
@@ -18,8 +18,7 @@ console = Console()
 # --- Async implementations ---
 
 
-# Available modules in service-template (must match copier.yml)
-AVAILABLE_MODULES = ["backend", "tg_bot", "notifications", "frontend"]
+AVAILABLE_MODULES = [m.value for m in ServiceModule]
 DESCRIPTION_TRUNCATE_LENGTH = 80
 
 

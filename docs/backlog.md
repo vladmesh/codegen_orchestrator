@@ -86,26 +86,18 @@
 **Документы**: `docs/audit.md`
 Отразить в документации, что `deploy-worker` и `engineering-worker` являются процессами LangGraph, а не скрытыми суб-сервисами.
 
-### 16. Consolidate `ServiceModule` (3 Sources of Truth)
-**Документы**: `docs/refactor-audit-v2.md` §2.1
-**Проблема**: Модули проекта (`backend`, `tg_bot`, `notifications`, `frontend`) определены в трёх местах:
-1. `shared/contracts/dto/project.py` — `ServiceModule(StrEnum)`
-2. `shared/schemas/modules.py` — `ServiceModule(StrEnum)` (идентичный дубль)
-3. `packages/orchestrator-cli/src/orchestrator_cli/commands/project.py:22` — hardcoded `AVAILABLE_MODULES` список строк
-**Задачи**:
-- Оставить единый источник в `shared/contracts/dto/project.py`.
-- Удалить `shared/schemas/modules.py`, заменить импорты.
-- В CLI заменить hardcoded список на импорт enum.
+### ~~16. Consolidate `ServiceModule` (3 Sources of Truth)~~ → ✅ Done
+> Единый источник — `shared/contracts/dto/project.py`. Дубль `shared/schemas/modules.py` удалён. CLI и PO tools используют `ServiceModule` enum.
 
 ### 17. Dead Code & Legacy Cleanup
 **Документы**: `docs/refactor-audit-v2.md` §1
 **Проблема**: Остатки прошлых рефакторингов, которые можно безопасно вычистить.
 **Задачи**:
-- ~~Удалить deprecated команду `update_framework` из `orchestrator-cli/commands/engineering.py`.~~ → ✅ Done (удалена; copier update признан ненужным, service-template — one-shot template).
-- Удалить deprecated аргумент `--api-url` из `scripts/seed_agent_configs.py`.
-- Убрать 4 redundant `import base64` в `services/worker-manager/src/manager.py` (строки 586, 608, 629, 677 — top-level import на строке 1 остаётся).
-- Убрать legacy networking fallback в `manager.py:525-530` (если host networking больше не используется).
-- Убрать legacy project lookup по имени в `scheduler/src/tasks/github_sync.py:213-226` (если все проекты уже слинкованы).
+- ~~Удалить deprecated команду `update_framework` из `orchestrator-cli/commands/engineering.py`.~~ → ✅ Done
+- ~~Удалить deprecated аргумент `--api-url` из `scripts/seed_agent_configs.py`.~~ → ✅ Done
+- ~~Убрать 4 redundant `import base64` в `services/worker-manager/src/manager.py`.~~ → ✅ Done
+- Убрать legacy networking fallback в `manager.py:525-530` (активно используется в CI/e2e — **оставлено**, не мёртвый код).
+- Убрать legacy project lookup по имени в `scheduler/src/tasks/github_sync.py:213-226` (защитный fallback — **оставлено**, предотвращает дубликаты проектов).
 
 ### 18. Split `engineering_worker.py` (947 LOC)
 **Документы**: `docs/refactor-audit-v2.md` §4
