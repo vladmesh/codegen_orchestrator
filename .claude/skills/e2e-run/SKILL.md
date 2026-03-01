@@ -56,6 +56,37 @@ Be specific: include exact error messages, file paths, and what you expected
 vs what happened. This report is as valuable as the code itself.
 ```
 
+## GitHub Access
+
+**IMPORTANT**: The local `gh` CLI is bound to a personal account that does NOT have access
+to `project-factory-organization` repos. Never use `gh api`, `gh run`, `gh repo delete`, etc.
+
+Instead, use `GitHubAppClient` via docker compose exec. The `langgraph` container has the
+GitHub App credentials mounted and all necessary methods:
+
+```bash
+# Helper: run GitHubAppClient methods from the host
+docker compose exec -T langgraph python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+
+async def main():
+    gh = GitHubAppClient()
+    # Available methods:
+    # gh.list_repo_files(owner, repo, path='', ref='main') -> list[str]
+    # gh.get_file_contents(owner, repo, path, ref='main') -> str | None
+    # gh.get_latest_workflow_run(owner, repo, workflow_file, branch, created_after=None) -> dict
+    # gh.delete_repo(owner, repo) -> None
+    # gh.create_repo(org, name, description, private) -> dict
+    result = await gh.list_repo_files('project-factory-organization', 'REPO_NAME')
+    print(result)
+
+asyncio.run(main())
+"
+```
+
+Use this pattern everywhere you need to interact with GitHub repos.
+
 ## Execution Flow
 
 For each selected test case, execute these steps. If running multiple tests,
@@ -183,10 +214,18 @@ Poll based on level. Print status updates every check.
 **Level A** — poll GitHub for code (don't wait for task completion):
 
 ```bash
-REPO="project-factory-organization/$PROJECT_NAME"
+ORG="project-factory-organization"
 # Poll every 60s, timeout after 30 minutes
 for i in $(seq 1 30); do
-  FILES=$(gh api repos/$REPO/contents 2>/dev/null | jq -r '.[].name' 2>/dev/null)
+  FILES=$(docker compose exec -T langgraph python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+async def main():
+    gh = GitHubAppClient()
+    files = await gh.list_repo_files('$ORG', '$PROJECT_NAME')
+    print('\n'.join(files))
+asyncio.run(main())
+" 2>/dev/null)
   if echo "$FILES" | grep -q "Makefile"; then
     echo "Code pushed at attempt $i"
     break
@@ -234,19 +273,53 @@ done
 **Level A** — code exists in GitHub:
 
 ```bash
-REPO="project-factory-organization/$PROJECT_NAME"
-gh api repos/$REPO/contents | jq -r '.[].name'
-# Check for expected files: Makefile, pyproject.toml, services/
-# Verify code is not just scaffold — check last commit message
-gh api repos/$REPO/commits | jq '.[0].commit.message'
+ORG="project-factory-organization"
+docker compose exec -T langgraph python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+
+async def main():
+    gh = GitHubAppClient()
+    # List root files
+    files = await gh.list_repo_files('$ORG', '$PROJECT_NAME')
+    print('Root files:', sorted(files))
+    # Check for expected files: Makefile, pyproject.toml, services/
+    # Fetch latest commit via GitHub API
+    token = await gh.get_org_token('$ORG')
+    import httpx
+    async with httpx.AsyncClient() as http:
+        r = await http.get(
+            'https://api.github.com/repos/$ORG/$PROJECT_NAME/commits?per_page=3',
+            headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
+        )
+        if r.status_code == 200:
+            for c in r.json():
+                msg = c['commit']['message'].split(chr(10))[0]
+                print(f\"  {c['sha'][:8]} {msg}\")
+
+asyncio.run(main())
+"
 ```
 
 **Level B** — CI passed:
 
 ```bash
-gh run list -R $REPO --limit 5
-# Check latest CI run status
-gh run view -R $REPO $(gh run list -R $REPO --json databaseId -q '.[0].databaseId') 2>/dev/null
+ORG="project-factory-organization"
+docker compose exec -T langgraph python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+
+async def main():
+    gh = GitHubAppClient()
+    try:
+        run = await gh.get_latest_workflow_run('$ORG', '$PROJECT_NAME', 'ci.yml', 'main')
+        print(f\"CI run #{run['id']}: status={run['status']}, conclusion={run.get('conclusion')}\")
+        print(f\"URL: {run['html_url']}\")
+    except Exception as e:
+        print(f'CI check failed: {e}')
+
+asyncio.run(main())
+"
 ```
 
 **Level C** — service running on server:
@@ -263,24 +336,31 @@ curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" 
 Try to fetch `AUDIT_REPORT.md` that the developer worker commits to the repo.
 
 ```bash
-REPO="project-factory-organization/$PROJECT_NAME"
+ORG="project-factory-organization"
 DATE=$(date +%Y%m%d)
 mkdir -p docs/e2e_results
 
-# Try GitHub first
-AUDIT=$(gh api repos/$REPO/contents/AUDIT_REPORT.md 2>/dev/null | jq -r '.content' 2>/dev/null | base64 -d 2>/dev/null)
+# Fetch via GitHubAppClient
+docker compose exec -T langgraph python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
 
-# Fallback: workspace on disk
-if [ -z "$AUDIT" ]; then
-  AUDIT=$(cat /tmp/codegen/workspaces/project-${PROJECT_ID}/workspace/AUDIT_REPORT.md 2>/dev/null)
-fi
+async def main():
+    gh = GitHubAppClient()
+    content = await gh.get_file_contents('$ORG', '$PROJECT_NAME', 'AUDIT_REPORT.md')
+    if content:
+        print(content)
+    else:
+        print('NOT_FOUND')
 
-# Save if found
-if [ -n "$AUDIT" ]; then
-  echo "$AUDIT" > "docs/e2e_results/${PROJECT_NAME}-${DATE}-worker.md"
-  echo "Worker audit report saved"
-else
+asyncio.run(main())
+" 2>/dev/null > /tmp/audit_report.txt
+
+if grep -q "NOT_FOUND" /tmp/audit_report.txt; then
   echo "No worker audit report found"
+else
+  cp /tmp/audit_report.txt "docs/e2e_results/${PROJECT_NAME}-${DATE}-worker.md"
+  echo "Worker audit report saved"
 fi
 ```
 
@@ -338,7 +418,17 @@ Report structure:
 docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$PROJECT_NAME" | xargs -r docker rm -f
 
 # 2. Delete GitHub repo
-gh repo delete project-factory-organization/$PROJECT_NAME --yes
+docker compose exec -T langgraph python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+
+async def main():
+    gh = GitHubAppClient()
+    await gh.delete_repo('project-factory-organization', '$PROJECT_NAME')
+    print('Repo deleted')
+
+asyncio.run(main())
+"
 ```
 
 **Level C only** — also clean server deployment:
