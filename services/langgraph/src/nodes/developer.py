@@ -329,6 +329,20 @@ class DeveloperNode(FunctionalNode):
     ) -> str:
         """Build task message for new project creation (scaffolded)."""
         modules_str = ",".join(modules)
+        has_backend = "backend" in modules
+
+        spec_lines = ""
+        if has_backend:
+            spec_lines = (
+                "\n- `shared/spec/models.yaml` - domain models definition"
+                "\n- `shared/spec/events.yaml` - events definition"
+            )
+
+        generate_hint = ""
+        if has_backend:
+            generate_hint = (
+                "\nRun `make generate-from-spec` after modifying spec files to regenerate code.\n"
+            )
 
         return f"""# Task: Build {project_name}
 
@@ -345,15 +359,11 @@ class DeveloperNode(FunctionalNode):
 
 The project was scaffolded with `copier` from `service-template`.
 You'll find:
-- `services/{modules_str.split(",")[0]}/` - main service directory
-- `shared/spec/models.yaml` - domain models definition
-- `shared/spec/events.yaml` - events definition
+- `services/{modules_str.split(",")[0]}/` - main service directory{spec_lines}
 - `/home/worker/TASK.md` - detailed requirements
 - `AGENTS.md` - code structure patterns
 - `Makefile` - build commands
-
-Run `make generate` after modifying spec files to regenerate code.
-
+{generate_hint}
 ## Implementation
 
 Implement the business logic according to the specification:

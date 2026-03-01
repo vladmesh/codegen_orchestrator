@@ -20,10 +20,10 @@
 - ~~Упростить `service_template` до опционального Backend/Postgres.~~ → ✅ Done (`modules=tg_bot` работает без DB)
 - ~~Убрать tooling-контейнер.~~ → ✅ Done (per-service `.venv` + `uv`)
 
-**Orchestrator-side (наша сторона):** ⚠️ Осталось обновить промпты и инструкции воркеров
-- `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md:98` — ссылается на `make sync-services check`, которой больше нет в template. Убрать.
-- `services/langgraph/src/nodes/developer.py:355` — `make generate` → должно быть `make generate-from-spec`.
-- `services/langgraph/src/nodes/developer.py:349-350` — промпт всегда указывает на `shared/spec/models.yaml` и `events.yaml`, но при `modules=tg_bot` этих файлов нет. Сделать условным.
+**Orchestrator-side (наша сторона):** ✅ **Всё выполнено**
+- ~~`services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md:98` — ссылается на `make sync-services check`, которой больше нет в template. Убрать.~~ → ✅ Done
+- ~~`services/langgraph/src/nodes/developer.py:355` — `make generate` → должно быть `make generate-from-spec`.~~ → ✅ Done
+- ~~`services/langgraph/src/nodes/developer.py:349-350` — промпт всегда указывает на `shared/spec/models.yaml` и `events.yaml`, но при `modules=tg_bot` этих файлов нет. Сделать условным.~~ → ✅ Done
 - ~~Облегчить worker-base image: убрать предустановленные ruff, xenon, pytest, mypy, copier и др. Перейти на `uv tool install` on-demand. Добавить uv-cache volume.~~ → ✅ Done (коммит `71eb9d1`, Iteration 4 из `plan-tooling-removal`)
 
 ### 2. Agent Hierarchy & Incident Response Pipeline

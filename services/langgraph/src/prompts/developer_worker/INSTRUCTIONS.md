@@ -95,7 +95,6 @@ Use `EXEC_MODE=native` for all Make targets that run linters, formatters, genera
 make lint EXEC_MODE=native
 make format EXEC_MODE=native
 make generate-from-spec EXEC_MODE=native
-make sync-services check EXEC_MODE=native
 
 # Unit tests (run natively, no infrastructure needed)
 make tests unit EXEC_MODE=native
