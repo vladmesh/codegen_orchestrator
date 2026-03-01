@@ -13,10 +13,17 @@
 ### 1. Service Template Simplification & Refactoring
 **Документы**: `docs/brainstorms/service-template-and-dev-environment.md`
 **Проблема**: Фреймворк `service_template` сильно перегружен абстракциями. 8 кодогенераторов, обязательный PostgreSQL для любого проекта.
-**Задачи**:
-- Избавиться от избыточных кодогенераторов (`RoutersGenerator`, `ClientsGenerator`, `RegistryGenerator`, `sync_services`).
-- Оставить только contract-first генерацию (общесетевых моделей, схем эвентов) и начального пула папок. Внутреннюю логику агент пишет сам.
-- Упростить `service_template` до опционального Backend/Postgres (для простых Telegram-ботов). (Cross-project: orchestrator scaffolder + template).
+
+**Template-side (service-template repo):** ✅ **Всё выполнено**
+- ~~Избавиться от избыточных кодогенераторов (`RoutersGenerator`, `ClientsGenerator`, `RegistryGenerator`, `sync_services`).~~ → ✅ Done (коммит `e924857`, 9→5 генераторов)
+- ~~Оставить только contract-first генерацию (общесетевых моделей, схем эвентов) и начального пула папок.~~ → ✅ Done
+- ~~Упростить `service_template` до опционального Backend/Postgres.~~ → ✅ Done (`modules=tg_bot` работает без DB)
+- ~~Убрать tooling-контейнер.~~ → ✅ Done (per-service `.venv` + `uv`)
+
+**Orchestrator-side (наша сторона):** ⚠️ Осталось обновить промпты и инструкции воркеров
+- `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md:98` — ссылается на `make sync-services check`, которой больше нет в template. Убрать.
+- `services/langgraph/src/nodes/developer.py:355` — `make generate` → должно быть `make generate-from-spec`.
+- `services/langgraph/src/nodes/developer.py:349-350` — промпт всегда указывает на `shared/spec/models.yaml` и `events.yaml`, но при `modules=tg_bot` этих файлов нет. Сделать условным.
 
 ### 2. Agent Hierarchy & Incident Response Pipeline
 **Документы**: `docs/brainstorms/agent-hierarchy.md`
