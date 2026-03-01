@@ -50,6 +50,16 @@
 - Очищать зависшие контейнеры / образы после окончания деплоев проекта (`docker image prune`).
 > *Часть с пользователем `deploy`, SSH hardening, fail2ban и UFW уже выполнена в ansible ролях.*
 
+### 15. Resolve Enum Divergence between Models and DTOs
+**Документы**: `docs/refactor-audit-v2.md` §3
+**Проблема**: Enum-ы с одинаковыми именами, но **разными значениями** между `shared/models/` и `shared/contracts/dto/`. Это риск data integrity на границе API/DB.
+- `ServerStatus`: модель — 11 значений (`ready`, `in_use`, `error`, `reserved`, `missing`, `decommissioned`…), DTO — 8 значений (`new`, `active`, `unreachable`…). Только 5 пересекаются.
+- `IncidentStatus`: модель — `detected`/`recovering`/`resolved`/`failed`, DTO — `open`/`resolved`. Единственное пересечение — `resolved`.
+- Модель имеет `IncidentType`, DTO имеет `IncidentSeverity` — разные концепции, не аналоги.
+**Задачи**:
+- Принять решение: DTO зеркалит модель (единый enum), или у них осознанно разные lifecycle (тогда нужен explicit маппинг).
+- Привести в соответствие или задокументировать маппинг.
+
 ---
 
 ## 🟡 MEDIUM Priority (Process Stability, Automation)
@@ -76,6 +86,44 @@
 **Документы**: `docs/audit.md`
 Отразить в документации, что `deploy-worker` и `engineering-worker` являются процессами LangGraph, а не скрытыми суб-сервисами.
 
+### 16. Consolidate `ServiceModule` (3 Sources of Truth)
+**Документы**: `docs/refactor-audit-v2.md` §2.1
+**Проблема**: Модули проекта (`backend`, `tg_bot`, `notifications`, `frontend`) определены в трёх местах:
+1. `shared/contracts/dto/project.py` — `ServiceModule(StrEnum)`
+2. `shared/schemas/modules.py` — `ServiceModule(StrEnum)` (идентичный дубль)
+3. `packages/orchestrator-cli/src/orchestrator_cli/commands/project.py:22` — hardcoded `AVAILABLE_MODULES` список строк
+**Задачи**:
+- Оставить единый источник в `shared/contracts/dto/project.py`.
+- Удалить `shared/schemas/modules.py`, заменить импорты.
+- В CLI заменить hardcoded список на импорт enum.
+
+### 17. Dead Code & Legacy Cleanup
+**Документы**: `docs/refactor-audit-v2.md` §1
+**Проблема**: Остатки прошлых рефакторингов, которые можно безопасно вычистить.
+**Задачи**:
+- Удалить deprecated команду `update_framework` из `orchestrator-cli/commands/engineering.py` (или перенести функционал — требует отдельного решения).
+- Удалить deprecated аргумент `--api-url` из `scripts/seed_agent_configs.py`.
+- Убрать 4 redundant `import base64` в `services/worker-manager/src/manager.py` (строки 586, 608, 629, 677 — top-level import на строке 1 остаётся).
+- Убрать legacy networking fallback в `manager.py:525-530` (если host networking больше не используется).
+- Убрать legacy project lookup по имени в `scheduler/src/tasks/github_sync.py:213-226` (если все проекты уже слинкованы).
+
+### 18. Split `engineering_worker.py` (947 LOC)
+**Документы**: `docs/refactor-audit-v2.md` §4
+Самый большой файл в кодовой базе. Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули или helper-классы.
+
+### 19. Split `github.py` Client (863 LOC)
+**Документы**: `docs/refactor-audit-v2.md` §4
+Разбить `shared/clients/github.py` на submodules по domain: repos, actions, secrets, workflows. Фасад `GitHubAppClient` делегирует в sub-clients.
+
+### 20. API Key & SSH Key Encryption
+**Документы**: `docs/refactor-audit-v2.md` §6.1
+**Проблема**: API keys и SSH keys хранятся plain text несмотря на наличие Fernet-шифрования для project secrets.
+- `services/api/src/routers/api_keys.py:36` — `TODO: Add real encryption here`
+- `services/api/src/routers/api_keys.py:72` — `TODO: Add real decryption here`
+- `services/api/src/routers/servers.py:66` — `TODO: Encrypt ssh_key`
+**Задачи**:
+- Применить существующий `SecretsCipher` (Fernet) к API key values и SSH keys.
+
 ---
 
 ## 🟢 LOW Priority (Product Features, Polish, Ad-Hocs)
@@ -90,6 +138,8 @@
 - **Cost Tracking**: Мониторинг LLM-баланса, расчёты потраченных токенов на проект.
 - **Deploy Rollback Capability**: Откат деплоя при failed health checks продакшена.
 - **Docker Python SDK**: Миграция вызовов docker cli в subprocess`ах worker-manager'а на официальный Docker SDK.
+- **Fix `sys.path` hack в telegram_bot**: `main.py:37` делает `sys.path.insert(0, "/app")` + 6 строк `noqa: E402`. Решить через PYTHONPATH в Docker или proper packaging.
+- **Split Tier 2 large files**: `devops/nodes.py` (516), `telegram_bot/main.py` (473), `env_analyzer.py` (462), `server_sync.py` (411), `developer.py` (405) — разбивать по мере касания.
 
 ---
 
@@ -109,3 +159,6 @@
 - **Pre-push Tests to Local venv (#6)**: Done. Интегрирован быстрый локальный pytest скрипт без Docker overhead.
 - **Security Audit Base (#7)**: Done. Пароли отключены, deploy юзер создан, fail2ban/UFW настроены.
 - **Contract Consistency (#14)**: Done. Избавились от сырых вызовов `xadd` в пользу методов клиента.
+- **StrEnum Migration**: Done. 21 instance `(str, Enum)` → `StrEnum` в 14 файлах (shared/contracts, shared/models, shared/schemas, services/langgraph).
+- **Stale ruff.toml Cleanup**: Done. Удалены 3 per-file-ignores для несуществующих файлов (`product_owner.py`, `capabilities/base.py`, `worker.py`).
+- **MockProcess Test Dedup**: Done. Вынесен в `packages/worker-wrapper/tests/conftest.py`.
