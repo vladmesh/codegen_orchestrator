@@ -19,10 +19,11 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
-      interval: 5s
-      timeout: 3s
+      test: [ "CMD", "curl", "-f", "http://127.0.0.1:8000/health" ]
+      interval: 2s
+      timeout: 1s
       retries: 10
+      start_period: 5s
     networks:
       - internal
     volumes:
@@ -274,9 +275,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
-      interval: 5s
-      timeout: 3s
+      interval: 2s
+      timeout: 1s
       retries: 5
+      start_period: 5s
     volumes:
       - db_data:/var/lib/postgresql/data
     networks:
@@ -288,16 +290,16 @@ services:
       - redis_data:/data
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
-      interval: 5s
-      timeout: 3s
+      interval: 2s
+      timeout: 1s
       retries: 5
+      start_period: 2s
     networks:
       - internal
 
 networks:
   internal:
     name: codegen_internal
-
 
 volumes:
   db_data:
