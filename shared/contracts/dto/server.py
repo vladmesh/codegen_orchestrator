@@ -1,18 +1,8 @@
 from datetime import datetime
-from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict
 
-
-class ServerStatus(StrEnum):
-    NEW = "new"
-    PENDING_SETUP = "pending_setup"
-    PROVISIONING = "provisioning"
-    ACTIVE = "active"
-    UNREACHABLE = "unreachable"
-    MAINTENANCE = "maintenance"
-    FORCE_REBUILD = "force_rebuild"
-    DISCOVERED = "discovered"
+from shared.models.server import ServerStatus
 
 
 class ServerCreate(BaseModel):

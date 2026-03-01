@@ -58,15 +58,8 @@
 - Очищать зависшие контейнеры / образы после окончания деплоев проекта (`docker image prune`).
 > *Часть с пользователем `deploy`, SSH hardening, fail2ban и UFW уже выполнена в ansible ролях.*
 
-### 15. Resolve Enum Divergence between Models and DTOs
-**Документы**: `docs/refactor-audit-v2.md` §3
-**Проблема**: Enum-ы с одинаковыми именами, но **разными значениями** между `shared/models/` и `shared/contracts/dto/`. Это риск data integrity на границе API/DB.
-- `ServerStatus`: модель — 11 значений (`ready`, `in_use`, `error`, `reserved`, `missing`, `decommissioned`…), DTO — 8 значений (`new`, `active`, `unreachable`…). Только 5 пересекаются.
-- `IncidentStatus`: модель — `detected`/`recovering`/`resolved`/`failed`, DTO — `open`/`resolved`. Единственное пересечение — `resolved`.
-- Модель имеет `IncidentType`, DTO имеет `IncidentSeverity` — разные концепции, не аналоги.
-**Задачи**:
-- Принять решение: DTO зеркалит модель (единый enum), или у них осознанно разные lifecycle (тогда нужен explicit маппинг).
-- Привести в соответствие или задокументировать маппинг.
+### ~~15. Resolve Enum Divergence between Models and DTOs~~ → ✅ Done
+> `ServerStatus` — единый enum в `shared/models/server.py` (superset: добавлены `NEW`, `ACTIVE`, `UNREACHABLE`). DTO реэкспортирует из модели. `shared/contracts/dto/incident.py` удалён как dead code (zero imports).
 
 ---
 

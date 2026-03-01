@@ -14,6 +14,7 @@ class ServerStatus(StrEnum):
 
     # Discovery
     DISCOVERED = "discovered"  # Обнаружен в Time4VPS API
+    NEW = "new"  # Новый, ещё не классифицирован
     PENDING_SETUP = "pending_setup"  # Новый managed сервер, требует настройки
 
     # Provisioning
@@ -23,9 +24,11 @@ class ServerStatus(StrEnum):
     # Operational
     READY = "ready"  # Настроен, готов принимать сервисы
     IN_USE = "in_use"  # Имеет активные сервисы
+    ACTIVE = "active"  # Доступен и работает
 
     # Issues
     ERROR = "error"  # Инцидент: был в норме, доступ пропал
+    UNREACHABLE = "unreachable"  # Недоступен по сети
     MAINTENANCE = "maintenance"  # Плановое обслуживание
 
     # Archive
