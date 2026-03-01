@@ -56,5 +56,6 @@ services:
       api:
         condition: service_healthy
     volumes:
-      # Mount tests dynamically so we don't need to rebuild image to change tests
+      - ../../../services/api/src:/app/src
       - ../../../services/api/tests:/app/tests
+      - ../../../shared:/app/shared

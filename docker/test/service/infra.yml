@@ -32,5 +32,6 @@ services:
       infra-service:
         condition: service_started
     volumes:
-      - ../../../services/infra-service/tests:/app/services/infra-service/tests
       - ../../../services/infra-service/src:/app/services/infra-service/src
+      - ../../../services/infra-service/tests:/app/services/infra-service/tests
+      - ../../../shared:/app/shared

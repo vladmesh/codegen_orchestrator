@@ -59,4 +59,6 @@ services:
       api:
         condition: service_healthy
     volumes:
+      - ../../../services/scheduler/src:/app/src
       - ../../../services/scheduler/tests:/app/tests
+      - ../../../shared:/app/shared

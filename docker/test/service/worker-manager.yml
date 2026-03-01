@@ -43,4 +43,6 @@ services:
       worker-manager:
         condition: service_healthy
     volumes:
+      - ../../../services/worker-manager/src:/app/src
       - ../../../services/worker-manager/tests:/app/tests
+      - ../../../shared:/app/shared

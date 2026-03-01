@@ -43,4 +43,6 @@ services:
       langgraph:
         condition: service_started
     volumes:
+      - ../../../services/langgraph/src:/app/src
       - ../../../services/langgraph/tests:/app/tests
+      - ../../../shared:/app/shared
