@@ -34,7 +34,7 @@ orchestrator project create --name <name> --modules <modules> \\
     --description "<what to build>"
 
 # Available modules (comma-separated):
-#   backend    - FastAPI REST API (always included)
+#   backend    - FastAPI REST API + PostgreSQL
 #   tg_bot     - Telegram bot service
 #   notifications - Notification worker
 #   frontend   - Frontend application

@@ -19,7 +19,6 @@ console = Console()
 
 
 # Available modules in service-template (must match copier.yml)
-# backend is always required
 AVAILABLE_MODULES = ["backend", "tg_bot", "notifications", "frontend"]
 DESCRIPTION_TRUNCATE_LENGTH = 80
 
@@ -42,10 +41,6 @@ async def create_project_async(
     # Default to backend if no modules specified
     if not modules:
         modules = ["backend"]
-
-    # Ensure backend is always included
-    if "backend" not in modules:
-        modules = ["backend", *modules]
 
     project_id = str(uuid.uuid4())
     config = {"modules": modules}

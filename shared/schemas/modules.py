@@ -10,10 +10,10 @@ class ServiceModule(str, Enum):
     """Available modules for project scaffolding.
 
     These correspond to modules in vladmesh/service-template.
-    BACKEND is always required.
+    Any combination is valid (at least one required).
     """
 
-    BACKEND = "backend"  # Core backend service (required)
+    BACKEND = "backend"  # FastAPI REST API + PostgreSQL
     TG_BOT = "tg_bot"  # Telegram bot service
-    NOTIFICATIONS = "notifications"  # Notifications worker
+    NOTIFICATIONS = "notifications"  # Notifications worker (requires backend)
     FRONTEND = "frontend"  # Frontend service

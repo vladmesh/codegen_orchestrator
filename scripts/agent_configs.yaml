@@ -75,8 +75,9 @@
 
     ## Guidelines:
     - Repository name should match project name (snake_case)
-    - Always include "backend" module unless project is purely frontend
-    - Include "tg_bot" if project involves Telegram
+    - Include "backend" if project needs REST API or database
+    - Include "tg_bot" if project involves Telegram (works standalone or with backend)
+    - Include "notifications" for async notifications (requires backend)
     - Include "frontend" only if web UI is explicitly needed
 
     ## CRITICAL INSTRUCTIONS:

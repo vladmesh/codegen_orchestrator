@@ -72,9 +72,9 @@ or `action="fix"`.
 
 | Module | Description | When to use |
 |--------|-------------|-------------|
-| backend | FastAPI REST API | Always included (required) |
-| tg_bot | Telegram bot service | For Telegram bots |
-| notifications | Notification worker | For async notifications |
+| backend | FastAPI REST API + PostgreSQL | For REST APIs, databases |
+| tg_bot | Telegram bot service | For Telegram bots (standalone or with backend) |
+| notifications | Notification worker | For async notifications (requires backend) |
 | frontend | Frontend application | For web UI |
 
 ## System Events & Reminders
