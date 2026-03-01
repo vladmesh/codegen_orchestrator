@@ -279,6 +279,29 @@ ssh root@$SERVER_IP "cd /opt/apps/$PROJECT_NAME && docker compose logs --tail=50
 ssh root@$SERVER_IP "cd /opt/apps/$PROJECT_NAME && docker compose ps"
 ```
 
+### Step 6: Collect Audit Report
+
+The developer worker commits `AUDIT_REPORT.md` to the repo. Fetch it from GitHub:
+
+```bash
+REPO="project-factory-organization/$PROJECT_NAME"
+
+# Download audit report
+gh api repos/$REPO/contents/AUDIT_REPORT.md | jq -r '.content' | base64 -d
+
+# Or save to a file
+gh api repos/$REPO/contents/AUDIT_REPORT.md | jq -r '.content' | base64 -d \
+  > "audit_${PROJECT_NAME}.md"
+```
+
+If the report wasn't pushed (worker failed mid-task), grab it from the workspace on disk:
+
+```bash
+cat /tmp/codegen/workspaces/project-${PROJECT_ID}/workspace/AUDIT_REPORT.md
+```
+
+> Note: Workspace GC runs every 24h. Collect the report before cleanup.
+
 ---
 
 ## Cleanup
