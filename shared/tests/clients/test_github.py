@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from shared.clients.github import GitHubAppClient
+from shared.clients.github import GitHubAppClient, WorkflowNotFoundError
 
 
 @pytest.fixture
@@ -204,3 +204,36 @@ async def test_trigger_workflow_dispatch_unprocessable(authed_client):
 
             with pytest.raises(httpx.HTTPStatusError):
                 await authed_client.trigger_workflow_dispatch(owner, repo, "deploy.yml")
+
+
+# --- get_latest_workflow_run tests ---
+
+
+@pytest.mark.asyncio
+async def test_get_latest_workflow_run_404_raises_workflow_not_found(authed_client):
+    """404 on workflow runs endpoint → WorkflowNotFoundError (not raw HTTPStatusError)."""
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.get(f"/repos/{owner}/{repo}/actions/workflows/ci.yml/runs").mock(
+                return_value=httpx.Response(404)
+            )
+
+            with pytest.raises(WorkflowNotFoundError, match="ci.yml"):
+                await authed_client.get_latest_workflow_run(owner, repo, "ci.yml")
+
+
+@pytest.mark.asyncio
+async def test_get_latest_workflow_run_empty_runs_returns_none(authed_client):
+    """200 with no runs → None (workflow exists but hasn't been triggered)."""
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.get(f"/repos/{owner}/{repo}/actions/workflows/ci.yml/runs").mock(
+                return_value=httpx.Response(200, json={"workflow_runs": []})
+            )
+
+            result = await authed_client.get_latest_workflow_run(owner, repo, "ci.yml")
+            assert result is None

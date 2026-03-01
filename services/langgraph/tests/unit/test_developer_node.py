@@ -222,3 +222,56 @@ class TestScaffoldConfigConstruction:
         # Project should be patched to scaffold_failed
         patch_calls = [str(c) for c in mock_api.patch.call_args_list]
         assert any("scaffold_failed" in c for c in patch_calls)
+
+
+class TestTaskMessageDescription:
+    """Tests that _build_create_task reads description from config, not top-level."""
+
+    def test_description_from_config(self):
+        """Description in TASK.md must come from config.description."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        project_spec = {
+            "name": "test-project",
+            "config": {
+                "modules": ["backend"],
+                "description": "Build a REST API for todos",
+            },
+        }
+        task_md = node._build_create_task(
+            project_name="test-project",
+            description="Build a REST API for todos",
+            modules=["backend"],
+            project_spec=project_spec,
+        )
+        assert "Build a REST API for todos" in task_md
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_config_description_flows_to_task_message(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """config.description must appear in the task_content passed to request_spawn."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="create", status="scaffolded")
+        # Override with specific description
+        state["project_spec"]["config"]["description"] = "My specific task with audit"
+        await node.run(state)
+
+        mock_spawn.assert_awaited_once()
+        task_content = mock_spawn.call_args[1]["task_content"]
+        assert "My specific task with audit" in task_content

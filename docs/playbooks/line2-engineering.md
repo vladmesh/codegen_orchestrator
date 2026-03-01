@@ -93,11 +93,23 @@ vs what happened. This report is as valuable as the code itself.
 
 ### Prerequisites
 
-- **Line 1 passed**: Run `make test-e2e-scaffold` first. This e2e test verifies the scaffold phase (copier + make setup + git push) works correctly inside a worker container. If Line 1 fails, Line 2 will fail at the scaffold step.
-- Stack is running: `make up`
-- Engineering worker consuming: check `docker compose logs engineering-worker`
-- Worker-manager running: check `docker compose logs worker-manager`
-- For Level C: at least one managed server with capacity in DB
+> **BLOCKER**: Steps 1-2 must pass. If scaffold doesn't work, Line 2 will silently
+> skip it and Claude Code will waste time building from scratch on an empty repo.
+
+1. **Line 1 scaffold test passes**: Run `make test-e2e-scaffold` and verify it succeeds.
+   This validates the scaffold phase (copier + make setup + git push) inside a worker container.
+2. **Stack is running and healthy**:
+   ```bash
+   make up
+   # Verify ALL services are up (especially api — it can silently fail to start)
+   docker compose ps --format "{{.Name}} {{.Status}}" | grep -v "Up"
+   # Should output nothing. If api is missing: docker compose up api -d
+   curl -s http://localhost:8000/health | jq .
+   # Expected: {"status":"ok"}
+   ```
+3. Engineering worker consuming: check `docker compose logs engineering-worker --tail=5`
+4. Worker-manager running: check `docker compose logs worker-manager --tail=5`
+5. For Level C: at least one managed server with capacity in DB
 
 ### Step 1: Create Project
 
@@ -150,30 +162,75 @@ curl -s -X PATCH http://localhost:8000/api/projects/$PROJECT_ID \
 
 ### Step 3: Trigger Engineering
 
+Two sub-steps: create a task in the API, then publish to the Redis queue.
+
 ```bash
 # Level A/B: skip deploy
 SKIP_DEPLOY=true
-
 # Level C: full flow with deploy
 # SKIP_DEPLOY=false
 
+# 3a. Create task via API
+TASK_ID="eng-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')"
+
+curl -s -X POST http://localhost:8000/api/tasks/ \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n \
+    --arg id "$TASK_ID" \
+    --arg pid "$PROJECT_ID" \
+    '{
+      id: $id,
+      type: "engineering",
+      project_id: $pid,
+      task_metadata: {triggered_by: "cli", action: "create"},
+      callback_stream: "agent:events:manual-test"
+    }')" | jq .
+
+# 3b. Publish to engineering queue
 docker compose exec -T langgraph python -c "
-import asyncio, json, uuid, os
-os.environ.setdefault('ORCHESTRATOR_API_URL', 'http://api:8000')
-os.environ.setdefault('REDIS_URL', 'redis://redis:6379')
+import asyncio
+from shared.contracts.queues.engineering import EngineeringMessage
+from shared.redis.client import RedisStreamClient
+from shared.queues import ENGINEERING_QUEUE
 
-from orchestrator_cli.commands.engineering import trigger_engineering_async
+async def main():
+    client = RedisStreamClient()
+    await client.connect()
+    msg = EngineeringMessage(
+        task_id='$TASK_ID',
+        project_id='$PROJECT_ID',
+        user_id='manual-test',
+        action='create',
+        skip_deploy=$SKIP_DEPLOY,
+        callback_stream='agent:events:manual-test',
+    )
+    mid = await client.publish_message(ENGINEERING_QUEUE, msg)
+    print(f'Task {msg.task_id} published to {ENGINEERING_QUEUE}: {mid}')
+    await client.close()
 
-result = asyncio.run(trigger_engineering_async(
-    project_id='$PROJECT_ID',
-    action='create',
-    skip_deploy=$SKIP_DEPLOY,
-))
-print(json.dumps(result, indent=2))
+asyncio.run(main())
 "
+
+echo "TASK_ID=$TASK_ID"
 ```
 
-Save the `task_id` from output.
+Save the `TASK_ID` from output.
+
+### Step 3c: Verify Scaffold Started (do this immediately!)
+
+Within 30 seconds of triggering, check that scaffold is running. If you see
+`developer_node_start` **without** a preceding `scaffold_phase_start`, the scaffold
+was skipped — **abort immediately** to avoid wasting Claude Code credits.
+
+```bash
+sleep 15
+docker compose logs worker-manager --tail=20 --since=30s 2>&1 | grep -E "scaffold|copier|creating_worker"
+# GOOD: "scaffold_phase_start" or "copier" appears
+# BAD:  only "creating_worker" with no scaffold → scaffold was skipped, abort
+
+# If scaffold was skipped, kill the worker:
+# docker ps --filter "name=dev-*$PROJECT_NAME*" -q | xargs -r docker rm -f
+```
 
 ### Step 4: Monitor
 
@@ -302,6 +359,82 @@ cat /tmp/codegen/workspaces/project-${PROJECT_ID}/workspace/AUDIT_REPORT.md
 ```
 
 > Note: Workspace GC runs every 24h. Collect the report before cleanup.
+
+### Step 7: Write E2E Report
+
+After a test completes (pass or fail), write a report to `docs/e2e_results/`.
+This step is mandatory — we learn as much from failures as from successes.
+
+#### 7a. Save worker audit report (if available)
+
+If the developer worker produced `AUDIT_REPORT.md` (Step 6), save it alongside
+the main report under a unique name:
+
+```bash
+# Save audit report from worker
+gh api repos/$REPO/contents/AUDIT_REPORT.md | jq -r '.content' | base64 -d \
+  > docs/e2e_results/audit-${PROJECT_NAME}-$(date +%Y%m%d).md
+
+# Or from workspace if not pushed
+cp /tmp/codegen/workspaces/project-${PROJECT_ID}/workspace/AUDIT_REPORT.md \
+  docs/e2e_results/audit-${PROJECT_NAME}-$(date +%Y%m%d).md 2>/dev/null || true
+```
+
+#### 7b. Write the investigation report
+
+Create `docs/investigations/e2e-<project_name>-<date>.md` documenting every problem
+encountered during the test. Use existing reports in `docs/investigations/` as a
+format reference.
+
+For each problem, classify it into one of four types:
+
+| Type | Description | Where to fix |
+|------|-------------|--------------|
+| **orchestrator** | Bug or issue in this project (codegen_orchestrator) | Fix in this repo |
+| **template** | Bug or issue in `service-template` (scaffolding, framework, generated code). The template lives at `/home/vlad/projects/service-template` — read it to confirm root cause. | Fix in service-template repo |
+| **meta** | Error in test setup: wrong commands, missing prerequisites, unclear playbook instructions | Fix by updating this playbook |
+| **other** | Network failures, hardware issues, transient errors, anything not in the above three | Document and move on |
+
+Report structure:
+
+```markdown
+# E2E Investigation: <project_name> — <brief summary>
+
+> **Date**: YYYY-MM-DD
+> **Project**: <project_name> (project_id: `...`)
+> **Task**: <task_id>
+> **Test level**: A / B / C
+> **Status**: Passed / Failed
+> **Worker audit report**: [audit-<name>-<date>.md](../e2e_results/audit-<name>-<date>.md) (if available)
+
+---
+
+## Timeline
+(chronological log of what happened)
+
+## Problems Found
+
+### Problem 1: <title>
+- **Type**: orchestrator | template | meta | other
+- **Severity**: critical / major / minor
+- **Description**: ...
+- **Root cause**: ...
+- **Suggested fix**: ...
+
+### Problem 2: ...
+```
+
+If the worker audit report was collected (Step 7a), reference it by filename in
+the investigation report header. The audit report captures the developer agent's
+perspective — problems it hit while writing code inside the generated project.
+
+#### 7c. Commit both files
+
+```bash
+git add docs/investigations/e2e-${PROJECT_NAME}-$(date +%Y%m%d).md
+git add docs/e2e_results/audit-${PROJECT_NAME}-$(date +%Y%m%d).md 2>/dev/null
+git commit -m "docs: e2e report for ${PROJECT_NAME}"
+```
 
 ---
 

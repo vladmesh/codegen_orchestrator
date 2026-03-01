@@ -64,8 +64,8 @@ class DeveloperNode(FunctionalNode):
             }
 
         project_name = project_spec.get("name", "project")
-        project_description = project_spec.get("description", "")
         config = project_spec.get("config") or {}
+        project_description = config.get("description", "")
         modules = config.get("modules", ["backend"])
 
         action = state.get("action", "create")

@@ -14,6 +14,10 @@ from shared.schemas.github import GitHubRepository
 logger = get_logger(__name__)
 
 
+class WorkflowNotFoundError(RuntimeError):
+    """Raised when a GitHub Actions workflow file does not exist in the repository."""
+
+
 class GitHubAppClient:
     """Client for authenticated GitHub App interactions."""
 
@@ -640,12 +644,21 @@ class GitHubAppClient:
         if created_after:
             params["created"] = f">={created_after.strftime('%Y-%m-%dT%H:%M:%SZ')}"
 
-        resp = await self._make_request(
-            "GET",
-            f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_file}/runs",
-            headers=headers,
-            params=params,
-        )
+        try:
+            resp = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow_file}/runs",
+                headers=headers,
+                params=params,
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                raise WorkflowNotFoundError(
+                    f"Workflow '{workflow_file}' not found in {owner}/{repo}. "
+                    "The repository may be missing .github/workflows/ — "
+                    "scaffold phase likely failed or was skipped."
+                ) from e
+            raise
 
         runs = resp.json().get("workflow_runs", [])
         if not runs:

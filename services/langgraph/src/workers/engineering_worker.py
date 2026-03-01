@@ -481,7 +481,10 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
     try:
         # Update task status to running
-        await api_client.patch(f"tasks/{task_id}", json={"status": "running"})
+        await api_client.patch(
+            f"tasks/{task_id}",
+            json={"status": "running", "started_at": datetime.now(UTC).isoformat()},
+        )
 
         # Publish progress event
         await publish_callback_event(
@@ -615,16 +618,23 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "errors": [],
         }
 
-        # Update project status to developing
-        await api_client.patch(
-            f"projects/{project_id}",
-            json={"status": ProjectStatus.DEVELOPING.value},
-        )
+        # NOTE: Do NOT update project status here.
+        # Status must remain "scaffolding" so the developer node's
+        # _build_scaffold_config() can detect it and trigger copier.
+        # The developer node updates status to "scaffolded" after scaffold
+        # succeeds, and engineering_worker sets "developing" after subgraph
+        # completes.
 
         # Create and run engineering subgraph
         engineering_subgraph = create_engineering_subgraph()
         developer_started_at = datetime.now(UTC)
         result = await engineering_subgraph.ainvoke(subgraph_input)
+
+        # Update project status to developing (after scaffold + code generation)
+        await api_client.patch(
+            f"projects/{project_id}",
+            json={"status": ProjectStatus.DEVELOPING.value},
+        )
 
         # Check result status
         if result.get("engineering_status") == "done":
