@@ -116,7 +116,7 @@ jobs:
         if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
         with:
           path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ matrix.service }}-${{ hashFiles(format('services/{0}/pyproject.toml', matrix.service)) }}
+          key: ${{ runner.os }}-buildx-${{ matrix.service }}-${{ hashFiles(format('services/{0}/pyproject.toml', matrix.service), format('packages/{0}/pyproject.toml', matrix.service)) }}
           restore-keys: |
             ${{ runner.os }}-buildx-${{ matrix.service }}-
             ${{ runner.os }}-buildx-

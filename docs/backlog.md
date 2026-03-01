@@ -23,7 +23,7 @@
 **Проблема**: `PO-воркер` сейчас берёт на себя слишком много. Ошибки в пайплайне не исправляются умно, а падают с исчерпанием ретраев.
 **Задачи**:
 - **TaskAssessor & Architect**: Внедрить ноду Архитектора для сложных задач и TaskAssessor для первоначального анализа.
-- **Scaffolder node**: Перевести Scaffolder из механического background-сервиса в ноду Engineering subgraph.
+- ~~**Scaffolder node**: Перевести Scaffolder из механического background-сервиса в ноду Engineering subgraph.~~ → ✅ Done (scaffolder удалён; copier выполняется в worker-manager scaffold phase, repo creation inline в engineering worker)
 - **Watchdog & Recovery**: Добавить DockerEventsListener и DLQ consumer в scheduler + простые рекавери-плейбуки. Добавить механизм `request_help` для агента.
 - **Shared Session Memory**: Транслировать ошибку и `stderr` от упавшего агента к новому процессу (retry) в `TASK.md` (предсмертная записка).
 

@@ -740,8 +740,8 @@ git clone "https://x-access-token:{token}@github.com/{repo}" .tmp-clone
 mv .tmp-clone/.git /workspace/.git
 rm -rf .tmp-clone
 
-git config user.email "scaffolder@codegen.local"
-git config user.name "Scaffolder Bot"
+git config user.email "ai@codegen.local"
+git config user.name "Codegen Bot"
 git config core.hooksPath /dev/null
 
 # Install copier via uv (cached after first run)

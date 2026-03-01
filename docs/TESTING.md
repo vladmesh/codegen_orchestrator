@@ -29,13 +29,6 @@ services/
     Dockerfile.test
     pytest.ini
 
-  scaffolder/
-    tests/
-      unit/
-      integration/
-    Dockerfile.test
-    pytest.ini
-
   infra-service/
     tests/
       unit/
@@ -100,7 +93,6 @@ make test-all
 make test-api
 make test-langgraph
 make test-worker-manager
-make test-scaffolder
 make test-infra
 make test-scheduler
 make test-telegram
@@ -116,10 +108,6 @@ make test-api-integration
 # Worker Manager (Core Logic)
 make test-worker-manager-unit
 make test-worker-manager-integration
-
-# Scaffolder (Copier)
-make test-scaffolder-unit
-make test-scaffolder-integration
 
 # Infra Service (Ansible)
 make test-infra-unit
@@ -216,7 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [api, langgraph, scheduler, telegram, worker-manager, scaffolder, infra-service]
+        service: [api, langgraph, scheduler, telegram, worker-manager, infra-service]
     steps:
       - uses: actions/checkout@v4
       - name: Run unit tests

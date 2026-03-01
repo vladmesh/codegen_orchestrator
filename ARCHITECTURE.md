@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-02-25
+> **Актуально на**: 2026-03-01
 
 ## Обзор
 
@@ -36,7 +36,6 @@ Codegen Orchestrator — мультиагентная система для ав
 | `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment) |
 | `langgraph` | Engineering/DevOps subgraphs |
 | `scheduler` | Background tasks (sync, health checks, garbage collection) |
-| `scaffolder` | Copier runner для scaffolding (бывший preparer) |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
 
 ## Граф
@@ -93,7 +92,7 @@ System events (worker callbacks, reminders) → po:input → PO decides → po:p
 **Key Features:**
 - **PO ReactAgent**: LangGraph agent with native Python tools, PostgreSQL checkpointer
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager
-- **Engineering Subgraph**: Scaffolder → Developer → Tester (max 3 iterations)
+- **Engineering Subgraph**: Repo creation → Scaffold (copier via worker-manager) → Developer → CI gate (max 3 fix iterations)
 - **DevOps Subgraph**: LLM-based env analysis, env groups for coherent secrets, Ansible deployment via infra-service
 - **Unified Redis Consumers**: All 9 consumers use `RedisStreamClient.consume()` with PEL recovery (`claim_pending=True`) — crashed messages are automatically re-delivered on restart. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns)
 

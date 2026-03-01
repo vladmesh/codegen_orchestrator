@@ -93,6 +93,7 @@ vs what happened. This report is as valuable as the code itself.
 
 ### Prerequisites
 
+- **Line 1 passed**: Run `make test-e2e-scaffold` first. This e2e test verifies the scaffold phase (copier + make setup + git push) works correctly inside a worker container. If Line 1 fails, Line 2 will fail at the scaffold step.
 - Stack is running: `make up`
 - Engineering worker consuming: check `docker compose logs engineering-worker`
 - Worker-manager running: check `docker compose logs worker-manager`

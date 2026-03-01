@@ -136,27 +136,6 @@ services:
     networks:
       - e2e-test
 
-  scaffolder:
-    build:
-      context: ../../..
-      dockerfile: services/scaffolder/Dockerfile
-    volumes:
-      - ../../../secrets/github_app.pem:/app/keys/github_app.pem:ro
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      API_BASE_URL: http://api:8000
-      GITHUB_APP_ID: ${GH_APP_ID:-${GITHUB_APP_ID}}
-      GITHUB_APP_PRIVATE_KEY_PATH: /app/keys/github_app.pem
-      GITHUB_PRIVATE_KEY_CONTENT: ${GH_APP_PRIVATE_KEY}
-      GITHUB_ORG: ${E2E_TEST_ORG:-project-factory-test}
-    depends_on:
-      redis:
-        condition: service_healthy
-      api:
-        condition: service_healthy
-    networks:
-      - e2e-test
-
   # === Test Runner ===
   e2e-test-runner:
     build:
@@ -167,8 +146,6 @@ services:
       langgraph:
         condition: service_started
       worker-manager:
-        condition: service_started
-      scaffolder:
         condition: service_started
       mock-anthropic:
         condition: service_healthy
