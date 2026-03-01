@@ -41,7 +41,16 @@
 ### 5. ~~Queue Contract Enforcement~~ → ✅ Done
 > Объединено с #3. См. [redis-streams-unification.md](plans/redis-streams-unification.md).
 
-### 6. Security Audit: Server Provisioning & Deploy
+### 6. Migrate Pre-push Tests from Docker to Local venv
+**Проблема**: Pre-push hook гоняет юнит-тесты в Docker-контейнерах (build image + install deps + run). Это добавляет минуты overhead на каждый пуш, хотя юнит-тесты не требуют изоляции.
+**Контекст**: 5 из 8 сервисов уже работают локально из `.venv`. Три (scheduler, telegram, worker-manager) падают из-за `from src.` импортов — они завязаны на `PYTHONPATH` внутри Docker.
+**Задачи**:
+- Перевести scheduler, telegram_bot, worker-manager на editable install (как api, langgraph, packages) чтобы `from src.` импорты работали локально.
+- Переписать `make test-unit` / pre-push hook на локальный запуск через `.venv/bin/pytest`.
+- Docker оставить только для integration тестов (где реально нужны Postgres/Redis).
+- Ожидаемый результат: pre-push с ~3 минут до ~15 секунд.
+
+### 7. Security Audit: Server Provisioning & Deploy
 **Документы**: `docs/backlog.md`
 **Проблема**: Деплой от рута, незакрытые порты, отсутствие удаляющего cleanup.
 **Задачи**:
@@ -53,25 +62,25 @@
 
 ## 🟡 MEDIUM Priority (Process Stability, Automation)
 
-### 7. Workspace Failure Counter & Retry Limit (Persistence Phase 6)
+### 8. Workspace Failure Counter & Retry Limit (Persistence Phase 6)
 **Документы**: `docs/plans/workspace-persistence.md`
 Накопление числа падений воркера по `project_id`. Wipe workspace после 2 попыток (чтобы избежать застрявших merge conflicts / detached head). Отклонение после 3 попыток.
 
-### 8. ~~Worker Reuse for CI Fix Loop~~ → ✅ Done
+### 9. ~~Worker Reuse for CI Fix Loop~~ → ✅ Done
 > См. [worker-reuse-ci-fix.md](plans/worker-reuse-ci-fix.md). Wrapper multi-turn, spawner API (send_task/delete), engineering worker reuse с fallback, total gate timeout.
 
-### 9. Worker Lifecycle (Pause/Unpause, Limits)
+### 10. Worker Lifecycle (Pause/Unpause, Limits)
 **Документы**: `docs/tasks/worker-lifecycle.md`
 Управление "простаивающими" воркерами: `docker pause` при бездействии. Также ввести CPU и RAM лимиты на контейнеры (запрет `MAX_CONCURRENT_WORKERS` монополизации).
 
-### 10. E2E Тесты
+### 11. E2E Тесты
 Завершение покрытия системы E2E тестами (завершить неоконченные фазы 5-7).
 
-### 11. Remove Obsolete Zavhoz
+### 12. Remove Obsolete Zavhoz
 **Документы**: `docs/backlog.md`
 Обновить документацию и конфигурацию. Полностью удалить `Zavhoz` — вместо него уже работает `ResourceAllocatorNode`.
 
-### 12. Fix "Deploy-worker" Documentation
+### 13. Fix "Deploy-worker" Documentation
 **Документы**: `docs/audit.md`
 Отразить в документации, что `deploy-worker` и `engineering-worker` являются процессами LangGraph, а не скрытыми суб-сервисами.
 
@@ -92,7 +101,7 @@
 
 ---
 
-### 13. Contract Consistency Improvements (Остаток #3+#5)
+### 14. Contract Consistency Improvements (Остаток #3+#5)
 **Документы**: [redis-streams-unification.md](plans/redis-streams-unification.md) → «Остаточные замечания»
 **Проблема**: После унификации consumer'ов остались мелкие несоответствия — часть publish-вызовов идёт через raw `redis.xadd`, а не через `client.publish_flat()`; несколько consumer'ов не валидируют входящие данные Pydantic-контрактом.
 **Задачи**:
