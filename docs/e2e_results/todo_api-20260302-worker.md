@@ -1,80 +1,58 @@
 # Audit Report
 
 ## Overview
-Audit performed while implementing the `todo_api` project — a REST API for TODO items with GET/POST/PATCH/DELETE /todos endpoints.
+Built a TODO CRUD API (`GET/POST/PATCH/DELETE /todos`) following the spec-first framework workflow. This report documents observations, issues, and suggestions encountered during development.
 
-## Framework & Tooling Observations
+## What Worked Well
 
-### What Worked Well
+1. **Spec-first workflow**: Editing `models.yaml` + domain spec → `make generate-from-spec` → protocols + controller stubs auto-generated. Very smooth and productive.
+2. **Generated controller stubs**: The framework generated a working `TodosController` skeleton with correct method signatures matching the protocol. Significantly reduced boilerplate.
+3. **Validation and linting pipeline**: `make validate-specs`, `make lint`, `make lint-controllers` all work correctly and catch real issues (import ordering, spec compliance, controller sync).
+4. **Test infrastructure**: The `conftest.py` setup with SQLite for unit tests, transactional fixtures, and mock broker is well-designed and fast (~1s for 19 tests).
+5. **`list[Model]` return type support**: The framework correctly handled `output: list[TodoRead]` in the spec, generating the right protocol signature (`-> list[TodoRead]`).
 
-1. **Spec-first workflow is smooth.** Editing `shared/spec/models.yaml` and `services/backend/spec/todos.yaml`, then running `make generate-from-spec` produced correct Pydantic schemas, Protocol classes, and a controller stub. The whole flow took seconds.
+## Issues Encountered
 
-2. **Generated controller stubs are helpful.** The `TodosController` stub was generated with correct method signatures matching the protocol. Only the business logic needed to be filled in.
+### 1. Routers are NOT auto-generated (manual work required)
+- **What happened**: After running `make generate-from-spec`, protocols and controller stubs were generated, but routers were not. I had to manually create `services/backend/src/app/api/routers/todos.py` and wire it into `services/backend/src/app/api/router.py`.
+- **Impact**: This is the most significant manual step. Each new domain requires creating a router file (~80 lines of boilerplate) and updating `router.py`.
+- **Suggestion**: Auto-generate routers from the domain spec, since all the information (prefix, tags, methods, paths, status codes, parameter types) is already in the YAML. The router pattern is 100% mechanical.
 
-3. **Linting and compliance checks are comprehensive.** `make lint` runs ruff, xenon complexity, spec validation, spec compliance, and controller sync checks. All caught issues early.
+### 2. ORM models and repositories are NOT generated
+- **What happened**: Had to manually create `services/backend/src/app/models/todo.py` and `services/backend/src/app/repositories/todo.py`, then update both `__init__.py` files.
+- **Impact**: Moderate. The models and repos follow predictable patterns derived from the spec.
+- **Suggestion**: Consider generating at least the ORM model skeleton from `models.yaml`, since field types, defaults, and constraints are already defined there.
 
-4. **Test infrastructure is solid.** The SQLite-based test setup with savepoint isolation (`conftest.py`) makes unit tests fast and reliable without requiring a live database.
+### 3. Migration requires Docker but `EXEC_MODE=native` doesn't support it
+- **What happened**: `make makemigrations` runs via `docker compose`, but the workspace is set up for `EXEC_MODE=native`. Had to write the migration manually.
+- **Expected**: A native-mode alternative for creating migrations (e.g., running alembic directly against a temporary database).
+- **Suggestion**: Add a `make makemigrations EXEC_MODE=native` target that can use a local SQLite or connect to infrastructure started via `orchestrator dev-env`.
 
-5. **`EXEC_MODE=native` works as documented.** All make targets (`lint`, `format`, `tests`, `generate-from-spec`, `validate-specs`) run natively without Docker as expected.
+### 4. Generated schema defaults may cause confusion with PATCH semantics
+- **File**: `shared/shared/generated/schemas.py`
+- **What happened**: `TodoUpdate` generates `description: str | None = ""` and `is_completed: bool | None = False`. While `model_dump(exclude_unset=True)` handles this correctly at runtime, the schema defaults (`""` and `False`) differ from the `None` default that `UserUpdate` uses for optional fields.
+- **Impact**: Low (works correctly), but could confuse developers reviewing the schema who might not realize `exclude_unset` is used.
+- **Suggestion**: For `Update` variants, consider generating all optional fields with `default=None` instead of carrying over the create-time defaults.
 
-### Issues & Problems
+### 5. Documentation is partially in Russian
+- **Files**: `AGENTS.md`, `services/backend/AGENTS.md`, `CONTRIBUTING.md`
+- **What happened**: All documentation in these files is in Russian. As an English-speaking developer this requires translation.
+- **Suggestion**: Provide English translations or maintain bilingual docs.
 
-1. **`make makemigrations` requires Docker but instructions say to use it.**
-   - **Expected:** A native way to create migrations (consistent with `EXEC_MODE=native` for other targets).
-   - **Actual:** `make makemigrations` runs `docker compose ... run --rm backend alembic ...`, which fails without Docker.
-   - **Workaround:** Created the migration file manually following the pattern in existing migration `118f8b3895d8_create_user.py`.
-   - **Suggestion:** Add an `EXEC_MODE=native` path for `make makemigrations` that runs Alembic directly.
+### 6. `shared/generated/` path inconsistency
+- **What happened**: The import path is `shared.generated.schemas` but the actual file lives at `shared/shared/generated/schemas.py`. This double `shared/shared/` nesting is unusual and initially confusing.
+- **Suggestion**: Either flatten to `shared/generated/` or document the package structure clearly.
 
-2. **Generated `TodoUpdate` schema has potentially confusing defaults.**
-   - For fields with `default` values in the spec (e.g., `description: default ""`, `is_completed: default false`), the generated `TodoUpdate` schema keeps those defaults instead of using `None`.
-   - **Generated:** `description: str | None = ""` and `is_completed: bool | None = False`
-   - **Expected for PATCH:** `description: str | None = None` and `is_completed: bool | None = None`
-   - **Impact:** The business logic works correctly because we use `model_dump(exclude_unset=True)`, but the OpenAPI documentation shows misleading defaults for the update schema.
-   - **Suggestion:** For Update variants, override defaults to `None` for all optional fields regardless of the base model's default.
+## Minor Observations
 
-3. **Protocol `.py` has inconsistent indentation.**
-   - The generated `protocols.py` has irregular spacing in method signatures (extra leading spaces before params/payload).
-   - **Example:** Line 33 `        payload: CommandReceivedCreate,` has extra indentation relative to `self` and `session`.
-   - **Impact:** Cosmetic only — ruff doesn't flag it, but it looks messy.
-   - **File:** `services/backend/src/generated/protocols.py`
-   - **Suggestion:** Fix the Jinja2 template `protocols.py.j2` indentation handling.
+- **`make format`** correctly fixed the import ordering issue in `services/backend/src/app/repositories/todo.py` (ruff I001). The ruff integration works well.
+- **Controller sync linter** (`make lint-controllers`) correctly validates that controller implementations match protocol signatures. Very useful for spec-first.
+- **Test conftest** uses `os.environ.setdefault` to set up test env vars. This works but means running tests without the conftest loading first will fail with `RuntimeError` from `Settings._validate_required_env_vars`. This is by design and appropriate.
 
-4. **No router auto-generation.**
-   - Protocols and controller stubs are auto-generated, but REST routers must be written manually.
-   - **Impact:** Boilerplate duplication — the router file closely mirrors the spec and protocol. Each endpoint follows an identical pattern (create FastAPI route, inject dependencies, delegate to controller).
-   - **Suggestion:** Consider generating routers from the spec as well (like protocols), or at least generating stubs.
+## Suggestions for Improvement
 
-5. **AGENTS.md and documentation are in Russian.**
-   - `AGENTS.md`, `services/backend/AGENTS.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md` contain Russian text.
-   - **Impact:** Non-Russian-speaking developers may struggle to follow conventions.
-   - **Suggestion:** Provide English translations or maintain bilingual docs.
-
-### Minor Observations
-
-- The `ORMBase` adds both `created_at` and `updated_at` columns. For models that only expose `created_at` in the API (like Todo), the `updated_at` column exists in the DB but is unused in the schema. This is fine but slightly wasteful.
-- The `conftest.py` approach of setting all environment variables via `os.environ.setdefault()` works but could be cleaner with a `.env.test` file.
-- The `_to_schema()` pattern for handling SQLite's naive datetimes (adding UTC tzinfo) is duplicated per controller. A shared utility would reduce duplication.
-- The `extra="forbid"` config on all generated schemas is a good safety measure for strict API contracts.
-
-## Files Created/Modified
-
-### New Files
-- `shared/spec/models.yaml` — Added `Todo` model with variants
-- `services/backend/spec/todos.yaml` — Domain operations for todos
-- `services/backend/src/app/models/todo.py` — Todo ORM model
-- `services/backend/src/app/repositories/todo.py` — TodoRepository
-- `services/backend/src/controllers/todos.py` — TodosController implementation
-- `services/backend/src/app/api/routers/todos.py` — REST router for /todos
-- `services/backend/migrations/versions/0003_create_todo.py` — Migration for todos table
-- `services/backend/tests/unit/test_todos.py` — 11 unit tests for all CRUD operations
-
-### Modified Files
-- `services/backend/src/app/models/__init__.py` — Added Todo import
-- `services/backend/src/app/repositories/__init__.py` — Added TodoRepository import
-- `services/backend/src/app/schemas/__init__.py` — Added Todo schema imports
-- `services/backend/src/app/api/router.py` — Registered todos router
-
-### Auto-Generated (by framework)
-- `shared/shared/generated/schemas.py` — Todo, TodoCreate, TodoUpdate, TodoRead
-- `services/backend/src/generated/protocols.py` — TodosControllerProtocol
+1. **Router auto-generation**: This is the #1 improvement. All info exists in the spec to generate routers automatically.
+2. **Scaffolding command**: A `make scaffold-domain name=todos` command that generates the ORM model, repository, router, `__init__.py` updates, and test file would dramatically speed up development.
+3. **Native migration support**: Allow creating migrations without Docker.
+4. **Update variant defaults**: Use `None` defaults for all `Update` variant fields to make PATCH semantics clearer.
 

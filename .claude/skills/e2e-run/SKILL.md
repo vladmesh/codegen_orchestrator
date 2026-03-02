@@ -490,8 +490,8 @@ SERVER_IP=$(echo "$DEPLOYMENTS" | jq -r '.[0].server_ip // empty')
 # 4. Remove app from server
 if [ -n "$SERVER_IP" ]; then
   ssh root@$SERVER_IP "
-    cd /opt/apps/$PROJECT_NAME && docker compose down --remove-orphans --volumes
-    rm -rf /opt/apps/$PROJECT_NAME
+    cd /opt/services/$PROJECT_NAME/infra && docker compose --env-file ../.env down --remove-orphans --volumes
+    rm -rf /opt/services/$PROJECT_NAME
   "
 fi
 
