@@ -47,6 +47,27 @@ class SpawnResult:
     worker_id: str | None = None
 
 
+LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
+WORKER_DEAD_STATUS = "DEAD"
+
+
+async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool:
+    """Check if a worker is still alive by reading its Redis status.
+
+    Returns False if the status is DEAD (set by DockerEventsListener when the
+    container dies) or if the status key has been deleted entirely.
+    """
+    status = await redis_client.hget(f"worker:status:{worker_id}", "status")
+    if status is None:
+        # Key deleted — worker was cleaned up
+        return False
+    # Handle both bytes and str (depends on decode_responses setting)
+    status_str = status.decode() if isinstance(status, bytes) else status
+    if status_str == WORKER_DEAD_STATUS:
+        return False
+    return True
+
+
 async def _wait_for_response(
     redis_client: redis.Redis,
     group_name: str,
@@ -54,14 +75,34 @@ async def _wait_for_response(
     request_id: str | None,
     timeout_s: float,
     stream: str = RESPONSE_STREAM,
+    worker_id: str | None = None,
 ) -> dict | None:
     """Wait for a specific response in the stream.
 
     If request_id is None, returns the first message (used for worker output streams).
+    If worker_id is provided, periodically checks that the worker container is still
+    alive. Returns None immediately if the worker is detected as dead.
     """
     start_time = asyncio.get_running_loop().time()
+    last_liveness_check = start_time
 
     while (asyncio.get_running_loop().time() - start_time) < timeout_s:
+        # Periodic liveness check (every LIVENESS_CHECK_INTERVAL_S seconds)
+        now = asyncio.get_running_loop().time()
+        if worker_id and (now - last_liveness_check) >= LIVENESS_CHECK_INTERVAL_S:
+            last_liveness_check = now
+            try:
+                if not await _check_worker_alive(redis_client, worker_id):
+                    logger.warning(
+                        "worker_dead_detected",
+                        worker_id=worker_id,
+                        elapsed_s=round(now - start_time, 1),
+                    )
+                    return None
+            except Exception as e:
+                # Don't fail the whole wait on a check error
+                logger.debug("liveness_check_error", worker_id=worker_id, error=str(e))
+
         try:
             messages = await redis_client.xreadgroup(
                 groupname=group_name,
@@ -207,7 +248,13 @@ async def request_spawn(
 
         # Wait for output (worker output doesn't have request_id, so pass None)
         output_resp = await _wait_for_response(
-            redis_client, group_name, consumer_id, None, float(timeout_seconds), output_stream
+            redis_client,
+            group_name,
+            consumer_id,
+            None,
+            float(timeout_seconds),
+            output_stream,
+            worker_id=worker_id,
         )
 
         if output_resp:
@@ -309,7 +356,13 @@ async def send_task_to_worker(
 
         # 3. Wait for output
         output_resp = await _wait_for_response(
-            redis_client, group_name, consumer_id, None, float(timeout_seconds), output_stream
+            redis_client,
+            group_name,
+            consumer_id,
+            None,
+            float(timeout_seconds),
+            output_stream,
+            worker_id=worker_id,
         )
 
         if output_resp:

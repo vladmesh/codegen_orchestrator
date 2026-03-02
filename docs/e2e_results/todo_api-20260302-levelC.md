@@ -1,107 +1,133 @@
-# E2E Report: todo_api — Level C full flow: engineering + CI + deploy
+# E2E Report: todo_api — Level C full flow (engineering + CI + deploy)
 
 > **Date**: 2026-03-02
-> **Project**: todo_api (project_id: `fdecc61b-0206-4bcd-b4bd-27050e03b34e`)
-> **Task**: eng-da22c2c2b5b6 (engineering), deploy-da22c2c2b5b6 (deploy)
+> **Project**: todo_api (project_id: `94e9a090-8f28-4f9a-a0f9-c1e933778cd6`)
+> **Task**: eng-1c6651df5457 (engineering), deploy-1c6651df5457 (deploy)
 > **Test level**: C
-> **Status**: Partial pass (engineering + CI + deploy workflow OK, service crashed on start)
-> **Worker audit**: [todo_api-20260302-worker.md](./todo_api-20260302-worker.md)
+> **Status**: Partial pass (engineering + CI OK, deploy failed — backend crash loop)
+> **Worker audit**: [todo_api-20260302-levelC-worker.md](./todo_api-20260302-levelC-worker.md)
 
 ---
 
 ## Timeline
 
-| Time (UTC)  | Event |
-|-------------|-------|
-| 00:10:23 | Task created via API |
-| 00:10:31 | Engineering message published to queue |
-| 00:10:37 | Worker container `worker-dev-todo-api-ae56d9dc` created |
-| 00:10:37 | Scaffold phase starts (modules: backend) |
-| 00:10:55 | Scaffold complete, verified (copier-answers + github-workflows present) |
-| 00:10:56 | Claude Code starts in worker |
-| 00:11:00 | CI run #22556190337 (scaffold commit) → **FAILED** (integration tests: missing POSTGRES_USER) |
-| 00:20:14 | **Commit 1** `f275d1f` — `feat: implement TODO CRUD API with GET/POST/PATCH/DELETE /todos` |
-| 00:20:22 | CI run #22556388134 → **FAILED** (integration tests: missing POSTGRES_USER env var) |
-| 00:20:58 | CI gate sends fix task to worker (attempt 1) |
-| 00:25:35 | **Commit 2** `0c7c9f8` — `fix: resolve Docker Compose env var interpolation for integration tests` |
-| 00:25:41 | CI run #22556495490 → **SUCCESS** |
-| 00:28:05 | Deploy task created (auto-triggered by CI success + skip_deploy=false) |
-| 00:28:19 | CI run #22556546534 (deploy.yml) starts |
-| 00:30:10 | Deploy workflow completed successfully, deployment record created |
-| 00:30:10 | Deploy task marked completed, deployed_url: `http://176.223.131.124:8000` |
+| Time (UTC) | Event |
+|------------|-------|
+| 01:44:37 | Project created via API, task queued |
+| 01:44:37 | Engineering message published to queue |
+| 01:45:49 | Engineering-worker picked up task (delayed — had to restart worker due to stuck state from previous run) |
+| 01:45:50 | GitHub repo `todo-api` created, secrets set |
+| 01:45:54 | Worker spawn requested |
+| 01:45:55 | Worker `dev-todo-api-3f2f114f` created, scaffold started |
+| 01:46:07 | Scaffold commit `f043a711` — `feat: scaffold todo-api with modules: backend` |
+| 01:46:08 | Scaffold verified (copier-answers + github-workflows present) |
+| 01:46:10 | Claude Code agent starts working |
+| 01:46:12 | CI run #22558088021 (scaffold commit) → **SUCCESS** |
+| 01:57:39 | Implementation commit `20865aff` — `feat: implement Todo CRUD API with GET/POST/PATCH/DELETE /todos` |
+| 01:57:45 | CI run #22558313718 (implementation) → **SUCCESS** |
+| 01:59:53 | Engineering task completed |
+| 02:00:05 | Deploy secrets configured (9 secrets), workflow dispatched |
+| 02:00:06 | CI run #22558357007 (deploy.yml) starts |
+| 02:01:55 | Deploy step "Deploy via SSH" failed — backend in crash loop (3 restarts) |
+| 02:01:58 | Deploy task marked failed |
 
-**Total duration**: ~20 minutes (code gen ~10 min, CI fix ~5 min, deploy ~2 min)
+**Total duration**: ~17 minutes (scaffold ~20s, code gen ~12 min, CI ~2 min, deploy ~2 min)
 
 ## Verification
 
 ### Code generation: PASS
-4 commits on main. Complete Todo CRUD API with unit tests, all generated via spec-first workflow.
+3 commits on main. Complete Todo CRUD API with spec-first workflow, unit tests, proper migrations. All generated through the spec-first pipeline.
 
-### CI: PASS (after 1 fix)
-- First failure: `POSTGRES_USER is missing a value` in `compose.tests.integration.yml` — the `x-backend-env` anchor references `${POSTGRES_USER:?}` which fails when `.env` is not loaded.
-- Fix: agent added proper `--env-file .env` to docker compose commands.
-- Second CI run passed: lint, unit tests, integration tests all green.
+### CI: PASS (first try!)
+Unlike the previous run, both scaffold CI and implementation CI passed on first attempt. No CI fix cycles needed. This is a notable improvement.
 
-### Deploy workflow: PASS
-- deploy.yml ran: SCP compose files → SSH deploy → success.
-- Deployment record created in API.
+### Deploy workflow: FAIL
+- `deploy.yml` ran: SCP compose files → SSH deploy → containers started → backend entered crash loop.
+- Deploy healthcheck correctly detected: `FATAL: /infra-backend-1 restarted 3 times — crash loop detected`
 
 ### Service reachable: FAIL
-- `curl http://176.223.131.124:8000/health` → connection refused.
-- **Root cause confirmed via SSH**: backend container in `Restarting` state. Crash log:
+- Backend container in `Restarting` state on server.
+- **Root cause** (same as previous run):
   ```
   File "/app/services/backend/src/controllers/debug.py", line 15, in <module>
       from shared.generated.events import publish_command_received
   ModuleNotFoundError: No module named 'shared.generated'
   ```
-- The agent created a `debug.py` controller that imports `shared.generated.events` — a module that doesn't exist because `make generate-from-spec` was not run for the `debug` domain or the events system wasn't scaffolded.
-- DB container (`infra-db-1`) was healthy; only the backend crashed.
+- The scaffold includes a `debug.py` controller that imports `shared.generated.events` — a module that doesn't exist because the events system isn't scaffolded for this project.
+- Import chain: `main.py` → `app/__init__.py` → `api/router.py` → `routers/debug.py` → `controllers/debug.py` → boom.
+
+### .env.prod: EMPTY
+- The `.env.prod` file on the server was 0 bytes. This means all the database connection vars rely on defaults from compose anchors (`postgres`/`postgres`). DB was healthy, but this is fragile.
 
 ---
 
 ## Problems Found
 
-### Problem 1: Integration tests fail due to missing env vars from compose anchor
+### Problem 1: Backend crashes on deploy — `shared.generated.events` missing (RECURRING)
 
 - **Type**: template
-- **Severity**: major
-- **Description**: `compose.base.yml` uses `x-backend-env` anchor with `${POSTGRES_USER:?}` (required). The integration compose inherits this via `extends`, but CI runs docker compose from repo root while env file is at repo root. The compose file's `env_file` directive loads `.env` but the anchor `x-backend-env` is evaluated before `env_file` is processed, so required vars fail.
-- **Root cause**: Docker Compose evaluates `${VAR:?}` in the compose file from the shell environment, not from `env_file`. The `x-backend-env` anchor uses `:?` (required) syntax which fails if vars aren't in the shell environment, even though `env_file: ../.env` is specified.
-- **Fix applied by agent**: Added `--env-file .env` to the docker compose command in Makefile, ensuring vars are available during compose file parsing.
-- **Note**: This is the same class of issue as the previous run's env var problem. The template's `compose.base.yml` uses strict `${VAR:?}` syntax that's incompatible with relying solely on `env_file` directives.
-
-### Problem 2: Backend crashes on deploy — `shared.generated` missing
-
-- **Type**: template / agent code quality
 - **Severity**: critical
-- **Description**: Deploy workflow completed successfully (all steps green), but the backend container crashes on startup in a restart loop.
-- **Root cause**: The agent created `services/backend/src/controllers/debug.py` which imports `from shared.generated.events import publish_command_received`. The `shared.generated` package doesn't exist — the scaffold generates `shared/shared/generated/schemas.py` but no `events` module. The agent hallucinated this import. CI passed because unit tests don't trigger this import path (they test `todos` endpoints, not `debug`), and integration tests apparently didn't hit the debug endpoint either.
-- **Impact**: Service can't start at all — every container restart hits the same import error.
-- **Suggested fix**: Two things: (1) The deploy workflow's healthcheck step should catch this and mark the deploy as failed. (2) The template should not include a `debug` controller with external imports, or the scaffold should generate `shared.generated.events` as a stub.
+- **Description**: Same issue as the 2026-03-02 Level C run. The scaffold's `debug.py` controller imports `shared.generated.events.publish_command_received`, which doesn't exist when events aren't scaffolded.
+- **Root cause**: The `debug.py` controller in the template unconditionally imports from `shared.generated.events`. This module is only created when events are configured in `events.yaml`. For projects without events, the import fails at startup.
+- **Impact**: Service can't start at all. Every container restart hits the same import error.
+- **This is the 2nd consecutive Level C run hitting this exact issue.**
+- **Suggested fix**: Either (1) remove the events import from `debug.py` in the template, (2) guard it with `try/except ImportError`, or (3) always generate a stub `shared.generated.events` module even when no events are defined.
 
-### Problem 3: Scaffold CI run also fails integration tests
+### Problem 2: .env.prod is empty on server
+
+- **Type**: orchestrator
+- **Severity**: major
+- **Description**: The `.env.prod` file deployed to the server is 0 bytes. Critical environment variables (POSTGRES_USER, POSTGRES_PASSWORD, etc.) fall back to compose defaults.
+- **Root cause**: The deploy workflow copies compose files but the `.env.prod` generation isn't populating it with actual values.
+- **Impact**: Even if the backend could start, it would connect to Postgres with default credentials (`postgres`/`postgres`). For production deployments, this is insecure.
+- **Suggested fix**: The deploy-worker should generate `.env.prod` with proper values from the project's encrypted secrets before dispatching the deploy workflow.
+
+### Problem 3: Engineering-worker stuck after previous run cleanup
+
+- **Type**: orchestrator
+- **Severity**: major
+- **Description**: After the previous E2E run's cleanup, the engineering-worker was stuck waiting for a worker completion signal that would never arrive. The new task sat in "queued" status until the worker was restarted.
+- **Root cause**: The engineering-worker was blocking on a Redis stream wait for worker `dev-todo-api-379082dc` (from the previous run), which had already been killed during cleanup. The stream message never arrived, so the worker hung indefinitely.
+- **Impact**: New tasks can't be processed until manual restart. This makes the system non-self-healing.
+- **Suggested fix**: Add a timeout to the worker completion wait. If the worker container is no longer running and no completion message is received within N minutes, mark the task as failed and move on.
+
+### Problem 4: Scaffold CI passes but should it run at all?
 
 - **Type**: template
 - **Severity**: minor
-- **Description**: The scaffold commit triggers CI which runs integration tests on the bare scaffold (before business logic). This always fails because the scaffold has no real endpoints implemented yet. This is wasted CI time (~3 min).
-- **Suggested fix**: Either skip integration tests on scaffold commits (detect via commit message pattern) or make the scaffold's integration tests pass by default (test only the health endpoint which the scaffold provides).
+- **Description**: The scaffold commit triggers CI which runs successfully (no integration test failures this time — improvement from last run). However, running full CI on a bare scaffold with no business logic is wasted time (~2 min).
+- **Note**: This is less severe than last run since CI now passes on scaffold. But it's still unnecessary compute.
 
 ---
 
 ## Worker Audit Highlights
 
-The worker's audit report is thorough. Key findings:
-1. **Routers not auto-generated** — most significant manual step, ~80 lines of boilerplate per domain
-2. **Spec-first workflow works well** — generate-from-spec produced correct schemas, protocols, controller stubs
-3. **Test infrastructure solid** — SQLite-based unit tests with transactional fixtures, fast (~1s for 19 tests)
-4. **Validation pipeline works** — spec validation, lint, controller sync all catch real issues
+The worker's audit report is thorough and well-organized. Key findings:
+
+1. **Router generation gap** — routers are NOT auto-generated from specs. This is the biggest manual step in the spec-first workflow (~80 lines per domain).
+2. **`response_list` validation error** — had to discover `list[ModelName]` syntax for list endpoints by reading framework source. No documentation.
+3. **Generated protocol formatting** — inconsistent indentation in generated `protocols.py`.
+4. **`make makemigrations` requires Docker** — no native mode available in worker container.
+5. **All linters/tests pass** — `make lint` and `make tests` both clean after implementation.
+6. **Spec-first workflow works well** — validate → generate → implement → test cycle is effective.
+
+## Comparison with Previous Run (same day, earlier)
+
+| Aspect | Previous Run | This Run |
+|--------|-------------|----------|
+| Scaffold CI | Failed (missing POSTGRES_USER) | **Passed** |
+| Implementation CI | Failed → fixed → passed (1 fix cycle) | **Passed first try** |
+| Deploy crash | `shared.generated.events` | `shared.generated.events` (same) |
+| Code gen time | ~10 min | ~12 min |
+| Total duration | ~20 min | ~17 min |
+| CI fix cycles | 1 | 0 |
+
+The CI reliability improved (no fix cycles needed), but the deploy crash is identical — confirming it's a template bug, not agent error.
 
 ## Summary
 
-**Level C flow works end-to-end**: scaffold → code gen → CI pass → deploy workflow → deployment record. The orchestrator pipeline successfully delivered from "project description" to "deployed service" in ~20 minutes.
+**Engineering pipeline is reliable**: scaffold → code gen → CI pass completed cleanly in ~15 minutes with zero CI fix cycles. The agent produced a complete CRUD API following the spec-first workflow, with proper tests and migrations.
 
-The critical gap is the final mile: the backend container crashes on startup due to a hallucinated import (`shared.generated.events`). The deploy workflow reported success because the GitHub Actions steps completed (SCP + SSH + docker compose up), but the container entered a restart loop immediately after. The deploy healthcheck didn't catch this.
+**Deploy pipeline has a recurring blocker**: The `debug.py` template imports `shared.generated.events` which doesn't exist when events aren't configured. This is the same critical issue from the previous run and must be fixed in the service-template before Level C tests can pass.
 
-Engineering quality is mostly high — the agent produced a complete CRUD API with proper spec-first workflow, unit tests, and fixed CI autonomously. However, the `debug.py` controller with a non-existent import is a code quality gap that CI didn't catch because tests didn't exercise that path.
-
-**Cleanup**: Server cleaned via SSH — containers stopped, volumes removed, `/opt/services/todo_api` deleted.
+**Orchestrator has a resilience gap**: The engineering-worker gets stuck after abnormal previous run termination, requiring manual restart. This needs a timeout/recovery mechanism.

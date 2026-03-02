@@ -13,6 +13,90 @@ def _mock_settings():
     return s
 
 
+# ---------- Liveness check ----------
+
+
+class TestCheckWorkerAlive:
+    @pytest.mark.asyncio
+    async def test_returns_true_when_running(self):
+        """Worker with RUNNING status should be considered alive."""
+        from src.clients.worker_spawner import _check_worker_alive
+
+        mock_redis = AsyncMock()
+        mock_redis.hget = AsyncMock(return_value="RUNNING")
+
+        assert await _check_worker_alive(mock_redis, "dev-123") is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_dead(self):
+        """Worker with DEAD status should be considered not alive."""
+        from src.clients.worker_spawner import _check_worker_alive
+
+        mock_redis = AsyncMock()
+        mock_redis.hget = AsyncMock(return_value="DEAD")
+
+        assert await _check_worker_alive(mock_redis, "dev-123") is False
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_key_missing(self):
+        """Worker with no status key (cleaned up) should be considered not alive."""
+        from src.clients.worker_spawner import _check_worker_alive
+
+        mock_redis = AsyncMock()
+        mock_redis.hget = AsyncMock(return_value=None)
+
+        assert await _check_worker_alive(mock_redis, "dev-123") is False
+
+    @pytest.mark.asyncio
+    async def test_handles_bytes_status(self):
+        """Should handle bytes-encoded status (decode_responses=False)."""
+        from src.clients.worker_spawner import _check_worker_alive
+
+        mock_redis = AsyncMock()
+        mock_redis.hget = AsyncMock(return_value=b"DEAD")
+
+        assert await _check_worker_alive(mock_redis, "dev-123") is False
+
+    @pytest.mark.asyncio
+    async def test_handles_bytes_running_status(self):
+        """Should handle bytes-encoded RUNNING status."""
+        from src.clients.worker_spawner import _check_worker_alive
+
+        mock_redis = AsyncMock()
+        mock_redis.hget = AsyncMock(return_value=b"RUNNING")
+
+        assert await _check_worker_alive(mock_redis, "dev-123") is True
+
+
+class TestWaitForResponseLiveness:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_worker_dead(self):
+        """_wait_for_response should return None quickly when worker is dead."""
+        from src.clients.worker_spawner import _wait_for_response
+
+        mock_redis = AsyncMock()
+        mock_redis.xreadgroup = AsyncMock(return_value=[])
+        mock_redis.xgroup_create = AsyncMock()
+        # Worker is DEAD
+        mock_redis.hget = AsyncMock(return_value="DEAD")
+
+        # Patch the interval to 0 so check happens immediately
+        with patch("src.clients.worker_spawner.LIVENESS_CHECK_INTERVAL_S", 0):
+            result = await _wait_for_response(
+                redis_client=mock_redis,
+                group_name="test-group",
+                consumer_id="test-consumer",
+                request_id=None,
+                timeout_s=60,
+                stream="worker:dev-123:output",
+                worker_id="dev-123",
+            )
+
+        assert result is None
+        # Should have checked liveness
+        mock_redis.hget.assert_called()
+
+
 # ---------- 2.1: send_task_to_worker ----------
 
 

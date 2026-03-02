@@ -422,6 +422,10 @@ If worker audit was collected in Step 6, link to it from the report header.
 - `docs/e2e_results/<project_name>-<date>.md` — your report (this step)
 - `docs/e2e_results/<project_name>-<date>-worker.md` — worker's audit (Step 6, if available)
 
+**IMPORTANT: Never overwrite existing reports.** If a file with the target name already exists,
+append a suffix: `-2`, `-3`, etc. (e.g., `todo_api-20260302-levelC-2.md`). Each E2E run
+produces a unique report — previous results must be preserved.
+
 Use existing reports in `docs/e2e_results/` as format reference if any exist.
 
 Classify each problem by type:
