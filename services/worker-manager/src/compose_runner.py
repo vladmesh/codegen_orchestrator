@@ -13,6 +13,9 @@ _NETWORK_INJECTION_COMMANDS = {"up", "run", "build"}
 # Network override file written in the workspace
 _NETWORK_OVERRIDE_FILENAME = ".codegen-network.yml"
 
+# Default compose files for service-template projects (under infra/)
+_DEFAULT_COMPOSE_FILES = ["infra/compose.base.yml", "infra/compose.dev.yml"]
+
 
 def _generate_network_override(worker_id: str) -> str:
     """Generate a compose network override that routes the default network to the worker dev network.
@@ -111,10 +114,14 @@ class ComposeRunner:
             abs_override = str(override_path)
             network_args = ["-f", abs_override]
 
-            # If user didn't pass -f, add default docker-compose.yml explicitly
-            # (because adding any -f disables auto-discovery)
+            # If user didn't pass -f, add default compose files explicitly
+            # (because adding any -f disables auto-discovery).
+            # All projects use service-template layout: infra/compose.base.yml + compose.dev.yml
             if not file_args:
-                network_args = ["-f", "docker-compose.yml"] + network_args
+                default_files: list[str] = []
+                for cf in _DEFAULT_COMPOSE_FILES:
+                    default_files.extend(["-f", cf])
+                network_args = default_files + network_args
 
         # NOTE: We don't pass --project-directory. Docker compose uses the directory
         # of the first compose file by default, which preserves relative env_file

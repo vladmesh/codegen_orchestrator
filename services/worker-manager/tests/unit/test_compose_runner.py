@@ -10,9 +10,11 @@ from src.compose_runner import ComposeRunner
 def workspace(tmp_path):
     """Create a fake workspace directory structure for worker-123."""
     ws = tmp_path / "worker-123" / "workspace"
-    ws.mkdir(parents=True)
-    # Place a minimal docker-compose.yml
-    (ws / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres:16\n")
+    infra = ws / "infra"
+    infra.mkdir(parents=True)
+    # Place minimal compose files matching service-template layout
+    (infra / "compose.base.yml").write_text("services:\n  db:\n    image: postgres:16\n")
+    (infra / "compose.dev.yml").write_text("services:\n  db:\n    ports:\n      - '5432:5432'\n")
     return tmp_path
 
 
@@ -62,9 +64,17 @@ class TestComposeRunner:
 
         call_args = mock_run.call_args[0][0]
         assert "-f" in call_args
+        # Default compose files from infra/ should be included
+        assert "infra/compose.base.yml" in call_args
+        assert "infra/compose.dev.yml" in call_args
         # Network override should be referenced by absolute path
         override_path = workspace / "worker-123" / "workspace" / ".codegen-network.yml"
         assert str(override_path) in call_args
+
+        # Default files should come before network override
+        base_idx = call_args.index("infra/compose.base.yml")
+        override_idx = call_args.index(str(override_path))
+        assert base_idx < override_idx
 
         # Verify the override file was written with default network pointing to dev network
         assert override_path.exists()
@@ -159,8 +169,10 @@ class TestComposeRunner:
         """run() with workspace_dir should use the given path instead of deriving from worker_id."""
         # Workspace is NOT at base_path/worker-123, it's at a separate location
         actual_ws = tmp_path / "project-uuid" / "workspace"
-        actual_ws.mkdir(parents=True)
-        (actual_ws / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres:16\n")
+        infra = actual_ws / "infra"
+        infra.mkdir(parents=True)
+        (infra / "compose.base.yml").write_text("services:\n  db:\n    image: postgres:16\n")
+        (infra / "compose.dev.yml").write_text("services:\n  db:\n    ports:\n      - '5432:5432'\n")
 
         runner = ComposeRunner(str(tmp_path))
 
