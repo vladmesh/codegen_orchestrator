@@ -54,6 +54,12 @@ class TestClassifyByPattern:
         assert _classify_by_pattern("RANDOM_VAR") is None
         assert _classify_by_pattern("UNKNOWN_SETTING") is None
 
+    def test_classify_service_ports_as_computed(self):
+        """Service port variables should be classified as computed."""
+        assert _classify_by_pattern("BACKEND_PORT") == "computed"
+        assert _classify_by_pattern("FRONTEND_PORT") == "computed"
+        assert _classify_by_pattern("TG_BOT_PORT") == "computed"
+
 
 class TestParseEnvVariables:
     """Tests for _parse_env_variables with comment extraction."""

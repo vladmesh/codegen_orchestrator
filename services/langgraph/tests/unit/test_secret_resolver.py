@@ -107,9 +107,10 @@ class TestSecretResolverComputeSecret:
         project_spec = {"name": "test"}
         state = {
             "allocated_resources": {
-                "backend": {
+                "server1:8080": {
                     "server_ip": "192.168.1.100",
                     "port": 8080,
+                    "service_name": "backend",
                 }
             }
         }
@@ -124,6 +125,67 @@ class TestSecretResolverComputeSecret:
 
         result = self.node._compute_secret("BACKEND_API_URL", project_spec, state)
         assert result == "http://localhost:8000"
+
+    def test_compute_backend_port_with_resources(self):
+        """BACKEND_PORT should resolve to allocated port."""
+        project_spec = {"name": "test"}
+        state = {
+            "allocated_resources": {
+                "server1:8080": {
+                    "server_ip": "192.168.1.100",
+                    "port": 8080,
+                    "service_name": "backend",
+                }
+            }
+        }
+
+        result = self.node._compute_secret("BACKEND_PORT", project_spec, state)
+        assert result == "8080"
+
+    def test_compute_backend_port_fallback(self):
+        """BACKEND_PORT should fallback to 8000 when no resources."""
+        project_spec = {"name": "test"}
+        state = {}
+
+        result = self.node._compute_secret("BACKEND_PORT", project_spec, state)
+        assert result == "8000"
+
+    def test_compute_frontend_port_with_resources(self):
+        """FRONTEND_PORT should resolve to the frontend allocation."""
+        project_spec = {"name": "test"}
+        state = {
+            "allocated_resources": {
+                "server1:8080": {
+                    "server_ip": "192.168.1.100",
+                    "port": 8080,
+                    "service_name": "backend",
+                },
+                "server1:8081": {
+                    "server_ip": "192.168.1.100",
+                    "port": 8081,
+                    "service_name": "frontend",
+                },
+            }
+        }
+
+        result = self.node._compute_secret("FRONTEND_PORT", project_spec, state)
+        assert result == "8081"
+
+    def test_compute_tg_bot_port_with_resources(self):
+        """TG_BOT_PORT should resolve to the tg_bot allocation."""
+        project_spec = {"name": "test"}
+        state = {
+            "allocated_resources": {
+                "server1:8082": {
+                    "server_ip": "192.168.1.100",
+                    "port": 8082,
+                    "service_name": "tg_bot",
+                }
+            }
+        }
+
+        result = self.node._compute_secret("TG_BOT_PORT", project_spec, state)
+        assert result == "8082"
 
 
 class TestSecretResolverEncryption:

@@ -110,6 +110,22 @@ class SecretResolverNode(FunctionalNode):
             "missing_user_secrets": missing_user,
         }
 
+    def _find_allocation(self, state: DevOpsState, service_name: str) -> tuple[str, int] | None:
+        """Look up allocated server IP and port for a service.
+
+        Searches allocated_resources by matching service_name field.
+
+        Returns:
+            (server_ip, port) tuple or None if not found.
+        """
+        resources = state.get("allocated_resources", {})
+        for alloc in resources.values():
+            if isinstance(alloc, dict) and alloc.get("service_name") == service_name:
+                ip = alloc.get("server_ip", "localhost")
+                port = alloc.get("port", 8000)
+                return ip, port
+        return None
+
     def _generate_infra_secret(self, key: str, project_id: str) -> str:
         """Generate infrastructure secret value (fallback for vars not covered by groups)."""
         key_upper = key.upper()
@@ -120,7 +136,7 @@ class SecretResolverNode(FunctionalNode):
         # Default random for unknown infra
         return secrets_module.token_urlsafe(32)
 
-    def _compute_secret(self, key: str, project_spec: dict, state: DevOpsState) -> str:
+    def _compute_secret(self, key: str, project_spec: dict, state: DevOpsState) -> str:  # noqa: PLR0911
         """Compute context-based secret value."""
         key_upper = key.upper()
 
@@ -145,14 +161,23 @@ class SecretResolverNode(FunctionalNode):
         elif key_upper == "POSTGRES_REQUIRE_SSL":
             return "false"
 
+        elif key_upper in {"BACKEND_PORT", "FRONTEND_PORT", "TG_BOT_PORT"}:
+            # Map VAR_PORT -> service name in allocator
+            service_map = {
+                "BACKEND_PORT": "backend",
+                "FRONTEND_PORT": "frontend",
+                "TG_BOT_PORT": "tg_bot",
+            }
+            service = service_map.get(key_upper, "backend")
+            alloc = self._find_allocation(state, service)
+            if alloc:
+                return str(alloc[1])
+            return "8000"
+
         elif key_upper in {"BACKEND_API_URL", "API_URL", "API_BASE_URL", "BACKEND_URL"}:
-            resources = state.get("allocated_resources", {})
-            if resources:
-                first_resource = list(resources.values())[0]
-                if isinstance(first_resource, dict):
-                    ip = first_resource.get("server_ip", "localhost")
-                    port = first_resource.get("port", 8000)
-                    return f"http://{ip}:{port}"
+            alloc = self._find_allocation(state, "backend")
+            if alloc:
+                return f"http://{alloc[0]}:{alloc[1]}"
             return "http://localhost:8000"
 
         # Docker images from self-hosted registry
