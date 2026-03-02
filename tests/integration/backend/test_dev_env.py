@@ -126,7 +126,7 @@ class TestDevEnvIntegration:
         async with httpx.AsyncClient(base_url=WORKER_MANAGER_URL) as client:
             response = await client.post(
                 f"/api/worker/{worker_name}/infra/compose",
-                json={"args": ["up", "-d"]},
+                json={"args": ["-f", "docker-compose.yml", "up", "-d"]},
             )
 
         assert response.status_code == 400

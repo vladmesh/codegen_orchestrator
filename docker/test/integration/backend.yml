@@ -8,7 +8,7 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.30.0.0/16
+        - subnet: 172.31.0.0/24
 
 services:
   # Services
@@ -34,12 +34,12 @@ services:
       dockerfile: services/worker-manager/Dockerfile
     user: root  # Required for Docker daemon access and workspace chown (matches production)
     environment:
-      - REDIS_URL=redis://172.30.0.10:6379/0
+      - REDIS_URL=redis://172.31.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
       - DOCKER_NETWORK=host
       # Worker URLs use IP because workers inside DIND can't resolve DNS
-      - WORKER_REDIS_URL=redis://172.30.0.10:6379/0
-      - WORKER_API_URL=http://172.30.0.20:8000
+      - WORKER_REDIS_URL=redis://172.31.0.10:6379/0
+      - WORKER_API_URL=http://172.31.0.20:8000
     volumes:
       - workspaces:/tmp/codegen/workspaces
     depends_on:
@@ -75,7 +75,7 @@ services:
       retries: 5
     networks:
       backend-test:
-        ipv4_address: 172.30.0.10
+        ipv4_address: 172.31.0.10
 
   api:
     build:
@@ -90,7 +90,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
     networks:
       backend-test:
-        ipv4_address: 172.30.0.20
+        ipv4_address: 172.31.0.20
 
   # Mock Docker (Dind)
   docker:
@@ -117,7 +117,7 @@ services:
       start_period: 5s
     networks:
       backend-test:
-        ipv4_address: 172.30.0.30
+        ipv4_address: 172.31.0.30
 
   # Test Runner
   integration-test-runner:
@@ -137,7 +137,7 @@ services:
       - ../../../packages:/app/packages
     environment:
       - PYTHONUNBUFFERED=1
-      - REDIS_URL=redis://172.30.0.10:6379/0
+      - REDIS_URL=redis://172.31.0.10:6379/0
       - DOCKER_HOST=tcp://docker:2375
       - FACTORY_API_KEY=${FACTORY_API_KEY}
       - CLAUDE_SESSION_DIR=${HOST_CLAUDE_DIR}
