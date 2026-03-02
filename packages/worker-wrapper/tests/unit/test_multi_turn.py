@@ -8,6 +8,13 @@ from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
 
 
+@pytest.fixture(autouse=True)
+def _no_workspace_check():
+    """Skip workspace preflight — these tests run outside containers."""
+    with patch("worker_wrapper.wrapper.WORKSPACE_DIR", "/nonexistent/workspace"):
+        yield
+
+
 @pytest.fixture
 def config():
     return WorkerWrapperConfig(
@@ -182,29 +189,31 @@ class TestGitPullBeforeTurn:
     @pytest.mark.asyncio
     async def test_git_pull_runs_git_command(self, config, mock_redis_client):
         """_git_pull() should run 'git pull --rebase=false'."""
-        wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+        with patch("worker_wrapper.wrapper.WORKSPACE_DIR", "/workspace"):
+            wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            await wrapper._git_pull()
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                await wrapper._git_pull()
 
-            mock_run.assert_called_once_with(
-                ["/usr/bin/git", "pull", "--rebase=false"],
-                cwd="/workspace",
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+                mock_run.assert_called_once_with(
+                    ["/usr/bin/git", "pull", "--rebase=false"],
+                    cwd="/workspace",
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
 
     @pytest.mark.asyncio
     async def test_git_pull_failure_does_not_crash(self, config, mock_redis_client):
         """git pull failure should log warning but not raise."""
-        wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+        with patch("worker_wrapper.wrapper.WORKSPACE_DIR", "/workspace"):
+            wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="merge conflict")
-            # Should not raise
-            await wrapper._git_pull()
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="merge conflict")
+                # Should not raise
+                await wrapper._git_pull()
 
 
 # ---------- 1.3: Update TASK.md before each turn ----------

@@ -1,9 +1,16 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fakeredis import FakeAsyncRedis
 import pytest
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
+
+
+@pytest.fixture(autouse=True)
+def _no_workspace_check():
+    """Skip workspace preflight — these tests run outside containers."""
+    with patch("worker_wrapper.wrapper.WORKSPACE_DIR", "/nonexistent/workspace"):
+        yield
 
 
 @pytest.fixture
