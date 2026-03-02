@@ -11,7 +11,7 @@ from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGMessage, RAGS
 from .resource import Resource
 from .server import Server, ServerStatus
 from .service_deployment import ServiceDeployment
-from .task import Task, TaskStatus, TaskType
+from .task import Task, TaskStatus
 from .user import User
 
 __all__ = [
@@ -30,7 +30,6 @@ __all__ = [
     "PortAllocation",
     "Task",
     "TaskStatus",
-    "TaskType",
     "APIKey",
     "User",
     "Incident",

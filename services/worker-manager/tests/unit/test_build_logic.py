@@ -216,7 +216,8 @@ class TestWorkerManagerCreateWithCapabilities:
         return docker
 
     @pytest.mark.asyncio
-    async def test_create_worker_with_capabilities(self, mock_redis, mock_docker):
+    @patch("src.workspace._chown_recursive")
+    async def test_create_worker_with_capabilities(self, _mock_chown, mock_redis, mock_docker):
         """create_worker should accept capabilities and build image if needed."""
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
