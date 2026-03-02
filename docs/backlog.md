@@ -53,13 +53,35 @@
 **Источник**: E2E Level C run 3 (worker-manager compose 500), аудит service/e2e тестов
 **Проблема**: Service-тесты не в CI, не в хуках, часть сломана. E2E тесты деградировали.
 
-**Service-тесты:**
-- [ ] **worker-manager `test_compose_api.py`**: Все 6 тестов ERROR — `TestClient(app)` вызывает lifespan → `docker.from_env()` → падает без Docker socket. Тесты полностью мокают runner — lifespan не нужен. **Фикс**: создать `app` без lifespan или перенести в `tests/unit/` (они и так unit-уровня).
-- [ ] **worker-manager `test_flow.py`, `test_consumer.py`**: Используют FakeRedis + мок Docker — это unit-тесты, ошибочно живут в `tests/service/`. **Фикс**: перенести в `tests/unit/`.
-- [ ] **langgraph `test_engineering_flow.py`**: RED phase — harness methods не реализованы.
-- [ ] **scheduler `test_provisioner_result_listener.py`**: RED phase — модуль не реализован.
-- [ ] **Makefile `test-service`**: включает только api + langgraph. Нет scheduler, worker-manager, telegram, infra.
-- [ ] **CI (`ci.yml`)**: service-тесты не запускаются. Добавить после починки.
+**Makefile cleanup:** ✅ **Done** (коммит `2621eb4`)
+- ~~Убрать Docker-based unit targets (`test-api-unit`, `test-langgraph-unit`, etc.).~~ → ✅ Done
+- ~~Переименовать `test-unit-local` → `test-unit` (локально, без Docker).~~ → ✅ Done
+- ~~Убрать `test-smoke`, `test-e2e`, `test-e2e-infra`, `test-e2e-worker-mock`, `test-service`, `test-all`.~~ → ✅ Done
+- ~~Оставить `test-unit`, `test-integration`, `test-e2e-scaffold`, `test-clean`.~~ → ✅ Done
+- ~~Починить `worker-manager/test_compose_api.py` (lifespan → isolated FastAPI), перенести в `tests/unit/`.~~ → ✅ Done
+- ~~Удалить RED phase стабы: `langgraph/test_engineering_flow.py` (unit), `scheduler/test_provisioner_result_listener.py` (unit).~~ → ✅ Done
+
+**Service-тесты (аудит 2026-03-02):**
+
+*api* — ✅ OK, оставляем:
+- `test_smoke.py` — DB + Redis connectivity smoke. Полезно.
+- `test_pure_crud.py` — POST `/api/projects/` через ASGI client + DB. Реальный CRUD без side-effects.
+
+*langgraph:*
+- [ ] **`test_engineering_flow.py`** (service): RED phase — harness не реализован. **Удалить.**
+- [ ] **`test_reminder_flow.py`**: тестирует `_poll_once()` с real Redis. Можно заменить Redis на FakeRedis и перенести в `tests/unit/`.
+
+*scheduler* — ✅ OK (кроме RED phase):
+- `test_github_sync_integration.py` — mock GitHub → `_sync_single_repo()` → real API. Настоящий integration.
+- `test_server_sync_integration.py` — mock Time4VPS (respx) → `_sync_server_list()` → real API. Настоящий integration.
+- [ ] **`test_provisioner_result_listener.py`**: RED phase — модуль `src.tasks.provisioner_result_listener` не реализован, 181 строка мёртвого кода. **Удалить.**
+
+*telegram_bot:*
+- [ ] **`test_notifications.py`**: `ProvisionerNotifier` с real Redis + mock bot. Можно заменить Redis на FakeRedis и перенести в `tests/unit/`. 3 теста с `asyncio.sleep(0.5)` — overhead.
+
+*worker-manager:*
+- [ ] **`test_flow.py`**: lifecycle/GC/auto-pause с FakeRedis + mock Docker. Чистый unit, перенести в `tests/unit/` (нужно скопировать фикстуры из conftest). 4 теста ERROR — API изменилось, нужно поправить.
+- [ ] **`test_consumer.py`**: `WorkerCommandConsumer.process_message()` с FakeRedis + mock manager. Чистый unit. 1 failing test (`create_worker` не вызывается). Перенести + починить.
 
 **E2E-тесты:**
 - [ ] **`test_engineering_flow.py`**: `@pytest.mark.skip` навечно. Разблокировать или удалить.
