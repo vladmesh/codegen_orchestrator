@@ -39,6 +39,7 @@ htmlcov/
 
 # Secrets (encrypted is ok, decrypted is not)
 /tmp/secrets.yaml
+.claude/e2e-secrets.env
 
 # Distribution / packaging
 *.egg-info/

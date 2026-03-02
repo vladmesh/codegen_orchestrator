@@ -56,6 +56,57 @@ Be specific: include exact error messages, file paths, and what you expected
 vs what happened. This report is as valuable as the code itself.
 ```
 
+## E2E Secrets (for tg_bot tests)
+
+Tests with `tg_bot` module (#2 echo_bot, #4 weather_bot, #6 bot_landing, #7 expense_tracker)
+need a `TELEGRAM_BOT_TOKEN` for **Level C** (deploy). Level A/B work without it.
+
+Secrets are read from `.claude/e2e-secrets.env` (gitignored). If missing, tell the user:
+
+```
+Create .claude/e2e-secrets.env (see .claude/e2e-secrets.env.example).
+A test bot token from @BotFather is needed for Level C tg_bot tests.
+```
+
+**Injection**: After creating the project in Step 1, if the test includes `tg_bot` AND level is C,
+inject secrets into `project.config.secrets` so the DevOps subgraph can resolve them during deploy:
+
+```bash
+# Read token from secrets file
+TG_TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' .claude/e2e-secrets.env 2>/dev/null | cut -d= -f2-)
+
+if [ -z "$TG_TOKEN" ]; then
+  echo "ERROR: TELEGRAM_BOT_TOKEN not found in .claude/e2e-secrets.env"
+  echo "Level C tg_bot tests require a bot token. See .claude/e2e-secrets.env.example"
+  # STOP this test — cannot deploy without token
+fi
+
+# Inject encrypted secret into project config
+docker compose exec -T -e "TG_TOKEN=$TG_TOKEN" -e "PROJECT_ID=$PROJECT_ID" langgraph python -c "
+import os, asyncio
+import httpx
+from shared.crypto import encrypt_dict
+
+async def main():
+    pid = os.environ['PROJECT_ID']
+    token = os.environ['TG_TOKEN']
+    async with httpx.AsyncClient(base_url='http://api:8000') as api:
+        r = await api.get(f'/api/projects/{pid}')
+        project = r.json()
+        config = project['config']
+        existing = config.get('secrets', {})
+        new_secrets = encrypt_dict({'TELEGRAM_BOT_TOKEN': token})
+        existing.update(new_secrets)
+        config['secrets'] = existing
+        await api.patch(f'/api/projects/{pid}', json={'config': config})
+        print(f'Injected TELEGRAM_BOT_TOKEN into project {pid}')
+
+asyncio.run(main())
+"
+```
+
+Skip this step entirely for Level A/B or tests without `tg_bot` module.
+
 ## GitHub Access
 
 **IMPORTANT**: The local `gh` CLI is bound to a personal account that does NOT have access
@@ -253,6 +304,9 @@ curl -s -X POST http://localhost:8000/api/projects/ \
 ```
 
 Save `PROJECT_ID` — you'll need it for all subsequent steps.
+
+**If test includes `tg_bot` AND level is C** — inject secrets now (see "E2E Secrets" section above).
+If secrets file is missing or token is empty, STOP this test.
 
 ### Step 2: Trigger engineering
 
