@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
     # Shared state for HTTP handlers
     app.state.compose_runner = ComposeRunner(settings.WORKSPACE_BASE_PATH)
     app.state.docker = worker_manager.docker
+    app.state.redis = redis
 
     # Start Consumer
     stream_client = RedisStreamClient(redis_url=settings.REDIS_URL)

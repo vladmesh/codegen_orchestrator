@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -151,3 +153,41 @@ class TestComposeRunner:
         assert "--env-file" in call_args
         env_file_idx = call_args.index("--env-file")
         assert str(ws / ".env") == call_args[env_file_idx + 1]
+
+    @pytest.mark.asyncio
+    async def test_workspace_dir_override(self, tmp_path):
+        """run() with workspace_dir should use the given path instead of deriving from worker_id."""
+        # Workspace is NOT at base_path/worker-123, it's at a separate location
+        actual_ws = tmp_path / "project-uuid" / "workspace"
+        actual_ws.mkdir(parents=True)
+        (actual_ws / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres:16\n")
+
+        runner = ComposeRunner(str(tmp_path))
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            await runner.run("worker-123", ["ps"], workspace_dir=str(actual_ws))
+
+        _, call_kwargs = mock_run.call_args
+        assert call_kwargs["cwd"] == str(actual_ws)
+
+    @pytest.mark.asyncio
+    async def test_missing_workspace_raises_value_error(self, tmp_path):
+        """run() should raise ValueError (not FileNotFoundError) when workspace doesn't exist."""
+        runner = ComposeRunner(str(tmp_path))
+
+        with pytest.raises(ValueError, match="[Ww]orkspace.*does not exist"):
+            await runner.run("nonexistent-worker", ["up", "-d", "--wait", "db"])
+
+    @pytest.mark.asyncio
+    async def test_subprocess_timeout_raises_value_error(self, workspace):
+        """run() should raise ValueError (not TimeoutExpired) when compose times out."""
+        runner = ComposeRunner(str(workspace))
+
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker compose", timeout=1)):
+            with pytest.raises(ValueError, match="[Tt]imed? ?out"):
+                await runner.run("worker-123", ["up", "-d"], timeout=1)

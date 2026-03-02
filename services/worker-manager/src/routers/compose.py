@@ -1,10 +1,13 @@
 """HTTP endpoints for running docker compose commands on behalf of workers."""
 
+import structlog
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..compose_validator import validate_command, validate_compose_file, resolve_compose_path
 from ..compose_runner import ComposeRunner
+
+logger = structlog.get_logger()
 
 router = APIRouter(prefix="/api/worker", tags=["compose"])
 
@@ -32,12 +35,20 @@ async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> 
     # 2. Get compose runner and docker client from app state
     runner: ComposeRunner = req.app.state.compose_runner
     docker = req.app.state.docker
+    redis = req.app.state.redis
+
+    # Resolve actual workspace path from Redis metadata.
+    # When workers are created with a project_id, the workspace lives under
+    # the project_id directory, not the worker_id directory.
+    stored_workspace = await redis.hget(f"worker:meta:{worker_id}", "workspace_path")
 
     # 3. Resolve and validate compose file(s)
     from pathlib import Path
     from ..config import settings
 
-    workspace_path = Path(settings.WORKSPACE_BASE_PATH) / worker_id / "workspace"
+    workspace_path = (
+        Path(stored_workspace) if stored_workspace else (Path(settings.WORKSPACE_BASE_PATH) / worker_id / "workspace")
+    )
     container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
 
     # Collect compose file paths from -f/--file flags, or default to docker-compose.yml
@@ -83,8 +94,18 @@ async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> 
             args=request.args,
             cwd=request.cwd,
             timeout=request.timeout,
+            workspace_dir=stored_workspace,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.exception(
+            "compose_run_failed",
+            worker_id=worker_id,
+            args=request.args,
+            cwd=request.cwd,
+            workspace_path=str(workspace_path),
+        )
+        raise
 
     return ComposeResponse(exit_code=exit_code, stdout=stdout, stderr=stderr)

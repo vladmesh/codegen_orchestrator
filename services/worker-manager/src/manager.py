@@ -148,7 +148,12 @@ class WorkerManager:
             if stored_workspace:
                 try:
                     runner = ComposeRunner(settings.WORKSPACE_BASE_PATH)
-                    exit_code, stdout, stderr = await runner.run(worker_id, ["down", "-v"], timeout=60)
+                    exit_code, stdout, stderr = await runner.run(
+                        worker_id,
+                        ["down", "-v"],
+                        timeout=60,
+                        workspace_dir=stored_workspace,
+                    )
                     if exit_code != 0:
                         logger.warning(
                             "compose_down_nonzero",

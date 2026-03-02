@@ -38,6 +38,7 @@ class ComposeRunner:
         cwd: str = ".",
         timeout: int = 120,
         env: dict[str, str] | None = None,
+        workspace_dir: str | None = None,
     ) -> tuple[int, str, str]:
         """Run a docker compose command for a worker.
 
@@ -47,11 +48,19 @@ class ComposeRunner:
             cwd: Working directory relative to the worker's /workspace.
             timeout: Subprocess timeout in seconds.
             env: Additional environment variables to pass to the subprocess.
+            workspace_dir: Explicit workspace path. When set, overrides the default
+                           derivation from worker_id (needed when workspace is keyed
+                           by project_id rather than worker_id).
 
         Returns:
             (exit_code, stdout, stderr)
         """
-        worker_workspace = self.workspace_base_path / worker_id / "workspace"
+        if workspace_dir:
+            worker_workspace = Path(workspace_dir)
+        else:
+            worker_workspace = self.workspace_base_path / worker_id / "workspace"
+        if not worker_workspace.is_dir():
+            raise ValueError(f"Workspace for worker '{worker_id}' does not exist: {worker_workspace}")
         worker_workspace_resolved = worker_workspace.resolve()
 
         # Resolve the cwd within the workspace
@@ -157,7 +166,10 @@ class ComposeRunner:
             )
             return result
 
-        result = await loop.run_in_executor(None, _run_subprocess)
+        try:
+            result = await loop.run_in_executor(None, _run_subprocess)
+        except subprocess.TimeoutExpired:
+            raise ValueError(f"docker compose timed out after {timeout}s for worker '{worker_id}'")
 
         logger.info(
             "compose_run_complete",
