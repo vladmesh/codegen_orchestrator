@@ -196,6 +196,7 @@ class TestDeployerNodeFailures:
         gh.wait_for_workflow_completion.side_effect = RuntimeError(
             "Workflow deploy.yml failed: failure. See: https://github.com/runs/1"
         )
+        gh.get_latest_workflow_run.return_value = None  # rerun not possible
         mock_api.patch = AsyncMock(return_value={})
 
         result = await deployer.run(base_state)
@@ -218,6 +219,7 @@ class TestDeployerNodeFailures:
         gh.wait_for_workflow_completion.side_effect = TimeoutError(
             "Workflow deploy.yml did not complete within 600s"
         )
+        gh.get_latest_workflow_run.return_value = None  # rerun not possible
         mock_api.patch = AsyncMock(return_value={})
 
         result = await deployer.run(base_state)

@@ -3,6 +3,7 @@
 Contains functional nodes for secret resolution, readiness check, and deployment.
 """
 
+import asyncio
 from datetime import UTC, datetime
 import os
 import secrets as secrets_module
@@ -352,6 +353,44 @@ class DeployerNode(FunctionalNode):
     def __init__(self):
         super().__init__(node_id="deployer")
 
+    async def _try_deploy_rerun(
+        self,
+        github: GitHubAppClient,
+        owner: str,
+        repo: str,
+        dispatch_time: datetime,
+    ) -> dict | None:
+        """Attempt to rerun failed deploy workflow jobs.
+
+        Returns run_info dict on success, None on failure or if rerun is not possible.
+        """
+        try:
+            failed_run = await github.get_latest_workflow_run(
+                owner, repo, "deploy.yml", "main", created_after=dispatch_time
+            )
+            if not failed_run:
+                logger.warning("deploy_rerun_no_run_found")
+                return None
+
+            run_id = failed_run["id"]
+            logger.info("deploy_rerun_attempting", run_id=run_id)
+
+            await github.rerun_failed_jobs(owner, repo, run_id)
+            await asyncio.sleep(3)
+
+            run_info = await github.wait_for_run_completion(
+                owner, repo, run_id, timeout_seconds=600
+            )
+            logger.info("deploy_rerun_passed", run_id=run_id)
+            return run_info
+
+        except (RuntimeError, TimeoutError) as e:
+            logger.error("deploy_rerun_failed", error=str(e))
+            return None
+        except Exception as e:
+            logger.error("deploy_rerun_api_error", error=str(e))
+            return None
+
     async def run(self, state: DevOpsState) -> dict:
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
@@ -397,7 +436,16 @@ class DeployerNode(FunctionalNode):
             dotenv_b64 = encode_dotenv(dotenv_content)
 
             # 2. Write deploy secrets to GitHub
-            await _write_deploy_secrets(
+            logger.info(
+                "deploy_secrets_preview",
+                server_ip=server_ip,
+                port=port,
+                project_name=project_name,
+                owner=owner,
+                repo=repo,
+                dotenv_len=len(dotenv_b64),
+            )
+            secrets_ok = await _write_deploy_secrets(
                 github_client=github,
                 owner=owner,
                 repo=repo,
@@ -406,6 +454,14 @@ class DeployerNode(FunctionalNode):
                 project_name=project_name,
                 dotenv_b64=dotenv_b64,
             )
+
+            if not secrets_ok:
+                logger.error(
+                    "deploy_secrets_write_failed",
+                    server_ip=server_ip,
+                    owner=owner,
+                    repo=repo,
+                )
 
             # 3. Record dispatch time BEFORE triggering (for race condition safety)
             dispatch_time = datetime.now(UTC)
@@ -467,22 +523,65 @@ class DeployerNode(FunctionalNode):
                 "messages": [AIMessage(content=f"Deployment successful! URL: {deployed_url}")],
             }
 
-        except RuntimeError as e:
-            logger.error("deploy_workflow_failed", error=str(e))
-            try:
-                await api_client.patch(
-                    f"/projects/{project_id}",
-                    json={"status": "error"},
-                )
-            except Exception as status_err:
-                logger.warning("status_update_failed", error=str(status_err))
-            return {
-                "deployment_result": {"status": "failed", "error": str(e)},
-                "errors": [f"Deploy workflow failed: {e}"],
-            }
+        except (RuntimeError, TimeoutError) as e:
+            logger.warning("deploy_workflow_failed", error=str(e))
 
-        except TimeoutError as e:
-            logger.error("deploy_timeout", error=str(e))
+            # Attempt to rerun failed jobs (gets a new GH Actions runner)
+            run_info = await self._try_deploy_rerun(github, owner, repo, dispatch_time)
+            if run_info:
+                logger.info(
+                    "deploy_completed",
+                    owner=owner,
+                    repo=repo,
+                    run_id=run_info["id"],
+                    head_sha=run_info.get("head_sha"),
+                    rerun=True,
+                )
+
+                allocations: list[AllocationInfo] = await api_client.get_project_allocations(
+                    project_id
+                )
+                target_alloc = allocations[0] if allocations else None
+
+                config = project_spec.get("config") or {}
+                modules = config.get("modules", "backend")
+                if isinstance(modules, list):
+                    modules = ",".join(modules)
+
+                if target_alloc:
+                    await _create_service_deployment_record(
+                        project_id=project_id,
+                        service_name=project_name,
+                        server_handle=target_alloc.get("server_handle"),
+                        port=port,
+                        deployment_info={
+                            "repo_full_name": f"{owner}/{repo}",
+                            "branch": "main",
+                            "modules": modules,
+                        },
+                        deployed_sha=run_info.get("head_sha"),
+                    )
+
+                await api_client.patch(
+                    f"/projects/{project_id}",
+                    json={"status": "active"},
+                )
+
+                deployed_url = f"http://{server_ip}:{port}"
+                return {
+                    "deployment_result": {
+                        "status": "success",
+                        "run_id": run_info["id"],
+                    },
+                    "deployed_url": deployed_url,
+                    "messages": [
+                        AIMessage(
+                            content=f"Deployment successful (after rerun)! URL: {deployed_url}"
+                        )
+                    ],
+                }
+
+            # Rerun failed or not possible — mark project as error
             try:
                 await api_client.patch(
                     f"/projects/{project_id}",
@@ -490,9 +589,13 @@ class DeployerNode(FunctionalNode):
                 )
             except Exception as status_err:
                 logger.warning("status_update_failed", error=str(status_err))
+
+            error_prefix = (
+                "Deploy timeout" if isinstance(e, TimeoutError) else "Deploy workflow failed"
+            )
             return {
                 "deployment_result": {"status": "failed", "error": str(e)},
-                "errors": [f"Deploy timeout: {e}"],
+                "errors": [f"{error_prefix}: {e}"],
             }
 
         except Exception as e:

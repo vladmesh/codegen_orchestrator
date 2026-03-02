@@ -177,6 +177,17 @@
 
 ---
 
+## 💡 Ideas
+
+### Self-hosted GitLab вместо GitHub
+**Источник**: E2E Level C тесты (2026-03-02) — 50% failure rate на деплое из-за транзитных сетевых проблем GH Actions (Azure US) → Time4VPS (AS212531, Литва/Польша).
+**Идея**: Заменить GitHub на self-hosted GitLab на Time4VPS. CI/CD runners, реестр образов и серверы деплоя — всё в одной AS212531. Полностью убирает трансатлантическую зависимость для CI/CD.
+**Плюсы**: Нулевая сетевая латентность CI→deploy, предсказуемость, контроль над инфраструктурой.
+**Минусы**: Maintenance overhead (обновления, бэкапы, HA), потеря GH ecosystem (Actions marketplace, Copilot integration, community visibility), миграция всех проектов.
+**Промежуточный вариант**: Self-hosted GH Actions runner на VPS (минимальные изменения, тот же эффект для deploy).
+
+---
+
 ## 🗑️ Completed / Superseded
 *Архив или уже имплементированные решения*
 
