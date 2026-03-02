@@ -86,6 +86,23 @@ orchestrator dev-env stop-infra
 orchestrator dev-env reset-infra
 ```
 
+## Database Migrations
+
+Database migrations require a running PostgreSQL instance. Always start infrastructure first.
+
+```bash
+# 1. Start the database
+orchestrator dev-env start-infra db
+
+# 2. Generate a new migration (autogenerate from model changes)
+make makemigrations name="add_todos_table" EXEC_MODE=native
+
+# 3. Apply migrations
+make migrate EXEC_MODE=native
+```
+
+**Important**: Never create migration files manually — always use `make makemigrations` so Alembic can autogenerate the diff from your models. If `make makemigrations` fails, check that the database is running (`orchestrator dev-env start-infra db`) and that your `.env` has correct `DATABASE_URL` / `POSTGRES_*` variables.
+
 ## Running Tests and Tools
 
 Use `EXEC_MODE=native` for all Make targets that run linters, formatters, generators, and unit tests. These tools are pre-installed in your environment — no Docker needed.

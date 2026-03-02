@@ -87,12 +87,69 @@ asyncio.run(main())
 
 Use this pattern everywhere you need to interact with GitHub repos.
 
+## Server Access (Level C only)
+
+Deployed services run on managed VPS servers. Projects are allocated to servers
+during engineering via the resource allocator. The deploy workflow SSHes into the
+server and runs `docker compose up`.
+
+**SSH connection**: Connect as `root` using the local SSH key. Servers may be
+reprovisioned (new OS install), which changes their host keys. Always use
+`-o StrictHostKeyChecking=accept-new` to auto-accept new keys. If SSH fails with
+"REMOTE HOST IDENTIFICATION HAS CHANGED", remove the old key and retry:
+
+```bash
+ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$SERVER_IP"
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "hostname"
+```
+
+**Finding the server IP**: The resource allocator assigns a port on a managed server.
+The `service-deployments` API only has records if deploy succeeded. For failed deploys,
+get the IP from the port allocations API instead:
+
+```bash
+# Option 1: from service-deployments (only if deploy succeeded)
+SERVER_IP=$(curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | jq -r '.[0].server_ip // empty')
+
+# Option 2: from port allocations (always works — allocated during engineering)
+SERVER_IP=$(curl -s "http://localhost:8000/api/servers/vps-267180/ports" \
+  | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .server_ip // empty' )
+
+# Option 3: if you don't know which server, check all managed servers
+SERVER_IP=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
+  | jq -r '.[].handle' \
+  | while read h; do
+      curl -s "http://localhost:8000/api/servers/$h/ports" \
+        | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .server_ip // empty'
+    done | head -1)
+```
+
+**Server filesystem layout**: Deployed projects live under `/opt/services/`:
+
+```
+/opt/services/<PROJECT_NAME>/
+├── .env                    # decoded from DOTENV_B64 secret
+├── .env.bak                # backup of previous .env (if redeployed)
+└── infra/
+    ├── compose.base.yml    # base compose (services, volumes, healthchecks)
+    └── compose.prod.yml    # prod overlay (image refs, restart policy)
+```
+
+**Docker compose on server**: Always use both compose files and the env file:
+
+```bash
+COMPOSE="docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml"
+$COMPOSE ps -a
+$COMPOSE logs backend --tail=50
+$COMPOSE down -v --remove-orphans
+```
+
 ## Execution Flow
 
 For each selected test case, execute these steps. If running multiple tests,
 run them **sequentially** (one at a time — worker-manager handles one container at a time).
 
-### Step 0: Quick health check
+### Step 0: Health check + pre-flight cleanup
 
 Before the first test, verify the stack is healthy:
 
@@ -102,6 +159,67 @@ docker compose ps --format "{{.Name}} {{.Status}}" | grep -v "Up"
 ```
 
 If API is not healthy, STOP and tell the user to fix the stack first.
+
+**Pre-flight: clean up stale artifacts** (run for every test, essential for Level C):
+
+```bash
+ORG="project-factory-organization"
+# Convert PROJECT_NAME to repo slug (underscores → hyphens)
+REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')
+
+# 1. Check and delete leftover GitHub repo
+REPO_EXISTS=$(docker compose exec -T langgraph python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+async def main():
+    gh = GitHubAppClient()
+    try:
+        await gh.list_repo_files('$ORG', '$REPO_SLUG')
+        print('EXISTS')
+    except Exception:
+        print('CLEAN')
+asyncio.run(main())
+" 2>/dev/null)
+
+if [ "$REPO_EXISTS" = "EXISTS" ]; then
+  echo "WARNING: Leftover repo $ORG/$REPO_SLUG found — deleting"
+  docker compose exec -T langgraph python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+async def main():
+    gh = GitHubAppClient()
+    await gh.delete_repo('$ORG', '$REPO_SLUG')
+    print('Deleted')
+asyncio.run(main())
+"
+fi
+
+# 2. Kill leftover worker containers
+docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$REPO_SLUG" | xargs -r docker rm -f
+```
+
+**Level C only** — also check target servers for stale deployments:
+
+```bash
+# Check all managed servers for leftover /opt/services/<PROJECT_NAME>/
+for SERVER_IP in $(curl -s "http://localhost:8000/api/servers/?is_managed=true" | jq -r '.[].public_ip'); do
+  HAS_DIR=$(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP \
+    "[ -d /opt/services/$PROJECT_NAME ] && echo EXISTS || echo CLEAN" 2>/dev/null || echo "SSH_FAIL")
+
+  if [ "$HAS_DIR" = "EXISTS" ]; then
+    echo "WARNING: Stale deployment /opt/services/$PROJECT_NAME on $SERVER_IP — cleaning"
+    ssh -o StrictHostKeyChecking=accept-new root@$SERVER_IP "
+      cd /opt/services/$PROJECT_NAME/infra 2>/dev/null && \
+        docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
+      rm -rf /opt/services/$PROJECT_NAME
+    "
+  elif [ "$HAS_DIR" = "SSH_FAIL" ]; then
+    echo "WARNING: Could not reach $SERVER_IP — skipping server check"
+  fi
+done
+```
+
+If any cleanup happened, log it in the report timeline as "Pre-flight: cleaned stale artifacts".
 
 ### Step 1: Create project
 
@@ -373,12 +491,91 @@ asyncio.run(main())
 
 **Level C** — service running on server:
 
+First, find the server IP (see "Server Access" section). Then verify or diagnose:
+
 ```bash
-# Get deployment info
-curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | jq .
-# Extract server IP and port, then:
-# curl health endpoint, check container logs, etc.
+# Get server IP from port allocations (works even if deploy failed)
+SERVER_IP=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
+  | jq -r '.[].handle' \
+  | while read h; do
+      curl -s "http://localhost:8000/api/servers/$h/ports" \
+        | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .server_ip // empty'
+    done | head -1)
+echo "Server: $SERVER_IP"
 ```
+
+**If deploy succeeded** — verify service is healthy:
+
+```bash
+# Check deployment records
+curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | jq .
+
+# SSH to server and verify containers
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "
+  cd /opt/services/$PROJECT_NAME/infra
+  COMPOSE='docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml'
+  echo '=== Container status ==='
+  \$COMPOSE ps -a
+  echo '=== Restart counts ==='
+  for cid in \$(\$COMPOSE ps -q 2>/dev/null); do
+    restarts=\$(docker inspect --format '{{.RestartCount}}' \"\$cid\")
+    name=\$(docker inspect --format '{{.Name}}' \"\$cid\")
+    echo \"\$name: restarts=\$restarts\"
+  done
+"
+
+# Curl the health endpoint (port from allocation, default 8000)
+DEPLOY_PORT=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
+  | jq -r '.[].handle' \
+  | while read h; do
+      curl -s "http://localhost:8000/api/servers/$h/ports" \
+        | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .port // empty'
+    done | head -1)
+curl -sf "http://$SERVER_IP:$DEPLOY_PORT/health" | jq . || echo "Health endpoint not responding"
+```
+
+**If deploy failed** — SSH to server and collect crash diagnostics:
+
+```bash
+# Fix SSH host key if needed
+ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$SERVER_IP" 2>/dev/null
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "
+  PROJECT_DIR=/opt/services/$PROJECT_NAME
+  if [ ! -d \"\$PROJECT_DIR\" ]; then
+    echo 'No deployment directory found on server'
+    exit 0
+  fi
+
+  echo '=== .env contents ==='
+  cat \$PROJECT_DIR/.env 2>/dev/null || echo 'NO .env FILE'
+
+  echo '=== Compose files ==='
+  ls -la \$PROJECT_DIR/infra/
+
+  cd \$PROJECT_DIR/infra
+  COMPOSE='docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml'
+
+  echo '=== Container status ==='
+  \$COMPOSE ps -a 2>/dev/null || echo 'No containers'
+
+  echo '=== Backend logs (last 50 lines) ==='
+  \$COMPOSE logs backend --tail=50 2>/dev/null || echo 'No backend logs'
+
+  echo '=== DB logs (last 20 lines) ==='
+  \$COMPOSE logs db --tail=20 2>/dev/null || echo 'No db logs'
+
+  echo '=== Restart counts ==='
+  for cid in \$(\$COMPOSE ps -q 2>/dev/null); do
+    restarts=\$(docker inspect --format '{{.RestartCount}}' \"\$cid\")
+    name=\$(docker inspect --format '{{.Name}}' \"\$cid\")
+    state=\$(docker inspect --format '{{.State.Status}}' \"\$cid\")
+    echo \"\$name: state=\$state restarts=\$restarts\"
+  done
+"
+```
+
+The crash diagnostics output is essential for the report — include the error message
+and import chain (if applicable) in the Problem description.
 
 ### Step 6: Collect worker audit report
 
@@ -487,16 +684,31 @@ asyncio.run(main())
 **Level C only** — also clean server deployment:
 
 ```bash
-# 3. Get deployment info (server IP, port, deployment IDs)
+# 3. Get server IP — try service-deployments first, fall back to port allocations
 DEPLOYMENTS=$(curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID")
 SERVER_IP=$(echo "$DEPLOYMENTS" | jq -r '.[0].server_ip // empty')
 
+# Fallback: port allocations (works even if deploy failed and has no deployment records)
+if [ -z "$SERVER_IP" ]; then
+  SERVER_IP=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
+    | jq -r '.[].handle' \
+    | while read h; do
+        curl -s "http://localhost:8000/api/servers/$h/ports" \
+          | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .server_ip // empty'
+      done | head -1)
+fi
+
 # 4. Remove app from server
 if [ -n "$SERVER_IP" ]; then
-  ssh root@$SERVER_IP "
-    cd /opt/services/$PROJECT_NAME/infra && docker compose --env-file ../.env down --remove-orphans --volumes
+  ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$SERVER_IP" 2>/dev/null
+  ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "
+    if [ -d /opt/services/$PROJECT_NAME/infra ]; then
+      cd /opt/services/$PROJECT_NAME/infra
+      docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
+    fi
     rm -rf /opt/services/$PROJECT_NAME
-  "
+    echo 'Server cleanup done'
+  " || echo "WARNING: SSH cleanup failed for $SERVER_IP — may need manual cleanup"
 fi
 
 # 5. Delete deployment records

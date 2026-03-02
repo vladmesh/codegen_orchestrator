@@ -100,6 +100,24 @@
 - Убрать legacy networking fallback в `manager.py:525-530` (активно используется в CI/e2e — **оставлено**, не мёртвый код).
 - Убрать legacy project lookup по имени в `scheduler/src/tasks/github_sync.py:213-226` (защитный fallback — **оставлено**, предотвращает дубликаты проектов).
 
+### 21. Deploy Pre-Check: Validate Server State Before Deploy
+**Источник**: E2E Level C тесты (todo_api, 2026-03-02) — leftover deployment на сервере
+**Проблема**: Deploy-воркер не проверяет состояние целевого сервера перед деплоем. Если на сервере остался `/opt/services/<PROJECT_NAME>/` от предыдущего рана (cleanup не сработал или проект удалили из БД, но не с сервера), новый деплой молча перезаписывает чужие файлы или конфликтует с запущенными контейнерами.
+
+Аналогично: при `action=create` GitHub repo не должен существовать (уже пофикшено в `a0d0e7c`), а серверная директория — нет.
+
+**Задачи**:
+1. Прокинуть `action` из `EngineeringMessage` в `DeployMessage` (сейчас теряется — deploy не знает create vs feature vs fix)
+2. В DevOps subgraph (или deploy-worker) перед dispatch `deploy.yml`:
+   - `action=create`: SSH → проверить что `/opt/services/<NAME>/` **не существует** → если есть, fail fast с осмысленным сообщением
+   - `action=feature`/`fix`: SSH → проверить что `/opt/services/<NAME>/` **существует** и контейнеры running → если нет, fail fast
+3. Это заменяет хрупкую проверку `.env.bak` в `deploy.yml.jinja` (service-template) чистым сигналом от оркестратора
+
+**Файлы**:
+- `shared/contracts/queues/deploy.py` — добавить `action` field
+- `services/langgraph/src/workers/engineering_worker.py:~913` — передать action в DeployMessage
+- `services/langgraph/src/workers/deploy_worker.py` или DevOps subgraph нода — SSH pre-check
+
 ### 18. Split `engineering_worker.py` (947 LOC)
 **Документы**: `docs/refactor-audit-v2.md` §4
 Самый большой файл в кодовой базе. Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули или helper-классы.
