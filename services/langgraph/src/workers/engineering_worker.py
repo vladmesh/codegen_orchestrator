@@ -5,6 +5,7 @@ Run standalone: python -m src.workers.engineering_worker
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import os
 import re
@@ -124,7 +125,136 @@ async def _respawn_developer_for_ci_fix(
     return worker_result.success
 
 
-async def _wait_for_ci_and_fix(  # noqa: PLR0915
+async def _try_infra_rerun(
+    github_client: GitHubAppClient,
+    owner: str,
+    repo_name: str,
+    run_id: int,
+    task_id: str,
+    timeout_seconds: int,
+    redis: RedisStreamClient,
+    callback_stream: str | None,
+    user_id: str,
+    project_id: str,
+) -> bool | None:
+    """Attempt to rerun failed CI jobs for an infrastructure failure.
+
+    Returns:
+        True if rerun succeeded, False if rerun completed but still failed,
+        None if the rerun API call itself errored (caller should fall through).
+    """
+    try:
+        logger.info("ci_infra_rerun_attempting", task_id=task_id, run_id=run_id)
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "progress",
+            task_id,
+            "CI infra failure detected, rerunning...",
+            user_id=user_id,
+            project_id=project_id,
+        )
+        await github_client.rerun_failed_jobs(owner, repo_name, run_id)
+        await asyncio.sleep(3)  # let GitHub update run status
+        await github_client.wait_for_run_completion(
+            owner,
+            repo_name,
+            run_id,
+            timeout_seconds=timeout_seconds,
+        )
+        logger.info("ci_infra_rerun_passed", task_id=task_id, run_id=run_id)
+        return True
+    except (RuntimeError, TimeoutError) as e:
+        logger.error(
+            "ci_infra_rerun_failed",
+            task_id=task_id,
+            run_id=run_id,
+            error=str(e),
+        )
+        return False
+    except Exception as e:
+        logger.error(
+            "ci_infra_rerun_api_error",
+            task_id=task_id,
+            run_id=run_id,
+            error=str(e),
+        )
+        return None
+
+
+async def _attempt_developer_fix(
+    worker_id: str | None,
+    project: dict,
+    owner: str,
+    repo_name: str,
+    repo_full_name: str,
+    github_client: GitHubAppClient,
+    failure_context: str,
+    attempt: int,
+    task_id: str,
+) -> tuple[bool, str | None]:
+    """Try to fix a CI code failure via an existing worker or by respawning.
+
+    Returns:
+        Tuple of (success, updated_worker_id). worker_id may become None
+        if the existing worker timed out and a fresh respawn was used.
+    """
+    from ..config.constants import Timeouts
+
+    task_message = _build_ci_fix_prompt(failure_context, attempt)
+
+    if worker_id:
+        logger.info(
+            "ci_fix_reuse_worker",
+            task_id=task_id,
+            worker_id=worker_id,
+            attempt=attempt,
+        )
+        fix_result = await send_task_to_worker(
+            worker_id=worker_id,
+            task_content=task_message,
+            timeout_seconds=Timeouts.WORKER_SPAWN,
+        )
+        if fix_result.success:
+            return True, worker_id
+        if fix_result.error_message == "execution_timeout":
+            # Worker likely dead, fall back to respawn
+            logger.warning(
+                "worker_reuse_failed_fallback",
+                task_id=task_id,
+                worker_id=worker_id,
+            )
+            success = await _respawn_developer_for_ci_fix(
+                project=project,
+                owner=owner,
+                repo_name=repo_name,
+                repo_full_name=repo_full_name,
+                github_client=github_client,
+                failure_context=failure_context,
+                attempt=attempt,
+            )
+            return success, None  # worker_id invalidated
+        # Worker alive but fix failed (agent error)
+        return False, worker_id
+
+    logger.info(
+        "ci_fix_respawn_developer",
+        task_id=task_id,
+        attempt=attempt,
+    )
+    success = await _respawn_developer_for_ci_fix(
+        project=project,
+        owner=owner,
+        repo_name=repo_name,
+        repo_full_name=repo_full_name,
+        github_client=github_client,
+        failure_context=failure_context,
+        attempt=attempt,
+    )
+    return success, None
+
+
+async def _wait_for_ci_and_fix(
     project: dict,
     task_id: str,
     callback_stream: str | None,
@@ -146,7 +276,7 @@ async def _wait_for_ci_and_fix(  # noqa: PLR0915
     """
     from shared.clients.github import GitHubAppClient, WorkflowNotFoundError
 
-    from ..config.constants import CI, Timeouts
+    from ..config.constants import CI
 
     ci_attempts: list[dict] = []
 
@@ -167,6 +297,7 @@ async def _wait_for_ci_and_fix(  # noqa: PLR0915
     created_after = developer_started_at or datetime.now(UTC)
 
     gate_start = datetime.now(UTC)
+    infra_rerun_attempted = False
 
     for attempt in range(CI.MAX_FIX_RETRIES + 1):  # 0 = initial check, 1..N = retries
         # Total gate timeout: abort if the entire CI fix loop has been running too long
@@ -275,6 +406,30 @@ async def _wait_for_ci_and_fix(  # noqa: PLR0915
 
             # Classify failure: infra issues can't be fixed by a developer
             if failure_context and _is_infra_failure(failure_context):
+                if run_id and not infra_rerun_attempted:
+                    infra_rerun_attempted = True
+                    rerun_ok = await _try_infra_rerun(
+                        github_client,
+                        owner,
+                        repo_name,
+                        run_id,
+                        task_id,
+                        CI.WORKFLOW_TIMEOUT,
+                        redis,
+                        callback_stream,
+                        user_id,
+                        project.get("id", ""),
+                    )
+                    if rerun_ok is True:
+                        ci_attempts.append({"attempt": attempt, "status": "passed_after_rerun"})
+                        await _record_ci_attempts(task_id, ci_attempts)
+                        return True, ci_attempts
+                    if rerun_ok is False:
+                        ci_attempts.append({"attempt": attempt, "status": "rerun_failed"})
+                        await _record_ci_attempts(task_id, ci_attempts)
+                        return False, ci_attempts
+                    # rerun_ok is None → API error, fall through
+
                 logger.error(
                     "ci_infra_failure",
                     task_id=task_id,
@@ -287,59 +442,17 @@ async def _wait_for_ci_and_fix(  # noqa: PLR0915
             # run created_at will be >= this timestamp).
             created_after = datetime.now(UTC)
 
-            task_message = _build_ci_fix_prompt(failure_context, attempt + 1)
-
-            if worker_id:
-                # Reuse existing worker container
-                logger.info(
-                    "ci_fix_reuse_worker",
-                    task_id=task_id,
-                    worker_id=worker_id,
-                    attempt=attempt + 1,
-                )
-                fix_result = await send_task_to_worker(
-                    worker_id=worker_id,
-                    task_content=task_message,
-                    timeout_seconds=Timeouts.WORKER_SPAWN,
-                )
-                if fix_result.success:
-                    fix_success = True
-                elif fix_result.error_message == "execution_timeout":
-                    # Worker likely dead, fall back to respawn
-                    logger.warning(
-                        "worker_reuse_failed_fallback",
-                        task_id=task_id,
-                        worker_id=worker_id,
-                    )
-                    worker_id = None
-                    fix_success = await _respawn_developer_for_ci_fix(
-                        project=project,
-                        owner=owner,
-                        repo_name=repo_name,
-                        repo_full_name=repo_full_name,
-                        github_client=github_client,
-                        failure_context=failure_context,
-                        attempt=attempt + 1,
-                    )
-                else:
-                    # Worker alive but fix failed (agent error)
-                    fix_success = False
-            else:
-                # No worker to reuse — spawn new one
-                logger.info(
-                    "ci_fix_respawn_developer",
-                    task_id=task_id,
-                    attempt=attempt + 1,
-                )
-                fix_success = await _respawn_developer_for_ci_fix(
-                    project=project,
-                    owner=owner,
-                    repo_name=repo_name,
-                    repo_full_name=repo_full_name,
-                    github_client=github_client,
-                    failure_context=failure_context,
-                    attempt=attempt + 1,
-                )
+            fix_success, worker_id = await _attempt_developer_fix(
+                worker_id=worker_id,
+                project=project,
+                owner=owner,
+                repo_name=repo_name,
+                repo_full_name=repo_full_name,
+                github_client=github_client,
+                failure_context=failure_context,
+                attempt=attempt + 1,
+                task_id=task_id,
+            )
 
             if not fix_success:
                 logger.error(

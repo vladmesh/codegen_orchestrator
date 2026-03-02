@@ -237,3 +237,114 @@ async def test_get_latest_workflow_run_empty_runs_returns_none(authed_client):
 
             result = await authed_client.get_latest_workflow_run(owner, repo, "ci.yml")
             assert result is None
+
+
+# --- rerun_failed_jobs tests ---
+
+
+@pytest.mark.asyncio
+async def test_rerun_failed_jobs_success(authed_client):
+    owner, repo, run_id = "my-org", "my-repo", 12345
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.post(
+                f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs"
+            ).mock(return_value=httpx.Response(201))
+
+            result = await authed_client.rerun_failed_jobs(owner, repo, run_id)
+
+            assert result is True
+            assert route.called
+
+
+@pytest.mark.asyncio
+async def test_rerun_failed_jobs_forbidden(authed_client):
+    owner, repo, run_id = "my-org", "my-repo", 12345
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.post(f"/repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs").mock(
+                return_value=httpx.Response(403)
+            )
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await authed_client.rerun_failed_jobs(owner, repo, run_id)
+
+
+# --- wait_for_run_completion tests ---
+
+
+@pytest.mark.asyncio
+async def test_wait_for_run_completion_success(authed_client):
+    owner, repo, run_id = "my-org", "my-repo", 12345
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.get(f"/repos/{owner}/{repo}/actions/runs/{run_id}").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "id": run_id,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "html_url": f"https://github.com/{owner}/{repo}/actions/runs/{run_id}",
+                    },
+                )
+            )
+
+            result = await authed_client.wait_for_run_completion(
+                owner, repo, run_id, timeout_seconds=10, poll_interval=1
+            )
+
+            assert result["id"] == run_id
+            assert result["conclusion"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_run_completion_failure(authed_client):
+    owner, repo, run_id = "my-org", "my-repo", 12345
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.get(f"/repos/{owner}/{repo}/actions/runs/{run_id}").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "id": run_id,
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": f"https://github.com/{owner}/{repo}/actions/runs/{run_id}",
+                    },
+                )
+            )
+
+            with pytest.raises(RuntimeError, match="failed"):
+                await authed_client.wait_for_run_completion(
+                    owner, repo, run_id, timeout_seconds=10, poll_interval=1
+                )
+
+
+@pytest.mark.asyncio
+async def test_wait_for_run_completion_timeout(authed_client):
+    owner, repo, run_id = "my-org", "my-repo", 12345
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.get(f"/repos/{owner}/{repo}/actions/runs/{run_id}").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "id": run_id,
+                        "status": "in_progress",
+                        "conclusion": None,
+                        "html_url": f"https://github.com/{owner}/{repo}/actions/runs/{run_id}",
+                    },
+                )
+            )
+
+            with patch("asyncio.sleep", return_value=None):
+                with pytest.raises(TimeoutError, match="did not complete"):
+                    await authed_client.wait_for_run_completion(
+                        owner, repo, run_id, timeout_seconds=1, poll_interval=1
+                    )

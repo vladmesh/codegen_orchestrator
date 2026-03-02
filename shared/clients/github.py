@@ -789,6 +789,117 @@ class GitHubAppClient:
 
         return "\n".join(lines)
 
+    async def rerun_failed_jobs(self, owner: str, repo: str, run_id: int) -> bool:
+        """Rerun only the failed jobs in a workflow run.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            run_id: Workflow run ID
+
+        Returns:
+            True if rerun was accepted (201)
+
+        Raises:
+            httpx.HTTPStatusError: On 403 (insufficient permissions) or other errors
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        await self._make_request(
+            "POST",
+            f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs",
+            headers=headers,
+        )
+
+        logger.info(
+            "workflow_rerun_failed_jobs_triggered",
+            owner=owner,
+            repo=repo,
+            run_id=run_id,
+        )
+        return True
+
+    async def wait_for_run_completion(
+        self,
+        owner: str,
+        repo: str,
+        run_id: int,
+        timeout_seconds: int = 600,
+        poll_interval: int = 15,
+    ) -> dict:
+        """Wait for a specific workflow run to complete.
+
+        Unlike wait_for_workflow_completion, this polls a known run_id directly.
+        Useful after rerun_failed_jobs where the run_id stays the same but
+        created_at doesn't change (so the created_after filter won't find it).
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            run_id: Workflow run ID to poll
+            timeout_seconds: Max wait time
+            poll_interval: Seconds between polls
+
+        Returns:
+            Dict with {id, status, conclusion, html_url} on success
+
+        Raises:
+            RuntimeError: If run completes with non-success conclusion
+            TimeoutError: If run doesn't complete within timeout
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        start = datetime.now(UTC)
+
+        while True:
+            elapsed = (datetime.now(UTC) - start).total_seconds()
+            if elapsed > timeout_seconds:
+                raise TimeoutError(
+                    f"Workflow run {run_id} did not complete within {timeout_seconds}s"
+                )
+
+            resp = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}",
+                headers=headers,
+            )
+            run = resp.json()
+
+            if run["status"] == "completed":
+                result = {
+                    "id": run["id"],
+                    "status": run["status"],
+                    "conclusion": run.get("conclusion"),
+                    "html_url": run["html_url"],
+                }
+                if run.get("conclusion") == "success":
+                    logger.info(
+                        "workflow_run_completed_success",
+                        run_id=run_id,
+                    )
+                    return result
+                else:
+                    raise RuntimeError(
+                        f"Workflow run {run_id} failed: {run.get('conclusion')}. "
+                        f"See: {run['html_url']}"
+                    )
+
+            logger.info(
+                "workflow_run_in_progress",
+                run_id=run_id,
+                status=run["status"],
+                elapsed_sec=int(elapsed),
+            )
+            await asyncio.sleep(poll_interval)
+
     async def provision_project_repo(
         self,
         name: str,

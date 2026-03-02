@@ -433,7 +433,8 @@ class TestCIInfraFailFast:
     async def test_infra_failure_skips_respawn(
         self, mock_publish, mock_record, mock_respawn, mock_gh_cls, mock_redis
     ):
-        """Infra CI failure must return False without spawning a developer."""
+        """Infra CI failure attempts rerun, and if rerun also fails, returns False
+        without spawning a developer."""
         from src.workers.engineering_worker import _wait_for_ci_and_fix
 
         mock_gh = AsyncMock()
@@ -452,6 +453,95 @@ class TestCIInfraFailFast:
                 "  Step 'Log in to Docker Registry' failed"
             )
         )
+        # Rerun also fails
+        mock_gh.rerun_failed_jobs = AsyncMock(return_value=True)
+        mock_gh.wait_for_run_completion = AsyncMock(
+            side_effect=RuntimeError("Workflow run 12345 failed: failure")
+        )
+
+        with patch("asyncio.sleep", return_value=None):
+            passed, ci_attempts = await _wait_for_ci_and_fix(
+                project=_project(repo_url="https://github.com/org/repo"),
+                task_id="eng-1",
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                developer_started_at=datetime(2025, 1, 1, tzinfo=UTC),
+                user_id="u1",
+            )
+
+        assert passed is False
+        assert ci_attempts[-1]["status"] == "rerun_failed"
+        mock_gh.rerun_failed_jobs.assert_awaited_once_with("org", "repo", 12345)
+        mock_respawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch("src.workers.engineering_worker._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._record_ci_attempts", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    async def test_infra_failure_reruns_and_passes(
+        self, mock_publish, mock_record, mock_respawn, mock_gh_cls, mock_redis
+    ):
+        """Infra CI failure → rerun succeeds → returns True with passed_after_rerun."""
+        from src.workers.engineering_worker import _wait_for_ci_and_fix
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+
+        mock_gh.wait_for_workflow_completion = AsyncMock(
+            side_effect=RuntimeError(
+                "Workflow ci.yml failed: failure. "
+                "See: https://github.com/org/repo/actions/runs/12345"
+            )
+        )
+        mock_gh.get_workflow_failure_logs = AsyncMock(
+            return_value=(
+                "Job 'build-and-push (backend)' failed:\n"
+                "  Step 'Log in to Docker Registry' failed"
+            )
+        )
+        mock_gh.rerun_failed_jobs = AsyncMock(return_value=True)
+        mock_gh.wait_for_run_completion = AsyncMock(
+            return_value={"id": 12345, "status": "completed", "conclusion": "success"}
+        )
+
+        with patch("asyncio.sleep", return_value=None):
+            passed, ci_attempts = await _wait_for_ci_and_fix(
+                project=_project(repo_url="https://github.com/org/repo"),
+                task_id="eng-1",
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                developer_started_at=datetime(2025, 1, 1, tzinfo=UTC),
+                user_id="u1",
+            )
+
+        assert passed is True
+        assert ci_attempts[-1]["status"] == "passed_after_rerun"
+        mock_gh.rerun_failed_jobs.assert_awaited_once()
+        mock_respawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch("src.workers.engineering_worker._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._record_ci_attempts", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    async def test_infra_failure_no_run_id_skips_rerun(
+        self, mock_publish, mock_record, mock_respawn, mock_gh_cls, mock_redis
+    ):
+        """Infra failure with no run_id in error → no rerun attempt, returns False."""
+        from src.workers.engineering_worker import _wait_for_ci_and_fix
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+
+        # Error without a URL → no run_id extractable
+        mock_gh.wait_for_workflow_completion = AsyncMock(
+            side_effect=RuntimeError("Workflow ci.yml failed: failure")
+        )
+        mock_gh.get_workflow_failure_logs = AsyncMock(
+            return_value="Job 'build-and-push' failed:\n  Step 'docker login' failed"
+        )
+        mock_gh.rerun_failed_jobs = AsyncMock()
 
         passed, ci_attempts = await _wait_for_ci_and_fix(
             project=_project(repo_url="https://github.com/org/repo"),
@@ -463,9 +553,7 @@ class TestCIInfraFailFast:
         )
 
         assert passed is False
-        assert len(ci_attempts) == 1
-        assert ci_attempts[0]["status"] == "failed"
-        mock_respawn.assert_not_awaited()
+        mock_gh.rerun_failed_jobs.assert_not_awaited()
 
     @pytest.mark.asyncio
     @patch("shared.clients.github.GitHubAppClient")
