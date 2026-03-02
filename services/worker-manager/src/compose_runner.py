@@ -23,9 +23,24 @@ def _generate_network_override(worker_id: str) -> str:
     Convention: compose files from service-template do NOT define custom networks,
     so all services use the implicit 'default' network. This override redirects it
     to the pre-created external dev network for the worker.
+
+    Also adds a unique 'project-db' alias for the db service, because the worker
+    container is connected to both codegen_internal and the dev network. The generic
+    name 'db' collides with the orchestrator's own postgres in codegen_internal.
     """
     network_name = f"dev_proj_{worker_id}"
-    return f"networks:\n  default:\n    name: {network_name}\n    external: true\n"
+    return (
+        f"networks:\n"
+        f"  default:\n"
+        f"    name: {network_name}\n"
+        f"    external: true\n"
+        f"services:\n"
+        f"  db:\n"
+        f"    networks:\n"
+        f"      default:\n"
+        f"        aliases:\n"
+        f"          - project-db\n"
+    )
 
 
 class ComposeRunner:
@@ -103,6 +118,14 @@ class ComposeRunner:
             else:
                 i += 1
 
+        # If user didn't pass -f, add default compose files explicitly.
+        # All projects use service-template layout: infra/compose.base.yml + compose.dev.yml.
+        # Must always be added because there's no docker-compose.yml for auto-discovery.
+        default_file_args: list[str] = []
+        if not file_args:
+            for cf in _DEFAULT_COMPOSE_FILES:
+                default_file_args.extend(["-f", cf])
+
         # Inject network override for commands that start containers.
         # The override file is placed in effective_cwd and referenced by absolute path
         # so it works regardless of --project-directory / compose file location.
@@ -113,15 +136,6 @@ class ComposeRunner:
             override_path.write_text(override_content)
             abs_override = str(override_path)
             network_args = ["-f", abs_override]
-
-            # If user didn't pass -f, add default compose files explicitly
-            # (because adding any -f disables auto-discovery).
-            # All projects use service-template layout: infra/compose.base.yml + compose.dev.yml
-            if not file_args:
-                default_files: list[str] = []
-                for cf in _DEFAULT_COMPOSE_FILES:
-                    default_files.extend(["-f", cf])
-                network_args = default_files + network_args
 
         # NOTE: We don't pass --project-directory. Docker compose uses the directory
         # of the first compose file by default, which preserves relative env_file
@@ -142,14 +156,26 @@ class ComposeRunner:
             project_name,
             *env_file_args,
             *file_args,
+            *default_file_args,
             *network_args,
             *command_args,
         ]
 
-        # Build environment: HOST_UID/GID + caller-supplied overrides
+        # Build environment: HOST_UID/GID + caller-supplied overrides.
+        # Load the project's .env into the subprocess env so its values override
+        # vars inherited from worker-manager (e.g. POSTGRES_* from the orchestrator).
+        # Docker compose precedence: shell env > --env-file, so we must set them here.
         run_env = dict(os.environ)
         run_env["HOST_UID"] = "1000"
         run_env["HOST_GID"] = "1000"
+        if dot_env.exists():
+            for line in dot_env.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key, _, value = line.partition("=")
+                if key:
+                    run_env[key] = value
         if env:
             run_env.update(env)
 

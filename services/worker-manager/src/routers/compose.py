@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..compose_validator import validate_command, validate_compose_file, resolve_compose_path
-from ..compose_runner import ComposeRunner
+from ..compose_runner import ComposeRunner, _DEFAULT_COMPOSE_FILES
 
 logger = structlog.get_logger()
 
@@ -51,7 +51,7 @@ async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> 
     )
     container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
 
-    # Collect compose file paths from -f/--file flags, or default to docker-compose.yml
+    # Collect compose file paths from -f/--file flags, or default to infra/ layout
     compose_files: list[str] = []
     args_iter = iter(request.args)
     for arg in args_iter:
@@ -61,7 +61,7 @@ async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> 
             except StopIteration:
                 break
     if not compose_files:
-        compose_files = ["docker-compose.yml"]
+        compose_files = list(_DEFAULT_COMPOSE_FILES)
 
     for cf in compose_files:
         # Check path traversal (works without filesystem access)

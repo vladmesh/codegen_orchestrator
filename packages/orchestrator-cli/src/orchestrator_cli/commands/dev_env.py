@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 
 from rich.console import Console
 import typer
@@ -108,6 +109,7 @@ def start_infra(
 
         exit_code = _print_result(result)
         if exit_code == 0:
+            _patch_db_hostname()
             console.print("[green]Infrastructure started.[/green]")
 
     except Exception as e:
@@ -116,6 +118,24 @@ def start_infra(
 
     if exit_code != 0:
         raise typer.Exit(code=exit_code)
+
+
+def _patch_db_hostname():
+    """Replace POSTGRES_HOST=db with project-db in .env to avoid DNS collision.
+
+    The worker container is connected to both codegen_internal (where the
+    orchestrator's 'db' lives) and the project's dev network. The generic
+    name 'db' resolves to the orchestrator's postgres. The compose network
+    override adds 'project-db' as a unique alias for the project's DB.
+    """
+    env_path = Path("/workspace/.env")
+    if not env_path.exists():
+        return
+    content = env_path.read_text()
+    if "POSTGRES_HOST=db" not in content:
+        return
+    content = content.replace("POSTGRES_HOST=db", "POSTGRES_HOST=project-db")
+    env_path.write_text(content)
 
 
 @app.command()
