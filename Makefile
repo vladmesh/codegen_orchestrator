@@ -1,9 +1,4 @@
-.PHONY: lint format test test-unit test-unit-local test-integration test-all test-clean \
-	test-api test-api-unit test-api-integration \
-	test-langgraph test-langgraph-unit test-langgraph-integration \
-	test-scheduler test-scheduler-unit test-scheduler-integration \
-	test-telegram test-telegram-unit \
-	test-orchestrator-cli test-smoke test-e2e-scaffold \
+.PHONY: lint format test-unit test-integration test-e2e-scaffold test-clean \
 	build up down stop logs help nuke seed migrate makemigrations shell \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild
@@ -35,10 +30,7 @@ help:
 	@echo "Testing:"
 	@echo "  make test-unit            - Run all unit tests (fast)"
 	@echo "  make test-integration     - Run all integration tests"
-	@echo "  make test-all             - Run ALL tests"
-	@echo "  make test-legacy          - Run legacy tests (quarantined)"
-	@echo "  make test-api-unit        - Run API unit tests"
-	@echo "  make test-api-service     - Run API service tests"
+	@echo "  make test-e2e-scaffold    - Run scaffolding E2E tests"
 	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
 	@echo "Git Hooks:"
@@ -165,59 +157,10 @@ setup-hooks:
 
 # === Testing ===
 
-# Dynamic discovery of integration test compose files
+# Integration tests - pattern rule for dynamic discovery
+# Any docker/test/integration/*.yml file automatically becomes test-integration-* target
 INTEGRATION_COMPOSE_FILES := $(wildcard docker/test/integration/*.yml)
 INTEGRATION_TESTS := $(patsubst docker/test/integration/%.yml,test-integration-%,$(INTEGRATION_COMPOSE_FILES))
-
-# Individual service unit tests (fast, no external deps)
-test-api-unit:
-	@echo "🧪 Running API unit tests (inside container)..."
-	@if [ -d "services/api/tests/unit" ] && [ "$$(ls -A services/api/tests/unit)" ]; then \
-		docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml run --rm --no-deps api-test-runner pytest tests/unit/ -v; \
-	else \
-		echo "⚠️  No unit tests found in services/api/tests/unit"; \
-	fi
-
-test-api-service:
-	@echo "🧪 Running API service tests..."
-	@docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml down -v --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml up --build --abort-on-container-exit --exit-code-from api-test-runner; \
-	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-test-langgraph-unit:
-	@echo "🧪 Running LangGraph unit tests..."
-	@if [ -d "services/langgraph/tests/unit" ] && [ "$$(ls -A services/langgraph/tests/unit)" ]; then \
-		docker compose -p $(TEST_PROJECT)_langgraph -f docker/test/service/langgraph.yml run --rm --no-deps -e API_BASE_URL=http://localhost:8000 langgraph-test-runner pytest tests/unit/ -v; \
-	else \
-		echo "⚠️  No unit tests found in services/langgraph/tests/unit"; \
-	fi
-
-test-langgraph-service:
-	@echo "🧪 Running LangGraph service tests..."
-	@docker compose -p $(TEST_PROJECT)_langgraph -f docker/test/service/langgraph.yml down -v --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_langgraph -f docker/test/service/langgraph.yml up --build --abort-on-container-exit --exit-code-from langgraph-test-runner; \
-	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_langgraph -f docker/test/service/langgraph.yml down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-test-scheduler-unit:
-	@echo "🧪 Running Scheduler unit tests..."
-	@if [ -d "services/scheduler/tests/unit" ] && [ "$$(ls -A services/scheduler/tests/unit)" ]; then \
-		docker compose -p $(TEST_PROJECT)_scheduler -f docker/test/service/scheduler.yml run --rm --no-deps scheduler-test-runner pytest tests/unit/ -v; \
-	else \
-		echo "⚠️  No unit tests found in services/scheduler/tests/unit"; \
-	fi
-
-test-telegram-unit:
-	@echo "🧪 Running Telegram bot unit tests..."
-	@if [ -d "services/telegram_bot/tests/unit" ] && [ "$$(ls -A services/telegram_bot/tests/unit)" ]; then \
-		docker build -f services/telegram_bot/Dockerfile.test -t telegram-bot-test .; \
-		docker run --rm telegram-bot-test pytest tests/unit/ -v; \
-	else \
-		echo "⚠️  No unit tests found in services/telegram_bot/tests/unit"; \
-	fi
 
 # Integration tests - pattern rule for dynamic discovery
 # Any docker/test/integration/*.yml file automatically becomes test-integration-* target
@@ -229,100 +172,16 @@ test-integration-%:
 	docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down --remove-orphans; \
 	exit $$EXIT_CODE
 
-# Note: Legacy aggregate targets (test-api, test-langgraph, etc.) were removed.
-# Use test-{service}-unit and test-{service}-service instead.
-
-test-scheduler-service:
-	@echo "🧪 Running Scheduler Service tests..."
-	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler build
-	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler up -d db redis api
-	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler run --rm scheduler-test-runner
-	@$(DOCKER_COMPOSE) -f docker/test/service/scheduler.yml -p $(TEST_PROJECT)_scheduler down -v
-
-test-orchestrator-cli-unit:
-	@echo "🧪 Running Orchestrator CLI unit tests..."
-	@if [ -d "packages/orchestrator-cli/tests/unit" ] && [ "$$(ls -A packages/orchestrator-cli/tests/unit)" ]; then \
-		docker build -f packages/orchestrator-cli/Dockerfile.test -t orchestrator-cli-test .; \
-		docker run --rm orchestrator-cli-test pytest packages/orchestrator-cli/tests/unit/ -v; \
-	else \
-		echo "⚠️  No unit tests found in packages/orchestrator-cli/tests/unit"; \
-	fi
-
-test-worker-wrapper-unit:
-	@echo "🧪 Running Worker Wrapper unit tests..."
-	@if [ -d "packages/worker-wrapper/tests/unit" ] && [ "$$(ls -A packages/worker-wrapper/tests/unit)" ]; then \
-		docker build -f packages/worker-wrapper/Dockerfile.test -t worker-wrapper-test .; \
-		docker run --rm worker-wrapper-test pytest packages/worker-wrapper/tests/ -v; \
-	else \
-		echo "⚠️  No unit tests found in packages/worker-wrapper/tests/unit"; \
-	fi
-
-test-infra-service:
-	@echo "🧪 Running Infra Service tests..."
-	@docker compose -p $(TEST_PROJECT)_infra -f docker/test/service/infra.yml down -v --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_infra -f docker/test/service/infra.yml up --build --abort-on-container-exit --exit-code-from infra-test-runner; \
-	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_infra -f docker/test/service/infra.yml down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-test-worker-manager-unit:
-	@echo "🧪 Running Worker Manager unit tests..."
-	@if [ -d "services/worker-manager/tests/unit" ] && [ "$$(ls -A services/worker-manager/tests/unit)" ]; then \
-		docker build -f services/worker-manager/Dockerfile.test -t worker-manager-test .; \
-		docker run --rm worker-manager-test pytest tests/unit/ -v; \
-	else \
-		echo "⚠️  No unit tests found in services/worker-manager/tests/unit"; \
-	fi
-
-test-worker-manager-service:
-	@echo "🧪 Running Worker Manager service tests..."
-	@docker compose -p $(TEST_PROJECT)_worker_manager -f docker/test/service/worker-manager.yml down -v --remove-orphans 2>/dev/null || true
-	@docker compose -p $(TEST_PROJECT)_worker_manager -f docker/test/service/worker-manager.yml up --build --abort-on-container-exit --exit-code-from worker-manager-test-runner; \
-	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_worker_manager -f docker/test/service/worker-manager.yml down -v --remove-orphans; \
-	exit $$EXIT_CODE
-
-test-shared-unit:
-	@echo "🧪 Running Shared unit tests..."
-	@if [ -d "shared/tests" ] && [ "$$(ls -A shared/tests)" ]; then \
-		docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml build api-test-runner; \
-		docker compose -p $(TEST_PROJECT)_api -f docker/test/service/api.yml run --rm --no-deps -e PYTHONPATH=/app api-test-runner pytest shared/tests/ -v; \
-	else \
-		echo "⚠️  No unit tests found in shared/tests"; \
-	fi
-
 # Run all unit tests locally (no Docker, fast)
 # Requires: uv sync (once)
-test-unit-local:
+test-unit:
 	@uv run bash scripts/test-unit-local.sh
-
-# Run all unit tests in Docker (slow, full isolation)
-test-unit: test-api-unit test-langgraph-unit test-scheduler-unit test-telegram-unit test-worker-manager-unit test-orchestrator-cli-unit test-worker-wrapper-unit test-shared-unit
 
 # Run all integration tests (auto-discovered from docker/test/integration/*.yml)
 test-integration: $(INTEGRATION_TESTS)
 	@echo "✅ All integration tests completed"
 
-# Run all service tests
-test-service: test-api-service test-langgraph-service
 
-# Run E2E tests (requires real GitHub, Claude credentials)
-# Live smoke test: runs against running `make up` stack
-# Tests API/Redis/worker-manager health + worker spawn/delete lifecycle
-test-smoke:
-	@echo "🧪 Running live smoke test against running stack..."
-	@docker run --rm \
-		--network codegen_internal \
-		-v /var/run/docker.sock:/var/run/docker.sock \
-		-v $(PWD)/tests:/app/tests \
-		-v $(PWD)/shared:/app/shared \
-		-v $(PWD)/packages:/app/packages \
-		-w /app \
-		-e PYTHONPATH=/app \
-		-e PYTHONUNBUFFERED=1 \
-		python:3.12-slim \
-		bash -c "pip install -q pytest pytest-asyncio httpx redis docker pydantic structlog && \
-			pytest tests/e2e/test_live_smoke.py -v --tb=short --noconftest --override-ini='asyncio_mode=auto' -p no:cacheprovider"
 
 # E2E Scaffold Test: runs against running `make up` stack
 # Creates GitHub repo, publishes CreateWorkerCommand with ScaffoldConfig,
@@ -335,47 +194,7 @@ test-e2e-scaffold:
 	docker ps -a --filter "name=dev-scaffold-e2e-" --format "{{.Names}}" | xargs -r docker rm -f 2>/dev/null || true; \
 	exit $$EXIT_CODE
 
-# Usage: HOST_CLAUDE_DIR=~/.claude make test-e2e
-test-e2e:
-	@echo "🧪 Running E2E tests..."
-	@docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml down -v --remove-orphans 2>/dev/null || true
-	@HOST_CLAUDE_DIR=$(HOST_CLAUDE_DIR) docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml up --build --abort-on-container-exit --exit-code-from e2e-test-runner; \
-	EXIT_CODE=$$?; \
-	docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml down -v --remove-orphans; \
-	exit $$EXIT_CODE
 
-# Run infrastructure sanity test only (GitHub + Copier, no LLM)
-# Validates that GitHub App auth, repo creation, copier, and git push work
-test-e2e-infra:
-	@echo "🧪 Running Infrastructure Sanity Test..."
-	@docker build -t e2e-test-runner -f docker/test/e2e/Dockerfile .
-	@docker run --rm \
-		-v $(PWD)/secrets/github_app.pem:/app/keys/github_app.pem:ro \
-		-v $(PWD)/tests:/app/tests \
-		-v $(PWD)/shared:/app/shared \
-		--env-file .env \
-		--env-file .env.test \
-		e2e-test-runner \
-		pytest tests/e2e/test_infrastructure_sanity.py -v --tb=short --noconftest -p no:cacheprovider
-
-# Run worker mock integration test (no real GitHub/Claude needed)
-# Uses standard conftest which handles image building inside DIND
-test-e2e-worker-mock:
-	@echo "🧪 Running Worker Mock Integration Test..."
-	@docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml down -v --remove-orphans 2>/dev/null || true
-	# Start all required services
-	@HOST_CLAUDE_DIR=$(HOST_CLAUDE_DIR) docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml up -d --build
-	# Wait for services to be healthy
-	@echo "⏳ Waiting for services..."
-	@sleep 10
-	# Run tests (conftest handles image building in dind)
-	@echo "🧪 Running tests..."
-	@HOST_CLAUDE_DIR=$(HOST_CLAUDE_DIR) docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml run --rm e2e-test-runner \
-		pytest tests/e2e/test_worker_mock_anthropic.py -v --tb=long -p no:cacheprovider
-	@docker compose -p $(TEST_PROJECT)_e2e -f docker/test/e2e/e2e.yml down -v --remove-orphans
-
-# Run ALL tests
-test-all: test-unit test-service test-integration
 
 # Cleanup test containers and volumes (all test projects)
 test-clean:

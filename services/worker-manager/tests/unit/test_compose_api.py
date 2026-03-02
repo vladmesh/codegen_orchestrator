@@ -2,15 +2,19 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-from src.main import app
+from src.routers.compose import router as compose_router
 from src.compose_runner import ComposeRunner
 
 
 @pytest.fixture
 def client(tmp_path):
     """Test client with a mocked compose runner and docker client in app state."""
+    # Create an isolated test app without lifespan manager from main.py
+    app = FastAPI(title="Test Worker Manager")
+    app.include_router(compose_router)
+
     runner = MagicMock(spec=ComposeRunner)
     runner.run = AsyncMock(return_value=(0, "output\n", ""))
 
