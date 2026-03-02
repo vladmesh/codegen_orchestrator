@@ -4,9 +4,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.server import ServerStatus
 from shared.crypto import SecretsCipher
 from shared.models import PortAllocation, Server, ServiceDeployment, User
-from shared.models.server import ServerStatus
 from shared.models.service_deployment import DeploymentStatus
 
 from ..database import get_async_session

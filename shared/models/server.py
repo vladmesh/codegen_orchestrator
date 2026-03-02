@@ -1,40 +1,13 @@
 """Server model."""
 
 from datetime import datetime
-from enum import StrEnum
 
 from sqlalchemy import JSON, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from shared.contracts.dto.server import ServerStatus  # Single source of truth
+
 from .base import Base
-
-
-class ServerStatus(StrEnum):
-    """Server status lifecycle."""
-
-    # Discovery
-    DISCOVERED = "discovered"  # Обнаружен в Time4VPS API
-    NEW = "new"  # Новый, ещё не классифицирован
-    PENDING_SETUP = "pending_setup"  # Новый managed сервер, требует настройки
-
-    # Provisioning
-    PROVISIONING = "provisioning"  # Идет базовая настройка
-    FORCE_REBUILD = "force_rebuild"  # 🔥 ТРИГГЕР: Полная переустановка
-
-    # Operational
-    READY = "ready"  # Настроен, готов принимать сервисы
-    IN_USE = "in_use"  # Имеет активные сервисы
-    ACTIVE = "active"  # Доступен и работает
-
-    # Issues
-    ERROR = "error"  # Инцидент: был в норме, доступ пропал
-    UNREACHABLE = "unreachable"  # Недоступен по сети
-    MAINTENANCE = "maintenance"  # Плановое обслуживание
-
-    # Archive
-    RESERVED = "reserved"  # Ghost server (личный)
-    MISSING = "missing"  # Пропал из Time4VPS API
-    DECOMMISSIONED = "decommissioned"  # Выведен из эксплуатации
 
 
 class Server(Base):

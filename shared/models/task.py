@@ -1,29 +1,13 @@
 """Task model for tracking asynchronous operations."""
 
 from datetime import datetime
-from enum import StrEnum
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from shared.contracts.dto.task import TaskStatus  # Single source of truth
+
 from .base import Base
-
-
-class TaskType(StrEnum):
-    """Type of task."""
-
-    ENGINEERING = "engineering"
-    DEPLOY = "deploy"
-
-
-class TaskStatus(StrEnum):
-    """Task execution status."""
-
-    QUEUED = "queued"  # Task published to queue, waiting to be picked up
-    RUNNING = "running"  # Worker is processing the task
-    COMPLETED = "completed"  # Task finished successfully
-    FAILED = "failed"  # Task failed with error
-    CANCELLED = "cancelled"  # Task was cancelled by user
 
 
 class Task(Base):
