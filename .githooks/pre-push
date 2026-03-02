@@ -32,7 +32,7 @@ fi
 
 # Run unit tests locally (fast, no Docker)
 echo "🧪 Running unit tests..."
-if ! make test-unit-local; then
+if ! make test-unit; then
     echo -e "${RED}❌ Unit tests failed!${NC}"
     echo -e "${YELLOW}💡 Fix failing tests before pushing${NC}"
     exit 1

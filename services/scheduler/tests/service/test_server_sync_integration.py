@@ -22,7 +22,7 @@ async def test_server_sync_integration_flow(time4vps_mock, api_client):
             "/api/api-keys/",
             json={
                 "service": "time4vps",
-                "type": "system",
+                "type": "credentials",
                 "value": {"username": "test", "password": "test"},
                 "project_id": None,
             },

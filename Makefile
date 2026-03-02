@@ -29,6 +29,7 @@ help:
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test-unit            - Run all unit tests (fast)"
+	@echo "  make test-service SERVICE=name - Run service tests for a specific module"
 	@echo "  make test-integration     - Run all integration tests"
 	@echo "  make test-e2e-scaffold    - Run scaffolding E2E tests"
 	@echo "  make test-clean           - Cleanup test containers"
@@ -176,6 +177,24 @@ test-integration-%:
 # Requires: uv sync (once)
 test-unit:
 	@uv run bash scripts/test-unit-local.sh
+
+# Run service tests for a specific service using its dedicated compose file
+# Usage: make test-service SERVICE=api
+test-service:
+	@if [ -z "$(SERVICE)" ]; then \
+		echo "❌ Error: SERVICE is required (e.g., make test-service SERVICE=api)"; \
+		exit 1; \
+	fi
+	@if [ ! -f "docker/test/service/$(SERVICE).yml" ]; then \
+		echo "❌ Error: Compose file docker/test/service/$(SERVICE).yml not found"; \
+		exit 1; \
+	fi
+	@echo "🧪 Running $(SERVICE) service tests..."
+	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml down --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml up --build --abort-on-container-exit --exit-code-from $(SERVICE)-test-runner; \
+	EXIT_CODE=$$?; \
+	docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml down --remove-orphans; \
+	exit $$EXIT_CODE
 
 # Run all integration tests (auto-discovered from docker/test/integration/*.yml)
 test-integration: $(INTEGRATION_TESTS)

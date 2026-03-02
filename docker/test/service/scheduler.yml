@@ -31,6 +31,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
+      - SECRETS_ENCRYPTION_KEY=GkH0NqyqjG599M0K9fVwU34b_2i1-m_i_M80-82d2X0=
     depends_on:
       db:
         condition: service_healthy
