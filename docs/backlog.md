@@ -1,6 +1,6 @@
 # Backlog
 
-> **Актуально на**: 2026-03-01
+> **Актуально на**: 2026-03-02
 
 Мы используем итеративный подход. Этот бэклог консолидирует задачи из предыдущих аудитов, брейнштормов и планов. Приоритет отдан архитектуре, стабильности процессов разработки и закрытию техдолга (DevEx). Продуктовые фичи вынесены в конец.
 
@@ -49,8 +49,24 @@
 ### 5. ~~Queue Contract Enforcement~~ → ✅ Done
 > Объединено с #3. См. [redis-streams-unification.md](plans/redis-streams-unification.md).
 
-### 6. ~~Migrate Pre-push Tests from Docker to Local venv~~ → ✅ Done
-> Реализовано скриптом локального запуска в pre-push hook.
+### 6. Fix & Consolidate Test Suites
+**Источник**: E2E Level C run 3 (worker-manager compose 500), аудит service/e2e тестов
+**Проблема**: Service-тесты не в CI, не в хуках, часть сломана. E2E тесты деградировали.
+
+**Service-тесты:**
+- [ ] **worker-manager `test_compose_api.py`**: Все 6 тестов ERROR — `TestClient(app)` вызывает lifespan → `docker.from_env()` → падает без Docker socket. Тесты полностью мокают runner — lifespan не нужен. **Фикс**: создать `app` без lifespan или перенести в `tests/unit/` (они и так unit-уровня).
+- [ ] **worker-manager `test_flow.py`, `test_consumer.py`**: Используют FakeRedis + мок Docker — это unit-тесты, ошибочно живут в `tests/service/`. **Фикс**: перенести в `tests/unit/`.
+- [ ] **langgraph `test_engineering_flow.py`**: RED phase — harness methods не реализованы.
+- [ ] **scheduler `test_provisioner_result_listener.py`**: RED phase — модуль не реализован.
+- [ ] **Makefile `test-service`**: включает только api + langgraph. Нет scheduler, worker-manager, telegram, infra.
+- [ ] **CI (`ci.yml`)**: service-тесты не запускаются. Добавить после починки.
+
+**E2E-тесты:**
+- [ ] **`test_engineering_flow.py`**: `@pytest.mark.skip` навечно. Разблокировать или удалить.
+- [ ] **Hardcoded IPs**: mock-anthropic `172.30.0.40:8000` в worker mock тестах. Заменить на DNS.
+- [ ] **`test_real_llm.py`**: hardcoded `/host-claude` path (line 82), не использует `CLAUDE_SESSION_DIR`.
+- [ ] **`test_dev_env_smoke.py`**: hardcoded `/tmp/codegen/workspaces` fallback.
+- [ ] **CI**: E2E mock-тесты (Level A + B) не требуют credentials — можно добавить в CI.
 
 ### 7. Security Audit: Project Deploy Cleanup
 **Проблема**: Отсутствие удаляющей очистки после деплоев.
@@ -78,6 +94,7 @@
 
 ### 11. E2E Тесты
 Завершение покрытия системы E2E тестами (завершить неоконченные фазы 5-7).
+Текущий статус E2E описан в #6 выше. Ни один E2E тест не в CI.
 
 ### 12. Remove Obsolete Zavhoz
 **Документы**: `docs/backlog.md`
@@ -168,7 +185,7 @@
 - **PO ReactAgent без контейнера**: Done. Переход на API-based ReactAgent завершен.
 - **Dev Environment Docker-in-Docker Migration**: Фазы 1-4 завершены. (В планах осталось только E2E тестирование).
 - **Redis Streams: PEL Recovery & Consumer Unification (#3+#5)**: Done. 9 consumer'ов переведены на `RedisStreamClient.consume()` с PEL recovery. Pydantic контракты на все очереди. См. [redis-streams-unification.md](plans/redis-streams-unification.md).
-- **Pre-push Tests to Local venv (#6)**: Done. Интегрирован быстрый локальный pytest скрипт без Docker overhead.
+- **Pre-push Tests to Local venv (old #6)**: Done. Интегрирован быстрый локальный pytest скрипт без Docker overhead. Пункт #6 в бэклоге переиспользован для "Fix & Consolidate Test Suites".
 - **Security Audit Base (#7)**: Done. Пароли отключены, deploy юзер создан, fail2ban/UFW настроены.
 - **Contract Consistency (#14)**: Done. Избавились от сырых вызовов `xadd` в пользу методов клиента.
 - **StrEnum Migration**: Done. 21 instance `(str, Enum)` → `StrEnum` в 14 файлах (shared/contracts, shared/models, shared/schemas, services/langgraph).
