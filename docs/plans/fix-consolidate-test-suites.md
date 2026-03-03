@@ -23,12 +23,12 @@ This matches how the existing `test_worker_execution.py` tests work: they publis
 
 ## Steps
 
-1. [ ] Consolidate duplicated test helpers into conftest
+1. [x] Consolidate duplicated test helpers into conftest
    - **Input**: `tests/integration/backend/test_worker_execution.py`, `conftest.py`
    - **Output**: `wait_for_stream_message`, `wait_for_create_response` moved to `conftest.py`; `test_worker_execution.py` imports from conftest
    - **Test**: `make test-integration-backend` — existing tests still pass
 
-2. [ ] Add API client fixture + data seeding helpers to conftest
+2. [x] Add API client fixture + data seeding helpers to conftest
    - **Input**: `tests/integration/backend/conftest.py`
    - **Output**: New fixtures:
      - `api_client` — `httpx.AsyncClient` pointing at `http://api:8000` (or `172.31.0.20:8000`)
@@ -38,7 +38,7 @@ This matches how the existing `test_worker_execution.py` tests work: they publis
      - Autouse cleanup fixture that deletes seeded records after each test (or relies on tmpfs DB reset per session)
    - **Test**: write a quick smoke test that seeds a project and reads it back via API
 
-3. [ ] Implement langgraph integration tests (real DB, real Redis, real API)
+3. [x] Implement langgraph integration tests (real DB, real Redis, real API)
    - **Input**: `tests/integration/backend/test_langgraph_integration.py` (skeleton), engineering worker code
    - **Output**: 3 test scenarios against the full stack:
 
@@ -64,12 +64,12 @@ This matches how the existing `test_worker_execution.py` tests work: they publis
 
    - **Test**: `make test-integration-backend` passes with new tests
 
-4. [ ] Update TESTING.md — final pass
+4. [x] Update TESTING.md — final pass
    - **Input**: `docs/TESTING.md`, current test state
    - **Output**: Updated coverage matrix (langgraph: stub → 3 real integration tests), accurate descriptions, verify Makefile targets listed are correct, document the seeding approach (API fixtures)
    - **Test**: —
 
-5. [ ] Update backlog and STATUS.md
+5. [x] Update backlog and STATUS.md
    - **Input**: `docs/backlog.md`, `docs/STATUS.md`
    - **Output**: #6 moved to Done, STATUS.md cleared, CHANGELOG updated
    - **Test**: —
@@ -81,3 +81,9 @@ This matches how the existing `test_worker_execution.py` tests work: they publis
 - DB uses `tmpfs` — data is ephemeral per compose session. No cleanup needed between sessions, but we should clean up between tests within a session (delete seeded records or use unique IDs per test).
 - The test runner container already has `shared/` and `services/` mounted, so it can import contracts (`EngineeringMessage`, etc.).
 - Environment: `GITHUB_ORG`, `GITHUB_APP_ID`, etc. are NOT set in the test compose — the engineering worker will fail at the GitHub boundary naturally. This is the expected behavior for these tests.
+
+## Deviations
+
+- **Step 1**: Also consolidated helpers from `test_task_injection.py` (not just `test_worker_execution.py` as planned).
+- **Step 2**: Cleanup uses `DELETE /api/projects/{id}` cascade (deletes tasks + allocations) instead of autouse fixture. No server cleanup (no DELETE endpoint, but DB is tmpfs).
+- **Step 3**: Added `engineering-worker` service to `backend.yml` — it was missing from the test compose. The `langgraph` container only runs PO/provisioner, not the engineering queue consumer. Task for "missing project" test seeded without `project_id` (FK constraint prevents referencing non-existent project).

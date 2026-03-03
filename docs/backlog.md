@@ -1,15 +1,8 @@
 # Backlog
 
-> **Актуально на**: 2026-03-03
+> **Актуально на**: 2026-03-04
 
 ## Queue (ordered by priority, first = next)
-
-### #6 Fix & Consolidate Test Suites
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/fix-consolidate-test-suites.md
-- **Status**: partial
-- **Brief**: Остатки: (1) Реализовать `test_langgraph_integration.py` — engineering-worker connectivity через Redis с моками API/GitHub (скелет в `tests/integration/backend/`). (2) Финальный проход по `docs/TESTING.md` после стабилизации E2E. Done: Makefile cleanup, placeholder-стабы удалены (3 шт), service tests работают, TESTING.md обновлён (базово).
 
 ### #2 Agent Hierarchy & Incident Response
 - **Priority**: HIGH
@@ -120,6 +113,7 @@
 
 ## Done (last 10)
 
+- #6 Fix & Consolidate Test Suites — 2026-03-04
 - #22 Worker Network Isolation — 2026-03-03
 - #1 Service Template Simplification — 2026-02-25
 - #3+#5 Redis Streams Unification + Queue Contracts — 2026-02-17
@@ -129,5 +123,4 @@
 - #16 Consolidate ServiceModule — 2026-02-25
 - Secrets Encryption (Fernet) — 2026-02-15
 - Caddy Reverse Proxy — 2026-02-15
-- PO ReactAgent Migration — 2026-02-15
 - Dev Environment DinD → Native — 2026-02-20

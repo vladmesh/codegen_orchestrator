@@ -7,6 +7,12 @@
 ### Added
 - Auto-detect stale worker images: source hash label in `worker-base-common`, `check-worker-images` target in Makefile, auto-rebuild in `make build` and E2E pre-flight
   - Root cause: `POSTGRES_HOST=project-db` bug persisted 4 E2E runs because `shared/` fix was never baked into worker image ([worker audit](e2e_results/todo_api-20260304-levelC-worker.md))
+- LangGraph integration tests (#6): 3 tests against real DB/Redis/API (engineering worker flow, missing project, scaffold_failed abort)
+- Engineering-worker service in backend test compose
+- API data seeding fixtures (`seed_project`, `seed_task`, `seed_server`) + `poll_task_status` helper
+
+### Changed
+- Consolidated duplicated test helpers (`wait_for_stream_message`, `wait_for_create_response`) into `conftest.py`
 
 ## 2026-03-03
 

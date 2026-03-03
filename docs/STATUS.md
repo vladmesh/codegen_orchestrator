@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #6 Fix & Consolidate Test Suites
-- **Plan**: docs/plans/fix-consolidate-test-suites.md
-- **Step**: 1/4 — Consolidate duplicated test helpers into conftest
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: #6 steps 1-5 completed
 
 ## Blocked
 (нет)
