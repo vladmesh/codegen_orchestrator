@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #22 Worker Network Isolation
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/worker-network-isolation.md
-- **Status**: in-progress (step 1/4)
-- **Brief**: Отдельная сеть `codegen_worker`, воркеры не видят инфру оркестратора. Удаление workaround `project-db` / `_patch_db_hostname()`.
-
 ### #6 Fix & Consolidate Test Suites
 - **Priority**: HIGH
 - **User Story**: —
@@ -127,6 +120,7 @@
 
 ## Done (last 10)
 
+- #22 Worker Network Isolation — 2026-03-03
 - #1 Service Template Simplification — 2026-02-25
 - #3+#5 Redis Streams Unification + Queue Contracts — 2026-02-17
 - #9 Worker Reuse for CI Fix Loop — 2026-02-19

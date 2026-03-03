@@ -9,12 +9,14 @@
 - BACKEND_PORT: resolve from allocated resources instead of random secret token
 
 ### Added
-- Worker network isolation plan (#22)
+- Worker network isolation (#22): `codegen_worker` network, dual-homing bridge services
 - E2E report: todo_api Level C — full pass, all CRUD working (14 min end-to-end)
-- Worker DB isolation brainstorm
 
 ### Changed
 - Remove obsolete EXEC_MODE=native references
+
+### Removed
+- `project-db` alias workaround and `_patch_db_hostname()` (#22) — no longer needed with network isolation
 
 ## 2026-03-02
 
