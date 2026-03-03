@@ -15,8 +15,8 @@
 - **Priority**: HIGH
 - **User Story**: —
 - **Plan**: —
-- **Status**: partial (Makefile cleanup done, service tests need migration/fix)
-- **Brief**: Перенести service-тесты в unit/integration, удалить RED phase стабы, добавить E2E mock-тесты в CI. Детали аудита: langgraph (2 файла), scheduler (1), telegram_bot (1), worker-manager (2), e2e (5 items).
+- **Status**: partial
+- **Brief**: Остатки: (1) Реализовать `test_langgraph_integration.py` — engineering-worker connectivity через Redis с моками API/GitHub (скелет в `tests/integration/backend/`). (2) Финальный проход по `docs/TESTING.md` после стабилизации E2E. Done: Makefile cleanup, placeholder-стабы удалены (3 шт), service tests работают, TESTING.md обновлён (базово).
 
 ### #2 Agent Hierarchy & Incident Response
 - **Priority**: HIGH

@@ -1,148 +1,87 @@
 # Test Infrastructure
 
-This document describes the test structure and how to run tests for the Codegen Orchestrator project.
+> **Актуально на**: 2026-03-03
 
-## Directory Structure
+## Test Layers
 
-Tests are organized per service with separation between unit and integration tests:
-
-```
-services/
-  api/tests/{unit,integration}/
-  langgraph/tests/{unit,integration}/
-  worker-manager/tests/{unit,integration}/
-  infra-service/tests/{unit,integration}/
-  scheduler/tests/{unit,integration}/
-  telegram_bot/tests/unit/
-
-tests/
-  unit/         # Cross-service unit tests (worker-manager, etc.)
-  integration/  # Cross-service integration tests
-  e2e/          # End-to-end system tests
-```
-
-## Test Types
-
-### Unit Tests
-- **Location**: `services/{service}/tests/unit/` and `tests/unit/`
-- **Purpose**: Test individual functions, classes, and modules in isolation
-- **Dependencies**: None (mocked external services)
-- **Speed**: Very fast (< 1 second per test)
-
-### Integration Tests
-- **Location**: `services/{service}/tests/integration/` and `tests/integration/`
-- **Purpose**: Test components working together with real dependencies
-- **Dependencies**: Database, Redis, or other services
-- **Speed**: Slower (1-10 seconds per test)
-
-### E2E Tests
-- **Location**: `tests/e2e/` and `.claude/skills/e2e-*`
-- **Purpose**: Test full user workflows across all services
-- **Dependencies**: Full stack running + Real LLM
-- **Run with**: `/e2e-run` skill (Level A/B/C)
+| Layer | Location | Dependencies | CI | Speed |
+|-------|----------|-------------|-----|-------|
+| **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks) | Pre-push + CI | ~5 min total |
+| **Service** | `services/{svc}/tests/service/` | Docker (single service) | CI | ~5-10 min |
+| **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI | ~10-30 min |
+| **E2E** | `.claude/skills/e2e-*` (manual), `tests/e2e/` (scripts) | Full stack + real LLM | Manual only | 10-60 min |
 
 ## Running Tests
 
-### Commands
-
 ```bash
-# All unit tests across all services (fast, no deps)
-make test-unit
-
-# All integration tests (require DB/Redis running)
-make test-integration
-
-# Service-specific unit tests
-make test-api-unit
+# Unit (fast, no deps — run before every push)
+make test-unit                 # All services
+make test-api-unit             # Per-service
 make test-langgraph-unit
 make test-scheduler-unit
 make test-telegram-unit
 
-# Service-specific integration tests
-make test-api-integration
-make test-langgraph-integration
-make test-scheduler-integration
+# Service (Docker, single service)
+make test-service SERVICE=api
 
-# E2E scaffold test (validates copier + make setup in worker container)
-make test-e2e-scaffold
+# Integration (Docker Compose, full stack)
+make test-integration          # All (auto-discovers docker/test/integration/*.yml)
+make test-integration-backend  # Specific suite
 
-# Cleanup test containers and volumes
-make test-clean
+# E2E
+make test-e2e-scaffold         # Quick scaffold smoke test (~2-3 min)
+# Full E2E — use skills:
+#   /e2e-run todo_api C       # Level A (code) / B (+CI) / C (+deploy)
+#   /e2e-check                # Pre-flight check
+#   /e2e-cleanup todo_api     # Cleanup resources
+
+# Cleanup
+make test-clean                # Remove all test containers/volumes
 ```
 
-### Pre-push Hook
+## Pre-push Hook
 
-The pre-push hook runs automatically:
+Runs automatically before `git push`:
 1. `make lint` — ruff check
 2. `make test-unit` — all unit tests
 
-Both must pass before push is allowed.
+Both must pass.
 
-## Writing Tests
+## Test Coverage by Service
 
-### Unit Test Example
+| Service | Unit | Service | Integration | E2E |
+|---------|------|---------|-------------|-----|
+| api | 6 files | 2 files | via backend suite | via /e2e-run |
+| langgraph | 20+ files | — | skeleton (TODO) | via /e2e-run |
+| worker-manager | 15 files | — | 4 tests (worker creation/execution) | via /e2e-run |
+| scheduler | 2 files | 2 files | — | — |
+| telegram_bot | 3 files | — | via frontend suite | — |
+| infra-service | — | — | 1 file (Ansible) | — |
+| shared | 9 files | — | — | — |
+| packages (cli, wrapper) | 11 files | — | 2 files | — |
 
-```python
-# services/api/tests/unit/test_models.py
-def test_project_creation():
-    """Test that a project can be created with valid data."""
-    from src.models.project import Project
+## E2E Testing
 
-    project = Project(name="test", status="pending")
-    assert project.name == "test"
-```
+E2E tests are NOT in CI — they require a running stack + real LLM calls.
 
-### Integration Test Example
+**Skills** (preferred way to run E2E):
+- `/e2e-run <scenario> <level>` — 7 scenarios (todo_api, echo_bot, landing_page, weather_bot, url_shortener, bot_landing, expense_tracker), 3 levels (A/B/C)
+- `/e2e-check` — pre-flight: Docker services, API health, Redis
+- `/e2e-cleanup <scenario>` — remove GitHub repo, containers, DB records
 
-```python
-# services/api/tests/integration/test_database.py
-import pytest
+**Reports**: Written to `docs/e2e_results/`.
 
-@pytest.mark.asyncio
-async def test_database_connection(db_session):
-    """Test that we can connect to the test database."""
-    result = await db_session.execute("SELECT 1")
-    assert result.scalar() == 1
-```
-
-## Test Configuration
-
-Each service has its own `pytest.ini`:
-
-```ini
-[pytest]
-asyncio_mode = auto
-testpaths = tests
-markers =
-    unit: Unit tests
-    integration: Integration tests
-```
-
-## CI/CD Integration
-
-- **PR**: Unit tests + integration tests + build (no push)
-- **Main**: Full test suite + image build + push to registry
-- Pre-push hook ensures lint + unit tests pass locally before push
+**Scripts** (`tests/e2e/`): Lower-level test scripts (mock anthropic, dev env smoke, live smoke). Used for development, not production E2E.
 
 ## Best Practices
 
-1. **Unit tests should be fast**: < 1 second per test
-2. **Mock external dependencies**: Use `unittest.mock` or `pytest-mock`
-3. **Integration tests should be isolated**: Each test should clean up after itself
-4. **Use fixtures**: Share common setup code via pytest fixtures
-5. **Test one thing**: Each test should verify one specific behavior
-6. **Use descriptive names**: `test_user_creation_fails_without_email` not `test_user_1`
+1. Unit tests: fast (< 1s each), mock external deps
+2. Integration tests: cleanup after themselves (conftest fixtures handle this)
+3. One assertion per test where practical
+4. Descriptive names: `test_user_creation_fails_without_email` not `test_user_1`
 
 ## Troubleshooting
 
-### Tests are slow
-- Run only unit tests: `make test-unit`
-- Run tests for one service: `make test-api-unit`
-
-### Import errors
-- Ensure `PYTHONPATH` includes service `src/` directory
-- Check that all `__init__.py` files exist
-
-### Database connection errors (integration tests)
-- Ensure services are running: `make up`
-- Check database healthchecks: `docker compose ps`
+- **Import errors**: Check `PYTHONPATH` includes `src/` (unit test runner sets this via `scripts/test-unit-local.sh`)
+- **DB connection errors**: `make up` first, check `docker compose ps` for healthchecks
+- **Stale test containers**: `make test-clean`

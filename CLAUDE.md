@@ -133,17 +133,6 @@ def deploy_to_server(server_handle: str):
     github.set_repository_secrets(repo, {"DEPLOY_HOST": server.public_ip, ...})
 ```
 
-## Adding New Agents
-
-1. Create file in `services/langgraph/src/nodes/<name>.py`
-2. Use `LLMNode` base class for agentic nodes or plain async function for functional nodes
-3. Add node to graph in `services/langgraph/src/graph.py`
-4. Define edges and routing logic
-5. If needs tools: add to `services/langgraph/src/tools/`
-6. If needs capability: add to `services/langgraph/src/capabilities/__init__.py`
-7. Document in `docs/NODES.md`
-8. Add tests in `services/langgraph/tests/unit/`
-
 ## Key Configuration
 
 - **Ruff**: Line length 100, Python 3.12, checks: E, F, I (isort), UP, B, C4, S, PLR, C901
