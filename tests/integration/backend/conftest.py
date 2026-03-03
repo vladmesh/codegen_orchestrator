@@ -1,12 +1,15 @@
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import hashlib
+import json
 import os
+import time
 
 import pytest
 import redis.asyncio as redis
 
 import docker
+from shared.contracts.queues.worker import CreateWorkerResponse
 
 # Configure pytest-asyncio
 pytest_plugins = ("pytest_asyncio",)
@@ -19,6 +22,68 @@ def pytest_configure(config):
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "tcp://docker:2375")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://172.31.0.20:8000")
+
+# Stream constants
+REDIS_STREAM_COMMANDS = "worker:commands"
+REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
+
+
+# --- Shared test helpers ---
+
+
+async def wait_for_create_response(
+    redis_client: redis.Redis, stream: str, request_id: str, timeout: int = 120
+) -> CreateWorkerResponse:
+    """Wait for a CreateWorkerResponse matching the given request_id.
+
+    Skips messages from other commands (e.g. delete responses from cleanup).
+    """
+    start = time.time()
+    current_id = "0"
+    while time.time() - start < timeout:
+        messages = await redis_client.xread({stream: current_id}, count=1, block=1000)
+        if not messages:
+            continue
+        msg_id = messages[0][1][0][0]
+        fields = messages[0][1][0][1]
+        current_id = msg_id
+
+        data_str = fields.get("data") if isinstance(fields.get("data"), str) else None
+        if not data_str:
+            raw = fields.get(b"data")
+            if raw:
+                data_str = raw.decode() if isinstance(raw, bytes) else raw
+        if not data_str:
+            continue
+
+        parsed = json.loads(data_str)
+        if parsed.get("request_id") != request_id:
+            continue
+
+        return CreateWorkerResponse.model_validate(parsed)
+
+    raise TimeoutError(f"No response for request_id={request_id} on {stream} within {timeout}s")
+
+
+async def wait_for_stream_message(
+    redis_client: redis.Redis, stream: str, timeout: int = 30, last_id: str = "0"
+) -> dict:
+    """Wait for a message on Redis stream."""
+    start = time.time()
+    current_id = last_id
+    while time.time() - start < timeout:
+        messages = await redis_client.xread({stream: current_id}, count=1, block=1000)
+        if messages:
+            msg_id = messages[0][1][0][0]
+            fields = messages[0][1][0][1]
+            result = {
+                k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v
+                for k, v in fields.items()
+            }
+            result["_msg_id"] = msg_id
+            return result
+    raise TimeoutError(f"No message received on {stream} within {timeout}s")
 
 
 @pytest.fixture

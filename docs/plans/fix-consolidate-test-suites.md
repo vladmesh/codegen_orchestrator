@@ -4,41 +4,80 @@
 
 Task #6 is partially done. Completed: Makefile cleanup, placeholder stubs removed, service tests working, TESTING.md updated (basic). Remaining:
 
-1. Implement `test_langgraph_integration.py` — engineering-worker connectivity through Redis with mocked API/GitHub
-2. Final pass on `docs/TESTING.md` after E2E stabilization
+1. Implement `test_langgraph_integration.py` — real integration tests using the full backend compose stack
+2. Final pass on `docs/TESTING.md` after stabilization
 
-The skeleton exists at `tests/integration/backend/test_langgraph_integration.py` with two stub tests. The backend integration suite (`docker/test/integration/backend.yml`) runs all services: langgraph, worker-manager, api, scheduler, telegram_bot, redis, db, DinD.
+The skeleton exists at `tests/integration/backend/test_langgraph_integration.py` with two stub tests. The backend integration suite (`docker/test/integration/backend.yml`) runs all services: langgraph, worker-manager, api, **db (PostgreSQL)**, redis, DinD.
 
-**Challenge**: The engineering-worker runs in its own container. Mocking its internal deps (GitHub, API client) from the test runner is impractical. Two approaches:
+**Approach**: Full-stack integration — tests run against real services (DB, Redis, API, LangGraph, worker-manager). Data is seeded via API endpoints. Only truly external services (GitHub API, LLM APIs) are out of scope — the tests exercise the flow up to the boundary where those external calls would happen.
 
-- **A) In-process subgraph execution**: Import and run the engineering subgraph directly in the test runner, with real Redis + mocked HTTP clients. Tests LangGraph graph logic + Redis stream integration.
-- **B) Full container test with mock HTTP server**: Spin up a mock GitHub/API server in the test network. More realistic but significantly more complex.
+This matches how the existing `test_worker_execution.py` tests work: they publish real Redis messages, hit real worker-manager, create real containers in DinD. The langgraph tests follow the same pattern but enter through the engineering queue.
 
-**Decision**: Approach A — in-process execution with real Redis. This matches the brief ("моки API/GitHub") and tests the important boundary: LangGraph ↔ Redis streams ↔ worker-manager. The engineering-worker container itself is already validated by E2E tests.
+**Key insight**: The engineering worker flow has clear internal boundaries we can test:
+1. Queue consumer → API (project fetch, task status update) → DB — **testable**
+2. Resource allocator → API (server fetch, allocation create) → DB — **testable**
+3. Developer node → worker spawner → Redis → worker-manager → DinD — **testable** (existing tests cover worker creation; we add the langgraph→Redis trigger)
+4. GitHub API calls, CI gate, LLM execution — **external, out of scope**
 
-**Helper duplication**: `wait_for_stream_message` is copy-pasted between `test_worker_execution.py` and `test_task_injection.py`. Consolidate into conftest.
+**Helper duplication**: `wait_for_stream_message` and `wait_for_create_response` are defined directly in `test_worker_execution.py`. Consolidate into conftest so `test_langgraph_integration.py` can reuse them.
 
 ## Steps
 
 1. [ ] Consolidate duplicated test helpers into conftest
-   - **Input**: `tests/integration/backend/test_worker_execution.py`, `test_task_injection.py`, `conftest.py`
-   - **Output**: `wait_for_stream_message`, `wait_for_create_response`, `cleanup_worker` moved to `conftest.py`; existing tests updated to use shared fixtures
+   - **Input**: `tests/integration/backend/test_worker_execution.py`, `conftest.py`
+   - **Output**: `wait_for_stream_message`, `wait_for_create_response` moved to `conftest.py`; `test_worker_execution.py` imports from conftest
    - **Test**: `make test-integration-backend` — existing tests still pass
 
-2. [ ] Implement langgraph integration tests (in-process, mocked GitHub/API)
-   - **Input**: `tests/integration/backend/test_langgraph_integration.py` (skeleton), `services/langgraph/src/subgraphs/engineering.py`, `services/langgraph/src/nodes/developer.py`, `services/langgraph/src/clients/worker_spawner.py`
-   - **Output**: 3 test scenarios:
-     - `test_engineering_subgraph_spawns_worker` — run engineering subgraph with mocked GitHub + API client, verify `CreateWorkerCommand` appears on `worker:commands` Redis stream
-     - `test_engineering_subgraph_blocked_on_missing_project` — verify error handling when project not found
-     - `test_worker_spawner_sends_create_command` — verify `WorkerSpawner.request_spawn()` publishes correct Redis message and reads response
+2. [ ] Add API client fixture + data seeding helpers to conftest
+   - **Input**: `tests/integration/backend/conftest.py`
+   - **Output**: New fixtures:
+     - `api_client` — `httpx.AsyncClient` pointing at `http://api:8000` (or `172.31.0.20:8000`)
+     - `seed_project(id, name, status, config, repository_url)` — creates project via `POST /api/projects/`
+     - `seed_task(id, type, project_id)` — creates task via `POST /api/tasks/`
+     - `seed_server(handle, host, public_ip, status, capacity_ram_mb)` — creates server via `POST /api/servers/`
+     - Autouse cleanup fixture that deletes seeded records after each test (or relies on tmpfs DB reset per session)
+   - **Test**: write a quick smoke test that seeds a project and reads it back via API
+
+3. [ ] Implement langgraph integration tests (real DB, real Redis, real API)
+   - **Input**: `tests/integration/backend/test_langgraph_integration.py` (skeleton), engineering worker code
+   - **Output**: 3 test scenarios against the full stack:
+
+     **a) `test_engineering_worker_processes_queue_and_updates_task`**
+     - Seed: project (status=`draft`, action=`create`), task (status=`queued`), server (status=`ready`, ram=8192)
+     - Action: queue `EngineeringMessage` to `engineering:queue`
+     - Assert: poll API until task status changes from `queued` → `running` (engineering worker picked it up)
+     - Assert: the flow eventually fails at GitHub boundary (`_create_repo_and_set_secrets` fails because `GITHUB_ORG`/GitHub App creds aren't configured in test env)
+     - Assert: task status becomes `failed` with an error message mentioning GitHub/repo
+     - **What this tests**: Redis consumer → API project fetch → task status lifecycle → error propagation — all through real services
+
+     **b) `test_engineering_worker_missing_project_fails_task`**
+     - Seed: task only (no project in DB)
+     - Action: queue `EngineeringMessage` with non-existent `project_id`
+     - Assert: task status becomes `failed` with "not found" error
+     - **What this tests**: error handling path with real DB — worker queries API, project doesn't exist, task marked failed
+
+     **c) `test_engineering_worker_scaffold_failed_aborts`**
+     - Seed: project (status=`scaffold_failed`), task
+     - Action: queue `EngineeringMessage`
+     - Assert: task status becomes `failed` with error mentioning "scaffold_failed"
+     - **What this tests**: fail-fast guard with real DB state
+
    - **Test**: `make test-integration-backend` passes with new tests
 
-3. [ ] Update TESTING.md — final pass
+4. [ ] Update TESTING.md — final pass
    - **Input**: `docs/TESTING.md`, current test state
-   - **Output**: Updated coverage matrix (langgraph: skeleton → 3 tests), accurate date, verify all Makefile targets listed are correct, add note about in-process vs container integration test approach
+   - **Output**: Updated coverage matrix (langgraph: stub → 3 real integration tests), accurate descriptions, verify Makefile targets listed are correct, document the seeding approach (API fixtures)
    - **Test**: —
 
-4. [ ] Update backlog and STATUS.md
+5. [ ] Update backlog and STATUS.md
    - **Input**: `docs/backlog.md`, `docs/STATUS.md`
    - **Output**: #6 moved to Done, STATUS.md cleared, CHANGELOG updated
    - **Test**: —
+
+## Notes
+
+- The `langgraph` service in the compose already connects to `redis` and `api`. The engineering worker runs inside it. We just need to ensure `engineering:queue` consumer group exists (the service creates it on startup).
+- API auto-runs `alembic upgrade head` on startup — DB schema is ready.
+- DB uses `tmpfs` — data is ephemeral per compose session. No cleanup needed between sessions, but we should clean up between tests within a session (delete seeded records or use unique IDs per test).
+- The test runner container already has `shared/` and `services/` mounted, so it can import contracts (`EngineeringMessage`, etc.).
+- Environment: `GITHUB_ORG`, `GITHUB_APP_ID`, etc. are NOT set in the test compose — the engineering worker will fail at the GitHub boundary naturally. This is the expected behavior for these tests.

@@ -1,11 +1,6 @@
-# Reuse helper from test_worker_execution.py
-# In a real scenario I might refactor this into a conftest or shared utility,
-# but for now I'll duplicate the simple wait function to keep the test standalone.
-import time
 from uuid import uuid4
 
 import pytest
-from redis.asyncio import Redis
 
 from shared.contracts.queues.worker import (
     AgentType,
@@ -16,34 +11,17 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
 )
 
-
-async def wait_for_stream_message(
-    redis: Redis, stream: str, timeout: int = 30, last_id: str = "0"
-) -> dict:
-    start = time.time()
-    current_id = last_id
-    while time.time() - start < timeout:
-        messages = await redis.xread({stream: current_id}, count=1, block=1000)
-        if messages:
-            msg_id = messages[0][1][0][0]
-            fields = messages[0][1][0][1]
-            result = {
-                k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v
-                for k, v in fields.items()
-            }
-            result["_msg_id"] = msg_id
-            return result
-    raise TimeoutError(f"No message received on {stream} within {timeout}s")
+from .conftest import (
+    REDIS_STREAM_COMMANDS,
+    REDIS_STREAM_DEV_RESPONSES,
+    wait_for_stream_message,
+)
 
 
-async def cleanup_worker(redis: Redis, worker_id: str):
+async def cleanup_worker(redis_client, worker_id: str):
     """Send delete command for worker."""
     cmd = DeleteWorkerCommand(request_id=f"cleanup-{worker_id}", worker_id=worker_id)
-    await redis.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
-
-
-REDIS_STREAM_COMMANDS = "worker:commands"
-REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
+    await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
 
 
 @pytest.mark.integration

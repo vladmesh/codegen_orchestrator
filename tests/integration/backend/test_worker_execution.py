@@ -1,76 +1,22 @@
 import json
-import time
 from uuid import uuid4
 
 import pytest
-from redis.asyncio import Redis
 
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
-    CreateWorkerResponse,
     WorkerCapability,
     WorkerChannels,
     WorkerConfig,
 )
 
-# Helper constants
-REDIS_STREAM_COMMANDS = "worker:commands"
-REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
-
-
-async def wait_for_create_response(
-    redis: Redis, stream: str, request_id: str, timeout: int = 120
-) -> CreateWorkerResponse:
-    """Wait for a CreateWorkerResponse matching the given request_id.
-
-    Skips messages from other commands (e.g. delete responses from cleanup).
-    """
-    start = time.time()
-    current_id = "0"
-    while time.time() - start < timeout:
-        messages = await redis.xread({stream: current_id}, count=1, block=1000)
-        if not messages:
-            continue
-        msg_id = messages[0][1][0][0]
-        fields = messages[0][1][0][1]
-        current_id = msg_id
-
-        data_str = fields.get("data") if isinstance(fields.get("data"), str) else None
-        if not data_str:
-            raw = fields.get(b"data")
-            if raw:
-                data_str = raw.decode() if isinstance(raw, bytes) else raw
-        if not data_str:
-            continue
-
-        parsed = json.loads(data_str)
-        if parsed.get("request_id") != request_id:
-            continue
-
-        return CreateWorkerResponse.model_validate(parsed)
-
-    raise TimeoutError(f"No response for request_id={request_id} on {stream} within {timeout}s")
-
-
-async def wait_for_stream_message(
-    redis: Redis, stream: str, timeout: int = 30, last_id: str = "0"
-) -> dict:
-    """Wait for a message on Redis stream."""
-    start = time.time()
-    current_id = last_id
-    while time.time() - start < timeout:
-        messages = await redis.xread({stream: current_id}, count=1, block=1000)
-        if messages:
-            msg_id = messages[0][1][0][0]
-            fields = messages[0][1][0][1]
-            result = {
-                k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v
-                for k, v in fields.items()
-            }
-            result["_msg_id"] = msg_id
-            return result
-    raise TimeoutError(f"No message received on {stream} within {timeout}s")
+from .conftest import (
+    REDIS_STREAM_COMMANDS,
+    REDIS_STREAM_DEV_RESPONSES,
+    wait_for_create_response,
+    wait_for_stream_message,
+)
 
 
 @pytest.mark.integration
