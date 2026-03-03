@@ -1,7 +1,7 @@
 # CI Pipeline Redesign
 
 > **Note** (2026-02-17): GHCR references below are about the orchestrator's own CI (worker-base images). For generated projects, GHCR was replaced by self-hosted registry — see [ghcr-403-app-token.md](../investigations/ghcr-403-app-token.md). The orchestrator's own images may also migrate to the self-hosted registry in the future.
-> **Status**: done (brainstorm complete, action items in backlog #4)
+> **Status**: triaged (action items in backlog #4)
 
 ## Current Problems
 

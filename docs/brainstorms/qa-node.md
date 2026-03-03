@@ -1,6 +1,6 @@
 # QA Node Brainstorm
 
-> **Status**: done (brainstorm complete, action items in roadmap Phase 4)
+> **Status**: triaged (action items in roadmap Phase 4)
 
 ## Идея
 

@@ -60,8 +60,9 @@ Telegram bot is connected and polling (`getUpdates` every 10s, no errors).
 
 ### Problem 1: Worker network isolation not active — stale worker-manager image
 
-- **Type**: orchestrator
 - **Severity**: major
+- **Type**: orchestrator
+- **Backlog**: — (fixed by `12787c4 feat: auto-detect and rebuild stale worker images`)
 - **Description**: Worker containers land on `codegen_internal` instead of `codegen_worker`. The worker sees the orchestrator's PostgreSQL (`db` → `172.19.0.2`) but with wrong credentials (`.env` has `postgres`, orchestrator uses `change_me_in_production`). This causes `make makemigrations` to fail with `password authentication failed` — a confusing error that has been misdiagnosed in 10+ previous E2E reports as "makemigrations requires running PostgreSQL".
 - **Root cause**: Commit `e133e56` (2026-03-03 23:54) added the `codegen_worker` network and changed `manager.py` to use `settings.WORKER_NETWORK` instead of `settings.INTERNAL_NETWORK`. But the worker-manager Docker image was last built at 2026-03-03 10:43 — **13 hours before the fix**. The running container still has the old code: `network_name = settings.INTERNAL_NETWORK`. Neither `make up` nor E2E test runs rebuild images.
 - **Verification**: `docker compose exec worker-manager cat /app/src/config.py` confirms no `WORKER_NETWORK` field. `docker inspect` confirms worker container is on `codegen_internal`, not `codegen_worker`.
@@ -70,8 +71,9 @@ Telegram bot is connected and polling (`getUpdates` every 10s, no errors).
 
 ### Problem 2: tg_bot AGENTS.md documents wrong env var name
 
-- **Type**: template
 - **Severity**: minor
+- **Type**: template
+- **Backlog**: service-template backlog
 - **Description**: `template/services/tg_bot/AGENTS.md.jinja:40` documents `API_BASE_URL` but the actual code (`main.py.jinja:49`) and `.env.jinja:22` use `BACKEND_API_URL`. The agent reads AGENTS.md, writes code using the wrong variable name, and may get runtime errors.
 - **Root cause**: Commit `370b297` (2026-02-09) renamed the variable in `.env`, `.env.example`, and `main.py` but missed `AGENTS.md.jinja`. The inconsistency has persisted for 3+ weeks.
 - **Fix**: One-line change in `/home/vlad/projects/service-template/template/services/tg_bot/AGENTS.md.jinja:40` — replace `API_BASE_URL` with `BACKEND_API_URL`.

@@ -1,6 +1,6 @@
 # Worker Workspace Persistence
 
-> **Status**: done (brainstorm complete, action items in backlog #8)
+> **Status**: triaged (action items in backlog #8)
 
 ## Problem
 
