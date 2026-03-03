@@ -68,7 +68,7 @@ Application deployment is fully delegated to GitHub Actions. This allows secure 
 *   **Infra Service**: Can create/destroy servers (Root access via Ansible). Cannot see App Secrets.
 *   **GitHub Actions**: Can deploy apps (SSH User access). Can access App Secrets. Cannot destroy servers.
 
-**Docker Registry**: Self-hosted (`registry:2`) behind Caddy with TLS and basic auth. CI pushes images there, deploy pulls from there. GHCR is not used (GitHub App tokens cannot create org packages — see [investigation](./investigations/ghcr-403-app-token.md)).
+**Docker Registry**: Self-hosted (`registry:2`) behind Caddy with TLS and basic auth. CI pushes images there, deploy pulls from there. GHCR is not used (GitHub App tokens cannot create org packages).
 
 ---
 

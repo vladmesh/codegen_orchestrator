@@ -9,7 +9,9 @@
 | [README.md](README.md) | Обзор проекта, философия, архитектура |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Техническая архитектура, state schema, граф |
 | [docs/NODES.md](docs/NODES.md) | Описание агентов-узлов LangGraph |
-| [docs/backlog.md](docs/backlog.md) | Бэклог задач и roadmap |
+| [docs/backlog.md](docs/backlog.md) | Бэклог задач |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Фазы и вехи |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | Что сделано |
 | [docs/LOGGING.md](docs/LOGGING.md) | Структурированное логирование |
 | [docs/TESTING.md](docs/TESTING.md) | Тестовая инфраструктура |
 
@@ -22,25 +24,20 @@
 1. Прочитай **`docs/STATUS.md`** — пойми текущую фазу и статус.
 2. Прочитай **`docs/CONTRACTS.md`** — пойми контракты (DTO, очереди).
 
-### Шаг 2: Изучение Legacy (Reference)
-1. Если есть старые тесты в `tests_legacy/` — изучи их для идей.
-2. **НЕ копируй** их бездумно — архитектура изменилась.
-3. Используй их как источник вдохновения для тест-кейсов.
-
-### Шаг 3: Red (Тесты)
-1. Создай новый тест-файл в `services/<service>/tests/{unit,service,integration}/`.
-2. Используй `make test-<service>-...` для запуска.
+### Шаг 2: Red (Тесты)
+1. Создай новый тест-файл в `services/<service>/tests/{unit,integration}/`.
+2. Используй `make test-unit` для запуска.
 3. Убедись, что **тест падает** (RED) с ожидаемой ошибкой (NotImplemented или AssertError).
 
-### Шаг 4: Green (Реализация)
+### Шаг 3: Green (Реализация)
 1. Напиши минимальный код для прохождения теста.
 2. Запусти тесты снова → **GREEN**.
 
-### Шаг 5: Milestone Gate (Финализация)
-Когда задача (P*.*) выполнена:
-1. Запусти полные тесты сервиса: `make test-<service>`.
-2. Обнови **`docs/STATUS.md`**: отметь пункт как выполненный (✅).
-3. Сделай коммит: `git commit -m "feat: implement P*.* <name>"`.
+### Шаг 4: Milestone Gate (Финализация)
+Когда задача выполнена:
+1. Запусти полные тесты: `make test-unit`.
+2. Запусти линтер: `make lint`.
+3. Обнови docs: STATUS.md, CHANGELOG.md, backlog.md (см. `/implement` skill).
 4. Если есть сомнения или нужно менять контракты (`shared/contracts`) — **STOP** и запроси ревью у пользователя.
 
 ⚠️ **Review Trigger**: Если задача требует изменения `Shared Contracts` или схемы БД, которые не описаны в плане — остановись и спроси.
@@ -66,11 +63,20 @@ codegen_orchestrator/
 ├── AGENTS.md           # Этот файл
 ├── ARCHITECTURE.md     # Техническая архитектура
 ├── CLAUDE.md           # Инструкции для Claude Code
+├── .claude/skills/     # Автоматизированные workflow (10 skills)
 ├── docs/               # Документация
+│   ├── backlog.md      # Бэклог (Queue/Ideas/Done)
+│   ├── ROADMAP.md      # Фазы и вехи
+│   ├── CHANGELOG.md    # Что сделано
+│   ├── STATUS.md       # Текущая задача
+│   ├── USER_STORIES.md # Целевые сценарии
 │   ├── NODES.md        # Описание агентов
-│   ├── LOGGING.md      # Логирование
+│   ├── CONTRACTS.md    # DTO и очереди
+│   ├── SECRETS.md      # Управление секретами
 │   ├── TESTING.md      # Тестирование
-│   └── backlog.md      # Бэклог
+│   ├── LOGGING.md      # Логирование
+│   ├── ERROR_HANDLING.md # Обработка ошибок
+│   └── GLOSSARY.md     # Терминология
 ├── services/
 │   ├── api/            # FastAPI backend
 │   │   └── src/        # routers, models, services
@@ -84,8 +90,9 @@ codegen_orchestrator/
 │   ├── telegram_bot/   # Telegram interface (PO via Redis Streams)
 │   ├── scheduler/      # Background jobs
 │   ├── worker-manager/ # Docker lifecycle for CLI agents
-│   ├── scaffolder/     # Copier runner (project scaffolding)
-│   └── infra-service/  # Ansible provisioning
+│   ├── infra-service/  # Ansible provisioning
+│   ├── engineering-worker/ # Engineering subgraph consumer
+│   └── deploy-worker/     # DevOps subgraph consumer
 ├── packages/
 │   ├── orchestrator-cli/ # CLI tools for agents
 │   └── worker-wrapper/   # Agent container entrypoint
@@ -162,11 +169,35 @@ make down       # Остановить сервисы
 make logs       # Посмотреть логи
 make format     # Форматирование кода
 make lint       # Линтеры
-make test       # Все тесты
-make test-unit  # Только unit тесты (быстрые)
+make test-unit         # Unit тесты (быстрые, без зависимостей)
+make test-integration  # Integration тесты (нужны DB/Redis)
 ```
 
-## 🧠 Контекст при работе
+## 🔧 Skills (`.claude/skills/`)
+
+Автоматизированные workflow. Вызов: `/skill-name [args]`.
+
+### Core loop
+| Skill | Описание |
+|-------|----------|
+| `/next [#ID]` | Выбрать следующую задачу из backlog → STATUS.md |
+| `/plan [#ID]` | Декомпозировать задачу на шаги с Input/Output/Test |
+| `/implement [#ID]` | TDD цикл, обновление CHANGELOG/backlog/STATUS |
+
+### Testing
+| Skill | Описание |
+|-------|----------|
+| `/e2e-run [level] [scenario]` | Запуск E2E теста (Level A/B/C) |
+| `/e2e-check [scenario]` | Проверить результат E2E прогона |
+| `/e2e-cleanup [scenario]` | Очистить ресурсы после E2E |
+
+### Meta & maintenance
+| Skill | Описание |
+|-------|----------|
+| `/triage` | Разбор e2e-отчётов, brainstorms → backlog / service-template |
+| `/brainstorm <topic>` | Создать/обсудить brainstorm документ |
+| `/checkpoint` | Обновить CHANGELOG/ROADMAP/STATUS, рекомендовать следующую задачу |
+| `/audit` | Аудит кода: dead code, smells, security, test gaps → backlog |
 
 При работе над конкретной задачей загружай только релевантные файлы:
 

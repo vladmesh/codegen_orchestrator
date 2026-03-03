@@ -53,8 +53,7 @@ graph TD
 - **Product Owner (PO)**: LangGraph ReactAgent, общающийся с пользователем и ставящий задачи.
 - **Worker Manager**: Управляет Docker контейнерами с проксированием `docker compose` для инфраструктурных сервисов (Engineering/Deploy Workers, Flat Dev Environment).
 - **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps).
-- **Scaffolder**: Сервис генерации кода через Copier (бывший `preparer`).
-- **Infra Service**: Ansible runner для настройки серверов (бывший `infrastructure-worker`).
+- **Infra Service**: Ansible runner для настройки серверов.
 - **Scheduler**: Фоновые задачи (синхронизация, проверка здоровья, сборка мусора).
 
 ### Связанные проекты
@@ -62,12 +61,11 @@ graph TD
 | Проект | Описание | Репо |
 |--------|----------|------|
 | **service-template** | Spec-first фреймворк для генерации микросервисов | [GitHub](https://github.com/vladmesh/service-template) |
-| **prod_infra** | Ansible playbooks для настройки серверов | [GitHub](https://github.com/vladmesh/prod_infra) |
 
 ## Инфраструктура
 
 - **LangGraph сервер**: Отдельный сервер для оркестратора и агентов
-- **Prod серверы**: Управляются через prod_infra
+- **Prod серверы**: Управляются через infra-service (Ansible)
 - **Телеграм**: Основной интерфейс
 
 ## Development Setup
@@ -105,8 +103,8 @@ graph TD
 
 5. **Run tests**
    ```bash
-   make test-unit  # Fast unit tests
-   make test-all   # All tests
+   make test-unit         # Fast unit tests
+   make test-integration  # Integration tests (require running services)
    ```
 
 ### Development Workflow
@@ -149,4 +147,7 @@ logger.info("event_name", user_id=123)
 
 ## Roadmap
 
-См. [docs/STATUS.md](docs/STATUS.md) для актуального статуса.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — вехи и фазы
+- [docs/STATUS.md](docs/STATUS.md) — текущая задача
+- [docs/backlog.md](docs/backlog.md) — очередь задач
+- [docs/CHANGELOG.md](docs/CHANGELOG.md) — что сделано

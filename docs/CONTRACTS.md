@@ -75,7 +75,6 @@
 > Developer Worker (AI Agent) → orchestrator-cli → Redis/API
 > ```
 > The CLI is a permission-checked proxy, not an independent actor.
-> See [cli_orchestrator.md](../packages/cli_orchestrator.md) for details.
 
 ### Actor Roles
 
@@ -116,7 +115,7 @@
 4. **Per-service**: Each client manages its own limits (MVP)
 5. **Post-MVP**: Centralized Redis-based limiter for horizontal scaling
 
-See [github_client.md](./shared/github_client.md#8-rate-limiting) for implementation details.
+Implementation: `shared/clients/github.py` (`GitHubAppClient`).
 
 ---
 
@@ -230,7 +229,7 @@ sequenceDiagram
 
 ## Consumer Patterns
 
-> **Implemented in**: [redis-streams-unification.md](plans/redis-streams-unification.md)
+> **Implemented in**: Redis Streams unification (#3+#5)
 
 All Redis Stream consumers use unified `RedisStreamClient.consume()` API from `shared.redis_client`.
 
@@ -284,10 +283,10 @@ On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim
 ```python
 # shared/contracts/dto/project.py
 
-from enum import Enum
+from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
-class ProjectStatus(str, Enum):
+class ProjectStatus(StrEnum):
     """Project lifecycle status.
     
     Happy path: DRAFT → SCAFFOLDING → SCAFFOLDED → DEVELOPING → TESTING → DEPLOYING → ACTIVE
@@ -319,7 +318,7 @@ class ProjectStatus(str, Enum):
     ARCHIVED = "archived"
 
 
-class ServiceModule(str, Enum):
+class ServiceModule(StrEnum):
     """Available project modules for scaffolding.
 
     Must match module names in service-template/copier.yml.
@@ -371,11 +370,11 @@ class ProjectDTO(BaseModel):
 ```python
 # shared/contracts/dto/task.py
 
-from enum import Enum
+from enum import StrEnum
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -383,7 +382,7 @@ class TaskStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     ENGINEERING = "engineering"
     DEPLOY = "deploy"
 
@@ -436,11 +435,11 @@ class UserDTO(BaseModel):
 ```python
 # shared/contracts/dto/server.py
 
-from enum import Enum
+from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
-class ServerStatus(str, Enum):
+class ServerStatus(StrEnum):
     NEW = "new"
     PENDING_SETUP = "pending_setup"
     PROVISIONING = "provisioning"
@@ -506,17 +505,17 @@ class ServerDTO(BaseModel):
 ```python
 # shared/contracts/dto/incident.py
 
-from enum import Enum
+from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 
-class IncidentSeverity(str, Enum):
+class IncidentSeverity(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
 
-class IncidentStatus(str, Enum):
+class IncidentStatus(StrEnum):
     OPEN = "open"
     RESOLVED = "resolved"
 
@@ -812,19 +811,19 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 ```python
 # shared/contracts/queues/worker.py
 
-class AgentType(str, Enum):
+class AgentType(StrEnum):
     CLAUDE = "claude"          # Claude Code
     FACTORY = "factory"        # Factory.ai Droid
 
 
-class WorkerCapability(str, Enum):
+class WorkerCapability(StrEnum):
     GIT = "git"
     GITHUB_CLI = "github_cli"
     CURL = "curl"
     DOCKER = "docker"          # dind mount
 
 
-class WorkerChannels(str, Enum):
+class WorkerChannels(StrEnum):
     """Redis stream channels and patterns."""
     COMMANDS = "worker:commands"
     LIFECYCLE = "worker:lifecycle"
@@ -909,7 +908,7 @@ WorkerResponse = CreateWorkerResponse | DeleteWorkerResponse | StatusWorkerRespo
 ```python
 # shared/contracts/dto/agent_verdict.py
 
-class AgentVerdictStatus(str, Enum):
+class AgentVerdictStatus(StrEnum):
     SUCCESS = "success"             # Task completed successfully
     FAILURE = "failure"             # Task failed (retries exhausted)
     IN_PROGRESS = "in_progress"     # Waiting for user input or external event

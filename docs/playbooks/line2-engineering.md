@@ -382,8 +382,8 @@ cp /tmp/codegen/workspaces/project-${PROJECT_ID}/workspace/AUDIT_REPORT.md \
 
 #### 7b. Write the investigation report
 
-Create `docs/investigations/e2e-<project_name>-<date>.md` documenting every problem
-encountered during the test. Use existing reports in `docs/investigations/` as a
+Create `docs/e2e_results/<project_name>-<date>.md` documenting every problem
+encountered during the test. Use existing reports in `docs/e2e_results/` as a
 format reference.
 
 For each problem, classify it into one of four types:
@@ -431,7 +431,7 @@ perspective — problems it hit while writing code inside the generated project.
 #### 7c. Commit both files
 
 ```bash
-git add docs/investigations/e2e-${PROJECT_NAME}-$(date +%Y%m%d).md
+git add docs/e2e_results/${PROJECT_NAME}-$(date +%Y%m%d).md
 git add docs/e2e_results/audit-${PROJECT_NAME}-$(date +%Y%m%d).md 2>/dev/null
 git commit -m "docs: e2e report for ${PROJECT_NAME}"
 ```

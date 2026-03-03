@@ -1,5 +1,7 @@
 # Worker Workspace Persistence
 
+> **Status**: done (brainstorm complete, action items in backlog #8)
+
 ## Problem
 
 При таймауте или крэше воркера весь написанный код теряется.

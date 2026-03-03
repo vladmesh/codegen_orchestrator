@@ -1,0 +1,140 @@
+# Changelog
+
+Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
+
+## 2026-03-03
+
+### Fixed
+- CI gate: filter by commit SHA to prevent scaffold CI satisfying implementation gate
+- BACKEND_PORT: resolve from allocated resources instead of random secret token
+
+### Added
+- Worker network isolation plan (#22)
+- E2E report: todo_api Level C — full pass, all CRUD working (14 min end-to-end)
+- Worker DB isolation brainstorm
+
+### Changed
+- Remove obsolete EXEC_MODE=native references
+
+## 2026-03-02
+
+### Fixed
+- Docker network overlap in compose volume test
+- Phantom TaskType re-export in shared.models (multiple attempts)
+- CI unit test targets — use unified `make test-unit` with uv
+
+### Changed
+- Consolidate test suites: clean up Makefile targets, fix worker-manager tests (#6)
+- Move enums to contracts/dto (single source of truth)
+- Cleanup migrated service tests
+- Add service tests to CI
+
+### Added
+- E2E reports: todo_api Level C — deploy failed, makemigrations investigated
+- Backlog #6 audit: service test details
+
+## 2026-02-28
+
+### Fixed
+- Compose proxy: file discovery, env leak, DNS collision
+- Use `infra/` compose layout in ComposeRunner
+
+### Added
+- E2E secret injection for tg_bot Level C tests
+- Deploy retry: rerun failed workflow
+
+### Changed
+- Backlog #6 audit: service & e2e test broken items documented
+
+## 2026-02-27
+
+### Fixed
+- Compose workspace path mismatch for project-id workers
+- Docker login resilience + infra failure rerun in CI
+- Dead worker container detection — unblock waiting consumers
+
+### Added
+- E2E Level C run reports (multiple iterations)
+- E2E skill pre-flight checks
+
+## 2026-02-26
+
+### Fixed
+- Scaffold skip due to stale project dict + 3-level fail-fast defense
+- Fail-fast when GitHub repo already exists during engineering job
+- WorkflowNotFoundError fail-fast and description fallback in CI gate
+
+### Changed
+- Use GitHubAppClient instead of gh CLI in e2e-run skill
+
+## 2026-02-25
+
+### Added
+- Encrypt API keys and SSH keys at rest using Fernet (#20)
+
+### Changed
+- Unify ServerStatus enum, remove dead IncidentDTO (#15)
+- Consolidate ServiceModule enum, remove dead code (#16, #17)
+- Sync worker prompts with simplified service-template (#1)
+- Migrate `(str, Enum)` to `StrEnum` across codebase (21 instances, 14 files)
+- Remove deprecated `update_framework` command
+- Remove stale ruff.toml per-file-ignores
+- Deduplicate MockProcess into shared test conftest
+
+### Added
+- Refactor audit v2 report
+
+## 2026-02-23
+
+### Fixed
+- Pin fakeredis>=2.34.1 to eliminate deprecation warnings
+- Timezone=True for Task model datetime columns
+- Healthcheck intervals tuned, worker-manager lock refresh
+
+### Added
+- E2E testing skills for Line 2 engineering pipeline (e2e-run, e2e-check, e2e-cleanup)
+
+### Fixed
+- Scaffold skip bug, description passthrough, CI gate 404 handling
+
+## 2026-02-21
+
+### Changed
+- Remove stale scaffolder references
+- Add audit report collection step to Line 2 playbook
+
+### Added
+- DELETE /api/projects endpoint
+- Line 2 engineering playbook
+
+### Fixed
+- Remove "backend always required" constraint from module selection
+
+## 2026-02-20
+
+### Added
+- Scaffolder removal: inline scaffold phase into worker-manager (#1 orchestrator-side)
+- Orphaned resource GC for worker-manager
+
+### Changed
+- Extend e2e scaffold test with verification and cleanup
+- Remove Docker-in-Docker capability, update developer prompts (dev-env phase 4)
+- Add native tooling packages to worker-base-common image
+
+## 2026-02-19
+
+### Added
+- Workspace persistence: project_id passthrough, git token refresh, PROGRESS.md, GC by age, project mutex (phases 1-5)
+- Worker reuse for CI fix loop: wrapper multi-turn, spawner API, engineering reuse, gate timeout (#8)
+- Dev environment: workspace bind-mount, dual-network, compose proxy (phases 1-3)
+
+## 2026-02-17
+
+### Added
+- Redis Streams unification: 9 consumers on `RedisStreamClient.consume()` with PEL recovery, Pydantic contracts (#3+#5)
+
+## 2026-02-15
+
+### Added
+- Deploy architecture (9 iterations): Fernet encryption, env groups, GitHub Actions deploy, webhook auto-deploy, self-hosted Docker registry + Caddy TLS
+- PO ReactAgent migration: CLI subprocess → async LLM consumer with reminder polling and direct tool access

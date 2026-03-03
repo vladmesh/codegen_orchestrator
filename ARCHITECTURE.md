@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-03-01
+> **Актуально на**: 2026-03-03
 
 ## Обзор
 
@@ -101,7 +101,6 @@ System events (worker callbacks, reminders) → po:input → PO decides → po:p
 | Репозиторий | Использование |
 |-------------|---------------|
 | [service-template](https://github.com/vladmesh/service-template) | Copier шаблон для генерации проектов |
-| `infra-service` | Ansible runner для деплоя |
 
 ## Документация
 
@@ -118,7 +117,7 @@ System events (worker callbacks, reminders) → po:input → PO decides → po:p
 | Coding Agents (Claude/Droid) | [docs/coding-agents.md](docs/coding-agents.md) |
 | Parallel Workers | [docs/parallel-workers.md](docs/parallel-workers.md) |
 | Logging | [docs/LOGGING.md](docs/LOGGING.md) |
-| Audit (Known Issues) | [docs/audit.md](docs/audit.md) |
+
 
 ## Мониторинг
 

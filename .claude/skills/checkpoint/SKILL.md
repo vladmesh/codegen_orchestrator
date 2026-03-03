@@ -1,0 +1,93 @@
+---
+name: checkpoint
+description: Periodic review — run audit, triage reports, update CHANGELOG/ROADMAP/STATUS, recommend next task. Use every 5-7 tasks or weekly.
+disable-model-invocation: true
+allowed-tools: Bash, Read, Write, Edit, Grep, Glob
+argument-hint: "[--skip-audit]"
+---
+
+# Checkpoint
+
+Periodic review of project state. Ensures docs are up-to-date, reports are triaged, and the next task is clear.
+
+## Input
+
+- `--skip-audit` — skip the code audit step (if one was done recently)
+
+## Protocol
+
+### 1. Gather state
+
+Read:
+- `docs/STATUS.md` — current task, last checkpoint date
+- `docs/backlog.md` — Queue, Ideas, Done
+- `docs/CHANGELOG.md` — recent entries
+- `docs/ROADMAP.md` — milestone progress
+- `git log --oneline` since last checkpoint date
+
+### 2. Audit (unless --skip-audit)
+
+Invoke the `/audit` skill logic:
+- Scan for dead code, smells, security issues
+- Add findings to `docs/backlog.md` if actionable
+
+If an audit was done within the last 5 tasks (check `docs/audit.md` date), skip.
+
+### 3. Triage
+
+Invoke the `/triage` skill logic:
+- Process untriaged E2E reports
+- Process brainstorms with Status: done
+- Route issues to appropriate backlogs
+
+### 4. Update CHANGELOG
+
+Check git log since last CHANGELOG entry date. For each commit not already in CHANGELOG:
+- Categorize as Added / Changed / Fixed / Removed
+- Add under today's date section
+- Reference backlog item IDs where applicable
+
+### 5. Update ROADMAP
+
+Read `docs/backlog.md` Done section. For each completed task:
+- Find it in ROADMAP.md
+- Mark as `[x]`
+- If all items in a milestone are done, update milestone status
+
+### 6. Update STATUS
+
+Update `## Last Checkpoint`:
+- Set date to today
+- Summarize audit and E2E status
+
+### 7. Report
+
+Print a comprehensive summary:
+
+```
+## Checkpoint Report — <date>
+
+### Since Last Checkpoint (<previous date>)
+- Tasks completed: #X, #Y, #Z
+- Commits: N
+- E2E runs: N (pass/fail)
+
+### Audit Summary
+- Critical: 0
+- New backlog items: N
+
+### Triage Summary
+- E2E reports processed: N
+- Brainstorms triaged: N
+- Tasks created: N
+- Template tasks: N
+
+### ROADMAP Progress
+- <Milestone>: X/Y complete
+
+### Recommended Next Task
+- #<ID> — <Title> (<reason>)
+
+### Open Questions for Human
+- <anything that needs human input>
+```

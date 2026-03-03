@@ -4,7 +4,7 @@
 > Статус: **Superseded**
 
 > **⚠️ SUPERSEDED (2026-02-16)**: Этот план заменён более простым подходом — Fernet encryption at rest.
-> Реализация: `shared/crypto.py`, см. [deploy-architecture.md](../plans/deploy-architecture.md) Iteration 1.
+> Реализация: `shared/crypto.py` (deploy architecture, iteration 1).
 > Ключевое отличие: секреты хранятся encrypted в `project.config.secrets` (PostgreSQL JSONB),
 > а не как metadata-only с GitHub Secrets как source of truth.
 >
