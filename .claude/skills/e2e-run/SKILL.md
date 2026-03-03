@@ -683,19 +683,15 @@ asyncio.run(main())
 if grep -q "NOT_FOUND" /tmp/audit_report.txt; then
   echo "No worker audit report found"
 else
-  cp /tmp/audit_report.txt "docs/e2e_results/${PROJECT_NAME}-${DATE}-worker.md"
-  echo "Worker audit report saved"
+  echo "Worker audit report saved to /tmp/audit_report.txt (will be consumed in Step 7)"
 fi
 ```
 
 ### Step 7: Write E2E report
 
 Write your own report to `docs/e2e_results/<project_name>-<date>.md`.
-If worker audit was collected in Step 6, link to it from the report header.
 
-**File naming pattern** (two files per test, linked by name prefix):
-- `docs/e2e_results/<project_name>-<date>.md` — your report (this step)
-- `docs/e2e_results/<project_name>-<date>-worker.md` — worker's audit (Step 6, if available)
+**File naming**: `docs/e2e_results/<project_name>-<date>.md` (one file per test).
 
 **IMPORTANT: Never overwrite existing reports.** If a file with the target name already exists,
 append a suffix: `-2`, `-3`, etc. (e.g., `todo_api-20260302-levelC-2.md`). Each E2E run
@@ -703,7 +699,7 @@ produces a unique report — previous results must be preserved.
 
 Use existing reports in `docs/e2e_results/` as format reference if any exist.
 
-**Worker audit findings → structured Problems.** Read the worker's audit report and include actionable findings as structured entries in `## Problems Found` of the main report. The `-worker.md` file is raw data; the main report is the single source of truth for `/triage`.
+**Worker audit findings → structured Problems.** Read the worker's audit report (saved in Step 6 as a temp file) and include actionable findings as structured entries in `## Problems Found`. After writing the main report, **delete the `-worker.md` file** — it has served its purpose. The main report is the single source of truth for `/triage`.
 
 Classify each problem by type:
 
@@ -724,7 +720,7 @@ Report structure:
 > **Task**: <task_id>
 > **Test level**: A / B / C
 > **Status**: Passed / Failed
-> **Worker audit**: [<project_name>-<date>-worker.md](./<project_name>-<date>-worker.md) (if available)
+> **Worker audit**: collected (findings included below) | not found
 
 ---
 
@@ -745,7 +741,7 @@ Report structure:
 ### Step 7.5: Commit reports
 
 ```bash
-git add docs/e2e_results/<project_name>-<date>*.md
+git add docs/e2e_results/<project_name>-<date>.md
 git commit -m "e2e: <project_name> level <X> — <pass/fail>"
 ```
 

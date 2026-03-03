@@ -21,7 +21,7 @@ Process incoming reports and convert findings into backlog tasks.
 
 ### 1. E2E Reports (`docs/e2e_results/`)
 
-Read all `.md` files in `docs/e2e_results/`, **excluding `*-worker.md`** (raw worker audits — their findings are already included in the main report). For each report, find the `## Problems Found` section.
+Read all `.md` files in `docs/e2e_results/`. For each report, find the `## Problems Found` section.
 
 For each problem with structured fields:
 - **Severity**: critical / major / minor / info
