@@ -44,8 +44,9 @@ Follow Red → Green → Refactor:
 
 1. **Red**: Write failing test(s) based on the step's Test spec. Run `make test-unit` to confirm they fail.
 2. **Green**: Write minimal code to make tests pass. Run `make test-unit`.
-3. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
-4. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
+3. **Integration**: If the step is an integration test step from the plan — write the test, but do NOT run locally (CI will run it).
+4. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
+5. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
 
 ### 4. Update step progress
 
@@ -54,9 +55,18 @@ After each completed step, update `docs/STATUS.md`:
 - Advance Step to next
 - If plan exists, mark step as `[x]` in the plan file
 
-### 5. Task completion
+### 5. CI gate
 
-When all steps are done (or the task is complete if no plan):
+After the last step is committed and pushed:
+- Wait for CI to finish: poll `gh run list --branch <branch> --limit 1 --json status` every 60s (up to 15 min)
+- If CI passes — proceed to completion
+- If CI fails — read the logs via `gh run view --log-failed`:
+  - **Failure related to current task** — fix, re-push, wait again. Do NOT mark task as done.
+  - **Pre-existing failure** (unrelated to current changes) — add to `docs/backlog.md` as `Priority: critical`, proceed to completion. Note the pre-existing failure in the commit message.
+
+### 6. Task completion
+
+When all steps are done AND CI is green:
 
 **Update `docs/CHANGELOG.md`**:
 - Add entry under today's date
@@ -71,12 +81,14 @@ When all steps are done (or the task is complete if no plan):
 - Clear Current Task section (set all fields to "—")
 - The Done Steps remain as a record until `/next` overwrites
 
-**Delete plan** (if exists):
-- Remove `docs/plans/<task>.md`
+**Annotate plan** (if exists):
+- Do NOT delete `docs/plans/<task>.md`
+- Add a `## Deviations` section at the end with notes on where implementation diverged from the plan
+- Mark all steps `[x]` and add inline comments if a step was done differently
 
 **Commit** all doc updates together: `docs: complete #<ID> — <title>`
 
-### 6. Report
+### 7. Report
 
 Print a summary:
 - Task: #ID — Title

@@ -98,6 +98,7 @@ if not api_key:
 3. **Review Trigger**: If a change requires modifying `shared/contracts/` or DB schema not described in the plan — STOP and ask.
 4. **Structured logging**: Use `structlog` everywhere, never `print()`.
 5. **Run tests before committing**: `make test-unit` at minimum.
+6. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the full flow (`/plan` → `/implement`).
 
 ### LangGraph Nodes
 Always define state as TypedDict and return complete state:

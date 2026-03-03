@@ -47,7 +47,7 @@ Create `docs/plans/<task-slug>.md` using this format:
 1. [ ] <Step title>
    - **Input**: <files/systems to read or modify>
    - **Output**: <what should exist after this step>
-   - **Test**: <unit test description> or <integration test if it's a cross-step stitch>
+   - **Test**: <unit test description>
 
 2. [ ] <Step title>
    - **Input**: ...
@@ -61,8 +61,8 @@ Create `docs/plans/<task-slug>.md` using this format:
 
 - Each step should be completable in one focused session (< 1 hour of agent work)
 - Steps should be ordered by dependency (step N should not depend on step N+2)
-- **Unit tests** come from individual steps (Input→Output)
-- **Integration tests** come from stitches between steps (where output of step N is input of step N+1)
+- Each step включает unit test в поле **Test**
+- Если несколько шагов сшивают компоненты — добавь **отдельный шаг** на написание integration test
 - Last step should be cleanup/documentation if needed
 - If a step requires changing `shared/contracts/` or DB schema — mark it explicitly: `⚠️ needs-approval`
 

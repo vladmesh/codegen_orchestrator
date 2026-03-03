@@ -18,6 +18,29 @@
 
 - **service-template** (`/home/vlad/projects/service-template`) — фреймворк для генерации проектов
 
+## Dev Pipeline
+
+```
+Идея → /brainstorm → backlog → /next → /plan → /implement → /e2e-run → /checkpoint
+```
+
+| Этап | Скилл | Артефакт |
+|------|-------|----------|
+| Исследование | `/brainstorm <topic>` | `docs/brainstorms/<topic>.md` |
+| Приоритизация | `/triage` или вручную | `docs/backlog.md` — новый item |
+| Взять в работу | `/next [#ID]` | `docs/STATUS.md` — Current Task |
+| Декомпозиция | `/plan [#ID]` | `docs/plans/<task>.md` — шаги с Input/Output/Test |
+| Реализация | `/implement [#ID]` | Код + тесты (TDD цикл по шагам плана) |
+| Валидация | `/e2e-run` → `/e2e-check` | `docs/e2e_results/<scenario>-<date>.md` |
+| Фиксация | `/checkpoint` | CHANGELOG, ROADMAP, STATUS |
+| Аудит | `/audit` | Находки → backlog |
+
+Без аргумента скиллы берут текущую задачу из `docs/STATUS.md`.
+
+**Планы не удаляются после реализации.** `/implement` дополняет план отклонениями, `/checkpoint` удаляет только если есть свежий E2E-результат.
+
+**Код вне flow** допустим для мелких фиксов (< 3 файлов). Обязательно: запись в CHANGELOG + коммит с `[hotfix]` префиксом. Крупные изменения — только через flow.
+
 ## TDD Workflow (MANDATORY)
 
 Red → Green → Refactor. Без исключений.

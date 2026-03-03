@@ -66,6 +66,9 @@ RUN mkdir /workspace && chown worker:worker /workspace
 RUN mkdir -p /home/worker/.cache/uv && chown -R worker:worker /home/worker/.cache
 WORKDIR /workspace
 
+ARG SOURCE_HASH=unknown
+LABEL org.codegen.worker_source_hash=$SOURCE_HASH
+
 USER worker
 
 # Healthcheck

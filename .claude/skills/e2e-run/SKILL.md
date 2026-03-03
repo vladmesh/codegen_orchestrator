@@ -211,6 +211,28 @@ docker compose ps --format "{{.Name}} {{.Status}}" | grep -v "Up"
 
 If API is not healthy, STOP and tell the user to fix the stack first.
 
+**Worker image staleness check** (run before the first test):
+
+```bash
+CURRENT_HASH=$(find shared packages/worker-wrapper packages/orchestrator-cli \
+  services/worker-manager/images -type f \
+  -not -path '*/__pycache__/*' -not -name '*.pyc' \
+  | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
+
+STORED_HASH=$(docker inspect worker-base-common:latest \
+  --format '{{index .Config.Labels "org.codegen.worker_source_hash"}}' 2>/dev/null || echo "none")
+
+if [ "$CURRENT_HASH" != "$STORED_HASH" ]; then
+  echo "Worker images stale ($STORED_HASH -> $CURRENT_HASH) — rebuilding..."
+  make rebuild-worker-images
+else
+  echo "Worker images up to date (hash: $CURRENT_HASH)"
+fi
+```
+
+If rebuild fails, STOP and tell the user. Stale worker images cause persistent bugs
+(e.g., POSTGRES_HOST=project-db from deleted _patch_db_hostname).
+
 **Pre-flight: clean up stale artifacts** (run for every test, essential for Level C):
 
 ```bash

@@ -60,7 +60,15 @@ Update `## Last Checkpoint`:
 - Set date to today
 - Summarize audit and E2E status
 
-### 7. Report
+### 7. Cleanup plans
+
+For each file in `docs/plans/`:
+- Check if the task is in backlog Done section
+- Check if there is an E2E result in `docs/e2e_results/` **newer** than the task's completion commit
+- If both conditions are true — delete the plan file
+- Otherwise — keep it (it may still be needed for debugging)
+
+### 8. Report
 
 Print a comprehensive summary:
 

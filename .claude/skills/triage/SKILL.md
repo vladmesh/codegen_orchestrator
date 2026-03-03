@@ -56,6 +56,16 @@ If exists, read and extract actionable items not already in backlog.
 | `meta` | Add to `docs/backlog.md` Queue with `[meta]` prefix in title |
 | `infra` | Don't create tasks. Collect and list at the end for human decision. |
 
+## Regression Detection
+
+Before creating a new task, check `Done` section in backlog for matches:
+- Search by keywords, affected service, error pattern
+- If a problem matches a completed task `#X`:
+  1. **Reopen** — move `#X` back from Done to Queue, set `Priority: critical`, add `[regression]` prefix
+  2. **Attach context** — add to Brief: link to E2E report, what was expected to fix it, why it likely didn't work
+  3. **Restore plan** — if `docs/plans/<task>.md` still exists, reference it. If deleted, recover from git: `git show main:docs/plans/<task>.md`
+  4. Do NOT create a duplicate task
+
 ## Deduplication
 
 Before creating any task, check existing backlog Queue and Ideas for duplicates:

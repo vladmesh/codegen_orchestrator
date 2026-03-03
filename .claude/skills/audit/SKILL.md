@@ -74,17 +74,7 @@ Write/overwrite `docs/audit.md`:
 ...
 ```
 
-### 3. Update backlog
-
-For each issue marked as "backlog":
-- Check if already exists in `docs/backlog.md` (dedup by file/description)
-- If new — add to Queue with appropriate priority:
-  - Security issues → HIGH
-  - Dead code / smells → MEDIUM
-  - Test gaps → MEDIUM
-- Group related issues into single backlog items where it makes sense (e.g. "Split 3 large files" not 3 separate tasks)
-
-### 4. Report
+### 3. Report
 
 Print summary to console:
 - Total issues found: N

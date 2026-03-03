@@ -1,13 +1,21 @@
 .PHONY: lint format test-unit test-integration test-e2e-scaffold test-clean \
 	build up down stop logs help nuke seed migrate makemigrations shell \
 	setup-hooks lock-deps cleanup-agents \
-	rebuild-worker-images rebuild-worker-images-hard rebuild
+	rebuild-worker-images rebuild-worker-images-hard rebuild \
+	check-worker-images
 
 # Load .env file
 -include .env
 export
 
 DOCKER_COMPOSE ?= docker compose
+
+# Hash of source files baked into worker images (shared, packages, Dockerfiles)
+WORKER_SOURCE_HASH = $(shell find shared packages/worker-wrapper packages/orchestrator-cli \
+  services/worker-manager/images -type f \
+  -not -path '*/__pycache__/*' -not -name '*.pyc' \
+  | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
+
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
 DOCKER_COMPOSE_TOOLS := $(COMPOSE_ENV) $(DOCKER_COMPOSE) -f docker-compose.tools.yml -p codegen_orchestrator_tools
 TOOLING := $(DOCKER_COMPOSE_TOOLS) run --rm tooling
@@ -88,6 +96,7 @@ logs:
 
 build:
 	$(DOCKER_COMPOSE) --profile build build
+	@$(MAKE) check-worker-images
 
 # === Full Rebuild (with cache) ===
 # Stops stack, kills workers, rebuilds all service + worker images, restarts
@@ -119,7 +128,8 @@ cleanup-agents:
 
 rebuild-worker-images:
 	@echo "🔨 Building worker-base-common..."
-	docker build -t worker-base-common:latest \
+	docker build --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		-t worker-base-common:latest \
 		-f services/worker-manager/images/worker-base-common/Dockerfile .
 	@echo "🔨 Building worker-base-claude..."
 	docker build -t worker-base-claude:latest \
@@ -131,7 +141,8 @@ rebuild-worker-images:
 # Full rebuild with --no-cache (use when Docker cache is stale)
 rebuild-worker-images-hard:
 	@echo "🔨 Building worker-base-common (no-cache)..."
-	docker build --no-cache -t worker-base-common:latest \
+	docker build --no-cache --build-arg SOURCE_HASH=$(WORKER_SOURCE_HASH) \
+		-t worker-base-common:latest \
 		-f services/worker-manager/images/worker-base-common/Dockerfile .
 	@echo "🔨 Building worker-base-claude (no-cache)..."
 	docker build --no-cache -t worker-base-claude:latest \
@@ -139,6 +150,18 @@ rebuild-worker-images-hard:
 	@echo "🧹 Cleaning cached worker:* images..."
 	@docker images -q 'worker:*' | xargs -r docker rmi 2>/dev/null || true
 	@echo "✅ Worker images rebuilt (no-cache)!"
+
+# Check if worker images are stale and rebuild if needed
+check-worker-images:
+	@CURRENT=$(WORKER_SOURCE_HASH); \
+	STORED=$$(docker inspect worker-base-common:latest \
+	  --format '{{index .Config.Labels "org.codegen.worker_source_hash"}}' 2>/dev/null || echo "none"); \
+	if [ "$$CURRENT" != "$$STORED" ]; then \
+	  echo "⚠️  Worker source files changed ($$STORED → $$CURRENT) — rebuilding images..."; \
+	  $(MAKE) rebuild-worker-images; \
+	else \
+	  echo "✅ Worker images up to date (hash: $$CURRENT)"; \
+	fi
 
 # === Quality ===
 
