@@ -28,6 +28,24 @@ services:
     networks:
       - backend-test
 
+  engineering-worker:
+    build:
+      context: ../../..
+      dockerfile: services/langgraph/Dockerfile
+    command: ["python", "-m", "src.workers.engineering_worker"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
+      # GitHub/registry env vars intentionally absent — tests verify
+      # the flow fails at the external boundary
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - backend-test
+
   worker-manager:
     build:
       context: ../../..
@@ -127,6 +145,8 @@ services:
     command: ["pytest", "tests/integration/backend/", "-v"]
     depends_on:
       langgraph:
+        condition: service_started
+      engineering-worker:
         condition: service_started
       worker-manager:
         condition: service_started
