@@ -166,11 +166,207 @@ Worker-manager решает на основе конфига проекта:
 
 ---
 
-## Рекомендация
+## Проблема 3: Масштабирование — где живут воркеры?
 
-**Сейчас (Phase 1):** Сетевая изоляция (`codegen_worker`). Минимальные изменения, закрывает реальную проблему, убирает хрупкий workaround. Ресурсную оптимизацию откладываем.
+> **Контекст**: Подходы A-D выше решают ресурсную проблему на одном хосте. Но настоящий вопрос — как масштабироваться до десятков и сотен параллельных воркеров? Нужно думать шире: выход за пределы одной машины.
 
-**Потом (Phase 2, когда упрёмся в ресурсы):** Shared postgres для dev-окружений (подход B или D). Это отдельная задача с новыми компонентами (DB provisioner, credential management).
+### Что нужно каждому воркеру
+
+1. Docker runtime (запуск контейнеров проекта: postgres, redis, app)
+2. Workspace на диске (~500 MB - 2 GB: repo + node_modules / venv)
+3. Доступ к оркестратору (Redis streams для команд, API для состояния)
+4. Изоляция от других воркеров (сеть, файловая система, DNS)
+5. Возможность запускать `make migrate`, `make test`, `docker compose up`
+
+### Вариант E: Отдельный "worker farm" сервер
+
+Оркестратор на одной машине, воркеры — на выделенном сервере (или нескольких).
+
+```
+Orchestrator host                    Worker farm (Hetzner AX52, 64GB)
+┌──────────────────┐                ┌──────────────────────────────┐
+│  api, langgraph  │                │  worker-abc + dev_proj_abc   │
+│  redis, db       │◄──WireGuard──►│  worker-def + dev_proj_def   │
+│  telegram_bot    │                │  worker-xyz + dev_proj_xyz   │
+│  worker-manager  │──Docker SSH──►│  ...30-50 воркеров...        │
+│  caddy, registry │                │                              │
+└──────────────────┘                └──────────────────────────────┘
+```
+
+Worker-manager управляет удалённым Docker через `DOCKER_HOST=ssh://worker-farm`.
+
+| Плюсы | Минусы |
+|-------|--------|
+| Минимум архитектурных изменений | Нужен VPN (WireGuard) между хостами |
+| DNS-коллизия невозможна (разные Docker daemons) | Docker API по SSH — чуть медленнее |
+| Воркер не может убить оркестратор OOM | Один сервер = single point of failure |
+| Hetzner AX52: 64 GB RAM, €62/мес → 30-50 воркеров | Нужен мониторинг ресурсов на ферме |
+| Масштабирование: добавить ещё сервер | Worker-manager должен знать про несколько хостов |
+
+**Масштаб:** ~30-50 воркеров на сервер. 2-3 сервера = 100+ воркеров.
+
+**Worker-manager изменения:** конфиг `WORKER_DOCKER_HOSTS=ssh://farm1,ssh://farm2`, round-robin или по свободной RAM.
+
+### Вариант F: Cloud VMs on-demand (Hetzner Cloud / DigitalOcean)
+
+Каждый воркер — отдельная cloud VM. Создаётся по запросу, уничтожается после завершения.
+
+```
+Orchestrator host                    Hetzner Cloud
+┌──────────────────┐                ┌─────────────┐
+│  api, langgraph  │                │ VM: CX22    │ ← worker-abc
+│  redis, db       │◄──public IP──►│ 4GB, docker │
+│  worker-manager  │                └─────────────┘
+│  (creates VMs    │                ┌─────────────┐
+│   via API)       │                │ VM: CX22    │ ← worker-def
+└──────────────────┘                └─────────────┘
+```
+
+Worker-manager → Hetzner Cloud API → создаёт VM → cloud-init ставит Docker → запускает worker agent.
+
+| Плюсы | Минусы |
+|-------|--------|
+| Полная изоляция (разные машины, разные IP) | Spinup 30-60 сек (cloud-init + docker pull) |
+| Платишь только за время работы | Hetzner CX22: €0.007/час, CX32: €0.014/час |
+| Бесконечный масштаб | Нужен надёжный provisioner (cloud-init, API) |
+| VM умирает — никакого cleanup | Redis/API оркестратора должны быть доступны извне |
+| Нет ресурсных ограничений на общем хосте | Стоимость при десятках воркеров 24/7 |
+
+**Стоимость:** 10 воркеров × 4 часа × €0.007 = €0.28/день. 50 воркеров × 4 часа = €1.40/день = ~€42/мес. Сравнимо с dedicated сервером, но с полной изоляцией и elastic scaling.
+
+**Оптимизация — pre-warm pool:** Держать 2-3 готовых VM в "спящем" режиме. Spinup из пула: ~5 сек вместо 60.
+
+### Вариант G: Fly.io Machines (managed microVMs)
+
+Fly Machines — Firecracker microVMs с Docker-совместимым API. По сути managed версия варианта H.
+
+| Плюсы | Минусы |
+|-------|--------|
+| Создание machine: ~300ms из образа | Vendor lock-in |
+| Оплата: ~$0.19/day за shared CPU | Нет Docker-in-Docker (postgres = отдельная machine) |
+| Каждая machine — изолированная microVM | Нужно адаптировать worker архитектуру |
+| Persistent volumes: $0.15/GB/мес | Network latency до оркестратора |
+| REST API для lifecycle management | Непрозрачное ценообразование при масштабе |
+
+**Проблема**: worker сейчас запускает `docker compose up` внутри себя. На Fly это невозможно. Нужно перестроить: postgres-as-a-service (Fly Postgres или Neon) + worker machine без Docker-in-Docker.
+
+**Вердикт:** Интересно если готовы переосмыслить архитектуру воркера. Не подходит как drop-in замена.
+
+### Вариант H: Self-hosted Firecracker / Kata Containers
+
+MicroVM на своём железе. Firecracker — то на чём работает AWS Lambda. Boot за <125ms, ~5 MB overhead.
+
+- **Firecracker напрямую**: каждый воркер — microVM с полным Linux. Внутри — Docker daemon, postgres, всё. Изоляция на уровне ядра.
+- **Kata Containers**: обёртка — `docker run` создаёт microVM вместо контейнера. Прозрачно для worker-manager.
+
+| Плюсы | Минусы |
+|-------|--------|
+| Изоляция уровня VM, скорость уровня контейнера | Сложный setup (особенно Firecracker напрямую) |
+| Boot <125ms, ~5 MB RAM overhead | Docker-in-VM требует nested virtualization |
+| Безопасность: `rm -rf /` убивает только microVM | Kata Containers менее зрелый на не-Cloud платформах |
+| Идеально для untrusted workloads | Нужен bare-metal (KVM), не работает в VM-хостинге |
+
+**Вердикт:** Отличная технология, но слишком сложная для текущего этапа. Имеет смысл когда безопасность воркеров станет критичной (публичные пользователи).
+
+### Вариант I: Kubernetes (namespaces per worker)
+
+Namespace per worker, pod-level isolation, network policies.
+
+```
+K8s cluster (3 nodes, Hetzner €30/мес)
+├── namespace: orchestrator
+│   ├── pod: api
+│   ├── pod: langgraph
+│   ├── pod: redis, postgres
+│   └── ...
+├── namespace: worker-abc
+│   ├── pod: worker-agent
+│   ├── pod: postgres
+│   └── pod: redis
+├── namespace: worker-def
+│   └── ...
+```
+
+| Плюсы | Минусы |
+|-------|--------|
+| Resource limits per namespace (CPU, RAM) | Огромная сложность для маленькой команды |
+| Network policies: namespace A ≠ namespace B | K8s — отдельный проект на поддержку |
+| Auto-scaling (HPA, cluster autoscaler) | Docker-in-K8s: нужен kaniko или dind sidecar |
+| Managed K8s: Hetzner, DO, etc. | Переписывание worker-manager → K8s operator |
+
+**Вердикт:** Overkill на текущем масштабе. Имеет смысл при 100+ воркерах и нескольких людях в команде.
+
+### Вариант J: Docker Swarm / Nomad
+
+Проще чем K8s, мощнее чем один Docker host.
+
+- **Docker Swarm**: нативный Docker, multi-node, service placement. `docker swarm join` на новом сервере и готово.
+- **Nomad**: HashiCorp, поддерживает Docker + raw_exec + QEMU. Легковесный.
+
+| Плюсы | Минусы |
+|-------|--------|
+| Swarm: zero config, нативный Docker | Swarm: фактически заброшен Docker Inc |
+| Nomad: лёгкий, один бинарник | Nomad: меньше community, меньше интеграций |
+| Multi-node из коробки | Сетевая изоляция менее зрелая чем в K8s |
+| Worker-manager → Swarm service create | Ограниченный auto-scaling |
+
+**Вердикт:** Swarm — рискованно из-за неясного будущего. Nomad — интересен как middle ground между "руками" и K8s.
+
+---
+
+## Сравнительная таблица всех вариантов
+
+| Вариант | Spinup | Изоляция | Стоимость (10 workers) | Сложность | Масштаб |
+|---------|--------|----------|------------------------|-----------|---------|
+| Текущий (один хост) | мгновенно | слабая (Docker network) | €0 (уже есть) | низкая | ~5-10 |
+| **E**: Worker farm (dedicated) | мгновенно | средняя (Docker) | ~€62/мес | низкая | ~30-50/сервер |
+| **F**: Cloud VMs on-demand | 30-60s | полная (разные машины) | ~€1-3/день | средняя | ∞ |
+| **G**: Fly.io Machines | <1s | полная (microVM) | ~$2/день | средняя | ∞ |
+| **H**: Firecracker/Kata | <1s | полная (VM) | ~€62/мес (self-hosted) | высокая | ~50+/сервер |
+| **I**: Kubernetes | 5-10s | средняя+ (namespaces) | ~€80+/мес | высокая | ∞ |
+| **J**: Docker Swarm/Nomad | 2-5s | средняя | ~€62-120/мес | средняя | ~100+ |
+
+---
+
+## Рекомендация: эволюционный путь
+
+### Phase 1 — Сетевая изоляция (сейчас)
+
+`codegen_worker` network. Минимальные изменения, закрывает реальную проблему DNS-коллизии, убирает хрупкий workaround. Ресурсную оптимизацию откладываем.
+
+**Объём:** ~6 строк compose, удаление ~30 строк мёртвого кода. 1-2 часа работы.
+
+### Phase 2 — Worker farm (5-10 параллельных воркеров)
+
+Выносим воркеров на отдельный Hetzner dedicated сервер. Worker-manager работает с remote Docker через SSH. Оркестратор и ферма связаны через WireGuard VPN.
+
+**Что меняется:**
+- `worker-manager`: конфиг `WORKER_DOCKER_HOSTS`, выбор хоста при создании воркера
+- Инфра: WireGuard туннель, Redis/API слушают на VPN-интерфейсе
+- Monitoring: ресурсы фермы (RAM, disk, CPU)
+
+**Что не меняется:** архитектура воркера, compose, tooling.
+
+### Phase 3 — Multi-farm + shared postgres (10-50 воркеров)
+
+Несколько worker-farm серверов. Round-robin или by-free-RAM балансировка. Shared postgres per farm (подход B) для экономии RAM.
+
+**Что меняется:**
+- Worker-manager: multi-host placement strategy
+- DB provisioner: `CREATE DATABASE` / `DROP DATABASE` при создании/удалении воркера
+- Credential injection: per-worker postgres user/password
+
+### Phase 4 — Elastic scaling (50+ воркеров)
+
+Cloud VMs on-demand (Hetzner Cloud API, вариант F) или Fly Machines (вариант G). Pre-warm pool для быстрого старта. Pay-per-use.
+
+К этому моменту уже понятно:
+- Средняя стоимость одного воркера (compute-часы)
+- Среднее время жизни воркера
+- Пиковая нагрузка (сколько параллельных)
+- Окупается ли elastic vs dedicated
+
+**Решение Phase 4 принимается на основе данных Phase 3.**
 
 ---
 
@@ -179,3 +375,6 @@ Worker-manager решает на основе конфига проекта:
 1. Нужен ли shared Redis для dev-проектов? Большинство backend-only проектов redis не используют. Те что используют — обычно для кеша, можно шарить с prefix isolation (`REDIS_KEY_PREFIX=project_{id}`).
 2. Как обрабатывать кастомные compose-сервисы? Если проект определяет `elasticsearch` или `rabbitmq` в compose — они всегда поднимаются как изолированные контейнеры на `dev_proj_*`.
 3. Health monitoring для shared postgres? Если он падает — все воркеры зависают. Нужен ли автоматический рестарт или алерт?
+4. Worker-manager и remote Docker: как мониторить здоровье воркеров на удалённых хостах? Docker events stream через SSH? Отдельный agent на ферме?
+5. Безопасность: при выходе на multi-host — WireGuard достаточно? Нужна ли mTLS между воркерами и оркестратором?
+6. Disk I/O: на worker farm N воркеров пишут в один SSD. NVMe справится с 30-50 параллельными postgres? Нужен ли tmpfs для тестовых БД?

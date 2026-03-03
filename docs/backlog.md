@@ -10,6 +10,16 @@
 
 Фундаментальные изменения, отладка конвейера и оптимизация цикла разработки.
 
+### 22. Worker Network Isolation (DNS Collision Fix)
+**Документы**: `docs/plans/worker-network-isolation.md`, `docs/brainstorms/worker-db-isolation.md`
+**Проблема**: Воркер сидит на `codegen_internal` вместе с postgres оркестратора. Имя `db` резолвится в БД оркестратора, а не проекта. Текущий workaround (`project-db` alias + `_patch_db_hostname()`) хрупок — агент может вызвать `make migrate` до патча или "починить" hostname обратно.
+**Решение**: Новая сеть `codegen_worker` — воркеры физически не видят инфру оркестратора. Удаление workaround. ~40 строк изменений.
+**Задачи**:
+1. Создать сеть `codegen_worker`, подключить redis/api/worker-manager к обеим сетям
+2. Переключить воркеров с `codegen_internal` на `codegen_worker`
+3. Удалить `project-db` alias и `_patch_db_hostname()`
+4. Тесты и валидация
+
 ### 1. Service Template Simplification & Refactoring
 **Документы**: `docs/brainstorms/service-template-and-dev-environment.md`
 **Проблема**: Фреймворк `service_template` сильно перегружен абстракциями. 8 кодогенераторов, обязательный PostgreSQL для любого проекта.

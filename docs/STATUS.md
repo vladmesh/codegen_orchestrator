@@ -1,31 +1,27 @@
 # Project Status
 
-> **Current Focus**: Next task from backlog
-> **Last completed**: Worker Reuse for CI Fix Loop (#8)
+> **Current Focus**: Worker Network Isolation (#22)
+> **План**: [worker-network-isolation.md](plans/worker-network-isolation.md)
 
-## Previous: Worker Reuse for CI Fix Loop (#8) — Done
+## Current: Worker Network Isolation (#22)
 
-Plan: [worker-reuse-ci-fix.md](plans/worker-reuse-ci-fix.md) — wrapper multi-turn support, spawner multi-turn API (send_task_to_worker, delete_worker), engineering worker reuse with fallback on dead worker, total gate timeout (60 min).
+DNS-коллизия: воркер на `codegen_internal` видит postgres оркестратора вместо проекта. Решение — отдельная сеть `codegen_worker`, удаление хрупкого workaround `project-db`.
 
-## Previous: Redis Streams Unification (#3+#5) — Done
+**Итерации**:
+1. Создание сети `codegen_worker`, dual-homing bridge-сервисов
+2. Удаление workaround (`project-db` alias, `_patch_db_hostname()`)
+3. Тесты и валидация
+4. Cleanup документации
 
-Plan: [redis-streams-unification.md](plans/redis-streams-unification.md) — unified all 9 Redis Stream consumers to `RedisStreamClient.consume()` with PEL recovery, added Pydantic contracts to all queues.
+## Previous work (summary)
 
-## Previous: CI Fix Loop Improvements — Done
-
-E2E iter 13 выявил каскадные проблемы в CI fix loop. Исправлено: project_id passthrough, CI контекст для девелопера, attempts tracking, обогащение сообщений. Investigation: [e2e-iter13-ci-fix-loop-deficits.md](investigations/e2e-iter13-ci-fix-loop-deficits.md).
-
-## Previous: Native Dev Environment + Workspace Persistence — Done
-
-Plans: [dev-env-architecture.md](plans/dev-env-architecture.md), [workspace-persistence.md](plans/workspace-persistence.md). Flat Dev Environment (bind-mounted workspaces, dual-network), workspace persistence по project_id. Phase 6 (failure counter) в backlog.
-
-## Previous: PO ReactAgent Migration — Done
-
-Plan: [po-react-agent.md](plans/po-react-agent.md) — fully implemented and merged.
-
-## Previous: Deploy Architecture — Done
-
-Plan: [deploy-architecture.md](plans/deploy-architecture.md) — 9 iterations: Fernet crypto, env groups, GitHub Actions deploy, self-hosted registry + Caddy, cascade failure fixes.
+| # | Задача | План |
+|---|--------|------|
+| 8 | Worker Reuse for CI Fix Loop | [worker-reuse-ci-fix.md](plans/worker-reuse-ci-fix.md) |
+| 3+5 | Redis Streams Unification | [redis-streams-unification.md](plans/redis-streams-unification.md) |
+| — | Native Dev Environment + Workspace Persistence | [dev-env-architecture.md](plans/dev-env-architecture.md), [workspace-persistence.md](plans/workspace-persistence.md) |
+| — | PO ReactAgent Migration | [po-react-agent.md](plans/po-react-agent.md) |
+| — | Deploy Architecture (9 iterations) | [deploy-architecture.md](plans/deploy-architecture.md) |
 
 ## Quick Links
 
