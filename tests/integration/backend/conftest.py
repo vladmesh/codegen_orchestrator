@@ -1,3 +1,4 @@
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import hashlib
@@ -98,6 +99,109 @@ def docker_client():
     client = docker.DockerClient(base_url=DOCKER_HOST)
     yield client
     client.close()
+
+
+# --- API client + data seeding ---
+
+
+@pytest.fixture
+async def api_client():
+    """Async HTTP client for the API service."""
+    import httpx
+
+    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=10) as client:
+        yield client
+
+
+async def poll_task_status(
+    api_client, task_id: str, target_statuses: set[str], timeout: int = 60
+) -> dict:
+    """Poll GET /api/tasks/{task_id} until status is in target_statuses."""
+    start = time.time()
+    while time.time() - start < timeout:
+        resp = await api_client.get(f"/api/tasks/{task_id}")
+        if resp.status_code == 200:
+            task = resp.json()
+            if task["status"] in target_statuses:
+                return task
+        await asyncio.sleep(1)
+    raise TimeoutError(f"Task {task_id} did not reach {target_statuses} within {timeout}s")
+
+
+@pytest.fixture
+async def seed_project(api_client):
+    """Factory fixture to create projects via API. Cleans up after test."""
+    created_ids = []
+
+    async def _create(
+        project_id: str,
+        name: str = "Test Project",
+        status: str = "draft",
+        config: dict | None = None,
+        repository_url: str | None = None,
+    ) -> dict:
+        body = {"id": project_id, "name": name, "status": status, "config": config or {}}
+        if repository_url:
+            body["repository_url"] = repository_url
+        resp = await api_client.post("/api/projects/", json=body)
+        assert resp.status_code == 201, f"Failed to seed project: {resp.text}"
+        created_ids.append(project_id)
+        return resp.json()
+
+    yield _create
+
+    # Cleanup: DELETE cascades to tasks + allocations
+    for pid in created_ids:
+        with contextlib.suppress(Exception):
+            await api_client.delete(f"/api/projects/{pid}")
+
+
+@pytest.fixture
+async def seed_task(api_client):
+    """Factory fixture to create tasks via API."""
+
+    async def _create(
+        task_id: str,
+        task_type: str = "engineering",
+        project_id: str | None = None,
+    ) -> dict:
+        body = {"id": task_id, "type": task_type}
+        if project_id:
+            body["project_id"] = project_id
+        resp = await api_client.post("/api/tasks/", json=body)
+        assert resp.status_code == 201, f"Failed to seed task: {resp.text}"
+        return resp.json()
+
+    yield _create
+
+
+@pytest.fixture
+async def seed_server(api_client):
+    """Factory fixture to create servers via API."""
+
+    async def _create(
+        handle: str,
+        host: str = "test.example.com",
+        public_ip: str = "192.0.2.1",
+        status: str = "ready",
+        capacity_ram_mb: int = 8192,
+        capacity_disk_mb: int = 51200,
+        is_managed: bool = True,
+    ) -> dict:
+        body = {
+            "handle": handle,
+            "host": host,
+            "public_ip": public_ip,
+            "status": status,
+            "capacity_ram_mb": capacity_ram_mb,
+            "capacity_disk_mb": capacity_disk_mb,
+            "is_managed": is_managed,
+        }
+        resp = await api_client.post("/api/servers/", json=body)
+        assert resp.status_code == 201, f"Failed to seed server: {resp.text}"
+        return resp.json()
+
+    yield _create
 
 
 @pytest.fixture(autouse=True)
