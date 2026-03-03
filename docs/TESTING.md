@@ -1,6 +1,6 @@
 # Test Infrastructure
 
-> **Актуально на**: 2026-03-03
+> **Актуально на**: 2026-03-04
 
 ## Test Layers
 
@@ -52,7 +52,7 @@ Both must pass.
 | Service | Unit | Service | Integration | E2E |
 |---------|------|---------|-------------|-----|
 | api | 6 files | 2 files | via backend suite | via /e2e-run |
-| langgraph | 20+ files | — | skeleton (TODO) | via /e2e-run |
+| langgraph | 20+ files | — | 3 tests (engineering worker flow) | via /e2e-run |
 | worker-manager | 15 files | — | 4 tests (worker creation/execution) | via /e2e-run |
 | scheduler | 2 files | 2 files | — | — |
 | telegram_bot | 3 files | — | via frontend suite | — |
@@ -73,10 +73,23 @@ E2E tests are NOT in CI — they require a running stack + real LLM calls.
 
 **Scripts** (`tests/e2e/`): Lower-level test scripts (mock anthropic, dev env smoke, live smoke). Used for development, not production E2E.
 
+## Integration Test Architecture
+
+The backend integration suite (`docker/test/integration/backend.yml`) spins up the full stack:
+- **Services**: api, langgraph, engineering-worker, worker-manager
+- **Infra**: PostgreSQL (tmpfs), Redis, Docker-in-Docker
+- **Test runner**: pytest container on the same network
+
+**Data seeding**: Tests create data via API endpoints (`POST /api/projects/`, `/api/tasks/`, `/api/servers/`). Factory fixtures in `conftest.py` (`seed_project`, `seed_task`, `seed_server`) handle creation and cleanup.
+
+**External boundaries**: GitHub API and LLM APIs are NOT configured in the test environment. Tests verify the flow works through real services up to the external boundary, where it fails predictably (e.g., `GITHUB_ORG` not set).
+
+**Shared helpers**: `wait_for_stream_message`, `wait_for_create_response`, `poll_task_status` in `conftest.py` — used by both worker and langgraph tests.
+
 ## Best Practices
 
 1. Unit tests: fast (< 1s each), mock external deps
-2. Integration tests: cleanup after themselves (conftest fixtures handle this)
+2. Integration tests: seed data via API, use unique IDs per test, cleanup via fixtures
 3. One assertion per test where practical
 4. Descriptive names: `test_user_creation_fails_without_email` not `test_user_1`
 
