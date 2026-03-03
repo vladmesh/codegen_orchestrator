@@ -21,7 +21,7 @@ Process incoming reports and convert findings into backlog tasks.
 
 ### 1. E2E Reports (`docs/e2e_results/`)
 
-Read all `.md` files in `docs/e2e_results/`. For each report, find the `## Problems Found` section.
+Read all `.md` files in `docs/e2e_results/`, **excluding `*-worker.md`** (raw worker audits — their findings are already included in the main report). For each report, find the `## Problems Found` section.
 
 For each problem with structured fields:
 - **Severity**: critical / major / minor / info
@@ -90,6 +90,21 @@ New Queue items use this format:
 Place after existing items of the same priority.
 
 Next ID = max existing ID in backlog + 1.
+
+## Commit
+
+After all processing, commit changed files:
+
+```bash
+git add docs/backlog.md docs/e2e_results/ docs/brainstorms/
+git commit -m "triage: <N> tasks created, <M> reports processed"
+```
+
+If template backlog was updated, also commit in that repo:
+```bash
+git -C /home/vlad/projects/service-template add docs/backlog.md
+git -C /home/vlad/projects/service-template commit -m "triage: tasks from orchestrator E2E"
+```
 
 ## Output
 

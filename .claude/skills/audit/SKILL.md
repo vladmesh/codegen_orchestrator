@@ -74,7 +74,14 @@ Write/overwrite `docs/audit.md`:
 ...
 ```
 
-### 3. Report
+### 3. Commit
+
+```bash
+git add docs/audit.md
+git commit -m "audit: <scope> — <N> issues found"
+```
+
+### 4. Report
 
 Print summary to console:
 - Total issues found: N

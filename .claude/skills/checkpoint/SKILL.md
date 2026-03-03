@@ -83,7 +83,14 @@ For each file in `docs/e2e_results/`:
 - If processed AND older than 2 days — delete the report (and its `-worker.md` pair if exists)
 - Keep the **latest passing report per scenario** regardless of age (needed for User Story status)
 
-### 10. Report
+### 10. Commit
+
+```bash
+git add docs/CHANGELOG.md docs/ROADMAP.md docs/STATUS.md docs/USER_STORIES.md docs/backlog.md docs/audit.md docs/plans/ docs/e2e_results/ docs/brainstorms/
+git commit -m "checkpoint: <date>"
+```
+
+### 11. Report
 
 Print a comprehensive summary:
 

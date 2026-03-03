@@ -70,7 +70,14 @@ If the user wants to continue discussing — update the document with new insigh
 
 When the discussion is complete, set `Status: done` in the header.
 
-### 4. Important
+### 4. Commit
+
+```bash
+git add docs/brainstorms/<topic-slug>.md
+git commit -m "brainstorm: <topic>"
+```
+
+### 5. Important
 
 - Brainstorms are for **thinking**, not deciding. The user makes final decisions.
 - Always end with concrete Action Items — a brainstorm without action items is wasted work.

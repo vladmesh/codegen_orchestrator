@@ -77,7 +77,14 @@ Update the Current Task section:
 
 Set the task's Plan field in `docs/backlog.md` to the new plan file path.
 
-### 7. Report
+### 7. Commit
+
+```bash
+git add docs/plans/<task>.md docs/STATUS.md docs/backlog.md
+git commit -m "plan: #<ID> — <title>"
+```
+
+### 8. Report
 
 Print:
 - Task: #ID — Title

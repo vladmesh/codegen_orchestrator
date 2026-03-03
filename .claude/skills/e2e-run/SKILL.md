@@ -45,15 +45,17 @@ In addition to completing the task above, you are performing an audit of the
 framework and development environment.
 
 Throughout your work, keep a file called AUDIT_REPORT.md in the repo root.
-Log everything you encounter:
-- Problems, errors, or unexpected behavior
-- Missing features or tools in the framework
-- Anything that didn't work as expected or required workarounds
-- Suggestions for improving the template, framework, or workspace setup
-- Ideas for making the development flow smoother
 
-Be specific: include exact error messages, file paths, and what you expected
-vs what happened. This report is as valuable as the code itself.
+Use this format for each finding:
+
+### <number>. <title>
+- **Severity**: critical / major / minor
+- **Category**: framework | template | tooling | docs
+- **File**: <path> (if applicable)
+- **Description**: What happened, what you expected, exact error messages
+- **Suggestion**: How to fix or improve
+
+Also include a ## What Worked Well section with positive observations.
 ```
 
 ## E2E Secrets (for tg_bot tests)
@@ -701,6 +703,8 @@ produces a unique report — previous results must be preserved.
 
 Use existing reports in `docs/e2e_results/` as format reference if any exist.
 
+**Worker audit findings → structured Problems.** Read the worker's audit report and include actionable findings as structured entries in `## Problems Found` of the main report. The `-worker.md` file is raw data; the main report is the single source of truth for `/triage`.
+
 Classify each problem by type:
 
 | Type | What it means | Where to look |
@@ -736,6 +740,13 @@ Report structure:
 - **Description**: ...
 - **Root cause**: ...
 - **Suggested fix**: ...
+```
+
+### Step 7.5: Commit reports
+
+```bash
+git add docs/e2e_results/<project_name>-<date>*.md
+git commit -m "e2e: <project_name> level <X> — <pass/fail>"
 ```
 
 ### Step 8: Cleanup (skip if --no-cleanup)
