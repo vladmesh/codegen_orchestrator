@@ -33,6 +33,9 @@ class WorkerManagerSettings(BaseSettings):
     # Fixed name of the internal bridge network shared by all services
     INTERNAL_NETWORK: str = "codegen_internal"
 
+    # Isolated network for worker containers (no access to orchestrator infra)
+    WORKER_NETWORK: str = "codegen_worker"
+
     # URL of this worker-manager service (injected into worker containers)
     WORKER_MANAGER_URL: str = "http://worker-manager:8000"
 

@@ -8,7 +8,7 @@
 - **Priority**: HIGH
 - **User Story**: —
 - **Plan**: docs/plans/worker-network-isolation.md
-- **Status**: in-progress (step 3/4)
+- **Status**: in-progress (step 1/4)
 - **Brief**: Отдельная сеть `codegen_worker`, воркеры не видят инфру оркестратора. Удаление workaround `project-db` / `_patch_db_hostname()`.
 
 ### #6 Fix & Consolidate Test Suites

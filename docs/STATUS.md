@@ -3,10 +3,8 @@
 ## Current Task
 - **Backlog**: #22 Worker Network Isolation
 - **Plan**: docs/plans/worker-network-isolation.md
-- **Step**: 3/4 — Тесты и валидация
-- **Done Steps**:
-  - 1/4 Создание сети codegen_worker, dual-homing bridge-сервисов
-  - 2/4 Удаление workaround (project-db alias, _patch_db_hostname)
+- **Step**: 1/4 — Создание сети codegen_worker и подключение сервисов
+- **Done Steps**: —
 
 ## Blocked
 (нет)

@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 import uuid
 from fakeredis import aioredis
@@ -37,6 +38,44 @@ async def test_create_worker_unit():
     assert res == "test-id"
     wrapper.run_container.assert_awaited_once()
     redis.set.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_network_selection_uses_worker_network():
+    """When DOCKER_NETWORK is empty, workers should connect to WORKER_NETWORK, not INTERNAL_NETWORK."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    wrapper.exec_in_container = AsyncMock()
+
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    with (
+        patch("src.manager.settings") as mock_settings,
+        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
+        patch("src.manager.workspace_mod.create_workspace", return_value=Path("/tmp/ws/w1/workspace")),
+        patch("src.manager.workspace_mod.get_workspace_host_path", return_value="/tmp/ws/w1/workspace"),
+    ):
+        mock_settings.DOCKER_NETWORK = ""
+        mock_settings.INTERNAL_NETWORK = "codegen_internal"
+        mock_settings.WORKER_NETWORK = "codegen_worker"
+        mock_settings.WORKSPACE_BASE_PATH = "/tmp/ws"
+        mock_settings.WORKER_REDIS_URL = ""
+        mock_settings.WORKER_API_URL = ""
+        mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
+        mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
+        mock_settings.WORKER_IMAGE_PREFIX = "worker"
+        mock_settings.WORKER_DOCKER_LABELS = "{}"
+
+        await manager.create_worker_with_capabilities(
+            worker_id="w1",
+            capabilities=["git"],
+            base_image="worker-base:latest",
+            agent_type="claude",
+        )
+
+    # run_container should have been called with network="codegen_worker"
+    run_call = wrapper.run_container.call_args
+    assert run_call.kwargs.get("network") == "codegen_worker" or run_call[1].get("network") == "codegen_worker"
 
 
 @pytest.mark.asyncio

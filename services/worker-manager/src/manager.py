@@ -527,12 +527,14 @@ class WorkerManager:
         # Volumes
         volumes = config.to_volume_mounts()
 
-        # DOCKER_NETWORK overrides INTERNAL_NETWORK (used in CI/integration tests).
+        # DOCKER_NETWORK overrides WORKER_NETWORK (used in CI/integration tests).
         # Empty DOCKER_NETWORK = use host networking (legacy), non-empty = explicit network.
+        # Workers attach to codegen_worker (isolated from orchestrator infra),
+        # not codegen_internal (which has the orchestrator's db/redis).
         if settings.DOCKER_NETWORK:
             network_name = settings.DOCKER_NETWORK if settings.DOCKER_NETWORK != "host" else None
         else:
-            network_name = settings.INTERNAL_NETWORK
+            network_name = settings.WORKER_NETWORK
 
         # Create container (dev network only when not in host mode)
         container_id = await self.create_worker(

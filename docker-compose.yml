@@ -27,6 +27,7 @@ services:
       start_period: 5s
     networks:
       - internal
+      - worker
     volumes:
       - ./services/api/src:/app/src:delegated
       - ./services/api/alembic.ini:/app/alembic.ini:ro
@@ -192,6 +193,7 @@ services:
       # Dev environment settings
       WORKSPACE_BASE_PATH: /tmp/codegen/workspaces
       INTERNAL_NETWORK: codegen_internal
+      WORKER_NETWORK: codegen_worker
       WORKER_MANAGER_URL: http://worker-manager:8000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -207,6 +209,7 @@ services:
       retries: 5
     networks:
       - internal
+      - worker
 
   scheduler:
     build:
@@ -297,10 +300,13 @@ services:
       start_period: 2s
     networks:
       - internal
+      - worker
 
 networks:
   internal:
     name: codegen_internal
+  worker:
+    name: codegen_worker
 
 volumes:
   db_data:
