@@ -1,14 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
-- **Plan**: —
-- **Step**: —
-- **Done Steps**:
-  - 1/4 Создание сети codegen_worker, dual-homing bridge-сервисов
-  - 2/4 Удаление workaround (project-db alias, _patch_db_hostname)
-  - 3/4 Тесты и валидация (tests added in steps 1-2, grep checks pass)
-  - 4/4 Cleanup документации и brainstorm-файлов
+- **Backlog**: #6 Fix & Consolidate Test Suites
+- **Plan**: docs/plans/fix-consolidate-test-suites.md
+- **Step**: 1/4 — Consolidate duplicated test helpers into conftest
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
