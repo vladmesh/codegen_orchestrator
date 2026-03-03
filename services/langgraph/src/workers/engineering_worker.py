@@ -263,6 +263,7 @@ async def _wait_for_ci_and_fix(
     *,
     user_id: str = "",
     worker_id: str | None = None,
+    commit_sha: str | None = None,
 ) -> tuple[bool, list[dict]]:
     """Wait for CI workflow to pass, re-spawning developer on failure.
 
@@ -342,6 +343,7 @@ async def _wait_for_ci_and_fix(
                 timeout_seconds=CI.WORKFLOW_TIMEOUT,
                 poll_interval=CI.POLL_INTERVAL,
                 created_after=created_after,
+                head_sha=commit_sha,
             )
 
             logger.info(
@@ -437,10 +439,11 @@ async def _wait_for_ci_and_fix(
                 )
                 return False, ci_attempts
 
-            # Capture timestamp BEFORE fix: after the failed run is observed
-            # (so it gets filtered out) but before the new push (so the new CI
-            # run created_at will be >= this timestamp).
-            created_after = datetime.now(UTC)
+            # Reset filters BEFORE fix: capture timestamp after the failed run
+            # is observed (so it gets filtered out) but before the new push.
+            # Clear commit_sha because the fix developer pushes a new commit
+            # with a different SHA — fall back to created_after filtering.
+            created_after, commit_sha = datetime.now(UTC), None
 
             fix_success, worker_id = await _attempt_developer_fix(
                 worker_id=worker_id,
@@ -930,6 +933,7 @@ async def _handle_engineering_success(
             developer_started_at=developer_started_at,
             user_id=user_id,
             worker_id=worker_id,
+            commit_sha=result.get("commit_sha"),
         )
     finally:
         # Cleanup: delete worker container after CI gate (regardless of outcome)

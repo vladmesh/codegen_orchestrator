@@ -296,8 +296,9 @@ class TestCIGateFailClosed:
         """
         from src.workers.engineering_worker import _wait_for_ci_and_fix
 
-        # Track created_after values passed to wait_for_workflow_completion
+        # Track created_after and head_sha values passed to wait_for_workflow_completion
         captured_timestamps: list[datetime] = []
+        captured_head_shas: list[str | None] = []
         respawn_started_at: list[datetime] = []
 
         mock_gh = AsyncMock()
@@ -307,6 +308,7 @@ class TestCIGateFailClosed:
         # attempt 1: CI passes
         async def fake_wait(**kwargs):
             captured_timestamps.append(kwargs["created_after"])
+            captured_head_shas.append(kwargs.get("head_sha"))
             if len(captured_timestamps) == 1:
                 raise RuntimeError("CI failed (run_id=12345)")
             return {"id": 99, "conclusion": "success"}
@@ -329,6 +331,7 @@ class TestCIGateFailClosed:
             redis=mock_redis,
             developer_started_at=datetime(2025, 1, 1, tzinfo=UTC),
             user_id="u1",
+            commit_sha="abc123",
         )
 
         expected_attempts = 2  # attempt 0 (initial) + attempt 1 (retry)
@@ -343,6 +346,12 @@ class TestCIGateFailClosed:
 
         # attempt 1: created_after must be from BEFORE the respawn started
         assert captured_timestamps[1] < respawn_started_at[0]
+
+        # attempt 0: head_sha must be forwarded from commit_sha
+        assert captured_head_shas[0] == "abc123"
+
+        # attempt 1: head_sha must be cleared (fix developer pushes a new commit)
+        assert captured_head_shas[1] is None
 
     @pytest.mark.asyncio
     @patch("shared.clients.github.GitHubAppClient")
@@ -374,6 +383,38 @@ class TestCIGateFailClosed:
         assert len(ci_attempts) == 1
         assert ci_attempts[0]["status"] == "workflow_not_found"
         mock_respawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("shared.clients.github.GitHubAppClient")
+    @patch("src.workers.engineering_worker._record_ci_attempts", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    async def test_head_sha_forwarded_on_initial_attempt(
+        self, mock_publish, mock_record, mock_gh_cls, mock_redis
+    ):
+        """commit_sha must be forwarded as head_sha on the initial CI check."""
+        from src.workers.engineering_worker import _wait_for_ci_and_fix
+
+        mock_gh = AsyncMock()
+        mock_gh_cls.return_value = mock_gh
+
+        # CI passes on first attempt
+        mock_gh.wait_for_workflow_completion = AsyncMock(
+            return_value={"id": 42, "conclusion": "success"}
+        )
+
+        passed, ci_attempts = await _wait_for_ci_and_fix(
+            project=_project(repo_url="https://github.com/org/repo"),
+            task_id="eng-1",
+            callback_stream="po:response:abc",
+            redis=mock_redis,
+            user_id="u1",
+            commit_sha="deadbeef",
+        )
+
+        assert passed is True
+        mock_gh.wait_for_workflow_completion.assert_awaited_once()
+        call_kwargs = mock_gh.wait_for_workflow_completion.call_args.kwargs
+        assert call_kwargs["head_sha"] == "deadbeef"
 
 
 class TestCIFailureClassification:

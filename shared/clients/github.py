@@ -619,6 +619,7 @@ class GitHubAppClient:
         workflow_file: str = "main.yml",
         branch: str = "main",
         created_after: datetime | None = None,
+        head_sha: str | None = None,
     ) -> dict | None:
         """Get the most recent workflow run for a branch.
 
@@ -629,6 +630,8 @@ class GitHubAppClient:
             branch: Branch name to filter by
             created_after: If set, ignore runs created before this time.
                 Useful to avoid picking up stale runs after a new push.
+            head_sha: If set, only return runs for this exact commit SHA.
+                Prevents picking up runs from a different commit (e.g. scaffold).
 
         Returns:
             Workflow run dict with keys: id, status, conclusion, html_url
@@ -643,6 +646,8 @@ class GitHubAppClient:
         params: dict[str, str | int] = {"branch": branch, "per_page": 1}
         if created_after:
             params["created"] = f">={created_after.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        if head_sha:
+            params["head_sha"] = head_sha
 
         try:
             resp = await self._make_request(
@@ -683,6 +688,7 @@ class GitHubAppClient:
         timeout_seconds: int = 600,
         poll_interval: int = 15,
         created_after: datetime | None = None,
+        head_sha: str | None = None,
     ) -> dict:
         """Wait for the latest workflow run to complete.
 
@@ -695,6 +701,7 @@ class GitHubAppClient:
             poll_interval: Seconds between polls
             created_after: If set, only consider runs created after this time.
                 Prevents picking up stale runs from before a new push.
+            head_sha: If set, only consider runs for this exact commit SHA.
 
         Returns:
             Final workflow run state
@@ -713,7 +720,12 @@ class GitHubAppClient:
                 )
 
             run = await self.get_latest_workflow_run(
-                owner, repo, workflow_file, branch, created_after=created_after
+                owner,
+                repo,
+                workflow_file,
+                branch,
+                created_after=created_after,
+                head_sha=head_sha,
             )
 
             if not run:
