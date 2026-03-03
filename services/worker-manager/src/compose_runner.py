@@ -24,23 +24,11 @@ def _generate_network_override(worker_id: str) -> str:
     so all services use the implicit 'default' network. This override redirects it
     to the pre-created external dev network for the worker.
 
-    Also adds a unique 'project-db' alias for the db service, because the worker
-    container is connected to both codegen_internal and the dev network. The generic
-    name 'db' collides with the orchestrator's own postgres in codegen_internal.
+    Workers are on codegen_worker (isolated from orchestrator infra), so 'db'
+    resolves only to the project's own postgres on dev_proj_<id>.
     """
     network_name = f"dev_proj_{worker_id}"
-    return (
-        f"networks:\n"
-        f"  default:\n"
-        f"    name: {network_name}\n"
-        f"    external: true\n"
-        f"services:\n"
-        f"  db:\n"
-        f"    networks:\n"
-        f"      default:\n"
-        f"        aliases:\n"
-        f"          - project-db\n"
-    )
+    return f"networks:\n" f"  default:\n" f"    name: {network_name}\n" f"    external: true\n"
 
 
 class ComposeRunner:

@@ -82,6 +82,9 @@ class TestComposeRunner:
         assert "dev_proj_worker-123" in content
         assert "default:" in content
         assert "external: true" in content
+        # No project-db alias or services section (workaround removed in #22)
+        assert "project-db" not in content
+        assert "services:" not in content
 
     @pytest.mark.asyncio
     async def test_network_override_with_user_file_flags(self, workspace):

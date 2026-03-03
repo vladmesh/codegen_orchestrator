@@ -31,6 +31,15 @@ def _mock_compose_response(exit_code: int = 0, stdout: str = "", stderr: str = "
     return {"exit_code": exit_code, "stdout": stdout, "stderr": stderr}
 
 
+def test_patch_db_hostname_removed():
+    """_patch_db_hostname workaround removed — workers on codegen_worker (#22)."""
+    import orchestrator_cli.commands.dev_env as mod
+
+    assert not hasattr(
+        mod, "_patch_db_hostname"
+    ), "_patch_db_hostname should be removed: workers on codegen_worker"
+
+
 class TestDevEnvCompose:
     def test_start_infra_calls_up_with_wait(self):
         """start-infra should issue 'up -d --wait' to the compose endpoint."""
