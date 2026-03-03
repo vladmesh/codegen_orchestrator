@@ -29,7 +29,7 @@ Read:
 
 Invoke the `/audit` skill logic:
 - Scan for dead code, smells, security issues
-- Add findings to `docs/backlog.md` if actionable
+- Writes `docs/audit.md` (report only, no backlog changes — `/triage` handles that)
 
 If an audit was done within the last 5 tasks (check `docs/audit.md` date), skip.
 
@@ -54,13 +54,20 @@ Read `docs/backlog.md` Done section. For each completed task:
 - Mark as `[x]`
 - If all items in a milestone are done, update milestone status
 
-### 6. Update STATUS
+### 6. Update User Stories
+
+Read `docs/USER_STORIES.md` and `docs/e2e_results/`. For each User Story:
+- If there is a **passing** E2E result that covers the story's acceptance criteria — set `Статус: Done`, update E2E field with date and result link
+- If blockers are resolved (blocked-by task is in Done) — change `Статус: Blocked` → `Ready` (or `Done` if E2E also passes)
+- Do NOT unblock if the blocking task has no passing E2E yet
+
+### 7. Update STATUS
 
 Update `## Last Checkpoint`:
 - Set date to today
 - Summarize audit and E2E status
 
-### 7. Cleanup plans
+### 8. Cleanup plans
 
 For each file in `docs/plans/`:
 - Check if the task is in backlog Done section
@@ -68,7 +75,15 @@ For each file in `docs/plans/`:
 - If both conditions are true — delete the plan file
 - Otherwise — keep it (it may still be needed for debugging)
 
-### 8. Report
+### 9. Cleanup E2E reports
+
+For each file in `docs/e2e_results/`:
+- Skip if file date (from filename) is **less than 2 days old**
+- Check if it was processed by triage (problems have `Backlog: #XX` or `Backlog: —`, not `new`)
+- If processed AND older than 2 days — delete the report (and its `-worker.md` pair if exists)
+- Keep the **latest passing report per scenario** regardless of age (needed for User Story status)
+
+### 10. Report
 
 Print a comprehensive summary:
 

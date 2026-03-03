@@ -30,7 +30,9 @@ For each problem with structured fields:
 
 Only process problems where `Backlog: new`.
 
-If a report has no structured Problems section (old format), scan for issues manually and classify them.
+After creating a backlog task, **update the report file**: change `Backlog: new` → `Backlog: #XX` (the created task ID). This marks the problem as processed.
+
+If a report has no structured Problems section (old format), scan for issues manually, classify them, and **rewrite the Problems section** in structured format with appropriate `Backlog` values.
 
 ### 2. Brainstorms (`docs/brainstorms/`)
 
