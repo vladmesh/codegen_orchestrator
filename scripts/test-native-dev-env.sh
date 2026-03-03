@@ -7,7 +7,7 @@
 # 2. Verify dual-network connectivity
 # 3. Verify env vars (ORCHESTRATOR_WORKER_MANAGER_URL, etc.)
 # 4. Run copier to scaffold a project
-# 5. Test EXEC_MODE=native make format/lint
+# 5. Test make format/lint (native venv)
 # 6. Test orchestrator dev-env start-infra db
 # =============================================================================
 
@@ -231,7 +231,7 @@ fi
 # =============================================================================
 echo ""
 echo "=========================================="
-echo " Step 7: Test EXEC_MODE=native (format/lint)"
+echo " Step 7: Test native make format/lint"
 echo "=========================================="
 # =============================================================================
 
@@ -244,35 +244,35 @@ docker exec "${CONTAINER_NAME}" bash -c '
 ' 2>&1 | while read line; do info "  $line"; done
 
 # Test: make format in native mode
-info "Running EXEC_MODE=native make format..."
+info "Running make format..."
 FORMAT_OUTPUT=$(docker exec "${CONTAINER_NAME}" bash -c '
     export PATH="$HOME/.local/bin:$PATH"
     cd /workspace
-    EXEC_MODE=native make format 2>&1
+    make format 2>&1
 ' 2>&1)
 FORMAT_EXIT=$?
 echo "${FORMAT_OUTPUT}" | tail -10
 
 if [ ${FORMAT_EXIT} -eq 0 ]; then
-    pass "EXEC_MODE=native make format succeeded"
+    pass "make format succeeded"
 else
-    fail "EXEC_MODE=native make format failed (exit ${FORMAT_EXIT})"
+    fail "make format failed (exit ${FORMAT_EXIT})"
 fi
 
 # Test: make lint in native mode
-info "Running EXEC_MODE=native make lint..."
+info "Running make lint..."
 LINT_OUTPUT=$(docker exec "${CONTAINER_NAME}" bash -c '
     export PATH="$HOME/.local/bin:$PATH"
     cd /workspace
-    EXEC_MODE=native make lint 2>&1
+    make lint 2>&1
 ' 2>&1)
 LINT_EXIT=$?
 echo "${LINT_OUTPUT}" | tail -10
 
 if [ ${LINT_EXIT} -eq 0 ]; then
-    pass "EXEC_MODE=native make lint succeeded"
+    pass "make lint succeeded"
 else
-    fail "EXEC_MODE=native make lint failed (exit ${LINT_EXIT})"
+    fail "make lint failed (exit ${LINT_EXIT})"
 fi
 
 # =============================================================================

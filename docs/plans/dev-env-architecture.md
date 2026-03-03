@@ -83,7 +83,7 @@
      - Поднятия инфраструктурных sidecar-зависимостей (`start-infra db redis`).
      - Запуска интеграционных тестов, завязанных на compose-оркестрацию (`compose -f infra/compose.tests.integration.yml run integration-tests`).
      - Сборки Dockerfile'ов (`compose build`).
-   - Нативно (внутри контейнера воркера через `make EXEC_MODE=native`) выполняются:
+   - Нативно (внутри контейнера воркера через `make`) выполняются:
      - Линтеры (`ruff`, `xenon`).
      - Юнит-тесты (`pytest tests/unit`).
      - Кодогенерация (`framework generate`, `sync_services`).
@@ -104,22 +104,16 @@
    - Удалено из: `compose.base.yml.jinja`, `compose.tests.integration.yml.jinja`, `compose_blocks.py` (все шаблоны сервисов).
 
 2. **Рефакторинг `Makefile` — прямые вызовы вместо Docker** — ✅ DONE:
-   - Введена переменная `EXEC_MODE ?= docker` (по умолчанию — Docker для обратной совместимости, воркеры выставляют `EXEC_MODE=native`).
-   - **Решение**: Прямые вызовы инструментов с `PYTHONPATH=.framework` вместо `uv run`.
+   - ~~Введена переменная `EXEC_MODE ?= docker`~~ → Впоследствии удалена при переходе на venv-only workflow (коммит `6aaa999`, 28 фев). Makefile стал однопутным — все таргеты работают через per-service `.venv/bin/`.
+   - **Решение**: Прямые вызовы инструментов через per-service venv-ы (`$(VENV)/ruff`, `$(VENV)/pytest` и т.д.).
    - **Причина отказа от `uv run`**: uv создаёт изолированный `.venv` и не может переиспользовать пакеты, установленные в системном site-packages образа. При этом `poetry`-формат `pyproject.toml` сервисов (без `[project]` таблицы) несовместим с `[tool.uv.workspace]` — uv падает с `No 'project' table found`.
-   - **Реализация** в `template/Makefile.jinja`:
+   - **Текущая реализация** в `template/Makefile.jinja`:
      ```makefile
-     ifeq ($(EXEC_MODE),native)
-     RUN_TOOLING := PYTHONPATH=.framework
-     PYTHON_TOOLING := PYTHONPATH=.framework python3
-     else
-     RUN_TOOLING := $(COMPOSE_ENV_TOOLING) $(DOCKER_COMPOSE) $(COMPOSE_TEST_UNIT) run --build --rm tooling
-     PYTHON_TOOLING := $(RUN_TOOLING) python
-     endif
+     VENV := .venv/bin
+     PYTHON := $(VENV)/python
+     # Все таргеты напрямую: $(VENV)/ruff, $(VENV)/pytest и т.д.
      ```
-   - В native-режиме все инструменты (ruff, pytest, xenon, mypy, framework) вызываются напрямую из системного Python, а `PYTHONPATH=.framework` обеспечивает доступ к модулям фреймворка.
-   - Цель `tooling-tests` также адаптирована: `PYTHONPATH=.framework pytest -q ...` в native-режиме.
-   - Интеграционные тесты по-прежнему запускаются через Docker Compose (`make tests` с compose up/run).
+   - Интеграционные тесты по-прежнему запускаются через Docker Compose.
 
 3. **Совместимость кодогенерации и безопасности** — ✅ DONE:
 
@@ -197,7 +191,7 @@
    - Инструктировать использовать `orchestrator dev-env start-infra db redis` для работы с персистентными sidecar-сервисами, сохраняя доступы в `.env` файл (через обращения к хостнеймам `db:5432` без публикаций портов `ports`).
    - Явно запретить добавлять директиву `ports` в свои `docker-compose.yml`, так как публикация портов на хосте будет конфликтовать между изолированными агентами.
    - Инструктировать использовать `orchestrator dev-env compose` для интеграционных тестов.
-   - Указать, что линтеры, генерация и юнит-тесты должны запускаться нативно через `make` с `EXEC_MODE=native`.
+   - Указать, что линтеры, генерация и юнит-тесты запускаются нативно через `make` (Makefile однопутный, venv-based).
 
 ---
 

@@ -126,8 +126,10 @@ Makefile в native mode использует `uv run`, но root pyproject.toml 
 
 **Нужно:** Либо генерировать root pyproject.toml, либо native mode должен использовать `cd services/X && uv run ...`.
 
-### 4.3 EXEC_MODE=native в Makefile
-Ветка `native-make-tests` в service-template содержит `ifeq ($(EXEC_MODE),native)` — надо довести до конца и вмержить.
+### ~~4.3 EXEC_MODE=native в Makefile~~ — ✅ RESOLVED
+~~Ветка `native-make-tests` в service-template содержит `ifeq ($(EXEC_MODE),native)` — надо довести до конца и вмержить.~~
+
+**Решение:** `EXEC_MODE` удалён полностью в коммите `6aaa999` (28 фев). Tooling-контейнер удалён, Makefile переписан на venv-only workflow (`$(VENV)/ruff`, `$(VENV)/pytest`). Двухпутная абстракция больше не нужна.
 
 ---
 
@@ -149,6 +151,6 @@ Makefile в native mode использует `uv run`, но root pyproject.toml 
 |-------|--------|-------------|
 | 1. Workspace bind-mount + dual-network | **DONE** | Работает из коробки |
 | 2. Compose proxy API + CLI | **DONE** | Полный жизненный цикл работает |
-| 3. Template adaptation | **IN PROGRESS** | Нужны фиксы в service-template (4.1–4.3) |
+| 3. Template adaptation | **DONE** | EXEC_MODE и tooling-контейнер удалены (`6aaa999`), остальные фиксы (4.1–4.2) применены |
 | 4. Remove DinD | WAITING | Зависит от Phase 3 |
 | 5. E2E testing | WAITING | Зависит от Phase 4 |
