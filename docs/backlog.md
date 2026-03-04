@@ -7,7 +7,7 @@
 ### #25 Post-Deploy Smoke Tester
 - **Priority**: HIGH (pre-MVP)
 - **User Story**: US0 (acceptance criteria: stable E2E)
-- **Plan**: —
+- **Plan**: docs/plans/post-deploy-smoke-tester.md
 - **Status**: pending
 - **Brief**: Минимальная нода в DevOps subgraph после деплоя. HTTP smoke (httpx: `/health` + эндпоинты из спеки) для бэкендов. Telethon smoke (`/start` + команды из спеки) для ботов. Детерминированные проверки, без Claude. Pass → уведомление юзеру, fail → retry/обратно в Engineering. Telethon-сессия хранится как секрет оркестратора. Brainstorm: `docs/brainstorms/qa-node.md` (полная версия — post-MVP).
 
