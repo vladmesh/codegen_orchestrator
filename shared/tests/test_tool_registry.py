@@ -1,10 +1,15 @@
 """Test tool registry and automatic command documentation."""
 
+import builtins
+import logging
+from unittest.mock import patch
+
 from shared.schemas.tool_groups import get_instructions_content
 from shared.schemas.tool_registry import (
     ToolGroup,
     clear_registry,
     get_registered_commands,
+    load_cli_commands,
     register_tool,
 )
 
@@ -24,6 +29,22 @@ def test_register_tool_decorator():
     assert commands[0]["description"] == "Test command description."
 
     clear_registry()
+
+
+def test_load_cli_commands_logs_import_error(caplog):
+    """ImportError should be logged via logger, not print()."""
+    real_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "orchestrator_cli.commands":
+            raise ImportError("test: no module")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=mock_import):
+        with caplog.at_level(logging.WARNING):
+            load_cli_commands()
+
+    assert any("Failed to load CLI commands" in r.message for r in caplog.records)
 
 
 def test_get_instructions_content_uses_registry():

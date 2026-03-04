@@ -18,7 +18,10 @@ console = Console()
 
 def _get_user_id() -> str:
     """Get user ID from environment."""
-    return os.getenv("ORCHESTRATOR_USER_ID", "unknown")
+    user_id = os.getenv("ORCHESTRATOR_USER_ID", "unknown")
+    if user_id == "unknown":
+        console.print("[yellow]Warning:[/yellow] ORCHESTRATOR_USER_ID not set, using 'unknown'")
+    return user_id
 
 
 async def trigger_engineering_async(

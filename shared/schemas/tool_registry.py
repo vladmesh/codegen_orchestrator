@@ -6,8 +6,11 @@ based on allowed_tools configuration.
 """
 
 from collections.abc import Callable
+import logging
 
 from .tool_groups import ToolGroup
+
+logger = logging.getLogger(__name__)
 
 # Global registry: group -> list of command info
 TOOL_REGISTRY: dict[ToolGroup, list[dict]] = {
@@ -84,5 +87,4 @@ def load_cli_commands():
         from orchestrator_cli.commands import deploy, engineering, project  # noqa: F401
     except ImportError as e:
         # CLI not available (e.g., in other contexts)
-        print(f"Warning: Failed to load CLI commands: {e}")
-        pass
+        logger.warning("Failed to load CLI commands: %s", e)

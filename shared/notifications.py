@@ -1,7 +1,8 @@
 """Notification service for sending Telegram messages to admins.
 
 Shared utility used by both API and LangGraph services.
-Configuration is read from environment or passed explicitly.
+Configuration is loaded lazily on first use — importing this module
+does NOT require env vars to be set.
 """
 
 import asyncio
@@ -15,28 +16,38 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# Lazy config — populated on first call to _ensure_config()
+_config: dict | None = None
 
-def _get_config():
-    """Get notification config from environment."""
-    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    api_url = os.getenv("API_BASE_URL", "")
-    rate_limit = int(os.getenv("NOTIFICATION_RATE_LIMIT", "10"))
+
+def _ensure_config() -> dict:
+    """Load and validate config on first use. Raises RuntimeError if missing."""
+    global _config  # noqa: PLW0603
+    if _config is not None:
+        return _config
+
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not telegram_token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
+
+    api_url = os.getenv("API_BASE_URL")
+    if not api_url:
+        raise RuntimeError("API_BASE_URL is not set")
 
     if api_url.rstrip("/").endswith("/api"):
-        logger.error("API_BASE_URL must not include /api, notify_admins disabled")
-        api_url = ""
+        raise RuntimeError("API_BASE_URL must not include /api suffix")
 
-    if not api_url:
-        logger.warning("API_BASE_URL not set, notify_admins will not work")
+    rate_limit = int(os.getenv("NOTIFICATION_RATE_LIMIT", "10"))
 
-    return telegram_token, api_url, rate_limit
+    _config = {
+        "telegram_token": telegram_token,
+        "api_url": api_url,
+        "rate_limit": rate_limit,
+    }
+    return _config
 
-
-# Get config at module load
-TELEGRAM_BOT_TOKEN, API_BASE_URL, NOTIFICATION_RATE_LIMIT = _get_config()
 
 # Rate limiting storage (in-memory, simple MVP)
-# Format: {telegram_id: [timestamp1, timestamp2, ...]}
 _rate_limit_storage: dict[int, list[datetime]] = defaultdict(list)
 
 # Emoji mapping for severity levels
@@ -63,17 +74,18 @@ async def send_telegram_message(
 
     Returns:
         True if sent successfully, False otherwise
+
+    Raises:
+        RuntimeError: If TELEGRAM_BOT_TOKEN is not set
     """
-    if not TELEGRAM_BOT_TOKEN:
-        logger.warning("telegram_token_missing", action="skip_notification")
-        return False
+    config = _ensure_config()
 
     # Check rate limit
     if not _check_rate_limit(telegram_id):
         logger.warning("rate_limit_exceeded", telegram_id=telegram_id, action="skip_notification")
         return False
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{config['telegram_token']}/sendMessage"
     payload = {
         "chat_id": telegram_id,
         "text": text,
@@ -115,16 +127,17 @@ async def notify_admins(message: str, level: str = "info") -> int:
 
     Returns:
         Number of users successfully notified
+
+    Raises:
+        RuntimeError: If TELEGRAM_BOT_TOKEN or API_BASE_URL is not set
     """
-    if not API_BASE_URL:
-        logger.error("api_url_not_configured", action="skip_admin_notifications")
-        return 0
+    config = _ensure_config()
 
     # Get all users from API
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
-                f"{API_BASE_URL}/api/users", timeout=aiohttp.ClientTimeout(total=5)
+                f"{config['api_url']}/api/users", timeout=aiohttp.ClientTimeout(total=5)
             ) as resp:
                 if resp.status != HTTPStatus.OK:
                     logger.error("fetch_users_failed", status=resp.status)
@@ -166,30 +179,18 @@ async def notify_admins(message: str, level: str = "info") -> int:
 
 
 def _check_rate_limit(telegram_id: int) -> bool:
-    """Check if user is within rate limit.
-
-    Args:
-        telegram_id: Telegram user ID
-
-    Returns:
-        True if within limit, False otherwise
-    """
+    """Check if user is within rate limit."""
+    config = _ensure_config()
     now = datetime.now(UTC)
     cutoff = now - timedelta(hours=1)
 
-    # Clean old timestamps
     _rate_limit_storage[telegram_id] = [
         ts for ts in _rate_limit_storage[telegram_id] if ts > cutoff
     ]
 
-    # Check limit
-    return len(_rate_limit_storage[telegram_id]) < NOTIFICATION_RATE_LIMIT
+    return len(_rate_limit_storage[telegram_id]) < config["rate_limit"]
 
 
 def _record_message(telegram_id: int):
-    """Record a sent message for rate limiting.
-
-    Args:
-        telegram_id: Telegram user ID
-    """
+    """Record a sent message for rate limiting."""
     _rate_limit_storage[telegram_id].append(datetime.now(UTC))

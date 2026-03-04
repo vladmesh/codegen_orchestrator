@@ -82,16 +82,16 @@ class DockerEventsListener:
             if self._events_stream:
                 try:
                     self._events_stream.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("cleanup_events_stream_close_error", error=str(e))
             try:
                 client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("cleanup_docker_client_close_error", error=str(e))
             try:
                 await pump_future
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("cleanup_pump_future_error", error=str(e))
             executor.shutdown(wait=False)
             logger.info("docker_events_listener_stopped")
 
@@ -101,8 +101,8 @@ class DockerEventsListener:
         if self._events_stream:
             try:
                 self._events_stream.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("cleanup_events_stream_close_error", error=str(e))
 
     async def _handle_event(self, event: dict[str, Any]) -> None:
         """Process a Docker container die event for a worker container.

@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.events import DockerEventsListener, WORKER_DEAD_STATUS
 
@@ -136,3 +136,24 @@ class TestHandleEvent:
 
         # hset should still be attempted
         mock_redis.hset.assert_called_once()
+
+
+class TestCleanupLogging:
+    """Cleanup in finally block should log errors, not swallow silently."""
+
+    @pytest.mark.asyncio
+    async def test_stop_logs_close_errors(self):
+        """stop() should log if events_stream.close() fails."""
+        mock_redis = AsyncMock()
+        listener = DockerEventsListener(mock_redis)
+
+        mock_stream = MagicMock()
+        mock_stream.close.side_effect = Exception("already closed")
+        listener._events_stream = mock_stream
+
+        with patch("src.events.logger") as mock_logger:
+            listener.stop()
+
+        mock_logger.debug.assert_called_once()
+        call_args = mock_logger.debug.call_args
+        assert "cleanup" in call_args[0][0]
