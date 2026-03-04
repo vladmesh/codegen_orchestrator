@@ -40,8 +40,8 @@
 - **Severity**: minor
 - **Backlog**: new
 - **Description**: The default `POSTGRES_HOST=db` only works inside Docker. For local development or running migrations from the host, it needs to be overridden, but this is undocumented.
-- **Root cause**: Lack of documentation in the `.env` template regarding docker hostnames.
-- **Suggested fix**: Add a comment in `.env` explaining that `db` is the Docker hostname and how to override for local use.
+- **Root cause**: This is a known architectural conflict between AI Workers (who need `db`) and Human Developers (who need `localhost`). A static `.env` file cannot satisfy both without hacks.
+- **Suggested fix**: See the full investigation report: [worker-db-isolation-history.md](../reports/worker-db-isolation-history.md). As a summary: update the template `.env` to default to `localhost` (for human DX) and explicitly inject `POSTGRES_HOST=db` directly into the worker container's OS environment limits to override the `.env` internally.
 
 ### Problem 4: No `make tests unit` target
 - **Type**: template
