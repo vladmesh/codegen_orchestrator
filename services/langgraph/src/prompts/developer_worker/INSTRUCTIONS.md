@@ -94,14 +94,31 @@ Database migrations require a running PostgreSQL instance. Always start infrastr
 # 1. Start the database
 orchestrator dev-env start-infra db
 
-# 2. Generate a new migration (autogenerate from model changes)
+# 2. Apply existing migrations (scaffold creates initial ones)
+make migrate
+
+# 3. Generate a new migration (autogenerate from model changes)
 make makemigrations name="add_todos_table"
 
-# 3. Apply migrations
+# 4. Apply the new migration
 make migrate
 ```
 
-**Important**: Never create migration files manually — always use `make makemigrations` so Alembic can autogenerate the diff from your models. If `make makemigrations` fails, check that the database is running (`orchestrator dev-env start-infra db`) and that your `.env` has correct `DATABASE_URL` / `POSTGRES_*` variables.
+**Important**: Never create migration files manually — always use `make makemigrations` so Alembic can autogenerate the diff from your models.
+
+### Database Configuration
+
+The `.env` file sets `POSTGRES_HOST=db`. This is correct — it refers to the project's own PostgreSQL container running on your isolated Docker network. **Do not change this value.** It is set intentionally and matches the service name in `infra/compose.base.yml`.
+
+### Database Troubleshooting
+
+If `make migrate` or `make makemigrations` fails with a database connection error:
+
+1. **Confirm the database is running**: `orchestrator dev-env start-infra db` — wait for the healthcheck to pass.
+2. **Check `.env` values match compose**: `POSTGRES_HOST` must match the service name in `infra/compose.base.yml` (default: `db`). `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` must match the `db` service's `environment:` block.
+3. **If the error says "password authentication failed"**: This likely means DNS is resolving `db` to the wrong PostgreSQL instance. Record the exact error message and the output of `getent hosts db` in your PROGRESS.md — this is critical diagnostic info.
+4. **If the error says "connection refused" or "could not connect"**: The database container may not be running or not on the correct network. Record the error and output of `orchestrator dev-env compose -- ps` in PROGRESS.md.
+5. **Do not work around database errors silently.** If you cannot connect to the database after following steps 1-2, document the exact error and diagnostic output in PROGRESS.md and proceed with other parts of the task. Do not write migration files manually or change `POSTGRES_HOST` to `localhost`.
 
 ## Running Tests and Tools
 
