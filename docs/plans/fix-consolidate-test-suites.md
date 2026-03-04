@@ -87,3 +87,5 @@ This matches how the existing `test_worker_execution.py` tests work: they publis
 - **Step 1**: Also consolidated helpers from `test_task_injection.py` (not just `test_worker_execution.py` as planned).
 - **Step 2**: Cleanup uses `DELETE /api/projects/{id}` cascade (deletes tasks + allocations) instead of autouse fixture. No server cleanup (no DELETE endpoint, but DB is tmpfs).
 - **Step 3**: Added `engineering-worker` service to `backend.yml` — it was missing from the test compose. The `langgraph` container only runs PO/provisioner, not the engineering queue consumer. Task for "missing project" test seeded without `project_id` (FK constraint prevents referencing non-existent project).
+- **CI fix 1**: Added `__init__.py` to `tests/`, `tests/integration/`, `tests/integration/backend/` — relative imports (`from .conftest import`) require the directory to be a Python package.
+- **CI fix 2**: Removed custom `command` override on API service in test compose — it was skipping `entrypoint.sh` which runs `alembic upgrade head`. Also added `SECRETS_ENCRYPTION_KEY` env var.
