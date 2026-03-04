@@ -1,7 +1,7 @@
 ---
 name: next
 description: Pick the next task from backlog and set it as current in STATUS.md. Use when starting a new task or after completing one.
-allowed-tools: Read, Edit, Glob
+allowed-tools: Bash, Read, Edit, Glob
 argument-hint: "[#ID]"
 ---
 
@@ -57,7 +57,14 @@ Write STATUS.md in this format:
 
 Keep the `## Previous work`, `## Quick Links` sections unchanged.
 
-### 5. Report
+### 5. Commit
+
+```bash
+git add docs/STATUS.md
+git commit -m "next: #<ID> — <title>"
+```
+
+### 6. Report
 
 Print a summary:
 - Task selected: #ID — Title
