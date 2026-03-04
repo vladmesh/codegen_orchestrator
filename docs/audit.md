@@ -1,232 +1,134 @@
-# Code Audit Report
+# Code Audit
 
-**Date:** 2026-03-04
-**Scope:** `services/`, `shared/`, `packages/` (256 Python files, excluding test files and `docs/`/`.claude/` directories)
-**Tools:** Ruff (E, F, I, UP, B, C4 rules), manual pattern analysis
+> **Date**: 2026-03-05
+> **Scope**: full codebase (`services/`, `shared/`, `packages/`)
+> **Previous audit**: 2026-03-04
 
----
+## CI Health
+
+✅ Last CI run passed (2026-03-04, `f6c0269`)
 
 ## Summary
 
-| Category                        | Count | Critical | Major | Minor |
-|---------------------------------|------:|----------|-------|-------|
-| Dead code / unused artifacts    |     2 |        0 |     1 |     1 |
-| Large files (>500 lines)        |     6 |        0 |     3 |     3 |
-| Default env var values          |    44 |        3 |     5 |    36 |
-| print() in production code      |    10 |        0 |     2 |     8 |
-| Broad except clauses            |    23 |        0 |     6 |    17 |
-| Swallowed exceptions (pass)     |    10 |        0 |     4 |     6 |
-| Duplicated code across services |     2 |        0 |     2 |     0 |
-| TODO/FIXME comments             |     2 |        0 |     0 |     2 |
-| Subprocess without shell=False  |     4 |        0 |     4 |     0 |
-| **Total**                       |**103**|    **3** | **27**| **73**|
+- Dead code: 2 issues
+- Code smells: 12 issues
+- Security: 5 issues
+- Test gaps: 88 files without unit tests
 
-Ruff linting (E, F, I, UP, B, C4) passes clean -- no unused imports (F401) or unused variables (F841) in production code.
+**Resolved since last audit:**
+- ✅ #23 Extract infra_client + constants to shared — DONE
+- ✅ #24 Fix critical getenv defaults — DONE
 
 ---
 
-## 1. Dead Code / Unused Artifacts
+## Dead Code
 
-### 1.1 Standalone debug script never referenced (major)
+| File | Issue | Action |
+|------|-------|--------|
+| `services/langgraph/src/list_repos.py` (72 LOC) | Standalone debug script, never imported, uses `print()` + `sys.path` hack | backlog #17 |
+| `shared/schemas/tool_registry.py:88` | Redundant `pass` after `print()` | fix now |
 
-`services/langgraph/src/list_repos.py` (72 lines) is a standalone script that searches for "palindrome" repos. It is not imported or referenced by any other file. It uses `print()` throughout and manipulates `sys.path` directly. Likely a one-off debugging artifact.
+## Code Smells
 
-```
-services/langgraph/src/list_repos.py:1-72 (entire file)
-```
+### Large files (>400 LOC)
 
-### 1.2 Unreachable pass after print in tool_registry (minor)
+| File | Lines | Status |
+|------|------:|--------|
+| `services/langgraph/src/workers/engineering_worker.py` | 1088 | backlog #18 |
+| `shared/clients/github.py` | 986 | backlog #19 |
+| `services/worker-manager/src/manager.py` | 828 | not tracked |
+| `services/api/src/routers/rag.py` | 688 | not tracked |
+| `services/langgraph/src/subgraphs/devops/nodes.py` | 644 | Ideas |
+| `services/infra-service/src/provisioner/node.py` | 615 | not tracked |
+| `services/telegram_bot/src/main.py` | 473 | Ideas |
+| `services/langgraph/src/nodes/developer.py` | 466 | not tracked |
+| `services/langgraph/src/subgraphs/devops/env_analyzer.py` | 465 | not tracked |
+| `services/langgraph/src/clients/worker_spawner.py` | 418 | not tracked |
+| `packages/worker-wrapper/src/worker_wrapper/wrapper.py` | 414 | not tracked |
+| `services/scheduler/src/tasks/server_sync.py` | 411 | not tracked |
 
-```
-shared/schemas/tool_registry.py:87-88
-    print(f"Warning: Failed to load CLI commands: {e}")
-    pass  # redundant pass after print
-```
+### Functions >50 LOC (top offenders)
 
----
+| File | Function | LOC |
+|------|----------|----:|
+| `engineering_worker.py:588` | `process_engineering_job()` | 285 |
+| `manager.py:434` | `create_worker_with_capabilities()` | 235 |
+| `engineering_worker.py:257` | `_wait_for_ci_and_fix()` | 220 |
+| `devops/nodes.py:419` | `run()` (DeployNode) | 220 |
+| `developer.py:48` | `run()` | 203 |
+| `engineering_worker.py:875` | `_handle_engineering_success()` | 201 |
+| `worker_spawner.py:147` | `request_spawn()` | 168 |
+| `server_sync.py:109` | `_sync_server_list()` | 131 |
+| `provisioner/node.py:85` | `reinstall_and_provision()` | 115 |
+| `server_sync.py:298` | `_check_provisioning_triggers()` | 114 |
+| `wrapper.py:257` | `execute_agent()` | 108 |
+| `env_analyzer.py:363` | `env_analyzer_run()` | 103 |
 
-## 2. Large Files (>500 lines) -- Split Candidates
+### Swallowed exceptions (except + pass)
 
-| File | Lines | Severity |
-|------|------:|----------|
-| `services/langgraph/src/workers/engineering_worker.py` | 1088 | major |
-| `shared/clients/github.py` | 986 | major |
-| `services/worker-manager/src/manager.py` | 828 | major |
-| `services/api/src/routers/rag.py` | 688 | minor |
-| `services/langgraph/src/subgraphs/devops/nodes.py` | 644 | minor |
-| `services/infra-service/src/provisioner/node.py` | 615 | minor |
+| File | Line | Severity |
+|------|------|----------|
+| `services/worker-manager/src/events.py` | 85, 89, 93, 104 | major — 4 silenced exceptions in cleanup |
+| `services/worker-manager/src/docker_ops.py` | 82 | minor |
+| `services/worker-manager/src/main.py` | 116 | minor |
 
-**Recommendation:** The top 3 files exceed 800 lines. `engineering_worker.py` at 1088 lines is the strongest split candidate -- consider extracting scaffold logic, CI monitoring, and worker lifecycle into separate modules.
+### Broad `except Exception:` clauses
 
----
+23 instances total. Notable: `worker-manager/routers/compose.py:82,101`, `api/main.py:45`, `api/routers/projects.py:119`, `langgraph/po/consumer.py:186`, `telegram_bot/main.py:326`.
 
-## 3. Security Issues
+## Security
 
-### 3.1 Default env var values violating fail-fast policy
+| File | Issue | Severity | Action |
+|------|-------|----------|--------|
+| `packages/orchestrator-cli/src/.../engineering.py:21` | `ORCHESTRATOR_USER_ID` defaults to `"unknown"` | major | not tracked |
+| `packages/orchestrator-cli/src/.../deploy.py:21` | Same | major | not tracked |
+| `packages/orchestrator-cli/src/.../respond.py:32` | Same | major | not tracked |
+| `services/infra-service/src/provisioner/ansible_runner.py:99` | `subprocess.run` without input validation (noqa S603) | minor | reviewed OK |
+| `services/infra-service/src/provisioner/recovery.py:73` | subprocess call | minor | reviewed OK |
 
-The project rule is: "Never use default values for env vars -- fail fast with RuntimeError." The following violate this in security-sensitive contexts.
+**Resolved:** `shared/notifications.py` TELEGRAM_BOT_TOKEN/API_BASE_URL defaults — fixed in #24.
 
-#### Critical (secrets/credentials defaulting to empty or placeholder)
+## Test Gaps
 
-| File | Line | Variable | Default |
-|------|------|----------|---------|
-| `shared/notifications.py` | 21 | `TELEGRAM_BOT_TOKEN` | `""` |
-| `shared/notifications.py` | 22 | `API_BASE_URL` | `""` |
-| `shared/clients/github.py` | 26 | `GITHUB_APP_PRIVATE_KEY_PATH` | `"/app/keys/github_app.pem"` |
+88 source files have no corresponding unit test. Top gaps by service:
 
-The notifications module silently degrades when `TELEGRAM_BOT_TOKEN` is empty. The GitHub client assumes a default key path that may not exist, leading to confusing runtime errors instead of clear startup failures.
+| Service | Untested files | Notable gaps |
+|---------|---------------:|--------------|
+| langgraph | 31 | nodes/base, tools/*, workers/_base, config/*, clients/* |
+| api | 25 | All routers except webhooks/delete/encryption/debug, all schemas |
+| infra-service | 9 | All source files (0% coverage) |
+| scheduler | 7 | health_checker, provisioner tasks, rag_summarizer |
+| telegram_bot | 6 | handlers, main, middleware, keyboards |
+| worker-wrapper | 5 | wrapper.py, runners/*, config |
+| worker-manager | 4 | manager.py, agents/*, main |
+| orchestrator-cli | 4 | client, commands/*, main |
 
-#### Major (identity/URL defaults masking misconfiguration)
+Skipped tests:
+- `tests/e2e/test_engineering_flow.py:84` — `@pytest.mark.skip` (full flow test)
+- `tests/e2e/test_real_llm.py` — 4 `@pytest.mark.skipif` (conditional on env vars — OK)
 
-| File | Line | Variable | Default |
-|------|------|----------|---------|
-| `services/infra-service/src/clients/api.py` | 20 | `API_BASE_URL` | `"http://api:8000"` |
-| `packages/orchestrator-cli/src/.../engineering.py` | 21 | `ORCHESTRATOR_USER_ID` | `"unknown"` |
-| `packages/orchestrator-cli/src/.../respond.py` | 32 | `ORCHESTRATOR_USER_ID` | `"unknown"` |
-| `packages/orchestrator-cli/src/.../deploy.py` | 21 | `ORCHESTRATOR_USER_ID` | `"unknown"` |
-| `services/langgraph/src/nodes/developer.py` | 288 | `SERVICE_TEMPLATE_REPO` | `"gh:vladmesh/service-template"` |
+## TODO/FIXME
 
-The `ORCHESTRATOR_USER_ID` defaulting to `"unknown"` means operations proceed with an unidentifiable actor -- audit trail is broken.
-
-#### Minor -- acceptable (tuning constants with sensible defaults): 36 instances
-
-Timeout values, poll intervals, and operational constants in `services/langgraph/src/config/constants.py` (19 instances), `services/infra-service/src/config/constants.py` (12 instances), and `shared/log_config/config.py` (3 instances). These are configuration knobs with reasonable defaults and are acceptable per convention.
-
-### 3.2 Subprocess calls without shell=False verification (major)
-
-```
-services/infra-service/src/provisioner/recovery.py:73
-services/infra-service/src/provisioner/ssh_manager.py:34
-services/infra-service/src/provisioner/ssh_manager.py:93
-services/worker-manager/src/compose_runner.py:180
-```
-
-These `subprocess` calls should be audited to confirm they do not pass untrusted input. While they likely use controlled command arrays, the Ruff S603 flag indicates they should be reviewed.
-
-### 3.3 print() statements in production code (should use structlog)
-
-#### Major -- logging lost in production
-
-| File | Line | Context |
-|------|------|---------|
-| `shared/schemas/tool_registry.py` | 87 | `print(f"Warning: Failed to load CLI commands: {e}")` |
-| `packages/worker-wrapper/src/worker_wrapper/main.py` | 25 | `print("Healthcheck passed")` |
-
-The `tool_registry.py` print is particularly problematic: it uses `print()` to report a warning about failed CLI command loading, which will not appear in structured JSON logs in production.
-
-The `worker_wrapper/main.py` healthcheck print runs before logger setup, which is acceptable but should ideally use `sys.stdout.write()` to signal intent.
-
-#### Minor -- CLI output (acceptable)
-
-48 instances of `console.print()` in `packages/orchestrator-cli/` commands. These use Rich's `console.print()` for CLI user output, which is the correct pattern for a CLI tool. Not flagged.
-
-#### Minor -- Ansible inventory script (acceptable)
-
-4 instances in `services/infra-service/ansible/inventory/api_inventory.py`. This is a standalone Ansible dynamic inventory script that must use `print()` for JSON output to stdout. Acceptable.
-
-#### Minor -- Debug script
-
-6 instances in `services/langgraph/src/list_repos.py`. Already flagged as dead code (Section 1.1).
+| File | Line | Comment | Status |
+|------|------|---------|--------|
+| `shared/notifications.py` | 156 | `TODO: Add is_admin field filtering` | not tracked |
+| `services/api/src/routers/servers.py` | 282 | `TODO: Trigger LangGraph provisioner node via queue/webhook` | not tracked |
 
 ---
 
-## 4. Broad Exception Handling
+## New Issues (not in backlog)
 
-### 4.1 Swallowed exceptions (except + pass) in production code (major)
+1. **`ORCHESTRATOR_USER_ID` defaults to `"unknown"`** in 3 CLI command files — breaks audit trail. Should fail fast.
+2. **`worker-manager/src/manager.py` (828 LOC)** — 6 functions >50 LOC, split candidate. Not tracked.
+3. **infra-service: 0% unit test coverage** — 9 source files, 0 tests.
+4. **`services/langgraph/src/tests/test_architect_routing.py`** — test file inside `src/` instead of `tests/`.
 
-These silently discard errors, making debugging difficult.
+## Already Tracked
 
-| File | Line | Exception Type | Severity |
-|------|------|---------------|----------|
-| `services/worker-manager/src/events.py` | 85 | `Exception` | major |
-| `services/worker-manager/src/events.py` | 89 | `Exception` | major |
-| `services/worker-manager/src/events.py` | 93 | `Exception` | major |
-| `services/worker-manager/src/events.py` | 104 | `Exception` | major |
-| `services/worker-manager/src/docker_ops.py` | 82 | `Exception` | minor |
-| `services/worker-manager/src/main.py` | 116 | `Exception` | minor |
-
-The `events.py` cleanup block (lines 83-95) swallows 4 separate `except Exception: pass` blocks during shutdown. Even in cleanup, a `logger.debug()` call would aid debugging.
-
-### 4.2 Broad except clauses (not swallowed but overly broad)
-
-23 total `except Exception:` clauses in production code. Notable cases:
-
-| File | Line | Notes |
-|------|------|-------|
-| `services/worker-manager/src/routers/compose.py` | 82 | Catches all exceptions in route handler |
-| `services/worker-manager/src/routers/compose.py` | 101 | Catches all exceptions in route handler |
-| `services/api/src/main.py` | 45 | Startup exception handling |
-| `services/api/src/routers/projects.py` | 119 | Route handler catch-all |
-| `services/langgraph/src/po/consumer.py` | 186 | Message processing catch-all |
-| `services/telegram_bot/src/main.py` | 326 | Bot error handler |
-
-Most of these log the exception but could benefit from narrower exception types.
-
----
-
-## 5. Code Duplication
-
-### 5.1 Identical file: infra_client.py (major)
-
-```
-services/langgraph/src/clients/infra_client.py  (279 lines)
-services/infra-service/src/clients/infra_client.py  (279 lines)
-```
-
-These files are byte-for-byte identical. This client should live in `shared/` and be imported by both services.
-
-### 5.2 Near-identical constants (major)
-
-```
-services/langgraph/src/config/constants.py  (68 lines)
-services/infra-service/src/config/constants.py  (55 lines)
-```
-
-The `Paths`, `Timeouts`, and `Provisioning` classes are duplicated between these two files with identical values. The `langgraph` version adds `CI` and worker-specific timeout classes. The shared portions (`Timeouts.SSH_COMMAND`, `Timeouts.PROVISIONING`, `Timeouts.REINSTALL`, `Timeouts.PASSWORD_RESET`, `Timeouts.ACCESS_PHASE`, `Timeouts.SERVICE_DEPLOY`, all of `Provisioning`, and `Paths.SSH_KEY`) should be extracted to `shared/`.
-
----
-
-## 6. TODO/FIXME Comments
-
-Only 2 TODO comments found in production code (excluding test data strings):
-
-| File | Line | Comment | Severity |
-|------|------|---------|----------|
-| `shared/notifications.py` | 143 | `# TODO: Add is_admin field filtering when implemented` | minor |
-| `services/api/src/routers/servers.py` | 282 | `# TODO: Trigger LangGraph provisioner node via queue/webhook` | minor |
-
-Both indicate planned but not yet implemented features. Low risk.
-
----
-
-## 7. Ruff Lint Status
-
-The project passes all configured Ruff rules (E, F, I, UP, B, C4) clean. No violations in production or test code.
-
-Rules **not currently enabled** that would catch issues found in this audit:
-- `S` (flake8-bandit): Would catch S603 (subprocess calls), S110 (try-except-pass). 4+6 issues.
-- `PLR` (Pylint refactoring): Would flag overly complex functions in large files.
-- `C901` (McCabe complexity): Would flag functions in the 6 large files.
-- `BLE` (blind-except): Would catch the 23 broad `except Exception:` clauses.
-
-**Recommendation:** Consider adding `S110`, `BLE001` to Ruff's `select` list for incremental improvement.
-
----
-
-## 8. Recommended Actions (Priority Order)
-
-### High Priority
-1. **Extract `infra_client.py` to `shared/`** -- eliminates 279 lines of duplicated code that will inevitably drift.
-2. **Extract shared constants** (`Timeouts`, `Provisioning`, `Paths.SSH_KEY`) to `shared/config/constants.py`.
-3. **Fix critical getenv defaults** -- `TELEGRAM_BOT_TOKEN` and `API_BASE_URL` in `shared/notifications.py` should fail fast or clearly document silent degradation.
-
-### Medium Priority
-4. **Split `engineering_worker.py`** (1088 lines) -- extract scaffold, CI gate, and worker lifecycle into separate modules.
-5. **Replace `print()` with structlog** in `shared/schemas/tool_registry.py:87`.
-6. **Add logging to swallowed exceptions** in `services/worker-manager/src/events.py` cleanup blocks.
-7. **Fix `ORCHESTRATOR_USER_ID` defaults** -- either require it or use a sentinel that downstream code can detect.
-
-### Low Priority
-8. **Delete `services/langgraph/src/list_repos.py`** -- dead debug script.
-9. **Enable Ruff S110 and BLE001 rules** to catch future occurrences.
-10. **Split `shared/clients/github.py`** (986 lines) -- separate app auth, repo operations, and workflow management.
+| Issue | Backlog |
+|-------|---------|
+| Split engineering_worker.py | #18 |
+| Split github.py | #19 |
+| Dead code cleanup (list_repos.py) | #17 |
+| Enable Ruff S110 + BLE001 | Ideas |
+| Split Tier 2 large files | Ideas |
