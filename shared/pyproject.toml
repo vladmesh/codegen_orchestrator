@@ -27,6 +27,7 @@ exclude = ["redis"]
 "__init__.py" = "shared/__init__.py"
 "clients" = "shared/clients"
 "config.py" = "shared/config.py"
+"constants.py" = "shared/constants.py"
 "contracts" = "shared/contracts"
 "log_config" = "shared/log_config"
 "models" = "shared/models"

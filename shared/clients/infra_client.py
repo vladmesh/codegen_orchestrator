@@ -15,7 +15,7 @@ import structlog
 if TYPE_CHECKING:
     pass
 
-from ..config.constants import Paths, Timeouts
+from shared.constants import Paths, Timeouts
 
 logger = structlog.get_logger(__name__)
 
