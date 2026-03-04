@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #23 Extract Shared Code (infra_client + constants)
-- **Priority**: HIGH (quick win)
-- **User Story**: —
-- **Plan**: docs/plans/extract-shared-code.md
-- **Status**: pending
-- **Brief**: `infra_client.py` byte-for-byte identical in langgraph and infra-service (279 LOC each) → move to `shared/clients/`. Shared constants (`Timeouts`, `Provisioning`, `Paths.SSH_KEY`) duplicated between `langgraph/config/constants.py` and `infra-service/config/constants.py` → extract to `shared/config/constants.py`. Source: audit 2026-03-04.
-
 ### #25 Post-Deploy Smoke Tester
 - **Priority**: HIGH (pre-MVP)
 - **User Story**: US0 (acceptance criteria: stable E2E)
@@ -142,6 +135,7 @@
 
 ## Done (last 10)
 
+- #23 Extract Shared Code (infra_client + constants) — 2026-03-05
 - #24 Fix Critical getenv Defaults — 2026-03-04
 - #6 Fix & Consolidate Test Suites — 2026-03-04
 - #22 Worker Network Isolation — 2026-03-03

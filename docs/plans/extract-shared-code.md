@@ -15,17 +15,17 @@ The constants files overlap heavily but each has service-specific additions:
 
 ## Steps
 
-1. [ ] Create `shared/constants.py` with merged constants
+1. [x] Create `shared/constants.py` with merged constants
    - **Input**: `services/langgraph/src/config/constants.py`, `services/infra-service/src/config/constants.py`
    - **Output**: `shared/constants.py` — merged `Paths` (with `playbook()`), `Timeouts` (superset), `CI`, `Provisioning`
    - **Test**: `shared/tests/unit/test_constants.py` — verify all constant values, `Paths.playbook()` helper
 
-2. [ ] Move `infra_client.py` to `shared/clients/`
+2. [x] Move `infra_client.py` to `shared/clients/`
    - **Input**: `services/langgraph/src/clients/infra_client.py` (either copy — identical)
    - **Output**: `shared/clients/infra_client.py` — update import from `..config.constants` → `shared.constants`
    - **Test**: `shared/tests/unit/test_infra_client.py` — verify class instantiation, method signatures (mock asyncssh)
 
-3. [ ] Update langgraph imports
+3. [x] Update langgraph imports
    - **Input**: 5 files in `services/langgraph/src/`:
      - `clients/infra_client.py` → delete (now in shared)
      - `config/constants.py` → keep only `CI` class, re-export rest from `shared.constants`
@@ -36,7 +36,7 @@ The constants files overlap heavily but each has service-specific additions:
    - **Output**: All langgraph imports resolve; local `constants.py` is thin wrapper with `CI` only
    - **Test**: `make test-langgraph-unit` passes
 
-4. [ ] Update infra-service imports
+4. [x] Update infra-service imports
    - **Input**: 4 files in `services/infra-service/src/`:
      - `clients/infra_client.py` → delete (now in shared)
      - `config/constants.py` → delete entirely (all constants now in shared)
@@ -46,7 +46,19 @@ The constants files overlap heavily but each has service-specific additions:
    - **Output**: All infra-service imports resolve; no local constants file
    - **Test**: `make test-infra-service-unit` passes (if exists, else manual import check)
 
-5. [ ] Run full test suite and cleanup
+5. [x] Run full test suite and cleanup
    - **Input**: All changes from steps 1–4
    - **Output**: `make test-unit` green, `make lint` clean
    - **Test**: `make test-unit && make lint`
+
+## Deviations
+
+1. **Steps 3-4: Re-export instead of rewrite** — Plan suggested updating consumer imports in 9 files. Instead, made service-local `constants.py` files thin re-export wrappers (`from shared.constants import ...`). This avoids touching any consumer code while achieving the same deduplication. Both services keep their `config/constants.py` as a facade.
+
+2. **CI class promoted to shared** — Plan said keep CI in langgraph only. Moved CI to `shared/constants.py` as well since it's a clean constant class with no service-specific dependencies. Langgraph re-exports it.
+
+3. **Test location** — Plan specified `shared/tests/unit/test_constants.py`. Used `shared/tests/test_constants.py` and `shared/tests/clients/test_infra_client.py` to match existing test structure (no `unit/` subdirectory in shared/tests).
+
+4. **Extra fix: ruff config** — Added `shared/tests/**` to `ruff.toml` per-file-ignores for PLR2004/S101, matching the existing `tests/**` pattern.
+
+5. **Extra fix: shared/pyproject.toml** — Added `constants.py` to hatch `force-include` so the module is included when shared is pip-installed.

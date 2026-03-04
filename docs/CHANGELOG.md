@@ -2,6 +2,14 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-05
+
+### Changed
+- Extract `infra_client.py` (279 LOC) from langgraph + infra-service to `shared/clients/` (#23)
+- Merge duplicated constants (`Paths`, `Timeouts`, `CI`, `Provisioning`) into `shared/constants.py` (#23)
+- Service-local `config/constants.py` now re-exports from shared (#23)
+- Add `shared/tests/**` to ruff PLR2004/S101 per-file-ignores (#23)
+
 ## 2026-03-04
 
 ### Added
