@@ -4,7 +4,7 @@
 - **Backlog**: —
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: #6 steps 1-5 completed
+- **Done Steps**: #24 completed
 
 ## Blocked
 (нет)

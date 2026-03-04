@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #24 Fix Critical getenv Defaults
-- **Priority**: HIGH (quick win)
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: `shared/notifications.py:21-22` — `TELEGRAM_BOT_TOKEN` and `API_BASE_URL` default to `""` (violates fail-fast policy). `ORCHESTRATOR_USER_ID` defaults to `"unknown"` in 3 CLI commands. `GITHUB_APP_PRIVATE_KEY_PATH` defaults to path. Also: `print()` in `shared/schemas/tool_registry.py:87` → structlog, swallowed exceptions in `worker-manager/src/events.py:83-95`. Source: audit 2026-03-04.
-
 ### #23 Extract Shared Code (infra_client + constants)
 - **Priority**: HIGH (quick win)
 - **User Story**: —
@@ -135,6 +128,7 @@
 
 ## Done (last 10)
 
+- #24 Fix Critical getenv Defaults — 2026-03-04
 - #6 Fix & Consolidate Test Suites — 2026-03-04
 - #22 Worker Network Isolation — 2026-03-03
 - #1 Service Template Simplification — 2026-02-25

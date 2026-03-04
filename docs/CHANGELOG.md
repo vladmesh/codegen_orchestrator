@@ -13,6 +13,10 @@
 - E2E reports: todo_api Level C PASS (14 min), weather_bot Level C PASS (15 min, first multi-module test)
 
 ### Fixed
+- Enforce fail-fast for env vars (#24): notifications.py uses lazy init — import safe, first call raises RuntimeError if TELEGRAM_BOT_TOKEN/API_BASE_URL missing
+- Replace `print()` with `logging.warning()` in tool_registry.py (#24)
+- Replace swallowed `except: pass` with `logger.debug()` in worker-manager events.py (#24)
+- Add ORCHESTRATOR_USER_ID warning in CLI commands (#24)
 - Alembic migrations in test API + encryption key for integration tests (#6)
 - Missing `__init__.py` for relative imports in integration tests (#6)
 
