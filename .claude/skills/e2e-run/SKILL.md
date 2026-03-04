@@ -661,7 +661,11 @@ Try to fetch `AUDIT_REPORT.md` that the developer worker commits to the repo.
 ```bash
 ORG="project-factory-organization"
 DATE=$(date +%Y%m%d)
-mkdir -p docs/e2e_results
+mkdir -p docs/e2e_results/worker_reports
+
+# Determine report filename (must match main report name + "-worker" suffix)
+# Use the same naming logic as Step 7: <project_name>-<date>-level<X>[-N]-worker.md
+WORKER_REPORT="docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-level${LEVEL}-worker.md"
 
 # Fetch via GitHubAppClient
 docker compose exec -T langgraph python -c "
@@ -682,7 +686,8 @@ asyncio.run(main())
 if grep -q "NOT_FOUND" /tmp/audit_report.txt; then
   echo "No worker audit report found"
 else
-  echo "Worker audit report saved to /tmp/audit_report.txt (will be consumed in Step 7)"
+  cp /tmp/audit_report.txt "$WORKER_REPORT"
+  echo "Worker audit report saved to $WORKER_REPORT"
 fi
 ```
 
@@ -698,7 +703,7 @@ produces a unique report — previous results must be preserved.
 
 Use existing reports in `docs/e2e_results/` as format reference if any exist.
 
-**Worker audit findings → structured Problems.** Read the worker's audit report (saved in Step 6 as a temp file) and include actionable findings as structured entries in `## Problems Found`. After writing the main report, **delete the `-worker.md` file** — it has served its purpose. The main report is the single source of truth for `/triage`.
+**Worker audit findings → structured Problems.** Read the worker's audit report (saved in Step 6) and include actionable findings as structured entries in `## Problems Found`. The raw worker report is preserved in `docs/e2e_results/worker_reports/` for human reference. The main report is the single source of truth for `/triage`.
 
 Classify each problem by type:
 
@@ -741,6 +746,7 @@ Report structure:
 
 ```bash
 git add docs/e2e_results/<project_name>-<date>.md
+git add docs/e2e_results/worker_reports/ 2>/dev/null || true
 git commit -m "e2e: <project_name> level <X> — <pass/fail>"
 ```
 
