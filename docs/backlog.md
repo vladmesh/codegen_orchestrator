@@ -7,7 +7,7 @@
 ### #23 Extract Shared Code (infra_client + constants)
 - **Priority**: HIGH (quick win)
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/extract-shared-code.md
 - **Status**: pending
 - **Brief**: `infra_client.py` byte-for-byte identical in langgraph and infra-service (279 LOC each) → move to `shared/clients/`. Shared constants (`Timeouts`, `Provisioning`, `Paths.SSH_KEY`) duplicated between `langgraph/config/constants.py` and `infra-service/config/constants.py` → extract to `shared/config/constants.py`. Source: audit 2026-03-04.
 

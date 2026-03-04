@@ -2,8 +2,8 @@
 
 ## Current Task
 - **Backlog**: #23 Extract Shared Code (infra_client + constants)
-- **Plan**: —
-- **Step**: —
+- **Plan**: docs/plans/extract-shared-code.md
+- **Step**: 1/5 — Create shared/constants.py with merged constants
 - **Done Steps**: (empty)
 
 ## Blocked
