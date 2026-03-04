@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #23 Extract Shared Code (infra_client + constants)
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: #24 completed
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
