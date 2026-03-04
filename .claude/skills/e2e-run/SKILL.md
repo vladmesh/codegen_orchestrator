@@ -2,13 +2,13 @@
 name: e2e-run
 description: Run Line 2 E2E test — submit engineering task, wait for completion, verify, write report. Use when user wants to test the engineering pipeline end-to-end.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
-argument-hint: "<test> <level> [--no-cleanup]"
+argument-hint: "<test> [--with-po] [--no-cleanup]"
 ---
 
 # E2E Engineering Test Runner
 
 Run one or more Line 2 E2E tests end-to-end: create project, trigger engineering,
-monitor progress, verify results, collect audit report, write investigation report, cleanup.
+monitor progress, verify results (including deploy), collect audit report, write investigation report, cleanup.
 
 ## Arguments
 
@@ -17,10 +17,8 @@ monitor progress, verify results, collect audit report, write investigation repo
   - Test number: `1`, `2`, `3`, etc.
   - Comma-separated: `1,3,5` or `todo_api,echo_bot`
   - `all` — run all 7 tests sequentially
-- `$1` — test level (default: `A`):
-  - `A` — Code generation only (fastest, ~10-20 min). Verify code in GitHub.
-  - `B` — Engineering + CI (~20-40 min). Wait for task completion + CI pass.
-  - `C` — Full flow + deploy (~30-60 min). Verify service running on server.
+- `--with-po` — route through PO agent instead of direct API/queue calls. Creates test user,
+  sends project description to `po:input`, waits for PO to create project & trigger engineering.
 - `--no-cleanup` — skip cleanup after test (keep repo, containers, DB records)
 
 ## Test Matrix
@@ -60,17 +58,17 @@ Also include a ## What Worked Well section with positive observations.
 ## E2E Secrets (for tg_bot tests)
 
 Tests with `tg_bot` module (#2 echo_bot, #4 weather_bot, #6 bot_landing, #7 expense_tracker)
-need a `TELEGRAM_BOT_TOKEN` for **Level C** (deploy). Level A/B work without it.
+need a `TELEGRAM_BOT_TOKEN` for deploy. Tests without `tg_bot` work without it.
 
 Secrets are read from `.claude/e2e-secrets.env` (gitignored). If missing, tell the user:
 
 ```
 Create .claude/e2e-secrets.env (see .claude/e2e-secrets.env.example).
-A test bot token from @BotFather is needed for Level C tg_bot tests.
+A test bot token from @BotFather is needed for tg_bot tests.
 ```
 
-**Injection**: After creating the project in Step 1, if the test includes `tg_bot` AND level is C,
-inject secrets into `project.config.secrets` so the DevOps subgraph can resolve them during deploy:
+**Injection**: After creating the project (Step 1 or after PO creates it in Step 1-PO),
+if the test includes `tg_bot`, inject secrets into `project.config.secrets`:
 
 ```bash
 # Read token from secrets file
@@ -78,7 +76,7 @@ TG_TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' .claude/e2e-secrets.env 2>/dev/null | 
 
 if [ -z "$TG_TOKEN" ]; then
   echo "ERROR: TELEGRAM_BOT_TOKEN not found in .claude/e2e-secrets.env"
-  echo "Level C tg_bot tests require a bot token. See .claude/e2e-secrets.env.example"
+  echo "tg_bot tests require a bot token. See .claude/e2e-secrets.env.example"
   # STOP this test — cannot deploy without token
 fi
 
@@ -106,7 +104,7 @@ asyncio.run(main())
 "
 ```
 
-Skip this step entirely for Level A/B or tests without `tg_bot` module.
+Skip this step entirely for tests without `tg_bot` module.
 
 ## GitHub Access
 
@@ -139,7 +137,7 @@ asyncio.run(main())
 
 Use this pattern everywhere you need to interact with GitHub repos.
 
-## Server Access (Level C only)
+## Server Access
 
 Deployed services run on managed VPS servers. Projects are allocated to servers
 during engineering via the resource allocator. The deploy workflow SSHes into the
@@ -234,7 +232,7 @@ fi
 If rebuild fails, STOP and tell the user. Stale worker images cause persistent bugs
 (e.g., POSTGRES_HOST=project-db from deleted _patch_db_hostname).
 
-**Pre-flight: clean up stale artifacts** (run for every test, essential for Level C):
+**Pre-flight: clean up stale artifacts** (run for every test):
 
 ```bash
 ORG="project-factory-organization"
@@ -272,7 +270,7 @@ fi
 docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$REPO_SLUG" | xargs -r docker rm -f
 ```
 
-**Level C only** — also check target servers for stale deployments:
+Also check target servers for stale deployments:
 
 ```bash
 # Check all managed servers for leftover /opt/services/<PROJECT_NAME>/
@@ -295,7 +293,9 @@ done
 
 If any cleanup happened, log it in the report timeline as "Pre-flight: cleaned stale artifacts".
 
-### Step 1: Create project
+### Step 1: Create project (direct mode — default)
+
+Skip this step if `--with-po` is set. Go to Step 1-PO instead.
 
 ```bash
 PROJECT_ID=$(uuidgen)
@@ -328,14 +328,12 @@ curl -s -X POST http://localhost:8000/api/projects/ \
 
 Save `PROJECT_ID` — you'll need it for all subsequent steps.
 
-**If test includes `tg_bot` AND level is C** — inject secrets now (see "E2E Secrets" section above).
+**If test includes `tg_bot`** — inject secrets now (see "E2E Secrets" section above).
 If secrets file is missing or token is empty, STOP this test.
 
-### Step 2: Trigger engineering
+### Step 2: Trigger engineering (direct mode — default)
 
-Set `SKIP_DEPLOY` based on level:
-- Level A or B: `SKIP_DEPLOY=true`
-- Level C: `SKIP_DEPLOY=false`
+Skip this step if `--with-po` is set. Go to Step 2-PO instead.
 
 ```bash
 TASK_ID="eng-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')"
@@ -369,7 +367,7 @@ async def main():
         project_id='$PROJECT_ID',
         user_id='manual-test',
         action='create',
-        skip_deploy=$SKIP_DEPLOY,
+        skip_deploy=False,
         callback_stream='agent:events:manual-test',
     )
     mid = await client.publish_message(ENGINEERING_QUEUE, msg)
@@ -381,6 +379,135 @@ asyncio.run(main())
 ```
 
 Save `TASK_ID`.
+
+### Step 1-PO: Create test user & send to PO (--with-po mode)
+
+Skip this step unless `--with-po` is set.
+
+**1a. Upsert test user** — ensures `owner_id` will link correctly when #27 is fixed:
+
+```bash
+curl -s -X POST http://localhost:8000/api/users/upsert \
+  -H "Content-Type: application/json" \
+  -d '{
+    "telegram_id": 999000001,
+    "username": "e2e_test_user",
+    "first_name": "E2E",
+    "last_name": "Test",
+    "is_admin": false
+  }' | jq .
+```
+
+**1b. Send project request to PO via `po:input`**.
+
+Compose a natural-language message that gives PO enough information to create the project
+and trigger engineering without follow-up questions. Include the project name, modules,
+full description, and the audit instructions.
+
+The message should look like:
+
+```
+Создай проект "<PROJECT_NAME>" с модулями: <MODULES>.
+
+Описание: <DESCRIPTION from matrix>
+
+<AUDIT INSTRUCTIONS block>
+
+После создания сразу запусти engineering.
+```
+
+Publish via Redis and wait for response:
+
+```bash
+REQUEST_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+E2E_USER_ID="999000001"
+
+docker compose exec -T \
+  -e "REQUEST_ID=$REQUEST_ID" \
+  -e "E2E_USER_ID=$E2E_USER_ID" \
+  -e "MESSAGE_TEXT=$MESSAGE_TEXT" \
+  langgraph python -c "
+import os, asyncio
+from shared.contracts.queues.po import POUserMessage, to_flat_fields
+from shared.redis.client import RedisStreamClient
+from shared.queues import PO_INPUT_QUEUE
+
+async def main():
+    client = RedisStreamClient()
+    await client.connect()
+    msg = POUserMessage(
+        text=os.environ['MESSAGE_TEXT'],
+        user_id=os.environ['E2E_USER_ID'],
+        request_id=os.environ['REQUEST_ID'],
+    )
+    mid = await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(msg))
+    print(f'Published to po:input: mid={mid}, request_id={msg.request_id}')
+    await client.close()
+
+asyncio.run(main())
+"
+```
+
+**1c. Wait for PO response** (timeout 120s — PO may need to call multiple tools):
+
+```bash
+docker compose exec -T -e "REQUEST_ID=$REQUEST_ID" langgraph python -c "
+import os, asyncio
+
+async def main():
+    import redis.asyncio as redis
+    r = redis.from_url('redis://redis:6379')
+    request_id = os.environ['REQUEST_ID']
+    stream = f'po:response:{request_id}'
+    # Poll with XREAD, block 5s at a time, total timeout 120s
+    for attempt in range(24):
+        result = await r.xread({stream: '0'}, block=5000, count=1)
+        if result:
+            for stream_name, messages in result:
+                for mid, fields in messages:
+                    text = fields.get(b'text', b'').decode()
+                    error = fields.get(b'error', b'').decode()
+                    if error:
+                        print(f'PO ERROR: {error}')
+                    else:
+                        print(f'PO RESPONSE: {text}')
+                    # Cleanup response stream
+                    await r.delete(stream)
+                    await r.aclose()
+                    return
+    print('TIMEOUT: PO did not respond within 120s')
+    await r.aclose()
+
+asyncio.run(main())
+"
+```
+
+**1d. Extract PROJECT_ID and TASK_ID**.
+
+After PO responds, retrieve the project and task IDs from the API:
+
+```bash
+# Find project by name
+PROJECT_ID=$(curl -s "http://localhost:8000/api/projects/" \
+  | jq -r --arg name "$PROJECT_NAME" '.[] | select(.name == $name) | .id' | head -1)
+
+# Find engineering task for this project
+TASK_ID=$(curl -s "http://localhost:8000/api/tasks/?type=engineering&project_id=$PROJECT_ID" \
+  | jq -r '.[0].id // empty')
+
+echo "PROJECT_ID=$PROJECT_ID TASK_ID=$TASK_ID"
+```
+
+If either is empty, PO may not have completed both actions. Check the PO response text
+for clues. You can send a follow-up message to `po:input` (same `E2E_USER_ID`, new `REQUEST_ID`)
+asking PO to proceed. If PO is stuck after 2 attempts, fall back to direct mode (Steps 1+2)
+and note "PO failed, fell back to direct" in the report.
+
+**1e. If test includes `tg_bot`** — inject secrets now (see "E2E Secrets" section above).
+
+### Step 2-PO: (no-op)
+
+Engineering was already triggered by PO in Step 1-PO. Proceed to Step 3.
 
 ### Step 3: Verify scaffold started (CRITICAL — do immediately!)
 
@@ -404,7 +531,7 @@ docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$PROJECT_NAME" | xa
 
 ### Step 4: Monitor
 
-Poll based on level. Print status updates every check.
+Poll task status. Print status updates every check.
 
 **Worker log checks**: During polling, periodically check worker container logs to understand
 what the agent is doing (especially useful for long waits):
@@ -416,7 +543,7 @@ docker logs worker-dev-$PROJECT_NAME_SLUG-* --tail=10 2>&1
 docker compose logs engineering-worker --tail=10 --since=120s 2>&1 | grep -v "health"
 ```
 
-**Level B CI fix tracking**: The worker may go through multiple CI fix cycles (push → CI fail →
+**CI fix tracking**: The worker may go through multiple CI fix cycles (push → CI fail →
 fix → push). Track each cycle by fetching all CI runs and commits when the task completes or
 when you need to understand progress:
 
@@ -455,31 +582,7 @@ asyncio.run(main())
 
 This data is essential for the report — include each CI fix attempt in the Timeline.
 
-**Level A** — poll GitHub for code (don't wait for task completion):
-
-```bash
-ORG="project-factory-organization"
-# Poll every 60s, timeout after 30 minutes
-for i in $(seq 1 30); do
-  FILES=$(docker compose exec -T langgraph python -c "
-import asyncio
-from shared.clients.github import GitHubAppClient
-async def main():
-    gh = GitHubAppClient()
-    files = await gh.list_repo_files('$ORG', '$PROJECT_NAME')
-    print('\n'.join(files))
-asyncio.run(main())
-" 2>/dev/null)
-  if echo "$FILES" | grep -q "Makefile"; then
-    echo "Code pushed at attempt $i"
-    break
-  fi
-  echo "[$i/30] Waiting for code push..."
-  sleep 60
-done
-```
-
-**Level B** — poll task status:
+**Poll engineering task**:
 
 ```bash
 # Poll every 30s, timeout after 60 minutes
@@ -493,9 +596,7 @@ for i in $(seq 1 120); do
 done
 ```
 
-**Level C** — poll engineering task, then deploy task:
-
-First wait for engineering (same as Level B), then:
+**Then find and poll deploy task**:
 
 ```bash
 # Find deploy task
@@ -514,38 +615,7 @@ done
 
 ### Step 5: Verify
 
-**Level A** — code exists in GitHub:
-
-```bash
-ORG="project-factory-organization"
-docker compose exec -T langgraph python -c "
-import asyncio
-from shared.clients.github import GitHubAppClient
-
-async def main():
-    gh = GitHubAppClient()
-    # List root files
-    files = await gh.list_repo_files('$ORG', '$PROJECT_NAME')
-    print('Root files:', sorted(files))
-    # Check for expected files: Makefile, pyproject.toml, services/
-    # Fetch latest commit via GitHub API
-    token = await gh.get_org_token('$ORG')
-    import httpx
-    async with httpx.AsyncClient() as http:
-        r = await http.get(
-            'https://api.github.com/repos/$ORG/$PROJECT_NAME/commits?per_page=3',
-            headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
-        )
-        if r.status_code == 200:
-            for c in r.json():
-                msg = c['commit']['message'].split(chr(10))[0]
-                print(f\"  {c['sha'][:8]} {msg}\")
-
-asyncio.run(main())
-"
-```
-
-**Level B** — CI passed:
+**5a. CI status**:
 
 ```bash
 ORG="project-factory-organization"
@@ -566,7 +636,7 @@ asyncio.run(main())
 "
 ```
 
-**Level C** — service running on server:
+**5b. Service running on server**:
 
 First, find the server IP (see "Server Access" section). Then verify or diagnose:
 
@@ -663,9 +733,7 @@ ORG="project-factory-organization"
 DATE=$(date +%Y%m%d)
 mkdir -p docs/e2e_results/worker_reports
 
-# Determine report filename (must match main report name + "-worker" suffix)
-# Use the same naming logic as Step 7: <project_name>-<date>-level<X>[-N]-worker.md
-WORKER_REPORT="docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-level${LEVEL}-worker.md"
+WORKER_REPORT="docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-worker.md"
 
 # Fetch via GitHubAppClient
 docker compose exec -T langgraph python -c "
@@ -698,7 +766,7 @@ Write your own report to `docs/e2e_results/<project_name>-<date>.md`.
 **File naming**: `docs/e2e_results/<project_name>-<date>.md` (one file per test).
 
 **IMPORTANT: Never overwrite existing reports.** If a file with the target name already exists,
-append a suffix: `-2`, `-3`, etc. (e.g., `todo_api-20260302-levelC-2.md`). Each E2E run
+append a suffix: `-2`, `-3`, etc. (e.g., `todo_api-20260304-2.md`). Each E2E run
 produces a unique report — previous results must be preserved.
 
 Use existing reports in `docs/e2e_results/` as format reference if any exist.
@@ -722,7 +790,7 @@ Report structure:
 > **Date**: YYYY-MM-DD
 > **Project**: <project_name> (project_id: `...`)
 > **Task**: <task_id>
-> **Test level**: A / B / C
+> **Mode**: direct | with-po
 > **Status**: Passed / Failed
 > **Worker audit**: collected (findings included below) | not found
 
@@ -730,6 +798,10 @@ Report structure:
 
 ## Timeline
 (chronological log of what happened — key timestamps and events)
+
+## PO Interaction (only if --with-po)
+(PO response text, whether it created project + triggered engineering on first try,
+any follow-up messages needed, fallback to direct if PO failed)
 
 ## Problems Found
 
@@ -747,7 +819,7 @@ Report structure:
 ```bash
 git add docs/e2e_results/<project_name>-<date>.md
 git add docs/e2e_results/worker_reports/ 2>/dev/null || true
-git commit -m "e2e: <project_name> level <X> — <pass/fail>"
+git commit -m "e2e: <project_name> — <pass/fail>"
 ```
 
 ### Step 8: Cleanup (skip if --no-cleanup)
@@ -770,7 +842,7 @@ asyncio.run(main())
 "
 ```
 
-**Level C only** — also clean server deployment:
+Clean server deployment:
 
 ```bash
 # 3. Get server IP — try service-deployments first, fall back to port allocations
@@ -806,11 +878,31 @@ echo "$DEPLOYMENTS" | jq -r '.[].id' | while read ID; do
 done
 ```
 
-**All levels** — delete project from DB last (cascades tasks + port allocations):
+Delete project from DB last (cascades tasks + port allocations):
 
 ```bash
 # 6. Delete project from DB
 curl -s -X DELETE http://localhost:8000/api/projects/$PROJECT_ID
+```
+
+**If `--with-po`** — also clean the PO thread checkpoint to avoid polluting future tests:
+
+```bash
+# 7. Delete PO thread checkpoint (optional, prevents state leaking between tests)
+docker compose exec -T langgraph python -c "
+import asyncio
+
+async def main():
+    from shared.database import get_engine
+    from sqlalchemy import text
+    engine = get_engine()
+    async with engine.begin() as conn:
+        await conn.execute(text(\"DELETE FROM checkpoints WHERE thread_id = 'po-user-999000001'\"))
+        await conn.execute(text(\"DELETE FROM checkpoint_writes WHERE thread_id = 'po-user-999000001'\"))
+        print('PO thread checkpoint cleaned')
+
+asyncio.run(main())
+" 2>/dev/null || echo "WARNING: Could not clean PO checkpoint (table may not exist)"
 ```
 
 ## Final Summary
@@ -820,10 +912,10 @@ After all tests complete, print a summary table:
 ```
 ## E2E Test Results
 
-| # | Project | Level | Status | Duration | Problems | Audit |
-|---|---------|-------|--------|----------|----------|-------|
-| 1 | todo_api | B | PASS | 25min | 0 | Yes |
-| 2 | echo_bot | B | FAIL | 18min | 2 | No |
+| # | Project | Mode | Status | Duration | Problems | Audit |
+|---|---------|------|--------|----------|----------|-------|
+| 1 | todo_api | direct | PASS | 25min | 0 | Yes |
+| 2 | echo_bot | with-po | FAIL | 18min | 2 | No |
 ...
 
 Total: X passed, Y failed out of Z tests

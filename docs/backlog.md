@@ -109,6 +109,13 @@
 - **Status**: pending
 - **Brief**: Отразить что deploy-worker и engineering-worker — процессы LangGraph, не суб-сервисы.
 
+### #27 PO Tools: Pass user_id to API (owner_id bug)
+- **Priority**: MEDIUM
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: PO tools (`services/langgraph/src/po/tools.py`) не передают `X-Telegram-ID` заголовок при вызовах API. В результате `create_project` создаёт проекты с `owner_id = NULL` — нет привязки к пользователю, `list_projects` возвращает всё всем. Фикс: прокинуть `user_id` из `config["configurable"]` в httpx-клиент как `X-Telegram-ID` header (per-request или при инициализации). Источник: e2e-run PO integration analysis, 2026-03-04.
+
 ### #26 Notifications via Redis Stream (убрать прямую зависимость от Telegram API)
 - **Priority**: MEDIUM
 - **User Story**: —

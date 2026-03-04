@@ -31,7 +31,7 @@
 | Взять в работу | `/next [#ID]` | `docs/STATUS.md` — Current Task |
 | Декомпозиция | `/plan [#ID]` | `docs/plans/<task>.md` — шаги с Input/Output/Test |
 | Реализация | `/implement [#ID]` | Код + тесты (TDD цикл по шагам плана) |
-| Валидация | `/e2e-run` → `/e2e-check` | `docs/e2e_results/<scenario>-<date>.md` |
+| Валидация | `/e2e-run` | `docs/e2e_results/<scenario>-<date>.md` |
 | Фиксация | `/checkpoint` | CHANGELOG, ROADMAP, STATUS |
 | Аудит | `/audit` | Находки → backlog |
 
@@ -93,14 +93,14 @@ make test-{service}-unit     # Per-service: api, langgraph, scheduler, telegram
 
 ## Skills (`.claude/skills/`)
 
+У части скиллов есть альтернативы для не-Claude агентов в `.agents/workflows/`.
+
 | Skill | Описание |
 |-------|----------|
 | `/next [#ID]` | Выбрать задачу из backlog → STATUS.md |
 | `/plan [#ID]` | Декомпозировать задачу на шаги |
 | `/implement [#ID]` | TDD цикл, обновление артефактов |
-| `/e2e-run [level] [scenario]` | Запуск E2E теста (Level A/B/C) |
-| `/e2e-check [scenario]` | Проверить результат E2E |
-| `/e2e-cleanup [scenario]` | Очистить ресурсы после E2E |
+| `/e2e-run <test> [--with-po] [--no-cleanup]` | Запуск E2E теста (полный цикл: engineering → CI → deploy → verify) |
 | `/triage` | Разбор отчётов → backlog / service-template |
 | `/brainstorm <topic>` | Brainstorm документ |
 | `/checkpoint` | Обновить CHANGELOG/ROADMAP/STATUS |
