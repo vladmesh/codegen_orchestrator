@@ -109,6 +109,13 @@
 - **Status**: pending
 - **Brief**: Отразить что deploy-worker и engineering-worker — процессы LangGraph, не суб-сервисы.
 
+### #26 Notifications via Redis Stream (убрать прямую зависимость от Telegram API)
+- **Priority**: MEDIUM
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Сейчас `shared/notifications.py` шлёт в Telegram API напрямую — scheduler, infra-service держат `TELEGRAM_BOT_TOKEN`. Нужно: сервисы публикуют в Redis stream `notifications:queue`, telegram_bot потребляет и отправляет. Убирает `TELEGRAM_BOT_TOKEN` из всех сервисов кроме telegram_bot, упрощает тесты, единая точка отправки. Источник: #24 code review.
+
 ## Ideas
 
 - Self-hosted GitLab или GH runner на VPS (источник: E2E failure rate 50%, 2026-03-02)
