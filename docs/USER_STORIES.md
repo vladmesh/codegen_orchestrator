@@ -1,6 +1,6 @@
 # User Stories
 
-> **Актуально на**: 2026-03-03
+> **Актуально на**: 2026-03-04
 
 Целевые сценарии использования платформы. Упорядочены по сложности — простые блокируют сложные.
 
@@ -20,7 +20,7 @@ US-Admin (видимость системы) — независимая, Phase 4
 ---
 
 ## US0: Базовый пайплайн (scaffold → code → CI → deploy)
-**Приоритет**: Критический | **Статус**: Blocked | **Blocked by**: #22
+**Приоритет**: Критический | **Статус**: Ready | **Blocked by**: —
 
 **Как** оператор платформы
 **Хочу** чтобы цепочка scaffold → code → CI → deploy проходила end-to-end
@@ -32,10 +32,10 @@ US-Admin (видимость системы) — независимая, Phase 4
 - [x] CI: GitHub Actions ci.yml (lint, test, build, push to registry) → 2026-02-15
 - [x] Deploy: GitHub Actions deploy.yml (SSH + docker compose) → 2026-02-15
 - [x] Webhook: ci.yml success → auto-deploy → уведомление юзеру → 2026-02-15
-- [ ] Network isolation: воркеры не видят инфру оркестратора → #22
-- [ ] Стабильный E2E pass без ручных workaround-ов → #22
+- [x] Network isolation: воркеры не видят инфру оркестратора → #22 done 2026-03-03
+- [ ] Стабильный E2E pass с активной сетевой изоляцией → needs E2E after image rebuild
 
-**E2E**: Level C todo_api — last pass 2026-03-03 (with workarounds) | clean pass blocked by #22
+**E2E**: Level C todo_api PASS 2026-03-04 (14 min), weather_bot PASS 2026-03-04 (15 min) — network isolation code done but stale image prevented activation during these runs; auto-detect stale images feature ensures next run will have it active
 
 ---
 

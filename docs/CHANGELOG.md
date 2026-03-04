@@ -10,6 +10,11 @@
 - LangGraph integration tests (#6): 3 tests against real DB/Redis/API (engineering worker flow, missing project, scaffold_failed abort)
 - Engineering-worker service in backend test compose
 - API data seeding fixtures (`seed_project`, `seed_task`, `seed_server`) + `poll_task_status` helper
+- E2E reports: todo_api Level C PASS (14 min), weather_bot Level C PASS (15 min, first multi-module test)
+
+### Fixed
+- Alembic migrations in test API + encryption key for integration tests (#6)
+- Missing `__init__.py` for relative imports in integration tests (#6)
 
 ### Changed
 - Consolidated duplicated test helpers (`wait_for_stream_message`, `wait_for_create_response`) into `conftest.py`

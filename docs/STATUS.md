@@ -10,8 +10,10 @@
 (нет)
 
 ## Last Checkpoint
-- **Date**: 2026-03-03
-- **E2E**: Level C pass (todo_api, 14 min end-to-end)
+- **Date**: 2026-03-04
+- **Phase 1 COMPLETE**: All 9 items done (scaffold → code → CI → deploy pipeline stable)
+- **E2E**: Level C — todo_api PASS (14 min), weather_bot PASS (15 min, first multi-module)
+- **Audit**: 2026-03-04, see [audit.md](audit.md)
 
 ## Previous work (summary)
 

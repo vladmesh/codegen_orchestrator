@@ -74,12 +74,26 @@
 - **Status**: pending
 - **Brief**: Завершить покрытие E2E (Level 5-7). Добавить E2E mock-тесты (Level A+B) в CI.
 
+### #23 Extract Shared Code (infra_client + constants)
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: `infra_client.py` byte-for-byte identical in langgraph and infra-service (279 LOC each) → move to `shared/clients/`. Shared constants (`Timeouts`, `Provisioning`, `Paths.SSH_KEY`) duplicated between `langgraph/config/constants.py` and `infra-service/config/constants.py` → extract to `shared/config/constants.py`. Source: audit 2026-03-04.
+
+### #24 Fix Critical getenv Defaults
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: `shared/notifications.py:21-22` — `TELEGRAM_BOT_TOKEN` and `API_BASE_URL` default to `""` (violates fail-fast policy). `ORCHESTRATOR_USER_ID` defaults to `"unknown"` in 3 CLI commands. `GITHUB_APP_PRIVATE_KEY_PATH` defaults to path. Also: `print()` in `shared/schemas/tool_registry.py:87` → structlog, swallowed exceptions in `worker-manager/src/events.py:83-95`. Source: audit 2026-03-04.
+
 ### #17 Dead Code & Legacy Cleanup
 - **Priority**: MEDIUM
 - **User Story**: —
 - **Plan**: —
 - **Status**: partial
-- **Brief**: Legacy networking fallback в `manager.py:525-530` и project lookup по имени в `github_sync.py:213-226` — оба оставлены как защитный код.
+- **Brief**: Legacy networking fallback в `manager.py:525-530` и project lookup по имени в `github_sync.py:213-226` — оба оставлены как защитный код. Audit 2026-03-04: delete `services/langgraph/src/list_repos.py` (dead debug script, 72 LOC).
 
 ### #12 Remove Obsolete Zavhoz
 - **Priority**: MEDIUM
@@ -110,6 +124,7 @@
 - Split Tier 2 large files: devops/nodes.py, telegram_bot/main.py, env_analyzer.py (источник: audit-v2)
 - Worker port isolation: убрать `ports:` из compose.base.yml при параллелизации (источник: audit)
 - "Добавить батарейку" к существующему проекту (источник: US3)
+- Enable Ruff S110 + BLE001 rules to catch swallowed/broad exceptions (источник: audit 2026-03-04)
 
 ## Done (last 10)
 

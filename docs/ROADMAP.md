@@ -1,6 +1,6 @@
 # Roadmap
 
-## Phase 1: Stable Pipeline (scaffold -> code -> CI -> deploy)
+## Phase 1: Stable Pipeline (scaffold -> code -> CI -> deploy) — COMPLETE
 
 Цель: надёжный конвейер от описания до работающего деплоя.
 
@@ -11,8 +11,8 @@
 - [x] Workspace persistence — project_id, git token refresh, PROGRESS.md, GC
 - [x] Worker reuse for CI fix loop (#9)
 - [x] Service template simplification (#1)
-- [ ] Worker network isolation (#22) — in progress
-- [ ] Fix & consolidate test suites (#6)
+- [x] Worker network isolation (#22)
+- [x] Fix & consolidate test suites (#6)
 
 ## Phase 2: Reliability & Self-Recovery
 
