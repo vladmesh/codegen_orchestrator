@@ -18,11 +18,14 @@
 
 Цель: система восстанавливается сама, ошибки не теряются.
 
-- [ ] Agent hierarchy & incident response (#2) — TaskAssessor, Watchdog, shared session memory
+- [ ] Fix critical getenv defaults (#24) — quick win
+- [ ] Extract shared code: infra_client + constants (#23) — quick win
+- [ ] Post-deploy smoke tester (#25) — httpx + Telethon, pre-MVP
 - [ ] Workspace failure counter & retry limit (#8)
 - [ ] Deploy pre-check: validate server state (#21)
 - [ ] Worker lifecycle: pause/unpause, CPU/RAM limits (#10)
 - [ ] CI pipeline: parallel integration tests, branch protection (#4)
+- [ ] Agent hierarchy & incident response (#2) — post-MVP candidate
 
 ## Phase 3: Dev Process Automation
 
@@ -39,7 +42,7 @@
 - [ ] Admin UI & observability — воркеры, статусы, логи, трассировки LangGraph
 - [ ] Parallel execution validation — state leaks, маршрутизация
 - [ ] Assessor node — фильтр сложности запросов (вместо Architect на старте)
-- [ ] Tester node (базовая версия) — валидация кода перед деплоем
+- [ ] Tester node (полный: Claude + Playwright + Telethon) — AI-driven QA после деплоя
 
 ## Phase 5: Capabilities Expansion
 

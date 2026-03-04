@@ -4,8 +4,29 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #24 Fix Critical getenv Defaults
+- **Priority**: HIGH (quick win)
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: `shared/notifications.py:21-22` — `TELEGRAM_BOT_TOKEN` and `API_BASE_URL` default to `""` (violates fail-fast policy). `ORCHESTRATOR_USER_ID` defaults to `"unknown"` in 3 CLI commands. `GITHUB_APP_PRIVATE_KEY_PATH` defaults to path. Also: `print()` in `shared/schemas/tool_registry.py:87` → structlog, swallowed exceptions in `worker-manager/src/events.py:83-95`. Source: audit 2026-03-04.
+
+### #23 Extract Shared Code (infra_client + constants)
+- **Priority**: HIGH (quick win)
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: `infra_client.py` byte-for-byte identical in langgraph and infra-service (279 LOC each) → move to `shared/clients/`. Shared constants (`Timeouts`, `Provisioning`, `Paths.SSH_KEY`) duplicated between `langgraph/config/constants.py` and `infra-service/config/constants.py` → extract to `shared/config/constants.py`. Source: audit 2026-03-04.
+
+### #25 Post-Deploy Smoke Tester
+- **Priority**: HIGH (pre-MVP)
+- **User Story**: US0 (acceptance criteria: stable E2E)
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Минимальная нода в DevOps subgraph после деплоя. HTTP smoke (httpx: `/health` + эндпоинты из спеки) для бэкендов. Telethon smoke (`/start` + команды из спеки) для ботов. Детерминированные проверки, без Claude. Pass → уведомление юзеру, fail → retry/обратно в Engineering. Telethon-сессия хранится как секрет оркестратора. Brainstorm: `docs/brainstorms/qa-node.md` (полная версия — post-MVP).
+
 ### #2 Agent Hierarchy & Incident Response
-- **Priority**: HIGH
+- **Priority**: HIGH (post-MVP candidate)
 - **User Story**: —
 - **Plan**: —
 - **Status**: pending
@@ -46,14 +67,14 @@
 - **Status**: pending
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
 
-### #18 Split engineering_worker.py (947 LOC)
+### #18 Split engineering_worker.py (1088 LOC)
 - **Priority**: MEDIUM
 - **User Story**: —
 - **Plan**: —
 - **Status**: pending
 - **Brief**: Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули.
 
-### #19 Split github.py Client (863 LOC)
+### #19 Split github.py Client (986 LOC)
 - **Priority**: MEDIUM
 - **User Story**: —
 - **Plan**: —
@@ -73,20 +94,6 @@
 - **Plan**: —
 - **Status**: pending
 - **Brief**: Завершить покрытие E2E (Level 5-7). Добавить E2E mock-тесты (Level A+B) в CI.
-
-### #23 Extract Shared Code (infra_client + constants)
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: `infra_client.py` byte-for-byte identical in langgraph and infra-service (279 LOC each) → move to `shared/clients/`. Shared constants (`Timeouts`, `Provisioning`, `Paths.SSH_KEY`) duplicated between `langgraph/config/constants.py` and `infra-service/config/constants.py` → extract to `shared/config/constants.py`. Source: audit 2026-03-04.
-
-### #24 Fix Critical getenv Defaults
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: `shared/notifications.py:21-22` — `TELEGRAM_BOT_TOKEN` and `API_BASE_URL` default to `""` (violates fail-fast policy). `ORCHESTRATOR_USER_ID` defaults to `"unknown"` in 3 CLI commands. `GITHUB_APP_PRIVATE_KEY_PATH` defaults to path. Also: `print()` in `shared/schemas/tool_registry.py:87` → structlog, swallowed exceptions in `worker-manager/src/events.py:83-95`. Source: audit 2026-03-04.
 
 ### #17 Dead Code & Legacy Cleanup
 - **Priority**: MEDIUM
@@ -113,7 +120,7 @@
 
 - Self-hosted GitLab или GH runner на VPS (источник: E2E failure rate 50%, 2026-03-02)
 - Admin UI: projects, workers, logs (источник: MVP Phase 4)
-- Tester node: QA-агент после деплоя (источник: brainstorm qa-node.md)
+- Tester node (полный): QA-агент с Claude + Playwright после деплоя (источник: brainstorm qa-node.md, post-MVP)
 - CI Monitor Node: вынести `_wait_for_ci_and_fix` в LangGraph-ноду (источник: audit)
 - API Authentication: заменить `x-telegram-id` на JWT (источник: audit)
 - Telegram Bot Pool: пре-зарегистрированные боты (источник: US2)
