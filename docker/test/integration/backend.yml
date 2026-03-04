@@ -99,10 +99,11 @@ services:
     build:
       context: ../../..
       dockerfile: services/api/Dockerfile
-    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0"]
+    # Uses default entrypoint.sh which runs alembic migrations before uvicorn
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
+      - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
     depends_on: [db, redis]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
