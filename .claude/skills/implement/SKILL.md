@@ -54,16 +54,21 @@ After each completed step, update `docs/STATUS.md`:
 - Advance Step to next
 - If plan exists, mark step as `[x]` in the plan file
 
-### 5. CI gate
+### 5. Push and wait for CI ⛔
 
-After the last step is committed and pushed:
-- Wait for CI to finish: poll `gh run list --branch <branch> --limit 1 --json status` every 60s (up to 15 min)
-- If CI passes — proceed to completion
-- If CI fails — read the logs via `gh run view --log-failed`:
-  - **Failure related to current task** — fix, re-push, wait again. Do NOT mark task as done.
-  - **Pre-existing failure** (unrelated to current changes) — add to `docs/backlog.md` as `Priority: critical`, proceed to completion. Note the pre-existing failure in the commit message.
+**MANDATORY — do NOT skip this step. Do NOT proceed to task completion until CI passes.**
+
+After the last step is committed:
+1. **Push**: `git push` (or `git push -u origin <branch>` if no upstream)
+2. **Poll CI**: `gh run list --branch <branch> --limit 1 --json status` every 60s (up to 15 min)
+3. **CI green** → proceed to step 6
+4. **CI red** → read logs via `gh run view --log-failed`:
+   - **Failure related to current task** — fix, commit, re-push, wait again. Do NOT mark task as done.
+   - **Pre-existing failure** (unrelated to current changes) — add to `docs/backlog.md` as `Priority: critical`, proceed to step 6. Note the pre-existing failure in the commit message.
 
 ### 6. Task completion
+
+⚠️ **Gate**: only enter this step when CI is green (or pre-existing failure documented).
 
 When all steps are done AND CI is green:
 
