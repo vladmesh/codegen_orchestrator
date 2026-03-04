@@ -116,12 +116,12 @@ Skipped tests:
 
 ---
 
-## New Issues (not in backlog)
+## New Issues (triaged 2026-03-05)
 
-1. **`ORCHESTRATOR_USER_ID` defaults to `"unknown"`** in 3 CLI command files — breaks audit trail. Should fail fast.
-2. **`worker-manager/src/manager.py` (828 LOC)** — 6 functions >50 LOC, split candidate. Not tracked.
-3. **infra-service: 0% unit test coverage** — 9 source files, 0 tests.
-4. **`services/langgraph/src/tests/test_architect_routing.py`** — test file inside `src/` instead of `tests/`.
+1. **`ORCHESTRATOR_USER_ID` defaults to `"unknown"`** in 3 CLI command files — breaks audit trail. → backlog #29
+2. **`worker-manager/src/manager.py` (828 LOC)** — 6 functions >50 LOC, split candidate. → Ideas
+3. **infra-service: 0% unit test coverage** — 9 source files, 0 tests. → Ideas
+4. **`services/langgraph/src/tests/test_architect_routing.py`** — test file inside `src/` instead of `tests/`. → backlog #17
 
 ## Already Tracked
 

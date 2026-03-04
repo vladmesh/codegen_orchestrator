@@ -62,11 +62,33 @@
 ### Minor: Double-nested `shared/shared/` package
 - While documented in AGENTS.md as a "standard Python packaging convention", this can still be confusing for newcomers. The explanation helps but the convention itself is unusual.
 
+## Problems Found
+
+### Problem 1: `make setup` not idempotent — fails if `.venv` exists
+- **Severity**: minor
+- **Type**: template
+- **Backlog**: service-template backlog
+- **Description**: `make setup` fails with "A virtual environment already exists". Fix: `uv venv --clear`.
+
+### Problem 2: Xenon excludes don't cover service test directories
+- **Severity**: minor
+- **Type**: template
+- **Backlog**: service-template backlog
+- **Description**: `--exclude '.framework/*,tests/*'` only matches root `tests/`, not `services/*/tests/`. Test files flagged for complexity.
+
+### Problem 3: `make makemigrations` requires running PostgreSQL
+- **Severity**: minor
+- **Type**: template
+- **Backlog**: — (root cause was stale worker-manager image putting worker on wrong network, see weather_bot-20260304-levelC.md Problem 1)
+- **Description**: Cannot auto-generate migrations without running PostgreSQL. With proper network isolation this is expected — agent should use `orchestrator dev-env start-infra db`.
+
+### Problem 4: tg_bot AGENTS.md documents wrong env var name
+- **Severity**: minor
+- **Type**: template
+- **Backlog**: service-template backlog (existing entry)
+- **Description**: `AGENTS.md.jinja:40` documents `API_BASE_URL` but code uses `BACKEND_API_URL`.
+
 ## Summary
 
-The framework is generally well-designed and productive. The main pain points are:
-1. `make setup` not being idempotent
-2. Xenon complexity excludes not covering service test directories
-3. Migration generation requiring running PostgreSQL
-4. Minor documentation inconsistency in tg_bot AGENTS.md env var names
+The framework is generally well-designed and productive. Main pain points are template-side issues tracked in service-template backlog.
 

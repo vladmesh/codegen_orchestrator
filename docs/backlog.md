@@ -23,7 +23,7 @@
 - **User Story**: —
 - **Plan**: —
 - **Status**: partial (PR/Publish split done)
-- **Brief**: Branch Protection, параллельные интеграционные тесты (GH Actions matrix). Brainstorm: `docs/brainstorms/ci-pipeline-redesign.md`.
+- **Brief**: Branch Protection, параллельные интеграционные тесты (GH Actions matrix). Split `test-integration` into 5 parallel jobs (backend, cli, template, frontend, infra) — wall-clock 10min→3-4min. Brainstorms: `docs/brainstorms/ci-pipeline-redesign.md`, `docs/brainstorms/ci-integration-test-speed.md`.
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: HIGH
@@ -86,7 +86,7 @@
 - **User Story**: —
 - **Plan**: —
 - **Status**: partial
-- **Brief**: Legacy networking fallback в `manager.py:525-530` и project lookup по имени в `github_sync.py:213-226` — оба оставлены как защитный код. Audit 2026-03-04: delete `services/langgraph/src/list_repos.py` (dead debug script, 72 LOC).
+- **Brief**: Legacy networking fallback в `manager.py:525-530` и project lookup по имени в `github_sync.py:213-226` — оба оставлены как защитный код. Audit 2026-03-04: delete `services/langgraph/src/list_repos.py` (dead debug script, 72 LOC). Audit 2026-03-05: move `services/langgraph/src/tests/test_architect_routing.py` to `tests/` directory.
 
 ### #12 Remove Obsolete Zavhoz
 - **Priority**: MEDIUM
@@ -108,6 +108,20 @@
 - **Plan**: —
 - **Status**: pending
 - **Brief**: PO tools (`services/langgraph/src/po/tools.py`) не передают `X-Telegram-ID` заголовок при вызовах API. В результате `create_project` создаёт проекты с `owner_id = NULL` — нет привязки к пользователю, `list_projects` возвращает всё всем. Фикс: прокинуть `user_id` из `config["configurable"]` в httpx-клиент как `X-Telegram-ID` header (per-request или при инициализации). Источник: e2e-run PO integration analysis, 2026-03-04.
+
+### #29 Fix ORCHESTRATOR_USER_ID defaults in CLI commands
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: 3 CLI command files (`engineering.py:21`, `deploy.py:21`, `respond.py:32`) default `ORCHESTRATOR_USER_ID` to `"unknown"` — breaks audit trail. Should fail fast with `RuntimeError`. Source: audit 2026-03-05.
+
+### #28 CI: Cache copier template for integration tests
+- **Priority**: MEDIUM
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Template integration tests clone from GitHub on every run. Pass local path instead of GitHub URL to avoid network dependency and save ~10-15s per test. Source: brainstorm `docs/brainstorms/ci-integration-test-speed.md`.
 
 ### #26 Notifications via Redis Stream (убрать прямую зависимость от Telegram API)
 - **Priority**: MEDIUM
@@ -132,6 +146,9 @@
 - Worker port isolation: убрать `ports:` из compose.base.yml при параллелизации (источник: audit)
 - "Добавить батарейку" к существующему проекту (источник: US3)
 - Enable Ruff S110 + BLE001 rules to catch swallowed/broad exceptions (источник: audit 2026-03-04)
+- pytest-xdist для backend integration tests — исследовать после параллелизации стеков (источник: brainstorm ci-integration-test-speed)
+- Split worker-manager/src/manager.py (828 LOC, 6 functions >50 LOC) (источник: audit 2026-03-05)
+- infra-service unit test coverage: 9 source files, 0 tests (источник: audit 2026-03-05)
 
 ## Done (last 10)
 

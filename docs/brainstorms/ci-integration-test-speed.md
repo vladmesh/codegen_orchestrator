@@ -2,7 +2,7 @@
 
 > **Дата**: 2026-03-05
 > **Контекст**: Интеграционные тесты занимают ~10 минут в CI, хочется сократить
-> **Status**: done
+> **Status**: triaged
 
 ---
 
@@ -94,7 +94,6 @@ frontend (1 тест) + infra (2 теста) → один compose-стек.
 
 ## Action Items
 
-- → backlog #4: обновить описание — добавить "параллельные integration tests через matrix strategy" (уже есть упоминание в brief)
-- → new task: "CI: parallelize integration tests via matrix strategy" — разбить test-integration на 5 параллельных jobs
-- → new task: "CI: cache copier template for template integration tests" — передавать local path вместо GitHub URL
-- → idea: "pytest-xdist для backend integration tests" — исследовать после параллелизации стеков
+- → backlog #4: обновлён brief — добавлена детализация по matrix strategy
+- → backlog #28: "CI: cache copier template for integration tests" (MEDIUM)
+- → idea: "pytest-xdist для backend integration tests" — добавлено в Ideas
