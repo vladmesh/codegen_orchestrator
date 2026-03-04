@@ -15,6 +15,23 @@ Scan the codebase for issues and create actionable tasks.
 
 ## Protocol
 
+### 0. CI Health Check
+
+Before scanning code, check the latest CI run on the default branch:
+
+```bash
+gh run list --branch main --limit 1 --json status,conclusion,name,headSha,createdAt,url
+```
+
+If the latest run **failed or is not successful**:
+- Include a `## CI Health` section at the **top** of the audit report (before Dead Code)
+- Show: workflow name, commit SHA, failure date, link to the run
+- Fetch failed job logs if needed: `gh run view <run-id> --log-failed | tail -50`
+- Categorize: test failure / lint failure / build failure / infra flake
+- This counts as an issue in the Summary
+
+If the latest run **passed** — add `## CI Health` with "✅ Last CI run passed (<date>)".
+
 ### 1. Scan
 
 Check each category:

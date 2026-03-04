@@ -17,6 +17,16 @@ Periodic review of project state. Ensures docs are up-to-date, reports are triag
 
 ### 1. Gather state
 
+**CI Health Check** — before anything else, verify CI is green:
+
+```bash
+gh run list --branch main --limit 1 --json status,conclusion,name,headSha,createdAt,url
+```
+
+If the latest run **failed**: fetch failed logs (`gh run view <run-id> --log-failed | tail -50`), write a brief report to `docs/brainstorms/ci-failure-<date>.md` with Status: draft, and include the failure in the checkpoint report (step 11) under a `### CI Status` section. This is a blocker that should be called out prominently.
+
+If the latest run **passed**: note it for the report, no document needed.
+
 Read:
 - `docs/STATUS.md` — current task, last checkpoint date
 - `docs/backlog.md` — Queue, Ideas, Done
@@ -95,6 +105,9 @@ Print a comprehensive summary:
 
 ```
 ## Checkpoint Report — <date>
+
+### CI Status
+- ✅ Green / ❌ FAILING — <link to run> (<failure category if broken>)
 
 ### Since Last Checkpoint (<previous date>)
 - Tasks completed: #X, #Y, #Z
