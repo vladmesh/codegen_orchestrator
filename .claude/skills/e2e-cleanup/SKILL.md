@@ -1,7 +1,6 @@
 ---
 name: e2e-cleanup
 description: Clean up after an E2E test. Deletes GitHub repo, worker containers, and DB records.
-disable-model-invocation: true
 allowed-tools: Bash, Read
 argument-hint: "<project_name> [--level C] [--server-ip IP]"
 ---

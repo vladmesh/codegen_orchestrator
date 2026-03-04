@@ -1,7 +1,6 @@
 ---
 name: e2e-check
 description: Check prerequisites for Line 2 E2E tests. Verifies stack health, services, and optionally scaffold test.
-disable-model-invocation: true
 allowed-tools: Bash, Read
 argument-hint: "[--scaffold]"
 ---

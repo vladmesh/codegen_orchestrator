@@ -1,7 +1,6 @@
 ---
 name: audit
 description: Scan codebase for dead code, code smells, security issues, and large files. Creates/updates docs/audit.md and adds actionable items to backlog.
-disable-model-invocation: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[--scope <path>]"
 ---

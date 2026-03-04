@@ -1,7 +1,6 @@
 ---
 name: implement
 description: Implement the current task from STATUS.md using TDD. Updates CHANGELOG, backlog, STATUS on completion. Main development skill.
-disable-model-invocation: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[#ID | step]"
 ---

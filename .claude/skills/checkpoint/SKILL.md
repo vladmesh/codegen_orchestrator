@@ -1,7 +1,6 @@
 ---
 name: checkpoint
 description: Periodic review — run audit, triage reports, update CHANGELOG/ROADMAP/STATUS, recommend next task. Use every 5-7 tasks or weekly.
-disable-model-invocation: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[--skip-audit]"
 ---

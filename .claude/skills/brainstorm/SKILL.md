@@ -1,7 +1,6 @@
 ---
 name: brainstorm
 description: Structured thinking session on a topic. Creates docs/brainstorms/<topic>.md with Status tracking and Action Items for later triage.
-disable-model-invocation: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "<topic>"
 ---

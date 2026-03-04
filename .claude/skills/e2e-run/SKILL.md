@@ -1,7 +1,6 @@
 ---
 name: e2e-run
 description: Run Line 2 E2E test — submit engineering task, wait for completion, verify, write report. Use when user wants to test the engineering pipeline end-to-end.
-disable-model-invocation: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "<test> <level> [--no-cleanup]"
 ---

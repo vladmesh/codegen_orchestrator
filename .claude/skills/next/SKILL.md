@@ -1,7 +1,6 @@
 ---
 name: next
 description: Pick the next task from backlog and set it as current in STATUS.md. Use when starting a new task or after completing one.
-disable-model-invocation: true
 allowed-tools: Read, Edit, Glob
 argument-hint: "[#ID]"
 ---

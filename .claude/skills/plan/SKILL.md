@@ -1,7 +1,6 @@
 ---
 name: plan
 description: Decompose a backlog task into a step-by-step plan with Input/Output/Test for each step. Creates docs/plans/<task>.md and updates STATUS.md.
-disable-model-invocation: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[#ID]"
 ---

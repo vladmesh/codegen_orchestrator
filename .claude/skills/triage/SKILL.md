@@ -1,7 +1,6 @@
 ---
 name: triage
 description: Process E2E reports, completed brainstorms, and audit reports into backlog tasks. Routes issues by type (orchestrator/template/meta/infra).
-disable-model-invocation: true
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[--source e2e|brainstorms|audit|all]"
 ---
