@@ -92,6 +92,21 @@ async def test_deploy_worker_smoke_pass(
 
 
 @pytest.mark.asyncio
+async def test_build_subgraph_input_includes_smoke_result():
+    """_build_subgraph_input must include smoke_result key so LangGraph tracks it."""
+    from src.workers.deploy_worker import _build_subgraph_input
+
+    result = _build_subgraph_input(
+        project_id="proj-1",
+        project={"name": "test", "repository_url": "https://github.com/org/repo"},
+        allocated_resources={"srv:8000": {"server_ip": "1.2.3.4", "port": 8000}},
+        job_data={},
+    )
+    assert "smoke_result" in result, "smoke_result must be initialized in subgraph input"
+    assert result["smoke_result"] is None
+
+
+@pytest.mark.asyncio
 async def test_deploy_worker_smoke_fail(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):

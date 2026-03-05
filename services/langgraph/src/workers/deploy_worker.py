@@ -208,6 +208,7 @@ def _build_subgraph_input(
         "missing_user_secrets": [],
         "deployment_result": None,
         "deployed_url": None,
+        "smoke_result": None,
         "errors": [],
     }
 
