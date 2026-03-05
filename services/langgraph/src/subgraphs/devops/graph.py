@@ -7,7 +7,10 @@ Topology:
     START -> env_analyzer -> secret_resolver -> readiness_check
                                                       |
                                       [if missing] -> END (return to PO)
-                                      [if ready]  -> deployer -> END
+                                      [if ready]  -> deployer
+                                                        |
+                                        [if errors] -> END
+                                        [if ok]    -> smoke_tester -> END
 """
 
 from typing import Any
@@ -18,6 +21,7 @@ import structlog
 from ...nodes.resource_allocator import resource_allocator_node
 from .env_analyzer import env_analyzer_run
 from .nodes import deployer_node, readiness_check_node, secret_resolver_node
+from .smoke import smoke_tester_node
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -53,6 +57,17 @@ def route_after_readiness_check(state: DevOpsState) -> str:
     return "deployer"
 
 
+def route_after_deployer(state: DevOpsState) -> str:
+    """Route after deployer.
+
+    - If deployed_url is set and no errors -> smoke_tester
+    - Otherwise (deploy failed) -> END
+    """
+    if state.get("deployed_url") and not state.get("errors"):
+        return "smoke_tester"
+    return END
+
+
 def create_devops_subgraph() -> Any:
     """Create the DevOps subgraph.
 
@@ -60,17 +75,20 @@ def create_devops_subgraph() -> Any:
         START -> env_analyzer -> secret_resolver -> readiness_check
                                                           |
                                           [if missing] -> END
-                                          [if ready]  -> deployer -> END
+                                          [if ready]  -> deployer
+                                                            |
+                                            [if errors] -> END
+                                            [if ok]    -> smoke_tester -> END
     """
     graph = StateGraph(DevOpsState)
 
-    # Add nodes
     # Add nodes
     graph.add_node("resource_allocator", resource_allocator_node.run)
     graph.add_node("env_analyzer", env_analyzer_run)
     graph.add_node("secret_resolver", secret_resolver_node.run)
     graph.add_node("readiness_check", readiness_check_node.run)
     graph.add_node("deployer", deployer_node.run)
+    graph.add_node("smoke_tester", smoke_tester_node.run)
 
     # Edges
     graph.add_edge(START, "resource_allocator")
@@ -102,6 +120,15 @@ def create_devops_subgraph() -> Any:
         },
     )
 
-    graph.add_edge("deployer", END)
+    graph.add_conditional_edges(
+        "deployer",
+        route_after_deployer,
+        {
+            "smoke_tester": "smoke_tester",
+            END: END,
+        },
+    )
+
+    graph.add_edge("smoke_tester", END)
 
     return graph.compile()
