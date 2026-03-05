@@ -64,23 +64,6 @@ class RepositoryInspectionResult(BaseModel):
     error: str | None = Field(None, description="Error message if inspection failed")
 
 
-class PortAllocationResult(BaseModel):
-    """Return value from `allocate_port` tool.
-
-    Contains details about the allocated port and server for deployment.
-    """
-
-    id: int | None = Field(None, description="Port allocation record ID")
-    server_handle: str = Field(..., description="Server where port was allocated")
-    server_ip: str = Field(..., description="Server public IP (crucial for DevOps)")
-    port: int = Field(..., description="Allocated port number")
-    service_name: str = Field(..., description="Service using this port")
-    project_id: str = Field(..., description="Owning project ID")
-
-    # Timestamps from API
-    created_at: str | None = Field(None, description="Allocation timestamp")
-
-
 class ServerSearchResult(BaseModel):
     """Return value from `find_suitable_server` tool.
 

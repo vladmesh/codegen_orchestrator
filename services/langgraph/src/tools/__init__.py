@@ -10,9 +10,6 @@ PO capability tools are replaced by orchestrator-cli commands.
 # GitHub tools
 from .github import create_file_in_repo, create_github_repo, get_github_token
 
-# Port allocation (used by ResourceAllocatorNode)
-from .ports import allocate_port, get_next_available_port
-
 # Project tools (used by Analyst and subgraphs)
 from .projects import (
     create_project,
@@ -49,9 +46,6 @@ __all__ = [
     "get_server_info",
     "update_server_status",
     "get_services_on_server",
-    # Ports
-    "allocate_port",
-    "get_next_available_port",
     # GitHub
     "create_github_repo",
     "get_github_token",

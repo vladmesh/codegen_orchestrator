@@ -12,7 +12,6 @@ from .project import EntryPoint, ProjectSpec
 from .tools import (
     DeploymentReadinessResult,
     IncidentCreateResult,
-    PortAllocationResult,
     ProjectActivationResult,
     ProjectCreateResult,
     RepositoryInspectionResult,
@@ -34,7 +33,6 @@ __all__ = [
     # Tools
     "ProjectActivationResult",
     "RepositoryInspectionResult",
-    "PortAllocationResult",
     "ServerSearchResult",
     "DeploymentReadinessResult",
     "SecretSaveResult",

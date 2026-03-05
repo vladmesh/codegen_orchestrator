@@ -96,12 +96,17 @@ async def ensure_project_allocations(
     server_handle = server["handle"]
     server_ip = get_server_ip(server)
 
-    # Allocate port for each module
+    # Allocate port for each module atomically
     allocated = {}
     for module in modules:
-        port = await _get_next_available_port(server_handle)
-        await _allocate_port(server_handle, port, module, project_id)
-
+        alloc_result = await api_client.allocate_next_port(
+            server_handle,
+            {
+                "service_name": module,
+                "project_id": project_id,
+            },
+        )
+        port = alloc_result["port"]
         key = f"{server_handle}:{port}"
         allocated[key] = {
             "port": port,
@@ -149,30 +154,3 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> dict | Non
 
     # Return the one with most capacity
     return max(suitable, key=lambda s: s.get("capacity_ram_mb", 0))
-
-
-async def _get_next_available_port(server_handle: str, start_port: int = 8000) -> int:
-    """Find the next available port on a server."""
-    ports_data: list[AllocationInfo] = await api_client.list_server_ports(server_handle)
-    allocated = {p["port"] for p in ports_data}
-
-    port = start_port
-    while port in allocated:
-        port += 1
-    return port
-
-
-async def _allocate_port(
-    server_handle: str,
-    port: int,
-    service_name: str,
-    project_id: str,
-) -> dict:
-    """Allocate a specific port on a server."""
-    payload = {
-        "server_handle": server_handle,
-        "port": port,
-        "service_name": service_name,
-        "project_id": project_id,
-    }
-    return await api_client.allocate_server_port(server_handle, payload)
