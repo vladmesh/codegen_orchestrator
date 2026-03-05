@@ -116,9 +116,9 @@ jobs:
       matrix:
         include:
           - service: api
-            changed: needs.detect-changes.outputs.api
+            changed: ${{ needs.detect-changes.outputs.api }}
           - service: scheduler
-            changed: needs.detect-changes.outputs.scheduler
+            changed: ${{ needs.detect-changes.outputs.scheduler }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

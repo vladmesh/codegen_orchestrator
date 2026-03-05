@@ -9,6 +9,7 @@ sys.path.append("/app")
 from httpx import ASGITransport, AsyncClient
 import pytest
 from redis.asyncio import Redis
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Use env vars or defaults matching docker-compose
@@ -31,6 +32,20 @@ async def db_engine():
     await engine.dispose()
 
 
+@pytest.fixture(scope="session")
+async def seed_test_user(db_engine):
+    """Seed a test user for X-Telegram-ID header resolution."""
+    async_session = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as session:
+        await session.execute(
+            text(
+                "INSERT INTO users (telegram_id, username) VALUES (12345, 'test-user') "
+                "ON CONFLICT (telegram_id) DO NOTHING"
+            )
+        )
+        await session.commit()
+
+
 @pytest.fixture(scope="function")
 async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
     async_session = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -47,7 +62,7 @@ async def redis_client() -> AsyncGenerator[Redis, None]:
 
 
 @pytest.fixture(scope="function")
-async def async_client() -> AsyncGenerator[AsyncClient, None]:
+async def async_client(seed_test_user) -> AsyncGenerator[AsyncClient, None]:
     from src.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

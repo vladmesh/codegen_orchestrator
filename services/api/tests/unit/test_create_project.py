@@ -51,8 +51,8 @@ def _cleanup_overrides():
 
 
 @pytest.mark.asyncio
-async def test_create_project_without_header_returns_400():
-    """POST /api/projects/ without X-Telegram-ID should return 400."""
+async def test_create_project_without_header_sets_no_owner():
+    """POST without X-Telegram-ID creates project with owner_id=None."""
     session = _mock_session(existing_project=None)
 
     async def override():
@@ -64,8 +64,10 @@ async def test_create_project_without_header_returns_400():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/api/projects/", json=PROJECT_PAYLOAD)
 
-    assert resp.status_code == 400  # noqa: PLR2004
-    assert "X-Telegram-ID" in resp.json()["detail"]
+    assert resp.status_code == 201  # noqa: PLR2004
+    session.add.assert_called_once()
+    project = session.add.call_args[0][0]
+    assert project.owner_id is None
 
 
 @pytest.mark.asyncio

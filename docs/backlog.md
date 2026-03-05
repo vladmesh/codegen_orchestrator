@@ -10,6 +10,11 @@
 - **Plan**: —
 - **Status**: pending
 - **Brief**: Service integration tests (api `test_pure_crud`, scheduler `test_github_sync_integration`) fail after #30 multi-user isolation. Tests need to seed a User record before creating projects (API now requires `X-Telegram-ID` → user lookup). Pre-existing from #30, surfaced when #31 triggered change detection.
+- **Findings**:
+  - **CI bug (root cause of green builds)**: `ci.yml:119-121` — `changed` field in service test matrix is a literal string (`needs.detect-changes.outputs.api`), not an expression (`${{ ... }}`). It never equals `'true'`, so service tests have been **skipped on every run** since #4 CI Pipeline Redesign. The job shows green because skipped steps ≠ failure. Integration tests (line 160+) use `${{ }}` correctly — service tests don't.
+  - **Test bug**: `services/api/tests/service/test_pure_crud.py` sends `X-Telegram-ID: 12345` but conftest doesn't seed a User record. After #30, `POST /api/projects/` resolves User from header → 404 if User doesn't exist.
+  - **Scheduler**: `services/scheduler/tests/service/test_github_sync_integration.py` calls `_sync_single_repo` which creates a project via API — may also need User seeding depending on API call path.
+  - **Fix scope**: (1) fix `ci.yml` matrix expression for service tests, (2) seed User in api conftest, (3) verify scheduler test path.
 
 ### #32 Prod Deploy Pipeline
 - **Priority**: HIGH

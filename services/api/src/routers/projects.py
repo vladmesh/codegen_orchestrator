@@ -81,19 +81,16 @@ async def create_project(
                 detail="Project with this ID already exists",
             )
 
-        # Resolve owner — X-Telegram-ID is required for project creation
-        if not x_telegram_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="X-Telegram-ID header is required for project creation",
-            )
-        user = await _resolve_user(x_telegram_id, db)
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User with telegram_id {x_telegram_id} not found",
-            )
-        owner_id = user.id
+        # Resolve owner — optional (system calls like scheduler have no user)
+        owner_id = None
+        if x_telegram_id:
+            user = await _resolve_user(x_telegram_id, db)
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"User with telegram_id {x_telegram_id} not found",
+                )
+            owner_id = user.id
 
         project = Project(
             id=project_in.id,
