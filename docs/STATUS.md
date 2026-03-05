@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #12 Documentation Cleanup (Zavhoz + Deploy-worker)
+- **Backlog**: —
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: (empty)
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 12 | Documentation Cleanup (Zavhoz + Deploy-worker) |
 | 4 | CI Pipeline Redesign |
 | 17 | Dead Code & Legacy Cleanup |
 | 37 | Remove Dead LLM Agent Configs from Code |

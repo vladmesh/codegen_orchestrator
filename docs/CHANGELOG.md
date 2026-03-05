@@ -5,6 +5,8 @@
 ## 2026-03-05
 
 ### Changed
+- Replaced last "Zavhoz agent" reference with "ResourceAllocatorNode" in `AllocatedResource` docstring (#12)
+- Clarified engineering-worker and deploy-worker as Redis stream consumers of the langgraph image, not independent services, across CLAUDE.md, README.md, ARCHITECTURE.md (#12)
 - CI integration tests: sequential → 5 parallel matrix jobs (backend, cli, template, frontend, infra) (#4)
 - Per-suite change detection: each integration suite only runs when relevant files changed (#4)
 - Healthcheck intervals 5s→2s in non-DIND test compose files (frontend, infra, cli) (#4)

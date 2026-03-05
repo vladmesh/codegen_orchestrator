@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #12 Documentation Cleanup (Zavhoz + Deploy-worker)
-- **Priority**: MEDIUM | quick-win
-- **User Story**: —
-- **Plan**: —
-- **Status**: partial (Zavhoz config removed from agent_configs.yaml)
-- **Brief**: (1) Удалить Zavhoz из документации и конфигурации, заменён на ResourceAllocatorNode. Конфиг из seed YAML уже удалён (2026-03-05). Осталось: документация, любые упоминания в коде. (2) Отразить что deploy-worker и engineering-worker — процессы LangGraph, не суб-сервисы. Объединено из #12 + #13.
-
 ### #30 Multi-user Isolation Fix
 - **Priority**: HIGH
 - **User Story**: —
@@ -157,6 +150,7 @@
 
 ## Done (last 10)
 
+- #12 Documentation Cleanup (Zavhoz + Deploy-worker) — 2026-03-05
 - #4 CI Pipeline Redesign — 2026-03-05
 - #17 Dead Code & Legacy Cleanup — 2026-03-05
 - #37 Remove Dead LLM Agent Configs from Code — 2026-03-05
@@ -167,9 +161,3 @@
 - #23 Extract Shared Code (infra_client + constants) — 2026-03-05
 - #24 Fix Critical getenv Defaults — 2026-03-04
 - #6 Fix & Consolidate Test Suites — 2026-03-04
-- #22 Worker Network Isolation — 2026-03-03
-- #3+#5 Redis Streams Unification + Queue Contracts — 2026-02-17
-- #9 Worker Reuse for CI Fix Loop — 2026-02-19
-- #14 Contract Consistency — 2026-02-17
-- #15 Resolve Enum Divergence — 2026-02-25
-- #16 Consolidate ServiceModule — 2026-02-25
