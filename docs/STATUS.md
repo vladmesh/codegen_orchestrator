@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #25 Post-Deploy Smoke Tester [regression]
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: —
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
