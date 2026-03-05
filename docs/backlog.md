@@ -9,14 +9,7 @@
 - **User Story**: —
 - **Plan**: —
 - **Status**: pending
-- **Brief**: API auth bypass: без `X-Telegram-ID` header возвращает ВСЕ проекты всех пользователей (projects.py, tasks.py, allocations.py). Worker ownership: engineering_worker и deploy_worker не проверяют что user_id владеет project_id. Task update bypass: невалидный telegram_id проходит проверку (silent pass при user=None). Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
-
-### #27 PO Tools: Pass user_id to API (owner_id bug)
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: PO tools (`services/langgraph/src/po/tools.py`) не передают `X-Telegram-ID` заголовок при вызовах API. В результате `create_project` создаёт проекты с `owner_id = NULL` — нет привязки к пользователю, `list_projects` возвращает всё всем. Фикс: прокинуть `user_id` из `config["configurable"]` в httpx-клиент как `X-Telegram-ID` header (per-request или при инициализации). Источник: e2e-run PO integration analysis, 2026-03-04. Priority adjusted by triage (roadmap phase change).
+- **Brief**: (1) PO tools (`services/langgraph/src/po/tools.py`) не передают `X-Telegram-ID` заголовок при вызовах API → `create_project` создаёт проекты с `owner_id = NULL`, `list_projects` возвращает всё всем. Фикс: прокинуть `user_id` из `config["configurable"]` в httpx-клиент как `X-Telegram-ID` header. (2) API auth bypass: без `X-Telegram-ID` header возвращает ВСЕ проекты всех пользователей (projects.py, tasks.py, allocations.py). (3) Worker ownership: engineering_worker и deploy_worker не проверяют что user_id владеет project_id. (4) Task update bypass: невалидный telegram_id проходит проверку (silent pass при user=None). Объединено из #30 + #27. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`, e2e-run PO integration analysis 2026-03-04.
 
 ### #31 Port Allocation Locking
 - **Priority**: HIGH
