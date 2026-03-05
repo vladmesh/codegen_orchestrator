@@ -53,6 +53,13 @@
 - **Status**: pending
 - **Brief**: Core product flow — "допили мне бота". 4 части: (1) PO tool: select existing project (`list_projects(user_id=X)` + выбор), (2) Engineering worker: feature flow (git pull → branch → code → CI, без scaffold), (3) Deploy: redeploy existing (тот же flow без allocation), (4) E2E test: feature-add scenario. Кандидат на первый "эпик". Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
 
+### #25 Post-Deploy Smoke Tester [regression]
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: blocked — awaiting E2E logs
+- **Brief**: smoke_result null в deploy task. Defensive init добавлен, но мини-граф тест показал что LangGraph пропагирует без него. Добавлен диагностический лог `devops_subgraph_result` в deploy_worker — покажет root cause при следующем деплое.
+
 ### #8 Workspace Failure Counter
 - **Priority**: MEDIUM
 - **User Story**: —
@@ -192,7 +199,6 @@
 
 ## Done (last 10)
 
-- #25 Post-Deploy Smoke Tester [regression fix] — 2026-03-05
 - #23 Extract Shared Code (infra_client + constants) — 2026-03-05
 - #24 Fix Critical getenv Defaults — 2026-03-04
 - #6 Fix & Consolidate Test Suites — 2026-03-04

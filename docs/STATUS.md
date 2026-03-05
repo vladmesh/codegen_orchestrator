@@ -1,13 +1,18 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #25 Post-Deploy Smoke Tester [regression]
 - **Plan**: —
-- **Step**: —
-- **Done Steps**: —
+- **Step**: blocked — awaiting next E2E run
+- **Done Steps**:
+  - Defensive init `smoke_result: None` in `_build_subgraph_input`
+  - Unit test for subgraph input initialization
+  - Integration test: mini-graph (deployer_stub → smoke_tester) with real `ainvoke()`
+  - Diagnostic logging in deploy_worker after `ainvoke()` (result_keys, smoke_result, errors)
+  - Updated `/e2e-run` skill to check deploy-worker logs
 
 ## Blocked
-(нет)
+- #25: mini-graph test shows smoke_result propagates fine even without init — real root cause unknown. Need next E2E deploy-worker logs (`devops_subgraph_result`) to diagnose
 
 ## Last Checkpoint
 - **Date**: 2026-03-05
