@@ -65,6 +65,153 @@ async def _check_duplicate_deploy(task_id: str, project_id: str) -> dict | None:
     return None
 
 
+async def _handle_smoke_failure(
+    *,
+    result: dict,
+    smoke_result: dict,
+    task_id: str,
+    project_id: str,
+    project_name: str,
+    callback_stream: str,
+    user_id: str,
+    redis: RedisStreamClient,
+) -> dict:
+    """Handle deploy success with smoke test failure."""
+    smoke_details = "; ".join(
+        f"{c['module']}: {c['detail']}"
+        for c in smoke_result.get("checks", [])
+        if c.get("result") == "fail"
+    )
+    error_msg = f"Deployed but smoke test failed: {smoke_details}"
+    logger.warning(
+        "deploy_job_smoke_failed",
+        task_id=task_id,
+        deployed_url=result["deployed_url"],
+        smoke_details=smoke_details,
+    )
+    await api_client.patch(
+        f"tasks/{task_id}",
+        json={
+            "status": "failed",
+            "error_message": error_msg,
+            "result": {
+                "deployed_url": result["deployed_url"],
+                "deployment_result": result.get("deployment_result"),
+                "smoke_result": smoke_result,
+            },
+        },
+    )
+    # Project stays active — deploy succeeded, service just unhealthy
+    await api_client.patch(
+        f"projects/{project_id}",
+        json={"status": ProjectStatus.ACTIVE.value},
+    )
+
+    await publish_callback_event(
+        redis,
+        callback_stream,
+        "failed",
+        task_id,
+        error_msg,
+        user_id=user_id,
+        project_id=project_id,
+    )
+    if not callback_stream:
+        await publish_proactive_message(
+            redis,
+            user_id,
+            f"Deployed {project_name} but smoke test failed: {smoke_details}",
+        )
+
+    return {
+        "status": "failed",
+        "error": error_msg,
+        "deployed_url": result["deployed_url"],
+        "finished_at": datetime.now(UTC).isoformat(),
+    }
+
+
+async def _handle_deploy_success(
+    *,
+    result: dict,
+    smoke_result: dict | None,
+    task_id: str,
+    project_id: str,
+    project: dict,
+    callback_stream: str,
+    user_id: str,
+    redis: RedisStreamClient,
+) -> dict:
+    """Handle successful deploy (with or without smoke)."""
+    logger.info(
+        "deploy_job_success",
+        task_id=task_id,
+        deployed_url=result["deployed_url"],
+    )
+    await api_client.patch(
+        f"tasks/{task_id}",
+        json={
+            "status": "completed",
+            "result": {
+                "deployed_url": result["deployed_url"],
+                "deployment_result": result.get("deployment_result"),
+                "smoke_result": smoke_result,
+            },
+        },
+    )
+    await api_client.patch(
+        f"projects/{project_id}",
+        json={"status": ProjectStatus.ACTIVE.value},
+    )
+
+    await publish_callback_event(
+        redis,
+        callback_stream,
+        "completed",
+        task_id,
+        f"Deploy completed: {result['deployed_url']}",
+        user_id=user_id,
+        project_id=project_id,
+    )
+    if not callback_stream:
+        project_name = project.get("name", project_id) if project else project_id
+        await publish_proactive_message(
+            redis, user_id, f"Deployed {project_name}: {result['deployed_url']}"
+        )
+
+    return {
+        "status": "success",
+        "deployed_url": result["deployed_url"],
+        "finished_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _build_subgraph_input(
+    project_id: str, project: dict, allocated_resources: dict, job_data: dict
+) -> dict:
+    """Build DevOps subgraph input from deploy job data."""
+    return {
+        "project_id": project_id,
+        "project_spec": project,
+        "repo_info": {
+            "full_name": project.get("repository_url", "")
+            .replace("https://github.com/", "")
+            .rstrip(".git"),
+            "html_url": project.get("repository_url"),
+        },
+        "allocated_resources": allocated_resources,
+        "provided_secrets": job_data.get("provided_secrets", {}),
+        "messages": [],
+        "env_variables": [],
+        "env_analysis": {},
+        "resolved_secrets": {},
+        "missing_user_secrets": [],
+        "deployment_result": None,
+        "deployed_url": None,
+        "errors": [],
+    }
+
+
 async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single deploy job by running DevOps Subgraph.
 
@@ -148,74 +295,36 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
         # Run DevOps subgraph
         devops_subgraph = create_devops_subgraph()
-
-        # Prepare subgraph input with enriched server_ip
-        subgraph_input = {
-            "project_id": project_id,
-            "project_spec": project,
-            "repo_info": {
-                "full_name": project.get("repository_url", "")
-                .replace("https://github.com/", "")
-                .rstrip(".git"),
-                "html_url": project.get("repository_url"),
-            },
-            "allocated_resources": allocated_resources,
-            "provided_secrets": job_data.get("provided_secrets", {}),
-            # Initialize empty fields
-            "messages": [],
-            "env_variables": [],
-            "env_analysis": {},
-            "resolved_secrets": {},
-            "missing_user_secrets": [],
-            "deployment_result": None,
-            "deployed_url": None,
-            "errors": [],
-        }
-
+        subgraph_input = _build_subgraph_input(project_id, project, allocated_resources, job_data)
         result = await devops_subgraph.ainvoke(subgraph_input)
 
         if result.get("deployed_url"):
-            logger.info(
-                "deploy_job_success",
-                task_id=task_id,
-                deployed_url=result["deployed_url"],
-            )
-            await api_client.patch(
-                f"tasks/{task_id}",
-                json={
-                    "status": "completed",
-                    "result": {
-                        "deployed_url": result["deployed_url"],
-                        "deployment_result": result.get("deployment_result"),
-                    },
-                },
-            )
-            # Update project status to active
-            await api_client.patch(
-                f"projects/{project_id}",
-                json={"status": ProjectStatus.ACTIVE.value},
-            )
+            smoke_result = result.get("smoke_result")
+            smoke_failed = smoke_result and smoke_result.get("status") == "fail"
 
-            await publish_callback_event(
-                redis,
-                callback_stream,
-                "completed",
-                task_id,
-                f"Deploy completed: {result['deployed_url']}",
-                user_id=user_id,
-                project_id=project_id or "",
-            )
-            if not callback_stream:
+            if smoke_failed:
                 project_name = project.get("name", project_id) if project else project_id
-                await publish_proactive_message(
-                    redis, user_id, f"Deployed {project_name}: {result['deployed_url']}"
+                return await _handle_smoke_failure(
+                    result=result,
+                    smoke_result=smoke_result,
+                    task_id=task_id,
+                    project_id=project_id,
+                    project_name=project_name,
+                    callback_stream=callback_stream,
+                    user_id=user_id,
+                    redis=redis,
                 )
 
-            return {
-                "status": "success",
-                "deployed_url": result["deployed_url"],
-                "finished_at": datetime.now(UTC).isoformat(),
-            }
+            return await _handle_deploy_success(
+                result=result,
+                smoke_result=smoke_result,
+                task_id=task_id,
+                project_id=project_id,
+                project=project,
+                callback_stream=callback_stream,
+                user_id=user_id,
+                redis=redis,
+            )
         elif result.get("missing_user_secrets"):
             missing = result.get("missing_user_secrets")
             logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing)
