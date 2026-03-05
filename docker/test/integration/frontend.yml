@@ -14,7 +14,7 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 5s
+      interval: 2s
       timeout: 5s
       retries: 5
 
@@ -42,7 +42,7 @@ services:
     tmpfs: /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
+      interval: 2s
       timeout: 5s
       retries: 5
 
@@ -50,7 +50,7 @@ services:
     image: redis:7-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 2s
       timeout: 5s
       retries: 5
 

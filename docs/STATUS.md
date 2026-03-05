@@ -3,8 +3,8 @@
 ## Current Task
 - **Backlog**: #4 CI Pipeline Redesign
 - **Plan**: docs/plans/ci-pipeline-redesign.md
-- **Step**: 1/4 — Convert test-integration job to matrix strategy
-- **Done Steps**: (empty)
+- **Step**: 4/4 — Validate full pipeline end-to-end
+- **Done Steps**: 1 (matrix strategy), 2 (healthcheck tuning), 3 (per-suite change detection)
 
 ## Blocked
 (нет)
