@@ -4,18 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #38 Fix Service Integration Tests After Multi-User Isolation
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Service integration tests (api `test_pure_crud`, scheduler `test_github_sync_integration`) fail after #30 multi-user isolation. Tests need to seed a User record before creating projects (API now requires `X-Telegram-ID` → user lookup). Pre-existing from #30, surfaced when #31 triggered change detection.
-- **Findings**:
-  - **CI bug (root cause of green builds)**: `ci.yml:119-121` — `changed` field in service test matrix is a literal string (`needs.detect-changes.outputs.api`), not an expression (`${{ ... }}`). It never equals `'true'`, so service tests have been **skipped on every run** since #4 CI Pipeline Redesign. The job shows green because skipped steps ≠ failure. Integration tests (line 160+) use `${{ }}` correctly — service tests don't.
-  - **Test bug**: `services/api/tests/service/test_pure_crud.py` sends `X-Telegram-ID: 12345` but conftest doesn't seed a User record. After #30, `POST /api/projects/` resolves User from header → 404 if User doesn't exist.
-  - **Scheduler**: `services/scheduler/tests/service/test_github_sync_integration.py` calls `_sync_single_repo` which creates a project via API — may also need User seeding depending on API call path.
-  - **Fix scope**: (1) fix `ci.yml` matrix expression for service tests, (2) seed User in api conftest, (3) verify scheduler test path.
-
 ### #32 Prod Deploy Pipeline
 - **Priority**: HIGH
 - **User Story**: —
@@ -36,6 +24,27 @@
 - **Plan**: —
 - **Status**: pending
 - **Brief**: Core product flow — "допили мне бота". 4 части: (1) PO tool: select existing project (`list_projects(user_id=X)` + выбор), (2) Engineering worker: feature flow (git pull → branch → code → CI, без scaffold), (3) Deploy: redeploy existing (тот же flow без allocation), (4) E2E test: feature-add scenario. Кандидат на первый "эпик". Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
+
+### #39 Enforce Project-User Binding (owner_id NOT NULL)
+- **Priority**: MEDIUM
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Проект строго привязан к юзеру. `owner_id` становится NOT NULL. github_sync перестаёт создавать проекты в БД — вместо этого шлёт warning админам через `notify_admins` о найденных ничейных репо. Админы разбираются вручную.
+- **Findings**:
+  - **Модель**: `shared/models/project.py:33` — `owner_id: Mapped[int | None]`, nullable FK
+  - **DTO**: `shared/contracts/dto/project.py:69,85` — `owner_id: int | None = None`
+  - **API create**: `services/api/src/routers/projects.py:84-93` — owner_id опционален, без `X-Telegram-ID` = None
+  - **github_sync**: `services/scheduler/src/tasks/github_sync.py:213-227` — `_sync_single_repo` создаёт `ProjectCreate` без owner → проект без владельца в БД
+  - **Webhook**: `services/api/src/routers/webhooks.py:113` — `if project.owner_id` guard перед нотификацией
+  - **Тесты**: `test_create_project.py:55` — тест "без X-Telegram-ID → owner_id=None" нужно инвертировать (должен быть 4xx)
+- **Scope**:
+  1. Миграция: `owner_id` NOT NULL (backfill existing orphans или удалить)
+  2. DTO: `owner_id: int` (required) в `ProjectCreate`; убрать None из `ProjectUpdate.owner_id`
+  3. API: `POST /api/projects/` — 400 если нет `X-Telegram-ID`
+  4. github_sync `_sync_single_repo`: если проект не найден в БД — `notify_admins` warning вместо `api_client.create_project`; doc sync для существующих проектов остаётся
+  5. Webhook: убрать `if project.owner_id` guard (всегда есть)
+  6. Тесты: обновить unit/service тесты
 
 ### #8 Workspace Failure Counter
 - **Priority**: MEDIUM
@@ -143,6 +152,7 @@
 
 ## Done (last 10)
 
+- #38 Fix Service Integration Tests After Multi-User Isolation — 2026-03-06
 - #31 Port Allocation Locking — 2026-03-05
 - #30 Multi-user Isolation Fix — 2026-03-05
 - #12 Documentation Cleanup (Zavhoz + Deploy-worker) — 2026-03-05
@@ -152,5 +162,3 @@
 - #36 Remove CLI Agent Config Infrastructure — 2026-03-05
 - #29 Fix ORCHESTRATOR_USER_ID defaults in CLI commands — 2026-03-05
 - #35 [meta] E2E Skill: server IP resolution + repo slug paths — fixed 2026-03-05
-- #25 Post-Deploy Smoke Tester — confirmed working in E2E todo_api-20260305-2 — 2026-03-05
-- #23 Extract Shared Code (infra_client + constants) — 2026-03-05

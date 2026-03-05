@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #38 Fix Service Integration Tests After Multi-User Isolation
+- **Backlog**: —
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: (empty)
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 38 | Fix Service Integration Tests After Multi-User Isolation |
 | 31 | Port Allocation Locking |
 | 30 | Multi-user Isolation Fix |
 | 12 | Documentation Cleanup (Zavhoz + Deploy-worker) |
