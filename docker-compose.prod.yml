@@ -1,0 +1,34 @@
+# Production overrides for docker-compose.yml
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# What this changes from dev:
+#   - No direct API port exposure (Caddy handles all traffic)
+#   - restart: unless-stopped on stateless services (already set on workers/caddy/registry)
+#   - DB credentials have no defaults (fail-fast if .env is misconfigured)
+#   - Redis AOF persistence enabled
+#
+# Secret paths (SSH key, GitHub App PEM, Telethon session, HOST_CLAUDE_DIR)
+# are controlled via env vars in .env — see docs/DEPLOY.md for required values.
+
+services:
+  api:
+    restart: unless-stopped
+    ports: !reset []
+
+  langgraph:
+    restart: unless-stopped
+
+  telegram_bot:
+    restart: unless-stopped
+
+  scheduler:
+    restart: unless-stopped
+
+  db:
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+  redis:
+    command: redis-server --appendonly yes

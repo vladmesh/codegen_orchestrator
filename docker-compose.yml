@@ -34,7 +34,7 @@ services:
       - ./services/api/migrations:/app/migrations:delegated
       - ./shared:/app/shared:delegated
       - ./scripts:/app/scripts:ro
-      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
     ports:
       - "8000:8000"
 
@@ -63,8 +63,8 @@ services:
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ~/.ssh:/root/.ssh:ro
-      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
+      - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh:ro
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
     depends_on:
       db:
         condition: service_healthy
@@ -97,8 +97,8 @@ services:
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ~/.ssh:/root/.ssh:ro
-      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
+      - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh:ro
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
       - ${TELETHON_SESSION_DIR:-./secrets/telethon}:/app/telethon:ro
     depends_on:
       - api
@@ -128,7 +128,7 @@ services:
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
     depends_on:
       - api
       - redis
@@ -152,7 +152,7 @@ services:
       - ./services/infra-service/src:/app/src:delegated
       - ./services/infra-service/ansible:/app/ansible:delegated
       - ./shared:/app/shared:delegated
-      - ~/.ssh:/host-ssh:ro
+      - ${SSH_KEY_PATH:-~/.ssh}:/host-ssh:ro
     depends_on:
       - api
       - redis
@@ -229,8 +229,8 @@ services:
     volumes:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ~/.ssh:/root/.ssh:ro
-      - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
+      - ${SSH_KEY_PATH:-~/.ssh}:/root/.ssh:ro
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
     depends_on:
       api:
         condition: service_healthy
