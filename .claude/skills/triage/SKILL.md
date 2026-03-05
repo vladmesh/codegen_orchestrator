@@ -27,15 +27,20 @@ For each problem with structured fields:
 - **Type**: orchestrator / template / meta / infra
 - **Backlog**: `#XX` (existing), `new` (create), or `—` (skip)
 
-Only process problems where `Backlog: new`.
+Only process problems where `Backlog: new` or `Backlog: template`.
 
-After creating a backlog task, **update the report file**: change `Backlog: new` → `Backlog: #XX` (the created task ID). This marks the problem as processed.
+- `Backlog: new` → create task in orchestrator or template backlog (based on Type), update to `Backlog: #XX`.
+- `Backlog: template` → route to service-template backlog (see Routing by Type), update to `Backlog: template (triaged)`.
+
+After creating a backlog task, **update the report file** to mark the problem as processed.
 
 If a report has no structured Problems section (old format), scan for issues manually, classify them, and **rewrite the Problems section** in structured format with appropriate `Backlog` values.
 
 ### 2. Brainstorms (`docs/brainstorms/`)
 
-Read all `.md` files. Only process files with `> **Status**: done` in the header.
+Read all `.md` files. **Only** process files with `> **Status**: done` in the header.
+Skip `draft` brainstorms even if they have Action Items — the brainstorm may still
+be in progress and action items may change.
 
 Find the `## Action Items` section. For each item:
 - `→ backlog #XX` — already in backlog, skip
@@ -67,6 +72,17 @@ Before creating a new task, check `Done` section in backlog for matches:
   3. **Restore plan** — if `docs/plans/<task>.md` still exists, reference it. If deleted, recover from git: `git show main:docs/plans/<task>.md`
   4. Do NOT create a duplicate task
 
+## Blocked/Regression Resolution
+
+After processing new reports, check Queue for tasks with `blocked` status or
+`[regression]` prefix. For each such task, search new E2E reports for evidence
+that the problem is resolved (e.g., smoke_result now passes, deploy succeeds,
+specific error no longer appears).
+
+If resolved:
+1. Move the task to Done with note: "Confirmed resolved in `<report filename>`"
+2. Report in triage summary under "### Resolved (confirmed by E2E)"
+
 ## Deduplication
 
 Before creating any task, check existing backlog Queue and Ideas for duplicates:
@@ -90,24 +106,36 @@ Place after existing items of the same priority.
 
 Next ID = max existing ID in backlog + 1.
 
-## Reorder Queue by Roadmap
+## Roadmap ↔ Backlog Sync
 
-After processing all sources (and before committing), check if backlog Queue order matches `docs/ROADMAP.md` priorities.
+After processing all sources (and before committing), synchronize ROADMAP.md and backlog.md.
 
-### When to reorder
+### Step 1: Ensure every ROADMAP item has a backlog task
 
-Compare ROADMAP.md git modification time with backlog.md:
+Parse each incomplete (`- [ ]`) item in ROADMAP.md. For each item:
+- If it contains `(#XX)` — verify `#XX` exists in backlog Queue. If missing, report as orphan.
+- If it has no `(#XX)` — search backlog Queue and Ideas by keywords for a matching task.
+  - **Found** → update the ROADMAP line to include `(#XX)`.
+  - **Not found** → report in triage output under `### ROADMAP items without backlog tasks`
+    so user can decide whether to create a task or defer.
+
+### Step 2: Reorder Queue by phases
+
+Compare ROADMAP.md and backlog.md git modification times:
 
 ```bash
 git log -1 --format="%H %ai" -- docs/ROADMAP.md
 git log -1 --format="%H %ai" -- docs/backlog.md
 ```
 
-Reorder if ROADMAP.md was modified **more recently** than backlog.md, OR if new tasks were created in this triage run.
+Reorder if ROADMAP.md was modified **more recently** than backlog.md, OR if new tasks
+were created in this triage run.
 
-### How to reorder
+How to reorder:
 
-1. **Parse ROADMAP.md phases** — identify which tasks (`#ID`) belong to which phase. The earliest incomplete phase = "current phase".
+1. **Parse ROADMAP phases** — identify which tasks (`#ID`) belong to which phase
+   (from the `(#XX)` annotations added/verified in Step 1). The earliest incomplete
+   phase = "current phase".
 
 2. **Sort Queue**:
    - Tasks in current phase → top of Queue, ordered by:
@@ -132,6 +160,14 @@ If reordering happened, add a section to the output:
 - Moved to top: #27 PO tools pass user_id (Phase 2A)
 - Priority HIGH→MEDIUM: #2 Agent Hierarchy (moved to Phase 4)
 - No change: #8 Workspace Failure Counter (same phase)
+```
+
+If ROADMAP items are missing backlog tasks:
+
+```
+### ROADMAP items without backlog tasks
+- Phase 2B: "Shared uv-cache isolation — per-project volume" — no matching task
+- Phase 3: "Dev pipeline skills refinement" — no matching task
 ```
 
 ## Commit
