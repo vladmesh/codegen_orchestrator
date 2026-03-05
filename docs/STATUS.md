@@ -2,8 +2,8 @@
 
 ## Current Task
 - **Backlog**: #32 Prod Deploy Pipeline
-- **Plan**: —
-- **Step**: —
+- **Plan**: docs/plans/prod-deploy-pipeline.md
+- **Step**: 1/5 — Create docker-compose.prod.yml override
 - **Done Steps**: (empty)
 
 ## Blocked

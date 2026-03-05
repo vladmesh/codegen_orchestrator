@@ -7,7 +7,7 @@
 ### #32 Prod Deploy Pipeline
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/prod-deploy-pipeline.md
 - **Status**: pending
 - **Brief**: Протестировать deploy.yml end-to-end на прод-сервере. Worker base images build в pipeline (не compose-сервисы, строятся отдельно). DB backup cron (pg_dump ежедневно). Environment guard на `make nuke`. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
 
