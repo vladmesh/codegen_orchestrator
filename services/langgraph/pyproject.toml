@@ -30,6 +30,9 @@ dependencies = [
 
     # Conversation summarization (SummarizationNode for context management)
     "langmem>=0.0.30",
+
+    # Telethon for Telegram bot smoke tests (optional — graceful skip if not configured)
+    "telethon>=1.36.0",
 ]
 
 [build-system]

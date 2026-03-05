@@ -91,11 +91,15 @@ services:
       ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
       REGISTRY_USER: ${REGISTRY_USER}
       REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
+      TELETHON_API_ID: ${TELETHON_API_ID:-}
+      TELETHON_API_HASH: ${TELETHON_API_HASH:-}
+      TELETHON_SESSION_PATH: ${TELETHON_SESSION_PATH:-}
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ~/.ssh:/root/.ssh:ro
       - ./secrets/github_app.pem:/app/keys/github_app.pem:ro
+      - ${TELETHON_SESSION_DIR:-./secrets/telethon}:/app/telethon:ro
     depends_on:
       - api
       - redis
