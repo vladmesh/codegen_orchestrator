@@ -210,6 +210,12 @@ $COMPOSE down -v --remove-orphans
 For each selected test case, execute these steps. If running multiple tests,
 run them **sequentially** (one at a time — worker-manager handles one container at a time).
 
+**IMPORTANT — repo naming convention**: GitHub repos use **hyphens**, not underscores.
+Always define `REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')` early and use `$REPO_SLUG`
+in ALL GitHub API calls (`list_repo_files`, `get_file_contents`, `get_latest_workflow_run`,
+`delete_repo`, raw API URLs). Use `$PROJECT_NAME` only for API calls, DB records, and
+server paths (`/opt/services/$PROJECT_NAME`).
+
 ### Step 0: Health check + pre-flight cleanup
 
 Before the first test, verify the stack is healthy:
@@ -227,7 +233,7 @@ If API is not healthy, STOP and tell the user to fix the stack first.
 CURRENT_HASH=$(find shared packages/worker-wrapper packages/orchestrator-cli \
   services/worker-manager/images -type f \
   -not -path '*/__pycache__/*' -not -name '*.pyc' \
-  | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
+  | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
 
 STORED_HASH=$(docker inspect worker-base-common:latest \
   --format '{{index .Config.Labels "org.codegen.worker_source_hash"}}' 2>/dev/null || echo "none")
@@ -251,6 +257,8 @@ ORG="project-factory-organization"
 REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')
 
 # 1. Check and delete leftover GitHub repo
+# NOTE: Use `tail -1` to extract only the final print() line.
+# structlog errors go to stdout and pollute the captured output otherwise.
 REPO_EXISTS=$(docker compose exec -T langgraph python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
@@ -262,7 +270,7 @@ async def main():
     except Exception:
         print('CLEAN')
 asyncio.run(main())
-" 2>/dev/null)
+" 2>/dev/null | tail -1)
 
 if [ "$REPO_EXISTS" = "EXISTS" ]; then
   echo "WARNING: Leftover repo $ORG/$REPO_SLUG found — deleting"
@@ -560,6 +568,7 @@ when you need to understand progress:
 
 ```bash
 ORG="project-factory-organization"
+# IMPORTANT: GitHub repos use hyphens, not underscores. Always use $REPO_SLUG here.
 docker compose exec -T langgraph python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
@@ -571,7 +580,7 @@ async def main():
     async with httpx.AsyncClient() as http:
         # All commits
         r = await http.get(
-            'https://api.github.com/repos/$ORG/$PROJECT_NAME/commits?per_page=10',
+            'https://api.github.com/repos/$ORG/$REPO_SLUG/commits?per_page=10',
             headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
         )
         print('=== Commits ===')
@@ -580,7 +589,7 @@ async def main():
             print(f'{c[\"sha\"][:8]} {c[\"commit\"][\"author\"][\"date\"]} {msg}')
         # All CI runs
         r = await http.get(
-            'https://api.github.com/repos/$ORG/$PROJECT_NAME/actions/runs?per_page=10',
+            'https://api.github.com/repos/$ORG/$REPO_SLUG/actions/runs?per_page=10',
             headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
         )
         print('=== CI Runs ===')
@@ -652,6 +661,7 @@ Include the full log line in the report under Timeline or Problems.
 
 ```bash
 ORG="project-factory-organization"
+# IMPORTANT: GitHub repos use hyphens, not underscores. Always use $REPO_SLUG here.
 docker compose exec -T langgraph python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
@@ -659,7 +669,7 @@ from shared.clients.github import GitHubAppClient
 async def main():
     gh = GitHubAppClient()
     try:
-        run = await gh.get_latest_workflow_run('$ORG', '$PROJECT_NAME', 'ci.yml', 'main')
+        run = await gh.get_latest_workflow_run('$ORG', '$REPO_SLUG', 'ci.yml', 'main')
         print(f\"CI run #{run['id']}: status={run['status']}, conclusion={run.get('conclusion')}\")
         print(f\"URL: {run['html_url']}\")
     except Exception as e:
@@ -794,7 +804,7 @@ from shared.clients.github import GitHubAppClient
 
 async def main():
     gh = GitHubAppClient()
-    content = await gh.get_file_contents('$ORG', '$PROJECT_NAME', 'AUDIT_REPORT.md')
+    content = await gh.get_file_contents('$ORG', '$REPO_SLUG', 'AUDIT_REPORT.md')
     if content:
         print(content)
     else:
@@ -888,7 +898,7 @@ from shared.clients.github import GitHubAppClient
 
 async def main():
     gh = GitHubAppClient()
-    await gh.delete_repo('project-factory-organization', '$PROJECT_NAME')
+    await gh.delete_repo('project-factory-organization', '$REPO_SLUG')
     print('Repo deleted')
 
 asyncio.run(main())
