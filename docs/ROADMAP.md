@@ -14,40 +14,63 @@
 - [x] Worker network isolation (#22)
 - [x] Fix & consolidate test suites (#6)
 
-## Phase 2: Reliability & Self-Recovery
+## Phase 2A: Pre-MVP (alpha blockers)
 
-Цель: система восстанавливается сама, ошибки не теряются.
+Цель: пустить 2-3 альфа-тестера. Изоляция, инфра, core product flow.
 
-- [ ] Fix critical getenv defaults (#24) — quick win
-- [ ] Extract shared code: infra_client + constants (#23) — quick win
-- [ ] Post-deploy smoke tester (#25) — httpx + Telethon, pre-MVP
+**Multi-user isolation:**
+- [ ] Multi-user isolation fix — API auth bypass, worker ownership checks
+- [ ] PO tools: pass user_id (#27) — проекты с owner, scoped list
+- [ ] Port allocation locking — atomic allocate-or-fail
+
+**Infrastructure (prod readiness):**
+- [ ] Prod deploy pipeline — test deploy.yml, worker images build, DB backup cron
+- [ ] Secrets hygiene — remove PEM from git, dedicated SSH key
+- [x] Fix critical getenv defaults (#24)
+- [x] Extract shared code (#23)
+- [x] Post-deploy smoke tester (#25)
+- [ ] Fix ORCHESTRATOR_USER_ID defaults (#29)
+
+**Product:**
+- [ ] US3: Add feature to existing project — PO tool + engineering flow + E2E
+
+── ALPHA RELEASE ──
+
+## Phase 2B: Post-alpha stability
+
+Цель: по фидбеку альфы. Устойчивость, cleanup, оптимизация.
+
 - [ ] Workspace failure counter & retry limit (#8)
 - [ ] Deploy pre-check: validate server state (#21)
+- [ ] Security: deploy cleanup (#7) — docker prune на серверах
 - [ ] Worker lifecycle: pause/unpause, CPU/RAM limits (#10)
+- [ ] Shared uv-cache isolation — per-project volume
+- [ ] SOPS для .env на проде
+- [ ] Фиксы по фидбеку альфа-тестеров
+
+## Phase 3: Dev Process Automation & Task Store
+
+Цель: автоматизация разработки + внутренняя "Jira" (dogfooding для продукта).
+
+- [ ] Task Store в БД — Epic, WorkItem, WorkItemGate (dogfooding)
+- [ ] API endpoints: /work-items, /epics
+- [ ] Миграция скиллов на API-first (/next, /implement, /triage через API)
+- [ ] Dev pipeline skills refinement
 - [ ] CI pipeline: parallel integration tests, branch protection (#4)
-- [ ] Agent hierarchy & incident response (#2) — post-MVP candidate
 
-## Phase 3: Dev Process Automation
+## Phase 4: Public Beta
 
-Цель: разработка самого оркестратора автоматизирована через скиллы.
+Цель: больше пользователей. Видимость, фильтрация, quality.
 
-- [ ] Dev pipeline skills: /next, /implement, /triage, /plan, /brainstorm, /checkpoint, /audit
-- [ ] Self-maintaining docs: CHANGELOG, STATUS, ROADMAP auto-update
-- [ ] Formalized backlog format (machine-readable Queue/Ideas/Done)
-
-## Phase 4: MVP (closed beta)
-
-Цель: первые пользователи. Telegram-боты генерируются, параллельность не ломается, всё видно, сложные запросы отклоняются.
-
-- [ ] Admin UI & observability — воркеры, статусы, логи, трассировки LangGraph
-- [ ] Parallel execution validation — state leaks, маршрутизация
-- [ ] Assessor node — фильтр сложности запросов (вместо Architect на старте)
-- [ ] Tester node (полный: Claude + Playwright + Telethon) — AI-driven QA после деплоя
+- [ ] Admin UI & observability — воркеры, статусы, логи, LangGraph traces
+- [ ] Assessor node — фильтр сложности запросов
+- [ ] Tester node (Claude + Playwright + Telethon) — AI-driven QA
+- [ ] Agent hierarchy & incident response (#2) — Watchdog, Diagnostician
 
 ## Phase 5: Capabilities Expansion
 
 - [ ] Frontend battery — React/Vue/HTML generation (US6)
-- [ ] Architect node — декомпозиция сложных задач
+- [ ] Architect node — декомпозиция сложных задач через Task Store
 - [ ] "Add battery" to existing project — инкрементальное добавление модулей
 
 ## Phase 6: Scale

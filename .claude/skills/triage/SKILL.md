@@ -1,6 +1,6 @@
 ---
 name: triage
-description: Process E2E reports, completed brainstorms, and audit reports into backlog tasks. Routes issues by type (orchestrator/template/meta/infra).
+description: Process E2E reports, completed brainstorms, and audit reports into backlog tasks. Routes issues by type (orchestrator/template/meta/infra). Reorders backlog Queue when roadmap changes.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[--source e2e|brainstorms|audit|all]"
 ---
@@ -90,6 +90,50 @@ Place after existing items of the same priority.
 
 Next ID = max existing ID in backlog + 1.
 
+## Reorder Queue by Roadmap
+
+After processing all sources (and before committing), check if backlog Queue order matches `docs/ROADMAP.md` priorities.
+
+### When to reorder
+
+Compare ROADMAP.md git modification time with backlog.md:
+
+```bash
+git log -1 --format="%H %ai" -- docs/ROADMAP.md
+git log -1 --format="%H %ai" -- docs/backlog.md
+```
+
+Reorder if ROADMAP.md was modified **more recently** than backlog.md, OR if new tasks were created in this triage run.
+
+### How to reorder
+
+1. **Parse ROADMAP.md phases** — identify which tasks (`#ID`) belong to which phase. The earliest incomplete phase = "current phase".
+
+2. **Sort Queue**:
+   - Tasks in current phase → top of Queue, ordered by:
+     1. Priority (HIGH before MEDIUM)
+     2. Order within the phase in ROADMAP
+   - Tasks in next phase → middle
+   - Tasks not in any phase → bottom (keep original relative order)
+
+3. **Adjust priorities to match phase**:
+   - Task in current phase but marked MEDIUM → bump to HIGH if the phase is a blocker milestone (e.g., pre-MVP)
+   - Task explicitly deferred to future phase (was HIGH) → downgrade to MEDIUM
+   - Add a note to Brief when priority changes: `Priority adjusted by triage (roadmap phase change).`
+
+4. **Don't touch**: Status, Plan, User Story, Brief content (except priority note). Only reorder entries and adjust Priority field.
+
+### What to report
+
+If reordering happened, add a section to the output:
+
+```
+### Queue Reordered (roadmap changed)
+- Moved to top: #27 PO tools pass user_id (Phase 2A)
+- Priority HIGH→MEDIUM: #2 Agent Hierarchy (moved to Phase 4)
+- No change: #8 Workspace Failure Counter (same phase)
+```
+
 ## Commit
 
 After all processing, commit changed files:
@@ -127,4 +171,10 @@ Print a summary table:
 
 ### Brainstorms Triaged
 - agent-hierarchy.md: done → triaged
+
+### Queue Reordered (roadmap changed)
+- Moved to top: #27 PO tools pass user_id (Phase 2A)
+- Priority HIGH→MEDIUM: #2 Agent Hierarchy (moved to Phase 4)
 ```
+
+If no reordering was needed, omit this section.

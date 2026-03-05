@@ -117,7 +117,7 @@ See [docs/TESTING.md](docs/TESTING.md) for detailed testing guide.
 
 ## Документация
 
-- [AGENTS.md](AGENTS.md) — описание каждого агента
+- [AGENTS.md](AGENTS.md) — точка входа для агентов
 - [ARCHITECTURE.md](ARCHITECTURE.md) — актуальная архитектура и потоки данных
 - [docs/LOGGING.md](docs/LOGGING.md) — руководство по структурированному логированию
 
