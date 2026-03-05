@@ -53,13 +53,6 @@
 - **Status**: pending
 - **Brief**: Core product flow — "допили мне бота". 4 части: (1) PO tool: select existing project (`list_projects(user_id=X)` + выбор), (2) Engineering worker: feature flow (git pull → branch → code → CI, без scaffold), (3) Deploy: redeploy existing (тот же flow без allocation), (4) E2E test: feature-add scenario. Кандидат на первый "эпик". Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
 
-### #25 Post-Deploy Smoke Tester [regression]
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: smoke_result is null в deploy task todo_api-20260305 — smoke tester не вернул результат, хотя deploy успешен. Задача была завершена 2026-03-05, но E2E показал что результат не пробрасывается. Нужно проверить deploy-worker логи, убедиться что smoke tester вызывается и результат сохраняется в task result. Источник: E2E report `docs/e2e_results/todo_api-20260305.md` Problem 3.
-
 ### #8 Workspace Failure Counter
 - **Priority**: MEDIUM
 - **User Story**: —
@@ -199,6 +192,7 @@
 
 ## Done (last 10)
 
+- #25 Post-Deploy Smoke Tester [regression fix] — 2026-03-05
 - #23 Extract Shared Code (infra_client + constants) — 2026-03-05
 - #24 Fix Critical getenv Defaults — 2026-03-04
 - #6 Fix & Consolidate Test Suites — 2026-03-04

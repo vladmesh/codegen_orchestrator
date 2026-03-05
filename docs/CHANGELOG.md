@@ -4,6 +4,9 @@
 
 ## 2026-03-05
 
+### Fixed
+- `smoke_result` null in deploy task result (#25 regression): `_build_subgraph_input` was missing `smoke_result: None` — LangGraph `LastValue` channels not initialized in input don't appear in `ainvoke()` output
+
 ### Added
 - E2E report: todo_api with-PO mode PASS (12 min) — first test with PO creating project via Redis Streams
 - Post-deploy smoke tester node in DevOps subgraph (#25): HTTP `/health` check for backends, Telethon `/start` check for tg_bot modules

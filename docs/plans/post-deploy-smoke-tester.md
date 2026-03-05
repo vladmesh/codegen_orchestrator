@@ -97,3 +97,4 @@ the container might crash on startup, fail health checks, or never bind its port
 - **Step 2**: Added `HTTP_OK = 200` constant to avoid PLR2004 magic number lint error.
 - **Step 3**: Used `/var/lib/telethon/` instead of `/tmp/` for session path default to avoid S108 (insecure temp directory) lint warning.
 - **General**: No deviations from the overall architecture or scope. All 7 steps implemented as planned.
+- **Regression fix (2026-03-05)**: `_build_subgraph_input` in `deploy_worker.py` was missing `smoke_result: None` in the initial state dict. LangGraph `LastValue` channels not initialized in the input don't appear in `ainvoke()` output — so smoke_result was always null despite the smoke tester node running correctly.
