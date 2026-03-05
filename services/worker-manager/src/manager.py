@@ -528,7 +528,7 @@ class WorkerManager:
         volumes = config.to_volume_mounts()
 
         # DOCKER_NETWORK overrides WORKER_NETWORK (used in CI/integration tests).
-        # Empty DOCKER_NETWORK = use host networking (legacy), non-empty = explicit network.
+        # Empty DOCKER_NETWORK (default) = use WORKER_NETWORK (codegen_worker).
         # Workers attach to codegen_worker (isolated from orchestrator infra),
         # not codegen_internal (which has the orchestrator's db/redis).
         if settings.DOCKER_NETWORK:
