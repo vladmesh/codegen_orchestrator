@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #30 Multi-user Isolation Fix
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: —
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
