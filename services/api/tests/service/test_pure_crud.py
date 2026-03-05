@@ -17,9 +17,7 @@ async def test_post_projects_pure_db(async_client: AsyncClient):
         "modules": ["backend"],
     }
 
-    response = await async_client.post(
-        "/api/projects/", json=payload, headers={"X-Telegram-ID": "12345"}
-    )
+    response = await async_client.post("/api/projects/", json=payload)
 
     # Assert success
     assert (

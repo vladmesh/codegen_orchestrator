@@ -48,13 +48,7 @@ async def redis_client() -> AsyncGenerator[Redis, None]:
 
 @pytest.fixture(scope="function")
 async def async_client() -> AsyncGenerator[AsyncClient, None]:
-    """Client with a seeded test user for X-Telegram-ID resolution."""
     from src.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        # Seed test user via API (avoids event loop issues with direct DB access)
-        await client.put(
-            "/api/users/upsert",
-            json={"telegram_id": 12345, "username": "test-user"},
-        )
         yield client
