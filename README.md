@@ -51,8 +51,8 @@ graph TD
 - **API**: FastAPI сервис, единственный источник правды (DAL) для PostgreSQL.
 - **Telegram Bot**: Интерфейс для пользователя, управляет PO сессиями.
 - **Product Owner (PO)**: LangGraph ReactAgent, общающийся с пользователем и ставящий задачи.
-- **Worker Manager**: Управляет Docker контейнерами с проксированием `docker compose` для инфраструктурных сервисов (Engineering/Deploy Workers, Flat Dev Environment).
-- **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps).
+- **Worker Manager**: Управляет Docker контейнерами Developer агентов с проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment).
+- **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps). Engineering-worker и deploy-worker — отдельные контейнеры того же Docker-образа с собственными entrypoint'ами (Redis stream consumers).
 - **Infra Service**: Ansible runner для настройки серверов.
 - **Scheduler**: Фоновые задачи (синхронизация, проверка здоровья, сборка мусора).
 

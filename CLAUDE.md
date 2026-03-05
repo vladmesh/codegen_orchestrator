@@ -58,8 +58,8 @@ Caddy (/webhooks/*) → API
 **Services** (in `services/`):
 - `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs, GitHub webhook receiver (port 8000)
 - `langgraph`: LangGraph orchestration (Engineering, DevOps subgraphs)
-- `engineering-worker`: Consumes `engineering:queue`, runs Engineering subgraph
-- `deploy-worker`: Consumes `deploy:queue`, runs DevOps subgraph
+- `engineering-worker`: Redis stream consumer (`engineering:queue`), runs Engineering subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.workers.engineering_worker`)
+- `deploy-worker`: Redis stream consumer (`deploy:queue`), runs DevOps subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.workers.deploy_worker`)
 - `telegram_bot`: python-telegram-bot interface (PO via Redis Streams)
 - `worker-manager`: Docker container lifecycle for CLI agents, runs scaffold phase (copier + make setup) via docker exec
 - `infra-service`: Ansible execution for server provisioning only (consumes `provisioner:queue`)

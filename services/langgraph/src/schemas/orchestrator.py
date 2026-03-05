@@ -34,7 +34,7 @@ class RepoInfo(BaseModel):
 class AllocatedResource(BaseModel):
     """Allocated server/port resource for a service.
 
-    Created by Zavhoz agent when allocating resources.
+    Created by ResourceAllocatorNode when allocating resources.
     Keys in allocated_resources dict are typically 'server_handle:port' or service name.
     """
 

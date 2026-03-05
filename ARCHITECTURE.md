@@ -34,7 +34,7 @@ Codegen Orchestrator — мультиагентная система для ав
 | `api` | FastAPI + SQLAlchemy — проекты, серверы, users, configs |
 | `telegram_bot` | Telegram интерфейс (PO via Redis Streams) |
 | `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment) |
-| `langgraph` | Engineering/DevOps subgraphs |
+| `langgraph` | Engineering/DevOps subgraphs. `engineering-worker` and `deploy-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `scheduler` | Background tasks (sync, health checks, garbage collection) |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
 
