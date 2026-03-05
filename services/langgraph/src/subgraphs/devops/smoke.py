@@ -2,13 +2,19 @@
 
 Runs deterministic health checks after deployment:
 - Backend modules: GET /health → HTTP 200
-- Telegram bot modules: Telethon /start → non-empty response (step 3)
+- Telegram bot modules: Telethon /start → non-empty response
 """
 
 import asyncio
+import os
 
 import httpx
 import structlog
+
+try:
+    from telethon import TelegramClient
+except ImportError:
+    TelegramClient = None  # type: ignore[assignment, misc]
 
 from ...nodes.base import FunctionalNode, RetryPolicy
 from .state import DevOpsState
@@ -136,12 +142,88 @@ class SmokeTesterNode(FunctionalNode):
         }
 
     async def _check_tg_bot(self, state: DevOpsState, server_ip: str, port: int) -> dict:
-        """Telegram bot smoke check (placeholder — implemented in step 3)."""
-        return {
-            "module": "tg_bot",
-            "result": "skip",
-            "detail": "Telethon check not yet implemented",
-        }
+        """Send /start to the bot via Telethon, verify non-empty response."""
+        # Check env vars — graceful skip if not configured
+        api_id = os.getenv("TELETHON_API_ID")
+        api_hash = os.getenv("TELETHON_API_HASH")
+        session_path = os.getenv("TELETHON_SESSION_PATH")
+
+        if not all([api_id, api_hash, session_path]):
+            logger.warning("smoke_tg_bot_skip", reason="Telethon env vars not configured")
+            return {
+                "module": "tg_bot",
+                "result": "skip",
+                "detail": "Telethon env vars not configured",
+            }
+
+        if TelegramClient is None:
+            logger.warning("smoke_tg_bot_skip", reason="telethon not installed")
+            return {
+                "module": "tg_bot",
+                "result": "skip",
+                "detail": "telethon package not installed",
+            }
+
+        # Get bot username via Bot API getMe
+        resolved_secrets = state.get("resolved_secrets", {})
+        bot_token = resolved_secrets.get("TELEGRAM_BOT_TOKEN")
+        if not bot_token:
+            return {
+                "module": "tg_bot",
+                "result": "skip",
+                "detail": "No TELEGRAM_BOT_TOKEN in resolved_secrets",
+            }
+
+        try:
+            async with httpx.AsyncClient() as http:
+                resp = await http.get(
+                    f"https://api.telegram.org/bot{bot_token}/getMe",
+                    timeout=HEALTH_CHECK_TIMEOUT,
+                )
+                data = resp.json()
+                bot_username = data.get("result", {}).get("username")
+
+            if not bot_username:
+                return {
+                    "module": "tg_bot",
+                    "result": "fail",
+                    "detail": "Could not get bot username from getMe",
+                }
+
+            # Connect Telethon and send /start
+            client = TelegramClient(session_path, int(api_id), api_hash)
+            try:
+                await client.start()
+                await client.send_message(f"@{bot_username}", "/start")
+                response = await client.get_response(f"@{bot_username}", timeout=15)
+
+                if response and response.text:
+                    return {
+                        "module": "tg_bot",
+                        "result": "pass",
+                        "detail": f"Bot responded: {response.text[:100]}",
+                    }
+                return {
+                    "module": "tg_bot",
+                    "result": "fail",
+                    "detail": "Bot sent empty response",
+                }
+            finally:
+                await client.disconnect()
+
+        except TimeoutError:
+            return {
+                "module": "tg_bot",
+                "result": "fail",
+                "detail": "No response from bot within 15s",
+            }
+        except Exception as e:
+            logger.error("smoke_tg_bot_error", error=str(e), error_type=type(e).__name__)
+            return {
+                "module": "tg_bot",
+                "result": "fail",
+                "detail": f"Error: {e}",
+            }
 
 
 smoke_tester_node = SmokeTesterNode()

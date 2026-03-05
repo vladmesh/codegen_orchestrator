@@ -1,6 +1,7 @@
 """Unit tests for SmokeTesterNode."""
 
-from unittest.mock import AsyncMock, patch
+import os
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -154,3 +155,139 @@ class TestSmokeTesterNoModules:
 
         assert result["smoke_result"]["status"] == "pass"
         assert result["smoke_result"]["checks"] == []
+
+
+def _tg_bot_state(**kwargs):
+    """Helper for tg_bot smoke tests."""
+    return _make_state(
+        modules=["tg_bot"],
+        allocated_resources={
+            "srv1:8001": {
+                "server_ip": "1.2.3.4",
+                "port": 8001,
+                "service_name": "tg_bot",
+            }
+        },
+        resolved_secrets={"TELEGRAM_BOT_TOKEN": "123456:ABC-DEF"},
+        **kwargs,
+    )
+
+
+class TestSmokeTesterTgBotPass:
+    """Telethon /start gets a response."""
+
+    async def test_pass_on_response(self, smoke_node):
+        state = _tg_bot_state()
+
+        # Mock getMe API call
+        mock_getme_response = AsyncMock()
+        mock_getme_response.status_code = 200
+        mock_getme_response.json = MagicMock(
+            return_value={"ok": True, "result": {"username": "test_bot"}}
+        )
+
+        # Mock Telethon client
+        mock_telethon_client = AsyncMock()
+        mock_telethon_client.start = AsyncMock()
+        mock_telethon_client.send_message = AsyncMock()
+        mock_telethon_client.disconnect = AsyncMock()
+
+        # Mock incoming message
+        mock_event = MagicMock()
+        mock_event.message = MagicMock()
+        mock_event.message.text = "Welcome!"
+
+        with (
+            patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_http_cls,
+            patch("src.subgraphs.devops.smoke.TelegramClient") as mock_tg_cls,
+            patch.dict(
+                os.environ,
+                {
+                    "TELETHON_API_ID": "12345",
+                    "TELETHON_API_HASH": "abcdef",
+                    "TELETHON_SESSION_PATH": "/var/lib/telethon/test.session",
+                },
+            ),
+        ):
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.get = AsyncMock(return_value=mock_getme_response)
+            mock_http_cls.return_value = mock_http
+
+            mock_tg_cls.return_value = mock_telethon_client
+
+            # Simulate receiving a message via get_response
+            mock_telethon_client.get_response = AsyncMock(return_value=mock_event.message)
+
+            result = await smoke_node.run(state)
+
+        assert result["smoke_result"]["status"] == "pass"
+        check = result["smoke_result"]["checks"][0]
+        assert check["module"] == "tg_bot"
+        assert check["result"] == "pass"
+
+
+class TestSmokeTesterTgBotTimeout:
+    """Telethon /start gets no response within timeout."""
+
+    async def test_timeout(self, smoke_node):
+        state = _tg_bot_state()
+
+        mock_getme_response = AsyncMock()
+        mock_getme_response.status_code = 200
+        mock_getme_response.json = MagicMock(
+            return_value={"ok": True, "result": {"username": "test_bot"}}
+        )
+
+        mock_telethon_client = AsyncMock()
+        mock_telethon_client.start = AsyncMock()
+        mock_telethon_client.send_message = AsyncMock()
+        mock_telethon_client.disconnect = AsyncMock()
+        mock_telethon_client.get_response = AsyncMock(side_effect=TimeoutError("no response"))
+
+        with (
+            patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_http_cls,
+            patch("src.subgraphs.devops.smoke.TelegramClient") as mock_tg_cls,
+            patch.dict(
+                os.environ,
+                {
+                    "TELETHON_API_ID": "12345",
+                    "TELETHON_API_HASH": "abcdef",
+                    "TELETHON_SESSION_PATH": "/var/lib/telethon/test.session",
+                },
+            ),
+        ):
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.get = AsyncMock(return_value=mock_getme_response)
+            mock_http_cls.return_value = mock_http
+
+            mock_tg_cls.return_value = mock_telethon_client
+
+            result = await smoke_node.run(state)
+
+        assert result["smoke_result"]["status"] == "fail"
+        check = result["smoke_result"]["checks"][0]
+        assert check["module"] == "tg_bot"
+        assert check["result"] == "fail"
+
+
+class TestSmokeTesterTgBotMissingEnv:
+    """Skip tg_bot check if Telethon env vars not configured."""
+
+    async def test_skip_without_env(self, smoke_node):
+        state = _tg_bot_state()
+
+        with patch.dict(os.environ, {}, clear=True):
+            # Ensure TELETHON_* vars are not set
+            for key in ["TELETHON_API_ID", "TELETHON_API_HASH", "TELETHON_SESSION_PATH"]:
+                os.environ.pop(key, None)
+
+            result = await smoke_node.run(state)
+
+        assert result["smoke_result"]["status"] == "pass"
+        check = result["smoke_result"]["checks"][0]
+        assert check["module"] == "tg_bot"
+        assert check["result"] == "skip"
