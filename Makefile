@@ -1,8 +1,8 @@
 .PHONY: lint format test-unit test-integration test-e2e-scaffold test-clean \
-	build up down stop logs help nuke seed migrate makemigrations shell \
+	build up down stop logs help nuke nuke-hard seed migrate makemigrations shell \
 	setup-hooks lock-deps cleanup-agents \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
-	check-worker-images
+	check-worker-images .nuke-common .nuke-hard-prune
 
 # Load .env file
 -include .env
@@ -268,12 +268,14 @@ nuke: BUILD_OPTS=
 nuke: .nuke-common
 
 nuke-hard: BUILD_OPTS=--no-cache
-nuke-hard: .nuke-common
+nuke-hard: .nuke-hard-prune .nuke-common
+
+.nuke-hard-prune:
+	@echo "🧹 Cleaning build cache..."
+	@docker builder prune -f
 
 .nuke-common:
 	@echo "🔥 Nuking everything (Build mode: $(if $(filter --no-cache,$(BUILD_OPTS)),hard reset,smart incremental))..."
-	@echo "🧹 Cleaning build cache..."
-	@docker builder prune -f
 	@echo "🧹 Cleaning up stale worker containers..."
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
 	@echo "🧹 Cleaning up worker images..."
@@ -284,8 +286,8 @@ nuke-hard: .nuke-common
 		docker volume rm codegen_orchestrator_$$vol 2>/dev/null || true; \
 	done
 	$(DOCKER_COMPOSE) --profile build build $(BUILD_OPTS)
-	@echo "🔨 Rebuilding worker base images..."
-	@$(MAKE) rebuild-worker-images
+	@echo "🔨 Checking worker base images..."
+	@$(MAKE) check-worker-images
 	$(DOCKER_COMPOSE) up -d
 	@echo "⏳ Waiting for DB to be healthy..."
 	@timeout=60; \
@@ -328,5 +330,4 @@ seed:
 	@echo "🤖 Seeding agent configurations..."
 	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_agent_configs.py \
 		--api-base-url http://localhost:8000 \
-		--configs-path /app/scripts/agent_configs.yaml \
-		--cli-configs-path /app/scripts/cli_agent_configs.yaml || echo "  ⚠️  Agent config seeding failed (API may not be ready)"
+		--configs-path /app/scripts/agent_configs.yaml || echo "  ⚠️  Agent config seeding failed (API may not be ready)"

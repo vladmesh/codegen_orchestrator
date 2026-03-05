@@ -125,19 +125,33 @@
 - **Status**: pending
 - **Brief**: Завершить покрытие E2E (Level 5-7). Добавить E2E mock-тесты (Level A+B) в CI.
 
+### #36 Remove CLI Agent Config Infrastructure
+- **Priority**: MEDIUM
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Вся CLI agent config инфраструктура мертва — `CLIAgentNode` base class никем не наследуется, worker spawning использует `request_spawn()` напрямую. Удалить: `CLIAgentNode` из `nodes/base.py` (строки 162-193), `cli_agent_config_cache.py`, `cli_agent_config.py` (langgraph config), CLI agent config router (`api/src/routers/cli_agent_configs.py`), CLI agent config schema (`api/src/schemas/cli_agent_config.py`), ORM model (`shared/models/cli_agent_config.py`), alembic migration для таблицы. Источник: seed/nuke audit 2026-03-05.
+
+### #37 Remove Dead LLM Agent Configs from Code
+- **Priority**: MEDIUM
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: 5 из 6 agent_configs были мёртвыми (удалены из YAML). Но код содержит vestigial references: `architect_complete: bool` в `OrchestratorState` (graph.py:72) и `provisioner.py:128`, docstring в `agent_config.py:48` ссылается на "product_owner". Также PO prompt из БД не используется — PO берёт model из env vars, prompt из `po/prompts.py`. Проверить нужен ли agent_configs API router вообще (используется только для `devops`). Источник: seed/nuke audit 2026-03-05.
+
 ### #17 Dead Code & Legacy Cleanup
 - **Priority**: MEDIUM
 - **User Story**: —
 - **Plan**: —
 - **Status**: partial
-- **Brief**: Legacy networking fallback в `manager.py:525-530` и project lookup по имени в `github_sync.py:213-226` — оба оставлены как защитный код. Audit 2026-03-04: delete `services/langgraph/src/list_repos.py` (dead debug script, 72 LOC). Audit 2026-03-05: move `services/langgraph/src/tests/test_architect_routing.py` to `tests/` directory.
+- **Brief**: Legacy networking fallback в `manager.py:525-530` и project lookup по имени в `github_sync.py:213-226` — оба оставлены как защитный код. Audit 2026-03-04: delete `services/langgraph/src/list_repos.py` (dead debug script, 72 LOC). Audit 2026-03-05: `test_architect_routing.py` deleted (broken, tested removed node).
 
 ### #12 Remove Obsolete Zavhoz
 - **Priority**: MEDIUM
 - **User Story**: —
 - **Plan**: —
-- **Status**: pending
-- **Brief**: Удалить Zavhoz из документации и конфигурации, заменён на ResourceAllocatorNode.
+- **Status**: partial (config removed from agent_configs.yaml)
+- **Brief**: Удалить Zavhoz из документации и конфигурации, заменён на ResourceAllocatorNode. Конфиг из seed YAML уже удалён (2026-03-05). Осталось: документация, любые упоминания в коде.
 
 ### #13 Fix Deploy-worker Documentation
 - **Priority**: MEDIUM
@@ -187,6 +201,7 @@
 - RLS policies на PostgreSQL для multi-tenant (подготовка, не блокер для MVP) (источник: brainstorm multi-tenant-isolation)
 - Redis key prefix isolation (tenant:{id}:*) — подготовка к multi-tenant (источник: brainstorm multi-tenant-isolation)
 - Отдельная database для системных данных оркестратора (orchestrator_system) — Phase 3 (источник: brainstorm multi-tenant-isolation)
+- Унифицировать Time4VPS credentials: infra-service читает из env vars, scheduler — из api_keys таблицы через API. Один источник правды. (источник: seed/nuke audit 2026-03-05)
 
 ## Done (last 10)
 
