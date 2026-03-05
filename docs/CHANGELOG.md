@@ -4,6 +4,14 @@
 
 ## 2026-03-05
 
+### Added
+- Post-deploy smoke tester node in DevOps subgraph (#25): HTTP `/health` check for backends, Telethon `/start` check for tg_bot modules
+- `SmokeTesterNode` with retry logic (3 retries, 5s delay) and graceful skip when Telethon not configured
+- `smoke_result` field in `DevOpsState` — propagated through deploy_worker to task result
+- Conditional routing: `deployer` → `smoke_tester` → END (skips smoke on deploy failure)
+- Telethon dependency + env vars in deploy-worker compose config
+- Updated `/e2e-run` skill to report smoke results
+
 ### Changed
 - Extract `infra_client.py` (279 LOC) from langgraph + infra-service to `shared/clients/` (#23)
 - Merge duplicated constants (`Paths`, `Timeouts`, `CI`, `Provisioning`) into `shared/constants.py` (#23)

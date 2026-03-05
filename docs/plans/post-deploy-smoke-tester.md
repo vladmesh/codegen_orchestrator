@@ -21,13 +21,13 @@ the container might crash on startup, fail health checks, or never bind its port
 
 ## Steps
 
-### 1. [ ] Add `smoke_result` to DevOpsState
+### 1. [x] Add `smoke_result` to DevOpsState
 
 - **Input**: `services/langgraph/src/subgraphs/devops/state.py`
 - **Output**: New field `smoke_result: dict | None` in `DevOpsState`
 - **Test**: Unit test — verify `DevOpsState` accepts `smoke_result` key
 
-### 2. [ ] Create `smoke_tester` node (backend HTTP health check)
+### 2. [x] Create `smoke_tester` node (backend HTTP health check)
 
 - **Input**: `services/langgraph/src/subgraphs/devops/nodes.py`, `allocated_resources`, `project_spec`
 - **Output**: New `SmokeTesterNode(FunctionalNode)` in a new file `services/langgraph/src/subgraphs/devops/smoke.py`:
@@ -37,7 +37,7 @@ the container might crash on startup, fail health checks, or never bind its port
   - On fail: append to `errors`
 - **Test**: Unit test with mocked httpx — pass case (200), fail case (500), timeout case, retry logic
 
-### 3. [ ] Add Telethon `/start` check for tg_bot modules
+### 3. [x] Add Telethon `/start` check for tg_bot modules
 
 - **Input**: `smoke.py`, `resolved_secrets` (for `TELEGRAM_BOT_TOKEN`)
 - **Output**: Extend `SmokeTesterNode`:
@@ -53,7 +53,7 @@ the container might crash on startup, fail health checks, or never bind its port
 - **Test**: Unit test with mocked Telethon client — pass case, timeout case, missing env skip
 - **Infra prerequisite**: One-time manual Telethon session authorization (document in README/ops guide)
 
-### 4. [ ] Wire smoke_tester into DevOps subgraph
+### 4. [x] Wire smoke_tester into DevOps subgraph
 
 - **Input**: `services/langgraph/src/subgraphs/devops/graph.py`
 - **Output**:
@@ -62,7 +62,7 @@ the container might crash on startup, fail health checks, or never bind its port
   - `smoke_tester` runs only when `deployed_url` is set
 - **Test**: Unit test — graph topology: verify `smoke_tester` is in the compiled graph, verify routing skips smoke on deploy failure
 
-### 5. [ ] Handle smoke failure in deploy_worker
+### 5. [x] Handle smoke failure in deploy_worker
 
 - **Input**: `services/langgraph/src/workers/deploy_worker.py`
 - **Output**:
@@ -72,7 +72,7 @@ the container might crash on startup, fail health checks, or never bind its port
   - Include smoke details in task result
 - **Test**: Unit test — deploy_worker with mocked subgraph returning smoke failure
 
-### 6. [ ] Add `telethon` dependency + env vars to langgraph service
+### 6. [x] Add `telethon` dependency + env vars to langgraph service
 
 - **Input**: `services/langgraph/requirements.in`, `docker-compose.yml`
 - **Output**:
@@ -81,7 +81,7 @@ the container might crash on startup, fail health checks, or never bind its port
   - Mount session file volume (optional, only if path configured)
 - **Test**: `make build` passes, service starts without Telethon vars (graceful skip)
 
-### 7. [ ] Update `/e2e-run` skill to use smoke results
+### 7. [x] Update `/e2e-run` skill to use smoke results
 
 - **Input**: `.claude/skills/e2e-run/SKILL.md`
 - **Output**: Update three sections:
@@ -89,3 +89,11 @@ the container might crash on startup, fail health checks, or never bind its port
   - **Step 5b (Verify)**: Read `smoke_result` from deploy task's `result` JSON (`curl -s http://localhost:8000/api/tasks/$DEPLOY_TASK | jq '.result.smoke_result'`). Log per-module check results. Keep the manual `curl /health` as independent cross-check.
   - **Step 7 (Report)**: Add `> **Smoke**: pass (backend: 200) / fail (tg_bot: timeout)` to report header. Include smoke details in Timeline.
 - **Test**: Manual — run a test E2E after all other steps are done, verify smoke results appear in report
+
+## Deviations
+
+- **Step 6**: Plan referenced `requirements.in` but project uses `pyproject.toml` for dependencies. Added telethon to `pyproject.toml` and ran `make lock-deps`.
+- **Step 5**: `deploy_worker.py` hit PLR0915 (too many statements) after adding smoke handling. Extracted 3 helper functions: `_handle_smoke_failure`, `_handle_deploy_success`, `_build_subgraph_input`.
+- **Step 2**: Added `HTTP_OK = 200` constant to avoid PLR2004 magic number lint error.
+- **Step 3**: Used `/var/lib/telethon/` instead of `/tmp/` for session path default to avoid S108 (insecure temp directory) lint warning.
+- **General**: No deviations from the overall architecture or scope. All 7 steps implemented as planned.

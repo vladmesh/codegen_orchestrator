@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #25 Post-Deploy Smoke Tester
-- **Priority**: HIGH (pre-MVP)
-- **User Story**: US0 (acceptance criteria: stable E2E)
-- **Plan**: docs/plans/post-deploy-smoke-tester.md
-- **Status**: pending
-- **Brief**: Минимальная нода в DevOps subgraph после деплоя. HTTP smoke (httpx: `/health` + эндпоинты из спеки) для бэкендов. Telethon smoke (`/start` + команды из спеки) для ботов. Детерминированные проверки, без Claude. Pass → уведомление юзеру, fail → retry/обратно в Engineering. Telethon-сессия хранится как секрет оркестратора. Brainstorm: `docs/brainstorms/qa-node.md` (полная версия — post-MVP).
-
 ### #2 Agent Hierarchy & Incident Response
 - **Priority**: HIGH (post-MVP candidate)
 - **User Story**: —
@@ -152,6 +145,7 @@
 
 ## Done (last 10)
 
+- #25 Post-Deploy Smoke Tester — 2026-03-05
 - #23 Extract Shared Code (infra_client + constants) — 2026-03-05
 - #24 Fix Critical getenv Defaults — 2026-03-04
 - #6 Fix & Consolidate Test Suites — 2026-03-04
@@ -162,6 +156,3 @@
 - #14 Contract Consistency — 2026-02-17
 - #15 Resolve Enum Divergence — 2026-02-25
 - #16 Consolidate ServiceModule — 2026-02-25
-- Secrets Encryption (Fernet) — 2026-02-15
-- Caddy Reverse Proxy — 2026-02-15
-- Dev Environment DinD → Native — 2026-02-20
