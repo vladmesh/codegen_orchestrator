@@ -1,46 +1,43 @@
 # Audit Report
 
-## Issues Found
+## Framework Assessment
 
-### 1. Broken import in scaffolded user repository (BUG)
-- **File**: `services/backend/src/app/repositories/user.py:9`
-- **Error**: `from ..schemas import UserCreate, UserUpdate` - `ModuleNotFoundError: No module named 'services.backend.src.app.schemas'`
-- **Expected**: The scaffolded code should have working imports out of the box.
-- **What happened**: The repository references a `schemas` module in the `app` package that doesn't exist. The schemas are generated in `shared/shared/generated/schemas.py`.
-- **Fix applied**: Changed to `from shared.generated.schemas import UserCreate, UserUpdate`.
-- **Impact**: This blocked `make migrate`, `make tests`, and any import of the backend application. The project was non-functional until this was fixed.
-- **Suggestion**: The scaffold generator should produce the correct import path for schemas in repository files, or a `schemas.py` re-export should be generated in `services/backend/src/app/`.
+### What worked well
 
-### 2. `services/backend/src/app/api/__init__.py` eagerly imports router (OBSERVATION)
-- **File**: `services/backend/src/app/api/__init__.py:3`
-- **What**: `from .router import api_router` is executed at import time, which causes the entire chain of imports (routers -> controllers -> repositories -> schemas) to execute. This means any broken import in any part of the chain causes the entire application to fail to import.
-- **Suggestion**: Consider lazy imports or at minimum ensure the import chain is correct in scaffolded code.
+1. **Spec-first workflow**: The `make generate-from-spec` command worked smoothly. Defining models in `shared/spec/models.yaml` and domain operations in `services/backend/spec/todos.yaml` generated correct Pydantic schemas, controller protocols, and stub controllers.
 
-### 3. `services/backend/src/__init__.py` eagerly imports app and create_app (OBSERVATION)
-- **File**: `services/backend/src/__init__.py:3`
-- **What**: `from .main import app, create_app` triggers the entire application initialization at import time.
-- **Impact**: When Alembic's `env.py` does `from services.backend.src.app import models`, it traverses through `src/__init__.py` which imports `main.py` which creates the app, which imports all routers and controllers. This makes migration operations fragile.
-- **Suggestion**: Alembic env.py could import models more directly (e.g., `from services.backend.src.app.models import *`) to avoid triggering the full app initialization chain.
+2. **Code generation quality**: Generated schemas (`shared/shared/generated/schemas.py`) correctly handled `readonly` fields (excluded from Create/Update variants), `default` values, and `optional` fields in Update variants.
 
-## What Worked Well
+3. **Controller stub generation**: The framework generated a complete `TodosController` stub in `services/backend/src/controllers/todos.py` with all methods from the protocol, ready to be filled in.
 
-1. **Spec-first workflow**: Adding the Todo model to `models.yaml` and creating `spec/todos.yaml` followed by `make generate-from-spec` correctly generated schemas, protocols, and a controller stub. This workflow is efficient and well-designed.
+4. **Spec validation**: `make validate-specs` caught issues before generation, providing a safety net.
 
-2. **Code generation quality**: The generated Pydantic schemas, controller protocols, and controller stubs were all correct and well-structured. The variant system (Create, Update, Read) works as documented.
+5. **Lint tooling**: `make lint` and `make format` worked well. The controller sync check (`lint-controllers`) verified controllers match their protocols.
 
-3. **Test infrastructure**: The test fixtures with SQLite, transactional isolation, and mock broker setup worked correctly. Adding new tests for todos was straightforward by following the existing user test patterns.
+6. **Test infrastructure**: The SQLite-based test setup with transactional isolation worked perfectly for the todo endpoints.
 
-4. **Linting pipeline**: `make lint` runs format check, ruff, xenon complexity, spec validation, spec compliance, and controller sync - comprehensive and catches issues early.
+7. **Database migration flow**: `orchestrator dev-env start-infra db` -> `make migrate` -> `make makemigrations` -> `make migrate` worked cleanly. Alembic correctly detected the new `todos` table.
 
-5. **Migration workflow**: `orchestrator dev-env start-infra db` -> `make migrate` -> `make makemigrations` -> `make migrate` worked smoothly once the import bug was fixed.
+### Issues encountered
 
-6. **Controller sync lint**: `make lint-controllers` correctly verified that the controller implementation matches the generated protocol.
+1. **Import sorting in generated/scaffold code**: The existing `services/backend/src/app/repositories/user.py` had an import sorting issue (`ruff I001`). This pre-existing lint issue was not caught until I ran `make lint`. The scaffold should either generate code that passes linting or run `make format` as part of `make setup`.
+   - **File**: `services/backend/src/app/repositories/user.py`
+   - **Error**: `I001 Import block is un-sorted or un-formatted`
+   - **Impact**: Minor - fixed with `make format`
 
-## Suggestions for Improvement
+2. **TodoRead schema lacks `updated_at`**: The Todo spec only has `created_at` as a readonly datetime. The `ORMBase` includes `updated_at`, but since we used `CreatedAtMixin + Base` for the Todo model (since the spec didn't define `updated_at`), this is consistent. However, if a user expects `updated_at` on Todo, they'd need to add it to the spec. The framework could document this pattern better.
 
-1. **Fix the broken schemas import**: This is the most critical issue. The scaffold should generate working code that passes `make tests` and `make migrate` immediately after scaffolding.
+3. **AGENTS.md is in Russian**: All documentation in `AGENTS.md` and `services/backend/AGENTS.md` is in Russian. While functional, this could be a barrier for non-Russian-speaking developers. Consider offering English translations or making the language configurable in the template.
 
-2. **Add a `make check` or `make verify` target**: A single command that runs format, lint, tests, and spec validation would be convenient for a final pre-commit check.
+### Suggestions
 
-3. **Document the `CreatedAtMixin` vs `ORMBase` distinction**: The `ORMBase` includes both `created_at` and `updated_at`. If a model only needs `created_at`, the developer needs to use `CreatedAtMixin + Base` directly. This should be documented in AGENTS.md.
+1. **Run `make format` as part of `make setup`**: This would ensure all scaffold-generated code passes lint from the start.
+
+2. **Add a `make new-domain` command**: A helper to scaffold the full domain (spec YAML + ORM model + repository + router) would reduce boilerplate and ensure consistency.
+
+3. **Router generation**: The framework generates protocols and controller stubs but not routers. Since routers follow a very predictable pattern (as shown in the AGENTS.md examples), generating them would save time and reduce errors.
+
+4. **Model `__init__.py` auto-update**: When adding new models/repositories, the `__init__.py` files need manual updates. The framework could auto-detect new modules.
+
+5. **Test template generation**: A basic test file template for new domains would speed up development.
 
