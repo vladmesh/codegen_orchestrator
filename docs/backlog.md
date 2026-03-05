@@ -4,6 +4,13 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #4 CI Pipeline Redesign
+- **Priority**: HIGH | integration-tests
+- **User Story**: —
+- **Plan**: —
+- **Status**: partial (PR/Publish split done)
+- **Brief**: Параллельные интеграционные тесты (GH Actions matrix). Split `test-integration` into 5 parallel jobs (backend, cli, template, frontend, infra) — wall-clock 10min→3-4min. Включает: healthcheck interval tuning (5s→2s в compose-файлах без DIND), buildx cache per-suite. Brainstorms: `docs/brainstorms/ci-pipeline-redesign.md`, `docs/brainstorms/ci-integration-test-speed.md`.
+
 ### #12 Remove Obsolete Zavhoz
 - **Priority**: MEDIUM | quick-win
 - **User Story**: —
@@ -88,13 +95,6 @@
 - **Status**: pending
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
 
-### #4 CI Pipeline Redesign
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: partial (PR/Publish split done)
-- **Brief**: Branch Protection, параллельные интеграционные тесты (GH Actions matrix). Split `test-integration` into 5 parallel jobs (backend, cli, template, frontend, infra) — wall-clock 10min→3-4min. Brainstorms: `docs/brainstorms/ci-pipeline-redesign.md`, `docs/brainstorms/ci-integration-test-speed.md`. Priority adjusted by triage (roadmap phase change).
-
 ### #2 Agent Hierarchy & Incident Response
 - **Priority**: MEDIUM
 - **User Story**: —
@@ -129,13 +129,6 @@
 - **Plan**: —
 - **Status**: pending
 - **Brief**: Завершить покрытие E2E (Level 5-7). Добавить E2E mock-тесты (Level A+B) в CI.
-
-### #28 CI: Cache copier template for integration tests
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Template integration tests clone from GitHub on every run. Pass local path instead of GitHub URL to avoid network dependency and save ~10-15s per test. Source: brainstorm `docs/brainstorms/ci-integration-test-speed.md`.
 
 ### #26 Notifications via Redis Stream (убрать прямую зависимость от Telegram API)
 - **Priority**: MEDIUM
@@ -172,6 +165,9 @@
 - Redis key prefix isolation (tenant:{id}:*) — подготовка к multi-tenant (источник: brainstorm multi-tenant-isolation)
 - Отдельная database для системных данных оркестратора (orchestrator_system) — Phase 3 (источник: brainstorm multi-tenant-isolation)
 - Унифицировать Time4VPS credentials: infra-service читает из env vars, scheduler — из api_keys таблицы через API. Один источник правды. (источник: seed/nuke audit 2026-03-05)
+- Shared Docker image layer для интеграционных тестов — собрать api/db/redis один раз, шарить между стеками через GHA artifacts (источник: brainstorm ci-integration-test-speed, Option B)
+- Объединить мелкие compose-стеки (frontend 1 тест + infra 2 теста) для экономии одного up/down цикла (источник: brainstorm ci-integration-test-speed, Option D)
+- CI: cache copier template clone для template integration tests — marginal gain ~10-15с, сложный cache invalidation (источник: brainstorm ci-integration-test-speed)
 
 ## Done (last 10)
 
