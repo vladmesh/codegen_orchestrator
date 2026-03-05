@@ -218,7 +218,19 @@ server paths (`/opt/services/$PROJECT_NAME`).
 
 ### Step 0: Health check + pre-flight cleanup
 
-Before the first test, verify the stack is healthy:
+Before the first test, do a full stack reset to ensure clean state:
+
+```bash
+make nuke
+```
+
+Wait 180 seconds for all services to fully initialize (DB migrations, Redis, workers):
+
+```bash
+sleep 180
+```
+
+Then verify the stack is healthy:
 
 ```bash
 curl -sf http://localhost:8000/health | jq .
