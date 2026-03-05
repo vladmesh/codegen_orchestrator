@@ -19,20 +19,20 @@
 Цель: пустить 2-3 альфа-тестера. Изоляция, инфра, core product flow.
 
 **Multi-user isolation:**
-- [ ] Multi-user isolation fix — API auth bypass, worker ownership checks
-- [ ] PO tools: pass user_id (#27) — проекты с owner, scoped list
-- [ ] Port allocation locking — atomic allocate-or-fail
+- [x] Multi-user isolation fix (#30) — API auth bypass, worker ownership checks
+- [x] PO tools: pass user_id (#27, merged into #30) — проекты с owner, scoped list
+- [x] Port allocation locking (#31) — atomic allocate-or-fail
 
 **Infrastructure (prod readiness):**
-- [ ] Prod deploy pipeline — test deploy.yml, worker images build, DB backup cron
-- [ ] Secrets hygiene — remove PEM from git, dedicated SSH key
+- [ ] Prod deploy pipeline (#32) — test deploy.yml, worker images build, DB backup cron
+- [ ] Secrets hygiene (#33) — remove PEM from git, dedicated SSH key
 - [x] Fix critical getenv defaults (#24)
 - [x] Extract shared code (#23)
 - [x] Post-deploy smoke tester (#25)
-- [ ] Fix ORCHESTRATOR_USER_ID defaults (#29)
+- [x] Fix ORCHESTRATOR_USER_ID defaults (#29)
 
 **Product:**
-- [ ] US3: Add feature to existing project — PO tool + engineering flow + E2E
+- [ ] US3: Add feature to existing project (#34) — PO tool + engineering flow + E2E
 
 ── ALPHA RELEASE ──
 
@@ -56,7 +56,7 @@
 - [ ] API endpoints: /work-items, /epics
 - [ ] Миграция скиллов на API-first (/next, /implement, /triage через API)
 - [ ] Dev pipeline skills refinement
-- [ ] CI pipeline: parallel integration tests, branch protection (#4)
+- [x] CI pipeline: parallel integration tests, branch protection (#4)
 
 ## Phase 4: Public Beta
 
