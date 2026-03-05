@@ -4,19 +4,12 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #12 Remove Obsolete Zavhoz
+### #12 Documentation Cleanup (Zavhoz + Deploy-worker)
 - **Priority**: MEDIUM | quick-win
 - **User Story**: —
 - **Plan**: —
-- **Status**: partial (config removed from agent_configs.yaml)
-- **Brief**: Удалить Zavhoz из документации и конфигурации, заменён на ResourceAllocatorNode. Конфиг из seed YAML уже удалён (2026-03-05). Осталось: документация, любые упоминания в коде.
-
-### #13 Fix Deploy-worker Documentation
-- **Priority**: MEDIUM | quick-win
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Отразить что deploy-worker и engineering-worker — процессы LangGraph, не суб-сервисы.
+- **Status**: partial (Zavhoz config removed from agent_configs.yaml)
+- **Brief**: (1) Удалить Zavhoz из документации и конфигурации, заменён на ResourceAllocatorNode. Конфиг из seed YAML уже удалён (2026-03-05). Осталось: документация, любые упоминания в коде. (2) Отразить что deploy-worker и engineering-worker — процессы LangGraph, не суб-сервисы. Объединено из #12 + #13.
 
 ### #30 Multi-user Isolation Fix
 - **Priority**: HIGH
