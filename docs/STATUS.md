@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #37 Remove Dead LLM Agent Configs from Code
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: —
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
