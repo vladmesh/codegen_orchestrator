@@ -28,6 +28,14 @@ from ..nodes.resource_allocator import resource_allocator_node
 from ._base import start_worker
 from ._events import publish_callback_event
 
+
+def _parse_telegram_id(user_id: str) -> dict:
+    """Build get_project kwargs with telegram_id if user_id is numeric."""
+    if user_id and user_id.isdigit():
+        return {"telegram_id": int(user_id)}
+    return {}
+
+
 logger = structlog.get_logger(__name__)
 
 
@@ -630,8 +638,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             project_id=project_id or "",
         )
 
-        # Fetch project details
-        project = await api_client.get_project(project_id)
+        # Fetch project details (with user isolation)
+        project = await api_client.get_project(project_id, **_parse_telegram_id(user_id))
         if not project:
             error_msg = f"Project {project_id} not found"
             await api_client.patch(
@@ -918,7 +926,7 @@ async def _handle_engineering_success(
     )
 
     # --- Refresh project before CI check (repo_url may have been updated) ---
-    fresh_project = await api_client.get_project(project_id)
+    fresh_project = await api_client.get_project(project_id, **_parse_telegram_id(user_id))
     if fresh_project:
         project = fresh_project
 

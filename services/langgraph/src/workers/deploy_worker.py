@@ -256,8 +256,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             project_id=project_id or "",
         )
 
-        # Fetch project details (needed early for proactive notification name)
-        project: ProjectInfo | None = await api_client.get_project(project_id)
+        # Fetch project details (with user isolation)
+        tg_kwargs = {"telegram_id": int(user_id)} if user_id and user_id.isdigit() else {}
+        project: ProjectInfo | None = await api_client.get_project(project_id, **tg_kwargs)
         if not project:
             error_msg = f"Project {project_id} not found"
             await api_client.patch(
