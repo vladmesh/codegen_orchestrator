@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #30 Multi-user Isolation Fix
-- **Plan**: docs/plans/multi-user-isolation.md
-- **Step**: 1/5 — PO tools: pass X-Telegram-ID header in API calls
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 30 | Multi-user Isolation Fix |
 | 12 | Documentation Cleanup (Zavhoz + Deploy-worker) |
 | 4 | CI Pipeline Redesign |
 | 17 | Dead Code & Legacy Cleanup |

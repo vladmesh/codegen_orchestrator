@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #30 Multi-user Isolation Fix
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/multi-user-isolation.md
-- **Status**: pending
-- **Brief**: (1) PO tools (`services/langgraph/src/po/tools.py`) не передают `X-Telegram-ID` заголовок при вызовах API → `create_project` создаёт проекты с `owner_id = NULL`, `list_projects` возвращает всё всем. Фикс: прокинуть `user_id` из `config["configurable"]` в httpx-клиент как `X-Telegram-ID` header. (2) API auth bypass: без `X-Telegram-ID` header возвращает ВСЕ проекты всех пользователей (projects.py, tasks.py, allocations.py). (3) Worker ownership: engineering_worker и deploy_worker не проверяют что user_id владеет project_id. (4) Task update bypass: невалидный telegram_id проходит проверку (silent pass при user=None). Объединено из #30 + #27. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`, e2e-run PO integration analysis 2026-03-04.
-
 ### #31 Port Allocation Locking
 - **Priority**: HIGH
 - **User Story**: —
@@ -143,6 +136,7 @@
 
 ## Done (last 10)
 
+- #30 Multi-user Isolation Fix — 2026-03-05
 - #12 Documentation Cleanup (Zavhoz + Deploy-worker) — 2026-03-05
 - #4 CI Pipeline Redesign — 2026-03-05
 - #17 Dead Code & Legacy Cleanup — 2026-03-05
@@ -152,5 +146,3 @@
 - #35 [meta] E2E Skill: server IP resolution + repo slug paths — fixed 2026-03-05
 - #25 Post-Deploy Smoke Tester — confirmed working in E2E todo_api-20260305-2 — 2026-03-05
 - #23 Extract Shared Code (infra_client + constants) — 2026-03-05
-- #24 Fix Critical getenv Defaults — 2026-03-04
-- #6 Fix & Consolidate Test Suites — 2026-03-04

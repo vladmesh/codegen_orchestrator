@@ -4,6 +4,12 @@
 
 ## 2026-03-05
 
+### Fixed
+- Multi-user isolation: PO tools now pass `X-Telegram-ID` header in all API calls (#30)
+- API requires `X-Telegram-ID` for project creation — prevents orphan projects with `owner_id=NULL` (#30)
+- Workers pass user's telegram_id to API when fetching projects, enabling ownership checks (#30)
+- `LanggraphAPIClient.get_project()` and `list_projects()` accept optional `telegram_id` param (#30)
+
 ### Changed
 - Replaced last "Zavhoz agent" reference with "ResourceAllocatorNode" in `AllocatedResource` docstring (#12)
 - Clarified engineering-worker and deploy-worker as Redis stream consumers of the langgraph image, not independent services, across CLAUDE.md, README.md, ARCHITECTURE.md (#12)

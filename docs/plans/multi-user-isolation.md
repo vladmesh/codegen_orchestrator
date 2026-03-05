@@ -28,7 +28,7 @@ Thread `user_id` through PO tools → httpx headers, and through workers → Lan
 
 ## Steps
 
-1. [ ] PO tools: pass `X-Telegram-ID` header in API calls
+1. [x] PO tools: pass `X-Telegram-ID` header in API calls
    - **Input**: `services/langgraph/src/po/tools.py`, `services/langgraph/src/po/consumer.py`
    - **Output**: All PO tool functions that call the API include `X-Telegram-ID` header from `config["configurable"]["user_id"]`. Specifically:
      - `create_project` — add `config: RunnableConfig` param, pass header
@@ -39,22 +39,22 @@ Thread `user_id` through PO tools → httpx headers, and through workers → Lan
      - Extract helper: `_user_headers(config)` → `{"X-Telegram-ID": user_id}`
    - **Test**: Unit tests in `services/langgraph/tests/unit/po/test_tools.py` — verify each tool passes `X-Telegram-ID` header when calling API. Verify `create_project` sends header so `owner_id` gets set.
 
-2. [ ] API: enforce `X-Telegram-ID` requirement for project creation
+2. [x] API: enforce `X-Telegram-ID` requirement for project creation
    - **Input**: `services/api/src/routers/projects.py`
    - **Output**: `create_project` endpoint requires `X-Telegram-ID` (return 400 if missing and project would get `owner_id=None`). This prevents orphan projects.
    - **Test**: Unit test — POST `/api/projects/` without header returns 400. With valid header returns 201 and `owner_id` is set.
 
-3. [ ] LanggraphAPIClient: add `user_id` support to high-level methods
+3. [x] LanggraphAPIClient: add `user_id` support to high-level methods
    - **Input**: `services/langgraph/src/clients/api.py`
    - **Output**: `get_project()` and `list_projects()` accept optional `telegram_id: int | None` param. When provided, pass `{"X-Telegram-ID": str(telegram_id)}` header. Other methods used by workers that touch user-scoped resources also get the param.
    - **Test**: Unit tests for `LanggraphAPIClient.get_project(id, telegram_id=123)` — verify header passed to httpx.
 
-4. [ ] Workers: pass `user_id` as `X-Telegram-ID` in API calls
+4. [x] Workers: pass `user_id` as `X-Telegram-ID` in API calls
    - **Input**: `services/langgraph/src/workers/engineering_worker.py`, `services/langgraph/src/workers/deploy_worker.py`
    - **Output**: Both workers extract `user_id` from queue message, resolve `telegram_id` (user_id in queue IS the telegram_id string), pass it to `api_client.get_project(project_id, telegram_id=...)`. If `user_id` is empty/missing, worker logs warning and continues (graceful degradation for webhook-triggered deploys where user_id may be "").
    - **Test**: Unit tests — worker calls `get_project` with telegram_id from message. Worker with empty user_id still processes (no crash).
 
-5. [ ] Integration test: multi-user isolation end-to-end
+5. [x] Integration test: multi-user isolation end-to-end
    - **Input**: All modified files
    - **Output**: Integration test that:
      - Creates two users (telegram_id 111, 222)
@@ -72,3 +72,10 @@ Thread `user_id` through PO tools → httpx headers, and through workers → Lan
 - Webhook-triggered deploys (`triggered_by=WEBHOOK`) get telegram_id from `project.owner_id → User.telegram_id` (webhooks.py:147-152), so they have valid user_id
 - Allocations router is admin-only — no changes needed
 - Task update is system-only — no changes needed
+
+## Deviations
+
+- Integration test placed in `tests/integration/backend/test_user_isolation.py` (not `services/api/tests/integration/`) to match existing project layout
+- Step 4: Added `_parse_telegram_id()` helper in engineering_worker to avoid PLR0915 (too many statements) lint error
+- Step 4: Workers don't log a warning for empty user_id (silent graceful degradation, no log noise for webhook-triggered deploys)
+- Brief items (2) API auth bypass on tasks.py and (4) task update bypass were not addressed — tasks.py already had correct behavior (system-only update, user filtering on list). These were false positives in the original brief.
