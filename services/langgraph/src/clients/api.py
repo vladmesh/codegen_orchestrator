@@ -85,8 +85,9 @@ class LanggraphAPIClient:
     async def get_agent_config(self, agent_id: str) -> dict[str, Any]:
         return await self._get_json(f"agent-configs/{agent_id}")
 
-    async def list_projects(self) -> list[dict]:
-        return await self._get_json("projects/")
+    async def list_projects(self, *, telegram_id: int | None = None) -> list[dict]:
+        headers = {"X-Telegram-ID": str(telegram_id)} if telegram_id else None
+        return await self._get_json("projects/", headers=headers)
 
     async def list_servers(self, is_managed: bool | None = None) -> list[dict]:
         params = {}
@@ -132,10 +133,11 @@ class LanggraphAPIClient:
 
     # --- Phase 4: Project methods ---
 
-    async def get_project(self, project_id: str) -> dict | None:
+    async def get_project(self, project_id: str, *, telegram_id: int | None = None) -> dict | None:
         """Get a single project by ID."""
+        headers = {"X-Telegram-ID": str(telegram_id)} if telegram_id else None
         try:
-            return await self._get_json(f"projects/{project_id}")
+            return await self._get_json(f"projects/{project_id}", headers=headers)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == HTTPStatus.NOT_FOUND:
                 return None
