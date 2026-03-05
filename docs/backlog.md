@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #31 Port Allocation Locking
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/port-allocation-locking.md
-- **Status**: pending
-- **Brief**: Два параллельных деплоя → оба читают порты → дупликат. `tools/allocator.py:54-122` — нет атомарности. Нужно: atomic allocate-or-fail. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
-
 ### #32 Prod Deploy Pipeline
 - **Priority**: HIGH
 - **User Story**: —
@@ -138,6 +131,7 @@
 
 ## Done (last 10)
 
+- #31 Port Allocation Locking — 2026-03-05
 - #30 Multi-user Isolation Fix — 2026-03-05
 - #12 Documentation Cleanup (Zavhoz + Deploy-worker) — 2026-03-05
 - #4 CI Pipeline Redesign — 2026-03-05

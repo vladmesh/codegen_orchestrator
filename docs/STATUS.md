@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #31 Port Allocation Locking
-- **Plan**: docs/plans/port-allocation-locking.md
-- **Step**: 1/5 — Add unique constraint on (server_handle, port)
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 31 | Port Allocation Locking |
 | 30 | Multi-user Isolation Fix |
 | 12 | Documentation Cleanup (Zavhoz + Deploy-worker) |
 | 4 | CI Pipeline Redesign |

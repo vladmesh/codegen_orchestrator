@@ -5,6 +5,12 @@
 ## 2026-03-05
 
 ### Fixed
+- Atomic port allocation: `UniqueConstraint(server_handle, port)` + `POST /ports/allocate-next` endpoint with `SELECT FOR UPDATE` — eliminates TOCTOU race in parallel deploys (#31)
+
+### Removed
+- Dead `ports.py` PO tools (`allocate_port`, `get_next_available_port`) and `PortAllocationResult` schema — replaced by atomic allocation in `allocator.py` (#31)
+
+### Fixed
 - Multi-user isolation: PO tools now pass `X-Telegram-ID` header in all API calls (#30)
 - API requires `X-Telegram-ID` for project creation — prevents orphan projects with `owner_id=NULL` (#30)
 - Workers pass user's telegram_id to API when fetching projects, enabling ownership checks (#30)
