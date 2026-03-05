@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #36 Remove CLI Agent Config Infrastructure
+- **Backlog**: —
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: (empty)
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 36 | Remove CLI Agent Config Infrastructure |
 | 29 | Fix ORCHESTRATOR_USER_ID defaults in CLI commands |
 | 25 | Post-Deploy Smoke Tester (reopened — regression, confirmed fixed) |
 | 23 | Extract Shared Code (infra_client + constants) |

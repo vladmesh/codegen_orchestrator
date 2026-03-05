@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #36 Remove CLI Agent Config Infrastructure
-- **Priority**: MEDIUM | quick-win
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Вся CLI agent config инфраструктура мертва — `CLIAgentNode` base class никем не наследуется, worker spawning использует `request_spawn()` напрямую. Удалить: `CLIAgentNode` из `nodes/base.py` (строки 162-193), `cli_agent_config_cache.py`, `cli_agent_config.py` (langgraph config), CLI agent config router (`api/src/routers/cli_agent_configs.py`), CLI agent config schema (`api/src/schemas/cli_agent_config.py`), ORM model (`shared/models/cli_agent_config.py`), alembic migration для таблицы. Источник: seed/nuke audit 2026-03-05.
-
 ### #37 Remove Dead LLM Agent Configs from Code
 - **Priority**: MEDIUM | quick-win
 - **User Story**: —
@@ -196,6 +189,7 @@
 
 ## Done (last 10)
 
+- #36 Remove CLI Agent Config Infrastructure — 2026-03-05
 - #29 Fix ORCHESTRATOR_USER_ID defaults in CLI commands — 2026-03-05
 - #35 [meta] E2E Skill: server IP resolution + repo slug paths — fixed 2026-03-05
 - #25 Post-Deploy Smoke Tester — confirmed working in E2E todo_api-20260305-2 — 2026-03-05
