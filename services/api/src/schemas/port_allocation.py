@@ -18,6 +18,14 @@ class PortAllocationCreate(PortAllocationBase):
     pass
 
 
+class AllocateNextPortRequest(BaseModel):
+    """Schema for atomic allocate-next-port request."""
+
+    service_name: str
+    project_id: str | None = None
+    start_port: int = 8000
+
+
 class PortAllocationRead(PortAllocationBase):
     """Schema for reading a port allocation."""
 

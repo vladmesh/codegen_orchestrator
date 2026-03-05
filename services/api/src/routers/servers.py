@@ -11,6 +11,7 @@ from shared.models.service_deployment import DeploymentStatus
 
 from ..database import get_async_session
 from ..schemas import (
+    AllocateNextPortRequest,
     PortAllocationCreate,
     PortAllocationRead,
     ServerCreate,
@@ -163,6 +164,60 @@ async def allocate_port(
     await db.commit()
     await db.refresh(allocation)
     return allocation
+
+
+@router.post("/{handle}/ports/allocate-next", response_model=PortAllocationRead)
+async def allocate_next_port(
+    handle: str,
+    req: AllocateNextPortRequest,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
+) -> PortAllocation:
+    """Atomically find and allocate the next available port.
+
+    Uses SELECT FOR UPDATE to prevent race conditions between concurrent
+    allocation requests. Retries with the next port if a conflict occurs.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    if not await db.get(Server, handle):
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    max_retries = 10
+    for _attempt in range(max_retries):
+        # Get all allocated ports with row-level lock
+        query = (
+            select(PortAllocation.port)
+            .where(PortAllocation.server_handle == handle)
+            .with_for_update()
+        )
+        result = await db.execute(query)
+        allocated_ports = {row[0] for row in result.all()}
+
+        # Find next available
+        port = req.start_port
+        while port in allocated_ports:
+            port += 1
+
+        allocation = PortAllocation(
+            server_handle=handle,
+            port=port,
+            service_name=req.service_name,
+            project_id=req.project_id,
+        )
+        db.add(allocation)
+        try:
+            await db.commit()
+            await db.refresh(allocation)
+            return allocation
+        except IntegrityError:
+            await db.rollback()
+            continue
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Failed to allocate port after max retries",
+    )
 
 
 @router.patch("/{handle}", response_model=ServerRead)

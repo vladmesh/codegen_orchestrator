@@ -3,7 +3,7 @@
 from .agent_config import AgentConfigCreate, AgentConfigRead, AgentConfigUpdate
 from .api_key import APIKeyCreate, APIKeyRead
 from .incident import IncidentCreate, IncidentRead, IncidentUpdate
-from .port_allocation import PortAllocationCreate, PortAllocationRead
+from .port_allocation import AllocateNextPortRequest, PortAllocationCreate, PortAllocationRead
 from .project import ProjectCreate, ProjectRead, ProjectUpdate
 from .rag import RAGDocsIngest, RAGDocsIngestResult, RAGMessageCreate, RAGMessageRead
 from .server import ServerCreate, ServerRead
@@ -31,6 +31,7 @@ __all__ = [
     "RAGMessageRead",
     "ServerCreate",
     "ServerRead",
+    "AllocateNextPortRequest",
     "PortAllocationCreate",
     "PortAllocationRead",
     "APIKeyCreate",
