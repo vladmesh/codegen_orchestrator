@@ -4,6 +4,13 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #38 Fix Service Integration Tests After Multi-User Isolation
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Service integration tests (api `test_pure_crud`, scheduler `test_github_sync_integration`) fail after #30 multi-user isolation. Tests need to seed a User record before creating projects (API now requires `X-Telegram-ID` → user lookup). Pre-existing from #30, surfaced when #31 triggered change detection.
+
 ### #32 Prod Deploy Pipeline
 - **Priority**: HIGH
 - **User Story**: —
