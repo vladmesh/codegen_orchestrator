@@ -80,3 +80,12 @@ the container might crash on startup, fail health checks, or never bind its port
   - Env vars in compose: `TELETHON_API_ID`, `TELETHON_API_HASH`, `TELETHON_SESSION_PATH`
   - Mount session file volume (optional, only if path configured)
 - **Test**: `make build` passes, service starts without Telethon vars (graceful skip)
+
+### 7. [ ] Update `/e2e-run` skill to use smoke results
+
+- **Input**: `.claude/skills/e2e-run/SKILL.md`
+- **Output**: Update three sections:
+  - **Step 4 (Monitor)**: After deploy task reaches terminal status, fetch task result and extract `smoke_result`. Distinguish "deploy failed" vs "deploy succeeded, smoke failed" in polling output.
+  - **Step 5b (Verify)**: Read `smoke_result` from deploy task's `result` JSON (`curl -s http://localhost:8000/api/tasks/$DEPLOY_TASK | jq '.result.smoke_result'`). Log per-module check results. Keep the manual `curl /health` as independent cross-check.
+  - **Step 7 (Report)**: Add `> **Smoke**: pass (backend: 200) / fail (tg_bot: timeout)` to report header. Include smoke details in Timeline.
+- **Test**: Manual — run a test E2E after all other steps are done, verify smoke results appear in report

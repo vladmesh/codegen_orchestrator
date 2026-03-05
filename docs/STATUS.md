@@ -3,7 +3,7 @@
 ## Current Task
 - **Backlog**: #25 Post-Deploy Smoke Tester
 - **Plan**: docs/plans/post-deploy-smoke-tester.md
-- **Step**: 1/6 — Add smoke_result to DevOpsState
+- **Step**: 1/7 — Add smoke_result to DevOpsState
 - **Done Steps**: (empty)
 
 ## Blocked
