@@ -2,7 +2,7 @@
 name: e2e-run
 description: Run Line 2 E2E test — submit engineering task, wait for completion, verify, write report. Use when user wants to test the engineering pipeline end-to-end.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
-argument-hint: "<test> [--with-po] [--no-cleanup]"
+argument-hint: "<test> [--with-po] [--no-cleanup] [--no-nuke]"
 ---
 
 # E2E Engineering Test Runner
@@ -20,6 +20,7 @@ monitor progress, verify results (including deploy), collect audit report, write
 - `--with-po` — route through PO agent instead of direct API/queue calls. Creates test user,
   sends project description to `po:input`, waits for PO to create project & trigger engineering.
 - `--no-cleanup` — skip cleanup after test (keep repo, containers, DB records)
+- `--no-nuke` — skip `make nuke` in Step 0 (assume stack is already clean and running)
 
 ## Test Matrix
 
@@ -218,16 +219,18 @@ server paths (`/opt/services/$PROJECT_NAME`).
 
 ### Step 0: Health check + pre-flight cleanup
 
-Before the first test, do a full stack reset to ensure clean state:
+Before the first test, do a full stack reset to ensure clean state.
+
+**Skip this if `--no-nuke` is set** — go straight to the health check below.
 
 ```bash
 make nuke
 ```
 
-Wait 180 seconds for all services to fully initialize (DB migrations, Redis, workers):
+Wait 140 seconds for all services to fully initialize (DB migrations, Redis, workers):
 
 ```bash
-sleep 180
+sleep 140
 ```
 
 Then verify the stack is healthy:
