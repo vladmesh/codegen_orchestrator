@@ -19,7 +19,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.drop_table("cli_agent_configs")
+    op.execute("DROP TABLE IF EXISTS cli_agent_configs")
 
 
 def downgrade() -> None:
