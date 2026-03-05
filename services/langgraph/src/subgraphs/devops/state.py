@@ -39,4 +39,5 @@ class DevOpsState(TypedDict):
     missing_user_secrets: list[str]
     deployment_result: dict | None
     deployed_url: str | None
+    smoke_result: dict | None
     errors: Annotated[list[str], _merge_errors]
