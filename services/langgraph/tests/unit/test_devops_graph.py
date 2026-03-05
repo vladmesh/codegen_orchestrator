@@ -1,11 +1,12 @@
 """Unit tests for DevOps subgraph topology."""
 
-from langgraph.graph import END
+from unittest.mock import AsyncMock, patch
 
-from src.subgraphs.devops.graph import (
-    create_devops_subgraph,
-    route_after_deployer,
-)
+from langgraph.graph import END, START, StateGraph
+import pytest
+
+from src.subgraphs.devops.graph import create_devops_subgraph, route_after_deployer
+from src.subgraphs.devops.state import DevOpsState
 
 
 class TestDevOpsGraphTopology:
@@ -50,3 +51,67 @@ class TestRouteAfterDeployer:
         """Should skip smoke_tester when no deployed_url."""
         state = {"deployed_url": None, "errors": []}
         assert route_after_deployer(state) == END
+
+
+class TestSmokeResultPropagation:
+    """Verify smoke_result survives ainvoke() — the #25 regression."""
+
+    @pytest.mark.asyncio
+    async def test_smoke_result_in_ainvoke_output(self):
+        """Build deployer_stub → smoke_tester mini-graph, check ainvoke returns smoke_result."""
+
+        async def deployer_stub(state: DevOpsState) -> dict:
+            return {
+                "deployment_result": {"status": "success"},
+                "deployed_url": "http://1.2.3.4:8000",
+            }
+
+        mock_response = AsyncMock()
+        mock_response.status_code = 200
+
+        mock_http = AsyncMock()
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+        mock_http.get = AsyncMock(return_value=mock_response)
+
+        from src.subgraphs.devops.smoke import smoke_tester_node
+
+        graph = StateGraph(DevOpsState)
+        graph.add_node("deployer", deployer_stub)
+        graph.add_node("smoke_tester", smoke_tester_node.run)
+        graph.add_edge(START, "deployer")
+        graph.add_edge("deployer", "smoke_tester")
+        graph.add_edge("smoke_tester", END)
+        compiled = graph.compile()
+
+        input_state = {
+            "messages": [],
+            "project_id": "test-proj",
+            "project_spec": {"config": {"modules": ["backend"]}},
+            "allocated_resources": {
+                "srv:8000": {
+                    "server_ip": "1.2.3.4",
+                    "port": 8000,
+                    "service_name": "backend",
+                }
+            },
+            "repo_info": None,
+            "provided_secrets": {},
+            "env_variables": [],
+            "env_analysis": {},
+            "resolved_secrets": {},
+            "missing_user_secrets": [],
+            "deployment_result": None,
+            "deployed_url": None,
+            "smoke_result": None,
+            "errors": [],
+        }
+
+        with patch("src.subgraphs.devops.smoke.httpx.AsyncClient", return_value=mock_http):
+            result = await compiled.ainvoke(input_state)
+
+        assert "smoke_result" in result, "smoke_result missing from ainvoke() output"
+        assert result["smoke_result"] is not None, "smoke_result is None"
+        assert result["smoke_result"]["status"] == "pass"
+        assert result["smoke_result"]["checks"][0]["module"] == "backend"
+        assert result["smoke_result"]["checks"][0]["result"] == "pass"
