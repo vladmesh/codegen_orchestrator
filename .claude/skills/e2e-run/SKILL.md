@@ -611,6 +611,18 @@ for i in $(seq 1 60); do
   fi
   sleep 30
 done
+
+# Extract smoke_result from deploy task (distinguishes deploy fail vs smoke fail)
+DEPLOY_RESULT=$(curl -s http://localhost:8000/api/tasks/$DEPLOY_TASK)
+SMOKE_STATUS=$(echo "$DEPLOY_RESULT" | jq -r '.result.smoke_result.status // "none"')
+DEPLOYED_URL=$(echo "$DEPLOY_RESULT" | jq -r '.result.deployed_url // empty')
+echo "Deploy status: $STATUS, Smoke: $SMOKE_STATUS, URL: $DEPLOYED_URL"
+
+# If deploy task failed but deployed_url exists — it's a smoke failure, not deploy failure
+if [ "$STATUS" = "failed" ] && [ -n "$DEPLOYED_URL" ]; then
+  echo "NOTE: Deploy succeeded but smoke test failed"
+  echo "$DEPLOY_RESULT" | jq '.result.smoke_result.checks[]'
+fi
 ```
 
 ### Step 5: Verify
@@ -671,7 +683,11 @@ ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "
   done
 "
 
-# Curl the health endpoint (port from allocation, default 8000)
+# Read smoke_result from deploy task (automated post-deploy check)
+echo "=== Smoke Test Result ==="
+curl -s http://localhost:8000/api/tasks/$DEPLOY_TASK | jq '.result.smoke_result // "no smoke result"'
+
+# Independent cross-check: curl the health endpoint directly
 DEPLOY_PORT=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
   | jq -r '.[].handle' \
   | while read h; do
@@ -792,6 +808,7 @@ Report structure:
 > **Task**: <task_id>
 > **Mode**: direct | with-po
 > **Status**: Passed / Failed
+> **Smoke**: pass (backend: 200) / fail (tg_bot: timeout) / none (no smoke result)
 > **Worker audit**: collected (findings included below) | not found
 
 ---
