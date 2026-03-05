@@ -1,6 +1,5 @@
 name: Deploy to Production
 
-# Manual trigger only - server not configured yet
 on:
   workflow_dispatch:
     inputs:
@@ -11,7 +10,6 @@ on:
         type: choice
         options:
           - production
-          - staging
 
 env:
   DEPLOY_PATH: /opt/codegen_orchestrator
@@ -19,39 +17,90 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
-    
+    environment: production
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Write secrets to server
+      - name: Write .env to server
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
           username: deploy
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            # Create secrets directory
-            sudo mkdir -p /opt/secrets
-            sudo chown deploy:deploy /opt/secrets
-            
-            # Write GitHub App credentials
-            echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > /opt/secrets/github_app.pem
-            chmod 600 /opt/secrets/github_app.pem
-            
-            # Write env file
             cat > ${{ env.DEPLOY_PATH }}/.env << 'ENVEOF'
-            GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
+            # Database
             POSTGRES_DB=${{ secrets.POSTGRES_DB }}
             POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+
+            # LLM
+            ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
             OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+            OPEN_ROUTER_KEY=${{ secrets.OPEN_ROUTER_KEY }}
+            PO_LLM_MODEL=${{ secrets.PO_LLM_MODEL }}
+            PO_LLM_BASE_URL=${{ secrets.PO_LLM_BASE_URL }}
+            PO_LLM_API_KEY=${{ secrets.PO_LLM_API_KEY }}
+
+            # Summarization
+            SUMMARIZATION_MODEL=${{ secrets.SUMMARIZATION_MODEL }}
+            SUMMARIZATION_MAX_TOKENS=${{ secrets.SUMMARIZATION_MAX_TOKENS }}
+            SUMMARIZATION_TRIGGER_TOKENS=${{ secrets.SUMMARIZATION_TRIGGER_TOKENS }}
+            SUMMARIZATION_MAX_SUMMARY_TOKENS=${{ secrets.SUMMARIZATION_MAX_SUMMARY_TOKENS }}
+
+            # GitHub
+            GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
+            GITHUB_ORG=${{ secrets.GITHUB_ORG }}
+            GITHUB_WEBHOOK_SECRET=${{ secrets.GITHUB_WEBHOOK_SECRET }}
+
+            # Telegram
             TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+            ADMIN_TELEGRAM_IDS=${{ secrets.ADMIN_TELEGRAM_IDS }}
+            TELEGRAM_ID_ADMIN=${{ secrets.TELEGRAM_ID_ADMIN }}
+
+            # Encryption
+            SECRETS_ENCRYPTION_KEY=${{ secrets.SECRETS_ENCRYPTION_KEY }}
+
+            # Infrastructure
+            ORCHESTRATOR_HOSTNAME=${{ secrets.ORCHESTRATOR_HOSTNAME }}
             GHOST_SERVERS=${{ secrets.GHOST_SERVERS }}
+
+            # Registry
+            REGISTRY_USER=${{ secrets.REGISTRY_USER }}
+            REGISTRY_PASSWORD=${{ secrets.REGISTRY_PASSWORD }}
+            REGISTRY_PASSWORD_HASH=${{ secrets.REGISTRY_PASSWORD_HASH }}
+
+            # Worker agents
+            FACTORY_API_KEY=${{ secrets.FACTORY_API_KEY }}
+            HOST_CLAUDE_DIR=${{ secrets.HOST_CLAUDE_DIR }}
+
+            # Observability
+            LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }}
+
+            # Prod secret paths (used by docker-compose.prod.yml)
+            SSH_KEY_PATH=/opt/secrets/ssh_key
+            GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem
             ENVEOF
 
-      - name: Deploy application
+      - name: Write secrets files to server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            sudo mkdir -p /opt/secrets
+            sudo chown deploy:deploy /opt/secrets
+
+            echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > /opt/secrets/github_app.pem
+            chmod 600 /opt/secrets/github_app.pem
+
+            echo '${{ secrets.ORCHESTRATOR_SSH_KEY }}' > /opt/secrets/ssh_key
+            chmod 600 /opt/secrets/ssh_key
+
+      - name: Pull latest code
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
@@ -59,16 +108,78 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ${{ env.DEPLOY_PATH }}
-            
-            # Pull latest code
             git pull origin main
-            
-            # Pull and restart containers
-            docker compose pull
-            docker compose up -d --remove-orphans
-            
-            # Run migrations
-            docker compose exec -T api alembic upgrade head
-            
-            # Cleanup
+
+      - name: Build service images
+        uses: appleboy/ssh-action@v1
+        timeout-minutes: 15
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+
+      - name: Pull worker base images from GHCR
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            GHCR_TOKEN='${{ secrets.GHCR_TOKEN }}' \
+            GHCR_OWNER='${{ github.repository_owner }}' \
+            bash infra/scripts/pull-worker-images.sh
+
+      - name: Deploy
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --remove-orphans
+
+      - name: Run migrations
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T api alembic upgrade head
+
+      - name: Health check
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            echo "Waiting for API to be healthy..."
+            timeout=60
+            while ! curl -sf http://127.0.0.1:8000/health > /dev/null 2>&1; do
+              if [ $timeout -le 0 ]; then
+                echo "FATAL: API health check failed after 60s"
+                cd ${{ env.DEPLOY_PATH }}
+                docker compose -f docker-compose.yml -f docker-compose.prod.yml logs --tail=50 api
+                exit 1
+              fi
+              sleep 2
+              timeout=$((timeout - 2))
+            done
+            echo "API is healthy"
+
+      - name: Cleanup
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: deploy
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
             docker image prune -f
