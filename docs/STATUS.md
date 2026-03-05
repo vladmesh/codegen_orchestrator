@@ -1,7 +1,7 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #17 Dead Code & Legacy Cleanup
+- **Backlog**: —
 - **Plan**: —
 - **Step**: —
 - **Done Steps**: —
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 17 | Dead Code & Legacy Cleanup |
 | 37 | Remove Dead LLM Agent Configs from Code |
 | 36 | Remove CLI Agent Config Infrastructure |
 | 29 | Fix ORCHESTRATOR_USER_ID defaults in CLI commands |

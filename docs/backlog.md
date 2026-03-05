@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #17 Dead Code & Legacy Cleanup
-- **Priority**: MEDIUM | quick-win
-- **User Story**: —
-- **Plan**: —
-- **Status**: partial
-- **Brief**: Legacy networking fallback в `manager.py:525-530` и project lookup по имени в `github_sync.py:213-226` — оба оставлены как защитный код. Audit 2026-03-04: delete `services/langgraph/src/list_repos.py` (dead debug script, 72 LOC). Audit 2026-03-05: `test_architect_routing.py` deleted (broken, tested removed node).
-
 ### #12 Remove Obsolete Zavhoz
 - **Priority**: MEDIUM | quick-win
 - **User Story**: —
@@ -182,6 +175,7 @@
 
 ## Done (last 10)
 
+- #17 Dead Code & Legacy Cleanup — 2026-03-05
 - #37 Remove Dead LLM Agent Configs from Code — 2026-03-05
 - #36 Remove CLI Agent Config Infrastructure — 2026-03-05
 - #29 Fix ORCHESTRATOR_USER_ID defaults in CLI commands — 2026-03-05
@@ -191,7 +185,6 @@
 - #24 Fix Critical getenv Defaults — 2026-03-04
 - #6 Fix & Consolidate Test Suites — 2026-03-04
 - #22 Worker Network Isolation — 2026-03-03
-- #1 Service Template Simplification — 2026-02-25
 - #3+#5 Redis Streams Unification + Queue Contracts — 2026-02-17
 - #9 Worker Reuse for CI Fix Loop — 2026-02-19
 - #14 Contract Consistency — 2026-02-17
