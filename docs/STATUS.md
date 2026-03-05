@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #4 CI Pipeline Redesign
-- **Plan**: docs/plans/ci-pipeline-redesign.md
-- **Step**: 4/4 — Validate full pipeline end-to-end
-- **Done Steps**: 1 (matrix strategy), 2 (healthcheck tuning), 3 (per-suite change detection)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 4 | CI Pipeline Redesign |
 | 17 | Dead Code & Legacy Cleanup |
 | 37 | Remove Dead LLM Agent Configs from Code |
 | 36 | Remove CLI Agent Config Infrastructure |

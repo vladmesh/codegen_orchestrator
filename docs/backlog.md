@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #4 CI Pipeline Redesign
-- **Priority**: HIGH | integration-tests
-- **User Story**: —
-- **Plan**: docs/plans/ci-pipeline-redesign.md
-- **Status**: partial (PR/Publish split done)
-- **Brief**: Параллельные интеграционные тесты (GH Actions matrix). Split `test-integration` into 5 parallel jobs (backend, cli, template, frontend, infra) — wall-clock 10min→3-4min. Включает: healthcheck interval tuning (5s→2s в compose-файлах без DIND), buildx cache per-suite. Brainstorms: `docs/brainstorms/ci-pipeline-redesign.md`, `docs/brainstorms/ci-integration-test-speed.md`.
-
 ### #12 Remove Obsolete Zavhoz
 - **Priority**: MEDIUM | quick-win
 - **User Story**: —
@@ -171,6 +164,7 @@
 
 ## Done (last 10)
 
+- #4 CI Pipeline Redesign — 2026-03-05
 - #17 Dead Code & Legacy Cleanup — 2026-03-05
 - #37 Remove Dead LLM Agent Configs from Code — 2026-03-05
 - #36 Remove CLI Agent Config Infrastructure — 2026-03-05

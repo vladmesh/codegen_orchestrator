@@ -4,6 +4,12 @@
 
 ## 2026-03-05
 
+### Changed
+- CI integration tests: sequential → 5 parallel matrix jobs (backend, cli, template, frontend, infra) (#4)
+- Per-suite change detection: each integration suite only runs when relevant files changed (#4)
+- Healthcheck intervals 5s→2s in non-DIND test compose files (frontend, infra, cli) (#4)
+- Per-suite Docker buildx cache keys for better cache hits (#4)
+
 ### Removed
 - Dead `list_repos.py` debug script from langgraph service (#17) — 72 LOC, standalone script with `sys.path` hack and `print()`
 - Legacy name-based project lookup fallback in github_sync (#17) — `get_project_by_name` from scheduler API client + fallback in `_sync_single_repo`

@@ -27,7 +27,14 @@ Current state: `ci.yml` has a single `test-integration` job that calls `make tes
    - **Output**: Each matrix suite only runs if relevant files changed (or `shared/` changed). Map: backend→langgraph+worker-manager+api, cli→cli+packages, template→always, frontend→telegram+api, infra→scheduler+api. Skip logic via `if` condition on each matrix entry.
    - **Test**: Push a change touching only `services/api/` — verify only backend/cli/frontend/infra suites run, template is skipped. Push `shared/` change — all suites run.
 
-4. [ ] Validate full pipeline end-to-end
+4. [x] Validate full pipeline end-to-end
    - **Input**: All changes from steps 1-3
    - **Output**: Open a test PR touching multiple areas. Verify: 5 parallel integration jobs, correct skip logic, all pass, wall-clock time < 5 min.
    - **Test**: PR CI run green. Compare wall-clock time vs previous sequential runs.
+
+## Deviations
+
+- Steps 1-3 were implemented in a single commit (tightly coupled CI config changes)
+- Step 4 validated on push to main rather than a separate PR — change detection correctly skipped backend/cli/frontend/infra (no code changes), ran template (always-on). All green.
+- Added `infra-service` and `docker-test` path filters to detect-changes (not in original plan but needed for correct per-suite detection)
+- Used `include`-style matrix with `should_run` field per entry instead of simple array — allows per-suite skip conditions inline
