@@ -45,12 +45,15 @@ asyncio.run(main())
 
 For each selected test, sequentially execute:
 
-### Step 0: Health check + pre-flight cleanup
-1. Verify stack healthy: `curl -sf http://localhost:8000/health | jq .`
-2. Worker image staleness check (compare source hash vs docker label).
-3. Delete leftover GitHub repo (`REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')`).
-4. Kill leftover worker containers: `docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$REPO_SLUG" | xargs -r docker rm -f`.
-5. Check managed servers for stale `/opt/services/<PROJECT_NAME>/` deployments.
+### Step 0: Nuke & rebuild
+1. Run `make nuke` to fully reset the stack (volumes, rebuild, migrate, seed).
+2. `sleep 180` — wait for all services to start and stabilize.
+
+### Step 0.5: Pre-flight cleanup
+1. Worker image staleness check (compare source hash vs docker label).
+2. Delete leftover GitHub repo (`REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')`).
+3. Kill leftover worker containers: `docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$REPO_SLUG" | xargs -r docker rm -f`.
+4. Check managed servers for stale `/opt/services/<PROJECT_NAME>/` deployments.
 
 ### Step 1: Create project (direct mode — default)
 Skip if `--with-po`. Generate `PROJECT_ID` with `uuidgen`.
