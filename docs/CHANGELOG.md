@@ -4,6 +4,9 @@
 
 ## 2026-03-05
 
+### Fixed
+- Fail fast with `RuntimeError` when `ORCHESTRATOR_USER_ID` not set in CLI commands (#29) — was silently defaulting to `"unknown"`, breaking audit trail
+
 ### Changed
 - Defensive init `smoke_result: None` in `_build_subgraph_input` (#25) — consistent with other Optional fields
 - Diagnostic logging `devops_subgraph_result` in deploy_worker after `ainvoke()` — for #25 root cause investigation

@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #29 Fix ORCHESTRATOR_USER_ID defaults in CLI commands
+- **Backlog**: —
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: (empty)
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 29 | Fix ORCHESTRATOR_USER_ID defaults in CLI commands |
 | 25 | Post-Deploy Smoke Tester (reopened — regression, confirmed fixed) |
 | 23 | Extract Shared Code (infra_client + constants) |
 | 24 | Fix Critical getenv Defaults |

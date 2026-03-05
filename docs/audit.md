@@ -80,9 +80,9 @@
 
 | File | Issue | Severity | Action |
 |------|-------|----------|--------|
-| `packages/orchestrator-cli/src/.../engineering.py:21` | `ORCHESTRATOR_USER_ID` defaults to `"unknown"` | major | not tracked |
-| `packages/orchestrator-cli/src/.../deploy.py:21` | Same | major | not tracked |
-| `packages/orchestrator-cli/src/.../respond.py:32` | Same | major | not tracked |
+| `packages/orchestrator-cli/src/.../engineering.py:21` | `ORCHESTRATOR_USER_ID` defaults to `"unknown"` | major | **fixed #29** |
+| `packages/orchestrator-cli/src/.../deploy.py:21` | Same | major | **fixed #29** |
+| `packages/orchestrator-cli/src/.../respond.py:32` | Same | major | **fixed #29** |
 | `services/infra-service/src/provisioner/ansible_runner.py:99` | `subprocess.run` without input validation (noqa S603) | minor | reviewed OK |
 | `services/infra-service/src/provisioner/recovery.py:73` | subprocess call | minor | reviewed OK |
 

@@ -4,6 +4,41 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #36 Remove CLI Agent Config Infrastructure
+- **Priority**: MEDIUM | quick-win
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Вся CLI agent config инфраструктура мертва — `CLIAgentNode` base class никем не наследуется, worker spawning использует `request_spawn()` напрямую. Удалить: `CLIAgentNode` из `nodes/base.py` (строки 162-193), `cli_agent_config_cache.py`, `cli_agent_config.py` (langgraph config), CLI agent config router (`api/src/routers/cli_agent_configs.py`), CLI agent config schema (`api/src/schemas/cli_agent_config.py`), ORM model (`shared/models/cli_agent_config.py`), alembic migration для таблицы. Источник: seed/nuke audit 2026-03-05.
+
+### #37 Remove Dead LLM Agent Configs from Code
+- **Priority**: MEDIUM | quick-win
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: 5 из 6 agent_configs были мёртвыми (удалены из YAML). Но код содержит vestigial references: `architect_complete: bool` в `OrchestratorState` (graph.py:72) и `provisioner.py:128`, docstring в `agent_config.py:48` ссылается на "product_owner". Также PO prompt из БД не используется — PO берёт model из env vars, prompt из `po/prompts.py`. Проверить нужен ли agent_configs API router вообще (используется только для `devops`). Источник: seed/nuke audit 2026-03-05.
+
+### #17 Dead Code & Legacy Cleanup
+- **Priority**: MEDIUM | quick-win
+- **User Story**: —
+- **Plan**: —
+- **Status**: partial
+- **Brief**: Legacy networking fallback в `manager.py:525-530` и project lookup по имени в `github_sync.py:213-226` — оба оставлены как защитный код. Audit 2026-03-04: delete `services/langgraph/src/list_repos.py` (dead debug script, 72 LOC). Audit 2026-03-05: `test_architect_routing.py` deleted (broken, tested removed node).
+
+### #12 Remove Obsolete Zavhoz
+- **Priority**: MEDIUM | quick-win
+- **User Story**: —
+- **Plan**: —
+- **Status**: partial (config removed from agent_configs.yaml)
+- **Brief**: Удалить Zavhoz из документации и конфигурации, заменён на ResourceAllocatorNode. Конфиг из seed YAML уже удалён (2026-03-05). Осталось: документация, любые упоминания в коде.
+
+### #13 Fix Deploy-worker Documentation
+- **Priority**: MEDIUM | quick-win
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Отразить что deploy-worker и engineering-worker — процессы LangGraph, не суб-сервисы.
+
 ### #30 Multi-user Isolation Fix
 - **Priority**: HIGH
 - **User Story**: —
@@ -39,20 +74,12 @@
 - **Status**: pending
 - **Brief**: Убрать `secrets/github_app.pem` из git + .gitignore (deploy.yml уже пишет из секрета). Dedicated SSH key вместо host `~/.ssh` — генерировать `ORCHESTRATOR_SSH_PRIVATE_KEY`, хранить как GitHub Secret, монтировать `/opt/secrets/orchestrator_ssh_key`. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
 
-### #29 Fix ORCHESTRATOR_USER_ID defaults in CLI commands
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: 3 CLI command files (`engineering.py:21`, `deploy.py:21`, `respond.py:32`) default `ORCHESTRATOR_USER_ID` to `"unknown"` — breaks audit trail. Should fail fast with `RuntimeError`. Source: audit 2026-03-05.
-
 ### #34 US3: Add Feature to Existing Project
 - **Priority**: HIGH
 - **User Story**: —
 - **Plan**: —
 - **Status**: pending
 - **Brief**: Core product flow — "допили мне бота". 4 части: (1) PO tool: select existing project (`list_projects(user_id=X)` + выбор), (2) Engineering worker: feature flow (git pull → branch → code → CI, без scaffold), (3) Deploy: redeploy existing (тот же flow без allocation), (4) E2E test: feature-add scenario. Кандидат на первый "эпик". Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
-
 
 ### #8 Workspace Failure Counter
 - **Priority**: MEDIUM
@@ -96,7 +123,6 @@
 - **Status**: pending
 - **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory ("предсмертная записка" агента). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change).
 
-
 ### #18 Split engineering_worker.py (1088 LOC)
 - **Priority**: MEDIUM
 - **User Story**: —
@@ -124,41 +150,6 @@
 - **Plan**: —
 - **Status**: pending
 - **Brief**: Завершить покрытие E2E (Level 5-7). Добавить E2E mock-тесты (Level A+B) в CI.
-
-### #36 Remove CLI Agent Config Infrastructure
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Вся CLI agent config инфраструктура мертва — `CLIAgentNode` base class никем не наследуется, worker spawning использует `request_spawn()` напрямую. Удалить: `CLIAgentNode` из `nodes/base.py` (строки 162-193), `cli_agent_config_cache.py`, `cli_agent_config.py` (langgraph config), CLI agent config router (`api/src/routers/cli_agent_configs.py`), CLI agent config schema (`api/src/schemas/cli_agent_config.py`), ORM model (`shared/models/cli_agent_config.py`), alembic migration для таблицы. Источник: seed/nuke audit 2026-03-05.
-
-### #37 Remove Dead LLM Agent Configs from Code
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: 5 из 6 agent_configs были мёртвыми (удалены из YAML). Но код содержит vestigial references: `architect_complete: bool` в `OrchestratorState` (graph.py:72) и `provisioner.py:128`, docstring в `agent_config.py:48` ссылается на "product_owner". Также PO prompt из БД не используется — PO берёт model из env vars, prompt из `po/prompts.py`. Проверить нужен ли agent_configs API router вообще (используется только для `devops`). Источник: seed/nuke audit 2026-03-05.
-
-### #17 Dead Code & Legacy Cleanup
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: partial
-- **Brief**: Legacy networking fallback в `manager.py:525-530` и project lookup по имени в `github_sync.py:213-226` — оба оставлены как защитный код. Audit 2026-03-04: delete `services/langgraph/src/list_repos.py` (dead debug script, 72 LOC). Audit 2026-03-05: `test_architect_routing.py` deleted (broken, tested removed node).
-
-### #12 Remove Obsolete Zavhoz
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: partial (config removed from agent_configs.yaml)
-- **Brief**: Удалить Zavhoz из документации и конфигурации, заменён на ResourceAllocatorNode. Конфиг из seed YAML уже удалён (2026-03-05). Осталось: документация, любые упоминания в коде.
-
-### #13 Fix Deploy-worker Documentation
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Отразить что deploy-worker и engineering-worker — процессы LangGraph, не суб-сервисы.
 
 ### #28 CI: Cache copier template for integration tests
 - **Priority**: MEDIUM
@@ -205,6 +196,7 @@
 
 ## Done (last 10)
 
+- #29 Fix ORCHESTRATOR_USER_ID defaults in CLI commands — 2026-03-05
 - #35 [meta] E2E Skill: server IP resolution + repo slug paths — fixed 2026-03-05
 - #25 Post-Deploy Smoke Tester — confirmed working in E2E todo_api-20260305-2 — 2026-03-05
 - #23 Extract Shared Code (infra_client + constants) — 2026-03-05
