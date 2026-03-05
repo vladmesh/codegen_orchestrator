@@ -29,9 +29,9 @@ def _get_agent_id() -> str:
 
 def _get_user_id() -> str:
     """Get user ID from environment."""
-    user_id = os.getenv("ORCHESTRATOR_USER_ID", "unknown")
-    if user_id == "unknown":
-        console.print("[yellow]Warning:[/yellow] ORCHESTRATOR_USER_ID not set, using 'unknown'")
+    user_id = os.getenv("ORCHESTRATOR_USER_ID")
+    if not user_id:
+        raise RuntimeError("ORCHESTRATOR_USER_ID is not set")
     return user_id
 
 

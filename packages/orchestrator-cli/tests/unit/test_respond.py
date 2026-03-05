@@ -53,7 +53,10 @@ class TestSendResponseAsync:
         from orchestrator_cli.commands.respond import send_response_async
 
         with (
-            patch.dict(os.environ, {"ORCHESTRATOR_AGENT_ID": "agent-1"}),
+            patch.dict(
+                os.environ,
+                {"ORCHESTRATOR_AGENT_ID": "agent-1", "ORCHESTRATOR_USER_ID": "user-1"},
+            ),
             patch(
                 "orchestrator_cli.commands.respond.get_redis_client",
                 return_value=mock_redis,
@@ -69,7 +72,10 @@ class TestSendResponseAsync:
 
         mock_redis.xadd.side_effect = ConnectionError("redis down")
         with (
-            patch.dict(os.environ, {"ORCHESTRATOR_AGENT_ID": "agent-1"}),
+            patch.dict(
+                os.environ,
+                {"ORCHESTRATOR_AGENT_ID": "agent-1", "ORCHESTRATOR_USER_ID": "user-1"},
+            ),
             patch(
                 "orchestrator_cli.commands.respond.get_redis_client",
                 return_value=mock_redis,
@@ -81,7 +87,7 @@ class TestSendResponseAsync:
         mock_redis.aclose.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_defaults_user_id_to_unknown(self, mock_redis):
+    async def test_raises_when_user_id_not_set(self, mock_redis):
         from orchestrator_cli.commands.respond import send_response_async
 
         env = {"ORCHESTRATOR_AGENT_ID": "agent-1"}
@@ -93,7 +99,5 @@ class TestSendResponseAsync:
             ),
         ):
             os.environ.pop("ORCHESTRATOR_USER_ID", None)
-            await send_response_async("hello")
-
-        data = mock_redis.xadd.call_args[0][1]
-        assert data["user_id"] == "unknown"
+            with pytest.raises(RuntimeError, match="ORCHESTRATOR_USER_ID"):
+                await send_response_async("hello")
