@@ -37,7 +37,8 @@ class TestSetProjectSecretEncryption:
             from src.po.tools import set_project_secret
 
             result = await set_project_secret.ainvoke(
-                {"project_id": "proj-1", "key": "NEW_KEY", "value": "new-value"}
+                {"project_id": "proj-1", "key": "NEW_KEY", "value": "new-value"},
+                config={"configurable": {"thread_id": "po-user-1", "user_id": "1"}},
             )
 
         mock_decrypt.assert_called_once_with({"OLD_KEY": "gAAAAA-old-encrypted"})

@@ -59,6 +59,14 @@ def _get_stream_client() -> RedisStreamClient:
     return _stream_client
 
 
+def _user_headers(config: RunnableConfig) -> dict[str, str]:
+    """Extract X-Telegram-ID header from LangGraph config."""
+    user_id = config["configurable"].get("user_id", "")
+    if user_id:
+        return {"X-Telegram-ID": str(user_id)}
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Available modules (single source of truth: ServiceModule enum)
 # ---------------------------------------------------------------------------
@@ -66,7 +74,13 @@ AVAILABLE_MODULES = {m.value for m in ServiceModule}
 
 
 @tool
-async def create_project(name: str, modules: str = "backend", description: str = "") -> str:
+async def create_project(
+    name: str,
+    modules: str = "backend",
+    description: str = "",
+    *,
+    config: RunnableConfig,
+) -> str:
     """Create a new project.
 
     Args:
@@ -85,27 +99,29 @@ async def create_project(name: str, modules: str = "backend", description: str =
         modules_list.insert(0, "backend")
 
     project_id = str(uuid.uuid4())[:8]
-    config = {"modules": modules_list, "description": description, "name": name}
+    proj_config = {"modules": modules_list, "description": description, "name": name}
 
     payload = {
         "id": project_id,
         "name": name,
         "status": ProjectStatus.DRAFT.value,
-        "config": config,
+        "config": proj_config,
     }
 
     api = _get_api()
-    resp = await api.post("/api/projects/", json=payload)
+    headers = _user_headers(config)
+    resp = await api.post("/api/projects/", json=payload, headers=headers)
     resp.raise_for_status()
     project = resp.json()
     return f"Project created. ID: {project['id']}, Name: {project['name']}"
 
 
 @tool
-async def list_projects() -> str:
+async def list_projects(*, config: RunnableConfig) -> str:
     """List all projects."""
     api = _get_api()
-    resp = await api.get("/api/projects/")
+    headers = _user_headers(config)
+    resp = await api.get("/api/projects/", headers=headers)
     resp.raise_for_status()
     projects = resp.json()
 
@@ -119,21 +135,24 @@ async def list_projects() -> str:
 
 
 @tool
-async def get_project(project_id: str) -> str:
+async def get_project(project_id: str, *, config: RunnableConfig) -> str:
     """Get project details by ID.
 
     Args:
         project_id: Project ID.
     """
     api = _get_api()
-    resp = await api.get(f"/api/projects/{project_id}")
+    headers = _user_headers(config)
+    resp = await api.get(f"/api/projects/{project_id}", headers=headers)
     resp.raise_for_status()
     project = resp.json()
     return json.dumps(project, indent=2, ensure_ascii=False)
 
 
 @tool
-async def set_project_secret(project_id: str, key: str, value: str) -> str:
+async def set_project_secret(
+    project_id: str, key: str, value: str, *, config: RunnableConfig
+) -> str:
     """Set a secret for a project (e.g. TELEGRAM_BOT_TOKEN).
 
     Args:
@@ -142,19 +161,21 @@ async def set_project_secret(project_id: str, key: str, value: str) -> str:
         value: Secret value.
     """
     api = _get_api()
+    headers = _user_headers(config)
 
-    # Get current project config
-    resp = await api.get(f"/api/projects/{project_id}")
+    resp = await api.get(f"/api/projects/{project_id}", headers=headers)
     resp.raise_for_status()
     project = resp.json()
 
-    config = project.get("config") or {}
-    secrets = config.get("secrets") or {}
+    proj_config = project.get("config") or {}
+    secrets = proj_config.get("secrets") or {}
     secrets = decrypt_dict(secrets) if secrets else {}
     secrets[key] = value
-    config["secrets"] = encrypt_dict(secrets)
+    proj_config["secrets"] = encrypt_dict(secrets)
 
-    resp = await api.patch(f"/api/projects/{project_id}", json={"config": config})
+    resp = await api.patch(
+        f"/api/projects/{project_id}", json={"config": proj_config}, headers=headers
+    )
     resp.raise_for_status()
     return f"Secret '{key}' set for project {project_id}."
 
@@ -180,6 +201,7 @@ async def trigger_engineering(
         return f"Error: --description is required for action '{action}'."
 
     api = _get_api()
+    headers = _user_headers(config)
 
     user_id = config["configurable"].get("user_id", "unknown")
     task_id = f"eng-{uuid.uuid4().hex[:12]}"
@@ -193,7 +215,7 @@ async def trigger_engineering(
         "callback_stream": callback_stream,
     }
 
-    resp = await api.post("/api/tasks/", json=task_data)
+    resp = await api.post("/api/tasks/", json=task_data, headers=headers)
     resp.raise_for_status()
 
     eng_msg = EngineeringMessage(
@@ -219,6 +241,7 @@ async def trigger_deploy(project_id: str, *, config: RunnableConfig) -> str:
         project_id: Project ID.
     """
     api = _get_api()
+    headers = _user_headers(config)
 
     user_id = config["configurable"].get("user_id", "unknown")
     task_id = f"deploy-{uuid.uuid4().hex[:12]}"
@@ -232,7 +255,7 @@ async def trigger_deploy(project_id: str, *, config: RunnableConfig) -> str:
         "callback_stream": callback_stream,
     }
 
-    resp = await api.post("/api/tasks/", json=task_data)
+    resp = await api.post("/api/tasks/", json=task_data, headers=headers)
     resp.raise_for_status()
 
     deploy_msg = DeployMessage(
@@ -249,14 +272,15 @@ async def trigger_deploy(project_id: str, *, config: RunnableConfig) -> str:
 
 
 @tool
-async def get_task_status(task_id: str) -> str:
+async def get_task_status(task_id: str, *, config: RunnableConfig) -> str:
     """Get task status (engineering or deploy).
 
     Args:
         task_id: Task ID (e.g. eng-abc123 or deploy-abc123).
     """
     api = _get_api()
-    resp = await api.get(f"/api/tasks/{task_id}")
+    headers = _user_headers(config)
+    resp = await api.get(f"/api/tasks/{task_id}", headers=headers)
     resp.raise_for_status()
     task = resp.json()
     return json.dumps(task, indent=2, ensure_ascii=False)

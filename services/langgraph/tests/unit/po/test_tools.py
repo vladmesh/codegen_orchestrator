@@ -67,7 +67,8 @@ class TestCreateProject:
         mock_api_client.post.return_value = _make_response(project_data)
 
         result = await create_project.ainvoke(
-            {"name": "my-bot", "modules": "backend,tg_bot", "description": "A test bot"}
+            {"name": "my-bot", "modules": "backend,tg_bot", "description": "A test bot"},
+            config=_make_config("user-42"),
         )
 
         mock_api_client.post.assert_called_once()
@@ -81,17 +82,36 @@ class TestCreateProject:
         assert "abc123" in result
 
     @pytest.mark.asyncio
+    async def test_passes_telegram_id_header(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response({"id": "x", "name": "y"})
+
+        await create_project.ainvoke(
+            {"name": "test", "modules": "backend"},
+            config=_make_config("12345"),
+        )
+
+        call_args = mock_api_client.post.call_args
+        headers = call_args[1].get("headers", {})
+        assert headers.get("X-Telegram-ID") == "12345"
+
+    @pytest.mark.asyncio
     async def test_ensures_backend_module(self, mock_api_client):
         mock_api_client.post.return_value = _make_response({"id": "x", "name": "y"})
 
-        await create_project.ainvoke({"name": "test", "modules": "tg_bot"})
+        await create_project.ainvoke(
+            {"name": "test", "modules": "tg_bot"},
+            config=_make_config("user-1"),
+        )
 
         payload = mock_api_client.post.call_args[1]["json"]
         assert "backend" in payload["config"]["modules"]
 
     @pytest.mark.asyncio
     async def test_rejects_invalid_modules(self, mock_api_client):
-        result = await create_project.ainvoke({"name": "test", "modules": "invalid_mod"})
+        result = await create_project.ainvoke(
+            {"name": "test", "modules": "invalid_mod"},
+            config=_make_config("user-1"),
+        )
         assert "Error" in result
         assert "invalid_mod" in result
         mock_api_client.post.assert_not_called()
@@ -107,17 +127,27 @@ class TestListProjects:
             ]
         )
 
-        result = await list_projects.ainvoke({})
+        result = await list_projects.ainvoke({}, config=_make_config("user-42"))
 
         assert "proj-a" in result
         assert "proj-b" in result
         mock_api_client.get.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_passes_telegram_id_header(self, mock_api_client):
+        mock_api_client.get.return_value = _make_response([])
+
+        await list_projects.ainvoke({}, config=_make_config("99999"))
+
+        call_args = mock_api_client.get.call_args
+        headers = call_args[1].get("headers", {})
+        assert headers.get("X-Telegram-ID") == "99999"
+
+    @pytest.mark.asyncio
     async def test_empty_list(self, mock_api_client):
         mock_api_client.get.return_value = _make_response([])
 
-        result = await list_projects.ainvoke({})
+        result = await list_projects.ainvoke({}, config=_make_config("user-1"))
         assert "No projects" in result
 
 
@@ -127,12 +157,21 @@ class TestGetProject:
         project = {"id": "abc", "name": "my-bot", "status": "active"}
         mock_api_client.get.return_value = _make_response(project)
 
-        result = await get_project.ainvoke({"project_id": "abc"})
+        result = await get_project.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
 
         parsed = json.loads(result)
         assert parsed["name"] == "my-bot"
         mock_api_client.get.assert_called_once()
         assert "/api/projects/abc" in mock_api_client.get.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_passes_telegram_id_header(self, mock_api_client):
+        mock_api_client.get.return_value = _make_response({"id": "abc", "name": "x"})
+
+        await get_project.ainvoke({"project_id": "abc"}, config=_make_config("55555"))
+
+        headers = mock_api_client.get.call_args[1].get("headers", {})
+        assert headers.get("X-Telegram-ID") == "55555"
 
 
 class TestSetProjectSecret:
@@ -146,12 +185,31 @@ class TestSetProjectSecret:
         mock_api_client.patch.return_value = _make_response({"id": "abc"})
 
         result = await set_project_secret.ainvoke(
-            {"project_id": "abc", "key": "TELEGRAM_BOT_TOKEN", "value": "123:ABC"}
+            {"project_id": "abc", "key": "TELEGRAM_BOT_TOKEN", "value": "123:ABC"},
+            config=_make_config("user-42"),
         )
 
         assert "Secret" in result
         patch_payload = mock_api_client.patch.call_args[1]["json"]
         assert patch_payload["config"]["secrets"]["TELEGRAM_BOT_TOKEN"] == "123:ABC"  # noqa: S105
+
+    @pytest.mark.asyncio
+    @patch("src.po.tools.encrypt_dict", side_effect=lambda d: d)
+    @patch("src.po.tools.decrypt_dict", side_effect=lambda d: d)
+    async def test_passes_telegram_id_header(self, _mock_decrypt, _mock_encrypt, mock_api_client):
+        mock_api_client.get.return_value = _make_response({"id": "abc", "config": {}})
+        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+
+        await set_project_secret.ainvoke(
+            {"project_id": "abc", "key": "K", "value": "V"},
+            config=_make_config("77777"),
+        )
+
+        # Both GET and PATCH should have the header
+        get_headers = mock_api_client.get.call_args[1].get("headers", {})
+        assert get_headers.get("X-Telegram-ID") == "77777"
+        patch_headers = mock_api_client.patch.call_args[1].get("headers", {})
+        assert patch_headers.get("X-Telegram-ID") == "77777"
 
 
 class TestTriggerEngineering:
@@ -203,6 +261,17 @@ class TestTriggerEngineering:
         eng_msg = mock_stream_client.publish_message.call_args[0][1]
         assert eng_msg.user_id == "user-777"
 
+    @pytest.mark.asyncio
+    async def test_passes_telegram_id_header_on_task_create(
+        self, mock_api_client, mock_stream_client
+    ):
+        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
+
+        await trigger_engineering.ainvoke({"project_id": "abc"}, config=_make_config("44444"))
+
+        headers = mock_api_client.post.call_args[1].get("headers", {})
+        assert headers.get("X-Telegram-ID") == "44444"
+
 
 class TestTriggerDeploy:
     @pytest.mark.asyncio
@@ -238,6 +307,17 @@ class TestTriggerDeploy:
         deploy_msg = mock_stream_client.publish_message.call_args[0][1]
         assert deploy_msg.user_id == "user-999"
 
+    @pytest.mark.asyncio
+    async def test_passes_telegram_id_header_on_task_create(
+        self, mock_api_client, mock_stream_client
+    ):
+        mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
+
+        await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("66666"))
+
+        headers = mock_api_client.post.call_args[1].get("headers", {})
+        assert headers.get("X-Telegram-ID") == "66666"
+
 
 class TestGetTaskStatus:
     @pytest.mark.asyncio
@@ -245,10 +325,21 @@ class TestGetTaskStatus:
         task = {"id": "eng-123", "status": "completed", "type": "engineering"}
         mock_api_client.get.return_value = _make_response(task)
 
-        result = await get_task_status.ainvoke({"task_id": "eng-123"})
+        result = await get_task_status.ainvoke(
+            {"task_id": "eng-123"}, config=_make_config("user-42")
+        )
 
         parsed = json.loads(result)
         assert parsed["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_passes_telegram_id_header(self, mock_api_client):
+        mock_api_client.get.return_value = _make_response({"id": "eng-1", "status": "running"})
+
+        await get_task_status.ainvoke({"task_id": "eng-1"}, config=_make_config("88888"))
+
+        headers = mock_api_client.get.call_args[1].get("headers", {})
+        assert headers.get("X-Telegram-ID") == "88888"
 
 
 class TestSetReminder:
