@@ -342,8 +342,20 @@ DESCRIPTION="<task description from matrix>
 
 In addition to completing the task above, you are performing an audit of the framework and development environment. Throughout your work, keep a file called AUDIT_REPORT.md in the repo root. Log everything you encounter: problems, errors, unexpected behavior, missing features or tools in the framework, anything that didn't work as expected or required workarounds, suggestions for improving the template, framework, or workspace setup, ideas for making the development flow smoother. Be specific: include exact error messages, file paths, and what you expected vs what happened."
 
+# Upsert test user (API requires X-Telegram-ID for project creation)
+curl -s -X POST http://localhost:8000/api/users/upsert \
+  -H "Content-Type: application/json" \
+  -d '{
+    "telegram_id": 999000001,
+    "username": "e2e_test_user",
+    "first_name": "E2E",
+    "last_name": "Test",
+    "is_admin": false
+  }' | jq .
+
 curl -s -X POST http://localhost:8000/api/projects/ \
   -H "Content-Type: application/json" \
+  -H "X-Telegram-ID: 999000001" \
   -d "$(jq -n \
     --arg id "$PROJECT_ID" \
     --arg name "$PROJECT_NAME" \
