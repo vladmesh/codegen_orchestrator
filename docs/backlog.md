@@ -7,7 +7,7 @@
 ### #31 Port Allocation Locking
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/port-allocation-locking.md
 - **Status**: pending
 - **Brief**: Два параллельных деплоя → оба читают порты → дупликат. `tools/allocator.py:54-122` — нет атомарности. Нужно: atomic allocate-or-fail. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
 

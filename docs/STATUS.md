@@ -2,9 +2,9 @@
 
 ## Current Task
 - **Backlog**: #31 Port Allocation Locking
-- **Plan**: —
-- **Step**: —
-- **Done Steps**: —
+- **Plan**: docs/plans/port-allocation-locking.md
+- **Step**: 1/5 — Add unique constraint on (server_handle, port)
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
