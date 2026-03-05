@@ -1,7 +1,7 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #17 Dead Code & Legacy Cleanup
 - **Plan**: —
 - **Step**: —
 - **Done Steps**: —
