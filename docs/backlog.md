@@ -7,7 +7,7 @@
 ### #4 CI Pipeline Redesign
 - **Priority**: HIGH | integration-tests
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/ci-pipeline-redesign.md
 - **Status**: partial (PR/Publish split done)
 - **Brief**: Параллельные интеграционные тесты (GH Actions matrix). Split `test-integration` into 5 parallel jobs (backend, cli, template, frontend, infra) — wall-clock 10min→3-4min. Включает: healthcheck interval tuning (5s→2s в compose-файлах без DIND), buildx cache per-suite. Brainstorms: `docs/brainstorms/ci-pipeline-redesign.md`, `docs/brainstorms/ci-integration-test-speed.md`.
 

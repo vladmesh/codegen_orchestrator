@@ -2,9 +2,9 @@
 
 ## Current Task
 - **Backlog**: #4 CI Pipeline Redesign
-- **Plan**: —
-- **Step**: —
-- **Done Steps**: —
+- **Plan**: docs/plans/ci-pipeline-redesign.md
+- **Step**: 1/4 — Convert test-integration job to matrix strategy
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
