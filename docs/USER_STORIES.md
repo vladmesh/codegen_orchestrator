@@ -1,6 +1,6 @@
 # User Stories
 
-> **Актуально на**: 2026-03-04
+> **Актуально на**: 2026-03-05
 
 Целевые сценарии использования платформы. Упорядочены по сложности — простые блокируют сложные.
 
@@ -20,7 +20,7 @@ US-Admin (видимость системы) — независимая, Phase 4
 ---
 
 ## US0: Базовый пайплайн (scaffold → code → CI → deploy)
-**Приоритет**: Критический | **Статус**: Ready | **Blocked by**: —
+**Приоритет**: Критический | **Статус**: Done | **Blocked by**: —
 
 **Как** оператор платформы
 **Хочу** чтобы цепочка scaffold → code → CI → deploy проходила end-to-end
@@ -33,14 +33,14 @@ US-Admin (видимость системы) — независимая, Phase 4
 - [x] Deploy: GitHub Actions deploy.yml (SSH + docker compose) → 2026-02-15
 - [x] Webhook: ci.yml success → auto-deploy → уведомление юзеру → 2026-02-15
 - [x] Network isolation: воркеры не видят инфру оркестратора → #22 done 2026-03-03
-- [ ] Стабильный E2E pass с активной сетевой изоляцией → needs E2E after image rebuild
+- [x] Стабильный E2E pass с активной сетевой изоляцией → 2026-03-05 (todo_api with-PO mode)
 
-**E2E**: Level C todo_api PASS 2026-03-04 (14 min), weather_bot PASS 2026-03-04 (15 min) — network isolation code done but stale image prevented activation during these runs; auto-detect stale images feature ensures next run will have it active
+**E2E**: todo_api with-PO PASS 2026-03-05 (12 min), weather_bot PASS 2026-03-04 (15 min)
 
 ---
 
 ## US1: Свой токен Telegram бота
-**Приоритет**: Критический | **Статус**: Blocked | **Blocked by**: US0
+**Приоритет**: Критический | **Статус**: Done | **Blocked by**: —
 
 **Как** пользователь
 **Хочу** использовать свой Telegram Bot Token
@@ -56,9 +56,9 @@ US-Admin (видимость системы) — независимая, Phase 4
 - [x] PO принимает токен от пользователя через Telegram → 2026-02-15
 - [x] Токен сохраняется как секрет проекта (Fernet) → 2026-02-25
 - [x] DevOps subgraph инжектит токен в deploy → 2026-02-15
-- [ ] E2E сценарий с tg_bot модулем проходит → blocked by US0
+- [x] E2E сценарий с tg_bot модулем проходит → weather_bot PASS 2026-03-04
 
-**E2E**: Level C tg_bot scenario — not written | blocked by US0
+**E2E**: weather_bot PASS 2026-03-04 (15 min, token injection + tg_bot polling verified)
 
 ---
 
@@ -85,7 +85,7 @@ US-Admin (видимость системы) — независимая, Phase 4
 ---
 
 ## US3: Доработка существующего проекта
-**Приоритет**: Высокий | **Статус**: Blocked | **Blocked by**: US0
+**Приоритет**: Высокий | **Статус**: Ready | **Blocked by**: —
 
 **Как** пользователь с существующим ботом
 **Хочу** попросить добавить функционал
@@ -98,10 +98,10 @@ US-Admin (видимость системы) — независимая, Phase 4
 
 **Acceptance Criteria**:
 - [x] EngineeringMessage action=feature/fix (без scaffold) → 2026-02-19
-- [ ] PO корректно выбирает существующий проект → Roadmap Phase 5 (idea)
-- [ ] E2E feature-add сценарий проходит → blocked by US0
+- [ ] PO корректно выбирает существующий проект → #34 (Phase 2A)
+- [ ] E2E feature-add сценарий проходит → #34
 
-**E2E**: — | blocked by US0
+**E2E**: — | backlog #34
 
 ---
 
@@ -122,7 +122,7 @@ US-Admin (видимость системы) — независимая, Phase 4
 ---
 
 ## US5: Автоматическое восстановление
-**Приоритет**: Средний | **Статус**: Not started | **Blocked by**: US0, US1
+**Приоритет**: Средний | **Статус**: Not started | **Blocked by**: —
 
 **Как** пользователь
 **Хочу** получать уведомления если проект упал

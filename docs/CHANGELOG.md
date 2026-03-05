@@ -5,6 +5,7 @@
 ## 2026-03-05
 
 ### Added
+- E2E report: todo_api with-PO mode PASS (12 min) — first test with PO creating project via Redis Streams
 - Post-deploy smoke tester node in DevOps subgraph (#25): HTTP `/health` check for backends, Telethon `/start` check for tg_bot modules
 - `SmokeTesterNode` with retry logic (3 retries, 5s delay) and graceful skip when Telethon not configured
 - `smoke_result` field in `DevOpsState` — propagated through deploy_worker to task result
@@ -17,6 +18,10 @@
 - Merge duplicated constants (`Paths`, `Timeouts`, `CI`, `Provisioning`) into `shared/constants.py` (#23)
 - Service-local `config/constants.py` now re-exports from shared (#23)
 - Add `shared/tests/**` to ruff PLR2004/S101 per-file-ignores (#23)
+- Restructure ROADMAP: split Phase 2 → 2A (pre-MVP alpha blockers) + 2B (post-alpha stability)
+- Triage: 7 new tasks (#30-#35), reopened #25 as regression, reordered backlog by roadmap phases
+- New brainstorm: epic decomposition — decision: Task Store in DB (Phase 3), skip intermediate file-based epics
+- Triage skill: added Queue reorder step based on ROADMAP phase priorities
 
 ## 2026-03-04
 
