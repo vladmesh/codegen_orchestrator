@@ -45,7 +45,7 @@
 ### Problem 1: ORMBase forces `updated_at` column on all models
 - **Type**: template
 - **Severity**: minor
-- **Backlog**: service-template backlog
+- **Backlog**: `—` (fixed in service-template: `CreatedAtMixin` added in `b0afb10`)
 - **Description**: The `ORMBase` abstract class in service-template provides both `created_at` and `updated_at` columns. Models that only need `created_at` (like the Todo model per spec) must use `Base` directly and define `created_at` manually, losing the convenience of `ORMBase`.
 - **Root cause**: `ORMBase` is the only timestamped base class, and it bundles both timestamp fields.
 - **Suggested fix**: Add a `CreatedAtBase` with only `created_at`, or make `updated_at` opt-in via a mixin.
@@ -53,7 +53,7 @@
 ### Problem 2: No router code generation from specs
 - **Type**: template
 - **Severity**: minor
-- **Backlog**: service-template backlog
+- **Backlog**: `—` (tracked in service-template backlog)
 - **Description**: The framework generates protocols and controller stubs from specs, but routers must be written manually. The worker noted this is the most boilerplate-heavy part of development.
 - **Root cause**: Router generation not implemented in the framework's `generate` command.
 - **Suggested fix**: Generate router stubs alongside controller stubs — the pattern is formulaic (map HTTP method to controller method with Depends wiring).
@@ -61,7 +61,7 @@
 ### Problem 3: Schema `__init__.py` re-exports are manual
 - **Type**: template
 - **Severity**: minor
-- **Backlog**: service-template backlog
+- **Backlog**: `—` (tracked in service-template backlog)
 - **Description**: After adding new models, `schemas/__init__.py` must be manually updated to re-export new schemas. Easy to forget.
 - **Root cause**: The generate command doesn't update `__init__.py` re-exports.
 - **Suggested fix**: Either auto-generate this file or remove the re-export pattern in favor of direct imports.

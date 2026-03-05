@@ -2,7 +2,7 @@
 
 > **Дата**: 2026-03-05
 > **Контекст**: Оркестратор будет использовать единую БД (эпики, таски, проекты) как для собственной разработки, так и для клиентских проектов. Вопрос: где на шкале "всё в одной куче" ↔ "полная изоляция per-project" находится оптимум?
-> **Status**: draft
+> **Status**: triaged
 
 ---
 
@@ -332,8 +332,8 @@ On-prem, compliance, white-label. Не проектировать заранее
 
 ## Action Items
 
-- → idea: "RLS policies на PostgreSQL для multi-tenant (подготовка, не блокер для MVP)"
-- → idea: "Redis key prefix isolation (tenant:{id}:*) — подготовка к multi-tenant"
-- → new task: "Task Store: добавить tenant_id в модель WorkItem при создании"
-- → new task: "Отдельная database для системных данных оркестратора (orchestrator_system)"
+- → idea (added to backlog Ideas): "RLS policies на PostgreSQL для multi-tenant"
+- → idea (added to backlog Ideas): "Redis key prefix isolation (tenant:{id}:*)"
+- → idea (merged into existing "Task Store" idea): "tenant_id в модель WorkItem при создании"
+- → idea (added to backlog Ideas): "Отдельная database для системных данных оркестратора"
 - → backlog #30 (Multi-user Isolation Fix — уже покрывает часть вопросов Level 1)

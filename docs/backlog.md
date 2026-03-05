@@ -53,12 +53,6 @@
 - **Status**: pending
 - **Brief**: Core product flow — "допили мне бота". 4 части: (1) PO tool: select existing project (`list_projects(user_id=X)` + выбор), (2) Engineering worker: feature flow (git pull → branch → code → CI, без scaffold), (3) Deploy: redeploy existing (тот же flow без allocation), (4) E2E test: feature-add scenario. Кандидат на первый "эпик". Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
 
-### #25 Post-Deploy Smoke Tester [regression]
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: —
-- **Status**: blocked — awaiting E2E logs
-- **Brief**: smoke_result null в deploy task. Defensive init добавлен, но мини-граф тест показал что LangGraph пропагирует без него. Добавлен диагностический лог `devops_subgraph_result` в deploy_worker — покажет root cause при следующем деплое.
 
 ### #8 Workspace Failure Counter
 - **Priority**: MEDIUM
@@ -102,12 +96,6 @@
 - **Status**: pending
 - **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory ("предсмертная записка" агента). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change).
 
-### #35 [meta] E2E Skill: Use Repo Slug for Server Paths
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: E2E skill uses `$PROJECT_NAME` (todo_api) for server paths, but deployed directory is `todo-api` (hyphenated, matches repo slug). `ssh root@$SERVER_IP "cd /opt/services/$PROJECT_NAME/infra"` fails. Fix: use `$REPO_SLUG` (hyphenated) for server directory paths. Источник: E2E report `docs/e2e_results/todo_api-20260305.md` Problem 4.
 
 ### #18 Split engineering_worker.py (1088 LOC)
 - **Priority**: MEDIUM
@@ -190,15 +178,20 @@
 - pytest-xdist для backend integration tests — исследовать после параллелизации стеков (источник: brainstorm ci-integration-test-speed)
 - Split worker-manager/src/manager.py (828 LOC, 6 functions >50 LOC) (источник: audit 2026-03-05)
 - infra-service unit test coverage: 9 source files, 0 tests (источник: audit 2026-03-05)
-- Task Store в БД — Epic, WorkItem, WorkItemGate (dogfooding для продукта, Phase 3) (источник: brainstorm epic-decomposition)
+- Task Store в БД — Epic, WorkItem, WorkItemGate с tenant_id с первого дня (dogfooding для продукта, Phase 3) (источник: brainstorms epic-decomposition, multi-tenant-isolation)
 - Миграция скиллов на API-first (/next, /implement, /triage через API) (источник: brainstorm epic-decomposition)
 - Assessor node — фильтр сложности запросов (Phase 4) (источник: brainstorm epic-decomposition)
 - Architect node — декомпозиция сложных задач через Task Store (Phase 5) (источник: brainstorm epic-decomposition)
 - SOPS для .env на проде (Phase 2B) (источник: brainstorm epic-decomposition)
 - Zero-downtime deploy — rolling restart (Phase 2B) (источник: brainstorm epic-decomposition)
+- RLS policies на PostgreSQL для multi-tenant (подготовка, не блокер для MVP) (источник: brainstorm multi-tenant-isolation)
+- Redis key prefix isolation (tenant:{id}:*) — подготовка к multi-tenant (источник: brainstorm multi-tenant-isolation)
+- Отдельная database для системных данных оркестратора (orchestrator_system) — Phase 3 (источник: brainstorm multi-tenant-isolation)
 
 ## Done (last 10)
 
+- #35 [meta] E2E Skill: server IP resolution + repo slug paths — fixed 2026-03-05
+- #25 Post-Deploy Smoke Tester — confirmed working in E2E todo_api-20260305-2 — 2026-03-05
 - #23 Extract Shared Code (infra_client + constants) — 2026-03-05
 - #24 Fix Critical getenv Defaults — 2026-03-04
 - #6 Fix & Consolidate Test Suites — 2026-03-04
