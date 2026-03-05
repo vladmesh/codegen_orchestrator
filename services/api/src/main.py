@@ -122,7 +122,7 @@ app.include_router(routers.api_keys.router, prefix="/api")
 app.include_router(routers.incidents.router, prefix="/api")
 app.include_router(routers.service_deployments.router, prefix="/api")
 app.include_router(routers.agent_configs.router, prefix="/api")
-app.include_router(routers.cli_agent_configs.router, prefix="/api")
+
 app.include_router(routers.available_models.router, prefix="/api")
 app.include_router(routers.rag.router, prefix="/api")
 app.include_router(routers.tasks.router, prefix="/api")

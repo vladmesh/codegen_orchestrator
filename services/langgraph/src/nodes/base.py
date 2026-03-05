@@ -17,7 +17,6 @@ from langchain_core.tools import BaseTool
 import structlog
 
 from ..config.agent_config_cache import agent_config_cache
-from ..config.cli_agent_config import cli_agent_config_cache
 from ..llm.factory import LLMFactory
 from .tool_executor import ToolExecutor
 
@@ -157,40 +156,6 @@ class LLMNode(BaseNode):
             Dict of state updates to apply
         """
         return {}
-
-
-class CLIAgentNode(BaseNode):
-    """Base class for CLI coding agents."""
-
-    provider: str = "cli"
-
-    def __init__(
-        self,
-        node_id: str | None = None,
-        model: str | None = None,
-        prompt_template: str | None = None,
-        timeout_seconds: int | None = None,
-        workspace_image: str | None = None,
-        required_credentials: list[str] | None = None,
-        provider: str | None = None,
-    ):
-        resolved_provider = provider or self.provider
-        super().__init__(node_id=node_id or resolved_provider, timeout_seconds=timeout_seconds)
-        self.provider = resolved_provider
-        self.model = model
-        self.prompt_template = prompt_template
-        self.workspace_image = workspace_image
-        self.required_credentials = required_credentials or []
-
-    async def get_config(self) -> dict[str, Any]:
-        """Get agent configuration from API.
-
-        Returns:
-            Config dict with keys: prompt_template, model, etc.
-        """
-        if not self.node_id:
-            raise ValueError("Node ID required to fetch config")
-        return await cli_agent_config_cache.get(self.node_id)
 
 
 class FunctionalNode(BaseNode):

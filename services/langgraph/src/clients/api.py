@@ -85,9 +85,6 @@ class LanggraphAPIClient:
     async def get_agent_config(self, agent_id: str) -> dict[str, Any]:
         return await self._get_json(f"agent-configs/{agent_id}")
 
-    async def get_cli_agent_config(self, agent_id: str) -> dict[str, Any]:
-        return await self._get_json(f"cli-agent-configs/{agent_id}")
-
     async def list_projects(self) -> list[dict]:
         return await self._get_json("projects/")
 

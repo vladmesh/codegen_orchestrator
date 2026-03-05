@@ -1,7 +1,7 @@
 """Add provisioning_started_at to servers
 
 Revision ID: 3b7b3d21a9f2
-Revises: f906c524c544
+Revises: 2ac76ac9438e
 Create Date: 2025-12-26 19:10:00.000000
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "3b7b3d21a9f2"
-down_revision: str | None = "f906c524c544"
+down_revision: str | None = "2ac76ac9438e"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
