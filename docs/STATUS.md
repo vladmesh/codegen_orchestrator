@@ -1,7 +1,7 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #4 CI Pipeline Redesign
 - **Plan**: —
 - **Step**: —
 - **Done Steps**: —
