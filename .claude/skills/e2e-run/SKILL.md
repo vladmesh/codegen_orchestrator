@@ -625,6 +625,16 @@ if [ "$STATUS" = "failed" ] && [ -n "$DEPLOYED_URL" ]; then
 fi
 ```
 
+**Smoke diagnostics** — check deploy-worker logs for subgraph result details (critical for #25 investigation):
+
+```bash
+docker compose logs deploy-worker --since=30m 2>&1 | grep "devops_subgraph_result"
+```
+
+This log line shows: `result_keys` (which state fields were returned), `has_smoke_result`,
+`smoke_result` value, `errors` (if non-empty, smoke_tester was skipped by routing).
+Include the full log line in the report under Timeline or Problems.
+
 ### Step 5: Verify
 
 **5a. CI status**:

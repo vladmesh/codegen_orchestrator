@@ -299,6 +299,16 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         subgraph_input = _build_subgraph_input(project_id, project, allocated_resources, job_data)
         result = await devops_subgraph.ainvoke(subgraph_input)
 
+        logger.info(
+            "devops_subgraph_result",
+            task_id=task_id,
+            result_keys=sorted(result.keys()),
+            has_smoke_result="smoke_result" in result,
+            smoke_result=result.get("smoke_result"),
+            deployed_url=result.get("deployed_url"),
+            errors=result.get("errors"),
+        )
+
         if result.get("deployed_url"):
             smoke_result = result.get("smoke_result")
             smoke_failed = smoke_result and smoke_result.get("status") == "fail"
