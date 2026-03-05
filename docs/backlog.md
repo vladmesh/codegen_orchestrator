@@ -7,7 +7,7 @@
 ### #30 Multi-user Isolation Fix
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/multi-user-isolation.md
 - **Status**: pending
 - **Brief**: (1) PO tools (`services/langgraph/src/po/tools.py`) не передают `X-Telegram-ID` заголовок при вызовах API → `create_project` создаёт проекты с `owner_id = NULL`, `list_projects` возвращает всё всем. Фикс: прокинуть `user_id` из `config["configurable"]` в httpx-клиент как `X-Telegram-ID` header. (2) API auth bypass: без `X-Telegram-ID` header возвращает ВСЕ проекты всех пользователей (projects.py, tasks.py, allocations.py). (3) Worker ownership: engineering_worker и deploy_worker не проверяют что user_id владеет project_id. (4) Task update bypass: невалидный telegram_id проходит проверку (silent pass при user=None). Объединено из #30 + #27. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`, e2e-run PO integration analysis 2026-03-04.
 

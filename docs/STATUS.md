@@ -2,8 +2,8 @@
 
 ## Current Task
 - **Backlog**: #30 Multi-user Isolation Fix
-- **Plan**: —
-- **Step**: —
+- **Plan**: docs/plans/multi-user-isolation.md
+- **Step**: 1/5 — PO tools: pass X-Telegram-ID header in API calls
 - **Done Steps**: (empty)
 
 ## Blocked
