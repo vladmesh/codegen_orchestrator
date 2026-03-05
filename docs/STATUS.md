@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #37 Remove Dead LLM Agent Configs from Code
+- **Backlog**: —
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: (empty)
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 37 | Remove Dead LLM Agent Configs from Code |
 | 36 | Remove CLI Agent Config Infrastructure |
 | 29 | Fix ORCHESTRATOR_USER_ID defaults in CLI commands |
 | 25 | Post-Deploy Smoke Tester (reopened — regression, confirmed fixed) |

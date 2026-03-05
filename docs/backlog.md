@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #37 Remove Dead LLM Agent Configs from Code
-- **Priority**: MEDIUM | quick-win
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: 5 из 6 agent_configs были мёртвыми (удалены из YAML). Но код содержит vestigial references: `architect_complete: bool` в `OrchestratorState` (graph.py:72) и `provisioner.py:128`, docstring в `agent_config.py:48` ссылается на "product_owner". Также PO prompt из БД не используется — PO берёт model из env vars, prompt из `po/prompts.py`. Проверить нужен ли agent_configs API router вообще (используется только для `devops`). Источник: seed/nuke audit 2026-03-05.
-
 ### #17 Dead Code & Legacy Cleanup
 - **Priority**: MEDIUM | quick-win
 - **User Story**: —
@@ -189,6 +182,7 @@
 
 ## Done (last 10)
 
+- #37 Remove Dead LLM Agent Configs from Code — 2026-03-05
 - #36 Remove CLI Agent Config Infrastructure — 2026-03-05
 - #29 Fix ORCHESTRATOR_USER_ID defaults in CLI commands — 2026-03-05
 - #35 [meta] E2E Skill: server IP resolution + repo slug paths — fixed 2026-03-05
