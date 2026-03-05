@@ -1,8 +1,4 @@
-"""LangGraph nodes package.
-
-After engineering simplification, architect and preparer nodes have been removed.
-Developer node now handles all engineering work (architecture, scaffolding, coding).
-"""
+"""LangGraph nodes package."""
 
 from . import (
     developer,

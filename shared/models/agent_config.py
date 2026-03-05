@@ -15,7 +15,7 @@ class AgentConfig(Base):
 
     __tablename__ = "agent_configs"
 
-    # Primary identifier: product_owner, architect, zavhoz, brainstorm, developer
+    # Primary identifier: e.g., "devops"
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
 
     # Display name for admin panel

@@ -1,10 +1,8 @@
 """Tools for LangGraph subgraphs.
 
-After engineering simplification:
-- Engineering subgraph uses unified Developer node (no Architect/Preparer)
+- Engineering subgraph uses unified Developer node
 - DevOps subgraph (Deployer) — deploys via GitHub Actions (deploy.yml)
-- Analyst node
-- Zavhoz node (resource allocation)
+- ResourceAllocatorNode (resource allocation)
 
 PO capability tools are replaced by orchestrator-cli commands.
 """
@@ -12,7 +10,7 @@ PO capability tools are replaced by orchestrator-cli commands.
 # GitHub tools
 from .github import create_file_in_repo, create_github_repo, get_github_token
 
-# Port allocation (used by Zavhoz)
+# Port allocation (used by ResourceAllocatorNode)
 from .ports import allocate_port, get_next_available_port
 
 # Project tools (used by Analyst and subgraphs)
@@ -25,7 +23,7 @@ from .projects import (
     update_project,
 )
 
-# Server management (used by Zavhoz)
+# Server management (used by ResourceAllocatorNode)
 from .servers import (
     find_suitable_server,
     get_server_info,

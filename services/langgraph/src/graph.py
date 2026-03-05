@@ -69,7 +69,6 @@ class OrchestratorState(TypedDict):
     # ============================================================
     repo_info: dict | None
     project_complexity: str | None
-    architect_complete: bool
 
     # ============================================================
     # PREPARER STATE

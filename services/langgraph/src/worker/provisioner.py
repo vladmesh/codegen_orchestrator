@@ -125,7 +125,6 @@ async def _run_provisioning_graph(server_handle: str, is_incident_recovery: bool
         "allocated_resources": {},
         "deployed_url": None,
         "repo_info": None,
-        "architect_complete": False,
         "project_complexity": None,
         "provisioning_result": None,
         # Dynamic PO Phase 2 fields

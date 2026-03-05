@@ -45,7 +45,7 @@ class AgentConfigCache:
         """Get agent config from cache or fetch from API.
 
         Args:
-            agent_id: Agent identifier (e.g., "product_owner", "brainstorm")
+            agent_id: Agent identifier (e.g., "devops")
 
         Returns:
             Agent config dict with keys: id, name, system_prompt, model_name, temperature

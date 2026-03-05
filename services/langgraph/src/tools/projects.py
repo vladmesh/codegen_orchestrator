@@ -67,7 +67,7 @@ async def create_project(
     Call this when you have gathered enough information about the project.
     Returns the created project with its ID.
 
-    After creation, the project will be passed to Zavhoz for resource allocation.
+    After creation, the project will be passed to ResourceAllocator for resource allocation.
     """
     # Validate project name format before proceeding
     validate_project_name(name)
@@ -75,7 +75,7 @@ async def create_project(
     project_id = str(uuid.uuid4())[:8]
 
     config_payload = {
-        "name": name,  # Include name for downstream nodes (architect, etc.)
+        "name": name,
         "description": description,
         "modules": modules,
         "entry_points": entry_points,
