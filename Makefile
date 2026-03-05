@@ -14,7 +14,7 @@ DOCKER_COMPOSE ?= docker compose
 WORKER_SOURCE_HASH = $(shell find shared packages/worker-wrapper packages/orchestrator-cli \
   services/worker-manager/images -type f \
   -not -path '*/__pycache__/*' -not -name '*.pyc' \
-  | sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
+  | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
 
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
 DOCKER_COMPOSE_TOOLS := $(COMPOSE_ENV) $(DOCKER_COMPOSE) -f docker-compose.tools.yml -p codegen_orchestrator_tools
