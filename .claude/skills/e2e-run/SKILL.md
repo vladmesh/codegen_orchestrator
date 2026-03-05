@@ -153,25 +153,36 @@ ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$SERVER_IP"
 ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "hostname"
 ```
 
-**Finding the server IP**: The resource allocator assigns a port on a managed server.
-The `service-deployments` API only has records if deploy succeeded. For failed deploys,
-get the IP from the port allocations API instead:
+**Finding the server IP and port**: The deploy task result contains the `deployed_url`
+(e.g. `http://1.2.3.4:8000`) — this is the most reliable source. For failed deploys
+where `deployed_url` is absent, resolve IP from `service-deployments` or the server's
+`public_ip` field via port allocation handle lookup.
 
 ```bash
-# Option 1: from service-deployments (only if deploy succeeded)
+# Option 1 (preferred): from deploy task result — always has IP:port if deploy ran
+DEPLOY_RESULT=$(curl -s "http://localhost:8000/api/tasks/$DEPLOY_TASK")
+DEPLOYED_URL=$(echo "$DEPLOY_RESULT" | jq -r '.result.deployed_url // empty')
+if [ -n "$DEPLOYED_URL" ]; then
+  SERVER_IP=$(echo "$DEPLOYED_URL" | sed -E 's|https?://([^:/]+).*|\1|')
+  DEPLOY_PORT=$(echo "$DEPLOYED_URL" | sed -E 's|.*:([0-9]+)$|\1|')
+fi
+
+# Option 2: from service-deployments (only if deploy succeeded)
 SERVER_IP=$(curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | jq -r '.[0].server_ip // empty')
 
-# Option 2: from port allocations (always works — allocated during engineering)
-SERVER_IP=$(curl -s "http://localhost:8000/api/servers/vps-267180/ports" \
-  | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .server_ip // empty' )
-
-# Option 3: if you don't know which server, check all managed servers
-SERVER_IP=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
+# Option 3: resolve via port allocations → server handle → server public_ip
+SERVER_HANDLE=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
   | jq -r '.[].handle' \
   | while read h; do
-      curl -s "http://localhost:8000/api/servers/$h/ports" \
-        | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .server_ip // empty'
+      HAS=$(curl -s "http://localhost:8000/api/servers/$h/ports" \
+        | jq -r --arg pid "$PROJECT_ID" '[.[] | select(.project_id == $pid)] | length')
+      [ "$HAS" != "0" ] && echo "$h" && break
     done | head -1)
+if [ -n "$SERVER_HANDLE" ]; then
+  SERVER_IP=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE" | jq -r '.public_ip // empty')
+  DEPLOY_PORT=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE/ports" \
+    | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .port // empty' | head -1)
+fi
 ```
 
 **Server filesystem layout**: Deployed projects live under `/opt/services/`:
@@ -660,17 +671,38 @@ asyncio.run(main())
 
 **5b. Service running on server**:
 
-First, find the server IP (see "Server Access" section). Then verify or diagnose:
+First, extract server IP and port from the deploy task result (see "Server Access" section):
 
 ```bash
-# Get server IP from port allocations (works even if deploy failed)
-SERVER_IP=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
-  | jq -r '.[].handle' \
-  | while read h; do
-      curl -s "http://localhost:8000/api/servers/$h/ports" \
-        | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .server_ip // empty'
-    done | head -1)
-echo "Server: $SERVER_IP"
+# Extract IP and port from deployed_url (most reliable source)
+DEPLOY_RESULT=$(curl -s "http://localhost:8000/api/tasks/$DEPLOY_TASK")
+DEPLOYED_URL=$(echo "$DEPLOY_RESULT" | jq -r '.result.deployed_url // empty')
+if [ -n "$DEPLOYED_URL" ]; then
+  SERVER_IP=$(echo "$DEPLOYED_URL" | sed -E 's|https?://([^:/]+).*|\1|')
+  DEPLOY_PORT=$(echo "$DEPLOYED_URL" | sed -E 's|.*:([0-9]+)$|\1|')
+fi
+
+# Fallback: service-deployments API
+if [ -z "$SERVER_IP" ]; then
+  SERVER_IP=$(curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | jq -r '.[0].server_ip // empty')
+fi
+
+# Fallback: port allocations → server handle → server public_ip
+if [ -z "$SERVER_IP" ]; then
+  SERVER_HANDLE=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
+    | jq -r '.[].handle' \
+    | while read h; do
+        HAS=$(curl -s "http://localhost:8000/api/servers/$h/ports" \
+          | jq -r --arg pid "$PROJECT_ID" '[.[] | select(.project_id == $pid)] | length')
+        [ "$HAS" != "0" ] && echo "$h" && break
+      done | head -1)
+  if [ -n "$SERVER_HANDLE" ]; then
+    SERVER_IP=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE" | jq -r '.public_ip // empty')
+    DEPLOY_PORT=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE/ports" \
+      | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .port // empty' | head -1)
+  fi
+fi
+echo "Server: $SERVER_IP, Port: $DEPLOY_PORT"
 ```
 
 **If deploy succeeded** — verify service is healthy:
@@ -698,12 +730,6 @@ echo "=== Smoke Test Result ==="
 curl -s http://localhost:8000/api/tasks/$DEPLOY_TASK | jq '.result.smoke_result // "no smoke result"'
 
 # Independent cross-check: curl the health endpoint directly
-DEPLOY_PORT=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
-  | jq -r '.[].handle' \
-  | while read h; do
-      curl -s "http://localhost:8000/api/servers/$h/ports" \
-        | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .port // empty'
-    done | head -1)
 curl -sf "http://$SERVER_IP:$DEPLOY_PORT/health" | jq . || echo "Health endpoint not responding"
 ```
 
@@ -872,18 +898,31 @@ asyncio.run(main())
 Clean server deployment:
 
 ```bash
-# 3. Get server IP — try service-deployments first, fall back to port allocations
+# 3. Get server IP — try deployed_url first, then service-deployments, then port allocations
 DEPLOYMENTS=$(curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID")
-SERVER_IP=$(echo "$DEPLOYMENTS" | jq -r '.[0].server_ip // empty')
 
-# Fallback: port allocations (works even if deploy failed and has no deployment records)
+# Primary: from deployed_url (already extracted in Step 4/5)
+# SERVER_IP should already be set from verification step. If not, re-extract:
 if [ -z "$SERVER_IP" ]; then
-  SERVER_IP=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
+  DEPLOYED_URL=$(curl -s "http://localhost:8000/api/tasks/$DEPLOY_TASK" | jq -r '.result.deployed_url // empty')
+  [ -n "$DEPLOYED_URL" ] && SERVER_IP=$(echo "$DEPLOYED_URL" | sed -E 's|https?://([^:/]+).*|\1|')
+fi
+
+# Fallback: service-deployments
+if [ -z "$SERVER_IP" ]; then
+  SERVER_IP=$(echo "$DEPLOYMENTS" | jq -r '.[0].server_ip // empty')
+fi
+
+# Fallback: port allocations → server handle → server public_ip
+if [ -z "$SERVER_IP" ]; then
+  SERVER_HANDLE=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
     | jq -r '.[].handle' \
     | while read h; do
-        curl -s "http://localhost:8000/api/servers/$h/ports" \
-          | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .server_ip // empty'
+        HAS=$(curl -s "http://localhost:8000/api/servers/$h/ports" \
+          | jq -r --arg pid "$PROJECT_ID" '[.[] | select(.project_id == $pid)] | length')
+        [ "$HAS" != "0" ] && echo "$h" && break
       done | head -1)
+  [ -n "$SERVER_HANDLE" ] && SERVER_IP=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE" | jq -r '.public_ip // empty')
 fi
 
 # 4. Remove app from server
