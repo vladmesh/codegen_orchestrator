@@ -211,34 +211,20 @@ async def _sync_single_repo(
     project = await api_client.get_project_by_repo_id(repo_id)
 
     if not project:
-        # Try to find by name (legacy projects or first sync)
-        project = await api_client.get_project_by_name(repo_name)
-
-        if project:
-            # Link legacy project
-            logger.info(
-                "project_linked_to_github",
-                project_name=project.name,
+        # Create new project
+        logger.info(
+            "github_project_discovered",
+            project_name=repo_name,
+            github_repo_id=repo_id,
+        )
+        project = await api_client.create_project(
+            ProjectCreate(
+                id=str(uuid.uuid4())[:8],
+                name=repo_name,
                 github_repo_id=repo_id,
+                status=ProjectStatus.DISCOVERED,
             )
-            project = await api_client.update_project(
-                project.id, ProjectUpdate(github_repo_id=repo_id)
-            )
-        else:
-            # Create new project
-            logger.info(
-                "github_project_discovered",
-                project_name=repo_name,
-                github_repo_id=repo_id,
-            )
-            project = await api_client.create_project(
-                ProjectCreate(
-                    id=str(uuid.uuid4())[:8],
-                    name=repo_name,
-                    github_repo_id=repo_id,
-                    status=ProjectStatus.DISCOVERED,
-                )
-            )
+        )
 
     # Sync project spec and README to RAG
     await _sync_project_docs(github_client, project, r)

@@ -48,42 +48,12 @@ async def test_sync_single_repo_updates_existing_project(mock_api_client, mock_g
 
 
 @pytest.mark.asyncio
-async def test_sync_single_repo_links_legacy_project(mock_api_client, mock_github):
-    # Setup
-    repo = await mock_github.create_repo(org="org", name="legacy-repo", private=True)
-
-    legacy_project = ProjectDTO(
-        id="proj-legacy",
-        name="legacy-repo",
-        status=ProjectStatus.ACTIVE,
-        github_repo_id=None,
-        modules=[],  # No repo ID yet
-    )
-
-    # Mocks
-    mock_api_client.get_project_by_repo_id = AsyncMock(return_value=None)
-    mock_api_client.get_project_by_name = AsyncMock(return_value=legacy_project)
-    mock_api_client.update_project = AsyncMock(return_value=legacy_project)
-
-    # Execution
-    missing_counters = {}
-    await github_sync._sync_single_repo(mock_github, repo, missing_counters)
-
-    # Verification
-    mock_api_client.update_project.assert_called_once()
-    call_args = mock_api_client.update_project.call_args
-    assert call_args[0][0] == "proj-legacy"
-    assert call_args[0][1].github_repo_id == repo.id
-
-
-@pytest.mark.asyncio
 async def test_sync_single_repo_creates_new_project(mock_api_client, mock_github):
     # Setup
     repo = await mock_github.create_repo(org="org", name="new-repo", private=True)
 
     # Mocks
     mock_api_client.get_project_by_repo_id = AsyncMock(return_value=None)
-    mock_api_client.get_project_by_name = AsyncMock(return_value=None)
 
     new_project_dto = ProjectDTO(
         id="new-id",

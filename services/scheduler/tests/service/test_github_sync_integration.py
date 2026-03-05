@@ -25,10 +25,9 @@ async def test_github_sync_integration_flow(mock_github, api_client):
     await github_sync._sync_single_repo(mock_github, repo, missing_counters={})
 
     # 3. Verify in API
-    # We use the internal api_client to fetch state from the Real API
-    project = await api_client.get_project_by_name(repo_name)
+    project = await api_client.get_project_by_repo_id(repo.id)
 
     assert project is not None
     assert project.name == repo_name
-    assert project.github_repo_id is not None
+    assert project.github_repo_id == repo.id
     assert project.status == ProjectStatus.DISCOVERED

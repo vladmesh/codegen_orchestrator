@@ -55,15 +55,6 @@ class SchedulerAPIClient:
                 return None
             raise
 
-    async def get_project_by_name(self, name: str) -> ProjectDTO | None:
-        try:
-            resp = await self._request("GET", "projects", params={"name": name})
-            projects = [ProjectDTO.model_validate(p) for p in resp.json()]
-            return projects[0] if projects else None
-        except httpx.HTTPStatusError:
-            # Depending on API impl, filtering might return empty list or 404
-            return None
-
     async def get_projects(self) -> list[ProjectDTO]:
         resp = await self._request("GET", "projects")
         return [ProjectDTO.model_validate(p) for p in resp.json()]
