@@ -5,6 +5,8 @@
 ## 2026-03-06
 
 ### Added
+- PO `web_search` tool: DuckDuckGo search for third-party API documentation (#44)
+- System prompt guidance for when to use web search vs. existing knowledge (#44)
 - PO Socratic dialog: requirements gathering before triggering engineering (#43)
 - PO prompt focuses on product questions for non-technical users, avoids technical details (#43)
 - `trigger_engineering` docstring emphasizes passing full gathered spec as description (#43)

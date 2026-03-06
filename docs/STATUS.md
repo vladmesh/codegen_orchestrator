@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #44 PO: DuckDuckGo Search Tool
-- **Plan**: docs/plans/po-duckduckgo-search.md
-- **Step**: 1/4 — Add duckduckgo-search dependency
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 44 | PO: DuckDuckGo Search Tool |
 | 43 | PO: Сократический диалог и формирование ТЗ |
 | 8 | Workspace Failure Counter |
 | 39 | Enforce Project-User Binding (owner_id NOT NULL) |

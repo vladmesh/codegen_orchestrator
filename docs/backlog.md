@@ -4,26 +4,12 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #45 Context-Aware Env Variables (PO to Developer)
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Улучшить передачу контекста от PO ReactAgent к Developer Worker. Добавить `env_hints` в конфиг проекта. Доработать `set_project_secret` у ПО для сохранения подсказок. Инжектить список готовых env vars в системный промпт Девелопера. (источник: brainstorm managed-integrations-env-hints)
-
 ### #45 PO: Context-Aware Env Variables & Hints
 - **Priority**: HIGH
 - **User Story**: —
 - **Plan**: —
 - **Status**: pending
 - **Brief**: Улучшить передачу контекста от PO к Девелоперу. Прокинуть `user_id` в контекст PO, добавить параметр `hint` в тулзу `set_project_secret` с сохранением в `config.env_hints`, и инжектить эти хинты в системный промпт Developer Worker'а. Сделать так, чтобы PO сам создавал нужные env vars без хардкода. (источник: brainstorm po-env-hints.md)
-
-### #44 PO: DuckDuckGo Search Tool
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/po-duckduckgo-search.md
-- **Status**: pending
-- **Brief**: Добавить инструмент веб-поиска (DuckDuckGo) в `services/langgraph/src/po/tools.py`. PO использует его для поиска документации по сторонним API перед формированием ТЗ. (источник: brainstorm po-smart-node)
 
 ### #42 Fix API Integration Test (test_post_projects_pure_db)
 - **Priority**: HIGH
@@ -139,6 +125,7 @@
 
 ## Done (last 10)
 
+- #44 PO: DuckDuckGo Search Tool — 2026-03-06
 - #43 PO: Сократический диалог и формирование ТЗ — 2026-03-06
 - #8 Workspace Failure Counter — 2026-03-06
 - #39 Enforce Project-User Binding (owner_id NOT NULL) — 2026-03-06
@@ -149,4 +136,3 @@
 - #31 Port Allocation Locking — 2026-03-05
 - #30 Multi-user Isolation Fix — 2026-03-05
 - #12 Documentation Cleanup (Zavhoz + Deploy-worker) — 2026-03-05
-- #4 CI Pipeline Redesign — 2026-03-05
