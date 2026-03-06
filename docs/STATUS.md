@@ -1,9 +1,9 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
-- **Plan**: —
-- **Step**: —
+- **Backlog**: #55 WorkItem Model + API + Backlog Migration (Step 0)
+- **Plan**: [docs/plans/work-item-model-api.md](plans/work-item-model-api.md)
+- **Step**: 1/10 — WorkItem + WorkItemEvent SQLAlchemy models
 - **Done Steps**: —
 
 ## Blocked

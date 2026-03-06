@@ -4,6 +4,13 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #55 WorkItem Model + API + Backlog Migration (Step 0)
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: [docs/plans/work-item-model-api.md](plans/work-item-model-api.md)
+- **Status**: in_progress
+- **Brief**: Фундамент системы управления задачами. Alembic migration: таблицы `work_items`, `work_item_events`, поля `work_item_id`+`iteration` в `tasks`. API: CRUD + action-based status transitions. Скрипт миграции backlog.md Queue → БД. Brainstorm: [orchestrator-v2-task-management.md](brainstorms/orchestrator-v2-task-management.md).
+
 ### #53 Compose runner: стрипать ports из worker compose files
 - **Priority**: CRITICAL
 - **User Story**: —
@@ -89,6 +96,13 @@
 - **Status**: pending
 - **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task` в `langgraph/src/worker/provisioner.py:100`), но все задачи упираются в единственный infra-service consumer. Фикс: спавнить `asyncio.create_task` для каждого job в consumer loop (аналогично provisioner.py), или запускать N consumer-реплик infra-service.
 
+### #54 Deploy: inter-service URL должен использовать docker service name
+- **Priority**: LOW
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при firewall-правилах. Фикс: при генерации `.env` для prod inter-service переменные (`*_API_URL`, `*_HOST`) должны указывать на docker service name, а не на внешний IP. Затронуты: `services/langgraph/src/subgraphs/devops/nodes.py` (генерация .env), возможно `service-template` шаблон `.env.prod`. Источник: fortune-telling-bot — tg_bot ходил в backend через `http://176.223.131.124:8000`.
+
 ### #46 Rename duckduckgo_search → ddgs
 - **Priority**: LOW
 - **User Story**: —
@@ -130,6 +144,7 @@
 - Объединить мелкие compose-стеки (frontend 1 тест + infra 2 теста) для экономии одного up/down цикла (источник: brainstorm ci-integration-test-speed, Option D)
 - CI: cache copier template clone для template integration tests — marginal gain ~10-15с, сложный cache invalidation (источник: brainstorm ci-integration-test-speed)
 - Отдельный UI/UX для подтверждения собранного ТЗ пользователем перед инженерным этапом (источник: brainstorm po-smart-node)
+- Functional health check: текущий healthcheck проверяет только что процесс жив (HTTP 200 на /health). Не ловит ситуации когда таблицы не созданы, миграции не прошли, seed-данные отсутствуют — бэкенд "healthy", но 500 на каждый бизнес-запрос. Можно добавить в service-template readiness probe с `SELECT 1` или проверкой ключевых таблиц (источник: fortune-telling-bot — backend healthy, но relation "fortunes" does not exist)
 
 ## Done (last 10)
 
