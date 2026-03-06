@@ -12,7 +12,7 @@ No graph changes needed — purely prompt engineering. The existing ReactAgent l
 
 ## Steps
 
-1. [ ] Rewrite SYSTEM_PROMPT with Socratic dialog instructions
+1. [x] Rewrite SYSTEM_PROMPT with Socratic dialog instructions
    - **Input**: `services/langgraph/src/po/prompts.py`
    - **Output**: Updated `SYSTEM_PROMPT` with:
      - New section "## Requirements Gathering" before scenarios
@@ -23,7 +23,7 @@ No graph changes needed — purely prompt engineering. The existing ReactAgent l
      - Keep existing scenarios (token flow, redeploy, add feature) intact
    - **Test**: Unit test asserting key phrases exist in SYSTEM_PROMPT (`"clarifying"`, `"requirements"`, `"description"` param usage instruction). Test that prompt length stays under 8000 chars (sanity).
 
-2. [ ] Update trigger_engineering tool docstring and scenario docs
+2. [x] Update trigger_engineering tool docstring and scenario docs
    - **Input**: `services/langgraph/src/po/tools.py` (trigger_engineering docstring), `services/langgraph/src/po/prompts.py` (scenarios)
    - **Output**:
      - Update "Scenario: NEW Bot/Project" to include requirements gathering step before step 4
@@ -31,7 +31,13 @@ No graph changes needed — purely prompt engineering. The existing ReactAgent l
      - Enhance `trigger_engineering` docstring to emphasize `description` should contain the full gathered spec
    - **Test**: Unit test verifying trigger_engineering docstring mentions "gathered requirements" or "detailed description".
 
-3. [ ] Manual E2E verification
+3. [ ] Manual E2E verification (deferred — test during next `/e2e-run`)
    - **Input**: Running system (`make up`)
    - **Output**: Send a vague message to PO via Telegram, verify it asks clarifying questions before triggering engineering
    - **Test**: Manual — document result in plan checkbox
+
+## Deviations
+
+- Steps 1 and 2 were combined into a single commit (both are prompt/docstring changes).
+- Prompt rewritten with user feedback: non-technical founder focus, "when to just go" vs "when to clarify" framing instead of rigid question list. No more than 1-2 questions.
+- Step 3 (manual E2E) deferred to next E2E run rather than blocking completion.

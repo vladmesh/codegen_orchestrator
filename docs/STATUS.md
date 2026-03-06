@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #43 PO: Сократический диалог и формирование ТЗ
-- **Plan**: docs/plans/po-socratic-dialog.md
-- **Step**: 1/3 — Rewrite SYSTEM_PROMPT with Socratic dialog instructions
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 43 | PO: Сократический диалог и формирование ТЗ |
 | 8 | Workspace Failure Counter |
 | 39 | Enforce Project-User Binding (owner_id NOT NULL) |
 | 34 | US3: Add Feature to Existing Project |

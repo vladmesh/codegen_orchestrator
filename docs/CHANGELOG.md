@@ -4,6 +4,12 @@
 
 ## 2026-03-06
 
+### Added
+- PO Socratic dialog: requirements gathering before triggering engineering (#43)
+- PO prompt focuses on product questions for non-technical users, avoids technical details (#43)
+- `trigger_engineering` docstring emphasizes passing full gathered spec as description (#43)
+- Unit tests for PO prompt content and tool docstrings (#43)
+
 ### Changed
 - `owner_id` on projects is now NOT NULL — every project must have an owner (#39)
 - `POST /api/projects/` returns 400 if `X-Telegram-ID` header is missing (#39)

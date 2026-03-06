@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #43 PO: Сократический диалог и формирование ТЗ
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/po-socratic-dialog.md
-- **Status**: pending
-- **Brief**: Обновить системный промпт PO (`services/langgraph/src/po/prompts.py`) для сократического диалога — PO задаёт 2-3 уточняющих вопроса, собирает детализированное ТЗ и только потом вызывает `trigger_engineering`. Быстрый win для MVP (источник: brainstorm po-smart-node)
-
 ### #44 PO: DuckDuckGo Search Tool
 - **Priority**: HIGH
 - **User Story**: —
@@ -132,6 +125,7 @@
 
 ## Done (last 10)
 
+- #43 PO: Сократический диалог и формирование ТЗ — 2026-03-06
 - #8 Workspace Failure Counter — 2026-03-06
 - #39 Enforce Project-User Binding (owner_id NOT NULL) — 2026-03-06
 - #34 US3: Add Feature to Existing Project — 2026-03-06
