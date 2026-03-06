@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #34 US3: Add Feature to Existing Project
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: —
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
