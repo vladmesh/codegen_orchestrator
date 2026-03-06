@@ -56,19 +56,21 @@ After each completed step, update `docs/STATUS.md`:
 
 ### 5. Push and wait for CI ⛔
 
-**MANDATORY — do NOT skip this step. Do NOT proceed to task completion until CI passes.**
+**MANDATORY — this is a HARD GATE. Do NOT touch docs (CHANGELOG, backlog, STATUS, plan) until CI is green.**
 
 After the last step is committed:
 1. **Push**: `git push` (or `git push -u origin <branch>` if no upstream)
 2. **Poll CI**: `gh run list --branch <branch> --limit 1 --json status` every 60s (up to 15 min)
 3. **CI green** → proceed to step 6
 4. **CI red** → read logs via `gh run view --log-failed`:
-   - **Failure related to current task** — fix, commit, re-push, wait again. Do NOT mark task as done.
+   - **Failure related to current task** — fix, commit, re-push, wait again. Do NOT touch any docs.
    - **Pre-existing failure** (unrelated to current changes) — add to `docs/backlog.md` as `Priority: critical`, proceed to step 6. Note the pre-existing failure in the commit message.
 
-### 6. Task completion
+⛔ **While CI is running or red: NO changes to CHANGELOG.md, backlog.md, STATUS.md, or plan files.** These are completion artifacts — they only get written after CI confirms the code works.
 
-⚠️ **Gate**: only enter this step when CI is green (or pre-existing failure documented).
+### 6. Task completion (only after CI green)
+
+⚠️ **Gate**: only enter this step when CI is green (or pre-existing failure documented). If you are here and CI has not passed — STOP, go back to step 5.
 
 When all steps are done AND CI is green:
 
