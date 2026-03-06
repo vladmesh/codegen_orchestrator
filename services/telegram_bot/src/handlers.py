@@ -12,12 +12,14 @@ from telegram.ext import ContextTypes
 
 from .clients.api import api_client
 from .keyboards import (
+    ACTION_ADD_USER,
     ACTION_BACK,
     ACTION_DEPLOY,
     ACTION_DETAILS,
     ACTION_LIST,
     ACTION_MAINTENANCE,
     ACTION_NEW,
+    PREFIX_ADMIN,
     PREFIX_MENU,
     PREFIX_PROJECT,
     PREFIX_PROJECTS,
@@ -138,6 +140,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await _handle_project(query, parts)
         elif prefix == PREFIX_SERVERS:
             await _handle_servers(query, parts, user_is_admin)
+        elif prefix == PREFIX_ADMIN:
+            await _handle_admin(query, parts, user_is_admin, context)
         else:
             logger.warning("unknown_callback_prefix", prefix=prefix, data=data)
     except Exception as e:
@@ -302,3 +306,77 @@ async def _handle_servers(query, parts: list[str], user_is_admin: bool = False) 
             reply_markup=servers_list_keyboard(servers),
             parse_mode="MarkdownV2",
         )
+
+
+async def _handle_admin(
+    query, parts: list[str], user_is_admin: bool, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle admin-only callbacks."""
+    if not user_is_admin:
+        logger.warning(
+            "unauthorized_admin_access",
+            telegram_id=query.from_user.id,
+            username=query.from_user.username,
+        )
+        await query.edit_message_text(
+            "🚫 *Доступ запрещён*\n\nДоступно только администраторам\\.",
+            reply_markup=back_to_menu_keyboard(),
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    action = parts[1] if len(parts) > 1 else ""
+
+    if action == ACTION_ADD_USER:
+        context.user_data["awaiting_add_user"] = True
+        await query.edit_message_text(
+            "👤 *Добавить пользователя*\n\n"
+            "Введите Telegram ID нового пользователя\\.\n"
+            "Отправьте /cancel для отмены\\.",
+            reply_markup=back_to_menu_keyboard(),
+            parse_mode="MarkdownV2",
+        )
+
+
+async def handle_add_user_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle text input when admin is adding a user.
+
+    Returns None if not in add_user flow (so caller can fall through to PO).
+    """
+    if not context.user_data.get("awaiting_add_user"):
+        return None
+
+    text = update.message.text.strip()
+
+    # Validate numeric telegram_id
+    try:
+        new_telegram_id = int(text)
+    except ValueError:
+        await update.message.reply_text(
+            "⚠️ Telegram ID должен быть числом. Попробуйте ещё раз или /cancel."
+        )
+        return
+
+    # Call API to create user
+    try:
+        await api_client.post_json(
+            "users/",
+            json={"telegram_id": new_telegram_id},
+        )
+        context.user_data.pop("awaiting_add_user", None)
+        await update.message.reply_text(f"✅ Пользователь {new_telegram_id} добавлен.")
+        logger.info(
+            "user_added_by_admin",
+            admin_id=update.effective_user.id,
+            new_user_telegram_id=new_telegram_id,
+        )
+    except httpx.HTTPStatusError as e:
+        context.user_data.pop("awaiting_add_user", None)
+        if e.response.status_code == 400:  # noqa: PLR2004
+            await update.message.reply_text(f"⚠️ Пользователь {new_telegram_id} уже существует.")
+        else:
+            await update.message.reply_text(f"⚠️ Ошибка API: {e.response.status_code}")
+    except httpx.HTTPError as e:
+        context.user_data.pop("awaiting_add_user", None)
+        logger.error("add_user_api_error", error=str(e))
+        await update.message.reply_text("⚠️ Ошибка соединения с API.")

@@ -15,6 +15,10 @@ ACTION_NEW = "new"
 ACTION_BACK = "back"
 ACTION_DEPLOY = "deploy"
 ACTION_MAINTENANCE = "maintenance"
+ACTION_ADD_USER = "add_user"
+
+# Admin prefix
+PREFIX_ADMIN = "admin"
 
 
 def main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
@@ -32,12 +36,20 @@ def main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("➕ Новый проект", callback_data=f"{PREFIX_PROJECTS}:{ACTION_NEW}")],
     ]
 
-    # Admin-only: servers list
+    # Admin-only buttons
     if is_admin:
         keyboard.append(
             [
                 InlineKeyboardButton(
                     "🖥️ Список серверов", callback_data=f"{PREFIX_SERVERS}:{ACTION_LIST}"
+                )
+            ]
+        )
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "👤 Добавить пользователя",
+                    callback_data=f"{PREFIX_ADMIN}:{ACTION_ADD_USER}",
                 )
             ]
         )

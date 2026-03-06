@@ -39,7 +39,7 @@ from shared.log_config import setup_logging  # noqa: E402
 
 from .clients.api import api_client  # noqa: E402
 from .config import get_settings  # noqa: E402
-from .handlers import handle_callback_query  # noqa: E402
+from .handlers import handle_add_user_input, handle_callback_query  # noqa: E402
 from .keyboards import main_menu_keyboard  # noqa: E402
 from .middleware import auth_middleware, is_admin  # noqa: E402
 from .notifications import ProvisionerNotifier  # noqa: E402
@@ -272,6 +272,11 @@ async def handle_message(update: Update, context) -> None:
     # Ensure user is registered in DB
     if update.effective_user:
         await _ensure_user_registered(update.effective_user)
+
+    # Check if admin is in "add user" flow — handle separately
+    if context.user_data.get("awaiting_add_user"):
+        await handle_add_user_input(update, context)
+        return
 
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
