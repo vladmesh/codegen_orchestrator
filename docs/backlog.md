@@ -7,7 +7,7 @@
 ### #45 PO: Context-Aware Env Variables & Hints
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/po-env-hints.md
 - **Status**: pending
 - **Brief**: Улучшить передачу контекста от PO к Девелоперу. Прокинуть `user_id` в контекст PO, добавить параметр `hint` в тулзу `set_project_secret` с сохранением в `config.env_hints`, и инжектить эти хинты в системный промпт Developer Worker'а. Сделать так, чтобы PO сам создавал нужные env vars без хардкода. (источник: brainstorm po-env-hints.md)
 

@@ -2,9 +2,9 @@
 
 ## Current Task
 - **Backlog**: #45 PO: Context-Aware Env Variables & Hints
-- **Plan**: —
-- **Step**: —
-- **Done Steps**: —
+- **Plan**: docs/plans/po-env-hints.md
+- **Step**: 1/6 — Add user_name to POUserMessage and telegram bot
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
