@@ -144,15 +144,20 @@ Deployed services run on managed VPS servers. Projects are allocated to servers
 during engineering via the resource allocator. The deploy workflow SSHes into the
 server and runs `docker compose up`.
 
-**SSH connection**: Connect as `root` using the local SSH key. Servers may be
-reprovisioned (new OS install), which changes their host keys. Always use
-`-o StrictHostKeyChecking=accept-new` to auto-accept new keys. If SSH fails with
-"REMOTE HOST IDENTIFICATION HAS CHANGED", remove the old key and retry:
+**SSH connection**: SSH keys are stored per-server in the database (Fernet-encrypted).
+Use the helper script which fetches the key from the API automatically:
 
 ```bash
-ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$SERVER_IP"
-ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "hostname"
+# Run a command on a server
+bash infra/scripts/ssh-to-server.sh $SERVER_IP "hostname"
+
+# Interactive shell
+bash infra/scripts/ssh-to-server.sh $SERVER_IP
 ```
+
+The script handles host key rotation (clears stale known_hosts entries) and
+tempfile cleanup automatically. Do NOT use bare `ssh root@$SERVER_IP` — it
+will fail with "Permission denied" because the host has no local SSH key.
 
 **Finding the server IP and port**: The deploy task result contains the `deployed_url`
 (e.g. `http://1.2.3.4:8000`) — this is the most reliable source. For failed deploys
@@ -309,12 +314,12 @@ Also check target servers for stale deployments:
 ```bash
 # Check all managed servers for leftover /opt/services/<PROJECT_NAME>/
 for SERVER_IP in $(curl -s "http://localhost:8000/api/servers/?is_managed=true" | jq -r '.[].public_ip'); do
-  HAS_DIR=$(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP \
+  HAS_DIR=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
     "[ -d /opt/services/$PROJECT_NAME ] && echo EXISTS || echo CLEAN" 2>/dev/null || echo "SSH_FAIL")
 
   if [ "$HAS_DIR" = "EXISTS" ]; then
     echo "WARNING: Stale deployment /opt/services/$PROJECT_NAME on $SERVER_IP — cleaning"
-    ssh -o StrictHostKeyChecking=accept-new root@$SERVER_IP "
+    bash infra/scripts/ssh-to-server.sh $SERVER_IP "
       cd /opt/services/$PROJECT_NAME/infra 2>/dev/null && \
         docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
       rm -rf /opt/services/$PROJECT_NAME
@@ -749,7 +754,7 @@ echo "Server: $SERVER_IP, Port: $DEPLOY_PORT"
 curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | jq .
 
 # SSH to server and verify containers
-ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "
+bash infra/scripts/ssh-to-server.sh $SERVER_IP "
   cd /opt/services/$PROJECT_NAME/infra
   COMPOSE='docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml'
   echo '=== Container status ==='
@@ -773,9 +778,7 @@ curl -sf "http://$SERVER_IP:$DEPLOY_PORT/health" | jq . || echo "Health endpoint
 **If deploy failed** — SSH to server and collect crash diagnostics:
 
 ```bash
-# Fix SSH host key if needed
-ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$SERVER_IP" 2>/dev/null
-ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "
+bash infra/scripts/ssh-to-server.sh $SERVER_IP "
   PROJECT_DIR=/opt/services/$PROJECT_NAME
   if [ ! -d \"\$PROJECT_DIR\" ]; then
     echo 'No deployment directory found on server'
@@ -964,8 +967,7 @@ fi
 
 # 4. Remove app from server
 if [ -n "$SERVER_IP" ]; then
-  ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$SERVER_IP" 2>/dev/null
-  ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@$SERVER_IP "
+  bash infra/scripts/ssh-to-server.sh $SERVER_IP "
     if [ -d /opt/services/$PROJECT_NAME/infra ]; then
       cd /opt/services/$PROJECT_NAME/infra
       docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
