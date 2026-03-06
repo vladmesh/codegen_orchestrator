@@ -276,6 +276,8 @@ nuke-hard: .nuke-hard-prune .nuke-common
 
 .nuke-common:
 	@echo "🔥 Nuking everything (Build mode: $(if $(filter --no-cache,$(BUILD_OPTS)),hard reset,smart incremental))..."
+	@echo "💾 Saving server SSH keys before DB wipe..."
+	@bash infra/scripts/dump-server-keys.sh || true
 	@echo "🧹 Cleaning up stale worker containers..."
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
 	@echo "🧹 Cleaning up worker images..."
@@ -326,6 +328,37 @@ seed:
 		fi; \
 	else \
 		echo "  ⚠️  TELEGRAM_ID_ADMIN not set, skipping user creation"; \
+	fi
+	@echo "🖥️  Restoring servers from dump..."
+	@if [ -f secrets/server_keys.json ]; then \
+		python3 -c " \
+import json, urllib.request, urllib.error; \
+servers = json.load(open('secrets/server_keys.json')); \
+restored = 0; \
+for srv in servers: \
+    handle = srv['handle']; \
+    try: \
+        urllib.request.urlopen('http://localhost:8000/api/servers/' + handle); \
+        continue; \
+    except urllib.error.HTTPError: \
+        pass; \
+    payload = json.dumps({ \
+        'handle': handle, \
+        'host': srv.get('host', ''), \
+        'public_ip': srv.get('public_ip', ''), \
+        'ssh_user': srv.get('ssh_user', 'root'), \
+        'ssh_key': srv.get('ssh_key'), \
+        'is_managed': srv.get('is_managed', True), \
+        'status': srv.get('status', 'active'), \
+        'labels': srv.get('labels', {}), \
+    }).encode(); \
+    req = urllib.request.Request('http://localhost:8000/api/servers/', data=payload, headers={'Content-Type': 'application/json'}, method='POST'); \
+    urllib.request.urlopen(req); \
+    restored += 1; \
+print(f'  Restored {restored}/{len(servers)} servers from secrets/server_keys.json') \
+		"; \
+	else \
+		echo "  No server dump found (secrets/server_keys.json), skipping"; \
 	fi
 	@echo "🤖 Seeding agent configurations..."
 	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_agent_configs.py \
