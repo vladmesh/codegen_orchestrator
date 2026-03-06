@@ -151,7 +151,7 @@ async def get_project(project_id: str, *, config: RunnableConfig) -> str:
 
 @tool
 async def set_project_secret(
-    project_id: str, key: str, value: str, *, config: RunnableConfig
+    project_id: str, key: str, value: str, hint: str = "", *, config: RunnableConfig
 ) -> str:
     """Set a secret for a project (e.g. TELEGRAM_BOT_TOKEN).
 
@@ -159,6 +159,9 @@ async def set_project_secret(
         project_id: Project ID.
         key: Secret key (e.g. TELEGRAM_BOT_TOKEN).
         value: Secret value.
+        hint: Description of what the variable is for (e.g. "Telegram bot token for API access").
+            Hints are stored in plaintext and injected into the Developer Worker prompt
+            so it knows which env vars to use in the code.
     """
     api = _get_api()
     headers = _user_headers(config)
@@ -172,6 +175,11 @@ async def set_project_secret(
     secrets = decrypt_dict(secrets) if secrets else {}
     secrets[key] = value
     proj_config["secrets"] = encrypt_dict(secrets)
+
+    if hint:
+        env_hints = proj_config.get("env_hints") or {}
+        env_hints[key] = hint
+        proj_config["env_hints"] = env_hints
 
     resp = await api.patch(
         f"/api/projects/{project_id}", json={"config": proj_config}, headers=headers
