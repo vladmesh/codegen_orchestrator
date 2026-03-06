@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
-- **Plan**: —
-- **Step**: —
-- **Done Steps**: —
+- **Backlog**: #8 Workspace Failure Counter
+- **Plan**: docs/plans/workspace-persistence.md
+- **Step**: 1/1 — Phase 6: Failure counter + force clean + retry limit
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
