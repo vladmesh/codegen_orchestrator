@@ -2,8 +2,8 @@
 
 ## Current Task
 - **Backlog**: #43 PO: Сократический диалог и формирование ТЗ
-- **Plan**: —
-- **Step**: —
+- **Plan**: docs/plans/po-socratic-dialog.md
+- **Step**: 1/3 — Rewrite SYSTEM_PROMPT with Socratic dialog instructions
 - **Done Steps**: (empty)
 
 ## Blocked
