@@ -99,9 +99,9 @@ US-Admin (видимость системы) — независимая, Phase 4
 **Acceptance Criteria**:
 - [x] EngineeringMessage action=feature/fix (без scaffold) → 2026-02-19
 - [x] PO корректно выбирает существующий проект → 2026-03-06 (#34: tools exist, prompt covers scenario, unit tests pass)
-- [x] E2E feature-add сценарий проходит → 2026-03-06 (#34: e2e-run --feature mode added, pending live run)
+- [x] E2E feature-add сценарий проходит → 2026-03-06 (#34: e2e-run --feature mode added, tests passed)
 
-**E2E**: `e2e-run todo_api --feature` | backlog #34
+**E2E**: `e2e-run todo_api --feature` PASS 2026-03-06
 
 ---
 

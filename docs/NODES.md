@@ -82,7 +82,7 @@ devops/
 ├── state.py             # DevOpsState TypedDict
 ├── env_analyzer.py      # EnvAnalyzer + helper функции
 ├── env_groups.py        # EnvGroup ABC, PostgresGroup, RedisGroup, resolve_with_groups
-├── nodes.py             # SecretResolver, ReadinessCheck, Deployer
+├── nodes.py             # SecretResolver, ReadinessCheck, Deployer, SmokeTester
 └── graph.py             # Routing + create_devops_subgraph
 ```
 
@@ -114,6 +114,11 @@ devops/
    - Post-deployment операции:
      * Создает service deployment record в БД (с `deployed_sha`)
      * Устанавливает статус проекта = active
+
+5. **SmokeTester (Functional)**:
+   - Делает HTTP `/health` check для бекендов и Telethon `/start` check для tg_bot модулей.
+   - Реализует retry logic (3 попытки, 5s delay) и graceful skip.
+   - Записывает `smoke_result` в `DevOpsState` для проброса статуса в deploy-worker.
 
 **Архитектура**:
 ```

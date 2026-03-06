@@ -33,7 +33,7 @@ Codegen Orchestrator — мультиагентная система для ав
 |--------|----------|
 | `api` | FastAPI + SQLAlchemy — проекты, серверы, users, configs |
 | `telegram_bot` | Telegram интерфейс (PO via Redis Streams) |
-| `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment) |
+| `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment). Воркеры работают в изолированной сети `codegen_worker`. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker` and `deploy-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `scheduler` | Background tasks (sync, health checks, garbage collection) |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
@@ -91,7 +91,7 @@ System events (worker callbacks, reminders) → po:input → PO decides → po:p
 
 **Key Features:**
 - **PO ReactAgent**: LangGraph agent with native Python tools, PostgreSQL checkpointer
-- **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager
+- **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager. Network isolated (`codegen_worker` network) to prevent access to orchestrator DBs.
 - **Engineering Subgraph**: Repo creation → Scaffold (copier via worker-manager) → Developer → CI gate (max 3 fix iterations)
 - **DevOps Subgraph**: LLM-based env analysis, env groups for coherent secrets, Ansible deployment via infra-service
 - **Unified Redis Consumers**: All 9 consumers use `RedisStreamClient.consume()` with PEL recovery (`claim_pending=True`) — crashed messages are automatically re-delivered on restart. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns)

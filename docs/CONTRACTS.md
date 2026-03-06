@@ -346,7 +346,6 @@ class ProjectUpdate(BaseModel):
     status: ProjectStatus | None = None
     modules: list[ServiceModule] | None = None
     github_repo_id: int | None = None
-    owner_id: int | None = None
     project_spec: dict | None = None
 
 
@@ -361,7 +360,7 @@ class ProjectDTO(BaseModel):
     modules: list[ServiceModule] = []
     repository_url: str | None = None
     github_repo_id: int | None = None
-    owner_id: int | None = None
+    owner_id: int
     project_spec: dict | None = None
 ```
 
@@ -455,6 +454,8 @@ class ServerCreate(BaseModel):
     handle: str
     host: str
     public_ip: str
+    ssh_user: str = "root"
+    ssh_key: str | None = None
     is_managed: bool = True
     status: str = "discovered"
     labels: dict = {}
@@ -465,6 +466,8 @@ class ServerUpdate(BaseModel):
     handle: str | None = None
     host: str | None = None
     public_ip: str | None = None
+    ssh_user: str | None = None
+    ssh_key: str | None = None
     status: ServerStatus | None = None
     labels: dict | None = None
     is_managed: bool | None = None

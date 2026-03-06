@@ -100,7 +100,7 @@ make test-{service}-unit     # Per-service: api, langgraph, scheduler, telegram
 | `/next [#ID]` | Выбрать задачу из backlog → STATUS.md |
 | `/plan [#ID]` | Декомпозировать задачу на шаги |
 | `/implement [#ID]` | TDD цикл, обновление артефактов |
-| `/e2e-run <test> [--with-po] [--no-cleanup]` | Запуск E2E теста (полный цикл: engineering → CI → deploy → verify) |
+| `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | Запуск E2E теста (полный цикл: engineering → CI → deploy → verify, `--feature` пропускает scaffolding) |
 | `/triage` | Разбор отчётов → backlog / service-template |
 | `/brainstorm <topic>` | Brainstorm документ |
 | `/checkpoint` | Обновить CHANGELOG/ROADMAP/STATUS |
