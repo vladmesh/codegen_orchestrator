@@ -365,83 +365,195 @@ Workspace GC запускается каждые 6 часов (21600s).
 
 ## Фаза 6: Failure counter + force clean + retry limit
 
+> **Ревью 2026-03-06**: план скорректирован по результатам аудита кода.
+>
+> **Проблема оригинального плана**: `delete_worker()` не знает, успешно ли завершился воркер.
+> `DeleteWorkerCommand` содержит только `worker_id`. Статус выполнения (success/failed)
+> определяется на стороне LangGraph (`worker_spawner.py` читает output stream), а не
+> worker-manager. Container status в Redis (`worker:status:{worker_id}`) — это operational
+> state (`RUNNING`, `DEAD`), не execution result.
+>
+> **Решение**: добавить Optional-поле `reason` в `DeleteWorkerCommand`. Caller (worker_spawner,
+> engineering_worker) уже знает результат — просто прокидываем.
+
+### 6.0 Прокинуть reason в DeleteWorkerCommand (prerequisite)
+
+#### 6.0.1 Контракт
+
+**Файл**: `shared/contracts/queues/worker.py`
+
+Добавить `reason` в `DeleteWorkerCommand`:
+
+```python
+class DeleteWorkerCommand(QueueMeta):
+    """Delete worker."""
+
+    command: Literal["delete"] = "delete"
+    request_id: str
+    worker_id: str
+    reason: Literal["completed", "failed", "timeout"] | None = None  # NEW
+```
+
+Optional — обратно совместимо. Старые вызовы без reason продолжат работать.
+
+#### 6.0.2 Caller: worker_spawner.py
+
+**Файл**: `services/langgraph/src/clients/worker_spawner.py`
+
+В `delete_worker()` (~строка 405) — добавить параметр `reason`:
+
+```python
+async def delete_worker(
+    worker_id: str,
+    reason: Literal["completed", "failed", "timeout"] | None = None,
+) -> None:
+    ...
+    delete_cmd = DeleteWorkerCommand(
+        request_id=str(uuid.uuid4()),
+        worker_id=worker_id,
+        reason=reason,
+    )
+```
+
+В `request_spawn()` (~строка 285, timeout cleanup):
+
+```python
+delete_cmd = DeleteWorkerCommand(
+    request_id=f"cleanup-{request_id}",
+    worker_id=worker_id,
+    reason="timeout",
+)
+```
+
+#### 6.0.3 Caller: engineering_worker.py
+
+**Файл**: `services/langgraph/src/workers/engineering_worker.py`
+
+В `finally` блоке (~строка 950) — передать reason:
+
+```python
+# Определить reason из результата (result доступен в scope)
+worker_reason = "completed" if ci_passed else "failed"
+await delete_worker(worker_id, reason=worker_reason)
+```
+
+#### 6.0.4 Consumer: прокинуть в manager
+
+**Файл**: `services/worker-manager/src/consumer.py`
+
+В `_handle_delete()` — передать `reason`:
+
+```python
+async def _handle_delete(self, cmd: DeleteWorkerCommand) -> DeleteWorkerResponse:
+    try:
+        await self.manager.delete_worker(cmd.worker_id, reason=cmd.reason)
+        ...
+```
+
+#### 6.0.5 Manager: принять reason
+
+**Файл**: `services/worker-manager/src/manager.py`
+
+В `delete_worker()` — добавить параметр:
+
+```python
+async def delete_worker(
+    self,
+    worker_id: str,
+    reason: str | None = None,
+) -> None:
+```
+
+#### Тесты 6.0
+
+- `test_delete_command_accepts_reason`: DeleteWorkerCommand с reason="failed" → валидный
+- `test_delete_command_reason_optional`: DeleteWorkerCommand без reason → валидный (None)
+
 ### 6.1 Счётчик consecutive failures в Redis
 
 **Файл**: `services/worker-manager/src/manager.py`
 
-Redis key: `workspace:{project_id}:failure_count`
+Redis key: `workspace:{project_id}:failure_count` (TTL: 48 часов)
 
-В `delete_worker()` — после определения статуса воркера:
+В `delete_worker()` — после определения `project_id` из meta, используя `reason`:
 
 ```python
-if project_id:
+if project_id and reason:
     failure_key = f"workspace:{project_id}:failure_count"
-    if status == "failed":
+    if reason == "failed":
         await self.redis.incr(failure_key)
-    elif status == "completed":
+        await self.redis.expire(failure_key, 48 * 3600)  # TTL 48h — auto-unblock
+    elif reason == "completed":
         await self.redis.delete(failure_key)
+    # reason == "timeout" → treat as failure
+    elif reason == "timeout":
+        await self.redis.incr(failure_key)
+        await self.redis.expire(failure_key, 48 * 3600)
 ```
 
-### 6.2 Force clean workspace после 2 consecutive failures
+TTL 48h гарантирует, что заблокированный проект (count >= 3) автоматически разблокируется, если никто не сбросил вручную. Совпадает с workspace GC (24h) — к моменту истечения TTL workspace уже удалён GC.
+
+### 6.2 Reject spawn после 3 consecutive failures (проверять ДО wipe)
 
 **Файл**: `services/worker-manager/src/manager.py`
 
-В `create_worker_with_capabilities()` — перед созданием workspace:
+В `create_worker_with_capabilities()` — **перед** созданием workspace, **после** mutex check:
 
 ```python
+MAX_CONSECUTIVE_FAILURES = 3
+
 if project_id:
     failure_key = f"workspace:{project_id}:failure_count"
     failure_count = int(await self.redis.get(failure_key) or 0)
 
+    # Reject FIRST — don't waste resources wiping if we'll reject anyway
+    if failure_count >= MAX_CONSECUTIVE_FAILURES:
+        raise RuntimeError(
+            f"Max retries ({MAX_CONSECUTIVE_FAILURES}) exceeded for project {project_id}. "
+            f"Reset with: DEL {failure_key}"
+        )
+
+    # Force clean after 2 failures — workspace likely broken
     if failure_count >= 2:
-        # Workspace likely in broken state — wipe and start fresh
         workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, project_id)
         logger.warning("workspace_force_cleaned", project_id=project_id, failure_count=failure_count)
 ```
+
+> **Отличие от оригинального плана**: reject (>=3) проверяется **до** wipe (>=2). Если count=3, нет смысла сначала вайпить workspace, а потом отклонять. `raise RuntimeError` вместо `return CreateWorkerResponse` — consumer.py уже ловит exceptions и оборачивает в response (паттерн из фазы 5).
 
 Логика попыток:
 - **Попытка 1** (failure_count=0): fresh workspace, clone repo
 - **Попытка 2** (failure_count=1): resume — workspace сохранён, агент продолжает
 - **Попытка 3** (failure_count=2): force wipe → fresh workspace, clone repo заново
+- **Попытка 4+** (failure_count>=3): reject spawn, PO сообщает юзеру
 
-### 6.3 Reject spawn после 3 consecutive failures
+### 6.3 Сброс счётчика вручную
 
-**Файл**: `services/worker-manager/src/manager.py`
-
-В `create_worker_with_capabilities()` — после проверки failure_count:
-
-```python
-MAX_RETRIES = 3
-
-if failure_count >= MAX_RETRIES:
-    logger.warning(
-        "max_retries_exceeded",
-        project_id=project_id,
-        failure_count=failure_count,
-    )
-    # Publish error response so engineering-worker doesn't hang
-    return CreateWorkerResponse(
-        worker_id=None,
-        error=f"Max retries ({MAX_RETRIES}) exceeded for project {project_id}",
-    )
-```
-
-PO получает ошибку через engineering-worker → сообщает юзеру: "не получилось за 3 попытки, нужна помощь".
-
-### 6.4 Сброс счётчика вручную (опционально)
-
-Для ручного вмешательства — redis-cli или будущий API endpoint:
+Для ручного вмешательства — redis-cli:
 ```
 DEL workspace:{project_id}:failure_count
 ```
 
+Автоматический сброс: TTL 48h (см. 6.1).
+
 ### Тесты фазы 6
 
-- `test_failure_count_incremented_on_failed`: delete_worker с status=failed → failure_count +1
-- `test_failure_count_reset_on_success`: delete_worker с status=completed → failure_count удалён
-- `test_force_clean_after_two_failures`: failure_count=2 → workspace удаляется перед созданием
-- `test_spawn_rejected_after_three_failures`: failure_count=3 → CreateWorkerResponse с error
-- `test_first_attempt_creates_fresh_workspace`: failure_count=0 → обычный clone
+**Контракт + passthrough (6.0)**:
+- `test_delete_command_accepts_reason`: DeleteWorkerCommand с reason="failed" → валидный
+- `test_delete_command_reason_optional`: DeleteWorkerCommand без reason → reason is None
+
+**Failure counter (6.1)**:
+- `test_failure_count_incremented_on_failed`: delete_worker с reason="failed" → failure_count +1
+- `test_failure_count_incremented_on_timeout`: delete_worker с reason="timeout" → failure_count +1
+- `test_failure_count_reset_on_success`: delete_worker с reason="completed" → failure_count удалён
+- `test_failure_count_not_changed_without_reason`: delete_worker без reason → failure_count не меняется
+- `test_failure_count_has_ttl`: после incr → TTL установлен (48h)
+
+**Force clean + reject (6.2)**:
+- `test_force_clean_after_two_failures`: failure_count=2 → remove_workspace вызван перед созданием
+- `test_spawn_rejected_after_three_failures`: failure_count=3 → RuntimeError
+- `test_reject_before_wipe`: failure_count=3 → remove_workspace НЕ вызван (reject раньше)
+- `test_first_attempt_creates_fresh_workspace`: failure_count=0 → обычный clone, remove не вызван
 
 ---
 
@@ -475,6 +587,10 @@ DEL workspace:{project_id}:failure_count
 | 4 | `services/worker-manager/src/manager.py` | `garbage_collect_workspaces()` (mtime с последнего использования) |
 | 4 | `services/worker-manager/src/main.py` | периодический таск для workspace GC |
 | 5 | `services/worker-manager/src/manager.py` | `_check_project_lock()` |
+| 6 | `shared/contracts/queues/worker.py` | `reason` в `DeleteWorkerCommand` |
+| 6 | `services/langgraph/src/clients/worker_spawner.py` | параметр `reason` в `delete_worker()`, передать в команду |
+| 6 | `services/langgraph/src/workers/engineering_worker.py` | передать reason в `delete_worker()` |
+| 6 | `services/worker-manager/src/consumer.py` | прокинуть `cmd.reason` в `manager.delete_worker()` |
 | 6 | `services/worker-manager/src/manager.py` | failure counter, force clean после 2 failures, reject после 3 |
 
 ---
@@ -490,3 +606,7 @@ DEL workspace:{project_id}:failure_count
 4. **Workspace GC trigger** → **По mtime с последнего использования (вариант C)**. `get_or_create_project_workspace()` делает `os.utime()` при reuse. GC смотрит mtime — 24ч с последнего запуска воркера, не с создания. Активно ретраимый проект никогда не попадёт под GC.
 
 5. **PO retry limit** → **Минимальная версия включена в фазу 6**. Worker-manager ведёт `workspace:{project_id}:failure_count`. Попытка 1: fresh. Попытка 2: resume. Попытка 3: force wipe + fresh. После 3 failures — reject spawn. PO получает ошибку, сообщает юзеру. Полноценная версия (PO анализирует ошибки, меняет approach) — отдельная задача на потом.
+
+6. **Как delete_worker узнаёт о success/failure** → **Поле `reason` в `DeleteWorkerCommand` (фаза 6.0)**. Оригинальный план предполагал, что `delete_worker()` сам определяет статус, но `DeleteWorkerCommand` не содержит статуса, а container status в Redis (`RUNNING`/`DEAD`) — это operational state, не execution result. Решение: caller (worker_spawner, engineering_worker) уже знает результат — просто прокидываем Optional-полем `reason: "completed" | "failed" | "timeout" | None`. Обратно совместимо.
+
+7. **TTL для failure_count** → **48 часов**. Без TTL заблокированный проект (count >= 3) остаётся заблокированным навсегда. TTL 48h = автоматическая разблокировка. Совпадает с lifecycle workspace GC (24h).
