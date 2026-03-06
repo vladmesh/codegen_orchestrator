@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #33 Secrets Hygiene
-- **Plan**: docs/plans/secrets-hygiene.md
-- **Step**: 1/11 — Remove PEM from git tracking
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 33 | Secrets Hygiene |
 | 32 | Prod Deploy Pipeline |
 | 38 | Fix Service Integration Tests After Multi-User Isolation |
 | 31 | Port Allocation Locking |

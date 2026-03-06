@@ -5,14 +5,26 @@
 ## 2026-03-06
 
 ### Added
+- `GET /servers/{handle}/ssh-key` — returns decrypted SSH private key per server (#33)
+- `PATCH /servers/{handle}` accepts `ssh_key` field — encrypts with Fernet and stores (#33)
+- Provisioner auto-saves SSH key to DB after successful provisioning (#33)
+- `LanggraphAPIClient.get_server_ssh_key()` — fetches per-server SSH key (#33)
+- `_ssh_key_tempfile()` context manager for secure temporary SSH key files (#33)
 - `docker-compose.prod.yml` — production overlay (no direct API port, restart policies, Redis AOF, no DB defaults) (#32)
 - `infra/scripts/pull-worker-images.sh` — pulls worker base images from GHCR and retags to local names (#32)
 - `infra/scripts/backup-db.sh` + systemd timer — daily pg_dump with 7-day rotation (#32)
 - `docs/DEPLOY.md` — full production deployment guide with GitHub Secrets inventory (#32)
 
 ### Changed
+- DeployerNode reads SSH key from DB (per-server) instead of mounted file (#33)
+- `run_ssh_command()` accepts `ssh_key` content parameter instead of reading from `Paths.SSH_KEY` (#33)
 - `docker-compose.yml`: parameterized `SSH_KEY_PATH` and `GITHUB_APP_PEM_PATH` with dev defaults (#32)
 - `.github/workflows/deploy.yml`: complete rewrite — writes all env vars, builds images, pulls worker images from GHCR, runs migrations, health checks (#32)
+
+### Removed
+- SSH volume mounts (`~/.ssh:/root/.ssh:ro`) from langgraph, deploy-worker, scheduler, infra-service (#33)
+- `Paths.SSH_KEY` from `shared/constants.py` — no longer needed (#33)
+- `ORCHESTRATOR_SSH_KEY` secret from deploy.yml — per-server keys in DB now (#33)
 
 ### Fixed
 - CI: service test matrix `changed` field was literal string, not `${{ }}` expression — tests were silently skipped on every run since #4 (#38)

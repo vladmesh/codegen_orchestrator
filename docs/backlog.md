@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #33 Secrets Hygiene
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/secrets-hygiene.md
-- **Status**: pending
-- **Brief**: Убрать `secrets/github_app.pem` из git + .gitignore (deploy.yml уже пишет из секрета). Dedicated SSH key вместо host `~/.ssh` — генерировать `ORCHESTRATOR_SSH_PRIVATE_KEY`, хранить как GitHub Secret, монтировать `/opt/secrets/orchestrator_ssh_key`. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
-
 ### #34 US3: Add Feature to Existing Project
 - **Priority**: HIGH
 - **User Story**: —
@@ -145,6 +138,7 @@
 
 ## Done (last 10)
 
+- #33 Secrets Hygiene — 2026-03-06
 - #32 Prod Deploy Pipeline — 2026-03-06
 - #38 Fix Service Integration Tests After Multi-User Isolation — 2026-03-06
 - #31 Port Allocation Locking — 2026-03-05
