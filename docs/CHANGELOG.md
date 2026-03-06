@@ -16,6 +16,10 @@
 - `SchedulerAPIClient.create_project()` — scheduler no longer creates projects (#39)
 
 ### Added
+- Workspace failure counter: tracks consecutive failures per project in Redis (#8)
+- Force workspace wipe after 2 consecutive failures — broken state auto-recovery (#8)
+- Spawn rejection after 3 consecutive failures — circuit breaker with auto-unblock (TTL 48h) (#8)
+- `reason` field on `DeleteWorkerCommand` — `completed`/`failed`/`timeout` for failure tracking (#8)
 - `--feature` mode in e2e-run skill: triggers `action=feature` after initial create+deploy, verifies no scaffold, monitors feature CI+deploy (#34)
 - Feature Add Matrix in e2e-run skill: per-test feature descriptions for all 7 test cases (#34)
 - Unit tests for `action=feature/fix` flow in DeveloperNode and engineering worker (#34)

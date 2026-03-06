@@ -363,7 +363,14 @@ Workspace GC запускается каждые 6 часов (21600s).
 
 ---
 
-## Фаза 6: Failure counter + force clean + retry limit
+## Фаза 6: Failure counter + force clean + retry limit ✅
+
+> **Статус**: выполнена.
+> **Отклонения от плана**:
+> 1. `engineering_worker.py` всегда передаёт `reason="completed"` (не зависит от CI outcome) — worker succeeded if it produced code, CI failure is a separate concern. Workspace не broken при CI failure.
+> 2. Worker crashes без явного `delete_worker` (container dies → DockerEventsListener → orphan GC) не инкрементируют failure counter. Это known limitation — counter работает для timeout и явных failures.
+> 3. Два существующих теста обновлены для нового `reason` параметра (`test_consumer.py`, `test_engineering_worker_reuse.py`).
+> **Тесты**: 12 новых тестов (2 контракт, 5 failure counter, 1 TTL, 4 force clean/reject). Все зелёные, 154 total в worker-manager.
 
 > **Ревью 2026-03-06**: план скорректирован по результатам аудита кода.
 >

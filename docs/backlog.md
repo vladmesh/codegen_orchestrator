@@ -4,12 +4,12 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #8 Workspace Failure Counter
-- **Priority**: MEDIUM
+### #42 Fix API Integration Test (test_post_projects_pure_db)
+- **Priority**: HIGH
 - **User Story**: —
-- **Plan**: docs/plans/workspace-persistence.md (phase 6)
+- **Plan**: —
 - **Status**: pending
-- **Brief**: Счётчик падений по `project_id`. Wipe workspace после 2 попыток, отклонение после 3.
+- **Brief**: `test_pure_crud.py::test_post_projects_pure_db` не отправляет `X-Telegram-ID` header. Сломан после #39 (owner_id NOT NULL). Pre-existing failure, обнаружен при CI #8.
 
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
@@ -117,6 +117,7 @@
 
 ## Done (last 10)
 
+- #8 Workspace Failure Counter — 2026-03-06
 - #39 Enforce Project-User Binding (owner_id NOT NULL) — 2026-03-06
 - #34 US3: Add Feature to Existing Project — 2026-03-06
 - #33 Secrets Hygiene — 2026-03-06
@@ -126,4 +127,3 @@
 - #30 Multi-user Isolation Fix — 2026-03-05
 - #12 Documentation Cleanup (Zavhoz + Deploy-worker) — 2026-03-05
 - #4 CI Pipeline Redesign — 2026-03-05
-- #17 Dead Code & Legacy Cleanup — 2026-03-05

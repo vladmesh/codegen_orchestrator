@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #8 Workspace Failure Counter
-- **Plan**: docs/plans/workspace-persistence.md
-- **Step**: 1/1 — Phase 6: Failure counter + force clean + retry limit
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 8 | Workspace Failure Counter |
 | 39 | Enforce Project-User Binding (owner_id NOT NULL) |
 | 34 | US3: Add Feature to Existing Project |
 | 33 | Secrets Hygiene |
