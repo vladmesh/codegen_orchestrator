@@ -74,6 +74,20 @@
 - **Status**: pending
 - **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task` в `langgraph/src/worker/provisioner.py:100`), но все задачи упираются в единственный infra-service consumer. Фикс: спавнить `asyncio.create_task` для каждого job в consumer loop (аналогично provisioner.py), или запускать N consumer-реплик infra-service.
 
+### #47 Race Condition in set_project_secret (parallel tool calls)
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: docs/plans/race-condition-set-project-secret.md
+- **Status**: pending
+- **Brief**: Когда LLM вызывает `set_project_secret` параллельно (parallel tool calls), происходит read-modify-write race condition: оба вызова читают config одновременно, каждый пишет свою версию, последний перезатирает первый. Реальный кейс: `TELEGRAM_BOT_TOKEN` потерян из-за параллельного `ADMIN_TELEGRAM_ID`. Фикс: атомарный endpoint `POST /api/projects/{id}/config/secrets` который делает merge (не replace), или optimistic locking (ETag). Файлы: `services/langgraph/src/po/tools.py:152-188`, `services/api/src/routers/projects.py`.
+
+### #46 Rename duckduckgo_search → ddgs
+- **Priority**: LOW
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Пакет `duckduckgo_search` переименован в `ddgs`. Runtime warning в логах: `This package has been renamed to ddgs! Use pip install ddgs instead.` Заменить зависимость в `services/langgraph/pyproject.toml`, обновить импорт в `services/langgraph/src/po/tools.py`, перегенерировать lock-файл (`make lock-deps`).
+
 ## Ideas
 
 - Project Name Collision: repo_name и deploy path строятся из `project.name`, а не `project.id` — два юзера с одинаковым именем получают один GitHub-репо, один deploy path `/opt/services/{name}/`, один Docker-образ. Фикс: включить `project_id` в repo name (`my-bot-a1b2c3d4`). Затронуты: `engineering_worker.py:517-519` (repo name gen), `github.py:940` (create_repo), `devops/nodes.py:443,348` (PROJECT_NAME secret). Post-MVP. (источник: анализ #30 multi-user isolation)

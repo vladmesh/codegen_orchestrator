@@ -2,9 +2,9 @@
 
 ## Current Task
 - **Backlog**: #47 Race Condition in set_project_secret (parallel tool calls)
-- **Plan**: —
-- **Step**: —
-- **Done Steps**: —
+- **Plan**: docs/plans/race-condition-set-project-secret.md
+- **Step**: 1/5 — Add POST /api/projects/{id}/config/secrets endpoint
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
