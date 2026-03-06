@@ -24,8 +24,7 @@ This creates data integrity issues: unowned projects can't be notified, access-c
 1. [ ] ⚠️ needs-approval — Migration: `owner_id` NOT NULL
    - **Input**: `shared/models/project.py`, existing migration `2df4b21abbbe`
    - **Output**:
-     - New Alembic migration: `DELETE FROM projects WHERE owner_id IS NULL`, then `ALTER COLUMN owner_id SET NOT NULL`
-     - No backfill, no shims, no fallbacks — DB is empty in practice; orphans get deleted if any exist
+     - New Alembic migration: `ALTER COLUMN owner_id SET NOT NULL` — и всё. Если в базе есть orphans — миграция упадёт, почистить вручную перед запуском
      - Model updated: `owner_id: Mapped[int]` (not Optional)
    - **Test**: `make migrate` — verify migration applies cleanly
 
