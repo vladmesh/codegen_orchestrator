@@ -4,12 +4,26 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #53 Compose runner: стрипать ports из worker compose files
+- **Priority**: CRITICAL
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Корневая причина "рекурсивного бага миграций" (10 фиксов, 7 итераций). `service-template/template/infra/compose.dev.yml.jinja` публикует `ports: - "5432:5432"` для db и `- "6379:6379"` для redis — нужно для локальной разработки. Но в worker-контейнере orchestrator'а порт 5432 на хосте занят orchestrator'ским postgres → `Bind for 0.0.0.0:5432 failed: port is already allocated` → db не стартует → DNS alias `db` не регистрируется → `getent hosts db` пусто → alembic падает. Фикс: compose_runner.py уже инжектит `.codegen-network.yml` override для сети. Аналогично инжектить `.codegen-ports.yml` с `services: {db: {ports: []}, redis: {ports: []}}` для команд `up`/`run`. Шаблон не трогаем. Затронут: `services/worker-manager/src/compose_runner.py`. Контекст: `service-template/docs/backlog.md` (задача "compose.dev.yml: ports ломает worker-контейнеры"), `docs/brainstorms/worker-db-migration-recurring.md`. Диагностика: E2E diagnostic run 2026-03-07.
+
 ### #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save
 - **Priority**: CRITICAL
 - **User Story**: —
 - **Plan**: docs/plans/sqlalchemy-json-mutation-tracking.md
 - **Status**: pending
 - **Brief**: `POST /projects/{id}/config/secrets` returns 200 but never persists. Root cause: `shared/models/project.py:27` uses plain `JSON` column — SQLAlchemy doesn't detect in-place dict mutations. `merge_secrets` endpoint mutates `project.config` dict in-place then reassigns the same object back — no change detected, no flush. Fix: (1) `MutableDict.as_mutable(JSON)` on `Project.config` column, (2) `dict(project.config or {})` copy in `merge_secrets` endpoint, (3) same pattern in `patch_project` (`if project_in.config`). Also: deploy-worker doesn't reset project status on `missing_user_secrets` — project stuck in `deploying` forever. Add status rollback. Affected: `shared/models/project.py`, `services/api/src/routers/projects.py`, `services/langgraph/src/workers/deploy_worker.py`. Source: fortune-telling-bot deploy failure analysis 2026-03-07.
+
+### #52 Scaffold script не экранирует task_description
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из описания закрывают `--data "..."`, а скобки интерпретируются bash (`syntax error near unexpected token`). Scaffold падает, worker убивается, задача blocked. Воспроизведено: E2E diagnostic run 2026-03-07 — описание с `socket.getaddrinfo(...)` сломало scaffold дважды подряд. Фикс: экранировать `task_description` перед подстановкой в bash (shlex.quote) или передавать через env var / tempfile вместо inline в `--data`. Затронут: `services/worker-manager/src/manager.py:819`.
 
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM

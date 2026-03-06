@@ -90,7 +90,8 @@ class TestSmokeTesterBackendFail:
             mock_client.get = AsyncMock(return_value=mock_response)
             mock_client_cls.return_value = mock_client
 
-            result = await smoke_node.run(state)
+            with patch("src.subgraphs.devops.smoke.asyncio.sleep", new_callable=AsyncMock):
+                result = await smoke_node.run(state)
 
         assert result["smoke_result"]["status"] == "fail"
         check = result["smoke_result"]["checks"][0]

@@ -186,7 +186,7 @@ class TestSendTaskToWorker:
         result = await send_task_to_worker(
             worker_id="dev-123",
             task_content="Fix it",
-            timeout_seconds=2,
+            timeout_seconds=0,
         )
 
         assert result.success is False
