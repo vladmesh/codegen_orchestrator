@@ -1,7 +1,7 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #47 Race Condition in set_project_secret (parallel tool calls)
 - **Plan**: —
 - **Step**: —
 - **Done Steps**: —
