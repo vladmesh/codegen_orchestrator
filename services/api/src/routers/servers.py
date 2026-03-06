@@ -118,6 +118,24 @@ async def get_server(
     return server
 
 
+@router.get("/{handle}/ssh-key")
+async def get_server_ssh_key(
+    handle: str,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
+) -> dict:
+    """Get decrypted SSH private key for a server (admin/internal only)."""
+    server = await db.get(Server, handle)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    if not server.ssh_key_enc:
+        raise HTTPException(status_code=404, detail="No SSH key stored for this server")
+
+    decrypted = SecretsCipher().decrypt(server.ssh_key_enc)
+    return {"ssh_key": decrypted}
+
+
 @router.get("/{handle}/ports", response_model=list[PortAllocationRead])
 async def list_server_ports(
     handle: str,
@@ -233,6 +251,14 @@ async def update_server(
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
+
+    # Handle ssh_key specially — encrypt before storing
+    if "ssh_key" in updates:
+        raw_key = updates.pop("ssh_key")
+        if raw_key:
+            server.ssh_key_enc = SecretsCipher().encrypt(raw_key)
+        else:
+            server.ssh_key_enc = None
 
     # Update allowed fields
     allowed_fields = {
