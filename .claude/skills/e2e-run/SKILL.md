@@ -1042,6 +1042,33 @@ git add docs/e2e_results/worker_reports/ 2>/dev/null || true
 git commit -m "e2e: <project_name> — <pass/fail>"
 ```
 
+### Step 7.6: Doc review & fix divergences
+
+After all tests pass and reports are committed, review the project documentation for divergences
+introduced by recent tasks. Read these files:
+
+- `docs/STATUS.md`
+- `docs/backlog.md`
+- `docs/CHANGELOG.md`
+- `docs/ROADMAP.md`
+- `CLAUDE.md`
+- `ARCHITECTURE.md`
+
+Check for:
+- **Stale references**: mentions of removed code, renamed files, deleted features, old behavior
+- **Contradictions**: docs saying one thing while code now does another (e.g., "owner_id is optional" after it became NOT NULL)
+- **Missing updates**: new features/changes from recent tasks not reflected in architecture or CLAUDE.md
+- **Backlog/STATUS inconsistencies**: done tasks still in queue, wrong plan links, stale checkpoint info
+
+If divergences are found — fix them in place and commit together:
+
+```bash
+git add -A docs/ CLAUDE.md ARCHITECTURE.md
+git commit -m "docs: fix divergences found during E2E review"
+```
+
+If no divergences — skip the commit, move on.
+
 ### Step 8: Cleanup (skip if --no-cleanup)
 
 ```bash
