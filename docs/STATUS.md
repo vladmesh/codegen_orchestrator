@@ -3,8 +3,8 @@
 ## Current Task
 - **Backlog**: #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save
 - **Plan**: docs/plans/sqlalchemy-json-mutation-tracking.md
-- **Step**: 1/5 — Add MutableDict to Project.config column
-- **Done Steps**: (empty)
+- **Step**: 5/5 — Integration test: secrets round-trip
+- **Done Steps**: 1. MutableDict on JSON columns, 2. Copy dict in merge_secrets, 3. patch_project verified OK (no-op), 4. Deploy-worker status rollback on missing_user_secrets
 
 ## Blocked
 (нет)
