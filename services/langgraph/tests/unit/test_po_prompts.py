@@ -3,7 +3,7 @@
 from src.po.prompts import SYSTEM_PROMPT
 from src.po.tools import trigger_engineering
 
-MAX_PROMPT_LENGTH = 8000
+MAX_PROMPT_LENGTH = 12000
 
 
 class TestSystemPrompt:
@@ -47,6 +47,30 @@ class TestSystemPrompt:
     def test_preserves_key_principles(self):
         assert "## Key Principles" in SYSTEM_PROMPT
         assert "NEVER write code yourself" in SYSTEM_PROMPT
+
+    def test_contains_env_hints_instructions(self):
+        """Prompt should instruct PO to use hint parameter with set_project_secret."""
+        assert "hint" in SYSTEM_PROMPT.lower()
+        assert "set_project_secret" in SYSTEM_PROMPT
+
+    def test_contains_access_control_question(self):
+        """Prompt should ask about bot access control for tg_bot projects."""
+        prompt_lower = SYSTEM_PROMPT.lower()
+        assert "access" in prompt_lower
+        assert "ADMIN_TELEGRAM_ID" in SYSTEM_PROMPT
+
+    def test_access_control_options(self):
+        """Prompt should list access control options."""
+        prompt_lower = SYSTEM_PROMPT.lower()
+        # All four options should be mentioned
+        assert "only me" in prompt_lower or "только мне" in prompt_lower
+        assert "everyone" in prompt_lower or "всем" in prompt_lower
+        assert "admin" in prompt_lower
+
+    def test_mentions_user_context(self):
+        """Prompt should reference user context (user_id, user_name) from message prefix."""
+        assert "user_id" in SYSTEM_PROMPT
+        assert "context" in SYSTEM_PROMPT.lower()
 
 
 class TestTriggerEngineeringDocstring:
