@@ -2,8 +2,8 @@
 
 ## Current Task
 - **Backlog**: #44 PO: DuckDuckGo Search Tool
-- **Plan**: —
-- **Step**: —
+- **Plan**: docs/plans/po-duckduckgo-search.md
+- **Step**: 1/4 — Add duckduckgo-search dependency
 - **Done Steps**: (empty)
 
 ## Blocked

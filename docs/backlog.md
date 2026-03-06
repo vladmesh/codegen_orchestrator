@@ -7,7 +7,7 @@
 ### #44 PO: DuckDuckGo Search Tool
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/po-duckduckgo-search.md
 - **Status**: pending
 - **Brief**: Добавить инструмент веб-поиска (DuckDuckGo) в `services/langgraph/src/po/tools.py`. PO использует его для поиска документации по сторонним API перед формированием ТЗ. (источник: brainstorm po-smart-node)
 
