@@ -4,27 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #39 Enforce Project-User Binding (owner_id NOT NULL)
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: docs/plans/enforce-owner-id-not-null.md
-- **Status**: pending
-- **Brief**: Проект строго привязан к юзеру. `owner_id` становится NOT NULL. github_sync перестаёт создавать проекты в БД — вместо этого шлёт warning админам через `notify_admins` о найденных ничейных репо. Админы разбираются вручную.
-- **Findings**:
-  - **Модель**: `shared/models/project.py:33` — `owner_id: Mapped[int | None]`, nullable FK
-  - **DTO**: `shared/contracts/dto/project.py:69,85` — `owner_id: int | None = None`
-  - **API create**: `services/api/src/routers/projects.py:84-93` — owner_id опционален, без `X-Telegram-ID` = None
-  - **github_sync**: `services/scheduler/src/tasks/github_sync.py:213-227` — `_sync_single_repo` создаёт `ProjectCreate` без owner → проект без владельца в БД
-  - **Webhook**: `services/api/src/routers/webhooks.py:113` — `if project.owner_id` guard перед нотификацией
-  - **Тесты**: `test_create_project.py:55` — тест "без X-Telegram-ID → owner_id=None" нужно инвертировать (должен быть 4xx)
-- **Scope**:
-  1. Миграция: `owner_id` NOT NULL (backfill existing orphans или удалить)
-  2. DTO: `owner_id: int` (required) в `ProjectCreate`; убрать None из `ProjectUpdate.owner_id`
-  3. API: `POST /api/projects/` — 400 если нет `X-Telegram-ID`
-  4. github_sync `_sync_single_repo`: если проект не найден в БД — `notify_admins` warning вместо `api_client.create_project`; doc sync для существующих проектов остаётся
-  5. Webhook: убрать `if project.owner_id` guard (всегда есть)
-  6. Тесты: обновить unit/service тесты
-
 ### #8 Workspace Failure Counter
 - **Priority**: MEDIUM
 - **User Story**: —
@@ -138,6 +117,7 @@
 
 ## Done (last 10)
 
+- #39 Enforce Project-User Binding (owner_id NOT NULL) — 2026-03-06
 - #34 US3: Add Feature to Existing Project — 2026-03-06
 - #33 Secrets Hygiene — 2026-03-06
 - #32 Prod Deploy Pipeline — 2026-03-06
@@ -147,7 +127,3 @@
 - #12 Documentation Cleanup (Zavhoz + Deploy-worker) — 2026-03-05
 - #4 CI Pipeline Redesign — 2026-03-05
 - #17 Dead Code & Legacy Cleanup — 2026-03-05
-- #37 Remove Dead LLM Agent Configs from Code — 2026-03-05
-- #36 Remove CLI Agent Config Infrastructure — 2026-03-05
-- #29 Fix ORCHESTRATOR_USER_ID defaults in CLI commands — 2026-03-05
-- #35 [meta] E2E Skill: server IP resolution + repo slug paths — fixed 2026-03-05

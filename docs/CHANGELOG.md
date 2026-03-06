@@ -4,6 +4,17 @@
 
 ## 2026-03-06
 
+### Changed
+- `owner_id` on projects is now NOT NULL — every project must have an owner (#39)
+- `POST /api/projects/` returns 400 if `X-Telegram-ID` header is missing (#39)
+- `github_sync` no longer creates orphan projects — sends admin notification for unknown repos (#39)
+- Webhook removes `if project.owner_id` guard — owner always exists (#39)
+- `ProjectDTO.owner_id` is now `int` (was `int | None`), `ProjectRead` includes `owner_id` (#39)
+
+### Removed
+- `ProjectUpdate.owner_id` field — owner is immutable after creation (#39)
+- `SchedulerAPIClient.create_project()` — scheduler no longer creates projects (#39)
+
 ### Added
 - `--feature` mode in e2e-run skill: triggers `action=feature` after initial create+deploy, verifies no scaffold, monitors feature CI+deploy (#34)
 - Feature Add Matrix in e2e-run skill: per-test feature descriptions for all 7 test cases (#34)

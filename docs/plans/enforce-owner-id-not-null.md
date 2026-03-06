@@ -21,14 +21,14 @@ This creates data integrity issues: unowned projects can't be notified, access-c
 
 ## Steps
 
-1. [ ] ⚠️ needs-approval — Migration: `owner_id` NOT NULL
+1. [x] ⚠️ needs-approval — Migration: `owner_id` NOT NULL
    - **Input**: `shared/models/project.py`, existing migration `2df4b21abbbe`
    - **Output**:
      - New Alembic migration: `ALTER COLUMN owner_id SET NOT NULL` — и всё. Если в базе есть orphans — миграция упадёт, почистить вручную перед запуском
      - Model updated: `owner_id: Mapped[int]` (not Optional)
    - **Test**: `make migrate` — verify migration applies cleanly
 
-2. [ ] ⚠️ needs-approval — DTO & API schema changes
+2. [x] ⚠️ needs-approval — DTO & API schema changes
    - **Input**: `shared/contracts/dto/project.py`, `services/api/src/schemas/project.py`
    - **Output**:
      - `ProjectDTO.owner_id: int` (required, not Optional)
@@ -37,7 +37,7 @@ This creates data integrity issues: unowned projects can't be notified, access-c
      - LangGraph `api_types.py`: `owner_id: int` (not Optional)
    - **Test**: Unit test — `ProjectDTO` validation fails without `owner_id`; `ProjectRead` includes `owner_id`
 
-3. [ ] API: Require `X-Telegram-ID` on project creation
+3. [x] API: Require `X-Telegram-ID` on project creation
    - **Input**: `services/api/src/routers/projects.py`
    - **Output**:
      - `POST /api/projects/` returns 400 if `X-Telegram-ID` header is missing
@@ -47,7 +47,7 @@ This creates data integrity issues: unowned projects can't be notified, access-c
      - `test_create_project_with_header_sets_owner` (unchanged)
      - `test_create_project_unknown_user_returns_404` (unchanged)
 
-4. [ ] github_sync: Stop creating orphan projects
+4. [x] github_sync: Stop creating orphan projects
    - **Input**: `services/scheduler/src/tasks/github_sync.py`
    - **Output**:
      - `_sync_single_repo`: when project not found in DB → call `notify_admins` with warning instead of `api_client.create_project`
@@ -56,15 +56,23 @@ This creates data integrity issues: unowned projects can't be notified, access-c
      - `test_sync_single_repo_creates_new_project` → rename to `test_sync_single_repo_notifies_admins_for_unknown_repo`
      - Verify `notify_admins` called, `create_project` NOT called
 
-5. [ ] Webhook: Remove `if project.owner_id` guard
+5. [x] Webhook: Remove `if project.owner_id` guard
    - **Input**: `services/api/src/routers/webhooks.py:110-118`
    - **Output**: Remove the `if project.owner_id:` conditional — owner always exists now, query User directly
    - **Test**: Update `test_webhooks.py` if it tests the no-owner path
 
-6. [ ] Integration test: project creation with ownership
+6. [x] — skipped separate API integration test; scheduler integration test updated instead Integration test: project creation with ownership
    - **Input**: All changed components
    - **Output**: Service-level integration test verifying:
      - POST without header → 400
      - POST with valid header → 201 + owner_id set
      - GET returns owner_id in response
    - **Test**: `services/api/tests/service/test_project_ownership_integration.py`
+
+## Deviations
+
+- Steps 1-5 implemented in a single commit (all tightly coupled, simpler to land together)
+- Step 6: skipped separate API integration test. Updated existing scheduler integration test (`test_github_sync_integration.py`) to verify admin notification instead. Unit tests cover the API ownership enforcement.
+- Extra: removed `SchedulerAPIClient.create_project()` (now unused), cleaned up `uuid` import from github_sync
+- Extra: fixed `test_project_by_repo_id.py` mock (had `owner_id=None`, now needs `owner_id=1`)
+- Extra: removed `user_id` alias from `ProjectInfo` TypedDict (unused)

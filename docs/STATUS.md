@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #39 Enforce Project-User Binding (owner_id NOT NULL)
-- **Plan**: docs/plans/enforce-owner-id-not-null.md
-- **Step**: 1/6 — Migration: owner_id NOT NULL
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 39 | Enforce Project-User Binding (owner_id NOT NULL) |
 | 34 | US3: Add Feature to Existing Project |
 | 33 | Secrets Hygiene |
 | 32 | Prod Deploy Pipeline |
