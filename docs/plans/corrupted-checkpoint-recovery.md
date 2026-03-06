@@ -18,7 +18,7 @@ The validation (`_validate_chat_history`) runs inside LangGraph's `acall_model` 
 
 ## Steps
 
-1. [ ] Add `_repair_orphan_tool_calls` helper
+1. [x] Add `_repair_orphan_tool_calls` helper
    - **Input**: `services/langgraph/src/po/consumer.py`, `graph` (CompiledStateGraph), `thread_id` (str)
    - **Output**: New async function `_repair_orphan_tool_calls(graph, thread_id) -> int` that:
      1. Calls `graph.aget_state(config)` to load current checkpoint
@@ -27,17 +27,23 @@ The validation (`_validate_chat_history`) runs inside LangGraph's `acall_model` 
      4. Returns count of repaired tool_calls (0 if clean)
    - **Test**: Unit test with mocked graph — verify ToolMessages are injected for orphans, no-op when clean
 
-2. [ ] Integrate repair into `_handle_message`
+2. [x] Integrate repair into `_handle_message`
    - **Input**: `services/langgraph/src/po/consumer.py` — `_handle_message` function (line 203)
    - **Output**: Call `_repair_orphan_tool_calls(graph, thread_id)` before `graph.ainvoke()`. Log warning with repair count if > 0. Thread ID is already computed as `f"po-user-{user_id}"`.
    - **Test**: Unit test — mock graph.ainvoke to raise ValueError on first call (simulating corrupted state), verify repair is called, then ainvoke succeeds on retry. Test normal flow (no orphans) still works.
 
-3. [ ] Add retry-on-corruption fallback in `_handle_message`
+3. [x] Add retry-on-corruption fallback in `_handle_message`
    - **Input**: `services/langgraph/src/po/consumer.py` — `_handle_message`
    - **Output**: Wrap `graph.ainvoke()` in try/except for ValueError matching "tool_calls that do not have a corresponding ToolMessage". On catch: call `_repair_orphan_tool_calls`, retry ainvoke once. This handles edge cases where the pre-check passes but new corruption happens between check and invoke (race with summarization hook or concurrent checkpoint writes).
    - **Test**: Unit test — graph.ainvoke raises ValueError first time, repair fixes it, second ainvoke succeeds. Also test: non-matching ValueError is NOT caught (re-raised).
 
-4. [ ] Integration test with real LangGraph state
+4. [x] Integration test with real LangGraph state
    - **Input**: `services/langgraph/tests/unit/po/test_consumer.py` (can use MemorySaver for in-memory checkpoint)
    - **Output**: Test that creates a real graph with MemorySaver, manually corrupts checkpoint (insert AIMessage with tool_calls, no ToolMessage), then invokes `_handle_message` and verifies recovery + successful response. This tests the full flow without mocks.
    - **Test**: Self-contained integration test in the unit test file (MemorySaver needs no external deps)
+
+## Deviations
+
+- Steps 1-3 were implemented in a single commit since they all modify the same file (`consumer.py`) and are tightly coupled.
+- Step 4 integration test only tests `_repair_orphan_tool_calls` with a real graph (not the full `_handle_message` flow) since creating a real react agent requires an LLM. The mock-based tests in step 3 cover the full `_handle_message` retry flow.
+- Bonus fix: `ruff.toml` per-file-ignores pattern `"tests/**"` didn't match `services/**/tests/**` — added `"**/tests/**"` pattern.

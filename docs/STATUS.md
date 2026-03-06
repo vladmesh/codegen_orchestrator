@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #48 Corrupted Checkpoint Recovery (orphan tool_calls)
-- **Plan**: docs/plans/corrupted-checkpoint-recovery.md
-- **Step**: 1/4 — Add _repair_orphan_tool_calls helper
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 48 | Corrupted Checkpoint Recovery (orphan tool_calls) |
 | 47 | Race Condition in set_project_secret (parallel tool calls) |
 | 42 | Fix API Integration Test (test_post_projects_pure_db) |
 | 45 | PO: Context-Aware Env Variables & Hints |

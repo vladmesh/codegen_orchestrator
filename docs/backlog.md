@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #48 Corrupted Checkpoint Recovery (orphan tool_calls)
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/corrupted-checkpoint-recovery.md
-- **Status**: pending
-- **Brief**: PO agent крашится с `ValueError: Found AIMessages with tool_calls that do not have a corresponding ToolMessage` когда checkpoint содержит AIMessage с tool_call без парного ToolMessage. Реальный кейс: reminder сработал, PO вызвал `get_task_status`, tool result не сохранился (краш/таймаут), checkpoint сломан навсегда — пользователь заблокирован. Фикс: 1) обёртка вокруг tool execution в consumer — гарантировать запись ToolMessage (даже с ошибкой) при любом исходе; 2) recovery logic в `_handle_message` — если `_validate_chat_history` падает, добавить фейковый ToolMessage с ошибкой и retry. Файлы: `services/langgraph/src/po/consumer.py`.
-
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
 - **User Story**: —
@@ -125,6 +118,7 @@
 
 ## Done (last 10)
 
+- #48 Corrupted Checkpoint Recovery (orphan tool_calls) — 2026-03-06
 - #47 Race Condition in set_project_secret (parallel tool calls) — 2026-03-06
 - #42 Fix API Integration Test (test_post_projects_pure_db) — 2026-03-06
 - #45 PO: Context-Aware Env Variables & Hints — 2026-03-06
@@ -134,4 +128,3 @@
 - #39 Enforce Project-User Binding (owner_id NOT NULL) — 2026-03-06
 - #34 US3: Add Feature to Existing Project — 2026-03-06
 - #33 Secrets Hygiene — 2026-03-06
-- #32 Prod Deploy Pipeline — 2026-03-06

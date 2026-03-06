@@ -22,6 +22,8 @@
 - Unit tests for PO prompt content and tool docstrings (#43)
 
 ### Fixed
+- Corrupted checkpoint recovery: PO consumer auto-repairs orphan tool_calls that block users permanently (#48)
+- `ruff.toml` per-file-ignores now covers `**/tests/**` paths (services tests were getting PLR2004 false positives) (#48)
 - Race condition in `set_project_secret` when LLM calls it in parallel — secrets no longer lost (#47)
 - `test_post_projects_pure_db` integration test — add `X-Telegram-ID` header and seed user via API (#42)
 
