@@ -24,9 +24,10 @@ This creates data integrity issues: unowned projects can't be notified, access-c
 1. [ ] ⚠️ needs-approval — Migration: `owner_id` NOT NULL
    - **Input**: `shared/models/project.py`, existing migration `2df4b21abbbe`
    - **Output**:
-     - New Alembic migration: backfill orphan projects to admin user (or delete them), then `ALTER COLUMN owner_id SET NOT NULL`
+     - New Alembic migration: `DELETE FROM projects WHERE owner_id IS NULL`, then `ALTER COLUMN owner_id SET NOT NULL`
+     - No backfill, no shims, no fallbacks — DB is empty in practice; orphans get deleted if any exist
      - Model updated: `owner_id: Mapped[int]` (not Optional)
-   - **Test**: Migration unit test — verify upgrade/downgrade SQL is correct (or manual `make migrate` check)
+   - **Test**: `make migrate` — verify migration applies cleanly
 
 2. [ ] ⚠️ needs-approval — DTO & API schema changes
    - **Input**: `shared/contracts/dto/project.py`, `services/api/src/schemas/project.py`
