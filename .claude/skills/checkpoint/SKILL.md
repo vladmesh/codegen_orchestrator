@@ -76,7 +76,17 @@ Update `## Last Checkpoint`:
 - Set date to today
 - Summarize audit and E2E status
 
-### 8. Cleanup plans
+### 8. Review project documentation
+
+Check whether key project docs are still accurate after recent changes:
+- Read `ARCHITECTURE.md`, `README.md`, `docs/CONTRACTS.md`
+- Compare against commits since last checkpoint (`git log --oneline --since=<last checkpoint date>`)
+- If a change touched `shared/contracts/`, service interfaces, new services, or architectural patterns — verify the relevant doc reflects it
+- Update any stale sections (add/remove services, fix outdated diagrams, update contract descriptions)
+- If `CLAUDE.md` has outdated patterns or file paths — update it too
+- Skip docs that are already accurate — don't touch what doesn't need changing
+
+### 9. Cleanup plans
 
 For each file in `docs/plans/`:
 - Check if the task is in backlog Done section
@@ -84,7 +94,7 @@ For each file in `docs/plans/`:
 - If both conditions are true — delete the plan file
 - Otherwise — keep it (it may still be needed for debugging)
 
-### 9. Cleanup E2E reports
+### 10. Cleanup E2E reports
 
 For each file in `docs/e2e_results/`:
 - Skip if file date (from filename) is **less than 2 days old**
@@ -92,14 +102,14 @@ For each file in `docs/e2e_results/`:
 - If processed AND older than 2 days — delete the report (and its `-worker.md` pair if exists)
 - Keep the **latest passing report per scenario** regardless of age (needed for User Story status)
 
-### 10. Commit
+### 11. Commit
 
 ```bash
-git add docs/CHANGELOG.md docs/ROADMAP.md docs/STATUS.md docs/USER_STORIES.md docs/backlog.md docs/audit.md docs/plans/ docs/e2e_results/ docs/brainstorms/
+git add docs/CHANGELOG.md docs/ROADMAP.md docs/STATUS.md docs/USER_STORIES.md docs/backlog.md docs/audit.md docs/plans/ docs/e2e_results/ docs/brainstorms/ ARCHITECTURE.md README.md CLAUDE.md docs/CONTRACTS.md
 git commit -m "checkpoint: <date>"
 ```
 
-### 11. Report
+### 12. Report
 
 Print a comprehensive summary:
 
