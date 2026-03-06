@@ -1,15 +1,8 @@
 # Backlog
 
-> **Актуально на**: 2026-03-05
+> **Актуально на**: 2026-03-06
 
 ## Queue (ordered by priority, first = next)
-
-### #32 Prod Deploy Pipeline
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/prod-deploy-pipeline.md
-- **Status**: pending
-- **Brief**: Протестировать deploy.yml end-to-end на прод-сервере. Worker base images build в pipeline (не compose-сервисы, строятся отдельно). DB backup cron (pg_dump ежедневно). Environment guard на `make nuke`. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
 
 ### #33 Secrets Hygiene
 - **Priority**: HIGH
@@ -152,6 +145,7 @@
 
 ## Done (last 10)
 
+- #32 Prod Deploy Pipeline — 2026-03-06
 - #38 Fix Service Integration Tests After Multi-User Isolation — 2026-03-06
 - #31 Port Allocation Locking — 2026-03-05
 - #30 Multi-user Isolation Fix — 2026-03-05

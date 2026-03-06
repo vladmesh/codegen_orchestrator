@@ -4,6 +4,16 @@
 
 ## 2026-03-06
 
+### Added
+- `docker-compose.prod.yml` — production overlay (no direct API port, restart policies, Redis AOF, no DB defaults) (#32)
+- `infra/scripts/pull-worker-images.sh` — pulls worker base images from GHCR and retags to local names (#32)
+- `infra/scripts/backup-db.sh` + systemd timer — daily pg_dump with 7-day rotation (#32)
+- `docs/DEPLOY.md` — full production deployment guide with GitHub Secrets inventory (#32)
+
+### Changed
+- `docker-compose.yml`: parameterized `SSH_KEY_PATH` and `GITHUB_APP_PEM_PATH` with dev defaults (#32)
+- `.github/workflows/deploy.yml`: complete rewrite — writes all env vars, builds images, pulls worker images from GHCR, runs migrations, health checks (#32)
+
 ### Fixed
 - CI: service test matrix `changed` field was literal string, not `${{ }}` expression — tests were silently skipped on every run since #4 (#38)
 - API: make `X-Telegram-ID` optional for project creation — system calls (scheduler github_sync) create discovered projects with `owner_id=None` (#38)

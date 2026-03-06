@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #32 Prod Deploy Pipeline
-- **Plan**: docs/plans/prod-deploy-pipeline.md
-- **Step**: 1/5 — Create docker-compose.prod.yml override
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 32 | Prod Deploy Pipeline |
 | 38 | Fix Service Integration Tests After Multi-User Isolation |
 | 31 | Port Allocation Locking |
 | 30 | Multi-user Isolation Fix |

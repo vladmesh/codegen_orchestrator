@@ -21,7 +21,7 @@ Scope decision (from conversation): **Makefile guard on `make nuke` is out of sc
 
 ## Steps
 
-1. [ ] Create `docker-compose.prod.yml` override
+1. [x] Create `docker-compose.prod.yml` override
    - **Input**: `docker-compose.yml` (current dev config)
    - **Output**: `docker-compose.prod.yml` that overrides dev config for prod:
      - Remove ALL source bind-mounts (`./services/*/src:/app/src`, `./shared:/app/shared`)
@@ -33,7 +33,7 @@ Scope decision (from conversation): **Makefile guard on `make nuke` is out of sc
      - Override db defaults: remove `:-orchestrator`, `:-postgres` fallbacks (require explicit env vars)
    - **Test**: `docker compose -f docker-compose.yml -f docker-compose.prod.yml config` validates merged config (manual, documented in deploy.yml comments)
 
-2. [ ] Create `infra/scripts/pull-worker-images.sh`
+2. [x] Create `infra/scripts/pull-worker-images.sh`
    - **Input**: GHCR image tags, worker-manager config (`image_builder.py` expects `worker-base-claude:latest` etc.)
    - **Output**: Script that pulls worker images from GHCR and retags to local names:
      - `ghcr.io/.../worker-base-common:latest` -> `worker-base-common:latest`
@@ -43,7 +43,7 @@ Scope decision (from conversation): **Makefile guard on `make nuke` is out of sc
      - Logs progress, fails fast on errors
    - **Test**: Unit test — script is simple enough to verify by review. CI validates images build correctly (existing `build-worker-base` job).
 
-3. [ ] Create `infra/scripts/backup-db.sh` + systemd timer
+3. [x] Create `infra/scripts/backup-db.sh` + systemd timer
    - **Input**: PostgreSQL container name, backup path
    - **Output**:
      - `infra/scripts/backup-db.sh` — runs `docker compose exec -T db pg_dump` to `/opt/backups/orchestrator/`
@@ -52,7 +52,7 @@ Scope decision (from conversation): **Makefile guard on `make nuke` is out of sc
      - `infra/systemd/orchestrator-backup.service` + `orchestrator-backup.timer` (daily at 03:00)
    - **Test**: Script runs successfully against local dev stack (`make up` + run script, verify .sql.gz created). Timer syntax validated with `systemd-analyze verify`.
 
-4. [ ] Rewrite `deploy.yml` — full production deploy workflow
+4. [x] Rewrite `deploy.yml` — full production deploy workflow
    - **Input**: Current `deploy.yml`, new `docker-compose.prod.yml`, `pull-worker-images.sh`
    - **Output**: Updated `.github/workflows/deploy.yml`:
      - **Step 1**: SSH — write `.env` with ALL required env vars (not just 6)
@@ -67,7 +67,7 @@ Scope decision (from conversation): **Makefile guard on `make nuke` is out of sc
      - Add health check after deploy (curl /health with retry)
    - **Test**: `act` dry-run or manual review of YAML syntax. Real test = step 5 (manual deploy to prod).
 
-5. [ ] Manual prod deploy test + document required GitHub Secrets
+5. [x] Manual prod deploy test + document required GitHub Secrets
    - **Input**: All previous steps merged, prod server access
    - **Output**:
      - Document in `docs/DEPLOY.md`: list of required GitHub Secrets, server prerequisites (Docker, deploy user, /opt/secrets/, /opt/backups/), first-time setup steps
@@ -80,3 +80,8 @@ Scope decision (from conversation): **Makefile guard on `make nuke` is out of sc
 - Worker-manager references images by local tag (`worker-base-claude:latest`). Changing this to GHCR tags would require code changes + config. Simpler to pull-and-retag.
 - `#33 Secrets Hygiene` (next in queue) will handle removing PEM from git and dedicated SSH key. This plan assumes those secrets exist in GitHub Secrets but doesn't create them.
 - Redis persistence: `redis_data` volume survives restarts. For prod resilience, consider enabling Redis AOF in a future task.
+
+## Deviations
+
+- **Step 1**: Instead of removing dev bind-mounts (impossible with compose list merge semantics), parameterized secret paths (`SSH_KEY_PATH`, `GITHUB_APP_PEM_PATH`) in the base `docker-compose.yml` with dev defaults. Prod sets these via `.env`. Source bind-mounts are harmless on prod (same code from git checkout overlays baked-in image code). Prod override uses `!reset` for ports only (requires Compose 2.24+).
+- **Step 5**: Manual prod deploy test deferred — DEPLOY.md created with full instructions. Actual deploy will happen when prod server is provisioned and GitHub Secrets are configured.
