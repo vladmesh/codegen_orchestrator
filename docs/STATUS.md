@@ -2,8 +2,8 @@
 
 ## Current Task
 - **Backlog**: #49 Telegram: кнопка "Add User" для админов
-- **Plan**: —
-- **Step**: —
+- **Plan**: docs/plans/telegram-add-user.md
+- **Step**: 1/5 — Add admin keyboard constants and button
 - **Done Steps**: (empty)
 
 ## Blocked

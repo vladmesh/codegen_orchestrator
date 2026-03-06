@@ -7,7 +7,7 @@
 ### #49 Telegram: кнопка "Add User" для админов
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/telegram-add-user.md
 - **Status**: pending
 - **Brief**: Админам в Telegram-боте добавить кнопку/команду для быстрого добавления пользователей. Админы уже определяются двумя способами: `ADMIN_TELEGRAM_IDS` env var (`services/telegram_bot/src/middleware.py`) и `is_admin` флаг на модели `User` (`shared/models/user.py:21`). Middleware уже проверяет `is_admin` через context (`services/telegram_bot/src/middleware.py`). Нужно: 1) добавить inline-кнопку "Add User" в админ-меню (показывается только если `is_admin=True`); 2) по нажатию — запросить telegram_id нового пользователя; 3) создать/активировать пользователя через API. Файлы: `services/telegram_bot/src/handlers.py`, `services/telegram_bot/src/keyboards.py`, `services/api/`.
 
