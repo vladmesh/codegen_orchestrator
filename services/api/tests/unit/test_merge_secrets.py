@@ -150,6 +150,42 @@ async def test_merge_secrets_empty_secrets_rejected():
 
 
 @pytest.mark.asyncio
+@patch("src.routers.projects.encrypt_dict", side_effect=lambda d: d)
+@patch("src.routers.projects.decrypt_dict", side_effect=lambda d: d)
+async def test_merge_secrets_assigns_new_dict_object(mock_decrypt, mock_encrypt):
+    """merge_secrets must assign a NEW dict to project.config, not the same object.
+
+    This is critical: if the same dict is reassigned, SQLAlchemy won't detect
+    the change and will skip the UPDATE (even with MutableDict, belt-and-suspenders).
+    """
+    original_config = {"modules": ["backend"], "secrets": {"OLD": "val"}}
+    project = _make_project(config=original_config)
+    original_config_id = id(project.config)
+    user = _make_user()
+    session = _mock_session(project=project, user=user)
+
+    async def override():
+        yield session
+
+    app.dependency_overrides[get_async_session] = override
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/api/projects/proj-1/config/secrets",
+            json={"secrets": {"NEW_KEY": "new-val"}},
+            headers={"X-Telegram-ID": "12345"},
+        )
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    # The config dict assigned must be a NEW object, not the original
+    assert (
+        id(project.config) != original_config_id
+    ), "merge_secrets must create a new dict to trigger SQLAlchemy change detection"
+    # Original keys preserved
+    assert project.config["modules"] == ["backend"]
+
+
+@pytest.mark.asyncio
 @patch("src.routers.projects.encrypt_dict", return_value={"KEY_A": "enc-new"})
 @patch("src.routers.projects.decrypt_dict", return_value={"KEY_A": "old-val"})
 async def test_merge_secrets_overwrites_existing_key(mock_decrypt, mock_encrypt):

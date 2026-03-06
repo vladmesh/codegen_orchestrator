@@ -284,7 +284,7 @@ async def merge_secrets(
 
     await _check_project_access(project, x_telegram_id, db)
 
-    config = project.config or {}
+    config = dict(project.config or {})
     existing_secrets = config.get("secrets") or {}
     existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
 
