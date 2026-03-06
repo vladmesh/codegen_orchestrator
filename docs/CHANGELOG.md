@@ -5,6 +5,7 @@
 ## 2026-03-06
 
 ### Added
+- `GET /projects/by-repo-id/{repo_id}` — lookup project by GitHub repo ID, used by scheduler github_sync (#33)
 - `GET /servers/{handle}/ssh-key` — returns decrypted SSH private key per server (#33)
 - `PATCH /servers/{handle}` accepts `ssh_key` field — encrypts with Fernet and stores (#33)
 - Provisioner auto-saves SSH key to DB after successful provisioning (#33)
