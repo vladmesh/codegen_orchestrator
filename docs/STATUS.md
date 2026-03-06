@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #45 PO: Context-Aware Env Variables & Hints
-- **Plan**: docs/plans/po-env-hints.md
-- **Step**: 1/6 — Add user_name to POUserMessage and telegram bot
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 45 | PO: Context-Aware Env Variables & Hints |
 | 44 | PO: DuckDuckGo Search Tool |
 | 43 | PO: Сократический диалог и формирование ТЗ |
 | 8 | Workspace Failure Counter |

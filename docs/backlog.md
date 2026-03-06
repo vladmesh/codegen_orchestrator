@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #45 PO: Context-Aware Env Variables & Hints
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/po-env-hints.md
-- **Status**: pending
-- **Brief**: Улучшить передачу контекста от PO к Девелоперу. Прокинуть `user_id` в контекст PO, добавить параметр `hint` в тулзу `set_project_secret` с сохранением в `config.env_hints`, и инжектить эти хинты в системный промпт Developer Worker'а. Сделать так, чтобы PO сам создавал нужные env vars без хардкода. (источник: brainstorm po-env-hints.md)
-
 ### #42 Fix API Integration Test (test_post_projects_pure_db)
 - **Priority**: HIGH
 - **User Story**: —
@@ -125,6 +118,7 @@
 
 ## Done (last 10)
 
+- #45 PO: Context-Aware Env Variables & Hints — 2026-03-06
 - #44 PO: DuckDuckGo Search Tool — 2026-03-06
 - #43 PO: Сократический диалог и формирование ТЗ — 2026-03-06
 - #8 Workspace Failure Counter — 2026-03-06
@@ -134,5 +128,3 @@
 - #32 Prod Deploy Pipeline — 2026-03-06
 - #38 Fix Service Integration Tests After Multi-User Isolation — 2026-03-06
 - #31 Port Allocation Locking — 2026-03-05
-- #30 Multi-user Isolation Fix — 2026-03-05
-- #12 Documentation Cleanup (Zavhoz + Deploy-worker) — 2026-03-05

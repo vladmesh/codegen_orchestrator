@@ -5,6 +5,12 @@
 ## 2026-03-06
 
 ### Added
+- `user_name` field on `POUserMessage`; telegram bot populates from `tg_user.first_name` (#45)
+- User context injection `[context: user_id=..., user_name=...]` prefix on PO messages (#45)
+- `hint` parameter on `set_project_secret` tool; hints stored in `config.env_hints` (#45)
+- PO prompt sections: env hints usage, access control question for tg_bot projects (#45)
+- `_format_env_hints()` in DeveloperNode — injects `## Provided Environment Variables` into TASK.md (#45)
+- Integration test: verify env_hints appear in worker TASK.md (`test_task_injection.py`) (#45)
 - PO `web_search` tool: DuckDuckGo search for third-party API documentation (#44)
 - System prompt guidance for when to use web search vs. existing knowledge (#44)
 - PO Socratic dialog: requirements gathering before triggering engineering (#43)
