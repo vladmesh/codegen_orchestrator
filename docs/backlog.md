@@ -52,7 +52,7 @@
 - **User Story**: —
 - **Plan**: —
 - **Status**: pending
-- **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory ("предсмертная записка" агента). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change).
+- **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory ("предсмертная записка" агента). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change). NB: Watchdog/DLQ scope уменьшится — WorkItemEvent (#55) покрывает audit trail и историю итераций. TaskAssessor → будущий Assessor node на базе WorkItem.
 
 ### #18 Split engineering_worker.py (1088 LOC)
 - **Priority**: MEDIUM
@@ -130,10 +130,10 @@
 - pytest-xdist для backend integration tests — исследовать после параллелизации стеков (источник: brainstorm ci-integration-test-speed)
 - Split worker-manager/src/manager.py (828 LOC, 6 functions >50 LOC) (источник: audit 2026-03-05)
 - infra-service unit test coverage: 9 source files, 0 tests (источник: audit 2026-03-05)
-- Task Store в БД — Epic, WorkItem, WorkItemGate с tenant_id с первого дня (dogfooding для продукта, Phase 3) (источник: brainstorms epic-decomposition, multi-tenant-isolation)
-- Миграция скиллов на API-first (/next, /implement, /triage через API) (источник: brainstorm epic-decomposition)
-- Assessor node — фильтр сложности запросов (Phase 4) (источник: brainstorm epic-decomposition)
-- Architect node — декомпозиция сложных задач через Task Store (Phase 5) (источник: brainstorm epic-decomposition)
+- ~~Task Store в БД~~ — поглощено #55 (WorkItem Model + API)
+- ~~Миграция скиллов на API-first~~ — станет #56-58 (Steps 1-3 из brainstorm orchestrator-v2-task-management)
+- Assessor node — фильтр сложности запросов, теперь на базе WorkItem (Phase 4) (источник: brainstorm epic-decomposition)
+- Architect node — декомпозиция сложных задач на WorkItems (Phase 5) (источник: brainstorm epic-decomposition)
 - SOPS для .env на проде (Phase 2B) (источник: brainstorm epic-decomposition)
 - Zero-downtime deploy — rolling restart (Phase 2B) (источник: brainstorm epic-decomposition)
 - RLS policies на PostgreSQL для multi-tenant (подготовка, не блокер для MVP) (источник: brainstorm multi-tenant-isolation)
