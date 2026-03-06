@@ -98,6 +98,16 @@ class LanggraphAPIClient:
     async def get_server(self, server_handle: str) -> dict:
         return await self._get_json(f"servers/{server_handle}")
 
+    async def get_server_ssh_key(self, server_handle: str) -> str | None:
+        """Get decrypted SSH private key for a server. Returns None if not stored."""
+        try:
+            data = await self._get_json(f"servers/{server_handle}/ssh-key")
+            return data.get("ssh_key")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == HTTPStatus.NOT_FOUND:
+                return None
+            raise
+
     async def get_user_by_telegram(self, telegram_id: int) -> dict:
         return await self._get_json(f"users/by-telegram/{telegram_id}")
 

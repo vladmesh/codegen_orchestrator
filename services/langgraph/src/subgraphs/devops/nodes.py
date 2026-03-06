@@ -15,7 +15,6 @@ from shared.clients.github import GitHubAppClient
 from shared.crypto import decrypt_dict, encrypt_dict
 
 from ...clients.api import api_client
-from ...config.constants import Paths
 from ...nodes.base import FunctionalNode
 from ...schemas.api_types import AllocationInfo, get_repo_url
 from .dotenv_builder import build_dotenv, encode_dotenv
@@ -23,9 +22,6 @@ from .env_groups import resolve_with_groups
 from .state import DevOpsState
 
 logger = structlog.get_logger()
-
-# SSH key path for CI secrets
-SSH_KEY_PATH = Paths.SSH_KEY
 
 
 class SecretResolverNode(FunctionalNode):
@@ -311,20 +307,9 @@ async def _write_deploy_secrets(
     port: int,
     project_name: str,
     dotenv_b64: str,
+    ssh_key: str,
 ) -> bool:
     """Write deployment secrets to GitHub repository for deploy.yml workflow."""
-    # Read SSH private key from mounted volume
-    if not os.path.exists(SSH_KEY_PATH):
-        logger.warning("ssh_key_not_found", path=SSH_KEY_PATH)
-        return False
-
-    try:
-        with open(SSH_KEY_PATH) as f:
-            ssh_key = f.read()
-    except Exception as e:
-        logger.error("ssh_key_read_failed", error=str(e))
-        return False
-
     # Registry credentials for CI docker push
     registry_url = os.getenv("ORCHESTRATOR_HOSTNAME")
     if not registry_url:
@@ -416,12 +401,32 @@ class DeployerNode(FunctionalNode):
             logger.error("deploy_rerun_api_error", error=str(e))
             return None
 
+    def _extract_deploy_params(self, state: DevOpsState) -> dict | None:
+        """Extract and validate deployment parameters from state. Returns None on error."""
+        project_spec = state.get("project_spec") or {}
+        allocated_resources = state.get("allocated_resources", {})
+
+        repo_url = get_repo_url(project_spec)
+        if not repo_url:
+            return None
+
+        parts = repo_url.rstrip("/").split("/")
+        first_resource = next(iter(allocated_resources.values()), {}) if allocated_resources else {}
+
+        return {
+            "owner": parts[-2],
+            "repo": parts[-1],
+            "project_name": project_spec.get("name", "project").replace(" ", "_").lower(),
+            "server_ip": first_resource.get("server_ip"),
+            "port": first_resource.get("port"),
+            "server_handle": first_resource.get("server_handle"),
+        }
+
     async def run(self, state: DevOpsState) -> dict:
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
         project_spec = state.get("project_spec") or {}
         resolved_secrets = state.get("resolved_secrets", {})
-        allocated_resources = state.get("allocated_resources", {})
         logger.info("deployer_start", project_id=project_id)
 
         if not project_id:
@@ -430,22 +435,17 @@ class DeployerNode(FunctionalNode):
                 "errors": ["No project_id for deployment"],
             }
 
-        # Extract repo owner/name
-        repo_url = get_repo_url(project_spec)
-        if not repo_url:
+        params = self._extract_deploy_params(state)
+        if not params:
             return {
                 "deployment_result": {"status": "failed", "error": "No repository URL"},
                 "errors": ["No repository URL found in project spec"],
             }
 
-        parts = repo_url.rstrip("/").split("/")
-        owner, repo = parts[-2], parts[-1]
-        project_name = project_spec.get("name", "project").replace(" ", "_").lower()
-
-        # Extract server_ip and port from allocated_resources
-        first_resource = next(iter(allocated_resources.values()), {}) if allocated_resources else {}
-        server_ip = first_resource.get("server_ip")
-        port = first_resource.get("port")
+        owner, repo = params["owner"], params["repo"]
+        project_name = params["project_name"]
+        server_ip, port = params["server_ip"], params["port"]
+        server_handle = params["server_handle"]
 
         if not server_ip or not port:
             return {
@@ -455,6 +455,18 @@ class DeployerNode(FunctionalNode):
 
         try:
             github = GitHubAppClient()
+
+            # 0. Fetch SSH key for target server from DB
+            ssh_key = await api_client.get_server_ssh_key(server_handle) if server_handle else None
+            if not ssh_key:
+                logger.error("deploy_ssh_key_not_found", server_handle=server_handle)
+                return {
+                    "deployment_result": {
+                        "status": "failed",
+                        "error": f"No SSH key in DB for server {server_handle}",
+                    },
+                    "errors": [f"No SSH key for server {server_handle}"],
+                }
 
             # 1. Build and encode DOTENV
             dotenv_content = build_dotenv(resolved_secrets)
@@ -478,6 +490,7 @@ class DeployerNode(FunctionalNode):
                 port=port,
                 project_name=project_name,
                 dotenv_b64=dotenv_b64,
+                ssh_key=ssh_key,
             )
 
             if not secrets_ok:

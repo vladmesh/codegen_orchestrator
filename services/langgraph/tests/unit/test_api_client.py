@@ -52,6 +52,34 @@ class TestGetProjectWithTelegramId:
         assert "X-Telegram-ID" not in headers
 
 
+class TestGetServerSSHKey:
+    @pytest.mark.asyncio
+    async def test_returns_key_on_success(self, api_client, mock_httpx_client):
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200  # noqa: PLR2004
+        resp.json.return_value = {"ssh_key": "my-private-key"}
+        mock_httpx_client.request.return_value = resp
+
+        result = await api_client.get_server_ssh_key("srv-1")
+
+        assert result == "my-private-key"
+        call_args = mock_httpx_client.request.call_args
+        assert call_args[1].get("url") or "ssh-key" in str(call_args)
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_404(self, api_client, mock_httpx_client):
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 404  # noqa: PLR2004
+        resp.is_error = True
+        resp_exc = httpx.HTTPStatusError("Not Found", request=MagicMock(), response=resp)
+        mock_httpx_client.request.return_value = resp
+        resp.raise_for_status.side_effect = resp_exc
+
+        result = await api_client.get_server_ssh_key("srv-1")
+
+        assert result is None
+
+
 class TestListProjectsWithTelegramId:
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, api_client, mock_httpx_client):

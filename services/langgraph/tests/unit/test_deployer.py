@@ -2,7 +2,7 @@
 
 from datetime import datetime
 import os
-from unittest.mock import AsyncMock, mock_open, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -52,6 +52,7 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
     mock_gh_cls.return_value = gh
     gh.wait_for_workflow_completion.return_value = _SUCCESS_RUN
     mock_api.get_project_allocations = AsyncMock(return_value=_ALLOC_RESPONSE)
+    mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
     mock_api.create_service_deployment = AsyncMock(return_value={})
     mock_api.patch = AsyncMock(return_value={})
     return gh
@@ -66,13 +67,25 @@ class TestDeployerNodeErrors:
         assert "No project_id" in result["errors"][0]
 
     @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
+    @patch("src.subgraphs.devops.nodes.api_client")
+    async def test_deploy_fails_when_ssh_key_missing(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """Deploy should fail when no SSH key is stored for the server."""
+        mock_api.get_server_ssh_key = AsyncMock(return_value=None)
+
+        result = await deployer.run(base_state)
+
+        assert result["errors"]
+        assert "SSH key" in result["errors"][0]
+
+    @pytest.mark.asyncio
     @patch.dict(os.environ, {}, clear=True)
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.os.path.exists", return_value=True)
-    @patch("builtins.open", mock_open(read_data="ssh-key-content"))
     async def test_deploy_fails_when_registry_env_missing(
-        self, mock_exists, mock_api, mock_gh_cls, deployer, base_state
+        self, mock_api, mock_gh_cls, deployer, base_state
     ):
         """Deploy should fail when ORCHESTRATOR_HOSTNAME/REGISTRY_USER/PASSWORD are missing."""
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
@@ -95,11 +108,7 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.os.path.exists", return_value=True)
-    @patch("builtins.open", mock_open(read_data="ssh-key-content"))
-    async def test_writes_deploy_secrets(
-        self, mock_exists, mock_api, mock_gh_cls, deployer, base_state
-    ):
+    async def test_writes_deploy_secrets(self, mock_api, mock_gh_cls, deployer, base_state):
         """set_repository_secrets should be called with DOTENV, DEPLOY_HOST, registry creds, etc."""
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
 
@@ -110,7 +119,7 @@ class TestDeployerNodeHappyPath:
         assert "DOTENV" in secrets_arg
         assert secrets_arg["DEPLOY_HOST"] == "10.0.0.1"
         assert secrets_arg["DEPLOY_USER"] == "root"
-        assert "DEPLOY_SSH_KEY" in secrets_arg
+        assert secrets_arg["DEPLOY_SSH_KEY"] == "ssh-key-content"
         assert secrets_arg["DEPLOY_PORT"] == "8080"
         assert secrets_arg["PROJECT_NAME"] == "my_project"
         assert secrets_arg["REGISTRY_URL"] == "registry.example.com"
@@ -120,11 +129,7 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.os.path.exists", return_value=True)
-    @patch("builtins.open", mock_open(read_data="ssh-key-content"))
-    async def test_triggers_workflow_dispatch(
-        self, mock_exists, mock_api, mock_gh_cls, deployer, base_state
-    ):
+    async def test_triggers_workflow_dispatch(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
 
         await deployer.run(base_state)
@@ -134,11 +139,7 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.os.path.exists", return_value=True)
-    @patch("builtins.open", mock_open(read_data="ssh-key-content"))
-    async def test_waits_for_completion(
-        self, mock_exists, mock_api, mock_gh_cls, deployer, base_state
-    ):
+    async def test_waits_for_completion(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
 
         await deployer.run(base_state)
@@ -151,10 +152,8 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.os.path.exists", return_value=True)
-    @patch("builtins.open", mock_open(read_data="ssh-key-content"))
     async def test_creates_deployment_record_with_sha(
-        self, mock_exists, mock_api, mock_gh_cls, deployer, base_state
+        self, mock_api, mock_gh_cls, deployer, base_state
     ):
         _setup_happy_mocks(mock_api, mock_gh_cls)
 
@@ -167,10 +166,8 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.os.path.exists", return_value=True)
-    @patch("builtins.open", mock_open(read_data="ssh-key-content"))
     async def test_updates_project_status_to_active(
-        self, mock_exists, mock_api, mock_gh_cls, deployer, base_state
+        self, mock_api, mock_gh_cls, deployer, base_state
     ):
         _setup_happy_mocks(mock_api, mock_gh_cls)
 
@@ -186,13 +183,10 @@ class TestDeployerNodeFailures:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.os.path.exists", return_value=True)
-    @patch("builtins.open", mock_open(read_data="ssh-key-content"))
-    async def test_handles_workflow_failure(
-        self, mock_exists, mock_api, mock_gh_cls, deployer, base_state
-    ):
+    async def test_handles_workflow_failure(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
+        mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
         gh.wait_for_workflow_completion.side_effect = RuntimeError(
             "Workflow deploy.yml failed: failure. See: https://github.com/runs/1"
         )
@@ -211,11 +205,10 @@ class TestDeployerNodeFailures:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.os.path.exists", return_value=True)
-    @patch("builtins.open", mock_open(read_data="ssh-key-content"))
-    async def test_handles_timeout(self, mock_exists, mock_api, mock_gh_cls, deployer, base_state):
+    async def test_handles_timeout(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
+        mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
         gh.wait_for_workflow_completion.side_effect = TimeoutError(
             "Workflow deploy.yml did not complete within 600s"
         )
