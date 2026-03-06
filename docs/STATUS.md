@@ -2,9 +2,9 @@
 
 ## Current Task
 - **Backlog**: #39 Enforce Project-User Binding (owner_id NOT NULL)
-- **Plan**: —
-- **Step**: —
-- **Done Steps**: —
+- **Plan**: docs/plans/enforce-owner-id-not-null.md
+- **Step**: 1/6 — Migration: owner_id NOT NULL
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)

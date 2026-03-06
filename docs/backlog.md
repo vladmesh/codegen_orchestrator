@@ -7,7 +7,7 @@
 ### #39 Enforce Project-User Binding (owner_id NOT NULL)
 - **Priority**: MEDIUM
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/enforce-owner-id-not-null.md
 - **Status**: pending
 - **Brief**: Проект строго привязан к юзеру. `owner_id` становится NOT NULL. github_sync перестаёт создавать проекты в БД — вместо этого шлёт warning админам через `notify_admins` о найденных ничейных репо. Админы разбираются вручную.
 - **Findings**:
