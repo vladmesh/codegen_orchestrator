@@ -1,7 +1,7 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #39 Enforce Project-User Binding (owner_id NOT NULL)
 - **Plan**: —
 - **Step**: —
 - **Done Steps**: —
