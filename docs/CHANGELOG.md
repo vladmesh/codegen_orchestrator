@@ -5,6 +5,9 @@
 ## 2026-03-07
 
 ### Fixed
+- **Secrets not persisting**: `POST /projects/{id}/config/secrets` returned 200 but never saved. Root cause: plain `JSON` column didn't detect in-place dict mutations. Fix: `MutableDict.as_mutable(JSON)` on `Project.config` and `project_spec` columns + `dict()` copy in `merge_secrets` (#51)
+- **Project stuck in "deploying"**: deploy-worker didn't reset project status on `missing_user_secrets`. Now rolls back to `failed` (#51)
+- **API service tests event_loop**: replaced deprecated `event_loop` fixture with `asyncio_default_test_loop_scope=session` to fix "Future attached to a different loop" errors (#51)
 - Description loss in create flow: `trigger_engineering` now PATCHes `detailed_spec` into project config for `action=create` (#50)
 - `_build_create_task` uses `feature_description` from queue as fallback when `detailed_spec` is missing (#50)
 - PO prompt updated to pass description to both `create_project` and `trigger_engineering` (#50)

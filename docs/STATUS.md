@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save
-- **Plan**: docs/plans/sqlalchemy-json-mutation-tracking.md
-- **Step**: 5/5 — Integration test: secrets round-trip
-- **Done Steps**: 1. MutableDict on JSON columns, 2. Copy dict in merge_secrets, 3. patch_project verified OK (no-op), 4. Deploy-worker status rollback on missing_user_secrets
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 51 | SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save |
 | 50 | Fix Description Loss in Create Flow |
 | 49 | Telegram: кнопка "Add User" для админов |
 | 48 | Corrupted Checkpoint Recovery (orphan tool_calls) |

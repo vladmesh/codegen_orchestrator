@@ -13,27 +13,35 @@ project gets stuck in `deploying` forever.
 
 ## Steps
 
-1. [ ] Add `MutableDict` to Project.config column ⚠️ needs-approval
+1. [x] Add `MutableDict` to Project.config column ⚠️ needs-approval
    - **Input**: `shared/models/project.py`
    - **Output**: `config` column uses `MutableDict.as_mutable(JSON)` so SQLAlchemy detects in-place mutations
    - **Test**: Unit test — create a Project with config, mutate dict in-place via `project.config["key"] = "val"`, flush, re-query, assert persisted
 
-2. [ ] Fix `merge_secrets` to copy dict before mutation
+2. [x] Fix `merge_secrets` to copy dict before mutation
    - **Input**: `services/api/src/routers/projects.py` (line 287)
    - **Output**: `config = dict(project.config or {})` — always a new dict, so assignment triggers change detection even without MutableDict (belt-and-suspenders)
    - **Test**: Unit test — mock DB session, call `merge_secrets` with existing config, assert `project.config` is reassigned with a **new** dict object (not same identity)
 
-3. [ ] Fix `patch_project` config assignment (belt-and-suspenders)
+3. [x] Fix `patch_project` config assignment (belt-and-suspenders) — verified no-op, skipped
    - **Input**: `services/api/src/routers/projects.py` (lines 229-257)
    - **Output**: When `project_in.config` merges into existing config, ensure a new dict is assigned. Currently `project.config = project_in.config` replaces entirely (OK), but `update_project` (PUT, line 214-215) does the same — both are fine as-is since they assign a new object from the request. **No change needed** — verify with a test only.
    - **Test**: Unit test — PATCH with `config={...}`, verify config persisted (confirm current behavior is correct)
 
-4. [ ] Deploy-worker: reset project status on `missing_user_secrets`
+4. [x] Deploy-worker: reset project status on `missing_user_secrets`
    - **Input**: `services/langgraph/src/workers/deploy_worker.py` (lines 340-372)
    - **Output**: After detecting `missing_user_secrets`, patch project status back to a non-stuck state (e.g. `PENDING_SECRETS` or `DRAFT`) before returning failure
    - **Test**: Unit test — mock `api_client.patch`, invoke `process_deploy_job` with a result containing `missing_user_secrets`, assert project status is rolled back
 
-5. [ ] Integration test: secrets round-trip
+5. [x] Integration test: secrets round-trip
    - **Input**: API + DB
    - **Output**: Integration test — POST secrets, GET project, verify config.secrets persisted and decryptable
-   - **Test**: `services/api/tests/integration/test_merge_secrets.py`
+   - **Test**: `services/api/tests/service/test_merge_secrets_roundtrip.py`
+
+## Deviations
+
+- **Step 1**: Also applied MutableDict to `project_spec` column (same issue potential)
+- **Step 3**: Confirmed no-op — PUT/PATCH assign new objects from request body, no fix needed
+- **Step 4**: Used `ProjectStatus.FAILED` instead of `PENDING_SECRETS` (status doesn't exist) or `DRAFT`
+- **Step 5**: Placed in `tests/service/` (existing pattern), not `tests/integration/` (dir doesn't exist)
+- **Bonus**: Fixed pre-existing event_loop bug — deprecated `event_loop` fixture replaced with `asyncio_default_test_loop_scope=session` in pytest.ini. Root cause: asyncpg engine created at module level binds connections to first loop; function-scoped test loops caused "Future attached to a different loop"
