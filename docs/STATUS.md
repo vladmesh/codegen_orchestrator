@@ -2,8 +2,8 @@
 
 ## Current Task
 - **Backlog**: #34 US3: Add Feature to Existing Project
-- **Plan**: —
-- **Step**: —
+- **Plan**: docs/plans/us3-add-feature.md
+- **Step**: 1/6 — Dry-run feature flow via direct API/queue
 - **Done Steps**: (empty)
 
 ## Blocked
