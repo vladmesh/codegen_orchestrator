@@ -16,7 +16,7 @@ def _mock_project(project_id="proj-1", github_repo_id=42):
     project.name = "test-project"
     project.status = "discovered"
     project.config = {}
-    project.owner_id = None
+    project.owner_id = 1
     project.github_repo_id = github_repo_id
     project.repository_url = None
     project.created_at = None

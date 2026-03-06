@@ -2,13 +2,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.contracts.dto.project import ProjectCreate, ProjectDTO, ProjectStatus
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from src.tasks import github_sync
 
 
 @pytest.fixture
 def mock_api_client():
     with patch("src.tasks.github_sync.api_client") as mock:
+        yield mock
+
+
+@pytest.fixture
+def mock_notify_admins():
+    with patch("src.tasks.github_sync.notify_admins", new_callable=AsyncMock) as mock:
         yield mock
 
 
@@ -27,6 +33,7 @@ async def test_sync_single_repo_updates_existing_project(mock_api_client, mock_g
         name="test-repo",
         status=ProjectStatus.ACTIVE,
         github_repo_id=repo.id,
+        owner_id=1,
         modules=[],
     )
 
@@ -48,39 +55,35 @@ async def test_sync_single_repo_updates_existing_project(mock_api_client, mock_g
 
 
 @pytest.mark.asyncio
-async def test_sync_single_repo_creates_new_project(mock_api_client, mock_github):
+async def test_sync_single_repo_notifies_admins_for_unknown_repo(
+    mock_api_client, mock_github, mock_notify_admins
+):
     # Setup
     repo = await mock_github.create_repo(org="org", name="new-repo", private=True)
 
     # Mocks
     mock_api_client.get_project_by_repo_id = AsyncMock(return_value=None)
-
-    new_project_dto = ProjectDTO(
-        id="new-id",
-        name="new-repo",
-        status=ProjectStatus.DISCOVERED,
-        github_repo_id=repo.id,
-        modules=[],
-    )
-    mock_api_client.create_project = AsyncMock(return_value=new_project_dto)
+    mock_api_client.create_project = AsyncMock()
 
     # Execution
     missing_counters = {}
     await github_sync._sync_single_repo(mock_github, repo, missing_counters)
 
-    # Verification
-    mock_api_client.create_project.assert_called_once()
-    create_payload = mock_api_client.create_project.call_args[0][0]
-    assert isinstance(create_payload, ProjectCreate)
-    assert create_payload.name == "new-repo"
-    assert create_payload.github_repo_id == repo.id
+    # Verification: notify_admins called, create_project NOT called
+    mock_notify_admins.assert_called_once()
+    assert "new-repo" in mock_notify_admins.call_args[0][0]
+    mock_api_client.create_project.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_detect_missing_projects_marks_missing(mock_api_client):
     # Setup
-    proj_ok = ProjectDTO(id="p1", name="ok", github_repo_id=1, status=ProjectStatus.ACTIVE)
-    proj_missing = ProjectDTO(id="p2", name="gone", github_repo_id=2, status=ProjectStatus.ACTIVE)
+    proj_ok = ProjectDTO(
+        id="p1", name="ok", github_repo_id=1, status=ProjectStatus.ACTIVE, owner_id=1
+    )
+    proj_missing = ProjectDTO(
+        id="p2", name="gone", github_repo_id=2, status=ProjectStatus.ACTIVE, owner_id=1
+    )
 
     mock_api_client.get_projects = AsyncMock(return_value=[proj_ok, proj_missing])
     mock_api_client.update_project = AsyncMock()

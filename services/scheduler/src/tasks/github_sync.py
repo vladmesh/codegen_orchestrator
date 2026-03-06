@@ -6,7 +6,6 @@ import hmac
 import json
 import os
 import time
-import uuid
 
 import httpx
 from pydantic import ValidationError
@@ -14,7 +13,7 @@ import structlog
 import yaml
 
 from shared.clients.github import GitHubAppClient
-from shared.contracts.dto.project import ProjectCreate, ProjectDTO, ProjectStatus, ProjectUpdate
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus, ProjectUpdate
 from shared.notifications import notify_admins
 from shared.schemas.github import GitHubRepository
 from shared.schemas.project_spec import ProjectSpecYAML
@@ -211,20 +210,19 @@ async def _sync_single_repo(
     project = await api_client.get_project_by_repo_id(repo_id)
 
     if not project:
-        # Create new project
-        logger.info(
-            "github_project_discovered",
-            project_name=repo_name,
+        # Unknown repo — notify admins, do not create orphan project
+        logger.warning(
+            "github_repo_without_project",
+            repo_name=repo_name,
             github_repo_id=repo_id,
         )
-        project = await api_client.create_project(
-            ProjectCreate(
-                id=str(uuid.uuid4())[:8],
-                name=repo_name,
-                github_repo_id=repo_id,
-                status=ProjectStatus.DISCOVERED,
-            )
+        await notify_admins(
+            f"⚠️ Repository *{repo_name}* (GitHub ID: {repo_id}) "
+            "found in org but has no matching project in DB. "
+            "Create it manually if needed.",
+            level="warning",
         )
+        return
 
     # Sync project spec and README to RAG
     await _sync_project_docs(github_client, project, r)

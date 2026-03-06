@@ -107,15 +107,11 @@ async def github_webhook(
         )
         return {"status": "ignored", "reason": f"project status: {project.status}"}
 
-    # 9. Lookup owner for telegram_id
-    owner = None
-    telegram_id = None
-    if project.owner_id:
-        owner_query = select(User).where(User.id == project.owner_id)
-        owner_result = await db.execute(owner_query)
-        owner = owner_result.scalar_one_or_none()
-        if owner:
-            telegram_id = owner.telegram_id
+    # 9. Lookup owner for telegram_id (owner always exists)
+    owner_query = select(User).where(User.id == project.owner_id)
+    owner_result = await db.execute(owner_query)
+    owner = owner_result.scalar_one_or_none()
+    telegram_id = owner.telegram_id if owner else None
 
     # 10. Create Task record
     head_sha = workflow_run.get("head_sha", "")

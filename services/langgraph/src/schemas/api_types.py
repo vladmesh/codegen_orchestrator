@@ -56,8 +56,7 @@ class ProjectInfo(TypedDict, total=False):
     github_repo_id: int | None
     config: ProjectConfig
     project_spec: dict | None
-    owner_id: int | None
-    user_id: int | None  # Alias used in some contexts
+    owner_id: int
 
 
 class RepoInfo(TypedDict, total=False):

@@ -29,7 +29,7 @@ class Project(Base):
     # Project specification from .project-spec.yaml (machine-readable)
     project_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
-    # Owner (User ID)
-    owner_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=True, index=True
+    # Owner (User ID) — every project must have an owner
+    owner_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False, index=True
     )

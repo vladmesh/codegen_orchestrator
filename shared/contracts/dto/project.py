@@ -66,7 +66,6 @@ class ProjectUpdate(BaseModel):
     status: ProjectStatus | None = None
     modules: list[ServiceModule] | None = None
     github_repo_id: int | None = None
-    owner_id: int | None = None
     project_spec: dict | None = None
 
 
@@ -82,5 +81,5 @@ class ProjectDTO(BaseModel):
     modules: list[ServiceModule] = []
     repository_url: str | None = None
     github_repo_id: int | None = None
-    owner_id: int | None = None
+    owner_id: int
     project_spec: dict | None = None

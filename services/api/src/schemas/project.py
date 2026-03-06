@@ -29,6 +29,8 @@ class ProjectRead(ProjectBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+    owner_id: int
+
 
 class ProjectUpdate(BaseModel):
     """Schema for updating a project."""
