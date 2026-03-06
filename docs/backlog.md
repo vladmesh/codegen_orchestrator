@@ -7,7 +7,7 @@
 ### #48 Corrupted Checkpoint Recovery (orphan tool_calls)
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/corrupted-checkpoint-recovery.md
 - **Status**: pending
 - **Brief**: PO agent крашится с `ValueError: Found AIMessages with tool_calls that do not have a corresponding ToolMessage` когда checkpoint содержит AIMessage с tool_call без парного ToolMessage. Реальный кейс: reminder сработал, PO вызвал `get_task_status`, tool result не сохранился (краш/таймаут), checkpoint сломан навсегда — пользователь заблокирован. Фикс: 1) обёртка вокруг tool execution в consumer — гарантировать запись ToolMessage (даже с ошибкой) при любом исходе; 2) recovery logic в `_handle_message` — если `_validate_chat_history` падает, добавить фейковый ToolMessage с ошибкой и retry. Файлы: `services/langgraph/src/po/consumer.py`.
 

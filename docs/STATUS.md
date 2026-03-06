@@ -2,8 +2,8 @@
 
 ## Current Task
 - **Backlog**: #48 Corrupted Checkpoint Recovery (orphan tool_calls)
-- **Plan**: —
-- **Step**: —
+- **Plan**: docs/plans/corrupted-checkpoint-recovery.md
+- **Step**: 1/4 — Add _repair_orphan_tool_calls helper
 - **Done Steps**: (empty)
 
 ## Blocked
