@@ -5,6 +5,9 @@
 ## 2026-03-06
 
 ### Added
+- `--feature` mode in e2e-run skill: triggers `action=feature` after initial create+deploy, verifies no scaffold, monitors feature CI+deploy (#34)
+- Feature Add Matrix in e2e-run skill: per-test feature descriptions for all 7 test cases (#34)
+- Unit tests for `action=feature/fix` flow in DeveloperNode and engineering worker (#34)
 - `GET /projects/by-repo-id/{repo_id}` — lookup project by GitHub repo ID, used by scheduler github_sync (#33)
 - `GET /servers/{handle}/ssh-key` — returns decrypted SSH private key per server (#33)
 - `PATCH /servers/{handle}` accepts `ssh_key` field — encrypts with Fernet and stores (#33)

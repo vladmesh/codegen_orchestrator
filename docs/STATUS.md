@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #34 US3: Add Feature to Existing Project
-- **Plan**: docs/plans/us3-add-feature.md
-- **Step**: 1/6 — Dry-run feature flow via direct API/queue
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 34 | US3: Add Feature to Existing Project |
 | 33 | Secrets Hygiene |
 | 32 | Prod Deploy Pipeline |
 | 38 | Fix Service Integration Tests After Multi-User Isolation |

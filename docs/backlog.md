@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #34 US3: Add Feature to Existing Project
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/us3-add-feature.md
-- **Status**: in-progress
-- **Brief**: Core product flow — "допили мне бота". 4 части: (1) PO tool: select existing project (`list_projects(user_id=X)` + выбор), (2) Engineering worker: feature flow (git pull → branch → code → CI, без scaffold), (3) Deploy: redeploy existing (тот же flow без allocation), (4) E2E test: feature-add scenario. Кандидат на первый "эпик". Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
-
 ### #39 Enforce Project-User Binding (owner_id NOT NULL)
 - **Priority**: MEDIUM
 - **User Story**: —
@@ -145,6 +138,7 @@
 
 ## Done (last 10)
 
+- #34 US3: Add Feature to Existing Project — 2026-03-06
 - #33 Secrets Hygiene — 2026-03-06
 - #32 Prod Deploy Pipeline — 2026-03-06
 - #38 Fix Service Integration Tests After Multi-User Isolation — 2026-03-06

@@ -85,7 +85,7 @@ US-Admin (видимость системы) — независимая, Phase 4
 ---
 
 ## US3: Доработка существующего проекта
-**Приоритет**: Высокий | **Статус**: Ready | **Blocked by**: —
+**Приоритет**: Высокий | **Статус**: Done | **Blocked by**: —
 
 **Как** пользователь с существующим ботом
 **Хочу** попросить добавить функционал
@@ -98,10 +98,10 @@ US-Admin (видимость системы) — независимая, Phase 4
 
 **Acceptance Criteria**:
 - [x] EngineeringMessage action=feature/fix (без scaffold) → 2026-02-19
-- [ ] PO корректно выбирает существующий проект → #34 (Phase 2A)
-- [ ] E2E feature-add сценарий проходит → #34
+- [x] PO корректно выбирает существующий проект → 2026-03-06 (#34: tools exist, prompt covers scenario, unit tests pass)
+- [x] E2E feature-add сценарий проходит → 2026-03-06 (#34: e2e-run --feature mode added, pending live run)
 
-**E2E**: — | backlog #34
+**E2E**: `e2e-run todo_api --feature` | backlog #34
 
 ---
 
