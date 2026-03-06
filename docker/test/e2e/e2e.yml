@@ -96,7 +96,7 @@ services:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
     volumes:
-      - ../../../secrets/github_app.pem:/app/keys/github_app.pem:ro
+      - ${GITHUB_APP_PEM_PATH:-../../../secrets/github_app.pem}:/app/keys/github_app.pem:ro
     environment:
       REDIS_URL: redis://redis:6379/0
       API_URL: http://api:8000
@@ -155,7 +155,7 @@ services:
       - ../../../shared:/app/shared
       - ../../../packages:/app/packages
       # Mount GitHub App key for infrastructure sanity tests
-      - ../../../secrets/github_app.pem:/app/keys/github_app.pem:ro
+      - ${GITHUB_APP_PEM_PATH:-../../../secrets/github_app.pem}:/app/keys/github_app.pem:ro
     environment:
       PYTHONUNBUFFERED: "1"
       REDIS_URL: redis://172.30.0.10:6379/0

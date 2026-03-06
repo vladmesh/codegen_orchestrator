@@ -17,8 +17,11 @@ All secrets must be configured in the repository's **production** environment.
 | Secret | Description |
 |--------|-------------|
 | `PROD_HOST` | Server IP or hostname |
-| `SSH_PRIVATE_KEY` | Deploy key for SSH to prod server |
-| `ORCHESTRATOR_SSH_KEY` | Dedicated SSH key for orchestrator (written to `/opt/secrets/ssh_key`) |
+| `SSH_PRIVATE_KEY` | Deploy key for SSH to prod server (GitHub Actions → prod) |
+
+> **Note:** SSH keys for managed servers are stored per-server in the database
+> (encrypted with Fernet). The infra-service generates a key pair during provisioning
+> and saves it via the API. No SSH key mounting is needed in docker-compose.
 
 ### Database
 
