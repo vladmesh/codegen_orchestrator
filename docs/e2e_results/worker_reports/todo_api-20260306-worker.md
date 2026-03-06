@@ -1,62 +1,44 @@
 # Audit Report
 
-## Summary
+## Overall Assessment
 
-Implementation of a TODO CRUD API (`GET/POST/PATCH/DELETE /todos`) using the service-template framework. Overall the framework worked well with minimal friction.
+The framework and development environment worked well. The spec-first workflow is smooth and the code generation is reliable.
 
 ## What Worked Well
 
-1. **Spec-first code generation** (`make generate-from-spec`) correctly generated Pydantic schemas, controller protocols, and a controller stub from `models.yaml` and `spec/todos.yaml`. No manual intervention needed.
-2. **Existing patterns were clear.** The `User` domain (model, repository, controller, router, tests) served as an excellent reference for implementing the `Todo` domain.
-3. **Database migration workflow** (`make migrate` + `make makemigrations`) worked smoothly. Alembic auto-detected the new `todos` table.
-4. **Test infrastructure** (SQLite-based transactional fixtures with rollback isolation) worked correctly out of the box.
-5. **Linting pipeline** (`make lint`) catches formatting issues and validates spec compliance, controller sync, and complexity. Comprehensive and useful.
+1. **Spec-first workflow**: Editing `models.yaml` + domain spec YAML, then running `make generate-from-spec` correctly produced Pydantic schemas, protocols, and controller stubs. No manual schema creation needed.
+2. **Code generation**: The framework generated correct `TodosControllerProtocol`, `TodoCreate`/`TodoUpdate`/`TodoRead` schemas, and a controller stub with `NotImplementedError` placeholders.
+3. **Validation tooling**: `make validate-specs` caught issues early. `make lint-controllers` verified controller-protocol sync.
+4. **Test infrastructure**: The `conftest.py` with SQLite + transactional rollback worked seamlessly for the new Todo model without any modifications.
+5. **Migration workflow**: `orchestrator dev-env start-infra db` + `make migrate` + `make makemigrations` worked correctly end-to-end.
+6. **Linting**: `make lint` and `make format` with ruff worked smoothly.
 
 ## Issues Encountered
 
-### 1. Import ordering in generated controller stub
-- **File**: `services/backend/src/controllers/todos.py` (generated)
-- **What happened**: The generated stub uses relative imports (`from ..generated.protocols import ...`) while the existing hand-written `users.py` controller uses absolute imports (`from services.backend.src.generated.protocols import ...`). Both work, but inconsistency could confuse developers.
-- **Severity**: Low (cosmetic)
-- **Suggestion**: Have the generator use the same import style as the hand-written examples in AGENTS.md.
+1. **Formatting inconsistency in generated controller**: The generated controller stub (`services/backend/src/controllers/todos.py`) had empty docstrings (`""" """`) in each method. While not a bug, it's slightly odd - either generate meaningful docstrings or omit them.
 
-### 2. ruff format needed after file creation
-- **File**: `services/backend/src/app/models/todo.py`
-- **What happened**: After creating the model file, `make lint` failed because ruff wanted to reformat it. Had to run `make format` first.
-- **Severity**: Low (expected workflow, git hooks would catch this on commit)
-- **Suggestion**: Consider running `make format` automatically as part of `make generate-from-spec` for non-generated hand-written files. (Note: it already formats generated files.)
+2. **No router generation**: The framework generates protocols and controller stubs but not routers. Routers must be written manually and registered in `router.py`. This is documented in AGENTS.md but could be a candidate for generation since the spec contains all the REST metadata (method, path, status code).
 
-### 3. No `updated_at` field on Todo model
-- **Observation**: The `ORMBase` includes both `created_at` and `updated_at`, but the task spec only requires `created_at`. I used `CreatedAtMixin + Base` directly instead of `ORMBase` to match the spec exactly. The framework supports this composition well.
-- **Severity**: N/A (design choice, not a bug)
+3. **Model spec `default` for optional Create fields**: When using `optional: [description]` in the Create variant, the generator correctly makes `description` optional (`str | None = None`). However, the ORM model needs a non-null `server_default` which requires the developer to know to handle the `None` -> `""` conversion in the repository. A `default_on_create` spec field could simplify this.
 
-### 4. AGENTS.md is in Russian
-- **File**: `AGENTS.md`, `services/backend/AGENTS.md`
-- **Observation**: Documentation is written in Russian. This works fine but could be a barrier for non-Russian-speaking developers or AI agents without strong Russian language support.
-- **Suggestion**: Consider providing English translations or a bilingual version.
+4. **ORMBase vs Base+Mixin choice not guided**: The spec defines which fields a model has (`created_at` only for Todo vs `created_at` + `updated_at` for User), but the developer must manually choose between `ORMBase` (which adds both timestamps) and `CreatedAtMixin + Base`. The framework could generate ORM model stubs or at least document the mixin selection guidance.
 
-## Framework Suggestions
+5. **`ruff format` needed after manual file creation**: New files created during implementation weren't auto-formatted. Running `make format` fixed it, but a pre-commit hook that formats on save would be smoother. The git hooks run on commit which catches this, but it would be nice to have guidance that `make format` should be run periodically during development.
 
-1. **Router generation**: The framework generates protocols and controller stubs but not routers. Since routers follow a very predictable pattern (one endpoint per operation), consider auto-generating router stubs as well.
-2. **Test stub generation**: Similarly, test files could have basic stubs generated from the spec (one test per operation).
-3. **`make new-domain` command**: A single command to scaffold a new domain (spec file, model, repository, controller, router, tests, migration) would reduce boilerplate significantly.
+## Issues Encountered (Adding Stats Endpoint)
 
-## Files Created/Modified
+6. **No spec-first mechanism for aggregation endpoints**: The AGENTS.md rule says "Never create BaseModel manually — schemas are generated from models.yaml." However, for the `GET /todos/stats` endpoint returning `{"total": N, "completed": N, "pending": N}`, there's no way to define this response shape in the spec YAML since it's not a CRUD model. I had to create a local `TodoStats(BaseModel)` in the router file as a pragmatic workaround.
 
-### New files:
-- `shared/spec/models.yaml` (modified - added Todo model)
-- `services/backend/spec/todos.yaml` (new - todos domain spec)
-- `services/backend/src/app/models/todo.py` (new - SQLAlchemy model)
-- `services/backend/src/app/repositories/todo.py` (new - repository)
-- `services/backend/src/controllers/todos.py` (overwritten generated stub)
-- `services/backend/src/app/api/routers/todos.py` (new - FastAPI router)
-- `services/backend/tests/unit/test_todos.py` (new - tests)
-- `services/backend/migrations/versions/2a524bb1aec8_create_todos.py` (auto-generated migration)
+7. **Protocol doesn't cover custom endpoints**: The generated `TodosControllerProtocol` only includes spec-defined CRUD operations. The `get_stats` method added to `TodosController` is not part of the protocol, meaning custom endpoints bypass the spec-first contract. The `lint-controllers` check still passes (it only verifies protocol methods are implemented, not that extra methods exist), which is reasonable behavior.
 
-### Modified files:
-- `services/backend/src/app/models/__init__.py` (added Todo export)
-- `services/backend/src/app/repositories/__init__.py` (added TodoRepository export)
-- `services/backend/src/app/api/router.py` (registered todos router)
-- `shared/shared/generated/schemas.py` (auto-regenerated)
-- `services/backend/src/generated/protocols.py` (auto-regenerated)
+8. **`shared/generated/schemas.py` path confusion**: The actual file is at `shared/shared/generated/schemas.py` (double-nested Python packaging convention), but imports use `from shared.generated.schemas import ...`. This is documented but can be confusing when navigating the filesystem manually.
+
+## Suggestions
+
+1. **Generate routers from spec**: Since the spec contains REST method, path, status code, and parameter info, router files could be auto-generated (or at least scaffolded) to reduce boilerplate.
+2. **Generate ORM model stubs**: Based on the model fields in `models.yaml`, the framework could scaffold ORM models with the correct base class and column types.
+3. **Add a `make new-domain name=todos` command**: A single command that creates the spec YAML, generates code, and scaffolds the router/repository/ORM model would streamline adding new domains.
+4. **Document the CreatedAtMixin vs ORMBase decision**: The AGENTS.md could include guidance on when to use which base class based on whether the model needs `updated_at`.
+5. **Support non-CRUD response schemas in spec**: Allow defining response-only schemas (e.g., `TodoStats`) in the spec YAML for aggregation/stats endpoints, so they can be generated rather than hand-written.
+6. **Support custom operations in domain specs**: Allow defining operations that don't map to standard CRUD (e.g., stats, bulk operations) so they get proper protocol methods and type safety.
 
