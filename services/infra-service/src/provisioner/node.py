@@ -21,6 +21,7 @@ from ..nodes import FunctionalNode, log_node_execution
 from .ansible_runner import AnsibleRunner
 from .api_client import (
     get_server_info,
+    save_server_ssh_key,
     update_server_labels,
     update_server_status,
 )
@@ -205,6 +206,7 @@ async def handle_provisioning_success(
     provisioning_attempts: int,
     is_recovery: bool,
     method_suffix: str = "",
+    ssh_manager: SSHManager | None = None,
 ) -> dict:
     """Handle successful provisioning - update status, resolve incidents, redeploy services.
 
@@ -214,11 +216,18 @@ async def handle_provisioning_success(
         provisioning_attempts: Number of attempts
         is_recovery: Whether this is incident recovery
         method_suffix: Suffix for message (e.g., " (Reinstalled)")
+        ssh_manager: SSHManager to persist the private key to DB
 
     Returns:
         State update dict
     """
     await update_server_status(server_handle, "ready")
+
+    # Persist SSH key to DB for per-server key storage
+    if ssh_manager:
+        private_key = ssh_manager.get_private_key()
+        if private_key:
+            await save_server_ssh_key(server_handle, private_key)
 
     recovery_text = "recovered and " if is_recovery else ""
     services_redeployed = 0
@@ -446,7 +455,12 @@ class ProvisionerNode(FunctionalNode):
 
         if success:
             return await handle_provisioning_success(
-                server_handle, server_ip, provisioning_attempts, is_recovery, " (Reinstalled)"
+                server_handle,
+                server_ip,
+                provisioning_attempts,
+                is_recovery,
+                " (Reinstalled)",
+                ssh_manager=self.ssh_manager,
             )
 
         await update_server_status(server_handle, "error")
@@ -512,7 +526,12 @@ class ProvisionerNode(FunctionalNode):
         if success_soft:
             await update_server_labels(server_handle, {"provisioning_phase": "complete"})
             return await handle_provisioning_success(
-                server_handle, server_ip, provisioning_attempts, is_recovery, " (Retried)"
+                server_handle,
+                server_ip,
+                provisioning_attempts,
+                is_recovery,
+                " (Retried)",
+                ssh_manager=self.ssh_manager,
             )
 
         await update_server_status(server_handle, "error")

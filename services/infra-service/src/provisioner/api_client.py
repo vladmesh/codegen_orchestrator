@@ -88,6 +88,29 @@ async def update_server_labels(server_handle: str, labels: dict) -> bool:
         return False
 
 
+async def save_server_ssh_key(server_handle: str, ssh_key: str) -> bool:
+    """Save SSH private key to server record via API (encrypted at rest).
+
+    Args:
+        server_handle: Server handle
+        ssh_key: Raw SSH private key content
+
+    Returns:
+        True if successful
+    """
+    try:
+        await api_client.update_server(server_handle, {"ssh_key": ssh_key})
+        logger.info("api_server_ssh_key_saved", server_handle=server_handle)
+        return True
+    except Exception as e:
+        logger.error(
+            "api_server_ssh_key_save_failed",
+            server_handle=server_handle,
+            error=str(e),
+        )
+        return False
+
+
 async def get_services_on_server(server_handle: str) -> list[dict]:
     """Get services deployed on a server for redeployment.
 

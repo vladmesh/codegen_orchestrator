@@ -51,6 +51,13 @@ class SSHManager:
             logger.error("ssh_key_generation_failed", error=str(e), stderr=e.stderr)
             raise RuntimeError(f"Failed to generate SSH keys: {e}") from e
 
+    def get_private_key(self) -> str | None:
+        """Read SSH private key content."""
+        if os.path.exists(self.key_path):
+            with open(self.key_path) as f:
+                return f.read().strip()
+        return None
+
     def get_public_key(self) -> str | None:
         """Read SSH public key."""
         self.ensure_keys_exist()
