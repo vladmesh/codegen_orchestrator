@@ -73,3 +73,66 @@ class TestTaskInjection:
 
         finally:
             await cleanup_worker(redis_client, worker_id)
+
+    async def test_env_hints_in_task_md(self, redis_client, docker_client):
+        """Verify that env_hints from DeveloperNode appear in TASK.md inside the worker."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        project_spec = {
+            "name": "hints-test",
+            "config": {
+                "modules": ["backend", "tg_bot"],
+                "description": "Bot with env hints",
+                "env_hints": {
+                    "ADMIN_TELEGRAM_ID": "Telegram ID of the bot admin",
+                    "OPENAI_API_KEY": "OpenAI key for responses",
+                },
+            },
+        }
+        task_content = node._build_create_task(
+            project_name="hints-test",
+            description="Bot with env hints",
+            modules=["backend", "tg_bot"],
+            project_spec=project_spec,
+        )
+
+        req_id = f"test-hints-{uuid4().hex[:6]}"
+        command = CreateWorkerCommand(
+            request_id=req_id,
+            config=WorkerConfig(
+                name=f"test-hints-{req_id}",
+                worker_type="developer",
+                agent_type=AgentType.CLAUDE,
+                instructions="You are a test assistant.",
+                task_content=task_content,
+                allowed_commands=["project.get"],
+                capabilities=[WorkerCapability.GIT],
+            ),
+        )
+        await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
+
+        response = await wait_for_stream_message(
+            redis_client, REDIS_STREAM_DEV_RESPONSES, timeout=120
+        )
+        data_str = response.get("data")
+        result = CreateWorkerResponse.model_validate_json(data_str)
+
+        assert result.success is True, f"Worker creation failed: {result.error}"
+        worker_id = result.worker_id
+
+        try:
+            container = docker_client.containers.get(f"worker-{worker_id}")
+
+            exit_code, output = container.exec_run("cat /home/worker/TASK.md")
+            assert exit_code == 0, "TASK.md not found in /home/worker/"
+            task_text = output.decode()
+
+            assert "Provided Environment Variables" in task_text
+            assert "ADMIN_TELEGRAM_ID" in task_text
+            assert "Telegram ID of the bot admin" in task_text
+            assert "OPENAI_API_KEY" in task_text
+            assert "os.getenv()" in task_text
+
+        finally:
+            await cleanup_worker(redis_client, worker_id)
