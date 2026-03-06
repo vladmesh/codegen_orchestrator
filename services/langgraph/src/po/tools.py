@@ -191,10 +191,16 @@ async def trigger_engineering(
 ) -> str:
     """Trigger engineering task (scaffold + develop + deploy).
 
+    IMPORTANT: The description should contain the full gathered requirements —
+    not just the user's original short message. Compose a detailed spec from
+    the clarifying conversation before calling this tool.
+
     Args:
         project_id: Project ID.
         action: "create" (new project), "feature" (add feature), "fix" (bug fix).
-        description: Required for feature/fix — what to build or fix.
+        description: Detailed description of what to build or fix.
+            For "create": gathered requirements from the conversation.
+            For "feature"/"fix": required — detailed description of the change.
         skip_deploy: If true, skip auto-deploy after CI passes.
     """
     if action in ("feature", "fix") and not description:
