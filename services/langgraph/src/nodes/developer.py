@@ -371,6 +371,25 @@ class DeveloperNode(FunctionalNode):
             project_spec=project_spec,
         )
 
+    def _format_env_hints(self, project_spec: dict) -> str:
+        """Format env_hints from project config into a TASK.md section."""
+        config = project_spec.get("config") or {}
+        env_hints = config.get("env_hints") or {}
+        if not env_hints:
+            return ""
+
+        lines = [
+            "\n## Provided Environment Variables\n",
+            "The Product Owner has already defined the following environment variables "
+            "for this project.",
+            "You MUST use them in your code via `os.getenv()` or `pydantic-settings`. "
+            "Do NOT ask the user for them.\n",
+        ]
+        for key, hint in sorted(env_hints.items()):
+            lines.append(f"- `{key}`: {hint}")
+        lines.append("")
+        return "\n".join(lines)
+
     def _build_create_task(
         self,
         project_name: str,
@@ -395,6 +414,8 @@ class DeveloperNode(FunctionalNode):
                 "\nRun `make generate-from-spec` after modifying spec files to regenerate code.\n"
             )
 
+        env_hints_section = self._format_env_hints(project_spec)
+
         return f"""# Task: Build {project_name}
 
 ## Project Specification
@@ -405,7 +426,7 @@ class DeveloperNode(FunctionalNode):
 
 **Detailed Spec**:
 {project_spec.get("detailed_spec", "N/A")}
-
+{env_hints_section}
 ## Project Structure (already scaffolded)
 
 The project was scaffolded with `copier` from `service-template`.
@@ -437,6 +458,7 @@ Implement the business logic according to the specification:
         action_label = "Add Feature" if action == "feature" else "Fix Issue"
         task_description = feature_description or description or "No description provided"
         modules_str = ", ".join(modules)
+        env_hints_section = self._format_env_hints(project_spec)
 
         return f"""# Task: {action_label} in {project_name}
 
@@ -449,7 +471,7 @@ Implement the business logic according to the specification:
 **Name**: {project_name}
 **Description**: {description}
 **Modules**: {modules_str}
-
+{env_hints_section}
 ## Important
 
 - This is an **existing, working project** — do NOT regenerate or restructure it

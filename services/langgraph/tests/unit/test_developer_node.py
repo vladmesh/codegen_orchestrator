@@ -454,6 +454,76 @@ class TestTaskMessageDescription:
         task_content = mock_spawn.call_args[1]["task_content"]
         assert "My specific task with audit" in task_content
 
+    def test_create_task_includes_env_hints(self):
+        """_build_create_task should include env_hints section when hints exist."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        project_spec = {
+            "name": "test-project",
+            "config": {
+                "modules": ["backend", "tg_bot"],
+                "description": "A telegram bot",
+                "env_hints": {
+                    "ADMIN_TELEGRAM_ID": "Telegram ID of the bot admin",
+                    "OPENAI_API_KEY": "OpenAI key for generating responses",
+                },
+            },
+        }
+        task_md = node._build_create_task(
+            project_name="test-project",
+            description="A telegram bot",
+            modules=["backend", "tg_bot"],
+            project_spec=project_spec,
+        )
+        assert "Provided Environment Variables" in task_md
+        assert "ADMIN_TELEGRAM_ID" in task_md
+        assert "Telegram ID of the bot admin" in task_md
+        assert "OPENAI_API_KEY" in task_md
+        assert "os.getenv" in task_md
+
+    def test_create_task_no_env_hints(self):
+        """_build_create_task should NOT include env_hints section when empty."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        project_spec = {
+            "name": "test-project",
+            "config": {
+                "modules": ["backend"],
+                "description": "A simple API",
+            },
+        }
+        task_md = node._build_create_task(
+            project_name="test-project",
+            description="A simple API",
+            modules=["backend"],
+            project_spec=project_spec,
+        )
+        assert "Provided Environment Variables" not in task_md
+
+    def test_feature_task_includes_env_hints(self):
+        """_build_feature_task should include env_hints section when hints exist."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        project_spec = {
+            "config": {
+                "env_hints": {"API_KEY": "Third-party API key"},
+            },
+        }
+        task_md = node._build_feature_task(
+            project_name="test-project",
+            description="An existing project",
+            modules=["backend"],
+            action="feature",
+            feature_description="Add search feature",
+            project_spec=project_spec,
+        )
+        assert "Provided Environment Variables" in task_md
+        assert "API_KEY" in task_md
+        assert "Third-party API key" in task_md
+
     def test_feature_task_falls_back_to_config_description(self):
         """_build_feature_task falls back to description when feature_description is None."""
         from src.nodes.developer import DeveloperNode
