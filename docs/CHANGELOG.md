@@ -5,6 +5,7 @@
 ## 2026-03-06
 
 ### Added
+- Telegram admin "Add User" button: inline keyboard + text input flow to create users via `POST /users/` (#49)
 - `POST /api/projects/{id}/config/secrets` atomic merge endpoint with `SELECT FOR UPDATE` locking (#47)
 - `merge_secrets()` method on `LanggraphAPIClient` (#47)
 - Concurrent secrets merge integration test (#47)

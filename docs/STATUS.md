@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #49 Telegram: кнопка "Add User" для админов
-- **Plan**: docs/plans/telegram-add-user.md
-- **Step**: 1/5 — Add admin keyboard constants and button
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 49 | Telegram: кнопка "Add User" для админов |
 | 48 | Corrupted Checkpoint Recovery (orphan tool_calls) |
 | 47 | Race Condition in set_project_secret (parallel tool calls) |
 | 42 | Fix API Integration Test (test_post_projects_pure_db) |

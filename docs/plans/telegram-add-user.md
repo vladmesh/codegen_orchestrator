@@ -21,27 +21,34 @@ ConversationHandler is cleaner (scoped state, timeout, cancel). But the bot curr
 
 ## Steps
 
-1. [ ] Add admin keyboard constants and button
+1. [x] Add admin keyboard constants and button
    - **Input**: `services/telegram_bot/src/keyboards.py`
    - **Output**: New `PREFIX_ADMIN = "admin"`, `ACTION_ADD_USER = "add_user"` constants. `main_menu_keyboard()` shows "👤 Добавить пользователя" button when `is_admin=True`. Export new constants.
    - **Test**: Unit test `test_main_menu_keyboard_admin_shows_add_user` — verify button present when `is_admin=True`, absent when `False`.
 
-2. [ ] Add admin callback handler (entry point)
+2. [x] Add admin callback handler (entry point)
    - **Input**: `services/telegram_bot/src/handlers.py`
    - **Output**: New `PREFIX_ADMIN` dispatch in `handle_callback_query`. `_handle_admin()` function that handles `admin:add_user` — replies with "Введите Telegram ID нового пользователя" and sets `context.user_data["awaiting_add_user"] = True`.
    - **Test**: Unit test `test_handle_admin_add_user_callback` — verify correct prompt message and user_data flag set.
 
-3. [ ] Add text handler for receiving telegram_id and creating user
+3. [x] Add text handler for receiving telegram_id and creating user
    - **Input**: `services/telegram_bot/src/handlers.py`, `services/telegram_bot/src/clients/api.py`
    - **Output**: New `handle_add_user_input()` function: checks `context.user_data.get("awaiting_add_user")`, validates input is numeric telegram_id, calls `POST /users/` via `api_client.post_json()`, reports success/failure, clears flag. New `handle_add_user_cancel()` for `/cancel` during flow.
    - **Test**: Unit test `test_handle_add_user_input_success` — mock API call, verify user created message. `test_handle_add_user_input_invalid` — non-numeric input. `test_handle_add_user_input_duplicate` — API returns 400.
 
-4. [ ] Register handlers in main.py
+4. [x] Register handlers in main.py
    - **Input**: `services/telegram_bot/src/main.py`
    - **Output**: Import and register `handle_add_user_input` as a MessageHandler with a filter that checks `user_data["awaiting_add_user"]` flag, placed BEFORE the general text handler. Add `/cancel` command handler.
    - **Test**: Unit test `test_add_user_flow_integration` — simulate full flow: callback → text input → API call → response. Verify flag cleared after completion.
 
-5. [ ] Wire up and verify exports
+5. [x] Wire up and verify exports
    - **Input**: `services/telegram_bot/src/handlers.py`, `services/telegram_bot/src/keyboards.py`
    - **Output**: All new constants exported from keyboards.py, all new handlers importable. Run `make test-telegram-unit` and `make lint`.
    - **Test**: `make test-telegram-unit` passes, `make lint` passes.
+
+## Deviations
+
+- **Steps 1-5 merged into single commit**: All steps were small enough to implement in one pass with all 7 tests written upfront.
+- **No ConversationHandler**: Used simpler `user_data["awaiting_add_user"]` flag pattern instead. The flag is checked at the top of `handle_message()` in `main.py` before dispatching to PO. This avoids ConversationHandler complexity and handler group conflicts.
+- **No `/cancel` command**: The "back to menu" inline button clears the flow naturally (navigating away resets context). The flag is also cleared on any successful/failed API call.
+- **No separate handler registration**: Instead of a separate `MessageHandler` for add_user input, the check is integrated at the top of `handle_message()` — simpler and avoids python-telegram-bot group conflicts.
