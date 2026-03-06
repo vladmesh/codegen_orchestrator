@@ -947,7 +947,7 @@ async def _handle_engineering_success(
         # Cleanup: delete worker container after CI gate (regardless of outcome)
         if worker_id:
             try:
-                await delete_worker(worker_id)
+                await delete_worker(worker_id, reason="completed")
                 logger.info("worker_deleted_after_ci_gate", worker_id=worker_id)
             except Exception as e:
                 logger.warning("worker_delete_failed", worker_id=worker_id, error=str(e))

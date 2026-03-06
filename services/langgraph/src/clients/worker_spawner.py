@@ -285,6 +285,7 @@ async def request_spawn(
                 delete_cmd = DeleteWorkerCommand(
                     request_id=f"cleanup-{request_id}",
                     worker_id=worker_id,
+                    reason="timeout",
                 )
                 await redis_client.xadd(COMMAND_STREAM, {"data": delete_cmd.model_dump_json()})
 
@@ -402,7 +403,10 @@ async def send_task_to_worker(
         await redis_client.aclose()
 
 
-async def delete_worker(worker_id: str) -> None:
+async def delete_worker(
+    worker_id: str,
+    reason: str | None = None,
+) -> None:
     """Send DeleteWorkerCommand for a worker."""
     settings = get_settings()
     redis_client = redis.from_url(settings.redis_url)
@@ -411,6 +415,7 @@ async def delete_worker(worker_id: str) -> None:
         delete_cmd = DeleteWorkerCommand(
             request_id=f"delete-{worker_id}",
             worker_id=worker_id,
+            reason=reason,
         )
         await redis_client.xadd(COMMAND_STREAM, {"data": delete_cmd.model_dump_json()})
         logger.info("worker_delete_requested", worker_id=worker_id)

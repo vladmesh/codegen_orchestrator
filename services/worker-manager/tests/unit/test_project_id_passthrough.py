@@ -9,6 +9,7 @@ from fakeredis import aioredis
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
+    DeleteWorkerCommand,
     WorkerCapability,
     WorkerConfig,
 )
@@ -45,6 +46,38 @@ def consumer():
     manager = MagicMock()
     manager.create_worker_with_capabilities = AsyncMock(return_value="test-worker")
     return WorkerCommandConsumer(client=client, manager=manager)
+
+
+@pytest.mark.asyncio
+async def test_consumer_passes_reason_to_manager():
+    """reason from DeleteWorkerCommand should be forwarded to manager.delete_worker."""
+    client = MagicMock()
+    client.redis = MagicMock()
+    client.redis.xadd = AsyncMock()
+    manager = MagicMock()
+    manager.delete_worker = AsyncMock()
+
+    consumer = WorkerCommandConsumer(client=client, manager=manager)
+    cmd = DeleteWorkerCommand(request_id="req-del", worker_id="w-1", reason="failed")
+    await consumer._handle_delete(cmd)
+
+    manager.delete_worker.assert_awaited_once_with("w-1", reason="failed")
+
+
+@pytest.mark.asyncio
+async def test_consumer_passes_none_reason_when_missing():
+    """When DeleteWorkerCommand has no reason, None should be forwarded."""
+    client = MagicMock()
+    client.redis = MagicMock()
+    client.redis.xadd = AsyncMock()
+    manager = MagicMock()
+    manager.delete_worker = AsyncMock()
+
+    consumer = WorkerCommandConsumer(client=client, manager=manager)
+    cmd = DeleteWorkerCommand(request_id="req-del", worker_id="w-1")
+    await consumer._handle_delete(cmd)
+
+    manager.delete_worker.assert_awaited_once_with("w-1", reason=None)
 
 
 @pytest.mark.asyncio
@@ -551,3 +584,259 @@ class TestProjectMutex:
                 project_id="proj-1",
             )
             assert result == "w-second"
+
+
+# --- Phase 6: Failure counter + force clean + retry limit ---
+
+
+class TestDeleteWorkerCommandReason:
+    """Tests for reason field in DeleteWorkerCommand (6.0)."""
+
+    def test_delete_command_accepts_reason(self):
+        """DeleteWorkerCommand should accept an optional reason field."""
+        cmd = DeleteWorkerCommand(
+            request_id="req-1",
+            worker_id="w-1",
+            reason="failed",
+        )
+        assert cmd.reason == "failed"
+
+    def test_delete_command_reason_optional(self):
+        """DeleteWorkerCommand without reason should default to None."""
+        cmd = DeleteWorkerCommand(
+            request_id="req-1",
+            worker_id="w-1",
+        )
+        assert cmd.reason is None
+
+
+class TestFailureCounter:
+    """Tests for failure counter in delete_worker (6.1)."""
+
+    @pytest.fixture
+    def mock_docker(self):
+        return _make_docker_mock()
+
+    @pytest.mark.asyncio
+    async def test_failure_count_incremented_on_failed(self, mock_docker):
+        """delete_worker with reason='failed' should increment failure counter."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        await redis.hset(
+            "worker:meta:w-10",
+            mapping={
+                "dev_network": "dev_proj_w-10",
+                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "project_id": "proj-1",
+            },
+        )
+        await redis.hset("worker:status:w-10", mapping={"status": "RUNNING"})
+
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run = AsyncMock(return_value=(0, "", ""))
+            mock_runner_cls.return_value = mock_runner
+            await manager.delete_worker("w-10", reason="failed")
+
+        count = await redis.get("workspace:proj-1:failure_count")
+        assert count == "1"
+
+    @pytest.mark.asyncio
+    async def test_failure_count_incremented_on_timeout(self, mock_docker):
+        """delete_worker with reason='timeout' should increment failure counter."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        await redis.hset(
+            "worker:meta:w-11",
+            mapping={
+                "dev_network": "dev_proj_w-11",
+                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "project_id": "proj-1",
+            },
+        )
+        await redis.hset("worker:status:w-11", mapping={"status": "RUNNING"})
+
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run = AsyncMock(return_value=(0, "", ""))
+            mock_runner_cls.return_value = mock_runner
+            await manager.delete_worker("w-11", reason="timeout")
+
+        count = await redis.get("workspace:proj-1:failure_count")
+        assert count == "1"
+
+    @pytest.mark.asyncio
+    async def test_failure_count_reset_on_success(self, mock_docker):
+        """delete_worker with reason='completed' should reset failure counter."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        # Pre-set failure count
+        await redis.set("workspace:proj-1:failure_count", "2")
+        await redis.hset(
+            "worker:meta:w-12",
+            mapping={
+                "dev_network": "dev_proj_w-12",
+                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "project_id": "proj-1",
+            },
+        )
+        await redis.hset("worker:status:w-12", mapping={"status": "RUNNING"})
+
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run = AsyncMock(return_value=(0, "", ""))
+            mock_runner_cls.return_value = mock_runner
+            await manager.delete_worker("w-12", reason="completed")
+
+        count = await redis.get("workspace:proj-1:failure_count")
+        assert count is None
+
+    @pytest.mark.asyncio
+    async def test_failure_count_not_changed_without_reason(self, mock_docker):
+        """delete_worker without reason should not touch failure counter."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        await redis.set("workspace:proj-1:failure_count", "1")
+        await redis.hset(
+            "worker:meta:w-13",
+            mapping={
+                "dev_network": "dev_proj_w-13",
+                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "project_id": "proj-1",
+            },
+        )
+        await redis.hset("worker:status:w-13", mapping={"status": "RUNNING"})
+
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run = AsyncMock(return_value=(0, "", ""))
+            mock_runner_cls.return_value = mock_runner
+            await manager.delete_worker("w-13")
+
+        count = await redis.get("workspace:proj-1:failure_count")
+        assert count == "1"
+
+    @pytest.mark.asyncio
+    async def test_failure_count_has_ttl(self, mock_docker):
+        """Failure counter should have a TTL to auto-unblock projects."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        await redis.hset(
+            "worker:meta:w-14",
+            mapping={
+                "dev_network": "dev_proj_w-14",
+                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "project_id": "proj-1",
+            },
+        )
+        await redis.hset("worker:status:w-14", mapping={"status": "RUNNING"})
+
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch("src.manager.ComposeRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run = AsyncMock(return_value=(0, "", ""))
+            mock_runner_cls.return_value = mock_runner
+            await manager.delete_worker("w-14", reason="failed")
+
+        ttl = await redis.ttl("workspace:proj-1:failure_count")
+        assert ttl > 0  # TTL was set
+        assert ttl <= 48 * 3600  # At most 48 hours
+
+
+class TestForceCleanAndReject:
+    """Tests for force clean and spawn rejection (6.2)."""
+
+    @pytest.fixture
+    def mock_docker(self):
+        return _make_docker_mock()
+
+    @pytest.fixture
+    def mock_redis(self):
+        redis = MagicMock()
+        redis.set = AsyncMock()
+        redis.hset = AsyncMock()
+        redis.hget = AsyncMock(return_value=None)
+        redis.sadd = AsyncMock()
+        redis.sismember = AsyncMock(return_value=False)
+        return redis
+
+    @pytest.mark.asyncio
+    async def test_force_clean_after_two_failures(self, mock_redis, mock_docker):
+        """When failure_count=2, workspace should be wiped before creation."""
+        mock_redis.get = AsyncMock(return_value="2")
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        with (
+            patch(
+                "src.manager.workspace_mod.get_or_create_project_workspace",
+                return_value=(Path("/tmp/ws/proj-1/workspace"), False),
+            ),
+            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+        ):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-15",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                project_id="proj-1",
+            )
+
+        mock_rm.assert_called_once_with(settings.WORKSPACE_BASE_PATH, "proj-1")
+
+    @pytest.mark.asyncio
+    async def test_spawn_rejected_after_three_failures(self, mock_redis, mock_docker):
+        """When failure_count>=3, spawn should be rejected with RuntimeError."""
+        mock_redis.get = AsyncMock(return_value="3")
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        with pytest.raises(RuntimeError, match="Max retries"):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-16",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                project_id="proj-1",
+            )
+
+    @pytest.mark.asyncio
+    async def test_reject_before_wipe(self, mock_redis, mock_docker):
+        """When failure_count>=3, workspace should NOT be wiped (reject happens first)."""
+        mock_redis.get = AsyncMock(return_value="3")
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        with (
+            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+            pytest.raises(RuntimeError, match="Max retries"),
+        ):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-17",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                project_id="proj-1",
+            )
+
+        mock_rm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_first_attempt_creates_fresh_workspace(self, mock_redis, mock_docker):
+        """When failure_count=0, should create workspace normally without wipe."""
+        mock_redis.get = AsyncMock(return_value=None)
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        with (
+            patch(
+                "src.manager.workspace_mod.get_or_create_project_workspace",
+                return_value=(Path("/tmp/ws/proj-1/workspace"), False),
+            ),
+            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+        ):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-18",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                project_id="proj-1",
+            )
+
+        mock_rm.assert_not_called()

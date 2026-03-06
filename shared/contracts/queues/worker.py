@@ -71,6 +71,7 @@ class DeleteWorkerCommand(QueueMeta):
     command: Literal["delete"] = "delete"
     request_id: str
     worker_id: str
+    reason: Literal["completed", "failed", "timeout"] | None = None
 
 
 class StatusWorkerCommand(QueueMeta):

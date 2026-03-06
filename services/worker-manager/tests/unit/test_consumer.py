@@ -119,7 +119,7 @@ async def test_consume_delete_worker_command(redis_client, stream_client, mock_w
 
     await consumer.process_message(message_id, data)
 
-    mock_worker_manager.delete_worker.assert_called_with("worker-to-del")
+    mock_worker_manager.delete_worker.assert_called_with("worker-to-del", reason=None)
 
     r1 = await redis_client.xlen("worker:responses:developer")
     assert r1 > 0, "Should publish response"

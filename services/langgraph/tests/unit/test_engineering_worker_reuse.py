@@ -189,7 +189,7 @@ class TestCIFixCleanup:
             user_id="user-1",
         )
 
-        mock_delete.assert_called_once_with("dev-test-abc")
+        mock_delete.assert_called_once_with("dev-test-abc", reason="completed")
 
     @pytest.mark.asyncio
     @patch("src.workers.engineering_worker.delete_worker", new_callable=AsyncMock)

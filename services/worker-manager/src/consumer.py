@@ -120,7 +120,7 @@ class WorkerCommandConsumer:
 
     async def _handle_delete(self, cmd: DeleteWorkerCommand) -> DeleteWorkerResponse:
         try:
-            await self.manager.delete_worker(cmd.worker_id)
+            await self.manager.delete_worker(cmd.worker_id, reason=cmd.reason)
             return DeleteWorkerResponse(request_id=cmd.request_id, success=True)
         except Exception as e:
             return DeleteWorkerResponse(request_id=cmd.request_id, success=False, error=str(e))

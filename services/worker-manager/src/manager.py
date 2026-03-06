@@ -133,7 +133,7 @@ class WorkerManager:
             await self.redis.set(f"worker:error:{worker_id}", str(e))
             raise
 
-    async def delete_worker(self, worker_id: str) -> None:
+    async def delete_worker(self, worker_id: str, reason: str | None = None) -> None:
         """Stop and remove a worker, its dev network, workspace, and Redis keys."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         logger.info("deleting_worker", worker_id=worker_id)
@@ -176,6 +176,15 @@ class WorkerManager:
             if project_id:
                 logger.info("workspace_preserved", project_id=project_id, worker_id=worker_id)
                 await self.redis.srem("workspace:active_projects", project_id)
+
+                # Track consecutive failures per project for retry logic
+                if reason:
+                    failure_key = f"workspace:{project_id}:failure_count"
+                    if reason in ("failed", "timeout"):
+                        await self.redis.incr(failure_key)
+                        await self.redis.expire(failure_key, 48 * 3600)
+                    elif reason == "completed":
+                        await self.redis.delete(failure_key)
             else:
                 workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
 
@@ -464,6 +473,23 @@ class WorkerManager:
             existing_worker = await self._check_project_lock(project_id)
             if existing_worker:
                 raise RuntimeError(f"Project {project_id} already has active worker {existing_worker}")
+
+            # Check failure count — reject after MAX_CONSECUTIVE_FAILURES, force clean after 2
+            failure_key = f"workspace:{project_id}:failure_count"
+            failure_count = int(await self.redis.get(failure_key) or 0)
+
+            if failure_count >= 3:
+                raise RuntimeError(
+                    f"Max retries (3) exceeded for project {project_id}. " f"Reset with: DEL {failure_key}"
+                )
+
+            if failure_count >= 2:
+                workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, project_id)
+                logger.warning(
+                    "workspace_force_cleaned",
+                    project_id=project_id,
+                    failure_count=failure_count,
+                )
 
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
         env_vars = env_vars or {}
