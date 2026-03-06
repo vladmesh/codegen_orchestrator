@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
 
-from src.po.consumer import _handle_message, _process_message
+from src.po.consumer import _handle_message, _process_message, _repair_orphan_tool_calls
 
 
 @pytest.fixture
 def mock_graph():
-    """Mock compiled graph with ainvoke."""
+    """Mock compiled graph with ainvoke and aget_state."""
     graph = AsyncMock()
     graph.ainvoke.return_value = {"messages": [AIMessage(content="Hello! How can I help?")]}
+    # Default: clean checkpoint (no orphans)
+    clean_state = AsyncMock()
+    clean_state.values = {"messages": []}
+    graph.aget_state.return_value = clean_state
     return graph
 
 
@@ -384,3 +388,217 @@ class TestProcessMessage:
         start_indices = [i for i, x in enumerate(call_order) if x.startswith("start")]
         end_indices = [i for i, x in enumerate(call_order) if x.startswith("end")]
         assert end_indices[0] < start_indices[1]
+
+
+class TestRepairOrphanToolCalls:
+    @pytest.mark.asyncio
+    async def test_no_state_returns_zero(self):
+        """No checkpoint (new thread) — nothing to repair."""
+        graph = AsyncMock()
+        graph.aget_state.return_value = AsyncMock(values={})
+
+        result = await _repair_orphan_tool_calls(graph, "po-user-1")
+        assert result == 0
+        graph.aupdate_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clean_history_returns_zero(self):
+        """All tool_calls have matching ToolMessages — nothing to repair."""
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[{"id": "tc-1", "name": "get_projects", "args": {}}],
+        )
+        tool_msg = ToolMessage(content="[]", tool_call_id="tc-1")
+        state = AsyncMock()
+        state.values = {"messages": [ai_msg, tool_msg]}
+
+        graph = AsyncMock()
+        graph.aget_state.return_value = state
+
+        result = await _repair_orphan_tool_calls(graph, "po-user-1")
+        assert result == 0
+        graph.aupdate_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_orphan_tool_call_gets_repaired(self):
+        """AIMessage with tool_call but no ToolMessage — should inject recovery ToolMessage."""
+        ai_msg = AIMessage(
+            content="Let me check",
+            tool_calls=[{"id": "tc-orphan", "name": "get_task_status", "args": {}}],
+        )
+        state = AsyncMock()
+        state.values = {"messages": [ai_msg]}
+
+        graph = AsyncMock()
+        graph.aget_state.return_value = state
+
+        result = await _repair_orphan_tool_calls(graph, "po-user-1")
+
+        assert result == 1
+        graph.aupdate_state.assert_called_once()
+        call_args = graph.aupdate_state.call_args
+        config = call_args[0][0]
+        assert config["configurable"]["thread_id"] == "po-user-1"
+        injected = call_args[0][1]["messages"]
+        assert len(injected) == 1
+        assert isinstance(injected[0], ToolMessage)
+        assert injected[0].tool_call_id == "tc-orphan"
+
+    @pytest.mark.asyncio
+    async def test_multiple_orphans_all_repaired(self):
+        """Multiple orphan tool_calls across multiple AIMessages."""
+        ai1 = AIMessage(
+            content="",
+            tool_calls=[{"id": "tc-1", "name": "tool_a", "args": {}}],
+        )
+        tool1 = ToolMessage(content="ok", tool_call_id="tc-1")
+        ai2 = AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "tc-2", "name": "tool_b", "args": {}},
+                {"id": "tc-3", "name": "tool_c", "args": {}},
+            ],
+        )
+        # tc-2 and tc-3 have no ToolMessages
+        state = AsyncMock()
+        state.values = {"messages": [ai1, tool1, ai2]}
+
+        graph = AsyncMock()
+        graph.aget_state.return_value = state
+
+        result = await _repair_orphan_tool_calls(graph, "po-user-1")
+
+        assert result == 2
+        injected = graph.aupdate_state.call_args[0][1]["messages"]
+        assert len(injected) == 2
+        ids = {m.tool_call_id for m in injected}
+        assert ids == {"tc-2", "tc-3"}
+
+
+class TestHandleMessageRecovery:
+    """Tests for checkpoint recovery integration in _handle_message."""
+
+    @pytest.mark.asyncio
+    async def test_pre_invoke_repair_called(self, mock_graph, mock_client):
+        """_repair_orphan_tool_calls is called before graph.ainvoke."""
+        with patch(
+            "src.po.consumer._repair_orphan_tool_calls", new_callable=AsyncMock
+        ) as mock_repair:
+            mock_repair.return_value = 0
+            data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
+            await _handle_message(mock_graph, mock_client, "user-1", data)
+
+            mock_repair.assert_called_once_with(mock_graph, "po-user-user-1")
+            mock_graph.ainvoke.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_retry_on_corrupt_checkpoint_valueerror(self, mock_graph, mock_client):
+        """If ainvoke raises ValueError about orphan tool_calls, repair and retry."""
+        corrupt_error = ValueError(
+            "Found AIMessages with tool_calls that do not have a corresponding ToolMessage"
+        )
+        mock_graph.ainvoke.side_effect = [corrupt_error, {"messages": [AIMessage(content="ok")]}]
+
+        with patch(
+            "src.po.consumer._repair_orphan_tool_calls", new_callable=AsyncMock
+        ) as mock_repair:
+            mock_repair.return_value = 0  # pre-check finds nothing (race condition)
+            data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
+            await _handle_message(mock_graph, mock_client, "user-1", data)
+
+            # repair called twice: once pre-invoke, once on error
+            assert mock_repair.call_count == 2
+            assert mock_graph.ainvoke.call_count == 2
+            # Response should be written successfully
+            mock_client.publish_flat.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unrelated_valueerror_not_caught(self, mock_graph, mock_client):
+        """ValueError not about tool_calls should propagate."""
+        mock_graph.ainvoke.side_effect = ValueError("some other error")
+
+        with patch(
+            "src.po.consumer._repair_orphan_tool_calls", new_callable=AsyncMock
+        ) as mock_repair:
+            mock_repair.return_value = 0
+            data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
+            with pytest.raises(ValueError, match="some other error"):
+                await _handle_message(mock_graph, mock_client, "user-1", data)
+
+    @pytest.mark.asyncio
+    async def test_retry_fails_again_propagates(self, mock_graph, mock_client):
+        """If retry also fails with same error, it should propagate."""
+        corrupt_error = ValueError(
+            "Found AIMessages with tool_calls that do not have a corresponding ToolMessage"
+        )
+        mock_graph.ainvoke.side_effect = [corrupt_error, corrupt_error]
+
+        with patch(
+            "src.po.consumer._repair_orphan_tool_calls", new_callable=AsyncMock
+        ) as mock_repair:
+            mock_repair.return_value = 0
+            data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
+            with pytest.raises(ValueError, match="tool_calls"):
+                await _handle_message(mock_graph, mock_client, "user-1", data)
+
+
+class TestRepairWithRealGraph:
+    """Integration test using MemorySaver — real graph state, no mocks for checkpoint."""
+
+    @pytest.fixture
+    def real_graph(self):
+        """Create a minimal react agent with MemorySaver for testing checkpoint repair."""
+        from langchain_core.messages import AIMessage as AI
+        from langgraph.checkpoint.memory import MemorySaver
+        from langgraph.graph import MessagesState, StateGraph
+
+        # Minimal graph that just echoes
+        def echo(state: MessagesState):
+            return {"messages": [AI(content="recovered ok")]}
+
+        builder = StateGraph(MessagesState)
+        builder.add_node("echo", echo)
+        builder.set_entry_point("echo")
+        builder.set_finish_point("echo")
+        return builder.compile(checkpointer=MemorySaver())
+
+    @pytest.mark.asyncio
+    async def test_repair_corrupted_checkpoint_with_real_graph(self, real_graph):
+        """Manually corrupt a checkpoint and verify _repair_orphan_tool_calls fixes it."""
+        thread_id = "test-corrupt-thread"
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Step 1: Run graph to create initial checkpoint
+        await real_graph.ainvoke({"messages": [HumanMessage(content="hello")]}, config=config)
+
+        # Step 2: Corrupt the checkpoint by injecting an AIMessage with orphan tool_calls
+        orphan_ai = AIMessage(
+            content="Let me check",
+            tool_calls=[{"id": "tc-orphan-1", "name": "get_task_status", "args": {}}],
+        )
+        await real_graph.aupdate_state(config, {"messages": [orphan_ai]})
+
+        # Verify corruption: state now has orphan tool_call
+        state = await real_graph.aget_state(config)
+        ai_tool_call_ids = {
+            tc["id"]
+            for m in state.values["messages"]
+            if isinstance(m, AIMessage)
+            for tc in m.tool_calls
+        }
+        tool_result_ids = {
+            m.tool_call_id for m in state.values["messages"] if isinstance(m, ToolMessage)
+        }
+        orphans_before = ai_tool_call_ids - tool_result_ids
+        assert "tc-orphan-1" in orphans_before
+
+        # Step 3: Repair
+        repaired = await _repair_orphan_tool_calls(real_graph, thread_id)
+        assert repaired == 1
+
+        # Step 4: Verify state is now clean
+        state_after = await real_graph.aget_state(config)
+        tool_result_ids_after = {
+            m.tool_call_id for m in state_after.values["messages"] if isinstance(m, ToolMessage)
+        }
+        assert "tc-orphan-1" in tool_result_ids_after

@@ -14,7 +14,7 @@ import asyncio
 import os
 
 import httpx
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import TypeAdapter, ValidationError
 import structlog
 
@@ -200,6 +200,48 @@ async def _process_message(
                 await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
 
 
+async def _repair_orphan_tool_calls(graph, thread_id: str) -> int:
+    """Detect and repair orphan tool_calls in checkpoint history.
+
+    If an AIMessage has tool_calls without corresponding ToolMessages,
+    inject recovery ToolMessages so the thread is no longer corrupted.
+    Returns the number of repaired tool_calls.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    state = await graph.aget_state(config)
+    messages = state.values.get("messages", [])
+    if not messages:
+        return 0
+
+    tool_call_ids_with_results = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    orphan_calls = [
+        tc
+        for m in messages
+        if isinstance(m, AIMessage)
+        for tc in m.tool_calls
+        if tc["id"] not in tool_call_ids_with_results
+    ]
+    if not orphan_calls:
+        return 0
+
+    recovery_messages = [
+        ToolMessage(
+            content="[recovery] Tool call interrupted — result unavailable.",
+            tool_call_id=tc["id"],
+        )
+        for tc in orphan_calls
+    ]
+    await graph.aupdate_state(config, {"messages": recovery_messages})
+
+    logger.warning(
+        "po_checkpoint_repaired",
+        thread_id=thread_id,
+        repaired_count=len(orphan_calls),
+        tool_names=[tc["name"] for tc in orphan_calls],
+    )
+    return len(orphan_calls)
+
+
 async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: dict) -> None:
     """Format message, invoke PO graph, write response."""
     timestamp = data.get("timestamp", "")
@@ -228,17 +270,28 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
         context_line = f"[context: user_id={user_id}, user_name={user_name}]"
         formatted = f"{context_line} {formatted}"
     msg = HumanMessage(content=formatted)
+    thread_id = f"po-user-{user_id}"
+    invoke_input = {"messages": [msg]}
+    invoke_config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "user_name": user_name,
+        }
+    }
 
-    result = await graph.ainvoke(
-        {"messages": [msg]},
-        config={
-            "configurable": {
-                "thread_id": f"po-user-{user_id}",
-                "user_id": user_id,
-                "user_name": user_name,
-            }
-        },
-    )
+    # Pre-invoke: repair any orphan tool_calls from previous crashed invocations
+    await _repair_orphan_tool_calls(graph, thread_id)
+
+    try:
+        result = await graph.ainvoke(invoke_input, config=invoke_config)
+    except ValueError as exc:
+        if "tool_calls that do not have a corresponding ToolMessage" not in str(exc):
+            raise
+        # Race condition: corruption appeared between pre-check and invoke — repair and retry once
+        logger.warning("po_checkpoint_corrupt_on_invoke", thread_id=thread_id, error=str(exc))
+        await _repair_orphan_tool_calls(graph, thread_id)
+        result = await graph.ainvoke(invoke_input, config=invoke_config)
 
     last_msg = result["messages"][-1]
     response_text = last_msg.content

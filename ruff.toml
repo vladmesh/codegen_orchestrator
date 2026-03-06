@@ -27,6 +27,7 @@ max-returns = 12
 
 [lint.per-file-ignores]
 "tests/**" = ["PLR2004", "S101"]
+"**/tests/**" = ["PLR2004", "S101"]
 "shared/tests/**" = ["PLR2004", "S101"]
 "alembic/**" = ["F401"]
 
