@@ -7,7 +7,7 @@
 ### #33 Secrets Hygiene
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/secrets-hygiene.md
 - **Status**: pending
 - **Brief**: Убрать `secrets/github_app.pem` из git + .gitignore (deploy.yml уже пишет из секрета). Dedicated SSH key вместо host `~/.ssh` — генерировать `ORCHESTRATOR_SSH_PRIVATE_KEY`, хранить как GitHub Secret, монтировать `/opt/secrets/orchestrator_ssh_key`. Источник: brainstorm `docs/brainstorms/epic-decomposition.md`.
 
