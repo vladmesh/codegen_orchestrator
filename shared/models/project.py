@@ -1,6 +1,7 @@
 """Project model."""
 
 from sqlalchemy import JSON, ForeignKey, Integer, String
+from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.project import ProjectStatus  # Single source of truth
@@ -24,10 +25,10 @@ class Project(Base):
 
     status: Mapped[str] = mapped_column(String(50), default=ProjectStatus.DRAFT.value)
 
-    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    config: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)
 
     # Project specification from .project-spec.yaml (machine-readable)
-    project_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    project_spec: Mapped[dict | None] = mapped_column(MutableDict.as_mutable(JSON), nullable=True)
 
     # Owner (User ID) — every project must have an owner
     owner_id: Mapped[int] = mapped_column(
