@@ -39,3 +39,10 @@ class ProjectUpdate(BaseModel):
     config: dict[str, Any] | None = None
     repository_url: str | None = None
     github_repo_id: int | None = None
+
+
+class MergeSecretsRequest(BaseModel):
+    """Schema for atomic secret merge."""
+
+    secrets: dict[str, str]
+    env_hints: dict[str, str] | None = None

@@ -4,7 +4,7 @@ from .agent_config import AgentConfigCreate, AgentConfigRead, AgentConfigUpdate
 from .api_key import APIKeyCreate, APIKeyRead
 from .incident import IncidentCreate, IncidentRead, IncidentUpdate
 from .port_allocation import AllocateNextPortRequest, PortAllocationCreate, PortAllocationRead
-from .project import ProjectCreate, ProjectRead, ProjectUpdate
+from .project import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 from .rag import RAGDocsIngest, RAGDocsIngestResult, RAGMessageCreate, RAGMessageRead
 from .server import ServerCreate, ServerRead
 from .service_deployment import (
@@ -25,6 +25,7 @@ __all__ = [
     "ProjectCreate",
     "ProjectRead",
     "ProjectUpdate",
+    "MergeSecretsRequest",
     "RAGDocsIngest",
     "RAGDocsIngestResult",
     "RAGMessageCreate",

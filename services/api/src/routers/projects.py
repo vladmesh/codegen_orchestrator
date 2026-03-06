@@ -5,10 +5,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.crypto import decrypt_dict, encrypt_dict
 from shared.models import PortAllocation, Project, Task, User
 
 from ..database import get_async_session
-from ..schemas import ProjectCreate, ProjectRead, ProjectUpdate
+from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 
 logger = structlog.get_logger()
 
@@ -254,6 +255,57 @@ async def patch_project(
     logger.info("project_patched", project_id=project.id, status=project.status)
 
     return project
+
+
+@router.post("/{project_id}/config/secrets")
+async def merge_secrets(
+    project_id: str,
+    body: MergeSecretsRequest,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """Atomically merge secrets into project config.
+
+    Uses SELECT FOR UPDATE to prevent race conditions when multiple
+    callers set secrets concurrently.
+    """
+    if not body.secrets:
+        raise HTTPException(
+            status_code=422,
+            detail="secrets must not be empty",
+        )
+
+    # Lock the row to prevent concurrent read-modify-write
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    result = await db.execute(query)
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db)
+
+    config = project.config or {}
+    existing_secrets = config.get("secrets") or {}
+    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
+
+    existing_secrets.update(body.secrets)
+    config["secrets"] = encrypt_dict(existing_secrets)
+
+    if body.env_hints:
+        env_hints = config.get("env_hints") or {}
+        env_hints.update(body.env_hints)
+        config["env_hints"] = env_hints
+
+    project.config = config
+    await db.commit()
+
+    logger.info(
+        "secrets_merged",
+        project_id=project_id,
+        keys=sorted(body.secrets.keys()),
+    )
+
+    return {"keys": sorted(existing_secrets.keys())}
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
