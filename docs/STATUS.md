@@ -1,7 +1,7 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save
 - **Plan**: —
 - **Step**: —
 - **Done Steps**: —
