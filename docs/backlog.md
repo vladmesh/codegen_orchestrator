@@ -7,7 +7,7 @@
 ### #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save
 - **Priority**: CRITICAL
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/sqlalchemy-json-mutation-tracking.md
 - **Status**: pending
 - **Brief**: `POST /projects/{id}/config/secrets` returns 200 but never persists. Root cause: `shared/models/project.py:27` uses plain `JSON` column — SQLAlchemy doesn't detect in-place dict mutations. `merge_secrets` endpoint mutates `project.config` dict in-place then reassigns the same object back — no change detected, no flush. Fix: (1) `MutableDict.as_mutable(JSON)` on `Project.config` column, (2) `dict(project.config or {})` copy in `merge_secrets` endpoint, (3) same pattern in `patch_project` (`if project_in.config`). Also: deploy-worker doesn't reset project status on `missing_user_secrets` — project stuck in `deploying` forever. Add status rollback. Affected: `shared/models/project.py`, `services/api/src/routers/projects.py`, `services/langgraph/src/workers/deploy_worker.py`. Source: fortune-telling-bot deploy failure analysis 2026-03-07.
 

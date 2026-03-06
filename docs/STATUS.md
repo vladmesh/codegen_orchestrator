@@ -2,9 +2,9 @@
 
 ## Current Task
 - **Backlog**: #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save
-- **Plan**: —
-- **Step**: —
-- **Done Steps**: —
+- **Plan**: docs/plans/sqlalchemy-json-mutation-tracking.md
+- **Step**: 1/5 — Add MutableDict to Project.config column
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
