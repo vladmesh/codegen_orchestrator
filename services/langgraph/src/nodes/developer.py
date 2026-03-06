@@ -369,6 +369,7 @@ class DeveloperNode(FunctionalNode):
             description=description,
             modules=modules,
             project_spec=project_spec,
+            feature_description=feature_description,
         )
 
     def _format_env_hints(self, project_spec: dict) -> str:
@@ -396,6 +397,7 @@ class DeveloperNode(FunctionalNode):
         description: str,
         modules: list[str],
         project_spec: dict,
+        feature_description: str | None = None,
     ) -> str:
         """Build task message for new project creation (scaffolded)."""
         modules_str = ",".join(modules)
@@ -416,6 +418,8 @@ class DeveloperNode(FunctionalNode):
 
         env_hints_section = self._format_env_hints(project_spec)
 
+        detailed_spec = project_spec.get("detailed_spec") or feature_description or "N/A"
+
         return f"""# Task: Build {project_name}
 
 ## Project Specification
@@ -425,7 +429,7 @@ class DeveloperNode(FunctionalNode):
 **Modules**: {modules_str}
 
 **Detailed Spec**:
-{project_spec.get("detailed_spec", "N/A")}
+{detailed_spec}
 {env_hints_section}
 ## Project Structure (already scaffolded)
 

@@ -231,6 +231,27 @@ async def trigger_engineering(
     )
     await _get_stream_client().publish_message(ENGINEERING_QUEUE, eng_msg)
 
+    # Persist description to project config for action=create so it survives
+    # queue consumption and is available via project_spec.detailed_spec
+    if action == "create" and description:
+        try:
+            proj_resp = await api.get(f"/api/projects/{project_id}", headers=headers)
+            proj_resp.raise_for_status()
+            current_config = proj_resp.json().get("config", {})
+            current_config["detailed_spec"] = description
+            patch_resp = await api.patch(
+                f"/api/projects/{project_id}",
+                json={"config": current_config},
+                headers=headers,
+            )
+            patch_resp.raise_for_status()
+        except Exception:
+            logger.warning(
+                "failed_to_persist_detailed_spec",
+                project_id=project_id,
+                exc_info=True,
+            )
+
     logger.info("po_engineering_triggered", task_id=task_id, project_id=project_id, action=action)
     return f"Engineering task queued. Task ID: {task_id}"
 

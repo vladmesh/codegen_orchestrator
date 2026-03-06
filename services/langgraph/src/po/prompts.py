@@ -124,7 +124,9 @@ or should I explain how to get one?"
 4. **Ask about access control** (for tg_bot projects, see Access Control section above).
 
 5. **Once you have the token, access decision, and a clear description**:
-   - Create the project with correct modules using `create_project`.
+   - Create the project with correct modules using `create_project`. \
+Pass the gathered description as the `description` parameter to `create_project` — \
+this stores it as `detailed_spec` in the project config.
    - For Telegram bot: modules="backend,tg_bot"
    - For REST API only: modules="backend"
    - For full app: modules="backend,tg_bot,frontend"
@@ -132,7 +134,9 @@ or should I explain how to get one?"
 hint="Telegram bot token from @BotFather")`
    - Store any other secrets with hints (ADMIN_TELEGRAM_ID, API keys, etc.)
 
-6. **Trigger development**: `trigger_engineering(project_id)` with gathered description.
+6. **Trigger development**: `trigger_engineering(project_id, description=...)` — \
+pass the same gathered description. This ensures the developer worker receives \
+the full requirements both via the queue message and via the project config.
 
 7. **Set a reminder** to check status in 10-15 minutes.
 

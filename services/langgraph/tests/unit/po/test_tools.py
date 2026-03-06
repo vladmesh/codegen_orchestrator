@@ -309,6 +309,61 @@ class TestTriggerEngineering:
         headers = mock_api_client.post.call_args[1].get("headers", {})
         assert headers.get("X-Telegram-ID") == "44444"
 
+    @pytest.mark.asyncio
+    async def test_persists_description_to_detailed_spec_on_create(
+        self, mock_api_client, mock_stream_client
+    ):
+        """When action=create and description is provided, PATCH detailed_spec to DB."""
+        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
+        mock_api_client.get.return_value = _make_response(
+            {"id": "abc", "config": {"modules": ["backend"], "name": "my-bot"}}
+        )
+        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+
+        await trigger_engineering.ainvoke(
+            {"project_id": "abc", "action": "create", "description": "Build a todo app"},
+            config=_make_config("user-42"),
+        )
+
+        # Should GET project, then PATCH with detailed_spec merged into config
+        mock_api_client.get.assert_called_once()
+        assert "/api/projects/abc" in mock_api_client.get.call_args[0][0]
+
+        mock_api_client.patch.assert_called_once()
+        patch_args = mock_api_client.patch.call_args
+        assert "/api/projects/abc" in patch_args[0][0]
+        patched_config = patch_args[1]["json"]["config"]
+        assert patched_config["detailed_spec"] == "Build a todo app"
+        # Original config keys preserved
+        assert patched_config["modules"] == ["backend"]
+        assert patched_config["name"] == "my-bot"
+
+    @pytest.mark.asyncio
+    async def test_no_patch_when_action_is_feature(self, mock_api_client, mock_stream_client):
+        """For action=feature, do NOT persist description to DB (it's in queue message)."""
+        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
+
+        await trigger_engineering.ainvoke(
+            {"project_id": "abc", "action": "feature", "description": "Add auth"},
+            config=_make_config("user-42"),
+        )
+
+        mock_api_client.get.assert_not_called()
+        mock_api_client.patch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_patch_when_description_is_none(self, mock_api_client, mock_stream_client):
+        """When description is None, do NOT patch."""
+        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
+
+        await trigger_engineering.ainvoke(
+            {"project_id": "abc", "action": "create"},
+            config=_make_config("user-42"),
+        )
+
+        mock_api_client.get.assert_not_called()
+        mock_api_client.patch.assert_not_called()
+
 
 class TestTriggerDeploy:
     @pytest.mark.asyncio

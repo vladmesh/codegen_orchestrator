@@ -538,3 +538,78 @@ class TestTaskMessageDescription:
             project_spec={},
         )
         assert "Config description here" in task_md
+
+
+class TestCreateTaskDetailedSpecFallback:
+    """Tests that _build_create_task uses feature_description as fallback for detailed_spec."""
+
+    def test_uses_detailed_spec_when_present(self):
+        """detailed_spec in project_spec takes priority."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        task_md = node._build_create_task(
+            project_name="test-project",
+            description="Short desc",
+            modules=["backend"],
+            project_spec={"detailed_spec": "Full detailed specification here"},
+            feature_description="Fallback desc",
+        )
+        assert "Full detailed specification here" in task_md
+
+    def test_falls_back_to_feature_description(self):
+        """When detailed_spec is missing, uses feature_description."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        task_md = node._build_create_task(
+            project_name="test-project",
+            description="Short desc",
+            modules=["backend"],
+            project_spec={},
+            feature_description="Detailed requirements from PO",
+        )
+        assert "Detailed requirements from PO" in task_md
+
+    def test_falls_back_to_na_when_neither(self):
+        """When neither detailed_spec nor feature_description, shows N/A."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        task_md = node._build_create_task(
+            project_name="test-project",
+            description="Short desc",
+            modules=["backend"],
+            project_spec={},
+        )
+        assert "N/A" in task_md
+
+    def test_empty_detailed_spec_falls_back(self):
+        """Empty string detailed_spec should fall back to feature_description."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        task_md = node._build_create_task(
+            project_name="test-project",
+            description="Short desc",
+            modules=["backend"],
+            project_spec={"detailed_spec": ""},
+            feature_description="Fallback from queue",
+        )
+        assert "Fallback from queue" in task_md
+
+    def test_build_task_message_passes_feature_description_to_create(self):
+        """_build_task_message forwards feature_description for action=create."""
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        task_md = node._build_task_message(
+            project_name="test-project",
+            description="Short desc",
+            modules=["backend"],
+            repo_full_name="org/test-project",
+            project_spec={},
+            action="create",
+            feature_description="Detailed from PO conversation",
+        )
+        assert "Detailed from PO conversation" in task_md
