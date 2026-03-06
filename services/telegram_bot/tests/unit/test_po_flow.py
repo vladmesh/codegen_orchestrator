@@ -172,6 +172,27 @@ class TestSendToPOAndWait:
         assert "timestamp" in fields
 
     @pytest.mark.asyncio
+    async def test_message_includes_user_name(self, mock_stream_client, mock_bot):
+        """Should include user_name in published fields."""
+        response_data = {"text": "ok", "user_id": "42"}
+        mock_stream_client.redis.xread = AsyncMock(
+            return_value=[("po:response:test-id", [("1-0", response_data)])]
+        )
+
+        await _send_to_po_and_wait(
+            client=mock_stream_client,
+            user_id=42,
+            text="hello",
+            bot=mock_bot,
+            chat_id=42,
+            user_name="Vlad",
+        )
+
+        publish_call = mock_stream_client.publish_flat.call_args
+        fields = publish_call[0][1]
+        assert fields["user_name"] == "Vlad"
+
+    @pytest.mark.asyncio
     async def test_error_response_raises_runtime_error(self, mock_stream_client, mock_bot):
         """Should raise RuntimeError when PO returns error."""
         error_data = {

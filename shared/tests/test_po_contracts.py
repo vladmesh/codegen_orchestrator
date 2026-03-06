@@ -22,6 +22,24 @@ class TestPOUserMessage:
         assert msg.text == "hi"
         assert msg.timestamp  # auto-filled
 
+    def test_user_name_default_empty(self):
+        msg = POUserMessage(text="hi", user_id="42", request_id="abc")
+        assert msg.user_name == ""
+
+    def test_user_name_set(self):
+        msg = POUserMessage(text="hi", user_id="42", request_id="abc", user_name="Vlad")
+        assert msg.user_name == "Vlad"
+
+    def test_user_name_in_flat_fields(self):
+        msg = POUserMessage(text="hi", user_id="42", request_id="abc", user_name="Vlad")
+        fields = to_flat_fields(msg)
+        assert fields["user_name"] == "Vlad"
+
+    def test_user_name_empty_omitted_from_flat_fields(self):
+        msg = POUserMessage(text="hi", user_id="42", request_id="abc")
+        fields = to_flat_fields(msg)
+        assert "user_name" not in fields
+
     def test_round_trip(self):
         msg = POUserMessage(
             text="hello", user_id="1", request_id="r1", timestamp="2025-01-01T00:00:00"
@@ -31,6 +49,18 @@ class TestPOUserMessage:
         assert restored.text == msg.text
         assert restored.user_id == msg.user_id
         assert restored.request_id == msg.request_id
+
+    def test_round_trip_with_user_name(self):
+        msg = POUserMessage(
+            text="hello",
+            user_id="1",
+            request_id="r1",
+            timestamp="2025-01-01T00:00:00",
+            user_name="Vlad",
+        )
+        fields = to_flat_fields(msg)
+        restored = from_flat_fields(fields, POUserMessage)
+        assert restored.user_name == "Vlad"
 
 
 class TestPOSystemEvent:

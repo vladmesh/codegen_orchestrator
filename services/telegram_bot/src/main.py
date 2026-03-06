@@ -192,6 +192,7 @@ async def _send_to_po_and_wait(
     text: str,
     bot,
     chat_id: int,
+    user_name: str = "",
 ) -> str:
     """Send message to PO via po:input and wait for response.
 
@@ -215,7 +216,7 @@ async def _send_to_po_and_wait(
     response_stream = f"po:response:{request_id}"
 
     # Publish to PO input stream
-    msg = POUserMessage(text=text, user_id=str(user_id), request_id=request_id)
+    msg = POUserMessage(text=text, user_id=str(user_id), request_id=request_id, user_name=user_name)
     await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(msg))
 
     logger.info(
@@ -297,12 +298,14 @@ async def handle_message(update: Update, context) -> None:
             raise RuntimeError("Redis client not initialized")
 
         # Send to PO and wait for response
+        user_name = update.effective_user.first_name or ""
         response_text = await _send_to_po_and_wait(
             client=_stream_client,
             user_id=user_id,
             text=text,
             bot=context.bot,
             chat_id=chat_id,
+            user_name=user_name,
         )
 
         # Send response to user

@@ -22,6 +22,7 @@ class POUserMessage(BaseModel):
     text: str
     user_id: str
     request_id: str
+    user_name: str = ""
     timestamp: str = Field(default_factory=lambda: datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S"))
 
 
