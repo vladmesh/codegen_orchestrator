@@ -3,7 +3,7 @@
 ## Current Task
 - **Backlog**: #33 Secrets Hygiene
 - **Plan**: docs/plans/secrets-hygiene.md
-- **Step**: 1/5 — Remove PEM from git tracking
+- **Step**: 1/11 — Remove PEM from git tracking
 - **Done Steps**: (empty)
 
 ## Blocked

@@ -2,75 +2,87 @@
 
 ## Context
 
-The PEM file `secrets/github_app.pem` is tracked in git despite being a secret (repo is private but this is bad practice). The deploy.yml already writes it from GitHub Secret to `/opt/secrets/github_app.pem` on prod.
+Two problems:
 
-SSH keys are mounted from `~/.ssh` of the host, which is non-portable — on prod the host's SSH directory contains the server's own keys, not the orchestrator's. Deploy.yml already writes `ORCHESTRATOR_SSH_KEY` to `/opt/secrets/ssh_key` and sets `SSH_KEY_PATH` env var, but the code still defaults to `/root/.ssh/id_ed25519`.
+1. **PEM in git**: `secrets/github_app.pem` tracked in git despite `.gitignore` rules. deploy.yml already writes it from GitHub Secret — the repo copy is unnecessary.
 
-Source: brainstorm `docs/brainstorms/epic-decomposition.md` (infrastructure section).
+2. **SSH keys mounted from host**: All services mount `~/.ssh` from the Docker host. On prod this is the server's own keys, not the orchestrator's. One key for all servers — can't rotate, can't revoke per-server.
 
-### Current state
+**Target state**: SSH keys stored per-server in DB (`Server.ssh_key_enc`, Fernet-encrypted). No SSH volume mounts in docker-compose. infra-service generates a key pair during provisioning and saves it to DB. All consumers read the key from API.
 
-**PEM file:**
-- `secrets/github_app.pem` — tracked in git (committed before `.gitignore` rules)
-- `.gitignore` already has `*.pem` (line 5) and `secrets` (line 50) — but git still tracks it
-- `docker-compose.yml` mounts via `${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}` (5 services)
-- `deploy.yml` sets `GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem` in .env
-- `e2e.yml` mounts `../../../secrets/github_app.pem` directly (2 services)
-- `shared/clients/github.py:26` reads from `GITHUB_APP_PRIVATE_KEY_PATH` (default `/app/keys/github_app.pem`)
+### What already exists
 
-**SSH keys:**
-- `docker-compose.yml` mounts `${SSH_KEY_PATH:-~/.ssh}` → `/root/.ssh:ro` (langgraph, deploy-worker, scheduler)
-- `infra-service` mounts `${SSH_KEY_PATH:-~/.ssh}` → `/host-ssh:ro`, copies in entrypoint
-- `shared/constants.py:13`: `Paths.SSH_KEY = os.getenv("SSH_KEY_PATH", "/root/.ssh/id_ed25519")`
-- `devops/nodes.py:317-323` reads SSH key from `Paths.SSH_KEY` to set as GitHub repo secret
-- `infra-service/ssh_manager.py:19` defaults to `~/.ssh/id_ed25519`
-- On prod: deploy.yml writes orchestrator SSH key to `/opt/secrets/ssh_key` and sets `SSH_KEY_PATH=/opt/secrets/ssh_key`
+- `Server.ssh_key_enc` column — exists but never populated by provisioner
+- `SecretsCipher` (Fernet) — working, used for project secrets
+- `ServerCreate.ssh_key` — accepts raw key, encrypts on create
+- `ServerRead` — explicitly excludes `ssh_key` from response
+- `SSHManager` — generates ed25519 key pairs, but only in local filesystem
+- `PATCH /servers/{handle}` — does NOT allow updating `ssh_key_enc`
 
-**Problem:** The `SSH_KEY_PATH` env var serves dual purpose:
-1. In docker-compose.yml — it's a **host path** to mount (directory or file)
-2. In `Paths.SSH_KEY` / `ssh_manager.py` — it's the **in-container path** to the private key file
+### Consumers of SSH key
 
-On prod, deploy.yml sets `SSH_KEY_PATH=/opt/secrets/ssh_key`. This gets used:
-- In docker-compose.yml: mounts `/opt/secrets/ssh_key` (a file) to `/root/.ssh` — this will fail because it mounts a file as a directory
-- In constants.py: reads `/opt/secrets/ssh_key` — which is the in-container path, but the file is actually at `/root/.ssh` after the mount
+| Consumer | File | What it does |
+|----------|------|-------------|
+| devops/nodes.py `_write_deploy_secrets` | `langgraph/src/subgraphs/devops/nodes.py:317-323` | Reads key from file, sets as GitHub Secret `DEPLOY_SSH_KEY` |
+| infra_client.py `run_ssh_command` | `shared/clients/infra_client.py:42-53` | `ssh -i KEY_PATH root@server_ip` for diagnostics |
+| infra-service provisioner | `services/infra-service/src/provisioner/ssh_manager.py` | Generates key, uses for provisioning, never saves to DB |
+| scheduler health_checker | `services/scheduler/src/tasks/health_checker.py` | Stub (empty), future SSH health checks |
 
-This needs to be split into two variables: one for the host mount source, one for the in-container path.
+Source: brainstorm `docs/brainstorms/epic-decomposition.md`.
 
 ## Steps
 
 1. [ ] Remove PEM from git tracking
-   - **Input**: `secrets/github_app.pem` (tracked file), `.gitignore`
-   - **Output**: File removed from git index (but kept locally for dev), `.gitignore` confirms coverage
-   - **Test**: `git ls-files secrets/` returns empty; `secrets/github_app.pem` still exists on disk
+   - **Input**: `secrets/github_app.pem`
+   - **Output**: `git rm --cached secrets/github_app.pem`; file stays on disk for local dev; `.gitignore` already covers it
+   - **Test**: `git ls-files secrets/` returns empty
 
-2. [ ] Fix SSH key dual-variable problem
-   - **Input**: `docker-compose.yml`, `docker-compose.prod.yml`, `shared/constants.py`, `services/infra-service/src/provisioner/ssh_manager.py`, `services/infra-service/entrypoint.sh`, `.github/workflows/deploy.yml`, `docs/DEPLOY.md`
-   - **Output**:
-     - Split `SSH_KEY_PATH` into two env vars:
-       - `SSH_KEY_MOUNT` — host path for docker-compose volume mount (default: `~/.ssh` for dev)
-       - `SSH_KEY_PATH` — in-container path to the private key file (default: `/root/.ssh/id_ed25519`)
-     - `docker-compose.yml`: mount `${SSH_KEY_MOUNT:-~/.ssh}:/root/.ssh:ro`
-     - `infra-service`: mount `${SSH_KEY_MOUNT:-~/.ssh}:/host-ssh:ro` (unchanged pattern, new var name)
-     - `shared/constants.py`: keep `SSH_KEY_PATH` default `/root/.ssh/id_ed25519`
-     - `deploy.yml`: set `SSH_KEY_MOUNT=/opt/secrets` (directory containing `ssh_key` file named `id_ed25519`) OR mount the single file properly
-     - `infra-service/ssh_manager.py`: use `Paths.SSH_KEY` instead of hardcoded `~/.ssh/id_ed25519`
-   - **Test**: Unit test for `Paths.SSH_KEY` default; unit test for `SSHManager` using `Paths.SSH_KEY`; verify docker-compose config renders correctly
+2. [ ] Add dedicated endpoint `GET /servers/{handle}/ssh-key` ⚠️ needs-approval
+   - **Input**: `services/api/src/routers/servers.py`, `shared/crypto.py`
+   - **Output**: New endpoint returns `{"ssh_key": "<decrypted>"}`. Returns 404 if no key stored. Admin-only (same guard as other server endpoints). Separate from `ServerRead` to avoid leaking keys in list responses.
+   - **Test**: Unit test — get key for server with key → 200 + decrypted value; get key for server without key → 404; non-admin → 403
 
-3. [ ] Update deploy.yml secrets layout for SSH
-   - **Input**: `.github/workflows/deploy.yml`
-   - **Output**:
-     - Write SSH key to `/opt/secrets/id_ed25519` (not `ssh_key`) so the directory can be mounted as `/root/.ssh`
-     - Set `SSH_KEY_MOUNT=/opt/secrets/ssh` in .env (dedicated dir with just the key)
-     - Or: write to `/opt/secrets/ssh/id_ed25519`, set `SSH_KEY_MOUNT=/opt/secrets/ssh`
-     - Keep `SSH_KEY_PATH=/opt/secrets/ssh/id_ed25519` for `Paths.SSH_KEY` override
-   - **Test**: Manual review of deploy.yml; verify infra-service entrypoint handles single-key directory
+3. [ ] Add `ssh_key` to PATCH `/servers/{handle}` ⚠️ needs-approval
+   - **Input**: `services/api/src/routers/servers.py`
+   - **Output**: Accept `ssh_key` in update payload. Encrypt with `SecretsCipher` before saving to `ssh_key_enc`. Add to `allowed_fields` set (with special handling — encrypt before setattr).
+   - **Test**: Unit test — PATCH with `ssh_key` → stored encrypted; verify via GET ssh-key endpoint → returns original value
 
-4. [ ] Fix E2E compose PEM references
-   - **Input**: `docker/test/e2e/e2e.yml`, `.env.test`
-   - **Output**: E2E compose uses `GITHUB_APP_PEM_PATH` env var (same pattern as docker-compose.yml) instead of hardcoded relative path. Falls back to `./secrets/github_app.pem` for local dev where the file exists on disk.
-   - **Test**: `docker compose -f docker/test/e2e/e2e.yml config` renders correctly
+4. [ ] Make provisioner save SSH key to DB
+   - **Input**: `services/infra-service/src/provisioner/node.py`, `services/infra-service/src/provisioner/ssh_manager.py`
+   - **Output**: After successful provisioning, call `api_client.update_server(handle, {"ssh_key": private_key_content})` to persist the generated key. `SSHManager.get_private_key() -> str` method added for reading the key content.
+   - **Test**: Unit test — mock API client, verify `update_server` called with `ssh_key` after successful provision
 
-5. [ ] Update documentation
-   - **Input**: `docs/DEPLOY.md`
-   - **Output**: Document `SSH_KEY_MOUNT` vs `SSH_KEY_PATH` distinction; confirm `GH_APP_PRIVATE_KEY` secret requirement; remove any references to `secrets/github_app.pem` being in the repo
-   - **Test**: Review doc accuracy
+5. [ ] Add `get_server_ssh_key` to LangGraph API client
+   - **Input**: `services/langgraph/src/clients/api.py`
+   - **Output**: `async def get_server_ssh_key(self, handle: str) -> str | None` — calls `GET /servers/{handle}/ssh-key`, returns decrypted key or None.
+   - **Test**: Unit test with mocked HTTP response
+
+6. [ ] Refactor devops/nodes.py — read SSH key from API
+   - **Input**: `services/langgraph/src/subgraphs/devops/nodes.py`
+   - **Output**: `_write_deploy_secrets` receives SSH key as parameter (not reads from file). Caller (`DeployerNode.run` or resource allocation step) fetches key via `api_client.get_server_ssh_key(server_handle)`. Remove `SSH_KEY_PATH` import and file-based reading.
+   - **Test**: Unit test — mock API client returning key, verify `_write_deploy_secrets` sets correct GitHub secret
+
+7. [ ] Refactor infra_client.py — accept key content, use tempfile
+   - **Input**: `shared/clients/infra_client.py`, `shared/constants.py`
+   - **Output**: `run_ssh_command(server_ip, command, ssh_key: str)` — writes key to `tempfile.NamedTemporaryFile`, passes path to `ssh -i`. Removes dependency on `Paths.SSH_KEY` for the key file path. Clean up tempfile after use (context manager).
+   - **Test**: Unit test — mock subprocess, verify tempfile created with correct content and cleaned up
+
+8. [ ] Remove SSH volume mounts from docker-compose
+   - **Input**: `docker-compose.yml`, `docker-compose.prod.yml`, `.github/workflows/deploy.yml`
+   - **Output**: Remove `${SSH_KEY_PATH:-~/.ssh}:/root/.ssh:ro` from langgraph, deploy-worker, scheduler. Remove `${SSH_KEY_PATH:-~/.ssh}:/host-ssh:ro` from infra-service. Remove `SSH_KEY_PATH` and `SSH_KEY_MOUNT` from deploy.yml `.env` block. Remove `ORCHESTRATOR_SSH_KEY` secret write in deploy.yml. Keep infra-service entrypoint.sh for now (no-op if `/host-ssh` doesn't exist). Remove `Paths.SSH_KEY` from `shared/constants.py` (no longer needed).
+   - **Test**: `docker compose config` — no SSH volume mounts; existing unit tests pass without `SSH_KEY_PATH` env var
+
+9. [ ] Fix E2E compose PEM references
+   - **Input**: `docker/test/e2e/e2e.yml`
+   - **Output**: Use `${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}` pattern (same as docker-compose.yml) instead of hardcoded relative path `../../../secrets/github_app.pem`.
+   - **Test**: `docker compose -f docker/test/e2e/e2e.yml config` renders valid YAML
+
+10. [ ] Integration test: SSH key round-trip
+    - **Input**: Steps 2-7 combined
+    - **Output**: Integration test that: creates server with ssh_key → verifies encrypted in DB → fetches via GET endpoint → decrypts correctly → `run_ssh_command` receives correct key content
+    - **Test**: `make test-api-integration` passes
+
+11. [ ] Update docs + cleanup
+    - **Input**: `docs/DEPLOY.md`, `shared/constants.py`, deploy.yml
+    - **Output**: Remove `ORCHESTRATOR_SSH_KEY` from DEPLOY.md required secrets (keys are now per-server in DB). Document that provisioner auto-saves SSH keys. Remove stale `SSH_KEY_PATH` references from docs. Clean up `Paths.SSH_KEY` if no longer used.
+    - **Test**: Docs review; grep for stale references
