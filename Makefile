@@ -290,8 +290,9 @@ nuke-hard: .nuke-hard-prune .nuke-common
 	$(DOCKER_COMPOSE) --profile build build $(BUILD_OPTS)
 	@echo "🔨 Checking worker base images..."
 	@$(MAKE) check-worker-images
-	$(DOCKER_COMPOSE) up -d
-	@echo "⏳ Waiting for DB to be healthy..."
+	@echo "🗄️  Starting DB + API only (seed before scheduler to avoid reprovisioning)..."
+	$(DOCKER_COMPOSE) up -d db redis api
+	@echo "⏳ Waiting for API to be healthy..."
 	@timeout=60; \
 	while ! curl -s "http://localhost:8000/health" > /dev/null; do \
 		if [ $$timeout -le 0 ]; then echo "❌ API failed to start"; exit 1; fi; \
@@ -301,6 +302,8 @@ nuke-hard: .nuke-hard-prune .nuke-common
 	done
 	$(DOCKER_COMPOSE) exec api alembic upgrade head
 	@$(MAKE) seed
+	@echo "🚀 Starting remaining services..."
+	$(DOCKER_COMPOSE) up -d
 	@echo "✅ Fresh environment ready!"
 
 # === Seeding ===
