@@ -21,6 +21,8 @@ monitor progress, verify results (including deploy), collect audit report, write
   sends project description to `po:input`, waits for PO to create project & trigger engineering.
 - `--no-cleanup` — skip cleanup after test (keep repo, containers, DB records)
 - `--no-nuke` — skip `make nuke` in Step 0 (assume stack is already clean and running)
+- `--feature` — after the initial create+deploy succeeds, trigger a feature-add on the same project
+  and verify the full feature flow (no scaffold, CI, redeploy). Requires initial create to pass first.
 
 ## Test Matrix
 
@@ -33,6 +35,20 @@ monitor progress, verify results (including deploy), collect audit report, write
 | 5 | `url_shortener` | `backend,frontend` | `POST /api/shorten` → short code. `GET /{code}` redirects. Frontend: form + stats. |
 | 6 | `bot_landing` | `tg_bot,frontend` | Bot echoes with emoji. Frontend: static page describing bot. No shared backend. |
 | 7 | `expense_tracker` | `backend,tg_bot,frontend` | CRUD expenses + categories. Bot: `/add`, `/summary`. Frontend: dashboard + breakdown. |
+
+## Feature Add Matrix (for --feature mode)
+
+After the initial create+deploy succeeds, trigger `action="feature"` with these descriptions:
+
+| # | Name | Feature Description |
+|---|------|---------------------|
+| 1 | `todo_api` | Add `GET /todos/stats` endpoint that returns `{"total": N, "completed": N, "pending": N}` counting all todos. |
+| 2 | `echo_bot` | Add `/caps` command that converts the next message to UPPERCASE and sends it back. |
+| 3 | `landing_page` | Add a dark mode toggle button in the header that switches the page between light and dark themes. |
+| 4 | `weather_bot` | Add `/forecast <city>` command that returns mock 3-day forecast (today, tomorrow, day after). Backend endpoint `GET /api/forecast/{city}`. |
+| 5 | `url_shortener` | Add `GET /api/stats` endpoint that returns `{"total_urls": N, "total_redirects": N}` with global stats. |
+| 6 | `bot_landing` | Add `/help` command to the bot that lists all available commands with descriptions. |
+| 7 | `expense_tracker` | Add `GET /api/expenses/summary` endpoint that returns total amount grouped by category. |
 
 ## Audit Prompt (appended to every task description)
 
@@ -232,11 +248,6 @@ Before the first test, do a full stack reset to ensure clean state.
 make nuke
 ```
 
-Wait 140 seconds for all services to fully initialize (DB migrations, Redis, workers):
-
-```bash
-sleep 140
-```
 
 Then verify the stack is healthy:
 
@@ -884,6 +895,7 @@ Report structure:
 > **Task**: <task_id>
 > **Mode**: direct | with-po
 > **Status**: Passed / Failed
+> **Feature phase**: passed / failed / skipped (only if --feature)
 > **Smoke**: pass (backend: 200) / fail (tg_bot: timeout) / none (no smoke result)
 > **Worker audit**: collected (findings included below) | not found
 
@@ -906,6 +918,121 @@ any follow-up messages needed, fallback to direct if PO failed)
 - **Root cause**: ...
 - **Suggested fix**: ...
 ```
+
+### Steps F1-F5: Feature Add Phase (only if --feature)
+
+Skip this entire section unless `--feature` is set AND the initial create+deploy passed.
+If the create phase failed, skip feature phase and note "Feature phase skipped (create failed)" in report.
+
+#### Step F1: Trigger feature engineering
+
+```bash
+FEATURE_TASK_ID="eng-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')"
+FEATURE_DESCRIPTION="<from Feature Add Matrix>"
+
+# Create task in API
+curl -s -X POST http://localhost:8000/api/tasks/ \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n \
+    --arg id "$FEATURE_TASK_ID" \
+    --arg pid "$PROJECT_ID" \
+    '{
+      id: $id,
+      type: "engineering",
+      project_id: $pid,
+      task_metadata: {triggered_by: "cli", action: "feature"},
+      callback_stream: "agent:events:manual-test"
+    }')" | jq .
+
+# Publish to engineering queue with action=feature
+docker compose exec -T \
+  -e "FEATURE_TASK_ID=$FEATURE_TASK_ID" \
+  -e "PROJECT_ID=$PROJECT_ID" \
+  -e "FEATURE_DESCRIPTION=$FEATURE_DESCRIPTION" \
+  langgraph python -c "
+import os, asyncio
+from shared.contracts.queues.engineering import EngineeringMessage
+from shared.redis.client import RedisStreamClient
+from shared.queues import ENGINEERING_QUEUE
+
+async def main():
+    client = RedisStreamClient()
+    await client.connect()
+    msg = EngineeringMessage(
+        task_id=os.environ['FEATURE_TASK_ID'],
+        project_id=os.environ['PROJECT_ID'],
+        user_id='manual-test',
+        action='feature',
+        description=os.environ['FEATURE_DESCRIPTION'],
+        skip_deploy=False,
+        callback_stream='agent:events:manual-test',
+    )
+    mid = await client.publish_message(ENGINEERING_QUEUE, msg)
+    print(f'Published feature: task={msg.task_id} mid={mid}')
+    await client.close()
+
+asyncio.run(main())
+"
+```
+
+If `--with-po` mode: instead of direct queue, send natural-language message to PO:
+"Добавь в мой $PROJECT_NAME: $FEATURE_DESCRIPTION" (same flow as Step 1-PO).
+
+#### Step F2: Verify NO scaffold
+
+Wait 20 seconds, then check worker-manager logs:
+
+```bash
+sleep 20
+docker compose logs worker-manager --tail=30 --since=60s 2>&1 | grep -E "scaffold|copier|creating_worker|setup_git_repo"
+```
+
+**GOOD**: `setup_git_repo` or `creating_worker` WITHOUT `scaffold_phase_start` or `copier`.
+**BAD**: `scaffold_phase_start` or `copier` appears → scaffold ran on feature task (BUG).
+
+Document whether scaffold was correctly skipped in the report.
+
+#### Step F3: Monitor feature task
+
+Same as Step 4, but poll `$FEATURE_TASK_ID` instead. Also find and poll the feature deploy task:
+
+```bash
+# Poll feature engineering task
+for i in $(seq 1 120); do
+  STATUS=$(curl -s http://localhost:8000/api/tasks/$FEATURE_TASK_ID | jq -r '.status')
+  echo "[$i/120] Feature task status: $STATUS"
+  if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+    break
+  fi
+  sleep 30
+done
+
+# Find and poll feature deploy task
+FEATURE_DEPLOY_TASK=$(curl -s "http://localhost:8000/api/tasks/?type=deploy&project_id=$PROJECT_ID" \
+  | jq -r '[.[] | select(.id != "'$DEPLOY_TASK'")] | sort_by(.created_at) | last | .id // empty')
+
+if [ -n "$FEATURE_DEPLOY_TASK" ]; then
+  for i in $(seq 1 60); do
+    STATUS=$(curl -s http://localhost:8000/api/tasks/$FEATURE_DEPLOY_TASK | jq -r '.status')
+    echo "[$i/60] Feature deploy status: $STATUS"
+    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+      break
+    fi
+    sleep 30
+  done
+fi
+```
+
+#### Step F4: Verify feature
+
+Same as Step 5, but additionally verify the feature was added:
+- Check that a new commit exists after the initial deploy commit
+- For `todo_api`: `curl -sf http://$SERVER_IP:$DEPLOY_PORT/todos/stats | jq .`
+- For other tests: verify the specific feature endpoint/behavior from the Feature Add Matrix
+
+#### Step F5: Collect feature audit report
+
+Same as Step 6 — fetch AUDIT_REPORT.md again (it may have been updated by the feature worker).
 
 ### Step 7.5: Commit reports
 
@@ -1017,10 +1144,10 @@ After all tests complete, print a summary table:
 ```
 ## E2E Test Results
 
-| # | Project | Mode | Status | Duration | Problems | Audit |
-|---|---------|------|--------|----------|----------|-------|
-| 1 | todo_api | direct | PASS | 25min | 0 | Yes |
-| 2 | echo_bot | with-po | FAIL | 18min | 2 | No |
+| # | Project | Mode | Create | Feature | Duration | Problems | Audit |
+|---|---------|------|--------|---------|----------|----------|-------|
+| 1 | todo_api | direct | PASS | PASS | 35min | 0 | Yes |
+| 2 | echo_bot | with-po | FAIL | SKIP | 18min | 2 | No |
 ...
 
 Total: X passed, Y failed out of Z tests
