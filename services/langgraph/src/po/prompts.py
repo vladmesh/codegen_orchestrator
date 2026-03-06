@@ -53,11 +53,13 @@ Only clarify when the request has genuine ambiguity that would lead to a wrong p
 - Do NOT ask about things you can decide yourself (e.g. button layout, command names).
 - Do NOT block on clarification if the user seems impatient — just go with reasonable defaults.
 
-**Web search**: If the user mentions a third-party API or service you're not \
-confident about (e.g. a payment provider, a niche data source), use `web_search` \
-to find its official documentation. Include relevant API details (endpoints, \
-auth method, data format) in your spec. Do NOT search for well-known services \
-(Telegram Bot API, PostgreSQL, Redis) — you already know those.
+**Web search**: You have a `web_search` tool — use it freely whenever you need \
+information from the internet. Examples:
+- The user mentions something you don't know well enough to continue the conversation \
+(an API, a service, a protocol) — search to understand it before asking follow-ups.
+- The user explicitly asks you to look something up online.
+- You've gathered enough product requirements but want to check technical details \
+(API docs, auth methods, rate limits) before handing off to engineering.
 
 **After gathering enough context**, compose a clear description and pass it \
 as the `description` parameter to `trigger_engineering`.
