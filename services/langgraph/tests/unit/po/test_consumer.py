@@ -142,7 +142,9 @@ class TestHandleMessage:
         await _handle_message(mock_graph, mock_client, "user-1", data)
 
         msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
-        assert msg.content == "no timestamp"
+        assert "no timestamp" in msg.content
+        # No timestamp prefix (no "[...UTC]")
+        assert "UTC]" not in msg.content
 
     @pytest.mark.asyncio
     async def test_user_message_includes_user_id_in_config(self, mock_graph, mock_client):
@@ -242,6 +244,74 @@ class TestHandleMessage:
 
         mock_graph.ainvoke.assert_not_called()
         mock_client.publish_flat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_user_name_passed_in_configurable(self, mock_graph, mock_client):
+        """user_name from message data should appear in graph configurable."""
+        data = {
+            "type": "user_message",
+            "text": "hello",
+            "user_id": "42",
+            "user_name": "Vlad",
+            "request_id": "req-1",
+            "timestamp": "2026-01-01T00:00:00",
+        }
+
+        await _handle_message(mock_graph, mock_client, "42", data)
+
+        config = mock_graph.ainvoke.call_args[1]["config"]
+        assert config["configurable"]["user_name"] == "Vlad"
+
+    @pytest.mark.asyncio
+    async def test_user_name_empty_when_missing(self, mock_graph, mock_client):
+        """user_name defaults to empty string when not in data."""
+        data = {
+            "type": "user_message",
+            "text": "hello",
+            "user_id": "42",
+            "request_id": "req-1",
+        }
+
+        await _handle_message(mock_graph, mock_client, "42", data)
+
+        config = mock_graph.ainvoke.call_args[1]["config"]
+        assert config["configurable"]["user_name"] == ""
+
+    @pytest.mark.asyncio
+    async def test_user_message_includes_context_prefix(self, mock_graph, mock_client):
+        """User messages should include context prefix with user_id and user_name."""
+        data = {
+            "type": "user_message",
+            "text": "hello",
+            "user_id": "42",
+            "user_name": "Vlad",
+            "request_id": "req-1",
+            "timestamp": "2026-01-01T00:00:00",
+        }
+
+        await _handle_message(mock_graph, mock_client, "42", data)
+
+        messages = mock_graph.ainvoke.call_args[0][0]["messages"]
+        content = messages[0].content
+        assert "user_id=42" in content
+        assert "user_name=Vlad" in content
+
+    @pytest.mark.asyncio
+    async def test_system_event_no_context_prefix(self, mock_graph, mock_client):
+        """System events should NOT get context prefix."""
+        data = {
+            "type": "system_event",
+            "event": "completed",
+            "text": "task done",
+            "user_id": "42",
+            "timestamp": "2026-01-01T00:00:00",
+        }
+
+        await _handle_message(mock_graph, mock_client, "42", data)
+
+        messages = mock_graph.ainvoke.call_args[0][0]["messages"]
+        content = messages[0].content
+        assert "[context:" not in content
 
 
 class TestProcessMessage:

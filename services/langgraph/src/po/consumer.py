@@ -216,11 +216,17 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
             logger.info("po_progress_event_dropped", user_id=user_id, text=text)
             return
 
+    user_name = data.get("user_name", "")
+
     formatted = f"[{timestamp} UTC] {text}" if timestamp else text
 
     if msg_type != "user_message":
         tag = f"{msg_type}:{event}" if event else msg_type
         formatted = f"[system: {tag}] {formatted}"
+    else:
+        # Inject user context so PO knows who it's talking to
+        context_line = f"[context: user_id={user_id}, user_name={user_name}]"
+        formatted = f"{context_line} {formatted}"
     msg = HumanMessage(content=formatted)
 
     result = await graph.ainvoke(
@@ -229,6 +235,7 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
             "configurable": {
                 "thread_id": f"po-user-{user_id}",
                 "user_id": user_id,
+                "user_name": user_name,
             }
         },
     )
