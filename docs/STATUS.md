@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #43 PO: Сократический диалог и формирование ТЗ
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: —
+- **Done Steps**: (empty)
 
 ## Blocked
 (нет)
