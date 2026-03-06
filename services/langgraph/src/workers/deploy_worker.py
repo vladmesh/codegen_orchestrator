@@ -345,6 +345,11 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 f"tasks/{task_id}",
                 json={"status": "failed", "error_message": error_msg},
             )
+            # Roll back project status — don't leave it stuck in "deploying"
+            await api_client.patch(
+                f"projects/{project_id}",
+                json={"status": ProjectStatus.FAILED.value},
+            )
 
             await publish_callback_event(
                 redis,

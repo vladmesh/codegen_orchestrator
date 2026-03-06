@@ -144,3 +144,33 @@ async def test_deploy_worker_smoke_fail(
     ]
     assert len(proactive_calls) == 1
     assert "smoke" in proactive_calls[0][0][1]["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_deploy_worker_missing_secrets_resets_project_status(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    """When missing_user_secrets, project status must be rolled back from deploying."""
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        return_value={
+            "deployed_url": None,
+            "missing_user_secrets": ["TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY"],
+            "errors": [],
+        }
+    )
+
+    from src.workers.deploy_worker import process_deploy_job
+
+    result = await process_deploy_job(_job(), mock_redis)
+
+    assert result["status"] == "failed"
+    assert "missing" in result["error"].lower()
+
+    # Project status must be rolled back — NOT left as "deploying"
+    project_patch_calls = [c for c in mock_api.patch.call_args_list if "projects/proj-1" in str(c)]
+    # Should have: set to deploying, then rollback
+    assert len(project_patch_calls) >= 2  # noqa: PLR2004
+    last_project_status = project_patch_calls[-1][1]["json"]["status"]
+    assert (
+        last_project_status != "deploying"
+    ), "Project stuck in deploying — missing_user_secrets must roll back status"
