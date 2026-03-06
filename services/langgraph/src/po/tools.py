@@ -20,7 +20,6 @@ from shared.contracts.dto.project import ProjectStatus, ServiceModule
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
-from shared.crypto import decrypt_dict, encrypt_dict
 from shared.queues import (
     DEPLOY_QUEUE,
     ENGINEERING_QUEUE,
@@ -166,23 +165,12 @@ async def set_project_secret(
     api = _get_api()
     headers = _user_headers(config)
 
-    resp = await api.get(f"/api/projects/{project_id}", headers=headers)
-    resp.raise_for_status()
-    project = resp.json()
-
-    proj_config = project.get("config") or {}
-    secrets = proj_config.get("secrets") or {}
-    secrets = decrypt_dict(secrets) if secrets else {}
-    secrets[key] = value
-    proj_config["secrets"] = encrypt_dict(secrets)
-
+    payload: dict = {"secrets": {key: value}}
     if hint:
-        env_hints = proj_config.get("env_hints") or {}
-        env_hints[key] = hint
-        proj_config["env_hints"] = env_hints
+        payload["env_hints"] = {key: hint}
 
-    resp = await api.patch(
-        f"/api/projects/{project_id}", json={"config": proj_config}, headers=headers
+    resp = await api.post(
+        f"/api/projects/{project_id}/config/secrets", json=payload, headers=headers
     )
     resp.raise_for_status()
     return f"Secret '{key}' set for project {project_id}."

@@ -196,15 +196,11 @@ class TestSecretResolverEncryption:
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.encrypt_dict")
     @patch("src.subgraphs.devops.nodes.decrypt_dict")
-    async def test_saves_encrypted_secrets(self, mock_decrypt, mock_encrypt, mock_api):
-        """encrypt_dict should be called before PATCH when saving secrets."""
+    async def test_saves_secrets_via_merge_endpoint(self, mock_decrypt, mock_api):
+        """Generated secrets should be saved via merge_secrets (atomic, server-side crypto)."""
         mock_decrypt.return_value = {}
-        mock_encrypt.return_value = {"DB_URL": "gAAAAA-encrypted"}
-
-        mock_api.get_project = AsyncMock(return_value={"config": {"secrets": {}}})
-        mock_api.patch = AsyncMock()
+        mock_api.merge_secrets = AsyncMock(return_value={"keys": ["DB_URL"]})
 
         state = {
             "env_analysis": {"DB_URL": "infra"},
@@ -215,48 +211,31 @@ class TestSecretResolverEncryption:
 
         await self.node.run(state)
 
-        # encrypt_dict should have been called with the newly generated secrets
-        mock_encrypt.assert_called_once()
-        saved_config = mock_api.patch.call_args[1]["json"]["config"]
-        assert saved_config["secrets"] == {"DB_URL": "gAAAAA-encrypted"}
+        mock_api.merge_secrets.assert_called_once()
+        call_args = mock_api.merge_secrets.call_args
+        assert call_args[0][0] == "proj-123"
+        assert "DB_URL" in call_args[0][1]
 
     @pytest.mark.asyncio
-    async def test_save_secrets_decrypts_before_merge(self):
-        """_save_secrets_to_project must decrypt existing secrets before re-encrypting (BUG 12).
-
-        Without decrypt, existing encrypted secrets get double-encrypted on each save.
-        """
-        with (
-            patch("src.subgraphs.devops.nodes.api_client") as mock_api,
-            patch("src.subgraphs.devops.nodes.decrypt_dict") as mock_decrypt,
-            patch("src.subgraphs.devops.nodes.encrypt_dict") as mock_encrypt,
-        ):
-            mock_api.get_project = AsyncMock(
-                return_value={"config": {"secrets": {"OLD_KEY": "gAAAAA-old-encrypted"}}}
-            )
-            mock_api.patch = AsyncMock()
-            mock_decrypt.return_value = {"OLD_KEY": "old-plaintext"}
-            mock_encrypt.return_value = {
-                "OLD_KEY": "gAAAAA-old-reencrypted",
-                "NEW_KEY": "gAAAAA-new-encrypted",
-            }
+    async def test_save_secrets_uses_atomic_merge(self):
+        """_save_secrets_to_project delegates to api_client.merge_secrets."""
+        with patch("src.subgraphs.devops.nodes.api_client") as mock_api:
+            mock_api.merge_secrets = AsyncMock(return_value={"keys": ["OLD_KEY", "NEW_KEY"]})
 
             await self.node._save_secrets_to_project("proj-123", {"NEW_KEY": "new-plaintext"})
 
-            # decrypt_dict must be called on existing secrets from DB
-            mock_decrypt.assert_called_once_with({"OLD_KEY": "gAAAAA-old-encrypted"})
-
-            # encrypt_dict should receive merged plaintext values (not already-encrypted)
-            encrypt_call_args = mock_encrypt.call_args[0][0]
-            assert encrypt_call_args["OLD_KEY"] == "old-plaintext"  # decrypted, not gAAAAA...
-            assert encrypt_call_args["NEW_KEY"] == "new-plaintext"
+            mock_api.merge_secrets.assert_called_once_with("proj-123", {"NEW_KEY": "new-plaintext"})
+            # No GET+PATCH pattern
+            mock_api.get_project.assert_not_called()
+            mock_api.patch.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.encrypt_dict")
+    @patch("src.subgraphs.devops.nodes.api_client")
     @patch("src.subgraphs.devops.nodes.decrypt_dict")
-    async def test_decrypts_existing_secrets(self, mock_decrypt, mock_encrypt):
+    async def test_decrypts_existing_secrets(self, mock_decrypt, mock_api):
         """decrypt_dict should be called on config_secrets from project_spec."""
         mock_decrypt.return_value = {"EXISTING_KEY": "decrypted-value"}
+        mock_api.merge_secrets = AsyncMock(return_value={"keys": ["EXISTING_KEY"]})
 
         state = {
             "env_analysis": {"EXISTING_KEY": "infra"},
@@ -288,16 +267,11 @@ class TestSecretResolverGroupIntegration:
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.encrypt_dict")
     @patch("src.subgraphs.devops.nodes.decrypt_dict")
-    async def test_postgres_password_matches_database_url(
-        self, mock_decrypt, mock_encrypt, mock_api
-    ):
+    async def test_postgres_password_matches_database_url(self, mock_decrypt, mock_api):
         """DATABASE_URL and POSTGRES_PASSWORD must share the same password."""
         mock_decrypt.return_value = {}
-        mock_encrypt.return_value = {}
-        mock_api.get_project = AsyncMock(return_value={"config": {"secrets": {}}})
-        mock_api.patch = AsyncMock()
+        mock_api.merge_secrets = AsyncMock(return_value={"keys": []})
 
         state = {
             "env_analysis": {
@@ -321,14 +295,11 @@ class TestSecretResolverGroupIntegration:
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.encrypt_dict")
     @patch("src.subgraphs.devops.nodes.decrypt_dict")
-    async def test_async_database_url_coherent(self, mock_decrypt, mock_encrypt, mock_api):
+    async def test_async_database_url_coherent(self, mock_decrypt, mock_api):
         """ASYNC_DATABASE_URL password must match DATABASE_URL password."""
         mock_decrypt.return_value = {}
-        mock_encrypt.return_value = {}
-        mock_api.get_project = AsyncMock(return_value={"config": {"secrets": {}}})
-        mock_api.patch = AsyncMock()
+        mock_api.merge_secrets = AsyncMock(return_value={"keys": []})
 
         state = {
             "env_analysis": {
@@ -351,10 +322,11 @@ class TestSecretResolverGroupIntegration:
         assert secrets["ASYNC_DATABASE_URL"].startswith("postgresql+asyncpg://")
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.encrypt_dict")
+    @patch("src.subgraphs.devops.nodes.api_client")
     @patch("src.subgraphs.devops.nodes.decrypt_dict")
-    async def test_cached_secrets_bypass_groups(self, mock_decrypt, mock_encrypt):
+    async def test_cached_secrets_bypass_groups(self, mock_decrypt, mock_api):
         """Secrets already in config_secrets should NOT be regenerated by groups."""
+        mock_api.merge_secrets = AsyncMock(return_value={"keys": []})
         mock_decrypt.return_value = {
             "DATABASE_URL": "postgresql://postgres:cached_pw@postgres:5432/db_proj",
             "POSTGRES_PASSWORD": "cached_pw",
@@ -382,14 +354,11 @@ class TestSecretResolverGroupIntegration:
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.encrypt_dict")
     @patch("src.subgraphs.devops.nodes.decrypt_dict")
-    async def test_non_grouped_infra_uses_fallback(self, mock_decrypt, mock_encrypt, mock_api):
+    async def test_non_grouped_infra_uses_fallback(self, mock_decrypt, mock_api):
         """Infra variables not covered by groups should use _generate_infra_secret fallback."""
         mock_decrypt.return_value = {}
-        mock_encrypt.return_value = {}
-        mock_api.get_project = AsyncMock(return_value={"config": {"secrets": {}}})
-        mock_api.patch = AsyncMock()
+        mock_api.merge_secrets = AsyncMock(return_value={"keys": []})
 
         state = {
             "env_analysis": {

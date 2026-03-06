@@ -177,13 +177,8 @@ class TestGetProject:
 
 class TestSetProjectSecret:
     @pytest.mark.asyncio
-    @patch("src.po.tools.encrypt_dict", side_effect=lambda d: d)
-    @patch("src.po.tools.decrypt_dict", side_effect=lambda d: d)
-    async def test_sets_secret(self, _mock_decrypt, _mock_encrypt, mock_api_client):
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "config": {"modules": ["backend"]}}
-        )
-        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+    async def test_sets_secret(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response({"keys": ["TELEGRAM_BOT_TOKEN"]})
 
         result = await set_project_secret.ainvoke(
             {"project_id": "abc", "key": "TELEGRAM_BOT_TOKEN", "value": "123:ABC"},
@@ -191,36 +186,27 @@ class TestSetProjectSecret:
         )
 
         assert "Secret" in result
-        patch_payload = mock_api_client.patch.call_args[1]["json"]
-        assert patch_payload["config"]["secrets"]["TELEGRAM_BOT_TOKEN"] == "123:ABC"  # noqa: S105
+        call_args = mock_api_client.post.call_args
+        assert call_args[0][0] == "/api/projects/abc/config/secrets"
+        payload = call_args[1]["json"]
+        assert payload["secrets"]["TELEGRAM_BOT_TOKEN"] == "123:ABC"  # noqa: S105
 
     @pytest.mark.asyncio
-    @patch("src.po.tools.encrypt_dict", side_effect=lambda d: d)
-    @patch("src.po.tools.decrypt_dict", side_effect=lambda d: d)
-    async def test_passes_telegram_id_header(self, _mock_decrypt, _mock_encrypt, mock_api_client):
-        mock_api_client.get.return_value = _make_response({"id": "abc", "config": {}})
-        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+    async def test_passes_telegram_id_header(self, mock_api_client):
+        mock_api_client.post.return_value = _make_response({"keys": ["K"]})
 
         await set_project_secret.ainvoke(
             {"project_id": "abc", "key": "K", "value": "V"},
             config=_make_config("77777"),
         )
 
-        # Both GET and PATCH should have the header
-        get_headers = mock_api_client.get.call_args[1].get("headers", {})
-        assert get_headers.get("X-Telegram-ID") == "77777"
-        patch_headers = mock_api_client.patch.call_args[1].get("headers", {})
-        assert patch_headers.get("X-Telegram-ID") == "77777"
+        headers = mock_api_client.post.call_args[1].get("headers", {})
+        assert headers.get("X-Telegram-ID") == "77777"
 
     @pytest.mark.asyncio
-    @patch("src.po.tools.encrypt_dict", side_effect=lambda d: d)
-    @patch("src.po.tools.decrypt_dict", side_effect=lambda d: d)
-    async def test_hint_saved_to_env_hints(self, _mock_decrypt, _mock_encrypt, mock_api_client):
-        """When hint is provided, it should be saved to config.env_hints."""
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "config": {"modules": ["backend"]}}
-        )
-        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+    async def test_hint_included_in_payload(self, mock_api_client):
+        """When hint is provided, it should be sent in env_hints."""
+        mock_api_client.post.return_value = _make_response({"keys": ["ADMIN_TELEGRAM_ID"]})
 
         result = await set_project_secret.ainvoke(
             {
@@ -233,61 +219,34 @@ class TestSetProjectSecret:
         )
 
         assert "Secret" in result
-        patch_payload = mock_api_client.patch.call_args[1]["json"]
-        assert patch_payload["config"]["env_hints"]["ADMIN_TELEGRAM_ID"] == (
-            "Telegram ID of the bot admin"
-        )
+        payload = mock_api_client.post.call_args[1]["json"]
+        assert payload["env_hints"]["ADMIN_TELEGRAM_ID"] == "Telegram ID of the bot admin"
 
     @pytest.mark.asyncio
-    @patch("src.po.tools.encrypt_dict", side_effect=lambda d: d)
-    @patch("src.po.tools.decrypt_dict", side_effect=lambda d: d)
-    async def test_no_hint_no_env_hints(self, _mock_decrypt, _mock_encrypt, mock_api_client):
-        """When no hint is provided, env_hints should not be added."""
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "config": {"modules": ["backend"]}}
-        )
-        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+    async def test_no_hint_no_env_hints(self, mock_api_client):
+        """When no hint is provided, env_hints should not be in payload."""
+        mock_api_client.post.return_value = _make_response({"keys": ["TOKEN"]})
 
         await set_project_secret.ainvoke(
             {"project_id": "abc", "key": "TOKEN", "value": "abc123"},
             config=_make_config("user-42"),
         )
 
-        patch_payload = mock_api_client.patch.call_args[1]["json"]
-        assert "env_hints" not in patch_payload["config"]
+        payload = mock_api_client.post.call_args[1]["json"]
+        assert "env_hints" not in payload
 
     @pytest.mark.asyncio
-    @patch("src.po.tools.encrypt_dict", side_effect=lambda d: d)
-    @patch("src.po.tools.decrypt_dict", side_effect=lambda d: d)
-    async def test_hint_appends_to_existing_env_hints(
-        self, _mock_decrypt, _mock_encrypt, mock_api_client
-    ):
-        """Hints should be appended to existing env_hints, not overwrite."""
-        mock_api_client.get.return_value = _make_response(
-            {
-                "id": "abc",
-                "config": {
-                    "modules": ["backend"],
-                    "env_hints": {"EXISTING_KEY": "existing hint"},
-                },
-            }
-        )
-        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+    async def test_no_get_patch_calls(self, mock_api_client):
+        """Tool should use single POST, not GET+PATCH (race condition fix)."""
+        mock_api_client.post.return_value = _make_response({"keys": ["K"]})
 
         await set_project_secret.ainvoke(
-            {
-                "project_id": "abc",
-                "key": "NEW_KEY",
-                "value": "new-value",
-                "hint": "new hint",
-            },
+            {"project_id": "abc", "key": "K", "value": "V"},
             config=_make_config("user-42"),
         )
 
-        patch_payload = mock_api_client.patch.call_args[1]["json"]
-        env_hints = patch_payload["config"]["env_hints"]
-        assert env_hints["EXISTING_KEY"] == "existing hint"
-        assert env_hints["NEW_KEY"] == "new hint"
+        mock_api_client.get.assert_not_called()
+        mock_api_client.patch.assert_not_called()
 
 
 class TestTriggerEngineering:

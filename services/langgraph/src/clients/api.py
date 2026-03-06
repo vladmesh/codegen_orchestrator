@@ -156,6 +156,15 @@ class LanggraphAPIClient:
                 return None
             raise
 
+    async def merge_secrets(
+        self, project_id: str, secrets: dict[str, str], env_hints: dict[str, str] | None = None
+    ) -> dict:
+        """Atomically merge secrets into project config (server-side locking)."""
+        payload: dict = {"secrets": secrets}
+        if env_hints:
+            payload["env_hints"] = env_hints
+        return await self._post_json(f"projects/{project_id}/config/secrets", json=payload)
+
     # --- Phase 4: Allocation methods ---
 
     async def get_project_allocations(self, project_id: str) -> list[dict]:

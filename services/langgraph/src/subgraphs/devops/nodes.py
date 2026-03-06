@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
-from shared.crypto import decrypt_dict, encrypt_dict
+from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
@@ -200,26 +200,14 @@ class SecretResolverNode(FunctionalNode):
     async def _save_secrets_to_project(self, project_id: str, secrets: dict) -> None:
         """Save newly generated secrets to project config for reuse on redeploy.
 
+        Uses the atomic merge endpoint to avoid race conditions.
+
         Args:
             project_id: Project ID
             secrets: Dict of secret_name -> secret_value to save
         """
         try:
-            # Get current project to preserve existing config
-            project = await api_client.get_project(project_id)
-            if not project:
-                logger.warning("save_secrets_project_not_found", project_id=project_id)
-                return
-
-            # Merge new secrets with existing config
-            config = project.get("config", {}) or {}
-            config_secrets = config.get("secrets", {}) or {}
-            config_secrets = decrypt_dict(config_secrets) if config_secrets else {}
-            config_secrets.update(secrets)
-            config["secrets"] = encrypt_dict(config_secrets)
-
-            # Save back to project
-            await api_client.patch(f"/projects/{project_id}", json={"config": config})
+            await api_client.merge_secrets(project_id, secrets)
 
             logger.info(
                 "secrets_saved_to_project",
