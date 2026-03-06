@@ -2,19 +2,19 @@ from fastapi import status
 from httpx import AsyncClient
 import pytest
 
-from shared.models.user import User
-
 
 @pytest.mark.asyncio
-async def test_post_projects_pure_db(async_client: AsyncClient, db_session):
+async def test_post_projects_pure_db(async_client: AsyncClient):
     """
     Test that creating a project does NOT trigger GitHub (provision_project_repo)
     or Redis (scaffolder queue) calls.
     """
-    # Seed a user so the X-Telegram-ID lookup succeeds
-    user = User(telegram_id=100500, username="testuser")
-    db_session.add(user)
-    await db_session.commit()
+    # Seed a user via API so the X-Telegram-ID lookup succeeds
+    user_resp = await async_client.post(
+        "/api/users/",
+        json={"telegram_id": 100500, "username": "testuser"},
+    )
+    assert user_resp.status_code == status.HTTP_201_CREATED
 
     payload = {
         "id": "new-proj-001",
