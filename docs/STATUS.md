@@ -1,7 +1,7 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #45 PO: Context-Aware Env Variables & Hints
 - **Plan**: —
 - **Step**: —
 - **Done Steps**: —
