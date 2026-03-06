@@ -1,8 +1,8 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #50 Fix Description Loss in Create Flow
-- **Plan**: [task-description-flow](plans/task-description-flow.md)
+- **Backlog**: —
+- **Plan**: —
 - **Step**: —
 - **Done Steps**: —
 
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 50 | Fix Description Loss in Create Flow |
 | 49 | Telegram: кнопка "Add User" для админов |
 | 48 | Corrupted Checkpoint Recovery (orphan tool_calls) |
 | 47 | Race Condition in set_project_secret (parallel tool calls) |

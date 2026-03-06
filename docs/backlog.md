@@ -4,12 +4,12 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #50 Fix Description Loss in Create Flow
-- **Priority**: HIGH
+### #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save
+- **Priority**: CRITICAL
 - **User Story**: —
-- **Plan**: [task-description-flow](plans/task-description-flow.md)
+- **Plan**: —
 - **Status**: pending
-- **Brief**: Description из `trigger_engineering` теряется для action=create — воркер получает `Detailed Spec: N/A`. Три точки фикса: (1) `trigger_engineering` сохраняет description в `project.config.detailed_spec` через API PATCH, (2) `_build_create_task` использует `feature_description` из state как fallback, (3) промпт PO инструктирует передавать `detailed_spec` в `create_project`. Brainstorm: `docs/brainstorms/task-description-flow.md`.
+- **Brief**: `POST /projects/{id}/config/secrets` returns 200 but never persists. Root cause: `shared/models/project.py:27` uses plain `JSON` column — SQLAlchemy doesn't detect in-place dict mutations. `merge_secrets` endpoint mutates `project.config` dict in-place then reassigns the same object back — no change detected, no flush. Fix: (1) `MutableDict.as_mutable(JSON)` on `Project.config` column, (2) `dict(project.config or {})` copy in `merge_secrets` endpoint, (3) same pattern in `patch_project` (`if project_in.config`). Also: deploy-worker doesn't reset project status on `missing_user_secrets` — project stuck in `deploying` forever. Add status rollback. Affected: `shared/models/project.py`, `services/api/src/routers/projects.py`, `services/langgraph/src/workers/deploy_worker.py`. Source: fortune-telling-bot deploy failure analysis 2026-03-07.
 
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
@@ -125,6 +125,7 @@
 
 ## Done (last 10)
 
+- #50 Fix Description Loss in Create Flow — 2026-03-07
 - #49 Telegram: кнопка "Add User" для админов — 2026-03-06
 - #48 Corrupted Checkpoint Recovery (orphan tool_calls) — 2026-03-06
 - #47 Race Condition in set_project_secret (parallel tool calls) — 2026-03-06
@@ -134,5 +135,4 @@
 - #43 PO: Сократический диалог и формирование ТЗ — 2026-03-06
 - #8 Workspace Failure Counter — 2026-03-06
 - #39 Enforce Project-User Binding (owner_id NOT NULL) — 2026-03-06
-- #34 US3: Add Feature to Existing Project — 2026-03-06
 - #33 Secrets Hygiene — 2026-03-06

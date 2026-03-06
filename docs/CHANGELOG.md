@@ -2,6 +2,13 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-07
+
+### Fixed
+- Description loss in create flow: `trigger_engineering` now PATCHes `detailed_spec` into project config for `action=create` (#50)
+- `_build_create_task` uses `feature_description` from queue as fallback when `detailed_spec` is missing (#50)
+- PO prompt updated to pass description to both `create_project` and `trigger_engineering` (#50)
+
 ## 2026-03-06
 
 ### Added
