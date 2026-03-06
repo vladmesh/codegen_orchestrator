@@ -262,6 +262,146 @@ class TestScaffoldConfigConstruction:
         assert any("scaffold_failed" in c for c in patch_calls)
 
 
+class TestFeatureFlowIntegration:
+    """Tests for action=feature/fix through the full DeveloperNode.run() path."""
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_feature_action_skips_scaffold_and_succeeds(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """action=feature on active project → no scaffold, feature task, done."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(
+            return_value={
+                "id": "proj-1",
+                "name": "test-project",
+                "status": "active",
+                "config": {"modules": ["backend"], "description": "A todo API"},
+                "repository_url": "https://github.com/org/test-project",
+            }
+        )
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Feature added",
+            commit_sha="feat123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="feature", status="active")
+        state["description"] = "Add GET /todos/stats endpoint"
+        result = await node.run(state)
+
+        assert result["engineering_status"] == "done"
+        assert result["commit_sha"] == "feat123"
+
+        # Verify scaffold_config is None (no scaffold for features)
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["scaffold_config"] is None
+
+        # Verify task_content uses feature template (not create template)
+        assert "existing, working project" in call_kwargs["task_content"]
+        assert "Add GET /todos/stats endpoint" in call_kwargs["task_content"]
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_fix_action_uses_fix_template(self, mock_github_cls, mock_api, mock_spawn):
+        """action=fix → task title says 'Fix Issue', template says 'existing project'."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Fixed",
+            commit_sha="fix456",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="fix", status="active")
+        state["description"] = "Fix empty input crash"
+        result = await node.run(state)
+
+        assert result["engineering_status"] == "done"
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["scaffold_config"] is None
+        assert "Fix issue" in call_kwargs["task_title"]
+        assert "Fix empty input crash" in call_kwargs["task_content"]
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_feature_on_scaffolded_project_works(self, mock_github_cls, mock_api, mock_spawn):
+        """action=feature on scaffolded (not yet deployed) project works."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc789",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="feature", status="scaffolded")
+        state["description"] = "Add logging"
+        result = await node.run(state)
+
+        assert result["engineering_status"] == "done"
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["scaffold_config"] is None
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_feature_refreshes_project_spec(self, mock_github_cls, mock_api, mock_spawn):
+        """action=feature refreshes project from API (picks up latest repo URL etc)."""
+        fresh_project = {
+            "id": "proj-1",
+            "name": "test-project",
+            "status": "active",
+            "config": {"modules": ["backend"], "description": "A test project"},
+            "repository_url": "https://github.com/org/updated-repo-name",
+        }
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=fresh_project)
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="feature", status="active")
+        state["description"] = "Some feature"
+        await node.run(state)
+
+        # Should have refreshed project spec
+        mock_api.get_project.assert_awaited_once_with("proj-1")
+        # Repo should use the refreshed URL
+        call_kwargs = mock_spawn.call_args[1]
+        assert "updated-repo-name" in call_kwargs["repo"]
+
+
 class TestTaskMessageDescription:
     """Tests that _build_create_task reads description from config, not top-level."""
 

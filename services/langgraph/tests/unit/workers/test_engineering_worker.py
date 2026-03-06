@@ -645,6 +645,299 @@ class TestCIInfraFailFast:
         mock_respawn.assert_awaited_once()
 
 
+class TestFeatureActionFlow:
+    """Tests for action=feature through process_engineering_job."""
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.engineering.create_engineering_subgraph")
+    @patch("src.workers.engineering_worker.resource_allocator_node")
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    async def test_feature_skips_repo_creation(
+        self,
+        mock_ci_gate,
+        mock_publish,
+        mock_allocator,
+        mock_create_subgraph,
+        mock_redis,
+        mock_api,
+    ):
+        """action=feature on active project must NOT create repo or set secrets."""
+        from src.workers.engineering_worker import process_engineering_job
+
+        # Project is active with existing repo
+        mock_api.get_project = AsyncMock(
+            return_value={
+                "id": "proj-1",
+                "name": "test-project",
+                "status": "active",
+                "config": {"modules": ["backend"], "description": "A todo API"},
+                "repository_url": "https://github.com/org/test-project",
+            }
+        )
+        # Existing allocations
+        mock_api.get_project_allocations = AsyncMock(
+            return_value=[{"server_handle": "srv1", "port": 8001}]
+        )
+
+        # Subgraph returns success
+        mock_subgraph = AsyncMock()
+        mock_subgraph.ainvoke = AsyncMock(
+            return_value={
+                "engineering_status": "done",
+                "commit_sha": "feat123",
+                "worker_id": "w1",
+            }
+        )
+        mock_create_subgraph.return_value = mock_subgraph
+        mock_ci_gate.return_value = (True, [])
+
+        result = await process_engineering_job(
+            {
+                "task_id": "eng-feat-1",
+                "project_id": "proj-1",
+                "action": "feature",
+                "description": "Add stats endpoint",
+                "user_id": "u1",
+                "callback_stream": "po:input",
+            },
+            mock_redis,
+        )
+
+        assert result["status"] == "success"
+
+        # Verify action=feature was passed to subgraph
+        subgraph_input = mock_subgraph.ainvoke.call_args[0][0]
+        assert subgraph_input["action"] == "feature"
+        assert subgraph_input["description"] == "Add stats endpoint"
+
+        # Verify no repo creation was attempted (no call to _create_repo_and_set_secrets)
+        # The project is active, so the draft checks should not trigger
+        create_calls = [c for c in mock_api.patch.call_args_list if "scaffolding" in str(c)]
+        assert len(create_calls) == 0
+
+        # Verify existing allocations were reused (no allocator call)
+        mock_allocator.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.engineering.create_engineering_subgraph")
+    @patch("src.workers.engineering_worker.resource_allocator_node")
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    async def test_feature_reuses_existing_allocations(
+        self,
+        mock_ci_gate,
+        mock_publish,
+        mock_allocator,
+        mock_create_subgraph,
+        mock_redis,
+        mock_api,
+    ):
+        """action=feature must reuse existing server/port allocations."""
+        from src.workers.engineering_worker import process_engineering_job
+
+        mock_api.get_project = AsyncMock(
+            return_value={
+                "id": "proj-1",
+                "name": "test-project",
+                "status": "active",
+                "config": {"modules": ["backend"], "description": "A todo API"},
+                "repository_url": "https://github.com/org/test-project",
+            }
+        )
+
+        existing_allocations = [
+            {"server_handle": "vps-1", "port": 8042, "service_name": "backend"},
+        ]
+        mock_api.get_project_allocations = AsyncMock(return_value=existing_allocations)
+
+        mock_subgraph = AsyncMock()
+        mock_subgraph.ainvoke = AsyncMock(
+            return_value={
+                "engineering_status": "done",
+                "commit_sha": "feat456",
+                "worker_id": "w2",
+            }
+        )
+        mock_create_subgraph.return_value = mock_subgraph
+        mock_ci_gate.return_value = (True, [])
+
+        await process_engineering_job(
+            {
+                "task_id": "eng-feat-2",
+                "project_id": "proj-1",
+                "action": "feature",
+                "description": "Add feature",
+                "user_id": "u1",
+                "callback_stream": "po:input",
+            },
+            mock_redis,
+        )
+
+        # Verify allocations were passed to subgraph
+        subgraph_input = mock_subgraph.ainvoke.call_args[0][0]
+        assert "vps-1:8042" in subgraph_input["allocated_resources"]
+
+        # Allocator should NOT have been called
+        mock_allocator.run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_feature_on_scaffold_failed_rejects(self, mock_redis, mock_api):
+        """action=feature on scaffold_failed project must fail fast."""
+        from src.workers.engineering_worker import process_engineering_job
+
+        mock_api.get_project = AsyncMock(
+            return_value={
+                "id": "proj-1",
+                "name": "test-project",
+                "status": "scaffold_failed",
+                "config": {},
+            }
+        )
+
+        result = await process_engineering_job(
+            {
+                "task_id": "eng-feat-3",
+                "project_id": "proj-1",
+                "action": "feature",
+                "description": "Add feature",
+                "user_id": "u1",
+                "callback_stream": "po:input",
+            },
+            mock_redis,
+        )
+
+        assert result["status"] == "failed"
+        assert "scaffold_failed" in result["error"]
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.engineering.create_engineering_subgraph")
+    @patch("src.workers.engineering_worker.resource_allocator_node")
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    async def test_feature_triggers_auto_deploy(
+        self,
+        mock_ci_gate,
+        mock_publish,
+        mock_allocator,
+        mock_create_subgraph,
+        mock_redis,
+        mock_api,
+    ):
+        """action=feature with skip_deploy=False must auto-trigger deploy."""
+        from src.workers.engineering_worker import process_engineering_job
+
+        mock_api.get_project = AsyncMock(
+            return_value={
+                "id": "proj-1",
+                "name": "test-project",
+                "status": "active",
+                "config": {"modules": ["backend"], "description": "A todo API"},
+                "repository_url": "https://github.com/org/test-project",
+            }
+        )
+        mock_api.get_project_allocations = AsyncMock(
+            return_value=[{"server_handle": "srv1", "port": 8001}]
+        )
+
+        mock_subgraph = AsyncMock()
+        mock_subgraph.ainvoke = AsyncMock(
+            return_value={
+                "engineering_status": "done",
+                "commit_sha": "feat789",
+                "worker_id": "w3",
+            }
+        )
+        mock_create_subgraph.return_value = mock_subgraph
+        mock_ci_gate.return_value = (True, [])
+
+        result = await process_engineering_job(
+            {
+                "task_id": "eng-feat-4",
+                "project_id": "proj-1",
+                "action": "feature",
+                "skip_deploy": False,
+                "description": "Add feature",
+                "user_id": "u1",
+                "callback_stream": "po:input",
+            },
+            mock_redis,
+        )
+
+        assert result["status"] == "success"
+        assert result["deploy_task_id"] is not None
+
+        # Verify deploy was queued
+        import json
+
+        from shared.queues import DEPLOY_QUEUE
+
+        xadd_calls = mock_redis.redis.xadd.call_args_list
+        deploy_calls = [c for c in xadd_calls if c[0][0] == DEPLOY_QUEUE]
+        assert len(deploy_calls) == 1
+
+        deploy_data = json.loads(deploy_calls[0][0][1]["data"])
+        assert deploy_data["project_id"] == "proj-1"
+        assert deploy_data["user_id"] == "u1"
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.engineering.create_engineering_subgraph")
+    @patch("src.workers.engineering_worker.resource_allocator_node")
+    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    async def test_feature_description_fallback_to_config(
+        self,
+        mock_ci_gate,
+        mock_publish,
+        mock_allocator,
+        mock_create_subgraph,
+        mock_redis,
+        mock_api,
+    ):
+        """When description is None, falls back to project config description."""
+        from src.workers.engineering_worker import process_engineering_job
+
+        mock_api.get_project = AsyncMock(
+            return_value={
+                "id": "proj-1",
+                "name": "test-project",
+                "status": "active",
+                "config": {"modules": ["backend"], "description": "Original description"},
+                "repository_url": "https://github.com/org/test-project",
+            }
+        )
+        mock_api.get_project_allocations = AsyncMock(
+            return_value=[{"server_handle": "srv1", "port": 8001}]
+        )
+
+        mock_subgraph = AsyncMock()
+        mock_subgraph.ainvoke = AsyncMock(
+            return_value={
+                "engineering_status": "done",
+                "commit_sha": "abc",
+                "worker_id": "w4",
+            }
+        )
+        mock_create_subgraph.return_value = mock_subgraph
+        mock_ci_gate.return_value = (True, [])
+
+        await process_engineering_job(
+            {
+                "task_id": "eng-feat-5",
+                "project_id": "proj-1",
+                "action": "feature",
+                "description": None,
+                "user_id": "u1",
+                "callback_stream": "po:input",
+            },
+            mock_redis,
+        )
+
+        # Subgraph should receive fallback description
+        subgraph_input = mock_subgraph.ainvoke.call_args[0][0]
+        assert subgraph_input["description"] == "Original description"
+
+
 class TestCreateRepoAndSetSecrets:
     """Tests for _create_repo_and_set_secrets (replaced _trigger_scaffolding)."""
 
