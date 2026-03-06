@@ -343,6 +343,37 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
     return "Message sent to user."
 
 
+@tool
+def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web using DuckDuckGo.
+
+    Use this to find documentation for third-party APIs or services
+    when the user's project needs to integrate with an external service.
+
+    Args:
+        query: Search query (e.g. "OpenWeatherMap API documentation").
+        max_results: Maximum number of results to return (default 5).
+    """
+    from duckduckgo_search import DDGS
+
+    try:
+        results = DDGS().text(query, max_results=max_results)
+    except Exception as exc:
+        logger.warning("web_search_failed", query=query, error=str(exc))
+        return f"Search failed: {exc}"
+
+    if not results:
+        return f"No results found for: {query}"
+
+    lines = []
+    for r in results:
+        lines.append(f"**{r['title']}**")
+        lines.append(f"{r['body']}")
+        lines.append(f"URL: {r['href']}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def get_all_tools() -> list:
     """Return all PO tools for the ReactAgent."""
     return [
@@ -355,4 +386,5 @@ def get_all_tools() -> list:
         get_task_status,
         set_reminder,
         notify_user,
+        web_search,
     ]

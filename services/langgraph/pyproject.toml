@@ -33,6 +33,9 @@ dependencies = [
 
     # Telethon for Telegram bot smoke tests (optional — graceful skip if not configured)
     "telethon>=1.36.0",
+
+    # Web search for PO agent (DuckDuckGo, no API key needed)
+    "duckduckgo-search>=7.0.0",
 ]
 
 [build-system]

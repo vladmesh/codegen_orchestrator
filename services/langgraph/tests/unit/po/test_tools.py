@@ -21,6 +21,7 @@ from src.po.tools import (
     set_reminder,
     trigger_deploy,
     trigger_engineering,
+    web_search,
 )
 
 
@@ -398,10 +399,79 @@ class TestNotifyUser:
         assert fields["user_id"] == "user-456"
 
 
+class TestWebSearch:
+    @pytest.mark.asyncio
+    async def test_returns_formatted_results(self):
+        mock_results = [
+            {
+                "title": "OpenWeather API",
+                "body": "Free weather API",
+                "href": "https://openweathermap.org/api",
+            },
+            {
+                "title": "Weather API Docs",
+                "body": "Documentation for weather",
+                "href": "https://example.com/docs",
+            },
+        ]
+        mock_ddgs = MagicMock()
+        mock_ddgs.text.return_value = mock_results
+
+        with patch("duckduckgo_search.DDGS", return_value=mock_ddgs):
+            result = await web_search.ainvoke(
+                {"query": "weather API documentation"},
+                config=_make_config("user-1"),
+            )
+
+        assert "OpenWeather API" in result
+        assert "https://openweathermap.org/api" in result
+        assert "Weather API Docs" in result
+        mock_ddgs.text.assert_called_once_with("weather API documentation", max_results=5)
+
+    @pytest.mark.asyncio
+    async def test_custom_max_results(self):
+        mock_ddgs = MagicMock()
+        mock_ddgs.text.return_value = []
+
+        with patch("duckduckgo_search.DDGS", return_value=mock_ddgs):
+            await web_search.ainvoke(
+                {"query": "test", "max_results": 3},
+                config=_make_config("user-1"),
+            )
+
+        mock_ddgs.text.assert_called_once_with("test", max_results=3)
+
+    @pytest.mark.asyncio
+    async def test_no_results(self):
+        mock_ddgs = MagicMock()
+        mock_ddgs.text.return_value = []
+
+        with patch("duckduckgo_search.DDGS", return_value=mock_ddgs):
+            result = await web_search.ainvoke(
+                {"query": "nonexistent thing xyz"},
+                config=_make_config("user-1"),
+            )
+
+        assert "No results" in result
+
+    @pytest.mark.asyncio
+    async def test_handles_search_error(self):
+        mock_ddgs = MagicMock()
+        mock_ddgs.text.side_effect = Exception("rate limited")
+
+        with patch("duckduckgo_search.DDGS", return_value=mock_ddgs):
+            result = await web_search.ainvoke(
+                {"query": "test"},
+                config=_make_config("user-1"),
+            )
+
+        assert "Search failed" in result
+
+
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 9
+        expected_count = 10
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -417,4 +487,5 @@ class TestGetAllTools:
             "get_task_status",
             "set_reminder",
             "notify_user",
+            "web_search",
         }

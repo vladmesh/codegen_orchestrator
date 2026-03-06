@@ -28,6 +28,8 @@ cffi==2.0.0
     #   pynacl
 charset-normalizer==3.4.4
     # via requests
+click==8.3.1
+    # via duckduckgo-search
 cryptography==46.0.3
     # via pyjwt
 distro==1.9.0
@@ -36,6 +38,8 @@ distro==1.9.0
     #   openai
 docstring-parser==0.17.0
     # via anthropic
+duckduckgo-search==8.1.1
+    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 dydantic==0.0.8
     # via trustcall
 frozenlist==1.8.0
@@ -114,6 +118,8 @@ langsmith==0.5.1
     # via
     #   langchain-core
     #   langmem
+lxml==6.0.2
+    # via duckduckgo-search
 multidict==6.7.0
     # via
     #   aiohttp
@@ -131,6 +137,8 @@ packaging==25.0
     # via
     #   langchain-core
     #   langsmith
+primp==1.1.2
+    # via duckduckgo-search
 propcache==0.4.1
     # via
     #   aiohttp
