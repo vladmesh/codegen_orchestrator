@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #42 Fix API Integration Test (test_post_projects_pure_db)
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: `test_pure_crud.py::test_post_projects_pure_db` не отправляет `X-Telegram-ID` header. Сломан после #39 (owner_id NOT NULL). Pre-existing failure, обнаружен при CI #8.
-
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
 - **User Story**: —
@@ -118,6 +111,7 @@
 
 ## Done (last 10)
 
+- #42 Fix API Integration Test (test_post_projects_pure_db) — 2026-03-06
 - #45 PO: Context-Aware Env Variables & Hints — 2026-03-06
 - #44 PO: DuckDuckGo Search Tool — 2026-03-06
 - #43 PO: Сократический диалог и формирование ТЗ — 2026-03-06
@@ -127,4 +121,3 @@
 - #33 Secrets Hygiene — 2026-03-06
 - #32 Prod Deploy Pipeline — 2026-03-06
 - #38 Fix Service Integration Tests After Multi-User Isolation — 2026-03-06
-- #31 Port Allocation Locking — 2026-03-05

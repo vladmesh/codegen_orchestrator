@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #42 Fix API Integration Test (test_post_projects_pure_db)
+- **Backlog**: —
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: (empty)
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 42 | Fix API Integration Test (test_post_projects_pure_db) |
 | 45 | PO: Context-Aware Env Variables & Hints |
 | 44 | PO: DuckDuckGo Search Tool |
 | 43 | PO: Сократический диалог и формирование ТЗ |
