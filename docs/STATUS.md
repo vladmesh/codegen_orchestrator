@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #47 Race Condition in set_project_secret (parallel tool calls)
-- **Plan**: docs/plans/race-condition-set-project-secret.md
-- **Step**: 1/5 — Add POST /api/projects/{id}/config/secrets endpoint
-- **Done Steps**: (empty)
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 47 | Race Condition in set_project_secret (parallel tool calls) |
 | 42 | Fix API Integration Test (test_post_projects_pure_db) |
 | 45 | PO: Context-Aware Env Variables & Hints |
 | 44 | PO: DuckDuckGo Search Tool |

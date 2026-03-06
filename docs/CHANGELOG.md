@@ -5,6 +5,9 @@
 ## 2026-03-06
 
 ### Added
+- `POST /api/projects/{id}/config/secrets` atomic merge endpoint with `SELECT FOR UPDATE` locking (#47)
+- `merge_secrets()` method on `LanggraphAPIClient` (#47)
+- Concurrent secrets merge integration test (#47)
 - `user_name` field on `POUserMessage`; telegram bot populates from `tg_user.first_name` (#45)
 - User context injection `[context: user_id=..., user_name=...]` prefix on PO messages (#45)
 - `hint` parameter on `set_project_secret` tool; hints stored in `config.env_hints` (#45)
@@ -19,9 +22,12 @@
 - Unit tests for PO prompt content and tool docstrings (#43)
 
 ### Fixed
+- Race condition in `set_project_secret` when LLM calls it in parallel — secrets no longer lost (#47)
 - `test_post_projects_pure_db` integration test — add `X-Telegram-ID` header and seed user via API (#42)
 
 ### Changed
+- `set_project_secret` PO tool uses single POST instead of GET→decrypt→merge→encrypt→PATCH (#47)
+- `_save_secrets_to_project` in devops nodes delegates to `api_client.merge_secrets` (#47)
 - `owner_id` on projects is now NOT NULL — every project must have an owner (#39)
 - `POST /api/projects/` returns 400 if `X-Telegram-ID` header is missing (#39)
 - `github_sync` no longer creates orphan projects — sends admin notification for unknown repos (#39)

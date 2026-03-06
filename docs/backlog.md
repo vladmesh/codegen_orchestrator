@@ -4,6 +4,13 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #48 Corrupted Checkpoint Recovery (orphan tool_calls)
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: PO agent крашится с `ValueError: Found AIMessages with tool_calls that do not have a corresponding ToolMessage` когда checkpoint содержит AIMessage с tool_call без парного ToolMessage. Реальный кейс: reminder сработал, PO вызвал `get_task_status`, tool result не сохранился (краш/таймаут), checkpoint сломан навсегда — пользователь заблокирован. Фикс: 1) обёртка вокруг tool execution в consumer — гарантировать запись ToolMessage (даже с ошибкой) при любом исходе; 2) recovery logic в `_handle_message` — если `_validate_chat_history` падает, добавить фейковый ToolMessage с ошибкой и retry. Файлы: `services/langgraph/src/po/consumer.py`.
+
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
 - **User Story**: —
@@ -74,13 +81,6 @@
 - **Status**: pending
 - **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task` в `langgraph/src/worker/provisioner.py:100`), но все задачи упираются в единственный infra-service consumer. Фикс: спавнить `asyncio.create_task` для каждого job в consumer loop (аналогично provisioner.py), или запускать N consumer-реплик infra-service.
 
-### #47 Race Condition in set_project_secret (parallel tool calls)
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/race-condition-set-project-secret.md
-- **Status**: pending
-- **Brief**: Когда LLM вызывает `set_project_secret` параллельно (parallel tool calls), происходит read-modify-write race condition: оба вызова читают config одновременно, каждый пишет свою версию, последний перезатирает первый. Реальный кейс: `TELEGRAM_BOT_TOKEN` потерян из-за параллельного `ADMIN_TELEGRAM_ID`. Фикс: атомарный endpoint `POST /api/projects/{id}/config/secrets` который делает merge (не replace), или optimistic locking (ETag). Файлы: `services/langgraph/src/po/tools.py:152-188`, `services/api/src/routers/projects.py`.
-
 ### #46 Rename duckduckgo_search → ddgs
 - **Priority**: LOW
 - **User Story**: —
@@ -125,6 +125,7 @@
 
 ## Done (last 10)
 
+- #47 Race Condition in set_project_secret (parallel tool calls) — 2026-03-06
 - #42 Fix API Integration Test (test_post_projects_pure_db) — 2026-03-06
 - #45 PO: Context-Aware Env Variables & Hints — 2026-03-06
 - #44 PO: DuckDuckGo Search Tool — 2026-03-06
@@ -134,4 +135,3 @@
 - #34 US3: Add Feature to Existing Project — 2026-03-06
 - #33 Secrets Hygiene — 2026-03-06
 - #32 Prod Deploy Pipeline — 2026-03-06
-- #38 Fix Service Integration Tests After Multi-User Isolation — 2026-03-06
