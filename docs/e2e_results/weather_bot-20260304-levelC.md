@@ -73,7 +73,7 @@ Telegram bot is connected and polling (`getUpdates` every 10s, no errors).
 
 - **Severity**: minor
 - **Type**: template
-- **Backlog**: service-template backlog
+- **Backlog**: `template (triaged)` — tracked in service-template backlog
 - **Description**: `template/services/tg_bot/AGENTS.md.jinja:40` documents `API_BASE_URL` but the actual code (`main.py.jinja:49`) and `.env.jinja:22` use `BACKEND_API_URL`. The agent reads AGENTS.md, writes code using the wrong variable name, and may get runtime errors.
 - **Root cause**: Commit `370b297` (2026-02-09) renamed the variable in `.env`, `.env.example`, and `main.py` but missed `AGENTS.md.jinja`. The inconsistency has persisted for 3+ weeks.
 - **Fix**: One-line change in `/home/vlad/projects/service-template/template/services/tg_bot/AGENTS.md.jinja:40` — replace `API_BASE_URL` with `BACKEND_API_URL`.

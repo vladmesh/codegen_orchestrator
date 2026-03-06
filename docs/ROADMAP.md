@@ -14,7 +14,7 @@
 - [x] Worker network isolation (#22)
 - [x] Fix & consolidate test suites (#6)
 
-## Phase 2A: Pre-MVP (alpha blockers)
+## Phase 2A: Pre-MVP (alpha blockers) — COMPLETE
 
 Цель: пустить 2-3 альфа-тестера. Изоляция, инфра, core product flow.
 
@@ -24,15 +24,15 @@
 - [x] Port allocation locking (#31) — atomic allocate-or-fail
 
 **Infrastructure (prod readiness):**
-- [ ] Prod deploy pipeline (#32) — test deploy.yml, worker images build, DB backup cron
-- [ ] Secrets hygiene (#33) — remove PEM from git, dedicated SSH key
+- [x] Prod deploy pipeline (#32) — test deploy.yml, worker images build, DB backup cron
+- [x] Secrets hygiene (#33) — remove PEM from git, dedicated SSH key
 - [x] Fix critical getenv defaults (#24)
 - [x] Extract shared code (#23)
 - [x] Post-deploy smoke tester (#25)
 - [x] Fix ORCHESTRATOR_USER_ID defaults (#29)
 
 **Product:**
-- [ ] US3: Add feature to existing project (#34) — PO tool + engineering flow + E2E
+- [x] US3: Add feature to existing project (#34) — PO tool + engineering flow + E2E
 
 ── ALPHA RELEASE ──
 
@@ -40,7 +40,7 @@
 
 Цель: по фидбеку альфы. Устойчивость, cleanup, оптимизация.
 
-- [ ] Workspace failure counter & retry limit (#8)
+- [x] Workspace failure counter & retry limit (#8)
 - [ ] Deploy pre-check: validate server state (#21)
 - [ ] Security: deploy cleanup (#7) — docker prune на серверах
 - [ ] Worker lifecycle: pause/unpause, CPU/RAM limits (#10)

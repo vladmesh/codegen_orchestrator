@@ -28,19 +28,19 @@ Audit performed while implementing the Todo API (GET/POST/PATCH/DELETE /todos) u
 ### Problem 2: ORMBase forces `updated_at` on all models
 - **Severity**: minor
 - **Type**: template
-- **Backlog**: service-template backlog
+- **Backlog**: `template (triaged)` — tracked in service-template backlog
 - **Description**: `ORMBase` bundles both `created_at` and `updated_at`. Models needing only `created_at` must use `Base` directly. Fix: add `CreatedAtBase` mixin.
 
 ### Problem 3: No router code generation from specs
 - **Severity**: minor
 - **Type**: template
-- **Backlog**: service-template backlog
+- **Backlog**: `template (triaged)` — tracked in service-template backlog
 - **Description**: Domain spec has all info to generate routers but they must be written manually. Most boilerplate-heavy part.
 
 ### Problem 4: No `__init__.py` re-export updates after generation
 - **Severity**: minor
 - **Type**: template
-- **Backlog**: service-template backlog
+- **Backlog**: `template (triaged)` — tracked in service-template backlog
 - **Description**: `schemas/__init__.py`, `models/__init__.py`, `repositories/__init__.py` need manual updates after adding new domains.
 
 ### Problem 5: AGENTS.md in Russian

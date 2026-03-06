@@ -67,13 +67,13 @@
 ### Problem 1: `make setup` not idempotent — fails if `.venv` exists
 - **Severity**: minor
 - **Type**: template
-- **Backlog**: service-template backlog
+- **Backlog**: `template (triaged)` — tracked in service-template backlog
 - **Description**: `make setup` fails with "A virtual environment already exists". Fix: `uv venv --clear`.
 
 ### Problem 2: Xenon excludes don't cover service test directories
 - **Severity**: minor
 - **Type**: template
-- **Backlog**: service-template backlog
+- **Backlog**: `template (triaged)` — tracked in service-template backlog
 - **Description**: `--exclude '.framework/*,tests/*'` only matches root `tests/`, not `services/*/tests/`. Test files flagged for complexity.
 
 ### Problem 3: `make makemigrations` requires running PostgreSQL

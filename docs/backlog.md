@@ -1,6 +1,6 @@
 # Backlog
 
-> **Актуально на**: 2026-03-06
+> **Актуально на**: 2026-03-06 (triage)
 
 ## Queue (ordered by priority, first = next)
 
@@ -74,6 +74,20 @@
 - **Status**: pending
 - **Brief**: Сейчас `shared/notifications.py` шлёт в Telegram API напрямую — scheduler, infra-service держат `TELEGRAM_BOT_TOKEN`. Нужно: сервисы публикуют в Redis stream `notifications:queue`, telegram_bot потребляет и отправляет. Убирает `TELEGRAM_BOT_TOKEN` из всех сервисов кроме telegram_bot, упрощает тесты, единая точка отправки. Источник: #24 code review.
 
+### #43 PO: Сократический диалог и формирование ТЗ
+- **Priority**: MEDIUM
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Обновить системный промпт PO (`services/langgraph/src/po/prompts.py`) для сократического диалога — PO задаёт 2-3 уточняющих вопроса, собирает детализированное ТЗ и только потом вызывает `trigger_engineering`. Быстрый win для MVP (источник: brainstorm po-smart-node)
+
+### #44 PO: DuckDuckGo Search Tool
+- **Priority**: MEDIUM
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Добавить инструмент веб-поиска (DuckDuckGo) в `services/langgraph/src/po/tools.py`. PO использует его для поиска документации по сторонним API перед формированием ТЗ. (источник: brainstorm po-smart-node)
+
 ### #41 Parallel Server Provisioning
 - **Priority**: LOW
 - **User Story**: —
@@ -114,6 +128,7 @@
 - Shared Docker image layer для интеграционных тестов — собрать api/db/redis один раз, шарить между стеками через GHA artifacts (источник: brainstorm ci-integration-test-speed, Option B)
 - Объединить мелкие compose-стеки (frontend 1 тест + infra 2 теста) для экономии одного up/down цикла (источник: brainstorm ci-integration-test-speed, Option D)
 - CI: cache copier template clone для template integration tests — marginal gain ~10-15с, сложный cache invalidation (источник: brainstorm ci-integration-test-speed)
+- Отдельный UI/UX для подтверждения собранного ТЗ пользователем перед инженерным этапом (источник: brainstorm po-smart-node)
 
 ## Done (last 10)
 
