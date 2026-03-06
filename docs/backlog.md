@@ -4,6 +4,20 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #45 Context-Aware Env Variables (PO to Developer)
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Улучшить передачу контекста от PO ReactAgent к Developer Worker. Добавить `env_hints` в конфиг проекта. Доработать `set_project_secret` у ПО для сохранения подсказок. Инжектить список готовых env vars в системный промпт Девелопера. (источник: brainstorm managed-integrations-env-hints)
+
+### #45 PO: Context-Aware Env Variables & Hints
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Улучшить передачу контекста от PO к Девелоперу. Прокинуть `user_id` в контекст PO, добавить параметр `hint` в тулзу `set_project_secret` с сохранением в `config.env_hints`, и инжектить эти хинты в системный промпт Developer Worker'а. Сделать так, чтобы PO сам создавал нужные env vars без хардкода. (источник: brainstorm po-env-hints.md)
+
 ### #44 PO: DuckDuckGo Search Tool
 - **Priority**: HIGH
 - **User Story**: —
