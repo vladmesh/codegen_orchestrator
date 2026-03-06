@@ -1,4 +1,3 @@
-import asyncio
 from collections.abc import AsyncGenerator
 import os
 import sys
@@ -14,14 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Use env vars or defaults matching docker-compose
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@db:5432/postgres")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for each test case."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest.fixture(scope="session")
