@@ -1,8 +1,8 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
-- **Plan**: —
+- **Backlog**: #50 Fix Description Loss in Create Flow
+- **Plan**: [task-description-flow](plans/task-description-flow.md)
 - **Step**: —
 - **Done Steps**: —
 

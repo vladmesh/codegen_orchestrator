@@ -4,6 +4,13 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #50 Fix Description Loss in Create Flow
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: [task-description-flow](plans/task-description-flow.md)
+- **Status**: pending
+- **Brief**: Description из `trigger_engineering` теряется для action=create — воркер получает `Detailed Spec: N/A`. Три точки фикса: (1) `trigger_engineering` сохраняет description в `project.config.detailed_spec` через API PATCH, (2) `_build_create_task` использует `feature_description` из state как fallback, (3) промпт PO инструктирует передавать `detailed_spec` в `create_project`. Brainstorm: `docs/brainstorms/task-description-flow.md`.
+
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
 - **User Story**: —
