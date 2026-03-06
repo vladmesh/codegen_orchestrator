@@ -133,6 +133,20 @@ async def create_project(
         raise
 
 
+@router.get("/by-repo-id/{repo_id}", response_model=ProjectRead)
+async def get_project_by_repo_id(
+    repo_id: int,
+    db: AsyncSession = Depends(get_async_session),
+) -> Project:
+    """Get project by GitHub repository ID. Used by scheduler github_sync."""
+    query = select(Project).where(Project.github_repo_id == repo_id)
+    result = await db.execute(query)
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
 @router.get("/{project_id}", response_model=ProjectRead)
 async def get_project(
     project_id: str,
