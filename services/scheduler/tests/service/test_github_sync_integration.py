@@ -1,33 +1,31 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
-from shared.contracts.dto.project import ProjectStatus
 from src.tasks import github_sync
 
 
 @pytest.mark.asyncio
-async def test_github_sync_integration_flow(mock_github, api_client):
+async def test_github_sync_notifies_admins_for_unknown_repo(mock_github, api_client):
     """
-    Integration Test: GitHub Sync Flow
+    Integration Test: GitHub Sync — unknown repo triggers admin notification.
 
-    1. Seed Mock GitHub with a new repository.
+    1. Seed Mock GitHub with a repository not tracked in DB.
     2. Run the sync task.
-    3. Verify Project is created in the API.
+    3. Verify no project is created and notify_admins was called.
     """
-    # 1. Seed Mock Data
     org_name = "test-org"
     repo_name = "integration-demo"
 
-    # Must match GITHUB_ORG_NAME env var set in docker-compose
     repo = await mock_github.create_repo(org=org_name, name=repo_name, private=True)
 
-    # 2. Run Sync Task
-    # We invoke _sync_single_repo directly because the worker has an infinite loop
-    await github_sync._sync_single_repo(mock_github, repo, missing_counters={})
+    with patch("src.tasks.github_sync.notify_admins", new_callable=AsyncMock) as mock_notify:
+        await github_sync._sync_single_repo(mock_github, repo, missing_counters={})
 
-    # 3. Verify in API
+    # Project should NOT be created
     project = await api_client.get_project_by_repo_id(repo.id)
+    assert project is None
 
-    assert project is not None
-    assert project.name == repo_name
-    assert project.github_repo_id == repo.id
-    assert project.status == ProjectStatus.DISCOVERED
+    # Admin notification should have been sent
+    mock_notify.assert_called_once()
+    assert repo_name in mock_notify.call_args[0][0]

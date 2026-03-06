@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 
-from shared.contracts.dto.project import ProjectCreate, ProjectDTO, ProjectUpdate
+from shared.contracts.dto.project import ProjectDTO, ProjectUpdate
 from shared.contracts.dto.server import ServerCreate, ServerDTO, ServerUpdate
 from src.config import get_settings
 
@@ -58,10 +58,6 @@ class SchedulerAPIClient:
     async def get_projects(self) -> list[ProjectDTO]:
         resp = await self._request("GET", "projects")
         return [ProjectDTO.model_validate(p) for p in resp.json()]
-
-    async def create_project(self, project: ProjectCreate) -> ProjectDTO:
-        resp = await self._request("POST", "projects", json=project.model_dump())
-        return ProjectDTO.model_validate(resp.json())
 
     async def update_project(self, project_id: str, project: ProjectUpdate) -> ProjectDTO:
         resp = await self._request(
