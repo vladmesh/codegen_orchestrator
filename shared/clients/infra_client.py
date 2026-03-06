@@ -7,7 +7,11 @@ Phase 4.4 addition for Diagnose capability.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from datetime import UTC
+import os
+import stat
+import tempfile
 from typing import TYPE_CHECKING
 
 import structlog
@@ -15,18 +19,30 @@ import structlog
 if TYPE_CHECKING:
     pass
 
-from shared.constants import Paths, Timeouts
+from shared.constants import Timeouts
 
 logger = structlog.get_logger(__name__)
 
-# SSH configuration - use centralized constants
-SSH_KEY_PATH = Paths.SSH_KEY
 SSH_TIMEOUT = Timeouts.SSH_COMMAND
+
+
+@contextmanager
+def _ssh_key_tempfile(ssh_key: str):
+    """Write SSH key to a secure temporary file, yield path, clean up after."""
+    fd, path = tempfile.mkstemp(prefix="orch_ssh_", suffix=".key")
+    try:
+        os.write(fd, ssh_key.encode())
+        os.close(fd)
+        os.chmod(path, stat.S_IRUSR)  # 0o400
+        yield path
+    finally:
+        os.unlink(path)
 
 
 async def run_ssh_command(
     server_ip: str,
     command: str,
+    ssh_key: str,
     timeout: int = SSH_TIMEOUT,
 ) -> tuple[bool, str, str]:
     """Run a command on a remote server via SSH.
@@ -34,56 +50,59 @@ async def run_ssh_command(
     Args:
         server_ip: Server IP address
         command: Command to run
+        ssh_key: SSH private key content
         timeout: Timeout in seconds
 
     Returns:
         Tuple of (success, stdout, stderr)
     """
-    ssh_cmd = [
-        "ssh",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        f"ConnectTimeout={min(timeout, 10)}",
-        "-i",
-        SSH_KEY_PATH,
-        f"root@{server_ip}",
-        command,
-    ]
+    with _ssh_key_tempfile(ssh_key) as key_path:
+        ssh_cmd = [
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={min(timeout, 10)}",
+            "-i",
+            key_path,
+            f"root@{server_ip}",
+            command,
+        ]
 
-    try:
-        process = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *ssh_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            ),
-            timeout=timeout,
-        )
+        try:
+            process = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    *ssh_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                ),
+                timeout=timeout,
+            )
 
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout,
-        )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=timeout,
+            )
 
-        success = process.returncode == 0
-        return success, stdout.decode(), stderr.decode()
+            success = process.returncode == 0
+            return success, stdout.decode(), stderr.decode()
 
-    except TimeoutError:
-        logger.warning("ssh_command_timeout", server_ip=server_ip, timeout=timeout)
-        return False, "", "Command timed out"
-    except Exception as e:
-        logger.error("ssh_command_error", server_ip=server_ip, error=str(e))
-        return False, "", str(e)
+        except TimeoutError:
+            logger.warning("ssh_command_timeout", server_ip=server_ip, timeout=timeout)
+            return False, "", "Command timed out"
+        except Exception as e:
+            logger.error("ssh_command_error", server_ip=server_ip, error=str(e))
+            return False, "", str(e)
 
 
 async def get_container_logs(
     server_ip: str,
     container_name: str,
+    ssh_key: str,
     lines: int = 100,
     since: str | None = None,
 ) -> dict:
@@ -92,6 +111,7 @@ async def get_container_logs(
     Args:
         server_ip: Server IP address
         container_name: Container/service name
+        ssh_key: SSH private key content
         lines: Number of lines to fetch
         since: ISO timestamp to get logs from (optional)
 
@@ -105,7 +125,7 @@ async def get_container_logs(
         cmd += f" --since {since}"
     cmd += f" {container_name} 2>&1"
 
-    success, stdout, stderr = await run_ssh_command(server_ip, cmd)
+    success, stdout, stderr = await run_ssh_command(server_ip, cmd, ssh_key=ssh_key)
 
     if success or stdout:  # docker logs outputs to stdout even on "error"
         return {
@@ -124,12 +144,14 @@ async def get_container_logs(
 async def get_container_status(
     server_ip: str,
     container_name: str,
+    ssh_key: str,
 ) -> dict:
     """Get status of a Docker container via SSH.
 
     Args:
         server_ip: Server IP address
         container_name: Container/service name
+        ssh_key: SSH private key content
 
     Returns:
         {
@@ -142,7 +164,7 @@ async def get_container_status(
     format_str = "'{{{{.State.Status}}}}|{{{{.State.Health.Status}}}}|{{{{.State.StartedAt}}}}'"
     cmd = f"docker inspect --format {format_str} {container_name} 2>/dev/null || echo 'not_found'"
 
-    success, stdout, stderr = await run_ssh_command(server_ip, cmd)
+    success, stdout, stderr = await run_ssh_command(server_ip, cmd, ssh_key=ssh_key)
 
     if not success or stdout.strip() == "not_found":
         return {
@@ -182,12 +204,14 @@ async def get_container_status(
 async def get_container_stats(
     server_ip: str,
     container_name: str,
+    ssh_key: str,
 ) -> dict:
     """Get resource usage stats for a container.
 
     Args:
         server_ip: Server IP address
         container_name: Container/service name
+        ssh_key: SSH private key content
 
     Returns:
         {"cpu_percent": 5.2, "memory_mb": 128, "memory_limit_mb": 512}
@@ -196,7 +220,7 @@ async def get_container_stats(
     cmd_base = f"docker stats --no-stream --format {format_str} {container_name}"
     cmd = f"{cmd_base} 2>/dev/null || echo 'not_found'"
 
-    success, stdout, stderr = await run_ssh_command(server_ip, cmd)
+    success, stdout, stderr = await run_ssh_command(server_ip, cmd, ssh_key=ssh_key)
 
     if not success or stdout.strip() == "not_found":
         return {"error": f"Container {container_name} not found"}

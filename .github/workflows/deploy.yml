@@ -80,7 +80,6 @@ jobs:
             LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }}
 
             # Prod secret paths (used by docker-compose.prod.yml)
-            SSH_KEY_PATH=/opt/secrets/ssh_key
             GITHUB_APP_PEM_PATH=/opt/secrets/github_app.pem
             ENVEOF
 
@@ -96,9 +95,6 @@ jobs:
 
             echo '${{ secrets.GH_APP_PRIVATE_KEY }}' > /opt/secrets/github_app.pem
             chmod 600 /opt/secrets/github_app.pem
-
-            echo '${{ secrets.ORCHESTRATOR_SSH_KEY }}' > /opt/secrets/ssh_key
-            chmod 600 /opt/secrets/ssh_key
 
       - name: Pull latest code
         uses: appleboy/ssh-action@v1

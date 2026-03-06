@@ -10,7 +10,6 @@ import os
 class Paths:
     """File system paths used across services."""
 
-    SSH_KEY = os.getenv("SSH_KEY_PATH", "/root/.ssh/id_ed25519")
     ANSIBLE_PLAYBOOKS = os.getenv(
         "ANSIBLE_PLAYBOOKS_PATH",
         "/app/ansible/playbooks",

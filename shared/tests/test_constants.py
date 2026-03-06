@@ -4,9 +4,6 @@ from shared.constants import CI, Paths, Provisioning, Timeouts
 
 
 class TestPaths:
-    def test_ssh_key_default(self):
-        assert Paths.SSH_KEY == "/root/.ssh/id_ed25519"
-
     def test_ansible_playbooks_default(self):
         assert Paths.ANSIBLE_PLAYBOOKS == "/app/ansible/playbooks"
 
