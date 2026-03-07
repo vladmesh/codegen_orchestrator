@@ -4,6 +4,12 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #62 /brainstorm resume — продолжение обсуждения существующего драфта
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: /brainstorm должен уметь подхватить существующий draft из БД и продолжить дискуссию. Сценарий: /brainstorm resume → GET /api/brainstorms/?status=draft → список → выбор → дополнение content. Также: миграция 14 legacy brainstorms из docs/brainstorms/ в БД (status=draft/done/triaged по текущему стат...
+
 ### #59 PO work item tools (Step 4)
 - **Priority**: LOW
 - **Plan**: —
