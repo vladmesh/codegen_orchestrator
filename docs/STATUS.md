@@ -1,9 +1,9 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #56 `/next` skill via API (Step 1)
-- **Plan**: docs/plans/next-skill-via-api.md
-- **Step**: 1/6 — Add `limit` query param to list work items endpoint
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
 - **Done Steps**: —
 
 ## Blocked
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 56 | `/next` skill via API (Step 1) |
 | 55 | WorkItem Model + API + Backlog Migration (Step 0) |
 | 51 | SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save |
 | 50 | Fix Description Loss in Create Flow |

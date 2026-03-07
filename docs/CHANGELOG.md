@@ -5,6 +5,10 @@
 ## 2026-03-07
 
 ### Added
+- **`/next` skill via Work Items API** (#56): First skill migrated from markdown parsing to API. `/next` now picks tasks via `GET /api/work-items/?status=backlog&limit=1` and starts them via `POST /api/work-items/{id}/start`.
+  - `limit` and `sort` query params on list endpoint
+  - `GET /api/work-items/by-tag/{tag}` — lookup by backlog tag (e.g. `#53`)
+  - 5 service tests for the `/next` flow
 - **WorkItem task management system** (#55): Planning layer for tracking features/fixes with agile statuses (backlog → todo → in_dev → testing → done). Models: `WorkItem`, `WorkItemEvent`. Action-based API with state machine validation. Alembic migration, 25+ unit tests, service tests, backlog migration script.
   - `POST/GET/PATCH/DELETE /api/work-items/` — CRUD
   - `POST /api/work-items/{id}/start|complete|fail|reopen|transition` — state machine actions

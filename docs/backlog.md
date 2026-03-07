@@ -96,13 +96,6 @@
 - **Status**: pending
 - **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при firewall-правилах. Фикс: при генерации `.env` для prod inter-service переменные (`*_API_URL`, `*_HOST`) должны указывать на docker service name, а не на внешний IP. Затронуты: `services/langgraph/src/subgraphs/devops/nodes.py` (генерация .env), возможно `service-template` шаблон `.env.prod`. Источник: fortune-telling-bot — tg_bot ходил в backend через `http://176.223.131.124:8000`.
 
-### #56 `/next` skill via API (Step 1)
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: docs/plans/next-skill-via-api.md
-- **Status**: pending
-- **Brief**: Переписать `/next` skill с парсинга backlog.md на `GET /api/work-items?status=backlog&limit=1` + `POST /api/work-items/{id}/start`. STATUS.md по-прежнему обновляется для контекста агента. API-only (без fallback на файлы — `make up` обязателен). Proof of concept: первый скилл на API. Источник: brainstorm orchestrator-v2-task-management (Step 1).
-
 ### #57 `/implement` work item events (Step 2)
 - **Priority**: HIGH
 - **User Story**: —
@@ -162,6 +155,7 @@
 
 ## Done (last 10)
 
+- #56 `/next` skill via API (Step 1) — 2026-03-07
 - #55 WorkItem Model + API + Backlog Migration (Step 0) — 2026-03-07
 - #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save — 2026-03-07
 - #50 Fix Description Loss in Create Flow — 2026-03-07
