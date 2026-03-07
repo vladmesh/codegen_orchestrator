@@ -27,6 +27,7 @@ def _make_work_item(**overrides):
         "max_iterations": 3,
         "created_by": "system",
         "source_brainstorm_id": None,
+        "milestone_id": None,
         "created_at": now,
         "updated_at": now,
     }
