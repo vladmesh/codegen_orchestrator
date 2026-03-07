@@ -5,6 +5,7 @@ from .api_key import APIKey
 from .base import Base
 from .brainstorm import Brainstorm
 from .incident import Incident, IncidentStatus, IncidentType
+from .milestone import Milestone
 from .port_allocation import PortAllocation
 from .project import Project
 from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGMessage, RAGScope
@@ -19,6 +20,7 @@ __all__ = [
     "AgentConfig",
     "Base",
     "Brainstorm",
+    "Milestone",
     "Project",
     "Resource",
     "RAGChunk",

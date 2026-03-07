@@ -36,6 +36,9 @@ class WorkItem(Base):
     source_brainstorm_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("brainstorms.id"), nullable=True
     )
+    milestone_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("milestones.id"), nullable=True, index=True
+    )
 
 
 class WorkItemEvent(Base):
