@@ -438,11 +438,60 @@ async def test_complete_from_testing():
 
     assert resp.status_code == 200  # noqa: PLR2004
     assert task.status == "done"
+    # Direct transition: testing → done (1 event)
+    assert session.add.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_from_in_ci():
+    """Complete from in_ci should auto-promote: in_ci → testing → done."""
+    task = _make_task(id="task-abc", status="in_ci")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/tasks/task-abc/complete")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert task.status == "done"
+    # Two events: in_ci → testing, testing → done
+    assert session.add.call_count == 2  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_complete_from_in_dev():
+    """Complete from in_dev should auto-promote: in_dev → in_ci → testing → done."""
+    task = _make_task(id="task-abc", status="in_dev")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/tasks/task-abc/complete")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert task.status == "done"
+    # Three events: in_dev → in_ci, in_ci → testing, testing → done
+    assert session.add.call_count == 3  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
 async def test_complete_from_backlog_fails():
     task = _make_task(id="task-abc", status="backlog")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/tasks/task-abc/complete")
+
+    assert resp.status_code == 422  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_complete_from_cancelled_fails():
+    task = _make_task(id="task-abc", status="cancelled")
     session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
