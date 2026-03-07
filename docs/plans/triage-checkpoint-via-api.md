@@ -27,13 +27,14 @@ view generated from the database.
 
 ## Steps
 
-1. [ ] API: add `since` filter and `/stats` endpoint
+1. [ ] API: add `since` filter, `/stats`, `/next-tag`, and `project_id` in WorkItemUpdate
    - **Input**: `services/api/src/routers/work_items.py`, `services/api/src/schemas/work_item.py`
    - **Output**:
      - `GET /api/work-items/?since=2026-03-01T00:00:00Z` — filters by `updated_at >= since`
      - `GET /api/work-items/stats` — returns `{backlog: N, todo: N, in_dev: N, done: N, ...}` counts by status
      - `GET /api/work-items/next-tag` — returns `{"next_tag": 61}` (max tag number + 1)
-   - **Test**: Unit tests for each new endpoint (since filter, stats, next-tag)
+     - `WorkItemUpdate` schema: add optional `project_id: str | None` field (allows PATCH to reassign project)
+   - **Test**: Unit tests for each new endpoint and for project_id update
 
 2. [ ] Backlog generation script
    - **Input**: Work Items API, `docs/backlog.md` (current format as reference)
@@ -43,7 +44,7 @@ view generated from the database.
 3. [ ] Update `/triage` skill to use API
    - **Input**: `.claude/skills/triage/SKILL.md`
    - **Output**: Updated skill that:
-     - Creates tasks via `curl -s -X POST http://localhost:8000/api/work-items/ -H 'Content-Type: application/json' -d '{...}'`
+     - Creates tasks via `curl -s -X POST http://localhost:8000/api/work-items/ -H 'Content-Type: application/json' -d '{...}'` with `project_id: "codegen-orchestrator"`
      - Gets next tag via `GET /api/work-items/next-tag`
      - Dedup check via `GET /api/work-items/?status=backlog` + search by keywords (still in skill logic, not API)
      - Regression detection via `GET /api/work-items/?status=done` + keyword search
