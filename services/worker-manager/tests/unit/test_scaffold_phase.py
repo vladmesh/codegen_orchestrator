@@ -57,6 +57,19 @@ class AsyncIterEmpty:
         raise StopAsyncIteration
 
 
+def _extract_scaffold_script(mock_docker) -> str:
+    """Extract and decode the scaffold bash script from mock docker exec call."""
+    import base64
+    import re
+
+    call_args = mock_docker.exec_in_container.call_args
+    cmd = call_args[0][1]
+    # Extract base64-encoded script from: bash -c 'echo <B64> | base64 -d | bash'
+    match = re.search(r"echo (\S+) \| base64 -d", cmd)
+    assert match, f"Could not find base64 payload in: {cmd}"
+    return base64.b64decode(match.group(1)).decode()
+
+
 class TestScaffoldPhase:
     @pytest.mark.asyncio
     async def test_scaffold_script_contains_copier_copy(self, mock_redis, mock_docker, scaffold_config):
@@ -80,6 +93,73 @@ class TestScaffoldPhase:
         call_args = mock_docker.exec_in_container.call_args
         cmd = call_args[0][1]
         assert "base64" in cmd
+
+    @pytest.mark.asyncio
+    async def test_scaffold_uses_data_file_for_task_description(self, mock_redis, mock_docker, scaffold_config):
+        """task_description is passed via --data-file, not inline --data."""
+        from src.manager import WorkerManager
+
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+        await manager._run_scaffold_phase(
+            container_id="c-123",
+            scaffold_config=scaffold_config,
+            repo="org/my-project",
+            token="ghs_token",
+            worker_id="w-1",
+        )
+
+        script = _extract_scaffold_script(mock_docker)
+        assert "--data-file" in script
+        assert '--data "task_description=' not in script
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "dangerous_desc",
+        [
+            'has "double quotes" inside',
+            "has $(command substitution)",
+            "has `backticks`",
+            "socket.getaddrinfo('localhost', 8080)",
+            "line1\nline2\nline3",
+            "has 'single quotes'",
+            "back\\slashes\\everywhere",
+            'all together: "quotes" $(cmd) `bt` (parens) \\n',
+        ],
+        ids=[
+            "double_quotes",
+            "command_sub",
+            "backticks",
+            "parens",
+            "newlines",
+            "single_quotes",
+            "backslashes",
+            "combined",
+        ],
+    )
+    async def test_dangerous_task_description_is_safe(self, mock_redis, mock_docker, dangerous_desc):
+        """Dangerous characters in task_description do not break the bash script."""
+        from src.manager import WorkerManager
+
+        config = ScaffoldConfig(
+            template_repo="gh:vladmesh/service-template",
+            project_name="my-project",
+            modules="backend",
+            task_description=dangerous_desc,
+        )
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+        await manager._run_scaffold_phase(
+            container_id="c-123",
+            scaffold_config=config,
+            repo="org/my-project",
+            token="ghs_token",
+            worker_id="w-1",
+        )
+
+        script = _extract_scaffold_script(mock_docker)
+        # The dangerous description should NOT appear raw in the script
+        assert '--data "task_description=' not in script
+        # Should use data-file approach
+        assert "--data-file" in script
 
     @pytest.mark.asyncio
     async def test_copier_failure_returns_false(self, mock_redis, mock_docker, scaffold_config):
