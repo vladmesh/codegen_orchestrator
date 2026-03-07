@@ -46,3 +46,9 @@ class Task(Base):
 
     # Redis stream for progress events
     callback_stream: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Link to WorkItem (planning layer) — nullable for backward compat
+    work_item_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("work_items.id"), nullable=True, index=True
+    )
+    iteration: Mapped[int | None] = mapped_column(Integer, nullable=True)
