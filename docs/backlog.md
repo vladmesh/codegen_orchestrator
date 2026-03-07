@@ -4,12 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #61 Brainstorm model in DB
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Brainstorm как модель в БД вместо markdown файлов. Модель: id, project_id, title, content (text), status (draft→done→triaged→archived), created_by. Стейт-машина с action-endpoints (/done, /triage, /archive). WorkItem.source_brainstorm_id FK для связи brainstorm→work items. Переиспользуется для юз...
-
 ### #59 PO work item tools (Step 4)
 - **Priority**: LOW
 - **Plan**: —
@@ -103,6 +97,7 @@
 
 ## Done (last 10)
 
+- #61 Brainstorm model in DB — 2026-03-07
 - #58 Skills → API + Simplified Model — 2026-03-07
 - #57 /implement work item events (Step 2) — 2026-03-07
 - #56 /next skill via API (Step 1) — 2026-03-07
@@ -112,7 +107,6 @@
 - #45 PO: Context-Aware Env Variables & Hints — 2026-03-07
 - #42 Fix API Integration Test (test_post_projects_pure_db) — 2026-03-07
 - #47 Race Condition in set_project_secret (parallel tool calls) — 2026-03-07
-- #48 Corrupted Checkpoint Recovery (orphan tool_calls) — 2026-03-07
 
 ## Ideas
 

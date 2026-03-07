@@ -5,6 +5,14 @@
 ## 2026-03-07
 
 ### Added
+- **Brainstorm model in DB** (#61): Brainstorms as first-class DB entities instead of markdown-only files.
+  - `Brainstorm` SQLAlchemy model with status state machine (draft → done → triaged → archived)
+  - `POST/GET/PATCH/DELETE /api/brainstorms/` — CRUD endpoints
+  - `POST /api/brainstorms/{id}/done|triage|archive` — action endpoints with transition validation
+  - `WorkItem.source_brainstorm_id` FK — links work items back to originating brainstorm
+  - Alembic migration for `brainstorms` table + FK column
+  - Updated `/brainstorm` and `/triage` skills to use API
+  - 30 unit tests (DTO, model, schemas, router), 3 integration tests
 - **Skills → API + Simplified Model** (#58): All skills now use Work Items API instead of markdown files.
   - `plan` text field on WorkItem model + migration
   - `COMMENT` event type (Jira-style discussion); removed `STEP_START`/`STEP_DONE`
