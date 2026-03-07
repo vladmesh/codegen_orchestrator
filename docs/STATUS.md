@@ -1,8 +1,8 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
-- **WorkItem**: —
+- **Backlog**: #58 /triage + /checkpoint via API (Step 3)
+- **WorkItem**: wi-4c0731f8
 - **Plan**: —
 - **Step**: —
 - **Done Steps**: —
