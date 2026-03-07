@@ -9,7 +9,7 @@
 
 ### make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms)
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: ## Контекст Данные переехали в БД, но локальные docs-файлы полезны как read-only зеркала для IDE и контекста агентов.  ## Решение  ### 1. `make sync` — единый таргет - `make backlog` (уже есть) - `make roadmap` (уже есть) - `make status` — новый скрипт `scripts/generate_status.py`: текущая in_dev...
 
