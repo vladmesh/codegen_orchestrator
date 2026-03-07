@@ -5,6 +5,18 @@
 ## 2026-03-08
 
 ### Added
+- **make sync — docs generation from DB** (task-94f2783f):
+  - `POST /api/tasks/push` endpoint — auto-priority (`min(backlog) - 1`)
+  - `source_brainstorm_id` filter on `GET /api/tasks/` for sibling lookup
+  - `scripts/generate_status.py` — STATUS.md dashboard (current task, events, stats)
+  - `scripts/sync_recent_artifacts.py` — plans/brainstorms window (in_dev + last 3 done)
+  - `make sync` umbrella target (backlog + roadmap + status + recent-artifacts)
+  - `make task TITLE="..."` CLI wrapper for quick task creation
+  - Event writes in /implement: ci_fix, plan_deviation, implementation_summary
+  - Event reads in /implement and /plan: resume context + sibling tasks
+  - Cleaned 20+ stale plan files and 9 brainstorm files
+  - Updated DEV_PIPELINE.md with full workflow docs
+
 - **PR flow + in_ci status + need_e2e** (#64): Complete task lifecycle with CI and testing gates.
   - Renamed `IN_REVIEW` → `IN_CI` status; transitions: in_dev → in_ci → testing → done
   - Added `need_e2e` boolean field to Task model (controls smoke vs full E2E testing)

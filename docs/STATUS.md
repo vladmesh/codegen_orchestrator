@@ -8,15 +8,15 @@ _(no task in progress)_
 
 ## Stats
 
-| backlog: 18 | todo: 0 | in_dev: 0 | in_ci: 0 | testing: 1 | done: 19 |
+| backlog: 18 | todo: 0 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 20 |
 
 ## Recently Completed
 
 - #999 Smoke test task — 2026-03-07
+- make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms) — 2026-03-07
 - #64 Implement skill: PR flow + in_ci status + need_e2e — 2026-03-07
 - Rename WorkItem→Task, Task→Run — 2026-03-07
 - #63 Milestone model + ROADMAP generation — 2026-03-07
-- #61 Brainstorm model in DB — 2026-03-07
 
 ## Quick Links
 
