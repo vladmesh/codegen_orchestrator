@@ -165,6 +165,8 @@ async def list_work_items(
     project_id: str | None = None,
     status_filter: str | None = Query(None, alias="status"),
     type_filter: str | None = Query(None, alias="type"),
+    limit: int | None = Query(None, ge=1),
+    sort: str | None = Query(None),
     db: AsyncSession = Depends(get_async_session),
 ) -> list[WorkItemRead]:
     query = select(WorkItem)
@@ -176,11 +178,38 @@ async def list_work_items(
     if type_filter:
         query = query.where(WorkItem.type == type_filter)
 
-    query = query.order_by(WorkItem.priority.asc(), WorkItem.created_at.asc())
+    # Sorting
+    if sort == "-created_at":
+        query = query.order_by(WorkItem.created_at.desc())
+    elif sort == "created_at":
+        query = query.order_by(WorkItem.created_at.asc())
+    else:
+        query = query.order_by(WorkItem.priority.asc(), WorkItem.created_at.asc())
+
+    if limit is not None:
+        query = query.limit(limit)
 
     result = await db.execute(query)
     items = result.scalars().all()
     return [_to_read(wi) for wi in items]
+
+
+@router.get("/by-tag/{tag}", response_model=WorkItemRead)
+async def get_work_item_by_tag(
+    tag: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> WorkItemRead:
+    """Lookup work item by backlog tag (e.g. '53' finds item titled '#53 ...')."""
+    query = select(WorkItem).where(WorkItem.title.like(f"#{tag} %"))
+    result = await db.execute(query)
+    wi = result.scalar_one_or_none()
+    if not wi:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No work item with tag #{tag}",
+        )
+    last_event = await _get_last_event_summary(wi.id, db)
+    return _to_read(wi, last_event=last_event)
 
 
 @router.get("/{work_item_id}", response_model=WorkItemRead)

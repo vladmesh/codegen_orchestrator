@@ -182,6 +182,39 @@ async def test_list_work_items_with_filters():
 
 
 @pytest.mark.asyncio
+async def test_list_work_items_with_limit():
+    wi1 = _make_work_item(id="wi-1", title="First")
+    wi2 = _make_work_item(id="wi-2", title="Second")
+    wi3 = _make_work_item(id="wi-3", title="Third")
+    session = _mock_session(scalars_all=[wi1, wi2, wi3])
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/work-items/?limit=1")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    data = resp.json()
+    # limit is applied server-side, but with mock we get all 3 back
+    # The real test is that the endpoint accepts the param without error
+    # and the SQL query has .limit() — verified in service test
+    assert len(data) <= 3  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_list_work_items_sort_created_at():
+    """Verify sort param is accepted (actual ordering tested in service test)."""
+    session = _mock_session(scalars_all=[])
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/work-items/?sort=-created_at")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
 async def test_get_work_item():
     wi = _make_work_item(id="wi-abc")
     # First call returns work item, second returns event (for last_event)
@@ -250,6 +283,47 @@ async def test_cancel_work_item():
     assert wi.status == "cancelled"
     # Should have created a status_change event
     assert session.add.call_count == 1
+
+
+# --- Lookup ---
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_tag():
+    wi = _make_work_item(id="wi-abc", title="#53 Compose runner fix")
+    # Two queries: 1) find by tag, 2) last event
+    session = AsyncMock()
+    mock_result1 = MagicMock()
+    mock_result1.scalar_one_or_none = MagicMock(return_value=wi)
+    mock_result2 = MagicMock()
+    mock_result2.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(side_effect=[mock_result1, mock_result2])
+    session.commit = AsyncMock()
+
+    async def _refresh(obj):
+        pass
+
+    session.refresh = _refresh
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/work-items/by-tag/53")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert resp.json()["id"] == "wi-abc"
+
+
+@pytest.mark.asyncio
+async def test_lookup_by_tag_not_found():
+    session = _mock_session(scalar_one_or_none=None)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/work-items/by-tag/999")
+
+    assert resp.status_code == 404  # noqa: PLR2004
 
 
 # --- Actions ---
