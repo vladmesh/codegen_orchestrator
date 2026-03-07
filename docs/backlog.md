@@ -7,6 +7,18 @@
 
 ## Queue (ordered by priority, first = next)
 
+### Repository model + migration
+- **Priority**: CRITICAL
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Новая сущность Repository (id, project_id, name, git_url, provider_repo_id, role, is_managed). Alembic миграция + CRUD API. Миграция существующих Project.repository_url → Repository(role=primary). Task.repository_id nullable FK.
+
+### Story model + API
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Новая сущность Story (id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by). Alembic миграция + CRUD API + action-based status transitions. Task.story_id FK. parent_story_id — self-ref FK для epic-like группировки.
+
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: MEDIUM
 - **Plan**: yes (in work item)
@@ -18,18 +30,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
-
-### Repository model + migration
-- **Priority**: MEDIUM
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Новая сущность Repository (id, project_id, name, git_url, provider_repo_id, role, is_managed). Alembic миграция + CRUD API. Миграция существующих Project.repository_url → Repository(role=primary). Task.repository_id nullable FK.
-
-### Story model + API
-- **Priority**: MEDIUM
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Новая сущность Story (id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by). Alembic миграция + CRUD API + action-based status transitions. Task.story_id FK. parent_story_id — self-ref FK для epic-like группировки.
 
 ### #18 Split engineering_worker.py (1088 LOC)
 - **Priority**: LOW
