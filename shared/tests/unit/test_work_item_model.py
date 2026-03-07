@@ -89,7 +89,7 @@ def test_work_item_defaults():
     engine = _setup_db()
 
     with Session(engine) as session:
-        wi = WorkItem(id="wi-test1", title="Test feature")
+        wi = WorkItem(id="wi-test1", project_id="proj-test", title="Test feature")
         session.add(wi)
         session.commit()
         session.refresh(wi)
@@ -109,6 +109,7 @@ def test_work_item_persist_and_read():
         session.execute(
             insert(WorkItem).values(
                 id="wi-abc",
+                project_id="proj-test",
                 title="Add statistics button",
                 description="Full description here",
                 type=WorkItemType.FEATURE.value,
@@ -137,6 +138,7 @@ def test_work_item_event_persist_and_read():
         session.execute(
             insert(WorkItem).values(
                 id="wi-abc",
+                project_id="proj-test",
                 title="Test",
                 type="feature",
                 status="backlog",
@@ -200,6 +202,7 @@ def test_multiple_events_for_work_item():
         session.execute(
             insert(WorkItem).values(
                 id="wi-multi",
+                project_id="proj-test",
                 title="Multi-event test",
                 type="feature",
                 status="in_dev",

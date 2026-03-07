@@ -15,7 +15,7 @@ def _make_work_item(**overrides):
     now = datetime.now(UTC)
     defaults = {
         "id": "wi-test1",
-        "project_id": None,
+        "project_id": "proj-test",
         "type": "feature",
         "title": "Test feature",
         "description": None,
@@ -126,7 +126,7 @@ async def test_create_work_item():
 
 
 @pytest.mark.asyncio
-async def test_create_work_item_minimal():
+async def test_create_work_item_requires_project_id():
     session = _mock_session()
     _override_session(session)
 
@@ -134,10 +134,7 @@ async def test_create_work_item_minimal():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/api/work-items/", json={"title": "Bug fix"})
 
-    assert resp.status_code == 201  # noqa: PLR2004
-    wi = session.add.call_args[0][0]
-    assert wi.type == "feature"
-    assert wi.project_id is None
+    assert resp.status_code == 422  # noqa: PLR2004
 
 
 @pytest.mark.asyncio

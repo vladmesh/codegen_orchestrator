@@ -16,13 +16,13 @@ from src.schemas.work_item import (
 
 
 def test_work_item_create_minimal():
-    schema = WorkItemCreate(title="Fix login bug")
+    schema = WorkItemCreate(project_id="proj-1", title="Fix login bug")
     assert schema.title == "Fix login bug"
     assert schema.type == "feature"
     assert schema.priority == 0
     assert schema.max_iterations == 3
     assert schema.created_by == "system"
-    assert schema.project_id is None
+    assert schema.project_id == "proj-1"
 
 
 def test_work_item_create_full():
@@ -41,9 +41,14 @@ def test_work_item_create_full():
     assert schema.max_iterations == 5
 
 
+def test_work_item_create_requires_project_id():
+    with pytest.raises(ValidationError):
+        WorkItemCreate(title="Test without project")
+
+
 def test_work_item_create_invalid_type():
     with pytest.raises(ValidationError):
-        WorkItemCreate(title="Test", type="invalid_type")
+        WorkItemCreate(project_id="proj-1", title="Test", type="invalid_type")
 
 
 def test_work_item_read_from_attributes():

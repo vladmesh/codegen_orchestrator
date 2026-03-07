@@ -11,7 +11,7 @@ from shared.contracts.dto.work_item import WorkItemEventType, WorkItemType
 class WorkItemCreate(BaseModel):
     """Schema for creating a work item."""
 
-    project_id: str | None = None
+    project_id: str
     type: WorkItemType = WorkItemType.FEATURE
     title: str
     description: str | None = None
@@ -25,7 +25,7 @@ class WorkItemRead(BaseModel):
     """Schema for reading a work item."""
 
     id: str
-    project_id: str | None
+    project_id: str
     type: str
     title: str
     description: str | None

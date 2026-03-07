@@ -18,8 +18,8 @@ class WorkItem(Base):
     __tablename__ = "work_items"
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    project_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("projects.id"), nullable=True, index=True
+    project_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("projects.id"), nullable=False, index=True
     )
     type: Mapped[str] = mapped_column(String(50), default=WorkItemType.FEATURE.value)
     title: Mapped[str] = mapped_column(String(500))

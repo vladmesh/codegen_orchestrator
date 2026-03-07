@@ -42,6 +42,7 @@ def test_task_linked_to_work_item():
         session.execute(
             insert(WorkItem).values(
                 id="wi-abc",
+                project_id="proj-test",
                 title="Feature X",
                 type="feature",
                 status="in_dev",
