@@ -60,6 +60,24 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/start" \
 
 Save `WI_ID` from the response for use in event calls.
 
+**Load event history** (for resume/reopen context):
+```bash
+EVENTS=$(curl -sf "http://localhost:8000/api/tasks/$WI_ID/events" || echo "[]")
+EVENT_COUNT=$(echo "$EVENTS" | jq 'length')
+```
+If `EVENT_COUNT > 0`, print a summary of previous work:
+- Status transitions, completed steps, CI fixes, deviations
+- This helps understand where a previous session left off
+
+**Load sibling tasks** (if task came from a brainstorm):
+```bash
+BS_ID=$(echo "$WI" | jq -r '.source_brainstorm_id')
+if [ "$BS_ID" != "null" ]; then
+  SIBLINGS=$(curl -sf "http://localhost:8000/api/tasks/?source_brainstorm_id=$BS_ID")
+  echo "$SIBLINGS" | jq -r '.[] | select(.id != "'$WI_ID'") | "\(.title) — \(.last_event // "no events")"'
+fi
+```
+
 ### 2. Assess complexity & ensure plan
 
 Check whether the task has a plan:
