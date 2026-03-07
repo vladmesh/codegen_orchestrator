@@ -5,6 +5,18 @@
 ## 2026-03-07
 
 ### Added
+- **Milestone model + ROADMAP generation** (#63): Milestones as DB entities to group work items into phases/epics.
+  - `Milestone` SQLAlchemy model (id, project_id, title, description, sort_order, status, parent_id, created_by)
+  - `MilestoneStatus` DTO with transitions (open -> completed)
+  - `POST/GET/PATCH/DELETE /api/milestones/` — CRUD endpoints with project_id/status filters
+  - `POST /api/milestones/{id}/complete` — action endpoint with transition validation
+  - `GET /api/milestones/{id}/work-items` — sub-resource listing
+  - `WorkItem.milestone_id` FK — links work items to milestones
+  - `?milestone_id=X` filter on work items list endpoint
+  - Alembic migration for `milestones` table + `work_items.milestone_id` column
+  - `scripts/generate_roadmap.py` + `make roadmap` — generates ROADMAP.md from API
+  - `scripts/seed_milestones.py` — one-time migration of existing ROADMAP phases
+  - 33 unit tests (DTO, model, schemas, router, roadmap formatter)
 - **Brainstorm model in DB** (#61): Brainstorms as first-class DB entities instead of markdown-only files.
   - `Brainstorm` SQLAlchemy model with status state machine (draft → done → triaged → archived)
   - `POST/GET/PATCH/DELETE /api/brainstorms/` — CRUD endpoints
