@@ -68,6 +68,8 @@ Telegram Test Environment (test.telegram.org, DC2) отложен — потре
 
 ### Архитектура QA-воркера
 
+> **Где запускать**: см. [qa-on-prod-server.md](qa-on-prod-server.md) — анализ вариантов размещения (контейнер оркестратора vs прод-сервер vs контейнер на проде).
+
 ```
 QA Worker Container:
   - Claude (мозг, принимает решения)
