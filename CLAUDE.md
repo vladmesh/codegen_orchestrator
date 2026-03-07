@@ -17,6 +17,7 @@ make down                  # Stop services
 make build                 # Build all Docker images
 make migrate               # Run database migrations
 make makemigrations MSG='description'  # Create new migration
+make backlog               # Generate backlog.md from WorkItems API
 make seed                  # Seed database with API keys
 make nuke                  # Full reset (volumes, rebuild, migrate, seed)
 make shell                 # Open shell in tooling container
@@ -99,6 +100,7 @@ if not api_key:
 4. **Structured logging**: Use `structlog` everywhere, never `print()`.
 5. **Run tests before committing**: `make test-unit` at minimum.
 6. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the full flow (`/plan` → `/implement`).
+7. **Do not edit docs/backlog.md manually**: It is an auto-generated read-only view of the database. Use API or commands to manage tasks.
 
 ### LangGraph Nodes
 Always define state as TypedDict and return complete state:
