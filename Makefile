@@ -317,6 +317,9 @@ roadmap:
 status:
 	@uv run python scripts/generate_status.py
 
+recent-artifacts:
+	@uv run python scripts/sync_recent_artifacts.py
+
 # === Seeding ===
 
 seed:
