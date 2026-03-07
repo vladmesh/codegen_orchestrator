@@ -6,7 +6,7 @@
 
 ### #61 Brainstorm model in DB
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Brainstorm как модель в БД вместо markdown файлов. Модель: id, project_id, title, content (text), status (draft→done→triaged→archived), created_by. Стейт-машина с action-endpoints (/done, /triage, /archive). WorkItem.source_brainstorm_id FK для связи brainstorm→work items. Переиспользуется для юз...
 
