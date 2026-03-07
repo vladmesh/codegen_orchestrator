@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Decompose a backlog task into a step-by-step plan with Input/Output/Test for each step. Creates docs/plans/<task>.md and updates STATUS.md.
+description: Decompose a backlog task into a step-by-step plan. Writes plan to work item via API.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[#ID]"
 ---
@@ -11,31 +11,34 @@ Decompose a task into actionable steps. Each step has clear Input, Output, and T
 
 ## Input
 
-- `#ID` — backlog item to plan. If omitted, uses current task from `docs/STATUS.md`.
+- `#ID` — backlog tag to plan. If omitted, uses current in_dev work item from API.
 
 ## Steps
 
 ### 1. Load task
 
-Read the task from `docs/backlog.md` (find by ID in Queue).
-Read related brainstorms if referenced in Brief.
+Look up the work item:
+- If `#ID` given: `curl -sf http://localhost:8000/api/work-items/by-tag/<ID>`
+- If no ID: `curl -sf "http://localhost:8000/api/work-items/?status=in_dev&limit=1"` and take first
+- If nothing found, try `status=backlog&limit=1`
+- If still nothing: STOP — "No current task. Create one via triage or API."
+
+Read related brainstorms if referenced in description.
 Read related code to understand the scope.
 
 ### 2. Research
 
 Before writing the plan:
-- Read all files mentioned in the task's Brief
+- Read all files mentioned in the task's description
 - Understand the current state of the code
 - Identify dependencies between components
 - Check if there are related brainstorms in `docs/brainstorms/`
 
 ### 3. Write plan
 
-Create `docs/plans/<task-slug>.md` using this format:
+Write the plan as a text block in this format:
 
-```markdown
-# Plan: <Title> (#<ID>)
-
+```
 ## Context
 
 <Why this task exists. Link to brainstorms if relevant.>
@@ -60,26 +63,32 @@ Create `docs/plans/<task-slug>.md` using this format:
 
 - Each step should be completable in one focused session (< 1 hour of agent work)
 - Steps should be ordered by dependency (step N should not depend on step N+2)
-- Each step включает unit test в поле **Test**
-- Если несколько шагов сшивают компоненты — добавь **отдельный шаг** на написание integration test
+- Each step includes unit test in the **Test** field
+- If several steps stitch components together — add a **separate step** for integration tests
 - Last step should be cleanup/documentation if needed
 - If a step requires changing `shared/contracts/` or DB schema — mark it explicitly: `⚠️ needs-approval`
 
-### 5. Update STATUS.md
+### 5. Save plan to API
 
-Update the Current Task section:
-- Set `Plan` to the new plan file path
-- Set `Step` to `1/<total> — <first step title>`
-- Clear `Done Steps`
+Write the plan text to the work item:
+
+```bash
+WI_ID="<work_item_id from step 1>"
+curl -sf -X PATCH "http://localhost:8000/api/work-items/$WI_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"plan": "<escaped plan text>"}'
+```
+
+Use `jq -Rs .` to escape the plan text for JSON if needed.
 
 ### 6. Update backlog
 
-Set the task's Plan field in `docs/backlog.md` to the new plan file path.
+Run `make backlog` to regenerate docs/backlog.md from API.
 
 ### 7. Commit
 
 ```bash
-git add docs/plans/<task>.md docs/STATUS.md docs/backlog.md
+git add docs/backlog.md
 git commit -m "plan: #<ID> — <title>"
 ```
 
