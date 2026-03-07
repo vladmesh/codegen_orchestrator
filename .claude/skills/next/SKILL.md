@@ -71,6 +71,7 @@ Write STATUS.md Current Task section:
 ```markdown
 ## Current Task
 - **Backlog**: #<tag> <Title>
+- **WorkItem**: <work_item_id> (e.g. wi-3372a29b — from the API response `id` field)
 - **Plan**: docs/plans/<file>.md (or "—")
 - **Step**: 1/<N> — <first step description> (if plan exists, else "—")
 - **Done Steps**: (empty)
