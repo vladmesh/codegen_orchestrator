@@ -7,7 +7,7 @@ Verifies state machine transitions, event history, and filters.
 from httpx import AsyncClient
 import pytest
 
-from .conftest import TEST_PROJECT_ID
+WI_TEST_PROJECT_ID = "test-work-items-proj"
 
 
 @pytest.mark.asyncio
@@ -17,7 +17,7 @@ async def test_work_item_full_lifecycle(async_client: AsyncClient, _work_items_p
     resp = await async_client.post(
         "/api/work-items/",
         json={
-            "project_id": TEST_PROJECT_ID,
+            "project_id": WI_TEST_PROJECT_ID,
             "title": "Lifecycle test feature",
             "type": "feature",
             "description": "Full lifecycle",
@@ -72,7 +72,7 @@ async def test_invalid_transition_rejected(async_client: AsyncClient, _work_item
     """Cannot go from backlog directly to done."""
     resp = await async_client.post(
         "/api/work-items/",
-        json={"project_id": TEST_PROJECT_ID, "title": "Invalid test"},
+        json={"project_id": WI_TEST_PROJECT_ID, "title": "Invalid test"},
     )
     wi_id = resp.json()["id"]
 
@@ -86,7 +86,7 @@ async def test_reopen_from_done(async_client: AsyncClient, _work_items_project):
     """done → backlog with reason, event recorded."""
     resp = await async_client.post(
         "/api/work-items/",
-        json={"project_id": TEST_PROJECT_ID, "title": "Reopen test"},
+        json={"project_id": WI_TEST_PROJECT_ID, "title": "Reopen test"},
     )
     wi_id = resp.json()["id"]
 
@@ -122,7 +122,7 @@ async def test_list_with_filters(async_client: AsyncClient, _work_items_project)
     """List returns items matching status filter."""
     resp = await async_client.post(
         "/api/work-items/",
-        json={"project_id": TEST_PROJECT_ID, "title": "Filter test"},
+        json={"project_id": WI_TEST_PROJECT_ID, "title": "Filter test"},
     )
     wi_id = resp.json()["id"]
 
@@ -141,7 +141,7 @@ async def test_step_events_lifecycle(async_client: AsyncClient, _work_items_proj
     # Create and start
     resp = await async_client.post(
         "/api/work-items/",
-        json={"project_id": TEST_PROJECT_ID, "title": "Step events test", "type": "feature"},
+        json={"project_id": WI_TEST_PROJECT_ID, "title": "Step events test", "type": "feature"},
     )
     assert resp.status_code == 201  # noqa: PLR2004
     wi_id = resp.json()["id"]
@@ -221,7 +221,7 @@ async def test_update_metadata(async_client: AsyncClient, _work_items_project):
     """PATCH updates title/priority without changing status."""
     resp = await async_client.post(
         "/api/work-items/",
-        json={"project_id": TEST_PROJECT_ID, "title": "Patch test"},
+        json={"project_id": WI_TEST_PROJECT_ID, "title": "Patch test"},
     )
     wi_id = resp.json()["id"]
 

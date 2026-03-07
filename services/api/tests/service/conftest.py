@@ -45,8 +45,8 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
         yield client
 
 
-TEST_TELEGRAM_ID = 999000999
-TEST_PROJECT_ID = "test-work-items-proj"
+WI_TEST_TELEGRAM_ID = 999000999
+WI_TEST_PROJECT_ID = "test-work-items-proj"
 
 
 @pytest.fixture(scope="session")
@@ -56,12 +56,12 @@ async def _work_items_project():
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # Ensure user exists
-        resp = await client.get(f"/api/users/by-telegram/{TEST_TELEGRAM_ID}")
+        resp = await client.get(f"/api/users/by-telegram/{WI_TEST_TELEGRAM_ID}")
         if resp.status_code == 404:
             await client.post(
                 "/api/users/",
                 json={
-                    "telegram_id": TEST_TELEGRAM_ID,
+                    "telegram_id": WI_TEST_TELEGRAM_ID,
                     "username": "test_wi",
                     "first_name": "Test",
                     "is_admin": True,
@@ -69,17 +69,17 @@ async def _work_items_project():
             )
 
         # Ensure project exists
-        resp = await client.get(f"/api/projects/{TEST_PROJECT_ID}")
+        resp = await client.get(f"/api/projects/{WI_TEST_PROJECT_ID}")
         if resp.status_code == 404:
             await client.post(
                 "/api/projects/",
                 json={
-                    "id": TEST_PROJECT_ID,
+                    "id": WI_TEST_PROJECT_ID,
                     "name": "Test Work Items Project",
                     "status": "active",
                     "config": {},
                 },
-                headers={"X-Telegram-ID": str(TEST_TELEGRAM_ID)},
+                headers={"X-Telegram-ID": str(WI_TEST_TELEGRAM_ID)},
             )
 
-    return TEST_PROJECT_ID
+    return WI_TEST_PROJECT_ID

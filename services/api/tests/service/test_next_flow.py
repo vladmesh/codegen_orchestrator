@@ -10,7 +10,7 @@ Tests the API operations that the /next skill uses:
 from httpx import AsyncClient
 import pytest
 
-from .conftest import TEST_PROJECT_ID
+WI_TEST_PROJECT_ID = "test-work-items-proj"
 
 
 @pytest.mark.asyncio
@@ -25,7 +25,7 @@ async def test_next_picks_top_priority(async_client: AsyncClient, _work_items_pr
     ]:
         resp = await async_client.post(
             "/api/work-items/",
-            json={"project_id": TEST_PROJECT_ID, "title": title, "priority": priority},
+            json={"project_id": WI_TEST_PROJECT_ID, "title": title, "priority": priority},
         )
         assert resp.status_code == 201  # noqa: PLR2004
         items.append(resp.json())
@@ -49,11 +49,11 @@ async def test_next_start_advances_queue(async_client: AsyncClient, _work_items_
     # Create 2 items
     resp1 = await async_client.post(
         "/api/work-items/",
-        json={"project_id": TEST_PROJECT_ID, "title": "#910 First task", "priority": 0},
+        json={"project_id": WI_TEST_PROJECT_ID, "title": "#910 First task", "priority": 0},
     )
     await async_client.post(
         "/api/work-items/",
-        json={"project_id": TEST_PROJECT_ID, "title": "#911 Second task", "priority": 1},
+        json={"project_id": WI_TEST_PROJECT_ID, "title": "#911 Second task", "priority": 1},
     )
     first_id = resp1.json()["id"]
 
@@ -80,7 +80,7 @@ async def test_by_tag_lookup(async_client: AsyncClient, _work_items_project):
     resp = await async_client.post(
         "/api/work-items/",
         json={
-            "project_id": TEST_PROJECT_ID,
+            "project_id": WI_TEST_PROJECT_ID,
             "title": "#920 Tag lookup test",
             "description": "Test description",
         },
@@ -109,7 +109,7 @@ async def test_limit_and_sort(async_client: AsyncClient, _work_items_project):
     for title in ["#930 A", "#931 B", "#932 C"]:
         await async_client.post(
             "/api/work-items/",
-            json={"project_id": TEST_PROJECT_ID, "title": title},
+            json={"project_id": WI_TEST_PROJECT_ID, "title": title},
         )
 
     # Sort by -created_at, limit 2 → newest first
