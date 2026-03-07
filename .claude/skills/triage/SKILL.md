@@ -175,11 +175,11 @@ Priority adjustments:
 - Task deferred to future phase → downgrade to LOW
 - Add note to description when priority changes
 
-## Generate Backlog
+## Sync Docs
 
 After all API changes:
 ```bash
-make backlog
+make sync
 ```
 
 ## Commit

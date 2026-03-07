@@ -16,6 +16,12 @@ The main development skill. Implements the current task (or a specific one) usin
 
 ## Protocol
 
+### 0. Sync docs
+
+```bash
+make sync
+```
+
 ### 1. Load context
 
 Find the task to implement:
@@ -59,6 +65,24 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/start" \
 ```
 
 Save `WI_ID` from the response for use in event calls.
+
+**Load event history** (for resume/reopen context):
+```bash
+EVENTS=$(curl -sf "http://localhost:8000/api/tasks/$WI_ID/events" || echo "[]")
+EVENT_COUNT=$(echo "$EVENTS" | jq 'length')
+```
+If `EVENT_COUNT > 0`, print a summary of previous work:
+- Status transitions, completed steps, CI fixes, deviations
+- This helps understand where a previous session left off
+
+**Load sibling tasks** (if task came from a brainstorm):
+```bash
+BS_ID=$(echo "$WI" | jq -r '.source_brainstorm_id')
+if [ "$BS_ID" != "null" ]; then
+  SIBLINGS=$(curl -sf "http://localhost:8000/api/tasks/?source_brainstorm_id=$BS_ID")
+  echo "$SIBLINGS" | jq -r '.[] | select(.id != "'$WI_ID'") | "\(.title) — \(.last_event // "no events")"'
+fi
+```
 
 ### 2. Assess complexity & ensure plan
 
@@ -123,6 +147,13 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
   -d '{"event_type": "note", "details": {"action": "step_start", "step": N, "title": "Step title"}, "actor": "claude"}' || true
 ```
 
+**If deviating from the plan** (skipping a step, changing approach, adding unplanned work) — emit a deviation event:
+```bash
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "comment", "details": {"action": "plan_deviation", "step": N, "reason": "<why>"}, "actor": "claude"}' || true
+```
+
 Follow Red -> Green -> Refactor:
 
 1. **Red**: Write failing test(s) based on the step's Test spec. Run `make test-unit` to confirm they fail.
@@ -168,7 +199,12 @@ gh run list --branch "$BRANCH" --limit 1 --json status,conclusion
 ```
 
 5. **CI red** — read logs via `gh run view --log-failed`:
-   - **Failure related to current task** — fix, commit, push, re-poll. Do NOT touch docs.
+   - **Failure related to current task** — fix, commit, push, re-poll. Do NOT touch docs. After fixing, emit a CI-fix event:
+     ```bash
+     curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
+       -H "Content-Type: application/json" \
+       -d "{\"event_type\": \"note\", \"details\": {\"action\": \"ci_fix\", \"error\": \"<brief error>\", \"fix\": \"<what was fixed>\"}, \"actor\": \"claude\"}" || true
+     ```
    - **Pre-existing failure** (unrelated) — note it, proceed to step 7.
 
 6. **CI green** — proceed to step 7.
@@ -236,9 +272,9 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/complete" \
 - Use correct section: Added / Changed / Fixed / Removed
 - Reference backlog item ID
 
-5. **Regenerate backlog**:
+5. **Sync docs**:
 ```bash
-make backlog
+make sync
 ```
 
 6. **Commit** doc updates on main:
@@ -248,6 +284,13 @@ git commit -m "docs: complete #<ID> — <title>"
 ```
 
 ### 9. Report
+
+**Emit summary event** (before printing):
+```bash
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "comment", "details": {"action": "implementation_summary", "steps_completed": N, "total_steps": N, "deviations": [], "notes": "<brief summary>"}, "actor": "claude"}' || true
+```
 
 Print a summary:
 - Task: #ID — Title

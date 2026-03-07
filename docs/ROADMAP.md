@@ -39,8 +39,6 @@ Worker swarm, cost tracking, self-hosted CI.
 
 ## Backlog
 
-- [ ] #63 Milestone model + ROADMAP generation
-- [ ] Rename WorkItem→Task, Task→Run
 - [ ] #52 Scaffold script не экранирует task_description
 - [ ] Repository model + migration
 - [ ] Story model + API

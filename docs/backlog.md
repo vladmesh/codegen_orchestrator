@@ -1,14 +1,11 @@
 # Backlog
 
+> [!WARNING]
+> **DEPRECATED**: Этот файл более не является источником правды. Задачи мигрировали в базу данных (таблица `tasks`). Этот файл автогенерируется скриптом исключительно для read-only просмотра.
+
 > **Актуально на**: 2026-03-07 (generated)
 
 ## Queue (ordered by priority, first = next)
-
-### #64 Implement skill: PR flow + in_ci status + need_e2e
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: ## Зачем  Скилл /implement сейчас не закрывает задачи корректно: вызывает /complete из in_dev (невалидный переход), не создаёт PR (CI не триггерится на wi/* ветки), не мёржит надёжно. Статусы in_review и testing не используются. Нужен чистый автоматический flow от кода до done.  ## Что меняем  ##...
 
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: MEDIUM
@@ -121,6 +118,8 @@
 
 ## Done (last 10)
 
+- #999 Smoke test task — 2026-03-07
+- #64 Implement skill: PR flow + in_ci status + need_e2e — 2026-03-07
 - Rename WorkItem→Task, Task→Run — 2026-03-07
 - #63 Milestone model + ROADMAP generation — 2026-03-07
 - #61 Brainstorm model in DB — 2026-03-07
@@ -129,10 +128,11 @@
 - #56 /next skill via API (Step 1) — 2026-03-07
 - #8 Workspace Failure Counter — 2026-03-07
 - #43 PO: Сократический диалог и формирование ТЗ — 2026-03-07
-- #44 PO: DuckDuckGo Search Tool — 2026-03-07
-- #45 PO: Context-Aware Env Variables & Hints — 2026-03-07
 
 ## Ideas
+
+> [!WARNING]
+> **DEPRECATED**: Этот файл более не является источником правды. Идеи мигрировали в базу данных (превращаются в `brainstorms` или `work_items`). Файл временно оставлен для генерации старого backlog.md.
 
 Manually maintained list of ideas and future improvements.
 Read by `make backlog` to include in generated backlog.md.

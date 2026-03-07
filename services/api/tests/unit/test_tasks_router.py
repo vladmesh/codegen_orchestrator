@@ -170,6 +170,23 @@ async def test_list_tasks():
 
 
 @pytest.mark.asyncio
+async def test_list_tasks_filter_by_source_brainstorm_id():
+    """GET /api/tasks/?source_brainstorm_id=bs-xxx filters correctly."""
+    t1 = _make_task(id="task-1", title="From brainstorm", source_brainstorm_id="bs-xxx")
+    session = _mock_session(scalars_all=[t1])
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/tasks/?source_brainstorm_id=bs-xxx")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["source_brainstorm_id"] == "bs-xxx"
+
+
+@pytest.mark.asyncio
 async def test_list_tasks_with_filters():
     session = _mock_session(scalars_all=[])
     _override_session(session)
@@ -719,6 +736,108 @@ async def test_list_events():
     assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
     assert len(data) == 2  # noqa: PLR2004
+
+
+# --- Push (auto-priority) ---
+
+
+@pytest.mark.asyncio
+async def test_push_task_sets_priority_below_min():
+    """POST /api/tasks/push creates task with priority = min(backlog) - 1."""
+    session = AsyncMock()
+
+    # First execute: min priority query returns 2
+    mock_min_result = MagicMock()
+    mock_min_result.scalar_one_or_none = MagicMock(return_value=2)
+    # Second+ executes: not needed (add/commit/refresh handle creation)
+    session.execute = AsyncMock(return_value=mock_min_result)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    async def _refresh(obj):
+        pass
+
+    session.refresh = _refresh
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/tasks/push",
+            json={"title": "Urgent fix", "project_id": "proj-1"},
+        )
+
+    assert resp.status_code == 201  # noqa: PLR2004
+    task = session.add.call_args[0][0]
+    assert task.priority == 1
+    assert task.title == "Urgent fix"
+    assert task.status == "backlog"
+
+
+@pytest.mark.asyncio
+async def test_push_task_empty_backlog():
+    """Push to empty backlog gives priority -1."""
+    session = AsyncMock()
+
+    mock_min_result = MagicMock()
+    mock_min_result.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute = AsyncMock(return_value=mock_min_result)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    async def _refresh(obj):
+        pass
+
+    session.refresh = _refresh
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/tasks/push",
+            json={"title": "First task", "project_id": "proj-1"},
+        )
+
+    assert resp.status_code == 201  # noqa: PLR2004
+    task = session.add.call_args[0][0]
+    assert task.priority == -1
+
+
+@pytest.mark.asyncio
+async def test_push_twice_decreasing_priority():
+    """Two pushes in a row give decreasing priorities."""
+    session = AsyncMock()
+    priorities = []
+
+    mock_min1 = MagicMock()
+    mock_min1.scalar_one_or_none = MagicMock(return_value=3)
+    mock_min2 = MagicMock()
+    mock_min2.scalar_one_or_none = MagicMock(return_value=2)
+    session.execute = AsyncMock(side_effect=[mock_min1, mock_min2])
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+
+    async def _refresh(obj):
+        pass
+
+    session.refresh = _refresh
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/api/tasks/push",
+            json={"title": "Task A", "project_id": "proj-1"},
+        )
+        await client.post(
+            "/api/tasks/push",
+            json={"title": "Task B", "project_id": "proj-1"},
+        )
+
+    for call in session.add.call_args_list:
+        priorities.append(call[0][0].priority)
+
+    assert priorities == [2, 1]
 
 
 @pytest.mark.asyncio

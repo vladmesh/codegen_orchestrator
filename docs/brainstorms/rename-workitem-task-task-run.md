@@ -1,3 +1,5 @@
+# Project vs Repository Entity Model
+
 # Brainstorm: Project, Repository, и Entity Model оркестратора
 
 > **Дата**: 2026-03-07
@@ -425,3 +427,4 @@ Architect, Tech Lead, Planner? Architect кажется правильным —
 ### Далёкое будущее
 - → idea: "Spike task type" — когда Architect не может декомпозить Story, создаёт Task type=spike. Developer исследует кодовую базу, пишет отчёт (не код). Architect получает отчёт → пробует декомпозить снова. Альтернатива: Story.status=needs_clarification → PO уточняет у юзера.
 - → idea: "Multi-model technical brainstorm" — несколько LLM обсуждают сложное техническое решение (structured debate). Дорого, медленно, но потенциально полезно для архитектурных решений где один model застревает. Исследовать когда/если single-model Architect упрётся в потолок качества декомпозиции.
+

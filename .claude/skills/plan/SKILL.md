@@ -15,6 +15,12 @@ Decompose a task into actionable steps. Each step has clear Input, Output, and T
 
 ## Steps
 
+### 0. Sync docs
+
+```bash
+make sync
+```
+
 ### 1. Load task
 
 Look up the task:
@@ -40,6 +46,23 @@ fi
 Read the brainstorm's `content` field — it contains the full thinking session with context, decisions, and action items.
 
 **Related code**: read all files mentioned in the description, plan, and brainstorm content.
+
+**Event history** (important for reopened tasks — understand what didn't work):
+```bash
+WI_ID=$(echo "$WI" | jq -r '.id')
+EVENTS=$(curl -sf "http://localhost:8000/api/tasks/$WI_ID/events" || echo "[]")
+EVENT_COUNT=$(echo "$EVENTS" | jq 'length')
+```
+If events exist, review them for: previous implementation attempts, CI failures, deviations, and reasons for reopen.
+
+**Sibling tasks** (if `source_brainstorm_id` is set — know context of related steps):
+```bash
+BS_ID=$(echo "$WI" | jq -r '.source_brainstorm_id')
+if [ "$BS_ID" != "null" ]; then
+  curl -sf "http://localhost:8000/api/tasks/?source_brainstorm_id=$BS_ID" \
+    | jq -r '.[] | select(.id != "'$WI_ID'") | "\(.title) [\(.status)] — \(.last_event // "no events")"'
+fi
+```
 
 ### 3. Research
 
@@ -94,9 +117,9 @@ curl -sf -X PATCH "http://localhost:8000/api/tasks/$WI_ID" \
 
 Use `jq -Rs .` to escape the plan text for JSON if needed.
 
-### 7. Update backlog
+### 7. Sync docs
 
-Run `make backlog` to regenerate docs/backlog.md from API.
+Run `make sync` to regenerate all read-only docs from API.
 
 ### 8. Commit
 

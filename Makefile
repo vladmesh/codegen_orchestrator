@@ -1,6 +1,6 @@
 .PHONY: lint format test-unit test-integration test-e2e-scaffold test-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations shell \
-	setup-hooks lock-deps cleanup-agents backlog roadmap \
+	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
 	check-worker-images .nuke-common .nuke-hard-prune
 
@@ -313,6 +313,23 @@ backlog:
 
 roadmap:
 	@uv run python scripts/generate_roadmap.py
+
+status:
+	@uv run python scripts/generate_status.py
+
+recent-artifacts:
+	@uv run python scripts/sync_recent_artifacts.py
+
+sync: backlog roadmap status recent-artifacts
+
+task:
+ifndef TITLE
+	$(error Usage: make task TITLE="task title" [DESC="description"])
+endif
+	@curl -sf -X POST "http://localhost:8000/api/tasks/push" \
+		-H "Content-Type: application/json" \
+		-d '{"title": "$(TITLE)", "description": "$(DESC)", "project_id": "codegen-orchestrator"}' \
+		| python3 -c "import sys,json; t=json.load(sys.stdin); print(f'Created: {t[\"id\"]} (p={t[\"priority\"]}) {t[\"title\"]}')"
 
 # === Seeding ===
 
