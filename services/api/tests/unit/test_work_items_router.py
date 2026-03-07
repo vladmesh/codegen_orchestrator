@@ -19,6 +19,7 @@ def _make_work_item(**overrides):
         "type": "feature",
         "title": "Test feature",
         "description": None,
+        "plan": None,
         "status": "backlog",
         "priority": 0,
         "acceptance_criteria": None,
@@ -209,6 +210,66 @@ async def test_list_work_items_sort_created_at():
         resp = await client.get("/api/work-items/?sort=-created_at")
 
     assert resp.status_code == 200  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_list_work_items_with_since_filter():
+    """Verify since param is accepted for filtering by updated_at."""
+    session = _mock_session(scalars_all=[])
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/work-items/?since=2026-03-01T00:00:00")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_stats_endpoint():
+    """GET /api/work-items/stats returns status counts."""
+
+    session = AsyncMock()
+
+    # stats endpoint runs one query per status — mock all results
+    mock_result = MagicMock()
+    mock_result.scalar_one = MagicMock(return_value=0)
+    session.execute = AsyncMock(return_value=mock_result)
+    session.commit = AsyncMock()
+
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/work-items/stats")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    data = resp.json()
+    assert "backlog" in data
+    assert "done" in data
+    assert "in_dev" in data
+    assert "total" in data
+
+
+@pytest.mark.asyncio
+async def test_next_tag_endpoint():
+    """GET /api/work-items/next-tag returns next available tag number."""
+    session = AsyncMock()
+    mock_result = MagicMock()
+    # Simulate max tag = 60 -> next = 61
+    mock_result.scalar_one_or_none = MagicMock(return_value="#60 Some task")
+    session.execute = AsyncMock(return_value=mock_result)
+    session.commit = AsyncMock()
+
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/work-items/next-tag")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    data = resp.json()
+    assert "next_tag" in data
 
 
 @pytest.mark.asyncio

@@ -29,6 +29,7 @@ class WorkItemRead(BaseModel):
     type: str
     title: str
     description: str | None
+    plan: str | None = None
     status: str
     priority: int
     acceptance_criteria: str | None
@@ -46,8 +47,10 @@ class WorkItemRead(BaseModel):
 class WorkItemUpdate(BaseModel):
     """Schema for updating a work item (non-status fields only)."""
 
+    project_id: str | None = None
     title: str | None = None
     description: str | None = None
+    plan: str | None = None
     acceptance_criteria: str | None = None
     priority: int | None = None
 

@@ -60,6 +60,7 @@ def test_work_item_read_from_attributes():
         type = "feature"
         title = "Test"
         description = None
+        plan = None
         status = "backlog"
         priority = 0
         acceptance_criteria = None
@@ -72,8 +73,32 @@ def test_work_item_read_from_attributes():
     read = WorkItemRead.model_validate(FakeModel(), from_attributes=True)
     assert read.id == "wi-abc"
     assert read.status == "backlog"
+    assert read.plan is None
     assert read.last_event is None
     assert read.elapsed_minutes is None
+
+
+def test_work_item_read_with_plan():
+    now = datetime.now(UTC)
+
+    class FakeModel:
+        id = "wi-abc"
+        project_id = "proj-1"
+        type = "feature"
+        title = "Test"
+        description = None
+        plan = "## Step 1\nDo the thing"
+        status = "in_dev"
+        priority = 0
+        acceptance_criteria = None
+        current_iteration = 0
+        max_iterations = 3
+        created_by = "system"
+        created_at = now
+        updated_at = now
+
+    read = WorkItemRead.model_validate(FakeModel(), from_attributes=True)
+    assert read.plan == "## Step 1\nDo the thing"
 
 
 def test_work_item_update_partial():
@@ -81,6 +106,18 @@ def test_work_item_update_partial():
     data = update.model_dump(exclude_unset=True)
     assert data == {"title": "New title"}
     assert "description" not in data
+
+
+def test_work_item_update_with_plan():
+    update = WorkItemUpdate(plan="## Plan\nStep 1: Do thing")
+    data = update.model_dump(exclude_unset=True)
+    assert data == {"plan": "## Plan\nStep 1: Do thing"}
+
+
+def test_work_item_update_with_project_id():
+    update = WorkItemUpdate(project_id="proj-new")
+    data = update.model_dump(exclude_unset=True)
+    assert data == {"project_id": "proj-new"}
 
 
 def test_work_item_transition():
@@ -98,6 +135,28 @@ def test_work_item_event_create():
     )
     assert event.event_type == "iteration_start"
     assert event.iteration == 0
+
+
+def test_work_item_event_create_comment():
+    event = WorkItemEventCreate(
+        event_type="comment",
+        details={"text": "Looks good, proceeding with deploy"},
+        actor="engineer",
+    )
+    assert event.event_type == "comment"
+    assert event.details["text"] == "Looks good, proceeding with deploy"
+
+
+def test_work_item_event_create_step_start_rejected():
+    """step_start was removed from valid event types."""
+    with pytest.raises(ValidationError):
+        WorkItemEventCreate(event_type="step_start")
+
+
+def test_work_item_event_create_step_done_rejected():
+    """step_done was removed from valid event types."""
+    with pytest.raises(ValidationError):
+        WorkItemEventCreate(event_type="step_done")
 
 
 def test_work_item_event_create_invalid_type():

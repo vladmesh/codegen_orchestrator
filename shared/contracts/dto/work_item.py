@@ -26,8 +26,7 @@ class WorkItemEventType(StrEnum):
     ITERATION_START = "iteration_start"
     ITERATION_END = "iteration_end"
     NOTE = "note"
-    STEP_START = "step_start"
-    STEP_DONE = "step_done"
+    COMMENT = "comment"
 
 
 # Valid status transitions: from_status -> set of allowed to_statuses

@@ -1,10 +1,11 @@
 """Work items router — CRUD + action-based status transitions + events."""
 
 from datetime import UTC, datetime
+import re
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -44,6 +45,7 @@ def _to_read(wi: WorkItem, last_event: str | None = None) -> WorkItemRead:
         type=wi.type,
         title=wi.title,
         description=wi.description,
+        plan=wi.plan,
         status=wi.status,
         priority=wi.priority,
         acceptance_criteria=wi.acceptance_criteria,
@@ -165,6 +167,7 @@ async def list_work_items(
     project_id: str | None = None,
     status_filter: str | None = Query(None, alias="status"),
     type_filter: str | None = Query(None, alias="type"),
+    since: datetime | None = Query(None),
     limit: int | None = Query(None, ge=1),
     sort: str | None = Query(None),
     db: AsyncSession = Depends(get_async_session),
@@ -177,6 +180,8 @@ async def list_work_items(
         query = query.where(WorkItem.status == status_filter)
     if type_filter:
         query = query.where(WorkItem.type == type_filter)
+    if since:
+        query = query.where(WorkItem.updated_at >= since)
 
     # Sorting
     if sort == "-created_at":
@@ -192,6 +197,46 @@ async def list_work_items(
     result = await db.execute(query)
     items = result.scalars().all()
     return [_to_read(wi) for wi in items]
+
+
+@router.get("/stats")
+async def get_work_item_stats(
+    project_id: str | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """Return counts of work items by status."""
+    counts = {}
+    total = 0
+    for s in WorkItemStatus:
+        query = select(func.count()).select_from(WorkItem).where(WorkItem.status == s.value)
+        if project_id:
+            query = query.where(WorkItem.project_id == project_id)
+        result = await db.execute(query)
+        count = result.scalar_one()
+        counts[s.value] = count
+        total += count
+    counts["total"] = total
+    return counts
+
+
+@router.get("/next-tag")
+async def get_next_tag(
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """Return the next available backlog tag number (max existing tag + 1)."""
+    # Titles follow pattern "#N Title..."
+    query = select(WorkItem.title).order_by(WorkItem.created_at.desc())
+    result = await db.execute(query)
+    titles = result.scalars().all()
+
+    max_tag = 0
+    for title in titles:
+        match = re.match(r"^#(\d+)\s", title)
+        if match:
+            tag = int(match.group(1))
+            max_tag = max(tag, max_tag)
+
+    return {"next_tag": max_tag + 1}
 
 
 @router.get("/by-tag/{tag}", response_model=WorkItemRead)

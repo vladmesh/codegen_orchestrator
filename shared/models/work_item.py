@@ -31,6 +31,7 @@ class WorkItem(Base):
     acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_iteration: Mapped[int] = mapped_column(Integer, default=0)
     max_iterations: Mapped[int] = mapped_column(Integer, default=3)
+    plan: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(50), default="system")
 
 

@@ -44,8 +44,9 @@ def test_work_item_event_type_values():
     assert WorkItemEventType.ITERATION_START == "iteration_start"
     assert WorkItemEventType.ITERATION_END == "iteration_end"
     assert WorkItemEventType.NOTE == "note"
-    assert WorkItemEventType.STEP_START == "step_start"
-    assert WorkItemEventType.STEP_DONE == "step_done"
+    assert WorkItemEventType.COMMENT == "comment"
+    assert not hasattr(WorkItemEventType, "STEP_START")
+    assert not hasattr(WorkItemEventType, "STEP_DONE")
 
 
 # --- Transition matrix tests ---
@@ -168,6 +169,43 @@ def test_work_item_event_persist_and_read():
         assert event.from_status == WorkItemStatus.BACKLOG.value
         assert event.to_status == WorkItemStatus.TODO.value
         assert event.actor == "po"
+
+
+def test_work_item_plan_field():
+    engine = _setup_db()
+
+    with Session(engine) as session:
+        session.execute(
+            insert(WorkItem).values(
+                id="wi-plan",
+                project_id="proj-test",
+                title="Feature with plan",
+                type="feature",
+                status="in_dev",
+                priority=0,
+                current_iteration=0,
+                max_iterations=3,
+                created_by="system",
+                plan="## Step 1\nDo the thing\n## Step 2\nVerify",
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        wi = session.execute(select(WorkItem).where(WorkItem.id == "wi-plan")).scalar_one()
+        assert wi.plan == "## Step 1\nDo the thing\n## Step 2\nVerify"
+
+
+def test_work_item_plan_defaults_to_none():
+    engine = _setup_db()
+
+    with Session(engine) as session:
+        wi = WorkItem(id="wi-noplan", project_id="proj-test", title="No plan")
+        session.add(wi)
+        session.commit()
+        session.refresh(wi)
+
+        assert wi.plan is None
 
 
 def test_work_item_with_project_id():
