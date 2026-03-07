@@ -1,11 +1,11 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #57 /implement work item events (Step 2)
-- **WorkItem**: wi-3372a29b
-- **Plan**: docs/plans/57-implement-work-item-events.md
-- **Step**: 2/4 — Add work_item_id field to STATUS.md via /next skill
-- **Done Steps**: 1
+- **Backlog**: —
+- **WorkItem**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -22,6 +22,7 @@
 
 | # | Задача |
 |---|--------|
+| 57 | `/implement` work item events (Step 2) |
 | 56 | `/next` skill via API (Step 1) |
 | 55 | WorkItem Model + API + Backlog Migration (Step 0) |
 | 51 | SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save |

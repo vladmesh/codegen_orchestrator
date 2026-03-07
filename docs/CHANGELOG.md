@@ -5,6 +5,7 @@
 ## 2026-03-07
 
 ### Added
+- **`/implement` emits work item events** (#57): `/implement` skill now writes `step_start`/`step_done` events via `POST /api/work-items/{id}/events` at each plan step, and calls `/complete` on task finish. New `step_start`/`step_done` event types in `WorkItemEventType`. `/next` now writes `WorkItem` ID to STATUS.md for downstream skills.
 - **`/next` skill via Work Items API** (#56): First skill migrated from markdown parsing to API. `/next` now picks tasks via `GET /api/work-items/?status=backlog&limit=1` and starts them via `POST /api/work-items/{id}/start`.
   - `limit` and `sort` query params on list endpoint
   - `GET /api/work-items/by-tag/{tag}` — lookup by backlog tag (e.g. `#53`)

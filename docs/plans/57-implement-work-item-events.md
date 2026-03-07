@@ -20,18 +20,18 @@ Steps 0-1 delivered the WorkItem model, API, and `/next` skill on API. Now `/imp
 
 ## Steps
 
-1. [ ] Add `step_start` / `step_done` event types
+1. [x] Add `step_start` / `step_done` event types
    - **Input**: `shared/contracts/dto/work_item.py`
    - **Output**: `STEP_START = "step_start"`, `STEP_DONE = "step_done"` added to `WorkItemEventType`
    - **Test**: unit test in `shared/tests/unit/test_work_item_model.py` — assert new types exist and are valid `WorkItemEventType` members
    - ⚠️ changes `shared/contracts/`
 
-2. [ ] Add `work_item_id` field to STATUS.md via `/next` skill
+2. [x] Add `work_item_id` field to STATUS.md via `/next` skill
    - **Input**: `.claude/skills/next/SKILL.md`, `docs/STATUS.md`
    - **Output**: `/next` skill writes `- **WorkItem**: <work_item_id>` line in STATUS.md Current Task section. Update current STATUS.md to include `wi-3372a29b` for active task.
    - **Test**: manual — run `/next` on a test item and verify STATUS.md has the id. No automated test needed (skill is a prompt, not code).
 
-3. [ ] Update `/implement` skill to emit events via API
+3. [x] Update `/implement` skill to emit events via API
    - **Input**: `.claude/skills/implement/SKILL.md`
    - **Output**: Skill instructions updated:
      - On load context (step 1): read `WorkItem` field from STATUS.md, store as `$WI_ID`
@@ -41,7 +41,11 @@ Steps 0-1 delivered the WorkItem model, API, and `/next` skill on API. Now `/imp
      - All curl calls are best-effort (don't block on failure — `|| true`)
    - **Test**: manual — no automated test for skill prompts
 
-4. [ ] Integration test — step events through API
+4. [x] Integration test — step events through API
    - **Input**: `services/api/tests/service/test_work_item_lifecycle.py` (or new file)
    - **Output**: test that creates a work item, starts it, posts `step_start` + `step_done` events, completes it, then verifies events list via GET
    - **Test**: `make test-api-integration` (runs in CI)
+
+## Deviations
+
+None — implementation followed the plan exactly.
