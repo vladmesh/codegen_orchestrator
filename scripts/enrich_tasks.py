@@ -100,7 +100,7 @@ ENRICHMENTS: dict[str, dict] = {
 
 TRANSITIONS_TO_DONE = {
     "in_dev": ["testing", "done"],
-    "in_review": ["testing", "done"],
+    "in_ci": ["testing", "done"],
     "testing": ["done"],
     "backlog": ["todo", "in_dev", "testing", "done"],
     "todo": ["in_dev", "testing", "done"],

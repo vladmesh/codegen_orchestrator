@@ -508,10 +508,10 @@ async def test_generic_transition():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/tasks/task-abc/transition?to_status=testing")
+        resp = await client.post("/api/tasks/task-abc/transition?to_status=in_ci")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert task.status == "testing"
+    assert task.status == "in_ci"
 
 
 @pytest.mark.asyncio

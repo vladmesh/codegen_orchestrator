@@ -73,10 +73,24 @@ def test_all_statuses_have_transitions():
         assert status in VALID_TRANSITIONS, f"{status} missing from VALID_TRANSITIONS"
 
 
-def test_in_dev_can_go_to_testing_or_review():
+def test_in_dev_can_go_to_in_ci():
     allowed = VALID_TRANSITIONS[TaskStatus.IN_DEV]
-    assert TaskStatus.TESTING in allowed
-    assert TaskStatus.IN_REVIEW in allowed
+    assert TaskStatus.IN_CI in allowed
+    assert TaskStatus.TESTING not in allowed  # must go through in_ci first
+
+
+def test_in_ci_transitions():
+    allowed = VALID_TRANSITIONS[TaskStatus.IN_CI]
+    assert TaskStatus.IN_DEV in allowed  # CI red → back to dev
+    assert TaskStatus.TESTING in allowed  # CI green → testing
+    assert TaskStatus.DONE not in allowed  # must go through testing
+    assert TaskStatus.FAILED in allowed
+    assert TaskStatus.CANCELLED in allowed
+
+
+def test_in_ci_status_value():
+    assert TaskStatus.IN_CI == "in_ci"
+    assert not hasattr(TaskStatus, "IN_REVIEW")
 
 
 def test_testing_can_return_to_in_dev():
