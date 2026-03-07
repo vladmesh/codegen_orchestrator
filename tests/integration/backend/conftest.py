@@ -28,6 +28,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://172.31.0.20:8000")
 # Stream constants
 REDIS_STREAM_COMMANDS = "worker:commands"
 REDIS_STREAM_DEV_RESPONSES = "worker:responses:developer"
+TEST_TELEGRAM_ID = "999000"
 
 
 # --- Shared test helpers ---
@@ -133,6 +134,19 @@ async def seed_project(api_client):
     """Factory fixture to create projects via API. Cleans up after test."""
     created_ids = []
 
+    # Ensure test user exists (owner_id is NOT NULL)
+    resp = await api_client.get(f"/api/users/by-telegram/{TEST_TELEGRAM_ID}")
+    if resp.status_code == 404:
+        await api_client.post(
+            "/api/users/",
+            json={
+                "telegram_id": int(TEST_TELEGRAM_ID),
+                "username": "integration_test",
+                "first_name": "Test",
+                "is_admin": True,
+            },
+        )
+
     async def _create(
         project_id: str,
         name: str = "Test Project",
@@ -143,7 +157,11 @@ async def seed_project(api_client):
         body = {"id": project_id, "name": name, "status": status, "config": config or {}}
         if repository_url:
             body["repository_url"] = repository_url
-        resp = await api_client.post("/api/projects/", json=body)
+        resp = await api_client.post(
+            "/api/projects/",
+            json=body,
+            headers={"X-Telegram-ID": TEST_TELEGRAM_ID},
+        )
         assert resp.status_code == 201, f"Failed to seed project: {resp.text}"
         created_ids.append(project_id)
         return resp.json()

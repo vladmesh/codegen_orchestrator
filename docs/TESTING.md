@@ -1,12 +1,12 @@
 # Test Infrastructure
 
-> **Актуально на**: 2026-03-04
+> **Актуально на**: 2026-03-08
 
 ## Test Layers
 
 | Layer | Location | Dependencies | CI | Speed |
 |-------|----------|-------------|-----|-------|
-| **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks) | Pre-push + CI | ~5 min total |
+| **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks) | Pre-push + CI | ~12s (parallel) |
 | **Service** | `services/{svc}/tests/service/` | Docker (single service) | CI | ~5-10 min |
 | **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI | ~10-30 min |
 | **E2E** | `.claude/skills/e2e-*` (manual), `tests/e2e/` (scripts) | Full stack + real LLM | Manual only | 10-60 min |
@@ -15,11 +15,14 @@
 
 ```bash
 # Unit (fast, no deps — run before every push)
-make test-unit                 # All services
+make test-unit                 # All services (parallel, ~12s)
 make test-api-unit             # Per-service
 make test-langgraph-unit
 make test-scheduler-unit
 make test-telegram-unit
+
+# Serial mode (verbose output per service)
+uv run bash scripts/test-unit-local.sh --serial
 
 # Service (Docker, single service)
 make test-service SERVICE=api

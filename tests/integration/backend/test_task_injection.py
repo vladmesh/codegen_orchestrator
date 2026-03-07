@@ -75,26 +75,18 @@ class TestTaskInjection:
             await cleanup_worker(redis_client, worker_id)
 
     async def test_env_hints_in_task_md(self, redis_client, docker_client):
-        """Verify that env_hints from DeveloperNode appear in TASK.md inside the worker."""
-        from src.nodes.developer import DeveloperNode
-
-        node = DeveloperNode()
-        project_spec = {
-            "name": "hints-test",
-            "config": {
-                "modules": ["backend", "tg_bot"],
-                "description": "Bot with env hints",
-                "env_hints": {
-                    "ADMIN_TELEGRAM_ID": "Telegram ID of the bot admin",
-                    "OPENAI_API_KEY": "OpenAI key for responses",
-                },
-            },
-        }
-        task_content = node._build_create_task(
-            project_name="hints-test",
-            description="Bot with env hints",
-            modules=["backend", "tg_bot"],
-            project_spec=project_spec,
+        """Verify that env_hints content appears in TASK.md inside the worker."""
+        # Build task content inline — the formatting logic is tested in langgraph unit tests.
+        # Here we only verify that the worker receives and mounts the content correctly.
+        task_content = (
+            "# Task: Build hints-test\n\n"
+            "## Provided Environment Variables\n\n"
+            "The Product Owner has already defined the following environment variables "
+            "for this project.\n"
+            "You MUST use them in your code via `os.getenv()` or `pydantic-settings`. "
+            "Do NOT ask the user for them.\n\n"
+            "- `ADMIN_TELEGRAM_ID`: Telegram ID of the bot admin\n"
+            "- `OPENAI_API_KEY`: OpenAI key for responses\n"
         )
 
         req_id = f"test-hints-{uuid4().hex[:6]}"

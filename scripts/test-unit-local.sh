@@ -8,12 +8,15 @@
 #
 # We clear env vars that leak from the root .env to avoid pydantic-settings
 # picking up extra/conflicting values in service Settings classes.
+#
+# Usage:
+#   ./scripts/test-unit-local.sh           # parallel (default, fast)
+#   ./scripts/test-unit-local.sh --serial  # sequential (verbose output)
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FAILED=()
-PASSED=()
+MODE="${1:-parallel}"
 
 # Minimal env for unit tests — no real services needed.
 # Services with pydantic-settings will validate these at import time.
@@ -39,7 +42,9 @@ CLEAN_ENV=(
     WORKER_MANAGER_URL="http://localhost:8001"
 )
 
-run_tests() {
+# --- Serial mode (original behavior, verbose) ---
+
+run_tests_serial() {
     local label="$1"
     local test_dir="$2"
     local pythonpath="${3:-}"
@@ -50,7 +55,6 @@ run_tests() {
     fi
 
     echo "🧪 $label..."
-    # Run from service dir to isolate .env file loading (some services have env_file=".env")
     local workdir="${pythonpath:-$ROOT}"
     if (cd "$workdir" && "${CLEAN_ENV[@]}" \
        PYTHONPATH="${pythonpath:+$pythonpath:}" \
@@ -62,20 +66,73 @@ run_tests() {
     echo ""
 }
 
-# Services (need PYTHONPATH for `from src.xxx` imports)
-run_tests "api"            "services/api/tests/unit"            "$ROOT/services/api"
-run_tests "langgraph"      "services/langgraph/tests/unit"      "$ROOT/services/langgraph"
-run_tests "telegram_bot"   "services/telegram_bot/tests/unit"   "$ROOT/services/telegram_bot"
-run_tests "scheduler"      "services/scheduler/tests/unit"      "$ROOT/services/scheduler"
-run_tests "worker-manager" "services/worker-manager/tests/unit" "$ROOT/services/worker-manager"
-run_tests "infra-service"  "services/infra-service/tests/unit"  "$ROOT/services/infra-service"
+# --- Parallel mode (fast, logs to tmpfiles) ---
 
-# Packages (use proper package names, no PYTHONPATH needed)
-run_tests "orchestrator-cli" "packages/orchestrator-cli/tests/unit"
-run_tests "worker-wrapper"   "packages/worker-wrapper/tests/unit"
+LOGDIR=""
+run_tests_parallel() {
+    local label="$1"
+    local test_dir="$2"
+    local pythonpath="${3:-}"
 
-# Shared
-run_tests "shared" "shared/tests"
+    if [ ! -d "$ROOT/$test_dir" ] || [ -z "$(ls -A "$ROOT/$test_dir" 2>/dev/null)" ]; then
+        echo 0 > "$LOGDIR/$label.rc"
+        return
+    fi
+
+    local workdir="${pythonpath:-$ROOT}"
+    local rc=0
+    (cd "$workdir" && "${CLEAN_ENV[@]}" \
+       PYTHONPATH="${pythonpath:+$pythonpath:}" \
+       python -m pytest "$ROOT/$test_dir" --tb=short -q) \
+       > "$LOGDIR/$label.log" 2>&1 || rc=$?
+    echo "$rc" > "$LOGDIR/$label.rc"
+}
+
+# --- Shared test list ---
+
+ALL_SUITES=(
+    "api|services/api/tests/unit|$ROOT/services/api"
+    "langgraph|services/langgraph/tests/unit|$ROOT/services/langgraph"
+    "telegram_bot|services/telegram_bot/tests/unit|$ROOT/services/telegram_bot"
+    "scheduler|services/scheduler/tests/unit|$ROOT/services/scheduler"
+    "worker-manager|services/worker-manager/tests/unit|$ROOT/services/worker-manager"
+    "infra-service|services/infra-service/tests/unit|$ROOT/services/infra-service"
+    "orchestrator-cli|packages/orchestrator-cli/tests/unit|"
+    "worker-wrapper|packages/worker-wrapper/tests/unit|"
+    "shared|shared/tests|"
+)
+
+FAILED=()
+PASSED=()
+
+if [ "$MODE" = "--serial" ]; then
+    for suite in "${ALL_SUITES[@]}"; do
+        IFS='|' read -r label test_dir pythonpath <<< "$suite"
+        run_tests_serial "$label" "$test_dir" "$pythonpath"
+    done
+else
+    LOGDIR=$(mktemp -d)
+    trap 'rm -rf "$LOGDIR"' EXIT
+
+    for suite in "${ALL_SUITES[@]}"; do
+        IFS='|' read -r label test_dir pythonpath <<< "$suite"
+        run_tests_parallel "$label" "$test_dir" "$pythonpath" &
+    done
+    wait
+
+    for suite in "${ALL_SUITES[@]}"; do
+        IFS='|' read -r label _ _ <<< "$suite"
+        rc=$(cat "$LOGDIR/$label.rc" 2>/dev/null || echo 1)
+        if [ "$rc" = "0" ]; then
+            PASSED+=("$label")
+        else
+            FAILED+=("$label")
+            echo "❌ $label"
+            cat "$LOGDIR/$label.log" 2>/dev/null || echo "(no log)"
+            echo ""
+        fi
+    done
+fi
 
 # Summary
 echo "========================================="

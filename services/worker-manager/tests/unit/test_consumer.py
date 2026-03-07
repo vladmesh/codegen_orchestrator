@@ -33,7 +33,7 @@ def mock_worker_manager():
 async def redis_client():
     redis = aioredis.FakeRedis(decode_responses=True)
     yield redis
-    await redis.close()
+    await redis.aclose()
 
 
 @pytest.fixture

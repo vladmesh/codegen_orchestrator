@@ -34,7 +34,7 @@ async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
 async def redis_client() -> AsyncGenerator[Redis, None]:
     client = Redis.from_url(REDIS_URL)
     yield client
-    await client.close()
+    await client.aclose()
 
 
 @pytest.fixture(scope="function")

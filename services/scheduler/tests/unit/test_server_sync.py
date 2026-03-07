@@ -7,6 +7,12 @@ from src.tasks import server_sync
 
 
 @pytest.fixture
+def mock_notify_admins():
+    with patch("src.tasks.server_sync.notify_admins", new_callable=AsyncMock) as mock:
+        yield mock
+
+
+@pytest.fixture
 def mock_api_client():
     with patch("src.tasks.server_sync.api_client") as mock:
         yield mock
@@ -34,7 +40,9 @@ async def test_get_time4vps_client_returns_client(mock_api_client):
 
 
 @pytest.mark.asyncio
-async def test_sync_server_list_discovers_new_managed(mock_api_client, mock_time4vps_client):
+async def test_sync_server_list_discovers_new_managed(
+    mock_api_client, mock_time4vps_client, mock_notify_admins
+):
     # Setup
     api_server = MagicMock(ip="1.2.3.4", id=1001, domain="test.com")
     mock_time4vps_client.get_servers.return_value = [api_server]
@@ -100,7 +108,9 @@ async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_
 
 
 @pytest.mark.asyncio
-async def test_check_provisioning_triggers_detects_force_rebuild(mock_api_client):
+async def test_check_provisioning_triggers_detects_force_rebuild(
+    mock_api_client, mock_notify_admins
+):
     # Setup
     server = ServerDTO(
         handle="vps-1",

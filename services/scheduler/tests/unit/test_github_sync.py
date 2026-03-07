@@ -76,7 +76,7 @@ async def test_sync_single_repo_notifies_admins_for_unknown_repo(
 
 
 @pytest.mark.asyncio
-async def test_detect_missing_projects_marks_missing(mock_api_client):
+async def test_detect_missing_projects_marks_missing(mock_api_client, mock_notify_admins):
     # Setup
     proj_ok = ProjectDTO(
         id="p1", name="ok", github_repo_id=1, status=ProjectStatus.ACTIVE, owner_id=1
