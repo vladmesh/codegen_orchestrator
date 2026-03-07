@@ -41,6 +41,11 @@ def format_backlog(queue: list[dict], done: list[dict], ideas_text: str) -> str:
     lines = [
         "# Backlog",
         "",
+        "> [!WARNING]",
+        "> **DEPRECATED**: Этот файл более не является источником правды."
+        " Задачи мигрировали в базу данных (таблица `tasks`)."
+        " Этот файл автогенерируется скриптом исключительно для read-only просмотра.",
+        "",
         f"> **Актуально на**: {today} (generated)",
         "",
         "## Queue (ordered by priority, first = next)",
