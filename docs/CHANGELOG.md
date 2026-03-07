@@ -2,6 +2,18 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-08
+
+### Added
+- **PR flow + in_ci status + need_e2e** (#64): Complete task lifecycle with CI and testing gates.
+  - Renamed `IN_REVIEW` → `IN_CI` status; transitions: in_dev → in_ci → testing → done
+  - Added `need_e2e` boolean field to Task model (controls smoke vs full E2E testing)
+  - `/complete` endpoint auto-promotes through intermediate statuses (in_dev → in_ci → testing → done)
+  - Rewrote `/implement` skill: push → PR → CI → smoke/E2E → merge → done
+  - Updated `/e2e-run` skill URLs from `/api/tasks/` → `/api/runs/` post-rename
+  - Alembic migration for in_ci status rename + need_e2e column
+  - 10 new unit tests, 3 flow tests, service test updates
+
 ## 2026-03-07
 
 ### Changed
