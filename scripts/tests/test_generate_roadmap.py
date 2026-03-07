@@ -101,4 +101,4 @@ def test_format_roadmap_multiple_milestones_ordered():
 def test_format_roadmap_header():
     result = format_roadmap([], {}, [])
     assert result.startswith("# Roadmap")
-    assert "generated" in result
+    assert "make sync" in result

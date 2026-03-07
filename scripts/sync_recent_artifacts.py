@@ -83,7 +83,12 @@ def sync_artifacts(
             fname = f"{slug}.md"
             expected_plan_files.add(fname)
             path = plans_dir / fname
-            content = f"# {task['title']}\n\n{task['plan']}\n"
+            warning = (
+                "> [!WARNING]\n"
+                "> Этот файл автогенерируется командой `make sync`."
+                " Не редактируйте вручную — изменения будут перезаписаны.\n"
+            )
+            content = f"# {task['title']}\n\n{warning}\n{task['plan']}\n"
             path.write_text(content)
             written.append(str(path))
 
@@ -94,7 +99,12 @@ def sync_artifacts(
             fname = f"{slug}.md"
             expected_bs_files.add(fname)
             path = brainstorms_dir / fname
-            content = f"# {bs.get('title', task['title'])}\n\n{bs.get('content', '')}\n"
+            warning = (
+                "> [!WARNING]\n"
+                "> Этот файл автогенерируется командой `make sync`."
+                " Не редактируйте вручную — изменения будут перезаписаны.\n"
+            )
+            content = f"# {bs.get('title', task['title'])}\n\n{warning}\n{bs.get('content', '')}\n"
             path.write_text(content)
             written.append(str(path))
 

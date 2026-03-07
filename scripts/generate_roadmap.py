@@ -53,7 +53,11 @@ def format_roadmap(
     lines = [
         "# Roadmap",
         "",
-        f"> **Updated**: {today} (generated)",
+        "> [!WARNING]",
+        "> Этот файл автогенерируется командой `make sync`."
+        " Не редактируйте вручную — изменения будут перезаписаны.",
+        "",
+        f"> **Updated**: {today}",
         "",
     ]
 
