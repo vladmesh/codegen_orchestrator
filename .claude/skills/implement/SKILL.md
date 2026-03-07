@@ -123,6 +123,13 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
   -d '{"event_type": "note", "details": {"action": "step_start", "step": N, "title": "Step title"}, "actor": "claude"}' || true
 ```
 
+**If deviating from the plan** (skipping a step, changing approach, adding unplanned work) — emit a deviation event:
+```bash
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "comment", "details": {"action": "plan_deviation", "step": N, "reason": "<why>"}, "actor": "claude"}' || true
+```
+
 Follow Red -> Green -> Refactor:
 
 1. **Red**: Write failing test(s) based on the step's Test spec. Run `make test-unit` to confirm they fail.
@@ -168,7 +175,12 @@ gh run list --branch "$BRANCH" --limit 1 --json status,conclusion
 ```
 
 5. **CI red** — read logs via `gh run view --log-failed`:
-   - **Failure related to current task** — fix, commit, push, re-poll. Do NOT touch docs.
+   - **Failure related to current task** — fix, commit, push, re-poll. Do NOT touch docs. After fixing, emit a CI-fix event:
+     ```bash
+     curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
+       -H "Content-Type: application/json" \
+       -d "{\"event_type\": \"note\", \"details\": {\"action\": \"ci_fix\", \"error\": \"<brief error>\", \"fix\": \"<what was fixed>\"}, \"actor\": \"claude\"}" || true
+     ```
    - **Pre-existing failure** (unrelated) — note it, proceed to step 7.
 
 6. **CI green** — proceed to step 7.
@@ -248,6 +260,13 @@ git commit -m "docs: complete #<ID> — <title>"
 ```
 
 ### 9. Report
+
+**Emit summary event** (before printing):
+```bash
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "comment", "details": {"action": "implementation_summary", "steps_completed": N, "total_steps": N, "deviations": [], "notes": "<brief summary>"}, "actor": "claude"}' || true
+```
 
 Print a summary:
 - Task: #ID — Title
