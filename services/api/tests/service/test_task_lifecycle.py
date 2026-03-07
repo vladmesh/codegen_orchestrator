@@ -46,7 +46,15 @@ async def test_task_full_lifecycle(async_client: AsyncClient, _tasks_project):
     )
     assert resp.status_code == 201  # noqa: PLR2004
 
-    # 4. Transition to testing
+    # 4. Transition to in_ci
+    resp = await async_client.post(
+        f"/api/tasks/{task_id}/transition?to_status=in_ci",
+        json={"actor": "system"},
+    )
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert resp.json()["status"] == "in_ci"
+
+    # 5. Transition to testing
     resp = await async_client.post(
         f"/api/tasks/{task_id}/transition?to_status=testing",
         json={"actor": "system"},
@@ -54,17 +62,18 @@ async def test_task_full_lifecycle(async_client: AsyncClient, _tasks_project):
     assert resp.status_code == 200  # noqa: PLR2004
     assert resp.json()["status"] == "testing"
 
-    # 5. Complete
+    # 6. Complete
     resp = await async_client.post(f"/api/tasks/{task_id}/complete", json={"actor": "system"})
     assert resp.status_code == 200  # noqa: PLR2004
     assert resp.json()["status"] == "done"
 
-    # 6. Verify events
+    # 7. Verify events
     resp = await async_client.get(f"/api/tasks/{task_id}/events")
     assert resp.status_code == 200  # noqa: PLR2004
     events = resp.json()
     status_changes = [e for e in events if e["event_type"] == "status_change"]
-    assert len(status_changes) >= 3  # noqa: PLR2004
+    # backlog→todo, todo→in_dev, in_dev→in_ci, in_ci→testing, testing→done = 5
+    assert len(status_changes) >= 5  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
@@ -78,7 +87,7 @@ async def test_invalid_transition_rejected(async_client: AsyncClient, _tasks_pro
 
     resp = await async_client.post(f"/api/tasks/{task_id}/complete")
     assert resp.status_code == 422  # noqa: PLR2004
-    assert "Cannot transition" in resp.json()["detail"]
+    assert "Cannot complete" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -90,9 +99,8 @@ async def test_reopen_from_done(async_client: AsyncClient, _tasks_project):
     )
     task_id = resp.json()["id"]
 
-    # Get to done
+    # Get to done (auto-promotes through in_ci + testing)
     await async_client.post(f"/api/tasks/{task_id}/start")
-    await async_client.post(f"/api/tasks/{task_id}/transition?to_status=testing")
     await async_client.post(f"/api/tasks/{task_id}/complete")
 
     # Reopen
@@ -185,11 +193,7 @@ async def test_comment_events_lifecycle(async_client: AsyncClient, _tasks_projec
         },
     )
 
-    # Complete (need to go through testing first)
-    await async_client.post(
-        f"/api/tasks/{task_id}/transition?to_status=testing",
-        json={"actor": "claude"},
-    )
+    # Complete (auto-promotes through in_ci + testing)
     resp = await async_client.post(
         f"/api/tasks/{task_id}/complete",
         json={"actor": "claude"},
