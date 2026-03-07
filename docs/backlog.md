@@ -100,7 +100,7 @@
 ### #58 `/triage` + `/checkpoint` via API (Step 3)
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: docs/plans/triage-checkpoint-via-api.md
 - **Status**: pending
 - **Brief**: `/triage` создаёт задачи через `POST /api/work-items` вместо записи в backlog.md. `/checkpoint` считает прогресс по `GET /api/work-items?status=done&since=...`. backlog.md генерируется из БД (`make backlog` или auto). Все скиллы на API — markdown read-only view. Источник: brainstorm orchestrator-v2-task-management (Step 3).
 

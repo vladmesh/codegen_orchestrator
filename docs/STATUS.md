@@ -3,9 +3,9 @@
 ## Current Task
 - **Backlog**: #58 /triage + /checkpoint via API (Step 3)
 - **WorkItem**: wi-4c0731f8
-- **Plan**: —
-- **Step**: —
-- **Done Steps**: —
+- **Plan**: docs/plans/triage-checkpoint-via-api.md
+- **Step**: 1/6 — API: add `since` filter and `/stats` endpoint
+- **Done Steps**:
 
 ## Blocked
 (нет)
