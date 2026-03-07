@@ -12,7 +12,7 @@
 
 ### Rename WorkItem→Task, Task→Run
 - **Priority**: CRITICAL
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Переименовать сущности: WorkItem становится Task (planning layer), Task становится Run (execution layer). Одна alembic миграция: rename table work_items→tasks, tasks→runs. Rename моделей, DTO, enums, API routes (/work-items/→/tasks/, /tasks/→/runs/), тестов, скиллов.
 
