@@ -40,7 +40,10 @@ Worker swarm, cost tracking, self-hosted CI.
 ## Backlog
 
 - [ ] #63 Milestone model + ROADMAP generation
+- [ ] Rename WorkItem→Task, Task→Run
 - [ ] #52 Scaffold script не экранирует task_description
+- [ ] Repository model + migration
+- [ ] Story model + API
 - [ ] #18 Split engineering_worker.py (1088 LOC)
 - [ ] #54 Deploy: inter-service URL должен использовать docker service name
 - [ ] #62 /brainstorm resume — продолжение обсуждения существующего драфта

@@ -23,18 +23,31 @@ Look up the work item:
 - If nothing found, try `status=backlog&limit=1`
 - If still nothing: STOP — "No current task. Create one via triage or API."
 
-Read related brainstorms if referenced in description.
-Read related code to understand the scope.
+### 2. Load context
 
-### 2. Research
+Pull all available context for the task:
+
+**Description & plan**: read from the work item response fields.
+
+**Source brainstorm**: check the `source_brainstorm_id` field in the work item response.
+If it is not null, fetch the brainstorm:
+```bash
+BS_ID=$(echo "$WI" | jq -r '.source_brainstorm_id')
+if [ "$BS_ID" != "null" ]; then
+  curl -sf "http://localhost:8000/api/brainstorms/$BS_ID"
+fi
+```
+Read the brainstorm's `content` field — it contains the full thinking session with context, decisions, and action items.
+
+**Related code**: read all files mentioned in the description, plan, and brainstorm content.
+
+### 3. Research
 
 Before writing the plan:
-- Read all files mentioned in the task's description
 - Understand the current state of the code
 - Identify dependencies between components
-- Check if there are related brainstorms in `docs/brainstorms/`
 
-### 3. Write plan
+### 4. Write plan
 
 Write the plan as a text block in this format:
 
@@ -59,7 +72,7 @@ Write the plan as a text block in this format:
 ...
 ```
 
-### 4. Guidelines for good steps
+### 5. Guidelines for good steps
 
 - Each step should be completable in one focused session (< 1 hour of agent work)
 - Steps should be ordered by dependency (step N should not depend on step N+2)
@@ -68,7 +81,7 @@ Write the plan as a text block in this format:
 - Last step should be cleanup/documentation if needed
 - If a step requires changing `shared/contracts/` or DB schema — mark it explicitly: `⚠️ needs-approval`
 
-### 5. Save plan to API
+### 6. Save plan to API
 
 Write the plan text to the work item:
 
@@ -81,18 +94,18 @@ curl -sf -X PATCH "http://localhost:8000/api/work-items/$WI_ID" \
 
 Use `jq -Rs .` to escape the plan text for JSON if needed.
 
-### 6. Update backlog
+### 7. Update backlog
 
 Run `make backlog` to regenerate docs/backlog.md from API.
 
-### 7. Commit
+### 8. Commit
 
 ```bash
 git add docs/backlog.md
 git commit -m "plan: #<ID> — <title>"
 ```
 
-### 8. Report
+### 9. Report
 
 Print:
 - Task: #ID — Title

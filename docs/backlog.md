@@ -4,35 +4,35 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #63 Milestone model + ROADMAP generation
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Milestone как сущность в БД. Модель (id, project_id, title, description, sort_order, status, parent_id). API: CRUD + /complete. WorkItem.milestone_id FK. make roadmap генерирует ROADMAP.md из API. Миграция текущего ROADMAP в milestones. Источник: brainstorm milestone-model-roadmap.md
-
 ### Rename WorkItem→Task, Task→Run
 - **Priority**: CRITICAL
 - **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Переименовать сущности: WorkItem становится Task (planning layer), Task становится Run (execution layer). Одна alembic миграция: rename table work_items→tasks, tasks→runs. Rename моделей, DTO, enums, API routes (/work-items/→/tasks/, /tasks/→/runs/), тестов, скиллов.
 
-### #52 Scaffold script не экранирует task_description
+### #64 Implement skill: PR flow + in_ci status + need_e2e
 - **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: ## Зачем  Скилл /implement сейчас не закрывает задачи корректно: вызывает /complete из in_dev (невалидный переход), не создаёт PR (CI не триггерится на wi/* ветки), не мёржит надёжно. Статусы in_review и testing не используются. Нужен чистый автоматический flow от кода до done.  ## Что меняем  ##...
+
+### #52 Scaffold script не экранирует task_description
+- **Priority**: MEDIUM
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из...
-
-### Repository model + migration
-- **Priority**: HIGH
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Новая сущность Repository (id, project_id, name, git_url, provider_repo_id, role, is_managed). Alembic миграция + CRUD API. Миграция существующих Project.repository_url → Repository(role=primary). Task.repository_id nullable FK.
 
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
+
+### Repository model + migration
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Новая сущность Repository (id, project_id, name, git_url, provider_repo_id, role, is_managed). Alembic миграция + CRUD API. Миграция существующих Project.repository_url → Repository(role=primary). Task.repository_id nullable FK.
 
 ### Story model + API
 - **Priority**: MEDIUM
@@ -127,6 +127,7 @@
 
 ## Done (last 10)
 
+- #63 Milestone model + ROADMAP generation — 2026-03-07
 - #61 Brainstorm model in DB — 2026-03-07
 - #58 Skills → API + Simplified Model — 2026-03-07
 - #57 /implement work item events (Step 2) — 2026-03-07
@@ -136,7 +137,6 @@
 - #44 PO: DuckDuckGo Search Tool — 2026-03-07
 - #45 PO: Context-Aware Env Variables & Hints — 2026-03-07
 - #42 Fix API Integration Test (test_post_projects_pure_db) — 2026-03-07
-- #47 Race Condition in set_project_secret (parallel tool calls) — 2026-03-07
 
 ## Ideas
 
