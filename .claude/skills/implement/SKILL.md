@@ -21,12 +21,15 @@ The main development skill. Implements the current task (or a specific one) usin
 
 Read `docs/STATUS.md` to get:
 - Current backlog item ID and title
+- **WorkItem** ID (e.g. `wi-3372a29b`) — needed for events API
 - Plan file path (if exists)
 - Current step number
 
 If `#ID` argument provided and differs from current — update STATUS.md to point to the new task first (like `/next` would).
 
 If no current task in STATUS.md — STOP: "No current task. Use `/next` to pick one."
+
+Save the WorkItem ID as `$WI_ID` for use in event calls. If the field is missing or `—`, skip all event API calls (backward compat).
 
 ### 2. Understand the task
 
@@ -39,6 +42,13 @@ If no plan exists — read the task Brief from `docs/backlog.md` and use your ju
 
 ### 3. TDD cycle (per step)
 
+**Before starting the step** — emit `step_start` event (best-effort, don't block on failure):
+```bash
+curl -sf -X POST "http://localhost:8000/api/work-items/$WI_ID/events" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "step_start", "details": {"step": N, "title": "Step title"}, "actor": "claude"}' || true
+```
+
 Follow Red → Green → Refactor:
 
 1. **Red**: Write failing test(s) based on the step's Test spec. Run `make test-unit` to confirm they fail.
@@ -46,6 +56,14 @@ Follow Red → Green → Refactor:
 3. **Integration**: If the step is an integration test step from the plan — write the test, but do NOT run locally (CI will run it).
 4. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
 5. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
+
+**After the commit** — emit `step_done` event with commit SHA:
+```bash
+SHA=$(git rev-parse --short HEAD)
+curl -sf -X POST "http://localhost:8000/api/work-items/$WI_ID/events" \
+  -H "Content-Type: application/json" \
+  -d "{\"event_type\": \"step_done\", \"details\": {\"step\": N, \"title\": \"Step title\", \"commit_sha\": \"$SHA\"}, \"actor\": \"claude\"}" || true
+```
 
 ### 4. Update step progress
 
@@ -73,6 +91,13 @@ After the last step is committed:
 ⚠️ **Gate**: only enter this step when CI is green (or pre-existing failure documented). If you are here and CI has not passed — STOP, go back to step 5.
 
 When all steps are done AND CI is green:
+
+**Complete work item via API** (best-effort):
+```bash
+curl -sf -X POST "http://localhost:8000/api/work-items/$WI_ID/complete" \
+  -H "Content-Type: application/json" \
+  -d '{"actor": "claude"}' || true
+```
 
 **Update `docs/CHANGELOG.md`**:
 - Add entry under today's date
