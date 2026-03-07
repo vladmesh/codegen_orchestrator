@@ -170,6 +170,23 @@ async def test_list_tasks():
 
 
 @pytest.mark.asyncio
+async def test_list_tasks_filter_by_source_brainstorm_id():
+    """GET /api/tasks/?source_brainstorm_id=bs-xxx filters correctly."""
+    t1 = _make_task(id="task-1", title="From brainstorm", source_brainstorm_id="bs-xxx")
+    session = _mock_session(scalars_all=[t1])
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/tasks/?source_brainstorm_id=bs-xxx")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["source_brainstorm_id"] == "bs-xxx"
+
+
+@pytest.mark.asyncio
 async def test_list_tasks_with_filters():
     session = _mock_session(scalars_all=[])
     _override_session(session)

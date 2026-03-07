@@ -212,6 +212,7 @@ async def list_tasks(
     status_filter: str | None = Query(None, alias="status"),
     type_filter: str | None = Query(None, alias="type"),
     milestone_id: str | None = Query(None),
+    source_brainstorm_id: str | None = Query(None),
     since: datetime | None = Query(None),
     limit: int | None = Query(None, ge=1),
     sort: str | None = Query(None),
@@ -227,6 +228,8 @@ async def list_tasks(
         query = query.where(Task.type == type_filter)
     if milestone_id:
         query = query.where(Task.milestone_id == milestone_id)
+    if source_brainstorm_id:
+        query = query.where(Task.source_brainstorm_id == source_brainstorm_id)
     if since:
         query = query.where(Task.updated_at >= since)
 
