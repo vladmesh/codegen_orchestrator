@@ -795,6 +795,10 @@ git config user.email "ai@codegen.local"
             modules=scaffold_config.modules,
         )
 
+        # Base64-encode task_description to safely pass it through bash
+        # without shell metacharacter issues (quotes, backticks, $(), etc.)
+        task_desc_b64 = base64.b64encode(scaffold_config.task_description.encode()).decode()
+
         # Build scaffold script (runs as worker user inside container)
         scaffold_script = f"""set -e
 
@@ -812,11 +816,17 @@ git config core.hooksPath /dev/null
 # Install copier via uv (cached after first run)
 uv tool install copier
 
+# Write task_description to YAML data file (avoids shell escaping issues)
+echo -n '{task_desc_b64}' | base64 -d > /tmp/_copier_desc.txt
+printf 'task_description: |\\n' > /tmp/copier-data.yml
+sed 's/^/  /' /tmp/_copier_desc.txt >> /tmp/copier-data.yml
+rm /tmp/_copier_desc.txt
+
 # Run copier to scaffold project
 copier copy {scaffold_config.template_repo} /workspace \
     --data "project_name={scaffold_config.project_name}" \
     --data "modules={scaffold_config.modules}" \
-    --data "task_description={scaffold_config.task_description}" \
+    --data-file /tmp/copier-data.yml \
     --trust --defaults --overwrite --vcs-ref=HEAD
 
 # Setup project (install deps, generate code)

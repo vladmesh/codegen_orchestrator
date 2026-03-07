@@ -1,5 +1,8 @@
 # #64 Implement skill: PR flow + in_ci status + need_e2e
 
+> [!WARNING]
+> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
+
 ## Context
 
 Task #64 addresses the broken completion flow in the /implement skill. Currently:
