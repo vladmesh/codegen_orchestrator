@@ -1,76 +1,102 @@
-# Plan: /triage + /checkpoint via API (#58)
+# Plan: Skills → API + Simplified Model (#58)
 
 ## Context
 
-Steps 0-2 of the orchestrator-v2-task-management brainstorm are complete:
-- Step 0: WorkItem model + API + backlog migration
-- Step 1: `/next` skill uses API
-- Step 2: `/implement` emits work item events
+Steps 0-2 of the orchestrator-v2-task-management brainstorm are complete.
+This task was originally "Step 3: /triage + /checkpoint via API", but scope
+expanded after architectural review:
 
-This is Step 3: migrate `/triage` and `/checkpoint` skills to use the Work Items API
-instead of directly editing `backlog.md`. After this, `backlog.md` becomes a read-only
-view generated from the database.
-
-### Current state
-- `/triage` parses markdown reports, writes new tasks directly into `backlog.md`
-- `/checkpoint` reads markdown files to count progress, manually updates docs
-- Both skills assign tag IDs by scanning backlog.md for max existing ID
-- Work items API exists with CRUD, action endpoints, and events
-- API list endpoint supports `status`, `type`, `project_id`, `limit`, `sort` filters
-- API does NOT have: `since` date filter, next-tag endpoint, stats/counts
+- **Plans as text field** — no more `docs/plans/*.md`, plan stored in `work_item.plan`
+- **No structured steps** — tasks are atomic, progress tracked by git branch + commits
+- **STATUS.md removed** as source of truth — API is the only source
+- **`/next` eliminated** — absorbed into `/implement` (just `POST /start`)
+- **step_start/step_done events removed** — unnecessary without structured steps
 
 ### What changes
-- `/triage`: creates work items via `POST /api/work-items` instead of editing backlog.md
-- `/checkpoint`: queries `GET /api/work-items?status=done` for progress stats
-- New API endpoints: `since` filter, next-tag, stats
-- `backlog.md` regenerated from DB after each triage (read-only view)
+- WorkItem model: add `plan` text field, add `project_id` to WorkItemUpdate
+- Remove step_start/step_done event types
+- API: add `since` filter, `/stats`, `/next-tag`
+- `/plan` → writes to work_item.plan via API
+- `/implement` → reads plan from API, creates git branch, absorbs `/next`
+- `/triage` → creates work items via API
+- `/checkpoint` → reads stats from API
+- `backlog.md` → generated from DB (`make backlog`)
+- `docs/plans/*.md`, `STATUS.md` → removed
 
 ## Steps
 
-1. [ ] API: add `since` filter, `/stats`, `/next-tag`, and `project_id` in WorkItemUpdate
-   - **Input**: `services/api/src/routers/work_items.py`, `services/api/src/schemas/work_item.py`
+1. [ ] Model + API changes
+   - **Input**: `shared/models/work_item.py`, `shared/contracts/dto/work_item.py`, `services/api/src/routers/work_items.py`, `services/api/src/schemas/work_item.py`
    - **Output**:
-     - `GET /api/work-items/?since=2026-03-01T00:00:00Z` — filters by `updated_at >= since`
-     - `GET /api/work-items/stats` — returns `{backlog: N, todo: N, in_dev: N, done: N, ...}` counts by status
-     - `GET /api/work-items/next-tag` — returns `{"next_tag": 61}` (max tag number + 1)
-     - `WorkItemUpdate` schema: add optional `project_id: str | None` field (allows PATCH to reassign project)
-   - **Test**: Unit tests for each new endpoint and for project_id update
+     - Migration: add `plan` text column to `work_items`
+     - Remove `STEP_START`/`STEP_DONE` from `WorkItemEventType`
+     - `WorkItemUpdate` schema: add `project_id` and `plan` fields
+     - `WorkItemRead` schema: include `plan` field
+     - `GET /api/work-items/?since=<ISO datetime>` — filter by `updated_at >= since`
+     - `GET /api/work-items/stats` — `{backlog: N, todo: N, in_dev: N, done: N, ...}`
+     - `GET /api/work-items/next-tag` — `{"next_tag": 61}` (max tag + 1)
+   - **Test**: Unit tests for new endpoints, updated schema tests, removed step event references
 
 2. [ ] Backlog generation script
    - **Input**: Work Items API, `docs/backlog.md` (current format as reference)
-   - **Output**: `scripts/generate_backlog.py` — fetches work items from API, generates `docs/backlog.md` in current format. Sections: Queue (backlog status, ordered by priority), Ideas (kept as-is from a static section in the script or a separate file), Done (last 10 done items). `Makefile` target: `make backlog`
-   - **Test**: Unit test with mocked API responses, verify generated markdown matches expected format
+   - **Output**:
+     - `scripts/generate_backlog.py` — fetches work items from API, generates `docs/backlog.md`
+     - Sections: Queue (status=backlog, by priority), Done (last 10, status=done)
+     - Ideas section: read from `docs/ideas.md` (standalone file, manually maintained)
+     - `Makefile` target: `make backlog`
+   - **Test**: Unit test with mocked API responses
 
-3. [ ] Update `/triage` skill to use API
+3. [ ] Update `/plan` skill
+   - **Input**: `.claude/skills/plan/SKILL.md`
+   - **Output**: Updated skill that:
+     - Writes plan text to work item via `PATCH /api/work-items/{id}` (`plan` field)
+     - No longer creates `docs/plans/*.md`
+     - No longer updates STATUS.md
+   - **Test**: Manual — run `/plan`, verify plan text in API response
+
+4. [ ] Update `/implement` skill
+   - **Input**: `.claude/skills/implement/SKILL.md`
+   - **Output**: Updated skill that:
+     - On start: queries `GET /api/work-items/?status=in_dev&limit=1` or accepts `#ID` argument
+     - If work item not started: calls `POST /start` (absorbs `/next`)
+     - Reads plan from `work_item.plan` field (API response)
+     - Creates git branch `wi/{tag}-{slug}` and works there
+     - No more step_start/step_done event calls
+     - No STATUS.md reads/writes
+     - On completion: `POST /complete`, update CHANGELOG + `make backlog`, merge branch
+     - Removes all step tracking logic
+   - **Test**: Manual — run `/implement`, verify branch created, plan read from API
+
+5. [ ] Update `/triage` skill
    - **Input**: `.claude/skills/triage/SKILL.md`
    - **Output**: Updated skill that:
-     - Creates tasks via `curl -s -X POST http://localhost:8000/api/work-items/ -H 'Content-Type: application/json' -d '{...}'` with `project_id: "codegen-orchestrator"`
+     - Creates tasks via `POST /api/work-items/` with `project_id: "codegen-orchestrator"`
      - Gets next tag via `GET /api/work-items/next-tag`
-     - Dedup check via `GET /api/work-items/?status=backlog` + search by keywords (still in skill logic, not API)
-     - Regression detection via `GET /api/work-items/?status=done` + keyword search
-     - Reopen via `POST /api/work-items/{id}/reopen`
-     - After all changes: runs `make backlog` to regenerate markdown
-     - Removes direct backlog.md editing (except Ideas section — kept manually for now)
-   - **Test**: Manual — run triage on a test brainstorm, verify work item created in API and backlog.md regenerated
+     - Dedup/regression via API queries
+     - Runs `make backlog` after changes
+     - No direct backlog.md editing
+   - **Test**: Manual — run triage on test brainstorm
 
-4. [ ] Update `/checkpoint` skill to use API
+6. [ ] Update `/checkpoint` skill
    - **Input**: `.claude/skills/checkpoint/SKILL.md`
    - **Output**: Updated skill that:
-     - Counts completed tasks via `GET /api/work-items/stats`
-     - Gets recently completed via `GET /api/work-items/?status=done&since=<last_checkpoint_date>&sort=-created_at`
-     - After triage step: runs `make backlog` to regenerate markdown
-     - Rest of checkpoint logic unchanged (audit, CHANGELOG, ROADMAP, cleanup)
-   - **Test**: Manual — run checkpoint, verify stats match API data
+     - Stats via `GET /api/work-items/stats`
+     - Recently completed via `GET /api/work-items/?status=done&since=<date>`
+     - Runs `make backlog` after triage step
+   - **Test**: Manual — run checkpoint
 
-5. [ ] Move Ideas section to `docs/ideas.md` and include in generation
-   - **Input**: `docs/backlog.md` Ideas section, `scripts/generate_backlog.py`
+7. [ ] Cleanup
+   - **Input**: `docs/STATUS.md`, `docs/plans/`, `.claude/skills/next/`, `docs/backlog.md`
    - **Output**:
-     - `docs/ideas.md` — standalone file for ideas (not in DB, manually maintained)
-     - `scripts/generate_backlog.py` appends ideas.md content to generated backlog.md
-     - `/triage` skill updated to add ideas to `docs/ideas.md` instead of backlog.md
-   - **Test**: Verify `make backlog` produces backlog.md with Ideas section from ideas.md
+     - Delete `.claude/skills/next/` (absorbed into `/implement`)
+     - Delete `docs/STATUS.md` (API is source of truth)
+     - Move Ideas from `docs/backlog.md` to `docs/ideas.md`
+     - Delete existing `docs/plans/*.md` (migrate any active plan to work item)
+     - Remove step_start/step_done references from service tests
+     - Update CLAUDE.md if it references STATUS.md or /next
+   - **Test**: `make test-unit` passes, no broken references
 
-6. [ ] Integration test for new API endpoints
-   - **Input**: `services/api/tests/integration/`
-   - **Output**: Tests for `since` filter, `/stats`, `/next-tag` endpoints against real DB
-   - **Test**: `make test-api-integration`
+8. [ ] Integration tests + service tests
+   - **Input**: `services/api/tests/`
+   - **Output**: Service tests for `since`, `/stats`, `/next-tag`, `plan` field PATCH
+   - **Test**: CI green

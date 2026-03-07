@@ -4,7 +4,7 @@
 - **Backlog**: #58 /triage + /checkpoint via API (Step 3)
 - **WorkItem**: wi-4c0731f8
 - **Plan**: docs/plans/triage-checkpoint-via-api.md
-- **Step**: 1/6 — API: add `since` filter and `/stats` endpoint
+- **Step**: 1/8 — Model + API changes
 - **Done Steps**:
 
 ## Blocked
