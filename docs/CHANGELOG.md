@@ -4,6 +4,15 @@
 
 ## 2026-03-07
 
+### Changed
+- **Rename WorkItem→Task, Task→Run** (#64): Full entity rename across codebase.
+  - Planning layer: `WorkItem` → `Task` (table `work_items` → `tasks`, ID prefix `wi-` → `task-`)
+  - Execution layer: `Task` → `Run` (table `tasks` → `runs`)
+  - API routes: `/api/work-items/` → `/api/tasks/`, `/api/tasks/` → `/api/runs/`
+  - Alembic migration renames tables and FK columns in correct order
+  - All models, schemas, routers, workers, tests, scripts, and skill files updated
+  - ~48 files changed, ~1950 insertions, ~1925 deletions
+
 ### Added
 - **Milestone model + ROADMAP generation** (#63): Milestones as DB entities to group work items into phases/epics.
   - `Milestone` SQLAlchemy model (id, project_id, title, description, sort_order, status, parent_id, created_by)
