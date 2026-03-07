@@ -1,6 +1,9 @@
 # Roadmap
 
-> **Updated**: 2026-03-07 (generated)
+> [!WARNING]
+> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
+
+> **Updated**: 2026-03-07
 
 ## Phase 1: Stable Pipeline (scaffold -> code -> CI -> deploy) — COMPLETE
 

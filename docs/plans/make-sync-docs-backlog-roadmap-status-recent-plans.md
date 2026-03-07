@@ -1,5 +1,8 @@
 # make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms)
 
+> [!WARNING]
+> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
+
 ## Context
 
 Data has moved to the DB (tasks, brainstorms, milestones), but local docs files remain useful as read-only mirrors for IDE browsing and agent context injection. Currently `make backlog` and `make roadmap` exist as generators. Need to add: `make status`, `make recent-artifacts`, `make sync` (umbrella), `POST /api/tasks/push`, `make task`, event read/write in skills, and DEV_PIPELINE.md update.

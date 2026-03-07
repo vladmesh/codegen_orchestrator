@@ -1,15 +1,15 @@
 # Backlog
 
 > [!WARNING]
-> **DEPRECATED**: Этот файл более не является источником правды. Задачи мигрировали в базу данных (таблица `tasks`). Этот файл автогенерируется скриптом исключительно для read-only просмотра.
+> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Актуально на**: 2026-03-07 (generated)
+> **Updated**: 2026-03-07
 
 ## Queue (ordered by priority, first = next)
 
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: MEDIUM
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из...
 
