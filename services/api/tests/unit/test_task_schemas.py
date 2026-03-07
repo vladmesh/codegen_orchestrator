@@ -111,6 +111,46 @@ def test_task_read_with_plan():
     assert read.plan == "## Step 1\nDo the thing"
 
 
+def test_task_create_with_need_e2e():
+    schema = TaskCreate(project_id="proj-1", title="Complex task", need_e2e=True)
+    assert schema.need_e2e is True
+
+
+def test_task_create_need_e2e_defaults_false():
+    schema = TaskCreate(project_id="proj-1", title="Simple task")
+    assert schema.need_e2e is False
+
+
+def test_task_read_includes_need_e2e():
+    now = datetime.now(UTC)
+
+    class FakeModel:
+        id = "task-abc"
+        project_id = "proj-1"
+        type = "feature"
+        title = "Test"
+        description = None
+        plan = None
+        status = "backlog"
+        priority = 0
+        acceptance_criteria = None
+        current_iteration = 0
+        max_iterations = 3
+        created_by = "system"
+        need_e2e = True
+        created_at = now
+        updated_at = now
+
+    read = TaskRead.model_validate(FakeModel(), from_attributes=True)
+    assert read.need_e2e is True
+
+
+def test_task_update_need_e2e():
+    update = TaskUpdate(need_e2e=True)
+    data = update.model_dump(exclude_unset=True)
+    assert data == {"need_e2e": True}
+
+
 def test_task_update_partial():
     update = TaskUpdate(title="New title")
     data = update.model_dump(exclude_unset=True)

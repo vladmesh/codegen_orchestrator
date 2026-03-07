@@ -210,6 +210,30 @@ def test_task_plan_field():
         assert task.plan == "## Step 1\nDo the thing\n## Step 2\nVerify"
 
 
+def test_task_need_e2e_defaults_to_false():
+    engine = _setup_db()
+
+    with Session(engine) as session:
+        task = Task(id="task-e2e", project_id="proj-test", title="E2E test")
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+
+        assert task.need_e2e is False
+
+
+def test_task_need_e2e_can_be_set():
+    engine = _setup_db()
+
+    with Session(engine) as session:
+        task = Task(id="task-e2e2", project_id="proj-test", title="Complex task", need_e2e=True)
+        session.add(task)
+        session.commit()
+        session.refresh(task)
+
+        assert task.need_e2e is True
+
+
 def test_task_plan_defaults_to_none():
     engine = _setup_db()
 

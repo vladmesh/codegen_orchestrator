@@ -18,6 +18,7 @@ class TaskCreate(BaseModel):
     acceptance_criteria: str | None = None
     priority: int = 0
     max_iterations: int = 3
+    need_e2e: bool = False
     created_by: str = "system"
     source_brainstorm_id: str | None = None
     milestone_id: str | None = None
@@ -37,6 +38,7 @@ class TaskRead(BaseModel):
     acceptance_criteria: str | None
     current_iteration: int
     max_iterations: int
+    need_e2e: bool = False
     created_by: str
     source_brainstorm_id: str | None = None
     milestone_id: str | None = None
@@ -57,6 +59,7 @@ class TaskUpdate(BaseModel):
     plan: str | None = None
     acceptance_criteria: str | None = None
     priority: int | None = None
+    need_e2e: bool | None = None
     milestone_id: str | None = None
 
 

@@ -1,6 +1,6 @@
 """Task and TaskEvent models for task management (planning layer)."""
 
-from sqlalchemy import JSON, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.task import (
@@ -30,6 +30,7 @@ class Task(Base):
     current_iteration: Mapped[int] = mapped_column(Integer, default=0)
     max_iterations: Mapped[int] = mapped_column(Integer, default=3)
     plan: Mapped[str | None] = mapped_column(Text, nullable=True)
+    need_e2e: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str] = mapped_column(String(50), default="system")
     source_brainstorm_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("brainstorms.id"), nullable=True
