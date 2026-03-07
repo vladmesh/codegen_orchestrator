@@ -6,7 +6,7 @@
 
 ### #63 Milestone model + ROADMAP generation
 - **Priority**: CRITICAL
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Milestone как сущность в БД. Модель (id, project_id, title, description, sort_order, status, parent_id). API: CRUD + /complete. WorkItem.milestone_id FK. make roadmap генерирует ROADMAP.md из API. Миграция текущего ROADMAP в milestones. Источник: brainstorm milestone-model-roadmap.md
 
