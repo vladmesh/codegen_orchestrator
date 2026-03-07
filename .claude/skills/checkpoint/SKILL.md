@@ -82,10 +82,10 @@ Read `docs/USER_STORIES.md` and `docs/e2e_results/`. For each User Story:
 - If blockers are resolved (blocked-by task is in Done) — change `Статус: Blocked` → `Ready` (or `Done` if E2E also passes)
 - Do NOT unblock if the blocking task has no passing E2E yet
 
-### 7. Regenerate backlog
+### 7. Sync docs
 
 ```bash
-make backlog
+make sync
 ```
 
 ### 8. Review project documentation

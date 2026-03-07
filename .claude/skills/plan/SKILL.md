@@ -15,6 +15,12 @@ Decompose a task into actionable steps. Each step has clear Input, Output, and T
 
 ## Steps
 
+### 0. Sync docs
+
+```bash
+make sync
+```
+
 ### 1. Load task
 
 Look up the task:
@@ -111,9 +117,9 @@ curl -sf -X PATCH "http://localhost:8000/api/tasks/$WI_ID" \
 
 Use `jq -Rs .` to escape the plan text for JSON if needed.
 
-### 7. Update backlog
+### 7. Sync docs
 
-Run `make backlog` to regenerate docs/backlog.md from API.
+Run `make sync` to regenerate all read-only docs from API.
 
 ### 8. Commit
 

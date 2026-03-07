@@ -16,6 +16,12 @@ The main development skill. Implements the current task (or a specific one) usin
 
 ## Protocol
 
+### 0. Sync docs
+
+```bash
+make sync
+```
+
 ### 1. Load context
 
 Find the task to implement:
@@ -266,9 +272,9 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/complete" \
 - Use correct section: Added / Changed / Fixed / Removed
 - Reference backlog item ID
 
-5. **Regenerate backlog**:
+5. **Sync docs**:
 ```bash
-make backlog
+make sync
 ```
 
 6. **Commit** doc updates on main:
