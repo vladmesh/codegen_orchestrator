@@ -314,6 +314,9 @@ backlog:
 roadmap:
 	@uv run python scripts/generate_roadmap.py
 
+status:
+	@uv run python scripts/generate_status.py
+
 # === Seeding ===
 
 seed:
