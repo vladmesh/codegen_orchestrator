@@ -7,14 +7,17 @@ Verifies state machine transitions, event history, and filters.
 from httpx import AsyncClient
 import pytest
 
+from .conftest import TEST_PROJECT_ID
+
 
 @pytest.mark.asyncio
-async def test_work_item_full_lifecycle(async_client: AsyncClient):
+async def test_work_item_full_lifecycle(async_client: AsyncClient, _work_items_project):
     """create → start → iteration event → transition to testing → complete."""
     # 1. Create
     resp = await async_client.post(
         "/api/work-items/",
         json={
+            "project_id": TEST_PROJECT_ID,
             "title": "Lifecycle test feature",
             "type": "feature",
             "description": "Full lifecycle",
@@ -65,9 +68,12 @@ async def test_work_item_full_lifecycle(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_invalid_transition_rejected(async_client: AsyncClient):
+async def test_invalid_transition_rejected(async_client: AsyncClient, _work_items_project):
     """Cannot go from backlog directly to done."""
-    resp = await async_client.post("/api/work-items/", json={"title": "Invalid test"})
+    resp = await async_client.post(
+        "/api/work-items/",
+        json={"project_id": TEST_PROJECT_ID, "title": "Invalid test"},
+    )
     wi_id = resp.json()["id"]
 
     resp = await async_client.post(f"/api/work-items/{wi_id}/complete")
@@ -76,9 +82,12 @@ async def test_invalid_transition_rejected(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_reopen_from_done(async_client: AsyncClient):
+async def test_reopen_from_done(async_client: AsyncClient, _work_items_project):
     """done → backlog with reason, event recorded."""
-    resp = await async_client.post("/api/work-items/", json={"title": "Reopen test"})
+    resp = await async_client.post(
+        "/api/work-items/",
+        json={"project_id": TEST_PROJECT_ID, "title": "Reopen test"},
+    )
     wi_id = resp.json()["id"]
 
     # Get to done
@@ -109,9 +118,12 @@ async def test_reopen_from_done(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_list_with_filters(async_client: AsyncClient):
+async def test_list_with_filters(async_client: AsyncClient, _work_items_project):
     """List returns items matching status filter."""
-    resp = await async_client.post("/api/work-items/", json={"title": "Filter test"})
+    resp = await async_client.post(
+        "/api/work-items/",
+        json={"project_id": TEST_PROJECT_ID, "title": "Filter test"},
+    )
     wi_id = resp.json()["id"]
 
     resp = await async_client.get("/api/work-items/?status=backlog")
@@ -124,12 +136,12 @@ async def test_list_with_filters(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_step_events_lifecycle(async_client: AsyncClient):
+async def test_step_events_lifecycle(async_client: AsyncClient, _work_items_project):
     """create → start → step_start → step_done → complete, verify step events in history."""
     # Create and start
     resp = await async_client.post(
         "/api/work-items/",
-        json={"title": "Step events test", "type": "feature"},
+        json={"project_id": TEST_PROJECT_ID, "title": "Step events test", "type": "feature"},
     )
     assert resp.status_code == 201  # noqa: PLR2004
     wi_id = resp.json()["id"]
@@ -205,9 +217,12 @@ async def test_step_events_lifecycle(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_update_metadata(async_client: AsyncClient):
+async def test_update_metadata(async_client: AsyncClient, _work_items_project):
     """PATCH updates title/priority without changing status."""
-    resp = await async_client.post("/api/work-items/", json={"title": "Patch test"})
+    resp = await async_client.post(
+        "/api/work-items/",
+        json={"project_id": TEST_PROJECT_ID, "title": "Patch test"},
+    )
     wi_id = resp.json()["id"]
 
     resp = await async_client.patch(

@@ -10,9 +10,11 @@ Tests the API operations that the /next skill uses:
 from httpx import AsyncClient
 import pytest
 
+from .conftest import TEST_PROJECT_ID
+
 
 @pytest.mark.asyncio
-async def test_next_picks_top_priority(async_client: AsyncClient):
+async def test_next_picks_top_priority(async_client: AsyncClient, _work_items_project):
     """GET ?status=backlog&limit=1 returns highest-priority item."""
     # Create 3 items with different priorities
     items = []
@@ -23,7 +25,7 @@ async def test_next_picks_top_priority(async_client: AsyncClient):
     ]:
         resp = await async_client.post(
             "/api/work-items/",
-            json={"title": title, "priority": priority},
+            json={"project_id": TEST_PROJECT_ID, "title": title, "priority": priority},
         )
         assert resp.status_code == 201  # noqa: PLR2004
         items.append(resp.json())
@@ -42,16 +44,16 @@ async def test_next_picks_top_priority(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_next_start_advances_queue(async_client: AsyncClient):
+async def test_next_start_advances_queue(async_client: AsyncClient, _work_items_project):
     """After starting top item, next call returns the second item."""
     # Create 2 items
     resp1 = await async_client.post(
         "/api/work-items/",
-        json={"title": "#910 First task", "priority": 0},
+        json={"project_id": TEST_PROJECT_ID, "title": "#910 First task", "priority": 0},
     )
     await async_client.post(
         "/api/work-items/",
-        json={"title": "#911 Second task", "priority": 1},
+        json={"project_id": TEST_PROJECT_ID, "title": "#911 Second task", "priority": 1},
     )
     first_id = resp1.json()["id"]
 
@@ -73,11 +75,15 @@ async def test_next_start_advances_queue(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_by_tag_lookup(async_client: AsyncClient):
+async def test_by_tag_lookup(async_client: AsyncClient, _work_items_project):
     """GET /api/work-items/by-tag/920 finds the matching item."""
     resp = await async_client.post(
         "/api/work-items/",
-        json={"title": "#920 Tag lookup test", "description": "Test description"},
+        json={
+            "project_id": TEST_PROJECT_ID,
+            "title": "#920 Tag lookup test",
+            "description": "Test description",
+        },
     )
     assert resp.status_code == 201  # noqa: PLR2004
 
@@ -97,11 +103,14 @@ async def test_by_tag_not_found(async_client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_limit_and_sort(async_client: AsyncClient):
+async def test_limit_and_sort(async_client: AsyncClient, _work_items_project):
     """Verify limit and sort params work together."""
     # Create items
     for title in ["#930 A", "#931 B", "#932 C"]:
-        await async_client.post("/api/work-items/", json={"title": title})
+        await async_client.post(
+            "/api/work-items/",
+            json={"project_id": TEST_PROJECT_ID, "title": title},
+        )
 
     # Sort by -created_at, limit 2 → newest first
     resp = await async_client.get("/api/work-items/?sort=-created_at&limit=2")
