@@ -12,6 +12,7 @@ from .server import Server, ServerStatus
 from .service_deployment import ServiceDeployment
 from .task import Task, TaskStatus
 from .user import User
+from .work_item import WorkItem, WorkItemEvent
 
 __all__ = [
     "AgentConfig",
@@ -34,4 +35,6 @@ __all__ = [
     "IncidentStatus",
     "IncidentType",
     "ServiceDeployment",
+    "WorkItem",
+    "WorkItemEvent",
 ]
