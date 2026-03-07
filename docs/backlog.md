@@ -4,8 +4,50 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #62 /brainstorm resume — продолжение обсуждения существующего драфта
+### #63 Milestone model + ROADMAP generation
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Milestone как сущность в БД. Модель (id, project_id, title, description, sort_order, status, parent_id). API: CRUD + /complete. WorkItem.milestone_id FK. make roadmap генерирует ROADMAP.md из API. Миграция текущего ROADMAP в milestones. Источник: brainstorm milestone-model-roadmap.md
+
+### #52 Scaffold script не экранирует task_description
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из...
+
+### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
+
+### #18 Split engineering_worker.py (1088 LOC)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули.
+
+### #7 Security Audit: Deploy Cleanup
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Очистка зависших контейнеров/образов после деплоев (`docker image prune`). SSH hardening уже done в ansible. Priority adjusted by triage (roadmap phase change).
+
+### #10 Worker Lifecycle (Pause/Unpause)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
+
+### #54 Deploy: inter-service URL должен использовать docker service name
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при f...
+
+### #62 /brainstorm resume — продолжение обсуждения существующего драфта
+- **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: /brainstorm должен уметь подхватить существующий draft из БД и продолжить дискуссию. Сценарий: /brainstorm resume → GET /api/brainstorms/?status=draft → список → выбор → дополнение content. Также: миграция 14 legacy brainstorms из docs/brainstorms/ в БД (status=draft/done/triaged по текущему стат...
@@ -22,23 +64,11 @@
 - **Status**: backlog
 - **Brief**: engineering_worker при наличии work_item_id: пишет iteration_start/iteration_end events, CI fix attempts → events с деталями, обновляет work_item.status (in_dev → testing → done). Deploy worker обновляет status при успешном деплое. Полный audit trail: сколько итераций, что фейлилось, почему. Reop...
 
-### #10 Worker Lifecycle (Pause/Unpause)
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
-
 ### #2 Agent Hierarchy & Incident Response
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory ("предсмертная записка" агента). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change). NB: Watchdog/DLQ scope уменьшится — WorkItemEvent (#55) покрывает a...
-
-### #18 Split engineering_worker.py (1088 LOC)
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули.
 
 ### #19 Split github.py Client (986 LOC)
 - **Priority**: LOW
@@ -52,23 +82,11 @@
 - **Status**: backlog
 - **Brief**: Применить SecretsCipher (Fernet) к API key values и SSH keys. TODO-комменты в `api_keys.py:36,72` и `servers.py:66`.
 
-### #52 Scaffold script не экранирует task_description
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из...
-
 ### #11 E2E Tests Completion
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Завершить покрытие E2E (Level 5-7). Добавить E2E mock-тесты (Level A+B) в CI.
-
-### #21 Deploy Pre-Check
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
 
 ### #26 Notifications via Redis Stream (убрать прямую зависимость от Telegram API)
 - **Priority**: LOW
@@ -76,23 +94,11 @@
 - **Status**: backlog
 - **Brief**: Сейчас `shared/notifications.py` шлёт в Telegram API напрямую — scheduler, infra-service держат `TELEGRAM_BOT_TOKEN`. Нужно: сервисы публикуют в Redis stream `notifications:queue`, telegram_bot потребляет и отправляет. Убирает `TELEGRAM_BOT_TOKEN` из всех сервисов кроме telegram_bot, упрощает тес...
 
-### #7 Security Audit: Deploy Cleanup
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Очистка зависших контейнеров/образов после деплоев (`docker image prune`). SSH hardening уже done в ansible. Priority adjusted by triage (roadmap phase change).
-
 ### #41 Parallel Server Provisioning
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task`...
-
-### #54 Deploy: inter-service URL должен использовать docker service name
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при f...
 
 ### #46 Rename duckduckgo_search → ddgs
 - **Priority**: LOW
