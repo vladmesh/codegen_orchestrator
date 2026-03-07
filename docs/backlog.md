@@ -96,6 +96,27 @@
 - **Status**: pending
 - **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при firewall-правилах. Фикс: при генерации `.env` для prod inter-service переменные (`*_API_URL`, `*_HOST`) должны указывать на docker service name, а не на внешний IP. Затронуты: `services/langgraph/src/subgraphs/devops/nodes.py` (генерация .env), возможно `service-template` шаблон `.env.prod`. Источник: fortune-telling-bot — tg_bot ходил в backend через `http://176.223.131.124:8000`.
 
+### #56 `/next` skill via API (Step 1)
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: docs/plans/next-skill-via-api.md
+- **Status**: pending
+- **Brief**: Переписать `/next` skill с парсинга backlog.md на `GET /api/work-items?status=backlog&limit=1` + `POST /api/work-items/{id}/start`. STATUS.md по-прежнему обновляется для контекста агента. API-only (без fallback на файлы — `make up` обязателен). Proof of concept: первый скилл на API. Источник: brainstorm orchestrator-v2-task-management (Step 1).
+
+### #57 `/implement` work item events (Step 2)
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: `/implement` при старте/завершении каждого шага плана пишет events через `POST /api/work-items/{id}/events` (step_start, step_done с commit_sha). При завершении задачи — `POST /api/work-items/{id}/complete`. История шагов/итераций в БД. Источник: brainstorm orchestrator-v2-task-management (Step 2).
+
+### #58 `/triage` + `/checkpoint` via API (Step 3)
+- **Priority**: HIGH
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: `/triage` создаёт задачи через `POST /api/work-items` вместо записи в backlog.md. `/checkpoint` считает прогресс по `GET /api/work-items?status=done&since=...`. backlog.md генерируется из БД (`make backlog` или auto). Все скиллы на API — markdown read-only view. Источник: brainstorm orchestrator-v2-task-management (Step 3).
+
 ### #46 Rename duckduckgo_search → ddgs
 - **Priority**: LOW
 - **User Story**: —

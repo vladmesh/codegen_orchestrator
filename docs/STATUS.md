@@ -1,9 +1,9 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
-- **Plan**: —
-- **Step**: —
+- **Backlog**: #56 `/next` skill via API (Step 1)
+- **Plan**: docs/plans/next-skill-via-api.md
+- **Step**: 1/6 — Add `limit` query param to list work items endpoint
 - **Done Steps**: —
 
 ## Blocked
