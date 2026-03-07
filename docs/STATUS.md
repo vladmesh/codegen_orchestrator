@@ -4,27 +4,11 @@
 
 ## Current Task
 
-**make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms)** (`task-94f2783f`)
-- **Status**: in_dev
-- **Plan**: yes
-- **Elapsed**: 17 min
-
-### Recent Events
-
-- `2026-03-07 22:56` todo → in_dev
-- `2026-03-07 22:56` step_start
-- `2026-03-07 22:57` step_done
-- `2026-03-07 22:57` step_start
-- `2026-03-07 22:58` step_done
-- `2026-03-07 22:58` step_start
-- `2026-03-07 22:59` step_done
-- `2026-03-07 22:59` step_start
-- `2026-03-07 23:01` step_done
-- `2026-03-07 23:01` step_start
+_(no task in progress)_
 
 ## Stats
 
-| backlog: 18 | todo: 0 | in_dev: 1 | in_ci: 0 | testing: 0 | done: 19 |
+| backlog: 18 | todo: 0 | in_dev: 0 | in_ci: 0 | testing: 1 | done: 19 |
 
 ## Recently Completed
 
