@@ -76,7 +76,6 @@ Caddy (/webhooks/*) → API
 
 **Related Projects**:
 - `/home/vlad/projects/service-template` - Spec-first framework for generating microservices
-- `/home/vlad/projects/prod_infra` - Ansible playbooks for server infrastructure
 
 ## Code Patterns
 

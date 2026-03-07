@@ -10,17 +10,35 @@
 - **Status**: backlog
 - **Brief**: Milestone как сущность в БД. Модель (id, project_id, title, description, sort_order, status, parent_id). API: CRUD + /complete. WorkItem.milestone_id FK. make roadmap генерирует ROADMAP.md из API. Миграция текущего ROADMAP в milestones. Источник: brainstorm milestone-model-roadmap.md
 
+### Rename WorkItem→Task, Task→Run
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Переименовать сущности: WorkItem становится Task (planning layer), Task становится Run (execution layer). Одна alembic миграция: rename table work_items→tasks, tasks→runs. Rename моделей, DTO, enums, API routes (/work-items/→/tasks/, /tasks/→/runs/), тестов, скиллов.
+
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: HIGH
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из...
 
+### Repository model + migration
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Новая сущность Repository (id, project_id, name, git_url, provider_repo_id, role, is_managed). Alembic миграция + CRUD API. Миграция существующих Project.repository_url → Repository(role=primary). Task.repository_id nullable FK.
+
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
+
+### Story model + API
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Новая сущность Story (id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by). Alembic миграция + CRUD API + action-based status transitions. Task.story_id FK. parent_story_id — self-ref FK для epic-like группировки.
 
 ### #18 Split engineering_worker.py (1088 LOC)
 - **Priority**: LOW
