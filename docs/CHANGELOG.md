@@ -4,6 +4,9 @@
 
 ## 2026-03-08
 
+### Fixed
+- **Scaffold script task_description escaping** (#52): Pass `task_description` via copier `--data-file` instead of inline `--data` to prevent shell metacharacter injection (quotes, backticks, `$()`, parentheses). Base64-encode in Python, decode inside bash into YAML file. Added 9 parametrized tests for dangerous character patterns.
+
 ### Added
 - **make sync — docs generation from DB** (task-94f2783f):
   - `POST /api/tasks/push` endpoint — auto-priority (`min(backlog) - 1`)
