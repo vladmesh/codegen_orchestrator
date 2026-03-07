@@ -7,7 +7,7 @@ argument-hint: "[--source e2e|brainstorms|audit|all]"
 
 # Triage
 
-Process incoming reports and convert findings into backlog tasks via the Work Items API.
+Process incoming reports and convert findings into backlog tasks via the Tasks API.
 
 ## Input
 
@@ -24,10 +24,10 @@ All task creation/lookup goes through the API:
 API="http://localhost:8000"
 
 # Get next tag number
-NEXT_TAG=$(curl -sf "$API/api/work-items/next-tag" | jq -r '.next_tag')
+NEXT_TAG=$(curl -sf "$API/api/tasks/next-tag" | jq -r '.next_tag')
 
-# Create a work item
-curl -sf -X POST "$API/api/work-items/" \
+# Create a task
+curl -sf -X POST "$API/api/tasks/" \
   -H "Content-Type: application/json" \
   -d '{
     "project_id": "codegen-orchestrator",
@@ -39,10 +39,10 @@ curl -sf -X POST "$API/api/work-items/" \
   }'
 
 # Search existing items (for dedup)
-curl -sf "$API/api/work-items/?project_id=codegen-orchestrator" | jq '.[].title'
+curl -sf "$API/api/tasks/?project_id=codegen-orchestrator" | jq '.[].title'
 
 # Reopen a done item (regression)
-curl -sf -X POST "$API/api/work-items/<wi_id>/reopen" \
+curl -sf -X POST "$API/api/tasks/<wi_id>/reopen" \
   -H "Content-Type: application/json" \
   -d '{"reason": "Regression found in E2E", "actor": "triage"}'
 ```
@@ -62,10 +62,10 @@ For each problem with structured fields:
 
 Only process problems where `Backlog: new` or `Backlog: template`.
 
-- `Backlog: new` → create work item via API (based on Type), update report to `Backlog: #XX`.
+- `Backlog: new` → create task via API (based on Type), update report to `Backlog: #XX`.
 - `Backlog: template` → route to service-template backlog (see Routing by Type), update to `Backlog: template (triaged)`.
 
-After creating a work item, **update the report file** to mark the problem as processed.
+After creating a task, **update the report file** to mark the problem as processed.
 
 If a report has no structured Problems section (old format), scan for issues manually, classify them, and **rewrite the Problems section** in structured format with appropriate `Backlog` values.
 
@@ -83,9 +83,9 @@ For each brainstorm, read its `content` field (markdown text).
 Find the `## Action Items` section in each brainstorm's content. For each item:
 - `→ backlog #XX` — already in backlog, skip
 - `→ idea: "..."` — add to `docs/ideas.md`
-- `→ new task: "..."` — create work item via API with `source_brainstorm_id` set:
+- `→ new task: "..."` — create task via API with `source_brainstorm_id` set:
   ```bash
-  curl -sf -X POST "$API/api/work-items/" \
+  curl -sf -X POST "$API/api/tasks/" \
     -H "Content-Type: application/json" \
     -d '{
       "project_id": "codegen-orchestrator",
@@ -110,46 +110,46 @@ For legacy markdown-only brainstorms, also update the file's Status to `triaged`
 ### 3. Audit report (`docs/audit.md`)
 
 If exists, read and extract actionable items not already in backlog.
-Search existing work items via API before creating new ones.
+Search existing tasks via API before creating new ones.
 
 ## Routing by Type
 
 | Type | Action |
 |------|--------|
-| `orchestrator` | Create work item via API with `project_id: "codegen-orchestrator"` |
+| `orchestrator` | Create task via API with `project_id: "codegen-orchestrator"` |
 | `template` | Add to `/home/vlad/projects/service-template/docs/backlog.md` (create file if missing, free format). Stage and commit in that repo. |
-| `meta` | Create work item via API with `[meta]` prefix in title |
+| `meta` | Create task via API with `[meta]` prefix in title |
 | `infra` | Don't create tasks. Collect and list at the end for human decision. |
 
 ## Regression Detection
 
-Before creating a new work item, check done items via API:
+Before creating a new task, check done items via API:
 ```bash
-curl -sf "$API/api/work-items/?status=done&project_id=codegen-orchestrator"
+curl -sf "$API/api/tasks/?status=done&project_id=codegen-orchestrator"
 ```
 
 Search by keywords, affected service, error pattern. If a problem matches a completed item:
-1. **Reopen** — `POST /api/work-items/<wi_id>/reopen` with reason
-2. **Update** — `PATCH /api/work-items/<wi_id>` to add regression context to description
+1. **Reopen** — `POST /api/tasks/<wi_id>/reopen` with reason
+2. **Update** — `PATCH /api/tasks/<wi_id>` to add regression context to description
 3. Do NOT create a duplicate task
 
 ## Deduplication
 
-Before creating any work item, search existing items:
+Before creating any task, search existing items:
 ```bash
-curl -sf "$API/api/work-items/?project_id=codegen-orchestrator"
+curl -sf "$API/api/tasks/?project_id=codegen-orchestrator"
 ```
 Search by keywords from the problem description. If a matching item exists, skip (or update its description via PATCH if new info is available).
 
 ## Roadmap ↔ Backlog Sync
 
-After processing all sources, synchronize ROADMAP.md with work items.
+After processing all sources, synchronize ROADMAP.md with tasks.
 
-### Step 1: Ensure every ROADMAP item has a work item
+### Step 1: Ensure every ROADMAP item has a task
 
 Parse each incomplete (`- [ ]`) item in ROADMAP.md. For each item:
-- If it contains `(#XX)` — verify `#XX` exists via `GET /api/work-items/by-tag/XX`. If 404, report as orphan.
-- If it has no `(#XX)` — search work items by keywords for a matching task.
+- If it contains `(#XX)` — verify `#XX` exists via `GET /api/tasks/by-tag/XX`. If 404, report as orphan.
+- If it has no `(#XX)` — search tasks by keywords for a matching task.
   - **Found** → update the ROADMAP line to include `(#XX)`.
   - **Not found** → report in triage output under `### ROADMAP items without backlog tasks`
 
@@ -163,9 +163,9 @@ git log -1 --format="%H %ai" -- docs/backlog.md
 
 Reorder if ROADMAP.md was modified more recently than backlog.md, OR if new tasks were created in this triage run.
 
-How to reorder — update priority on work items via API:
+How to reorder — update priority on tasks via API:
 ```bash
-curl -sf -X PATCH "$API/api/work-items/<wi_id>" \
+curl -sf -X PATCH "$API/api/tasks/<wi_id>" \
   -H "Content-Type: application/json" \
   -d '{"priority": 1}'
 ```

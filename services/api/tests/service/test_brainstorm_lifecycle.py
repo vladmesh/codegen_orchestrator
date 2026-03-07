@@ -7,11 +7,11 @@ Verifies state machine transitions and filters.
 from httpx import AsyncClient
 import pytest
 
-BS_TEST_PROJECT_ID = "test-work-items-proj"
+BS_TEST_PROJECT_ID = "test-tasks-proj"
 
 
 @pytest.mark.asyncio
-async def test_brainstorm_full_lifecycle(async_client: AsyncClient, _work_items_project):
+async def test_brainstorm_full_lifecycle(async_client: AsyncClient, _tasks_project):
     """create → update content → done → triage → archive."""
     # 1. Create
     resp = await async_client.post(
@@ -58,7 +58,7 @@ async def test_brainstorm_full_lifecycle(async_client: AsyncClient, _work_items_
 
 
 @pytest.mark.asyncio
-async def test_brainstorm_filters(async_client: AsyncClient, _work_items_project):
+async def test_brainstorm_filters(async_client: AsyncClient, _tasks_project):
     """Test list endpoint with status and project_id filters."""
     # Create two brainstorms
     resp1 = await async_client.post(
@@ -86,8 +86,8 @@ async def test_brainstorm_filters(async_client: AsyncClient, _work_items_project
 
 
 @pytest.mark.asyncio
-async def test_brainstorm_source_link(async_client: AsyncClient, _work_items_project):
-    """Create work item with source_brainstorm_id linking back to brainstorm."""
+async def test_brainstorm_source_link(async_client: AsyncClient, _tasks_project):
+    """Create task with source_brainstorm_id linking back to brainstorm."""
     # Create brainstorm
     resp = await async_client.post(
         "/api/brainstorms/",
@@ -96,9 +96,9 @@ async def test_brainstorm_source_link(async_client: AsyncClient, _work_items_pro
     assert resp.status_code == 201  # noqa: PLR2004
     bs_id = resp.json()["id"]
 
-    # Create work item with source_brainstorm_id
+    # Create task with source_brainstorm_id
     resp = await async_client.post(
-        "/api/work-items/",
+        "/api/tasks/",
         json={
             "project_id": BS_TEST_PROJECT_ID,
             "title": "Task from brainstorm",

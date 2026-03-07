@@ -85,10 +85,10 @@ async def test_deploy_worker_smoke_pass(
     assert result["status"] == "success"
     # Task should be completed with smoke_result in result
     patch_calls = mock_api.patch.call_args_list
-    task_complete_call = [c for c in patch_calls if "tasks/" in str(c) and "completed" in str(c)]
-    assert len(task_complete_call) == 1
-    task_result = task_complete_call[0][1]["json"]["result"]
-    assert task_result["smoke_result"]["status"] == "pass"
+    run_complete_call = [c for c in patch_calls if "runs/" in str(c) and "completed" in str(c)]
+    assert len(run_complete_call) == 1
+    run_result = run_complete_call[0][1]["json"]["result"]
+    assert run_result["smoke_result"]["status"] == "pass"
 
 
 @pytest.mark.asyncio

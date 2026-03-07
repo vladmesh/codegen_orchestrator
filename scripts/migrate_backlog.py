@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Migrate backlog.md Queue section into work_items via API.
+"""Migrate backlog.md Queue section into tasks via API.
 
 Usage:
     python scripts/migrate_backlog.py [--api-url http://localhost:8000] [--dry-run]
@@ -73,7 +73,7 @@ def parse_queue(backlog_path: str) -> list[dict]:
 
 
 def migrate(items: list[dict], api_url: str, dry_run: bool = False) -> None:
-    """Create work items via API."""
+    """Create tasks via API."""
     print(f"Found {len(items)} items to migrate")
     if dry_run:
         print("DRY RUN — no API calls")
@@ -92,7 +92,7 @@ def migrate(items: list[dict], api_url: str, dry_run: bool = False) -> None:
         if dry_run:
             continue
 
-        resp = httpx.post(f"{api_url}/api/work-items/", json=payload, timeout=10)
+        resp = httpx.post(f"{api_url}/api/tasks/", json=payload, timeout=10)
         if resp.status_code == HTTPStatus.CREATED:
             wi = resp.json()
             print(f"    → created {wi['id']}")
@@ -100,7 +100,7 @@ def migrate(items: list[dict], api_url: str, dry_run: bool = False) -> None:
             # If task was in_progress, start it
             if item.get("status_override") == "in_dev":
                 start_resp = httpx.post(
-                    f"{api_url}/api/work-items/{wi['id']}/start",
+                    f"{api_url}/api/tasks/{wi['id']}/start",
                     json={"actor": "migration"},
                     timeout=10,
                 )
@@ -113,7 +113,7 @@ def migrate(items: list[dict], api_url: str, dry_run: bool = False) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Migrate backlog.md Queue → work_items API")
+    parser = argparse.ArgumentParser(description="Migrate backlog.md Queue → tasks API")
     parser.add_argument("--api-url", default="http://localhost:8000", help="API base URL")
     parser.add_argument("--dry-run", action="store_true", help="Parse only, no API calls")
     parser.add_argument(

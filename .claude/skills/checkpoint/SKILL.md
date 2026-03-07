@@ -30,9 +30,9 @@ If the latest run **passed**: note it for the report.
 **Get stats from API:**
 ```bash
 API="http://localhost:8000"
-curl -sf "$API/api/work-items/stats"
-curl -sf "$API/api/work-items/?status=done&sort=-created_at&limit=10"
-curl -sf "$API/api/work-items/?status=in_dev"
+curl -sf "$API/api/tasks/stats"
+curl -sf "$API/api/tasks/?status=done&sort=-created_at&limit=10"
+curl -sf "$API/api/tasks/?status=in_dev"
 ```
 
 Read:
@@ -54,7 +54,7 @@ Invoke the `/triage` skill logic:
 - Process untriaged E2E reports
 - Process brainstorms with Status: done
 - Route issues to appropriate backlogs
-- All task creation goes through the Work Items API
+- All task creation goes through the Tasks API
 
 ### 4. Update CHANGELOG
 
@@ -67,7 +67,7 @@ Check git log since last CHANGELOG entry date. For each commit not already in CH
 
 Get done items from API:
 ```bash
-curl -sf "$API/api/work-items/?status=done&sort=-created_at"
+curl -sf "$API/api/tasks/?status=done&sort=-created_at"
 ```
 
 For each completed task:
@@ -100,7 +100,7 @@ Check whether key project docs are still accurate after recent changes:
 ### 9. Cleanup plans
 
 For each file in `docs/plans/`:
-- Check if the task is done via API (`GET /api/work-items/by-tag/<ID>`, check status)
+- Check if the task is done via API (`GET /api/tasks/by-tag/<ID>`, check status)
 - Check if there is an E2E result newer than the task's completion
 - If both conditions are true — delete the plan file
 

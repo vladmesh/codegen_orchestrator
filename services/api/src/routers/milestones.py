@@ -10,7 +10,7 @@ import structlog
 
 from shared.contracts.dto.milestone import VALID_TRANSITIONS, MilestoneStatus
 from shared.models.milestone import Milestone
-from shared.models.work_item import WorkItem
+from shared.models.task import Task
 
 from ..database import get_async_session
 from ..schemas.milestone import (
@@ -19,7 +19,7 @@ from ..schemas.milestone import (
     MilestoneTransition,
     MilestoneUpdate,
 )
-from ..schemas.work_item import WorkItemRead
+from ..schemas.task import TaskRead
 
 logger = structlog.get_logger()
 
@@ -69,27 +69,27 @@ def _to_read(ms: Milestone) -> MilestoneRead:
     return MilestoneRead.model_validate(ms, from_attributes=True)
 
 
-def _wi_to_read(wi: WorkItem) -> WorkItemRead:
+def _task_to_read(task: Task) -> TaskRead:
     elapsed = None
-    if wi.created_at:
-        elapsed = (datetime.now(UTC) - wi.created_at.replace(tzinfo=UTC)).total_seconds() / 60
-    return WorkItemRead(
-        id=wi.id,
-        project_id=wi.project_id,
-        type=wi.type,
-        title=wi.title,
-        description=wi.description,
-        plan=wi.plan,
-        status=wi.status,
-        priority=wi.priority,
-        acceptance_criteria=wi.acceptance_criteria,
-        current_iteration=wi.current_iteration,
-        max_iterations=wi.max_iterations,
-        created_by=wi.created_by,
-        source_brainstorm_id=getattr(wi, "source_brainstorm_id", None),
-        milestone_id=getattr(wi, "milestone_id", None),
-        created_at=wi.created_at,
-        updated_at=wi.updated_at,
+    if task.created_at:
+        elapsed = (datetime.now(UTC) - task.created_at.replace(tzinfo=UTC)).total_seconds() / 60
+    return TaskRead(
+        id=task.id,
+        project_id=task.project_id,
+        type=task.type,
+        title=task.title,
+        description=task.description,
+        plan=task.plan,
+        status=task.status,
+        priority=task.priority,
+        acceptance_criteria=task.acceptance_criteria,
+        current_iteration=task.current_iteration,
+        max_iterations=task.max_iterations,
+        created_by=task.created_by,
+        source_brainstorm_id=getattr(task, "source_brainstorm_id", None),
+        milestone_id=getattr(task, "milestone_id", None),
+        created_at=task.created_at,
+        updated_at=task.updated_at,
         elapsed_minutes=round(elapsed, 1) if elapsed is not None else None,
     )
 
@@ -207,18 +207,18 @@ async def complete_milestone(
 # --- Sub-resources ---
 
 
-@router.get("/{milestone_id}/work-items", response_model=list[WorkItemRead])
-async def get_milestone_work_items(
+@router.get("/{milestone_id}/tasks", response_model=list[TaskRead])
+async def get_milestone_tasks(
     milestone_id: str,
     db: AsyncSession = Depends(get_async_session),
-) -> list[WorkItemRead]:
+) -> list[TaskRead]:
     await _get_milestone(milestone_id, db)
 
     query = (
-        select(WorkItem)
-        .where(WorkItem.milestone_id == milestone_id)
-        .order_by(WorkItem.priority.asc(), WorkItem.created_at.asc())
+        select(Task)
+        .where(Task.milestone_id == milestone_id)
+        .order_by(Task.priority.asc(), Task.created_at.asc())
     )
     result = await db.execute(query)
     items = result.scalars().all()
-    return [_wi_to_read(wi) for wi in items]
+    return [_task_to_read(task) for task in items]

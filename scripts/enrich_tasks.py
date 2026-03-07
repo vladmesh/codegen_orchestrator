@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Enrich existing work items with descriptions and fix statuses.
+"""Enrich existing tasks with descriptions and fix statuses.
 
 Usage:
-    python scripts/enrich_work_items.py [--api-url http://localhost:8000] [--dry-run]
+    python scripts/enrich_tasks.py [--api-url http://localhost:8000] [--dry-run]
 """
 
 import argparse
@@ -114,9 +114,9 @@ def _path_to_done(status: str) -> list[str]:
 
 
 def enrich(api_url: str, dry_run: bool = False) -> None:
-    """Enrich work items via API."""
+    """Enrich tasks via API."""
     # Fetch all items
-    resp = httpx.get(f"{api_url}/api/work-items/", params={"limit": 100}, timeout=10)
+    resp = httpx.get(f"{api_url}/api/tasks/", params={"limit": 100}, timeout=10)
     resp.raise_for_status()
     items = resp.json()
 
@@ -147,7 +147,7 @@ def enrich(api_url: str, dry_run: bool = False) -> None:
             print(f"  PATCH {tag} {item['title'][:50]}")
             if not dry_run:
                 r = httpx.patch(
-                    f"{api_url}/api/work-items/{item_id}",
+                    f"{api_url}/api/tasks/{item_id}",
                     json=patch,
                     timeout=10,
                 )
@@ -166,7 +166,7 @@ def enrich(api_url: str, dry_run: bool = False) -> None:
                 ok = True
                 for step in path:
                     r = httpx.post(
-                        f"{api_url}/api/work-items/{item_id}/transition",
+                        f"{api_url}/api/tasks/{item_id}/transition",
                         params={"to_status": step},
                         json={"actor": "migration"},
                         timeout=10,
@@ -184,7 +184,7 @@ def enrich(api_url: str, dry_run: bool = False) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Enrich work items with descriptions")
+    parser = argparse.ArgumentParser(description="Enrich tasks with descriptions")
     parser.add_argument("--api-url", default="http://localhost:8000")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

@@ -19,7 +19,7 @@ def test_format_roadmap_open_milestone_with_items():
             "sort_order": 0,
         },
     ]
-    work_items_by_milestone = {
+    tasks_by_milestone = {
         "ms-1": [
             {"title": "#1 Setup CI", "status": "done"},
             {"title": "#2 Deploy pipeline", "status": "backlog"},
@@ -27,7 +27,7 @@ def test_format_roadmap_open_milestone_with_items():
     }
     unsorted_items = []
 
-    result = format_roadmap(milestones, work_items_by_milestone, unsorted_items)
+    result = format_roadmap(milestones, tasks_by_milestone, unsorted_items)
 
     assert "## Phase 1: Foundation" in result
     assert "Core pipeline" in result
@@ -45,10 +45,10 @@ def test_format_roadmap_completed_milestone():
             "sort_order": 0,
         },
     ]
-    work_items_by_milestone = {"ms-1": []}
+    tasks_by_milestone = {"ms-1": []}
     unsorted_items = []
 
-    result = format_roadmap(milestones, work_items_by_milestone, unsorted_items)
+    result = format_roadmap(milestones, tasks_by_milestone, unsorted_items)
 
     assert "## Phase 1: Done stuff" in result
     assert "COMPLETE" in result
@@ -56,12 +56,12 @@ def test_format_roadmap_completed_milestone():
 
 def test_format_roadmap_unsorted_items():
     milestones = []
-    work_items_by_milestone = {}
+    tasks_by_milestone = {}
     unsorted_items = [
         {"title": "#99 Orphan task", "status": "backlog"},
     ]
 
-    result = format_roadmap(milestones, work_items_by_milestone, unsorted_items)
+    result = format_roadmap(milestones, tasks_by_milestone, unsorted_items)
 
     assert "## Backlog" in result
     assert "- [ ] #99 Orphan task" in result
@@ -84,13 +84,13 @@ def test_format_roadmap_multiple_milestones_ordered():
             "sort_order": 1,
         },
     ]
-    work_items_by_milestone = {
+    tasks_by_milestone = {
         "ms-1": [{"title": "#1 Done task", "status": "done"}],
         "ms-2": [{"title": "#2 Active task", "status": "in_dev"}],
     }
     unsorted_items = []
 
-    result = format_roadmap(milestones, work_items_by_milestone, unsorted_items)
+    result = format_roadmap(milestones, tasks_by_milestone, unsorted_items)
 
     # Phase 1 should come before Phase 2
     idx1 = result.index("Phase 1")

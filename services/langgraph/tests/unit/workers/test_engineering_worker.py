@@ -71,7 +71,7 @@ class TestHandleEngineeringSuccess:
 
         # Task must be patched as failed
         mock_api.patch.assert_called()
-        patch_calls = [c for c in mock_api.patch.call_args_list if "tasks/" in str(c)]
+        patch_calls = [c for c in mock_api.patch.call_args_list if "runs/" in str(c)]
         assert any("failed" in str(c) for c in patch_calls)
 
         # Callback must be "failed" (via publish_flat)

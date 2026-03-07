@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
-from shared.models import Project, Task, User
+from shared.models import Project, Run, User
 from shared.queues import DEPLOY_QUEUE
 
 from ..database import get_async_session
@@ -113,24 +113,24 @@ async def github_webhook(
     owner = owner_result.scalar_one_or_none()
     telegram_id = owner.telegram_id if owner else None
 
-    # 10. Create Task record
+    # 10. Create Run record
     head_sha = workflow_run.get("head_sha", "")
-    task_id = f"deploy-wh-{uuid.uuid4().hex[:8]}"
+    run_id = f"deploy-wh-{uuid.uuid4().hex[:8]}"
 
-    db_task = Task(
-        id=task_id,
+    db_run = Run(
+        id=run_id,
         type="deploy",
         status="queued",
         project_id=project.id,
         user_id=owner.id if owner else None,
-        task_metadata={"triggered_by": "webhook", "head_sha": head_sha},
+        run_metadata={"triggered_by": "webhook", "head_sha": head_sha},
     )
-    db.add(db_task)
+    db.add(db_run)
     await db.commit()
 
     logger.info(
         "webhook_deploy_triggered",
-        task_id=task_id,
+        run_id=run_id,
         project_id=project.id,
         head_sha=head_sha[:7] if head_sha else "",
     )
@@ -141,7 +141,7 @@ async def github_webhook(
         raise RuntimeError("REDIS_URL is not set")
 
     deploy_msg = DeployMessage(
-        task_id=task_id,
+        task_id=run_id,
         project_id=project.id,
         user_id=str(telegram_id or ""),
         triggered_by=DeployTrigger.WEBHOOK,
@@ -155,4 +155,4 @@ async def github_webhook(
     finally:
         await r.aclose()
 
-    return {"status": "accepted", "task_id": task_id, "project_id": project.id}
+    return {"status": "accepted", "run_id": run_id, "project_id": project.id}

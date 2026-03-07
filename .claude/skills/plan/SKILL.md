@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Decompose a backlog task into a step-by-step plan. Writes plan to work item via API.
+description: Decompose a backlog task into a step-by-step plan. Writes plan to task via API.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[#ID]"
 ---
@@ -11,15 +11,15 @@ Decompose a task into actionable steps. Each step has clear Input, Output, and T
 
 ## Input
 
-- `#ID` — backlog tag to plan. If omitted, uses current in_dev work item from API.
+- `#ID` — backlog tag to plan. If omitted, uses current in_dev task from API.
 
 ## Steps
 
 ### 1. Load task
 
-Look up the work item:
-- If `#ID` given: `curl -sf http://localhost:8000/api/work-items/by-tag/<ID>`
-- If no ID: `curl -sf "http://localhost:8000/api/work-items/?status=in_dev&limit=1"` and take first
+Look up the task:
+- If `#ID` given: `curl -sf http://localhost:8000/api/tasks/by-tag/<ID>`
+- If no ID: `curl -sf "http://localhost:8000/api/tasks/?status=in_dev&limit=1"` and take first
 - If nothing found, try `status=backlog&limit=1`
 - If still nothing: STOP — "No current task. Create one via triage or API."
 
@@ -27,9 +27,9 @@ Look up the work item:
 
 Pull all available context for the task:
 
-**Description & plan**: read from the work item response fields.
+**Description & plan**: read from the task response fields.
 
-**Source brainstorm**: check the `source_brainstorm_id` field in the work item response.
+**Source brainstorm**: check the `source_brainstorm_id` field in the task response.
 If it is not null, fetch the brainstorm:
 ```bash
 BS_ID=$(echo "$WI" | jq -r '.source_brainstorm_id')
@@ -83,11 +83,11 @@ Write the plan as a text block in this format:
 
 ### 6. Save plan to API
 
-Write the plan text to the work item:
+Write the plan text to the task:
 
 ```bash
-WI_ID="<work_item_id from step 1>"
-curl -sf -X PATCH "http://localhost:8000/api/work-items/$WI_ID" \
+WI_ID="<task_id from step 1>"
+curl -sf -X PATCH "http://localhost:8000/api/tasks/$WI_ID" \
   -H "Content-Type: application/json" \
   -d '{"plan": "<escaped plan text>"}'
 ```

@@ -230,14 +230,14 @@ async def test_webhook_ci_success_triggers_deploy(mock_env, mock_redis):
     data = resp.json()
     assert data["status"] == "accepted"
     assert data["project_id"] == "proj-1"
-    assert data["task_id"].startswith("deploy-wh-")
+    assert data["run_id"].startswith("deploy-wh-")
 
-    # Verify task was added to DB session
+    # Verify run was added to DB session
     mock_session.add.assert_called_once()
-    task_obj = mock_session.add.call_args[0][0]
-    assert task_obj.type == "deploy"
-    assert task_obj.status == "queued"
-    assert task_obj.task_metadata["triggered_by"] == "webhook"
+    run_obj = mock_session.add.call_args[0][0]
+    assert run_obj.type == "deploy"
+    assert run_obj.status == "queued"
+    assert run_obj.run_metadata["triggered_by"] == "webhook"
 
     # Verify Redis xadd was called with {"data": json_string} format
     mock_redis.xadd.assert_called_once()

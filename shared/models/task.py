@@ -1,54 +1,56 @@
-"""Task model for tracking asynchronous operations."""
+"""Task and TaskEvent models for task management (planning layer)."""
 
-from datetime import datetime
-
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.contracts.dto.task import TaskStatus  # Single source of truth
+from shared.contracts.dto.task import (
+    TaskEventType,
+    TaskStatus,
+    TaskType,
+)
 
 from .base import Base
 
 
 class Task(Base):
-    """Task model - tracks asynchronous operations like engineering, deploy, etc."""
+    """Task — a unit of work with agile statuses (planning layer)."""
 
     __tablename__ = "tasks"
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    type: Mapped[str] = mapped_column(String(50), index=True)
-    status: Mapped[str] = mapped_column(String(50), default=TaskStatus.QUEUED.value, index=True)
-
-    # Associated project
-    project_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("projects.id"), nullable=True, index=True
+    project_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("projects.id"), nullable=False, index=True
+    )
+    type: Mapped[str] = mapped_column(String(50), default=TaskType.FEATURE.value)
+    title: Mapped[str] = mapped_column(String(500))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default=TaskStatus.BACKLOG.value, index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_iteration: Mapped[int] = mapped_column(Integer, default=0)
+    max_iterations: Mapped[int] = mapped_column(Integer, default=3)
+    plan: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str] = mapped_column(String(50), default="system")
+    source_brainstorm_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("brainstorms.id"), nullable=True
+    )
+    milestone_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("milestones.id"), nullable=True, index=True
     )
 
-    # Owner (User ID)
-    user_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=True, index=True
+
+class TaskEvent(Base):
+    """TaskEvent — history of status transitions and iteration events."""
+
+    __tablename__ = "task_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("tasks.id"), nullable=False, index=True
     )
-
-    # Task metadata (input parameters, configuration)
-    # Note: 'metadata' is a reserved name in SQLAlchemy, so we use 'task_metadata'
-    task_metadata: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
-
-    # Task result (output data, artifacts, etc.)
-    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-
-    # Error information if task failed
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    error_traceback: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Timing
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    # Redis stream for progress events
-    callback_stream: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-    # Link to WorkItem (planning layer) — nullable for backward compat
-    work_item_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("work_items.id"), nullable=True, index=True
-    )
+    event_type: Mapped[str] = mapped_column(String(50), default=TaskEventType.NOTE.value)
+    from_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     iteration: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(50), default="system")

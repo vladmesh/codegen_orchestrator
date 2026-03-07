@@ -7,22 +7,22 @@ from .incident import IncidentCreate, IncidentRead, IncidentUpdate
 from .port_allocation import AllocateNextPortRequest, PortAllocationCreate, PortAllocationRead
 from .project import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 from .rag import RAGDocsIngest, RAGDocsIngestResult, RAGMessageCreate, RAGMessageRead
+from .run import RunCreate, RunRead, RunUpdate
 from .server import ServerCreate, ServerRead
 from .service_deployment import (
     ServiceDeploymentCreate,
     ServiceDeploymentRead,
     ServiceDeploymentUpdate,
 )
-from .task import TaskCreate, TaskRead, TaskUpdate
-from .user import UserCreate, UserRead, UserUpdate, UserUpsert
-from .work_item import (
-    WorkItemCreate,
-    WorkItemEventCreate,
-    WorkItemEventRead,
-    WorkItemRead,
-    WorkItemTransition,
-    WorkItemUpdate,
+from .task import (
+    TaskCreate,
+    TaskEventCreate,
+    TaskEventRead,
+    TaskRead,
+    TaskTransition,
+    TaskUpdate,
 )
+from .user import UserCreate, UserRead, UserUpdate, UserUpsert
 
 __all__ = [
     "AgentConfigCreate",
@@ -56,14 +56,14 @@ __all__ = [
     "ServiceDeploymentCreate",
     "ServiceDeploymentRead",
     "ServiceDeploymentUpdate",
+    "RunCreate",
+    "RunRead",
+    "RunUpdate",
     "TaskCreate",
+    "TaskEventCreate",
+    "TaskEventRead",
     "TaskRead",
+    "TaskTransition",
     "TaskUpdate",
     "UserUpsert",
-    "WorkItemCreate",
-    "WorkItemEventCreate",
-    "WorkItemEventRead",
-    "WorkItemRead",
-    "WorkItemTransition",
-    "WorkItemUpdate",
 ]

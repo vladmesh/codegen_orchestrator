@@ -1,4 +1,4 @@
-"""Unit tests for work items router — CRUD, actions, events."""
+"""Unit tests for tasks router — CRUD, actions, events (planning layer)."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,12 +9,12 @@ from src.database import get_async_session
 from src.main import app
 
 
-def _make_work_item(**overrides):
+def _make_task(**overrides):
     from datetime import UTC, datetime
 
     now = datetime.now(UTC)
     defaults = {
-        "id": "wi-test1",
+        "id": "task-test1",
         "project_id": "proj-test",
         "type": "feature",
         "title": "Test feature",
@@ -33,15 +33,15 @@ def _make_work_item(**overrides):
     }
     defaults.update(overrides)
 
-    wi = MagicMock()
+    task = MagicMock()
     for k, v in defaults.items():
-        setattr(wi, k, v)
-    return wi
+        setattr(task, k, v)
+    return task
 
 
 def _make_event(
     id=1,
-    work_item_id="wi-test1",
+    task_id="task-test1",
     event_type="status_change",
     from_status="backlog",
     to_status="todo",
@@ -55,7 +55,7 @@ def _make_event(
 
     ev = MagicMock()
     ev.id = id
-    ev.work_item_id = work_item_id
+    ev.task_id = task_id
     ev.event_type = event_type
     ev.from_status = from_status
     ev.to_status = to_status
@@ -106,7 +106,7 @@ def _override_session(session):
 
 
 @pytest.mark.asyncio
-async def test_create_work_item():
+async def test_create_task():
     session = _mock_session()
 
     _override_session(session)
@@ -114,126 +114,122 @@ async def test_create_work_item():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            "/api/work-items/",
+            "/api/tasks/",
             json={"title": "Add stats button", "type": "feature", "project_id": "proj-1"},
         )
 
     assert resp.status_code == 201  # noqa: PLR2004
     session.add.assert_called_once()
-    wi = session.add.call_args[0][0]
-    assert wi.title == "Add stats button"
-    assert wi.type == "feature"
-    assert wi.status == "backlog"
-    assert wi.project_id == "proj-1"
-    assert wi.id.startswith("wi-")
+    task = session.add.call_args[0][0]
+    assert task.title == "Add stats button"
+    assert task.type == "feature"
+    assert task.status == "backlog"
+    assert task.project_id == "proj-1"
+    assert task.id.startswith("task-")
 
 
 @pytest.mark.asyncio
-async def test_create_work_item_requires_project_id():
+async def test_create_task_requires_project_id():
     session = _mock_session()
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/", json={"title": "Bug fix"})
+        resp = await client.post("/api/tasks/", json={"title": "Bug fix"})
 
     assert resp.status_code == 422  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
-async def test_create_work_item_invalid_type():
+async def test_create_task_invalid_type():
     session = _mock_session()
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/", json={"title": "Bad", "type": "nonexistent"})
+        resp = await client.post("/api/tasks/", json={"title": "Bad", "type": "nonexistent"})
 
     assert resp.status_code == 422  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
-async def test_list_work_items():
-    wi1 = _make_work_item(id="wi-1", title="First")
-    wi2 = _make_work_item(id="wi-2", title="Second")
-    session = _mock_session(scalars_all=[wi1, wi2])
+async def test_list_tasks():
+    t1 = _make_task(id="task-1", title="First")
+    t2 = _make_task(id="task-2", title="Second")
+    session = _mock_session(scalars_all=[t1, t2])
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/")
+        resp = await client.get("/api/tasks/")
 
     assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
     assert len(data) == 2  # noqa: PLR2004
-    assert data[0]["id"] == "wi-1"
+    assert data[0]["id"] == "task-1"
 
 
 @pytest.mark.asyncio
-async def test_list_work_items_with_filters():
+async def test_list_tasks_with_filters():
     session = _mock_session(scalars_all=[])
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/?status=todo&type=fix&project_id=proj-1")
+        resp = await client.get("/api/tasks/?status=todo&type=fix&project_id=proj-1")
 
     assert resp.status_code == 200  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
-async def test_list_work_items_with_limit():
-    wi1 = _make_work_item(id="wi-1", title="First")
-    wi2 = _make_work_item(id="wi-2", title="Second")
-    wi3 = _make_work_item(id="wi-3", title="Third")
-    session = _mock_session(scalars_all=[wi1, wi2, wi3])
+async def test_list_tasks_with_limit():
+    t1 = _make_task(id="task-1", title="First")
+    t2 = _make_task(id="task-2", title="Second")
+    t3 = _make_task(id="task-3", title="Third")
+    session = _mock_session(scalars_all=[t1, t2, t3])
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/?limit=1")
+        resp = await client.get("/api/tasks/?limit=1")
 
     assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
-    # limit is applied server-side, but with mock we get all 3 back
-    # The real test is that the endpoint accepts the param without error
-    # and the SQL query has .limit() — verified in service test
     assert len(data) <= 3  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
-async def test_list_work_items_sort_created_at():
+async def test_list_tasks_sort_created_at():
     """Verify sort param is accepted (actual ordering tested in service test)."""
     session = _mock_session(scalars_all=[])
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/?sort=-created_at")
+        resp = await client.get("/api/tasks/?sort=-created_at")
 
     assert resp.status_code == 200  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
-async def test_list_work_items_with_since_filter():
+async def test_list_tasks_with_since_filter():
     """Verify since param is accepted for filtering by updated_at."""
     session = _mock_session(scalars_all=[])
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/?since=2026-03-01T00:00:00")
+        resp = await client.get("/api/tasks/?since=2026-03-01T00:00:00")
 
     assert resp.status_code == 200  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
 async def test_stats_endpoint():
-    """GET /api/work-items/stats returns status counts."""
+    """GET /api/tasks/stats returns status counts."""
 
     session = AsyncMock()
 
-    # stats endpoint runs one query per status — mock all results
     mock_result = MagicMock()
     mock_result.scalar_one = MagicMock(return_value=0)
     session.execute = AsyncMock(return_value=mock_result)
@@ -243,7 +239,7 @@ async def test_stats_endpoint():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/stats")
+        resp = await client.get("/api/tasks/stats")
 
     assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
@@ -255,10 +251,9 @@ async def test_stats_endpoint():
 
 @pytest.mark.asyncio
 async def test_next_tag_endpoint():
-    """GET /api/work-items/next-tag returns next available tag number."""
+    """GET /api/tasks/next-tag returns next available tag number."""
     session = AsyncMock()
     mock_result = MagicMock()
-    # Simulate max tag = 60 -> next = 61
     mock_result.scalar_one_or_none = MagicMock(return_value="#60 Some task")
     session.execute = AsyncMock(return_value=mock_result)
     session.commit = AsyncMock()
@@ -267,7 +262,7 @@ async def test_next_tag_endpoint():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/next-tag")
+        resp = await client.get("/api/tasks/next-tag")
 
     assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
@@ -275,12 +270,11 @@ async def test_next_tag_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_get_work_item():
-    wi = _make_work_item(id="wi-abc")
-    # First call returns work item, second returns event (for last_event)
+async def test_get_task():
+    task = _make_task(id="task-abc")
     session = AsyncMock()
     mock_result1 = MagicMock()
-    mock_result1.scalar_one_or_none = MagicMock(return_value=wi)
+    mock_result1.scalar_one_or_none = MagicMock(return_value=task)
     mock_result2 = MagicMock()
     mock_result2.scalar_one_or_none = MagicMock(return_value=None)
     session.execute = AsyncMock(side_effect=[mock_result1, mock_result2])
@@ -294,54 +288,53 @@ async def test_get_work_item():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/wi-abc")
+        resp = await client.get("/api/tasks/task-abc")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert resp.json()["id"] == "wi-abc"
+    assert resp.json()["id"] == "task-abc"
 
 
 @pytest.mark.asyncio
-async def test_get_work_item_not_found():
+async def test_get_task_not_found():
     session = _mock_session(scalar_one_or_none=None)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/wi-nonexistent")
+        resp = await client.get("/api/tasks/task-nonexistent")
 
     assert resp.status_code == 404  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
-async def test_update_work_item():
-    wi = _make_work_item(id="wi-abc")
-    session = _mock_session(scalar_one_or_none=wi)
+async def test_update_task():
+    task = _make_task(id="task-abc")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.patch(
-            "/api/work-items/wi-abc", json={"title": "Updated title", "priority": 5}
+            "/api/tasks/task-abc", json={"title": "Updated title", "priority": 5}
         )
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert wi.title == "Updated title"
-    assert wi.priority == 5  # noqa: PLR2004
+    assert task.title == "Updated title"
+    assert task.priority == 5  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
-async def test_cancel_work_item():
-    wi = _make_work_item(id="wi-abc", status="backlog")
-    session = _mock_session(scalar_one_or_none=wi)
+async def test_cancel_task():
+    task = _make_task(id="task-abc", status="backlog")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.delete("/api/work-items/wi-abc")
+        resp = await client.delete("/api/tasks/task-abc")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert wi.status == "cancelled"
-    # Should have created a status_change event
+    assert task.status == "cancelled"
     assert session.add.call_count == 1
 
 
@@ -350,11 +343,10 @@ async def test_cancel_work_item():
 
 @pytest.mark.asyncio
 async def test_lookup_by_tag():
-    wi = _make_work_item(id="wi-abc", title="#53 Compose runner fix")
-    # Two queries: 1) find by tag, 2) last event
+    task = _make_task(id="task-abc", title="#53 Compose runner fix")
     session = AsyncMock()
     mock_result1 = MagicMock()
-    mock_result1.scalar_one_or_none = MagicMock(return_value=wi)
+    mock_result1.scalar_one_or_none = MagicMock(return_value=task)
     mock_result2 = MagicMock()
     mock_result2.scalar_one_or_none = MagicMock(return_value=None)
     session.execute = AsyncMock(side_effect=[mock_result1, mock_result2])
@@ -368,10 +360,10 @@ async def test_lookup_by_tag():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/by-tag/53")
+        resp = await client.get("/api/tasks/by-tag/53")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert resp.json()["id"] == "wi-abc"
+    assert resp.json()["id"] == "task-abc"
 
 
 @pytest.mark.asyncio
@@ -381,7 +373,7 @@ async def test_lookup_by_tag_not_found():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/by-tag/999")
+        resp = await client.get("/api/tasks/by-tag/999")
 
     assert resp.status_code == 404  # noqa: PLR2004
 
@@ -392,145 +384,145 @@ async def test_lookup_by_tag_not_found():
 @pytest.mark.asyncio
 async def test_start_from_backlog():
     """Start from backlog should auto-promote backlog → todo → in_dev."""
-    wi = _make_work_item(id="wi-abc", status="backlog")
-    session = _mock_session(scalar_one_or_none=wi)
+    task = _make_task(id="task-abc", status="backlog")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/wi-abc/start")
+        resp = await client.post("/api/tasks/task-abc/start")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert wi.status == "in_dev"
+    assert task.status == "in_dev"
     # Two events: backlog→todo, todo→in_dev
     assert session.add.call_count == 2  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
 async def test_start_from_todo():
-    wi = _make_work_item(id="wi-abc", status="todo")
-    session = _mock_session(scalar_one_or_none=wi)
+    task = _make_task(id="task-abc", status="todo")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/wi-abc/start")
+        resp = await client.post("/api/tasks/task-abc/start")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert wi.status == "in_dev"
+    assert task.status == "in_dev"
     assert session.add.call_count == 1
 
 
 @pytest.mark.asyncio
 async def test_start_from_done_fails():
-    wi = _make_work_item(id="wi-abc", status="done")
-    session = _mock_session(scalar_one_or_none=wi)
+    task = _make_task(id="task-abc", status="done")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/wi-abc/start")
+        resp = await client.post("/api/tasks/task-abc/start")
 
     assert resp.status_code == 422  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
 async def test_complete_from_testing():
-    wi = _make_work_item(id="wi-abc", status="testing")
-    session = _mock_session(scalar_one_or_none=wi)
+    task = _make_task(id="task-abc", status="testing")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/wi-abc/complete")
+        resp = await client.post("/api/tasks/task-abc/complete")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert wi.status == "done"
+    assert task.status == "done"
 
 
 @pytest.mark.asyncio
 async def test_complete_from_backlog_fails():
-    wi = _make_work_item(id="wi-abc", status="backlog")
-    session = _mock_session(scalar_one_or_none=wi)
+    task = _make_task(id="task-abc", status="backlog")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/wi-abc/complete")
+        resp = await client.post("/api/tasks/task-abc/complete")
 
     assert resp.status_code == 422  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
-async def test_fail_work_item():
-    wi = _make_work_item(id="wi-abc", status="in_dev")
-    session = _mock_session(scalar_one_or_none=wi)
+async def test_fail_task():
+    task = _make_task(id="task-abc", status="in_dev")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            "/api/work-items/wi-abc/fail",
+            "/api/tasks/task-abc/fail",
             json={"reason": "CI crashed 3 times"},
         )
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert wi.status == "failed"
+    assert task.status == "failed"
 
 
 @pytest.mark.asyncio
 async def test_reopen_from_done():
-    wi = _make_work_item(id="wi-abc", status="done")
-    session = _mock_session(scalar_one_or_none=wi)
+    task = _make_task(id="task-abc", status="done")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            "/api/work-items/wi-abc/reopen",
+            "/api/tasks/task-abc/reopen",
             json={"reason": "Bug came back"},
         )
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert wi.status == "backlog"
+    assert task.status == "backlog"
 
 
 @pytest.mark.asyncio
 async def test_reopen_from_in_dev_fails():
-    wi = _make_work_item(id="wi-abc", status="in_dev")
-    session = _mock_session(scalar_one_or_none=wi)
+    task = _make_task(id="task-abc", status="in_dev")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/wi-abc/reopen")
+        resp = await client.post("/api/tasks/task-abc/reopen")
 
     assert resp.status_code == 422  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
 async def test_generic_transition():
-    wi = _make_work_item(id="wi-abc", status="in_dev")
-    session = _mock_session(scalar_one_or_none=wi)
+    task = _make_task(id="task-abc", status="in_dev")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/wi-abc/transition?to_status=testing")
+        resp = await client.post("/api/tasks/task-abc/transition?to_status=testing")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert wi.status == "testing"
+    assert task.status == "testing"
 
 
 @pytest.mark.asyncio
 async def test_generic_transition_invalid():
-    wi = _make_work_item(id="wi-abc", status="backlog")
-    session = _mock_session(scalar_one_or_none=wi)
+    task = _make_task(id="task-abc", status="backlog")
+    session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/work-items/wi-abc/transition?to_status=done")
+        resp = await client.post("/api/tasks/task-abc/transition?to_status=done")
 
     assert resp.status_code == 422  # noqa: PLR2004
     assert "Cannot transition" in resp.json()["detail"]
@@ -541,17 +533,15 @@ async def test_generic_transition_invalid():
 
 @pytest.mark.asyncio
 async def test_create_event():
-    wi = _make_work_item(id="wi-abc")
-    # First execute returns work_item, rest for events
+    task = _make_task(id="task-abc")
     session = AsyncMock()
     mock_result = MagicMock()
-    mock_result.scalar_one_or_none = MagicMock(return_value=wi)
+    mock_result.scalar_one_or_none = MagicMock(return_value=task)
     session.execute = AsyncMock(return_value=mock_result)
     session.add = MagicMock()
     session.commit = AsyncMock()
 
     async def _refresh(obj):
-        # Simulate DB assigning auto-increment id
         if hasattr(obj, "id") and obj.id is None:
             obj.id = 1
 
@@ -561,11 +551,11 @@ async def test_create_event():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
-            "/api/work-items/wi-abc/events",
+            "/api/tasks/task-abc/events",
             json={
                 "event_type": "iteration_start",
                 "iteration": 0,
-                "details": {"task_id": "eng-111"},
+                "details": {"run_id": "eng-111"},
                 "actor": "system",
             },
         )
@@ -574,24 +564,23 @@ async def test_create_event():
     event = session.add.call_args[0][0]
     assert event.event_type == "iteration_start"
     assert event.iteration == 0
-    assert event.details == {"task_id": "eng-111"}
+    assert event.details == {"run_id": "eng-111"}
 
 
 @pytest.mark.asyncio
 async def test_list_events():
-    wi = _make_work_item(id="wi-abc")
-    ev1 = _make_event(id=1, work_item_id="wi-abc")
-    ev2 = _make_event(id=2, work_item_id="wi-abc", event_type="iteration_start", iteration=0)
+    task = _make_task(id="task-abc")
+    ev1 = _make_event(id=1, task_id="task-abc")
+    ev2 = _make_event(id=2, task_id="task-abc", event_type="iteration_start", iteration=0)
 
     session = AsyncMock()
-    # First call: get_work_item, second: list events
-    mock_result_wi = MagicMock()
-    mock_result_wi.scalar_one_or_none = MagicMock(return_value=wi)
+    mock_result_task = MagicMock()
+    mock_result_task.scalar_one_or_none = MagicMock(return_value=task)
     mock_result_events = MagicMock()
     mock_scalars = MagicMock()
     mock_scalars.all = MagicMock(return_value=[ev1, ev2])
     mock_result_events.scalars = MagicMock(return_value=mock_scalars)
-    session.execute = AsyncMock(side_effect=[mock_result_wi, mock_result_events])
+    session.execute = AsyncMock(side_effect=[mock_result_task, mock_result_events])
     session.commit = AsyncMock()
 
     async def _refresh(obj):
@@ -602,7 +591,7 @@ async def test_list_events():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/wi-abc/events")
+        resp = await client.get("/api/tasks/task-abc/events")
 
     assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
@@ -610,12 +599,12 @@ async def test_list_events():
 
 
 @pytest.mark.asyncio
-async def test_events_for_nonexistent_work_item():
+async def test_events_for_nonexistent_task():
     session = _mock_session(scalar_one_or_none=None)
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/work-items/wi-nonexistent/events")
+        resp = await client.get("/api/tasks/task-nonexistent/events")
 
     assert resp.status_code == 404  # noqa: PLR2004
