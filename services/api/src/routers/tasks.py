@@ -168,6 +168,44 @@ async def create_task(
     return _to_read(task)
 
 
+@router.post("/push", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
+async def push_task(
+    body: TaskCreate,
+    db: AsyncSession = Depends(get_async_session),
+) -> TaskRead:
+    """Create a task at the top of the backlog (lowest priority number)."""
+    min_q = select(func.min(Task.priority)).where(Task.status == TaskStatus.BACKLOG)
+    result = await db.execute(min_q)
+    min_priority = result.scalar_one_or_none()
+    auto_priority = (min_priority if min_priority is not None else 0) - 1
+
+    now = datetime.now(UTC)
+    task = Task(
+        id=_generate_id(),
+        project_id=body.project_id,
+        type=body.type.value,
+        title=body.title,
+        description=body.description,
+        status=TaskStatus.BACKLOG.value,
+        priority=auto_priority,
+        acceptance_criteria=body.acceptance_criteria,
+        current_iteration=0,
+        max_iterations=body.max_iterations,
+        need_e2e=body.need_e2e,
+        created_by=body.created_by,
+        source_brainstorm_id=body.source_brainstorm_id,
+        milestone_id=body.milestone_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(task)
+    await db.commit()
+    await db.refresh(task)
+
+    logger.info("task_pushed", task_id=task.id, title=task.title, priority=auto_priority)
+    return _to_read(task)
+
+
 @router.get("/", response_model=list[TaskRead])
 async def list_tasks(
     project_id: str | None = None,
