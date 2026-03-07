@@ -28,12 +28,17 @@ async def test_next_picks_top_priority(async_client: AsyncClient):
         assert resp.status_code == 201  # noqa: PLR2004
         items.append(resp.json())
 
-    # /next with no argument: get first backlog item
-    resp = await async_client.get("/api/work-items/?status=backlog&limit=1")
+    # /next with no argument: get backlog items sorted by priority
+    resp = await async_client.get("/api/work-items/?status=backlog")
     assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
-    assert len(data) == 1
-    assert data[0]["title"] == "#900 High priority task"
+    # Find our items among all backlog items
+    our_items = [d for d in data if d["title"].startswith("#90")]
+    assert len(our_items) == 3  # noqa: PLR2004
+    # Priority 0 should come first
+    assert our_items[0]["title"] == "#900 High priority task"
+    assert our_items[1]["title"] == "#902 Medium priority task"
+    assert our_items[2]["title"] == "#901 Low priority task"
 
 
 @pytest.mark.asyncio
@@ -58,14 +63,13 @@ async def test_next_start_advances_queue(async_client: AsyncClient):
     assert resp.status_code == 200  # noqa: PLR2004
     assert resp.json()["status"] == "in_dev"
 
-    # Next backlog item should be #911
-    resp = await async_client.get("/api/work-items/?status=backlog&limit=1")
-    data = resp.json()
-    backlog_titles = [d["title"] for d in data]
+    # #910 should no longer appear in backlog
+    resp = await async_client.get("/api/work-items/?status=backlog")
+    backlog_titles = [d["title"] for d in resp.json()]
     assert "#910 First task" not in backlog_titles
-    if data:
-        # #911 should be in results (may also contain items from other tests)
-        assert any("#911" in d["title"] for d in data)
+
+    # #911 should still be in backlog
+    assert "#911 Second task" in backlog_titles
 
 
 @pytest.mark.asyncio
