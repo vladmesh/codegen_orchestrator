@@ -4,6 +4,14 @@
 
 ## 2026-03-07
 
+### Added
+- **WorkItem task management system** (#55): Planning layer for tracking features/fixes with agile statuses (backlog → todo → in_dev → testing → done). Models: `WorkItem`, `WorkItemEvent`. Action-based API with state machine validation. Alembic migration, 25+ unit tests, service tests, backlog migration script.
+  - `POST/GET/PATCH/DELETE /api/work-items/` — CRUD
+  - `POST /api/work-items/{id}/start|complete|fail|reopen|transition` — state machine actions
+  - `GET/POST /api/work-items/{id}/events` — event history
+  - `Task.work_item_id` + `Task.iteration` — links execution to planning layer
+  - `scripts/migrate_backlog.py` — migrates backlog.md Queue into DB
+
 ### Fixed
 - **Secrets not persisting**: `POST /projects/{id}/config/secrets` returned 200 but never saved. Root cause: plain `JSON` column didn't detect in-place dict mutations. Fix: `MutableDict.as_mutable(JSON)` on `Project.config` and `project_spec` columns + `dict()` copy in `merge_secrets` (#51)
 - **Project stuck in "deploying"**: deploy-worker didn't reset project status on `missing_user_secrets`. Now rolls back to `failed` (#51)

@@ -21,7 +21,7 @@
 
 ## Steps
 
-1. [ ] WorkItem + WorkItemEvent SQLAlchemy models
+1. [x] WorkItem + WorkItemEvent SQLAlchemy models
    - **Input**: `shared/models/base.py`, `shared/models/task.py` (pattern reference)
    - **Output**: `shared/models/work_item.py` with `WorkItem` and `WorkItemEvent` models. Enums `WorkItemStatus` and `WorkItemType` in `shared/contracts/dto/work_item.py`. Models registered in `shared/models/__init__.py`.
    - **Test**: Unit test validates model instantiation, enum values, default fields. Test valid status transitions matrix.
@@ -29,22 +29,22 @@
      - WorkItem: id (wi-{nanoid}), project_id (FK), type, title, description, status, priority, acceptance_criteria, current_iteration, max_iterations (default 3), created_by
      - WorkItemEvent: id (auto), work_item_id (FK), event_type, from_status, to_status, iteration, details (JSON), actor
 
-2. [ ] Add work_item_id + iteration to Task model
+2. [x] Add work_item_id + iteration to Task model
    - **Input**: `shared/models/task.py`
    - **Output**: `Task` model gets `work_item_id: Mapped[str | None]` (FK → work_items.id) and `iteration: Mapped[int | None]`. Both nullable for backward compat.
    - **Test**: Unit test: Task with and without work_item_id. Existing task tests still pass.
 
-3. [ ] Alembic migration
+3. [x] Alembic migration
    - **Input**: Models from steps 1-2
    - **Output**: `services/api/migrations/versions/<hash>_add_work_items.py` — creates `work_items` table, `work_item_events` table, adds `work_item_id` + `iteration` columns to `tasks`. Indices on work_items(project_id, status, priority) and work_item_events(work_item_id).
    - **Test**: `make migrate` succeeds. `make test-api-unit` still passes (no regressions). ⚠️ needs-approval (DB schema change)
 
-4. [ ] WorkItem API schemas (Pydantic)
+4. [x] WorkItem API schemas (Pydantic)
    - **Input**: `services/api/src/schemas/task.py` (pattern reference), DTOs from step 1
    - **Output**: `services/api/src/schemas/work_item.py` — `WorkItemCreate`, `WorkItemRead`, `WorkItemUpdate`, `WorkItemEventRead`. WorkItemRead includes `last_event` summary and `elapsed_minutes`.
    - **Test**: Unit test: schema validation, serialization round-trip.
 
-5. [ ] WorkItem CRUD router
+5. [x] WorkItem CRUD router (combined with steps 6-7 into single router)
    - **Input**: `services/api/src/routers/tasks.py` (pattern reference), schemas from step 4
    - **Output**: `services/api/src/routers/work_items.py` registered in `__init__.py` and `main.py`. Endpoints:
      - `POST /api/work-items/` — create work item
@@ -54,7 +54,7 @@
      - `DELETE /api/work-items/{id}` — soft-delete (status → cancelled)
    - **Test**: Unit tests for each endpoint (create, list with filters, get, update, delete). Follow existing pattern from `test_create_project.py`.
 
-6. [ ] Action endpoints (state machine transitions)
+6. [x] Action endpoints (state machine transitions)
    - **Input**: Router from step 5, status enums from step 1
    - **Output**: Action endpoints added to the work_items router:
      - `POST /api/work-items/{id}/start` — backlog/todo → in_dev (creates iteration_start event)
@@ -65,24 +65,32 @@
      Each action validates the transition is legal and creates a WorkItemEvent.
    - **Test**: Unit tests: valid transitions succeed, invalid transitions return 422. Event history recorded correctly.
 
-7. [ ] WorkItem events sub-router
+7. [x] WorkItem events sub-router
    - **Input**: Router from step 5, WorkItemEvent model
    - **Output**: Endpoints:
      - `GET /api/work-items/{id}/events` — list events for work item (ordered by created_at)
      - `POST /api/work-items/{id}/events` — add event (for system/workers: iteration_start, iteration_end, note)
    - **Test**: Unit tests: create event, list events, filter by event_type.
 
-8. [ ] Integration test: WorkItem full lifecycle
+8. [x] Service test: WorkItem full lifecycle (service test, not integration)
    - **Input**: All previous steps
    - **Output**: `services/api/tests/integration/test_work_item_lifecycle.py` — test full flow: create → start → (add events) → complete. Verify events history. Test transition validation (invalid transitions rejected). Test WorkItem ↔ Task linkage.
    - **Test**: `make test-api-integration` passes.
 
-9. [ ] Backlog migration script
+9. [x] Backlog migration script
    - **Input**: `docs/backlog.md` (Queue section), API from steps 5-6
    - **Output**: `scripts/migrate_backlog.py` — parses Queue section of backlog.md, creates WorkItems via API (curl or direct DB). Only migrates Queue items (not Done/Ideas). Maps: title, brief → description, priority (order in Queue), status=todo.
    - **Test**: Run script, verify work items created with correct data via `GET /api/work-items/`.
 
-10. [ ] Cleanup and docs
+10. [x] Cleanup and docs
     - **Input**: All previous steps
     - **Output**: Update brainstorm status to `in_progress`. Add entry to CHANGELOG.md. Verify `make test-unit` and `make lint` pass.
     - **Test**: `make test-unit` green, `make lint` clean.
+
+## Deviations
+
+- Steps 5-7 combined into a single router file (`work_items.py`) — CRUD, actions, and events are tightly coupled
+- Step 8: service test (`tests/service/`) instead of integration test — API+DB tests use service test pattern, not Docker integration
+- `shared` package required `uv pip install -e shared/` after adding new files (hatchling force-include copies, not editable symlinks)
+- Router sets `created_at`/`updated_at` explicitly in constructor to avoid issues with mock sessions in unit tests
+- Also migrated 10 Done items from backlog.md (not in original plan) for visual completeness

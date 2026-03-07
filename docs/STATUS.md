@@ -1,9 +1,9 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #55 WorkItem Model + API + Backlog Migration (Step 0)
-- **Plan**: [docs/plans/work-item-model-api.md](plans/work-item-model-api.md)
-- **Step**: 1/10 — WorkItem + WorkItemEvent SQLAlchemy models
+- **Backlog**: —
+- **Plan**: —
+- **Step**: —
 - **Done Steps**: —
 
 ## Blocked
@@ -21,6 +21,7 @@
 
 | # | Задача |
 |---|--------|
+| 55 | WorkItem Model + API + Backlog Migration (Step 0) |
 | 51 | SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save |
 | 50 | Fix Description Loss in Create Flow |
 | 49 | Telegram: кнопка "Add User" для админов |

@@ -4,13 +4,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #55 WorkItem Model + API + Backlog Migration (Step 0)
-- **Priority**: HIGH
-- **User Story**: —
-- **Plan**: [docs/plans/work-item-model-api.md](plans/work-item-model-api.md)
-- **Status**: in_progress
-- **Brief**: Фундамент системы управления задачами. Alembic migration: таблицы `work_items`, `work_item_events`, поля `work_item_id`+`iteration` в `tasks`. API: CRUD + action-based status transitions. Скрипт миграции backlog.md Queue → БД. Brainstorm: [orchestrator-v2-task-management.md](brainstorms/orchestrator-v2-task-management.md).
-
 ### #53 Compose runner: стрипать ports из worker compose files
 - **Priority**: CRITICAL
 - **User Story**: —
@@ -148,6 +141,7 @@
 
 ## Done (last 10)
 
+- #55 WorkItem Model + API + Backlog Migration (Step 0) — 2026-03-07
 - #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save — 2026-03-07
 - #50 Fix Description Loss in Create Flow — 2026-03-07
 - #49 Telegram: кнопка "Add User" для админов — 2026-03-06
@@ -157,4 +151,3 @@
 - #45 PO: Context-Aware Env Variables & Hints — 2026-03-06
 - #44 PO: DuckDuckGo Search Tool — 2026-03-06
 - #43 PO: Сократический диалог и формирование ТЗ — 2026-03-06
-- #8 Workspace Failure Counter — 2026-03-06
