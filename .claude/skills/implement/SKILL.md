@@ -11,36 +11,36 @@ The main development skill. Implements the current task (or a specific one) usin
 
 ## Input
 
-- No arguments: continue working on the current in_dev work item, or auto-pick the highest-priority backlog task
+- No arguments: continue working on the current in_dev task, or auto-pick the highest-priority backlog task
 - `#ID` (e.g. `#8`): start that task (calls /start if needed)
 
 ## Protocol
 
 ### 1. Load context
 
-Find the work item to implement:
+Find the task to implement:
 
 **If `#ID` given:**
 ```bash
-WI=$(curl -sf "http://localhost:8000/api/work-items/by-tag/<ID>")
+WI=$(curl -sf "http://localhost:8000/api/tasks/by-tag/<ID>")
 WI_ID=$(echo "$WI" | jq -r '.id')
 ```
 
-If work item is not in_dev, start it:
+If task is not in_dev, start it:
 ```bash
-curl -sf -X POST "http://localhost:8000/api/work-items/$WI_ID/start" \
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/start" \
   -H "Content-Type: application/json" \
   -d '{"actor": "claude"}' || true
 ```
 
 **If no argument:**
 ```bash
-WI=$(curl -sf "http://localhost:8000/api/work-items/?status=in_dev&limit=1" | jq '.[0]')
+WI=$(curl -sf "http://localhost:8000/api/tasks/?status=in_dev&limit=1" | jq '.[0]')
 ```
 
 If no in_dev item found — **auto-pick highest-priority backlog task**:
 ```bash
-WI=$(curl -sf "http://localhost:8000/api/work-items/?status=backlog&limit=50" \
+WI=$(curl -sf "http://localhost:8000/api/tasks/?status=backlog&limit=50" \
   | jq 'sort_by(.priority) | .[0]')
 ```
 
@@ -53,7 +53,7 @@ TITLE=$(echo "$WI" | jq -r '.title')
 ```
 Print: "Auto-picked: **$TITLE** (priority $(echo "$WI" | jq -r '.priority'))"
 ```bash
-curl -sf -X POST "http://localhost:8000/api/work-items/$WI_ID/start" \
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/start" \
   -H "Content-Type: application/json" \
   -d '{"actor": "claude"}'
 ```
@@ -74,12 +74,12 @@ HAS_PLAN=$(echo "$WI" | jq -r 'if .plan and .plan != "" then "yes" else "no" end
 - **Complex task** (multi-file, new feature, schema changes, unclear scope): auto-generate a plan by invoking /plan as a subagent:
 
 ```
-Use the Agent tool to run: "Run /plan for work item $WI_ID. The task: <title>. Description: <description>"
+Use the Agent tool to run: "Run /plan for task $WI_ID. The task: <title>. Description: <description>"
 ```
 
-After the subagent completes, re-fetch the work item to get the saved plan:
+After the subagent completes, re-fetch the task to get the saved plan:
 ```bash
-WI=$(curl -sf "http://localhost:8000/api/work-items/$WI_ID")
+WI=$(curl -sf "http://localhost:8000/api/tasks/$WI_ID")
 ```
 
 ### 3. Create git branch
@@ -96,7 +96,7 @@ If already on a `wi/` branch for this task, stay on it.
 
 ### 4. Understand the task
 
-Read the work item's `description` and `plan` fields from the API response.
+Read the task's `description` and `plan` fields from the API response.
 
 **Source brainstorm**: check the `source_brainstorm_id` field. If not null, fetch the brainstorm for additional context:
 ```bash
@@ -118,7 +118,7 @@ If no plan exists (simple task) — use the description (and brainstorm if avail
 
 **Before starting** — emit note event (best-effort):
 ```bash
-curl -sf -X POST "http://localhost:8000/api/work-items/$WI_ID/events" \
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
   -H "Content-Type: application/json" \
   -d '{"event_type": "note", "details": {"action": "step_start", "step": N, "title": "Step title"}, "actor": "claude"}' || true
 ```
@@ -134,7 +134,7 @@ Follow Red -> Green -> Refactor:
 **After the commit** — emit note event with commit SHA:
 ```bash
 SHA=$(git rev-parse --short HEAD)
-curl -sf -X POST "http://localhost:8000/api/work-items/$WI_ID/events" \
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
   -H "Content-Type: application/json" \
   -d "{\"event_type\": \"note\", \"details\": {\"action\": \"step_done\", \"step\": N, \"title\": \"Step title\", \"commit_sha\": \"$SHA\"}, \"actor\": \"claude\"}" || true
 ```
@@ -159,9 +159,9 @@ While CI is running or red: NO changes to CHANGELOG.md or backlog generation. Th
 
 When all steps are done AND CI is green:
 
-**Complete work item via API** (best-effort):
+**Complete task via API** (best-effort):
 ```bash
-curl -sf -X POST "http://localhost:8000/api/work-items/$WI_ID/complete" \
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/complete" \
   -H "Content-Type: application/json" \
   -d '{"actor": "claude"}' || true
 ```

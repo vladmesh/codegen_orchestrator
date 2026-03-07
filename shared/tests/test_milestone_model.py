@@ -49,10 +49,10 @@ def test_milestone_parent_id_nullable():
     assert col.nullable is True
 
 
-def test_work_item_has_milestone_id():
-    from shared.models.work_item import WorkItem
+def test_task_has_milestone_id():
+    from shared.models.task import Task
 
-    col_names = {c.name for c in WorkItem.__table__.columns}
+    col_names = {c.name for c in Task.__table__.columns}
     assert "milestone_id" in col_names
-    col = WorkItem.__table__.columns["milestone_id"]
+    col = Task.__table__.columns["milestone_id"]
     assert col.nullable is True

@@ -104,7 +104,7 @@ async def seed(api_url: str) -> None:
             # Link work items by tag
             for tag in phase["tags"]:
                 try:
-                    wi_resp = await client.get(f"/api/work-items/by-tag/{tag}")
+                    wi_resp = await client.get(f"/api/tasks/by-tag/{tag}")
                     if wi_resp.status_code == codes.NOT_FOUND:
                         print(f"  -> #{tag}: not found, skipping")
                         continue
@@ -112,7 +112,7 @@ async def seed(api_url: str) -> None:
                     wi = wi_resp.json()
 
                     patch_resp = await client.patch(
-                        f"/api/work-items/{wi['id']}",
+                        f"/api/tasks/{wi['id']}",
                         json={"milestone_id": ms_id},
                     )
                     patch_resp.raise_for_status()

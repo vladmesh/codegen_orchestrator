@@ -1,40 +1,57 @@
-from datetime import datetime
-from enum import StrEnum
+"""Task DTOs and enums — single source of truth for task statuses and types (planning layer)."""
 
-from pydantic import BaseModel, ConfigDict
+from enum import StrEnum
 
 
 class TaskStatus(StrEnum):
-    QUEUED = "queued"
-    RUNNING = "running"
-    COMPLETED = "completed"
+    BACKLOG = "backlog"
+    TODO = "todo"
+    IN_DEV = "in_dev"
+    IN_REVIEW = "in_review"
+    TESTING = "testing"
+    DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
 
 class TaskType(StrEnum):
-    ENGINEERING = "engineering"
-    DEPLOY = "deploy"
+    CREATE = "create"
+    FEATURE = "feature"
+    FIX = "fix"
+    REFACTOR = "refactor"
 
 
-class TaskCreate(BaseModel):
-    """Create task request."""
+class TaskEventType(StrEnum):
+    STATUS_CHANGE = "status_change"
+    ITERATION_START = "iteration_start"
+    ITERATION_END = "iteration_end"
+    NOTE = "note"
+    COMMENT = "comment"
 
-    project_id: str
-    type: TaskType
-    spec: str | None = None
 
-
-class TaskDTO(BaseModel):
-    """Task response."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    project_id: str
-    type: TaskType
-    status: TaskStatus
-    spec: str | None = None
-    result: dict | None = None
-    created_at: datetime
-    updated_at: datetime | None = None
+# Valid status transitions: from_status -> set of allowed to_statuses
+VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
+    TaskStatus.BACKLOG: {TaskStatus.TODO, TaskStatus.CANCELLED},
+    TaskStatus.TODO: {TaskStatus.IN_DEV, TaskStatus.BACKLOG, TaskStatus.CANCELLED},
+    TaskStatus.IN_DEV: {
+        TaskStatus.IN_REVIEW,
+        TaskStatus.TESTING,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    },
+    TaskStatus.IN_REVIEW: {
+        TaskStatus.IN_DEV,
+        TaskStatus.TESTING,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    },
+    TaskStatus.TESTING: {
+        TaskStatus.DONE,
+        TaskStatus.IN_DEV,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    },
+    TaskStatus.DONE: {TaskStatus.BACKLOG},
+    TaskStatus.FAILED: {TaskStatus.BACKLOG, TaskStatus.CANCELLED},
+    TaskStatus.CANCELLED: set(),
+}

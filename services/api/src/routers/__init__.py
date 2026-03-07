@@ -13,12 +13,12 @@ from . import (
     projects,
     rag,
     resources,
+    runs,
     servers,
     service_deployments,
     tasks,
     users,
     webhooks,
-    work_items,
 )
 
 __all__ = [
@@ -34,10 +34,10 @@ __all__ = [
     "projects",
     "rag",
     "resources",
+    "runs",
     "servers",
     "service_deployments",
     "tasks",
     "users",
     "webhooks",
-    "work_items",
 ]

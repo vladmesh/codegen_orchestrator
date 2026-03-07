@@ -1,47 +1,47 @@
-"""Unit tests for Task ↔ WorkItem linkage."""
+"""Unit tests for Run ↔ Task linkage."""
 
 from sqlalchemy import create_engine, insert, select
 from sqlalchemy.orm import Session
 
+from shared.models.run import Run
 from shared.models.task import Task
-from shared.models.work_item import WorkItem
 
 
 def _setup_db():
     engine = create_engine("sqlite:///:memory:")
-    WorkItem.__table__.create(engine)
     Task.__table__.create(engine)
+    Run.__table__.create(engine)
     return engine
 
 
-def test_task_without_work_item():
-    """Existing tasks without work_item_id still work (backward compat)."""
+def test_run_without_task():
+    """Existing runs without task_id still work (backward compat)."""
     engine = _setup_db()
 
     with Session(engine) as session:
         session.execute(
-            insert(Task).values(
-                id="task-1",
+            insert(Run).values(
+                id="run-1",
                 type="engineering",
                 status="queued",
-                task_metadata={},
+                run_metadata={},
             )
         )
         session.commit()
 
     with Session(engine) as session:
-        task = session.execute(select(Task).where(Task.id == "task-1")).scalar_one()
-        assert task.work_item_id is None
-        assert task.iteration is None
+        run = session.execute(select(Run).where(Run.id == "run-1")).scalar_one()
+        assert run.task_id is None
+        assert run.iteration is None
 
 
-def test_task_linked_to_work_item():
+def test_run_linked_to_task():
     engine = _setup_db()
 
     with Session(engine) as session:
         session.execute(
-            insert(WorkItem).values(
-                id="wi-abc",
+            insert(Task).values(
+                id="task-abc",
                 project_id="proj-test",
                 title="Feature X",
                 type="feature",
@@ -53,18 +53,18 @@ def test_task_linked_to_work_item():
             )
         )
         session.execute(
-            insert(Task).values(
+            insert(Run).values(
                 id="eng-111",
                 type="engineering",
                 status="running",
-                work_item_id="wi-abc",
+                task_id="task-abc",
                 iteration=1,
-                task_metadata={},
+                run_metadata={},
             )
         )
         session.commit()
 
     with Session(engine) as session:
-        task = session.execute(select(Task).where(Task.id == "eng-111")).scalar_one()
-        assert task.work_item_id == "wi-abc"
-        assert task.iteration == 1
+        run = session.execute(select(Run).where(Run.id == "eng-111")).scalar_one()
+        assert run.task_id == "task-abc"
+        assert run.iteration == 1

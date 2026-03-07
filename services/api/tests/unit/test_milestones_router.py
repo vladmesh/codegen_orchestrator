@@ -33,12 +33,12 @@ def _make_milestone(**overrides):
     return ms
 
 
-def _make_work_item(**overrides):
+def _make_task(**overrides):
     from datetime import UTC, datetime
 
     now = datetime.now(UTC)
     defaults = {
-        "id": "wi-test1",
+        "id": "task-test1",
         "project_id": "proj-test",
         "type": "feature",
         "title": "#99 Test task",
@@ -249,16 +249,16 @@ async def test_complete_from_completed_fails():
     assert resp.status_code == 409
 
 
-# --- Work items sub-resource ---
+# --- Tasks sub-resource ---
 
 
 @pytest.mark.asyncio
-async def test_get_milestone_work_items():
+async def test_get_milestone_tasks():
     ms = _make_milestone(id="ms-abc")
-    wi1 = _make_work_item(id="wi-1", milestone_id="ms-abc")
-    wi2 = _make_work_item(id="wi-2", milestone_id="ms-abc", status="done")
+    wi1 = _make_task(id="task-1", milestone_id="ms-abc")
+    wi2 = _make_task(id="task-2", milestone_id="ms-abc", status="done")
 
-    # First execute returns milestone, second returns work items
+    # First execute returns milestone, second returns tasks
     session = AsyncMock()
     result1 = MagicMock()
     result1.scalar_one_or_none = MagicMock(return_value=ms)
@@ -271,7 +271,7 @@ async def test_get_milestone_work_items():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/milestones/ms-abc/work-items")
+        resp = await client.get("/api/milestones/ms-abc/tasks")
 
     assert resp.status_code == 200
     data = resp.json()

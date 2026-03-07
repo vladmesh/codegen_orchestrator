@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from shared.clients.github import GitHubAppClient
 
 from shared.contracts.dto.project import ProjectStatus
-from shared.contracts.dto.task import TaskStatus, TaskType
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -488,7 +488,7 @@ async def _record_ci_attempts(task_id: str, ci_attempts: list[dict]) -> None:
     """Persist CI attempts to task metadata via API."""
     try:
         await api_client.patch(
-            f"tasks/{task_id}",
+            f"runs/{task_id}",
             json={"task_metadata": {"ci_attempts": ci_attempts}},
         )
     except Exception as e:
@@ -623,7 +623,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     try:
         # Update task status to running
         await api_client.patch(
-            f"tasks/{task_id}",
+            f"runs/{task_id}",
             json={"status": "running", "started_at": datetime.now(UTC).isoformat()},
         )
 
@@ -643,7 +643,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         if not project:
             error_msg = f"Project {project_id} not found"
             await api_client.patch(
-                f"tasks/{task_id}",
+                f"runs/{task_id}",
                 json={"status": "failed", "error_message": error_msg},
             )
             return {"status": "failed", "error": error_msg}
@@ -667,7 +667,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 action=action,
             )
             await api_client.patch(
-                f"tasks/{task_id}",
+                f"runs/{task_id}",
                 json={"status": "failed", "error_message": error_msg},
             )
             await publish_callback_event(
@@ -735,7 +735,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     errors=alloc_result["errors"],
                 )
                 await api_client.patch(
-                    f"tasks/{task_id}",
+                    f"runs/{task_id}",
                     json={"status": "failed", "error_message": error_msg},
                 )
                 return {"status": "failed", "error": error_msg}
@@ -807,7 +807,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         elif result.get("engineering_status") == "blocked" or result.get("needs_human_approval"):
             logger.info("engineering_job_blocked", task_id=task_id, errors=result.get("errors"))
             await api_client.patch(
-                f"tasks/{task_id}",
+                f"runs/{task_id}",
                 json={
                     "status": "failed",
                     "error_message": "; ".join(result.get("errors", ["Task blocked"])),
@@ -835,7 +835,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             errors = result.get("errors", ["Unknown engineering status"])
             logger.error("engineering_job_unknown_status", task_id=task_id, errors=errors)
             await api_client.patch(
-                f"tasks/{task_id}",
+                f"runs/{task_id}",
                 json={"status": "failed", "error_message": "; ".join(errors)},
             )
             return {
@@ -853,7 +853,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             exc_info=True,
         )
         await api_client.patch(
-            f"tasks/{task_id}",
+            f"runs/{task_id}",
             json={"status": "failed", "error_message": str(e), "error_traceback": str(e)},
         )
         # Update project status to failed
@@ -898,7 +898,7 @@ async def _handle_engineering_success(
     if not result.get("commit_sha"):
         logger.error("no_commit_sha", task_id=task_id, project_id=project_id)
         await api_client.patch(
-            f"tasks/{task_id}",
+            f"runs/{task_id}",
             json={
                 "status": "failed",
                 "error_message": "Developer completed but no commit was made",
@@ -958,7 +958,7 @@ async def _handle_engineering_success(
         fail_msg = f"CI failed after {len(ci_attempts)} attempt(s), retries exhausted"
         logger.error("ci_gate_failed", task_id=task_id, project_id=project_id)
         await api_client.patch(
-            f"tasks/{task_id}",
+            f"runs/{task_id}",
             json={
                 "status": "failed",
                 "error_message": fail_msg,
@@ -981,7 +981,7 @@ async def _handle_engineering_success(
 
     # CI passed — mark engineering task as completed
     await api_client.patch(
-        f"tasks/{task_id}",
+        f"runs/{task_id}",
         json={
             "status": "completed",
             "result": {
@@ -1026,12 +1026,12 @@ async def _handle_engineering_success(
         try:
             # Create deploy task in API
             await api_client.post(
-                "tasks/",
+                "runs/",
                 json={
                     "id": deploy_task_id,
-                    "type": TaskType.DEPLOY.value,
+                    "type": RunType.DEPLOY.value,
                     "project_id": project_id,
-                    "status": TaskStatus.QUEUED.value,
+                    "status": RunStatus.QUEUED.value,
                 },
             )
             # Queue deploy job

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.crypto import decrypt_dict, encrypt_dict
-from shared.models import PortAllocation, Project, Task, User
+from shared.models import PortAllocation, Project, Run, User
 
 from ..database import get_async_session
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
@@ -322,7 +322,7 @@ async def delete_project(
     await _check_project_access(project, x_telegram_id, db)
 
     # Delete FK-constrained related records
-    await db.execute(delete(Task).where(Task.project_id == project_id))
+    await db.execute(delete(Run).where(Run.project_id == project_id))
     await db.execute(delete(PortAllocation).where(PortAllocation.project_id == project_id))
 
     await db.delete(project)

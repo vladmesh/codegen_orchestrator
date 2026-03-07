@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
-from shared.contracts.dto.task import TaskStatus, TaskType
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.queues.deploy import DeployMessage
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -30,12 +30,12 @@ async def _check_duplicate_deploy(task_id: str, project_id: str) -> dict | None:
     Returns cancel result dict if duplicate found, None otherwise.
     """
     # API only supports single status filter, so check both running and queued
-    for check_status in (TaskStatus.RUNNING, TaskStatus.QUEUED):
+    for check_status in (RunStatus.RUNNING, RunStatus.QUEUED):
         existing = await api_client.get(
-            "tasks/",
+            "runs/",
             params={
                 "project_id": project_id,
-                "task_type": TaskType.DEPLOY.value,
+                "task_type": RunType.DEPLOY.value,
                 "status": check_status.value,
             },
         )
@@ -51,9 +51,9 @@ async def _check_duplicate_deploy(task_id: str, project_id: str) -> dict | None:
                 existing_status=check_status.value,
             )
             await api_client.patch(
-                f"tasks/{task_id}",
+                f"runs/{task_id}",
                 json={
-                    "status": TaskStatus.CANCELLED.value,
+                    "status": RunStatus.CANCELLED.value,
                     "error_message": (
                         f"Skipped: deploy {existing_id} is already"
                         f" {check_status.value} for this project"
@@ -90,7 +90,7 @@ async def _handle_smoke_failure(
         smoke_details=smoke_details,
     )
     await api_client.patch(
-        f"tasks/{task_id}",
+        f"runs/{task_id}",
         json={
             "status": "failed",
             "error_message": error_msg,
@@ -149,7 +149,7 @@ async def _handle_deploy_success(
         deployed_url=result["deployed_url"],
     )
     await api_client.patch(
-        f"tasks/{task_id}",
+        f"runs/{task_id}",
         json={
             "status": "completed",
             "result": {
@@ -243,7 +243,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             return cancel_result
 
         # Update task status to running
-        await api_client.patch(f"tasks/{task_id}", json={"status": TaskStatus.RUNNING.value})
+        await api_client.patch(f"runs/{task_id}", json={"status": RunStatus.RUNNING.value})
 
         # Publish progress event
         await publish_callback_event(
@@ -262,7 +262,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         if not project:
             error_msg = f"Project {project_id} not found"
             await api_client.patch(
-                f"tasks/{task_id}",
+                f"runs/{task_id}",
                 json={"status": "failed", "error_message": error_msg},
             )
             return {"status": "failed", "error": error_msg}
@@ -284,7 +284,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         except AllocationError as e:
             error_msg = str(e)
             await api_client.patch(
-                f"tasks/{task_id}",
+                f"runs/{task_id}",
                 json={"status": "failed", "error_message": error_msg},
             )
             return {"status": "failed", "error": error_msg}
@@ -342,7 +342,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing)
             error_msg = f"Missing secrets: {', '.join(missing)}"
             await api_client.patch(
-                f"tasks/{task_id}",
+                f"runs/{task_id}",
                 json={"status": "failed", "error_message": error_msg},
             )
             # Roll back project status — don't leave it stuck in "deploying"
@@ -380,7 +380,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             logger.error("deploy_job_failed", task_id=task_id, errors=errors)
             error_msg = "; ".join(errors)
             await api_client.patch(
-                f"tasks/{task_id}",
+                f"runs/{task_id}",
                 json={"status": "failed", "error_message": error_msg},
             )
 
@@ -414,7 +414,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             exc_info=True,
         )
         await api_client.patch(
-            f"tasks/{task_id}",
+            f"runs/{task_id}",
             json={"status": "failed", "error_message": str(e), "error_traceback": str(e)},
         )
         # Update project status to failed

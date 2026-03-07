@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate docs/backlog.md from Work Items API.
+"""Generate docs/backlog.md from Tasks API.
 
 Usage:
     python scripts/generate_backlog.py [--api-url URL] [--output PATH]
@@ -18,15 +18,15 @@ DEFAULT_OUTPUT = "docs/backlog.md"
 IDEAS_FILE = "docs/ideas.md"
 
 
-async def fetch_work_items(api_url: str) -> tuple[list[dict], list[dict]]:
-    """Fetch queue and done items from the API."""
+async def fetch_tasks(api_url: str) -> tuple[list[dict], list[dict]]:
+    """Fetch queue and done tasks from the API."""
     async with httpx.AsyncClient(base_url=api_url, timeout=10) as client:
-        queue_resp = await client.get("/api/work-items/", params={"status": "backlog"})
+        queue_resp = await client.get("/api/tasks/", params={"status": "backlog"})
         queue_resp.raise_for_status()
         queue = queue_resp.json()
 
         done_resp = await client.get(
-            "/api/work-items/",
+            "/api/tasks/",
             params={"status": "done", "sort": "-created_at", "limit": "10"},
         )
         done_resp.raise_for_status()
@@ -36,7 +36,7 @@ async def fetch_work_items(api_url: str) -> tuple[list[dict], list[dict]]:
 
 
 def format_backlog(queue: list[dict], done: list[dict], ideas_text: str) -> str:
-    """Format work items into backlog markdown."""
+    """Format tasks into backlog markdown."""
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     lines = [
         "# Backlog",
@@ -110,7 +110,7 @@ async def main(api_url: str, output: str) -> None:
     if ideas_path.exists():
         ideas_text = ideas_path.read_text()
 
-    queue, done = await fetch_work_items(api_url)
+    queue, done = await fetch_tasks(api_url)
     content = format_backlog(queue, done, ideas_text)
 
     Path(output).write_text(content)

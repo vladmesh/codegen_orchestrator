@@ -45,41 +45,41 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
         yield client
 
 
-WI_TEST_TELEGRAM_ID = 999000999
-WI_TEST_PROJECT_ID = "test-work-items-proj"
+TASK_TEST_TELEGRAM_ID = 999000999
+TASK_TEST_PROJECT_ID = "test-tasks-proj"
 
 
 @pytest.fixture(scope="session")
-async def _work_items_project():
-    """Create a user + project once per test session for work item tests."""
+async def _tasks_project():
+    """Create a user + project once per test session for task tests."""
     from src.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # Ensure user exists
-        resp = await client.get(f"/api/users/by-telegram/{WI_TEST_TELEGRAM_ID}")
+        resp = await client.get(f"/api/users/by-telegram/{TASK_TEST_TELEGRAM_ID}")
         if resp.status_code == 404:
             await client.post(
                 "/api/users/",
                 json={
-                    "telegram_id": WI_TEST_TELEGRAM_ID,
-                    "username": "test_wi",
+                    "telegram_id": TASK_TEST_TELEGRAM_ID,
+                    "username": "test_task",
                     "first_name": "Test",
                     "is_admin": True,
                 },
             )
 
         # Ensure project exists
-        resp = await client.get(f"/api/projects/{WI_TEST_PROJECT_ID}")
+        resp = await client.get(f"/api/projects/{TASK_TEST_PROJECT_ID}")
         if resp.status_code == 404:
             await client.post(
                 "/api/projects/",
                 json={
-                    "id": WI_TEST_PROJECT_ID,
-                    "name": "Test Work Items Project",
+                    "id": TASK_TEST_PROJECT_ID,
+                    "name": "Test Tasks Project",
                     "status": "active",
                     "config": {},
                 },
-                headers={"X-Telegram-ID": str(WI_TEST_TELEGRAM_ID)},
+                headers={"X-Telegram-ID": str(TASK_TEST_TELEGRAM_ID)},
             )
 
-    return WI_TEST_PROJECT_ID
+    return TASK_TEST_PROJECT_ID
