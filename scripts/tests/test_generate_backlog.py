@@ -52,6 +52,15 @@ def test_format_backlog_ideas_section():
     assert "Project Name Collision" in result
 
 
+def test_format_backlog_ideas_strips_heading():
+    """Ideas file with its own heading should not duplicate ## Ideas."""
+    ideas = "# Ideas\n\nSome description.\n\n- Idea one\n- Idea two"
+    result = format_backlog(queue=[], done=[], ideas_text=ideas)
+    assert result.count("## Ideas") == 1
+    assert "# Ideas" not in result.split("## Ideas")[1].split("\n")[0]
+    assert "Idea one" in result
+
+
 def test_format_backlog_empty():
     result = format_backlog(queue=[], done=[], ideas_text="")
     assert "# Backlog" in result

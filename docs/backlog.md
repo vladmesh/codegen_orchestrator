@@ -1,124 +1,123 @@
 # Backlog
 
-> **Актуально на**: 2026-03-06 (triage)
+> **Актуально на**: 2026-03-07 (generated)
 
 ## Queue (ordered by priority, first = next)
 
-### #53 Compose runner: стрипать ports из worker compose files
-- **Priority**: CRITICAL
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Корневая причина "рекурсивного бага миграций" (10 фиксов, 7 итераций). `service-template/template/infra/compose.dev.yml.jinja` публикует `ports: - "5432:5432"` для db и `- "6379:6379"` для redis — нужно для локальной разработки. Но в worker-контейнере orchestrator'а порт 5432 на хосте занят orchestrator'ским postgres → `Bind for 0.0.0.0:5432 failed: port is already allocated` → db не стартует → DNS alias `db` не регистрируется → `getent hosts db` пусто → alembic падает. Фикс: compose_runner.py уже инжектит `.codegen-network.yml` override для сети. Аналогично инжектить `.codegen-ports.yml` с `services: {db: {ports: []}, redis: {ports: []}}` для команд `up`/`run`. Шаблон не трогаем. Затронут: `services/worker-manager/src/compose_runner.py`. Контекст: `service-template/docs/backlog.md` (задача "compose.dev.yml: ports ломает worker-контейнеры"), `docs/brainstorms/worker-db-migration-recurring.md`. Диагностика: E2E diagnostic run 2026-03-07.
-
-
-### #52 Scaffold script не экранирует task_description
+### #61 Brainstorm model in DB
 - **Priority**: HIGH
-- **User Story**: —
 - **Plan**: —
-- **Status**: pending
-- **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из описания закрывают `--data "..."`, а скобки интерпретируются bash (`syntax error near unexpected token`). Scaffold падает, worker убивается, задача blocked. Воспроизведено: E2E diagnostic run 2026-03-07 — описание с `socket.getaddrinfo(...)` сломало scaffold дважды подряд. Фикс: экранировать `task_description` перед подстановкой в bash (shlex.quote) или передавать через env var / tempfile вместо inline в `--data`. Затронут: `services/worker-manager/src/manager.py:819`.
-
-### #21 Deploy Pre-Check
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
-
-### #7 Security Audit: Deploy Cleanup
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Очистка зависших контейнеров/образов после деплоев (`docker image prune`). SSH hardening уже done в ansible. Priority adjusted by triage (roadmap phase change).
-
-### #10 Worker Lifecycle (Pause/Unpause)
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
-
-### #2 Agent Hierarchy & Incident Response
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory ("предсмертная записка" агента). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change). NB: Watchdog/DLQ scope уменьшится — WorkItemEvent (#55) покрывает audit trail и историю итераций. TaskAssessor → будущий Assessor node на базе WorkItem.
-
-### #18 Split engineering_worker.py (1088 LOC)
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули.
-
-### #19 Split github.py Client (986 LOC)
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Разбить на submodules по domain: repos, actions, secrets, workflows. Фасад делегирует в sub-clients.
-
-### #20 API Key & SSH Key Encryption
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Применить SecretsCipher (Fernet) к API key values и SSH keys. TODO-комменты в `api_keys.py:36,72` и `servers.py:66`.
-
-### #11 E2E Tests Completion
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Завершить покрытие E2E (Level 5-7). Добавить E2E mock-тесты (Level A+B) в CI.
-
-### #26 Notifications via Redis Stream (убрать прямую зависимость от Telegram API)
-- **Priority**: MEDIUM
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: Сейчас `shared/notifications.py` шлёт в Telegram API напрямую — scheduler, infra-service держат `TELEGRAM_BOT_TOKEN`. Нужно: сервисы публикуют в Redis stream `notifications:queue`, telegram_bot потребляет и отправляет. Убирает `TELEGRAM_BOT_TOKEN` из всех сервисов кроме telegram_bot, упрощает тесты, единая точка отправки. Источник: #24 code review.
-
-### #41 Parallel Server Provisioning
-- **Priority**: LOW
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task` в `langgraph/src/worker/provisioner.py:100`), но все задачи упираются в единственный infra-service consumer. Фикс: спавнить `asyncio.create_task` для каждого job в consumer loop (аналогично provisioner.py), или запускать N consumer-реплик infra-service.
-
-### #54 Deploy: inter-service URL должен использовать docker service name
-- **Priority**: LOW
-- **User Story**: —
-- **Plan**: —
-- **Status**: pending
-- **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при firewall-правилах. Фикс: при генерации `.env` для prod inter-service переменные (`*_API_URL`, `*_HOST`) должны указывать на docker service name, а не на внешний IP. Затронуты: `services/langgraph/src/subgraphs/devops/nodes.py` (генерация .env), возможно `service-template` шаблон `.env.prod`. Источник: fortune-telling-bot — tg_bot ходил в backend через `http://176.223.131.124:8000`.
-
+- **Status**: backlog
+- **Brief**: Brainstorm как модель в БД вместо markdown файлов. Модель: id, project_id, title, content (text), status (draft→done→triaged→archived), created_by. Стейт-машина с action-endpoints (/done, /triage, /archive). WorkItem.source_brainstorm_id FK для связи brainstorm→work items. Переиспользуется для юз...
 
 ### #59 PO work item tools (Step 4)
 - **Priority**: LOW
-- **User Story**: —
 - **Plan**: —
-- **Status**: pending
-- **Brief**: Новые PO tools: create_work_item, list_work_items, get_work_item, start_work_item. start_work_item внутри вызывает trigger_engineering. PO промпт обновляется: мыслить фичами, не engineering tasks. Источник: brainstorm orchestrator-v2-task-management (Step 4).
+- **Status**: backlog
+- **Brief**: Новые PO tools: create_work_item, list_work_items, get_work_item, start_work_item. start_work_item внутри вызывает trigger_engineering (старый механизм). PO промпт обновляется: мыслить фичами, не engineering tasks. К этому моменту API стабилен и проверен на десятках задач dogfooding. Источник: br...
 
 ### #60 Engineering worker work_item lifecycle (Step 5)
 - **Priority**: LOW
-- **User Story**: —
 - **Plan**: —
-- **Status**: pending
-- **Brief**: engineering_worker при наличии work_item_id пишет iteration_start/iteration_end events, CI fix attempts → events с деталями, обновляет work_item.status (in_dev → testing → done). Deploy worker обновляет status при успешном деплое. Полный audit trail. Источник: brainstorm orchestrator-v2-task-management (Step 5).
+- **Status**: backlog
+- **Brief**: engineering_worker при наличии work_item_id: пишет iteration_start/iteration_end events, CI fix attempts → events с деталями, обновляет work_item.status (in_dev → testing → done). Deploy worker обновляет status при успешном деплое. Полный audit trail: сколько итераций, что фейлилось, почему. Reop...
+
+### #10 Worker Lifecycle (Pause/Unpause)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
+
+### #2 Agent Hierarchy & Incident Response
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory ("предсмертная записка" агента). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change). NB: Watchdog/DLQ scope уменьшится — WorkItemEvent (#55) покрывает a...
+
+### #18 Split engineering_worker.py (1088 LOC)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули.
+
+### #19 Split github.py Client (986 LOC)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Разбить на submodules по domain: repos, actions, secrets, workflows. Фасад делегирует в sub-clients.
+
+### #20 API Key & SSH Key Encryption
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Применить SecretsCipher (Fernet) к API key values и SSH keys. TODO-комменты в `api_keys.py:36,72` и `servers.py:66`.
+
+### #52 Scaffold script не экранирует task_description
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из...
+
+### #11 E2E Tests Completion
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Завершить покрытие E2E (Level 5-7). Добавить E2E mock-тесты (Level A+B) в CI.
+
+### #21 Deploy Pre-Check
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
+
+### #26 Notifications via Redis Stream (убрать прямую зависимость от Telegram API)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Сейчас `shared/notifications.py` шлёт в Telegram API напрямую — scheduler, infra-service держат `TELEGRAM_BOT_TOKEN`. Нужно: сервисы публикуют в Redis stream `notifications:queue`, telegram_bot потребляет и отправляет. Убирает `TELEGRAM_BOT_TOKEN` из всех сервисов кроме telegram_bot, упрощает тес...
+
+### #7 Security Audit: Deploy Cleanup
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Очистка зависших контейнеров/образов после деплоев (`docker image prune`). SSH hardening уже done в ansible. Priority adjusted by triage (roadmap phase change).
+
+### #41 Parallel Server Provisioning
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task`...
+
+### #54 Deploy: inter-service URL должен использовать docker service name
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при f...
 
 ### #46 Rename duckduckgo_search → ddgs
 - **Priority**: LOW
-- **User Story**: —
 - **Plan**: —
-- **Status**: pending
-- **Brief**: Пакет `duckduckgo_search` переименован в `ddgs`. Runtime warning в логах: `This package has been renamed to ddgs! Use pip install ddgs instead.` Заменить зависимость в `services/langgraph/pyproject.toml`, обновить импорт в `services/langgraph/src/po/tools.py`, перегенерировать lock-файл (`make lock-deps`).
+- **Status**: backlog
+- **Brief**: Пакет `duckduckgo_search` переименован в `ddgs`. Runtime warning в логах: `This package has been renamed to ddgs! Use pip install ddgs instead.` Заменить зависимость в `services/langgraph/pyproject.toml`, обновить импорт в `services/langgraph/src/po/tools.py`, перегенерировать lock-файл (`make lo...
+
+
+## Done (last 10)
+
+- #58 Skills → API + Simplified Model — 2026-03-07
+- #57 /implement work item events (Step 2) — 2026-03-07
+- #56 /next skill via API (Step 1) — 2026-03-07
+- #8 Workspace Failure Counter — 2026-03-07
+- #43 PO: Сократический диалог и формирование ТЗ — 2026-03-07
+- #44 PO: DuckDuckGo Search Tool — 2026-03-07
+- #45 PO: Context-Aware Env Variables & Hints — 2026-03-07
+- #42 Fix API Integration Test (test_post_projects_pure_db) — 2026-03-07
+- #47 Race Condition in set_project_secret (parallel tool calls) — 2026-03-07
+- #48 Corrupted Checkpoint Recovery (orphan tool_calls) — 2026-03-07
 
 ## Ideas
+
+Manually maintained list of ideas and future improvements.
+Read by `make backlog` to include in generated backlog.md.
 
 - Project Name Collision: repo_name и deploy path строятся из `project.name`, а не `project.id` — два юзера с одинаковым именем получают один GitHub-репо, один deploy path `/opt/services/{name}/`, один Docker-образ. Фикс: включить `project_id` в repo name (`my-bot-a1b2c3d4`). Затронуты: `engineering_worker.py:517-519` (repo name gen), `github.py:940` (create_repo), `devops/nodes.py:443,348` (PROJECT_NAME secret). Post-MVP. (источник: анализ #30 multi-user isolation)
 
@@ -153,19 +152,3 @@
 - CI: cache copier template clone для template integration tests — marginal gain ~10-15с, сложный cache invalidation (источник: brainstorm ci-integration-test-speed)
 - Отдельный UI/UX для подтверждения собранного ТЗ пользователем перед инженерным этапом (источник: brainstorm po-smart-node)
 - Functional health check: текущий healthcheck проверяет только что процесс жив (HTTP 200 на /health). Не ловит ситуации когда таблицы не созданы, миграции не прошли, seed-данные отсутствуют — бэкенд "healthy", но 500 на каждый бизнес-запрос. Можно добавить в service-template readiness probe с `SELECT 1` или проверкой ключевых таблиц (источник: fortune-telling-bot — backend healthy, но relation "fortunes" does not exist)
-
-## Done (last 10)
-
-- #58 Skills → API + Simplified Model (Step 3) — 2026-03-07
-- #57 `/implement` work item events (Step 2) — 2026-03-07
-- #56 `/next` skill via API (Step 1) — 2026-03-07
-- #55 WorkItem Model + API + Backlog Migration (Step 0) — 2026-03-07
-- #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save — 2026-03-07
-- #50 Fix Description Loss in Create Flow — 2026-03-07
-- #49 Telegram: кнопка "Add User" для админов — 2026-03-06
-- #48 Corrupted Checkpoint Recovery (orphan tool_calls) — 2026-03-06
-- #47 Race Condition in set_project_secret (parallel tool calls) — 2026-03-06
-- #42 Fix API Integration Test (test_post_projects_pure_db) — 2026-03-06
-- #45 PO: Context-Aware Env Variables & Hints — 2026-03-06
-- #44 PO: DuckDuckGo Search Tool — 2026-03-06
-- #43 PO: Сократический диалог и формирование ТЗ — 2026-03-06

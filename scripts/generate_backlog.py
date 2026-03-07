@@ -92,7 +92,13 @@ def format_backlog(queue: list[dict], done: list[dict], ideas_text: str) -> str:
     if ideas_text.strip():
         lines.append("## Ideas")
         lines.append("")
-        lines.append(ideas_text.strip())
+        # Strip leading heading + description lines from ideas file
+        body = ideas_text.strip()
+        for prefix in ("# Ideas", "## Ideas"):
+            if body.startswith(prefix):
+                body = body[len(prefix) :].strip()
+                break
+        lines.append(body)
         lines.append("")
 
     return "\n".join(lines)
