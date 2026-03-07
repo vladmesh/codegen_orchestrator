@@ -110,6 +110,20 @@
 - **Status**: pending
 - **Brief**: `/triage` создаёт задачи через `POST /api/work-items` вместо записи в backlog.md. `/checkpoint` считает прогресс по `GET /api/work-items?status=done&since=...`. backlog.md генерируется из БД (`make backlog` или auto). Все скиллы на API — markdown read-only view. Источник: brainstorm orchestrator-v2-task-management (Step 3).
 
+### #59 PO work item tools (Step 4)
+- **Priority**: LOW
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: Новые PO tools: create_work_item, list_work_items, get_work_item, start_work_item. start_work_item внутри вызывает trigger_engineering. PO промпт обновляется: мыслить фичами, не engineering tasks. Источник: brainstorm orchestrator-v2-task-management (Step 4).
+
+### #60 Engineering worker work_item lifecycle (Step 5)
+- **Priority**: LOW
+- **User Story**: —
+- **Plan**: —
+- **Status**: pending
+- **Brief**: engineering_worker при наличии work_item_id пишет iteration_start/iteration_end events, CI fix attempts → events с деталями, обновляет work_item.status (in_dev → testing → done). Deploy worker обновляет status при успешном деплое. Полный audit trail. Источник: brainstorm orchestrator-v2-task-management (Step 5).
+
 ### #46 Rename duckduckgo_search → ddgs
 - **Priority**: LOW
 - **User Story**: —

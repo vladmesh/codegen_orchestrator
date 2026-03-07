@@ -2,7 +2,7 @@
 
 > **Дата**: 2026-03-07
 > **Контекст**: Переход от "проект = один процесс" к полноценной системе управления задачами (Jira-like) с agile-статусами, историей итераций, и абстракцией ПО от кода.
-> **Status**: in_progress (Step 0 complete)
+> **Status**: in_progress (Steps 0-1 complete, Steps 2-5 in backlog)
 > **Связано**: [epic-decomposition.md](epic-decomposition.md) (Phase 3 Task Store), [task-description-flow.md](task-description-flow.md)
 
 ---

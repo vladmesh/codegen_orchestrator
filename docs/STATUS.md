@@ -1,7 +1,7 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #53 Compose runner: стрипать ports из worker compose files
+- **Backlog**: #57 /implement work item events (Step 2)
 - **Plan**: —
 - **Step**: —
 - **Done Steps**:
