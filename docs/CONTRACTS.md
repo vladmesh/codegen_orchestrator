@@ -364,6 +364,72 @@ class ProjectDTO(BaseModel):
     project_spec: dict | None = None
 ```
 
+## WorkItemDTO
+
+```python
+# services/api/src/schemas/work_item.py & shared/contracts/dto/work_item.py
+
+class WorkItemStatus(StrEnum):
+    BACKLOG = "backlog"
+    TODO = "todo"
+    IN_DEV = "in_dev"
+    IN_REVIEW = "in_review"
+    TESTING = "testing"
+    DONE = "done"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+class WorkItemType(StrEnum):
+    CREATE = "create"
+    FEATURE = "feature"
+    FIX = "fix"
+    REFACTOR = "refactor"
+
+class WorkItemRead(BaseModel):
+    """Schema for reading a work item."""
+    id: str
+    project_id: str
+    type: str
+    title: str
+    description: str | None
+    plan: str | None = None
+    status: str
+    priority: int
+    acceptance_criteria: str | None
+    current_iteration: int
+    max_iterations: int
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+    last_event: str | None = None
+    elapsed_minutes: float | None = None
+```
+
+## WorkItemEventDTO
+
+```python
+# services/api/src/schemas/work_item.py & shared/contracts/dto/work_item.py
+
+class WorkItemEventType(StrEnum):
+    STATUS_CHANGE = "status_change"
+    ITERATION_START = "iteration_start"
+    ITERATION_END = "iteration_end"
+    NOTE = "note"
+    COMMENT = "comment"
+
+class WorkItemEventRead(BaseModel):
+    """Schema for reading a work item event."""
+    id: int
+    work_item_id: str
+    event_type: str
+    from_status: str | None
+    to_status: str | None
+    iteration: int | None
+    details: dict[str, Any]
+    actor: str
+    created_at: datetime
+```
+
 ## TaskDTO
 
 ```python

@@ -52,6 +52,7 @@ def _to_read(wi: WorkItem, last_event: str | None = None) -> WorkItemRead:
         current_iteration=wi.current_iteration,
         max_iterations=wi.max_iterations,
         created_by=wi.created_by,
+        source_brainstorm_id=getattr(wi, "source_brainstorm_id", None),
         created_at=wi.created_at,
         updated_at=wi.updated_at,
         last_event=last_event,
@@ -151,6 +152,7 @@ async def create_work_item(
         current_iteration=0,
         max_iterations=body.max_iterations,
         created_by=body.created_by,
+        source_brainstorm_id=body.source_brainstorm_id,
         created_at=now,
         updated_at=now,
     )

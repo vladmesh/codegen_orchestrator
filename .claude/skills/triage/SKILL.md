@@ -69,17 +69,43 @@ After creating a work item, **update the report file** to mark the problem as pr
 
 If a report has no structured Problems section (old format), scan for issues manually, classify them, and **rewrite the Problems section** in structured format with appropriate `Backlog` values.
 
-### 2. Brainstorms (`docs/brainstorms/`)
+### 2. Brainstorms (API + fallback to `docs/brainstorms/`)
 
-Read all `.md` files. **Only** process files with `> **Status**: done` in the header.
-Skip `draft` brainstorms even if they have Action Items.
+**Primary**: Query brainstorms with status=done from the API:
+```bash
+BRAINSTORMS=$(curl -sf "$API/api/brainstorms/?status=done&project_id=codegen-orchestrator")
+```
 
-Find the `## Action Items` section. For each item:
+For each brainstorm, read its `content` field (markdown text).
+
+**Fallback**: Also scan `docs/brainstorms/*.md` for files with `> **Status**: done` that are NOT yet in the DB (legacy brainstorms).
+
+Find the `## Action Items` section in each brainstorm's content. For each item:
 - `→ backlog #XX` — already in backlog, skip
 - `→ idea: "..."` — add to `docs/ideas.md`
-- `→ new task: "..."` — create work item via API
+- `→ new task: "..."` — create work item via API with `source_brainstorm_id` set:
+  ```bash
+  curl -sf -X POST "$API/api/work-items/" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "project_id": "codegen-orchestrator",
+      "title": "#'"$NEXT_TAG"' <Title>",
+      "type": "feature",
+      "description": "<Brief>",
+      "priority": 1,
+      "created_by": "triage",
+      "source_brainstorm_id": "<brainstorm_id>"
+    }'
+  ```
 
-After processing, update the brainstorm's Status to `triaged`.
+After processing, mark the brainstorm as triaged:
+```bash
+curl -sf -X POST "$API/api/brainstorms/<brainstorm_id>/triage" \
+  -H "Content-Type: application/json" \
+  -d '{"actor": "triage"}'
+```
+
+For legacy markdown-only brainstorms, also update the file's Status to `triaged`.
 
 ### 3. Audit report (`docs/audit.md`)
 

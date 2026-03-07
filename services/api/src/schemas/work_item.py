@@ -19,6 +19,7 @@ class WorkItemCreate(BaseModel):
     priority: int = 0
     max_iterations: int = 3
     created_by: str = "system"
+    source_brainstorm_id: str | None = None
 
 
 class WorkItemRead(BaseModel):
@@ -36,6 +37,7 @@ class WorkItemRead(BaseModel):
     current_iteration: int
     max_iterations: int
     created_by: str
+    source_brainstorm_id: str | None = None
     created_at: datetime
     updated_at: datetime
     last_event: str | None = None

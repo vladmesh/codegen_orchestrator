@@ -149,5 +149,5 @@ logger.info("event_name", user_id=123)
 
 - [docs/ROADMAP.md](docs/ROADMAP.md) — вехи и фазы
 - [docs/STATUS.md](docs/STATUS.md) — текущая задача
-- [docs/backlog.md](docs/backlog.md) — очередь задач
+- [docs/backlog.md](docs/backlog.md) — очередь задач (auto-generated read-only view)
 - [docs/CHANGELOG.md](docs/CHANGELOG.md) — что сделано

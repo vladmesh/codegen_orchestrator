@@ -7,7 +7,7 @@
 | Документ | Когда читать |
 |----------|-------------|
 | [docs/STATUS.md](docs/STATUS.md) | **Всегда первым** — текущая задача и контекст |
-| [docs/backlog.md](docs/backlog.md) | Очередь задач, идеи |
+| [docs/backlog.md](docs/backlog.md) | Очередь задач, идеи (Read-only, генерируется из БД командой `make backlog`) |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | Перед изменением DTO, очередей, API |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Для понимания системы в целом |
 | [docs/NODES.md](docs/NODES.md) | Описание агентов-узлов LangGraph |
@@ -21,23 +21,23 @@
 ## Dev Pipeline
 
 ```
-Идея → /brainstorm → backlog → /next → /plan → /implement → /e2e-run → /checkpoint
+Идея → /brainstorm → backlog → /plan → /implement → /e2e-run → /checkpoint
 ```
 
 | Этап | Скилл | Артефакт |
 |------|-------|----------|
 | Исследование | `/brainstorm <topic>` | `docs/brainstorms/<topic>.md` |
-| Приоритизация | `/triage` или вручную | `docs/backlog.md` — новый item |
-| Взять в работу | `/next [#ID]` | `docs/STATUS.md` — Current Task |
+| Обнаружение | `/audit` | Находки → backlog |
+| Приоритизация | `/triage` | Создание новых WorkItems через API |
 | Декомпозиция | `/plan [#ID]` | `docs/plans/<task>.md` — шаги с Input/Output/Test |
 | Реализация | `/implement [#ID]` | Код + тесты (TDD цикл по шагам плана) |
 | Валидация | `/e2e-run` | `docs/e2e_results/<scenario>-<date>.md` |
 | Фиксация | `/checkpoint` | CHANGELOG, ROADMAP, STATUS |
 | Аудит | `/audit` | Находки → backlog |
 
-Без аргумента скиллы берут текущую задачу из `docs/STATUS.md`.
+Скиллы по умолчанию берут текущую задачу из `docs/STATUS.md`. Скиллы больше не работают с markdown файлами напрямую (кроме планов), а пишут и читают состояние через API WorkItems.
 
-**Планы не удаляются после реализации.** `/implement` дополняет план отклонениями, `/checkpoint` удаляет только если есть свежий E2E-результат.
+**Планы не удаляются после реализации.** `/implement` дополняет план и отправляет API events с итерациями. `/checkpoint` удаляет план только если есть свежий E2E-результат.
 
 **Код вне flow** допустим для мелких фиксов (< 3 файлов). Обязательно: запись в CHANGELOG + коммит с `[hotfix]` префиксом. Крупные изменения — только через flow.
 
@@ -48,7 +48,7 @@ Red → Green → Refactor. Без исключений.
 1. **Context**: прочитай `docs/STATUS.md` и `docs/CONTRACTS.md`
 2. **Red**: напиши тест в `services/<service>/tests/{unit,integration}/`, убедись что падает
 3. **Green**: минимальный код для прохождения теста
-4. **Gate**: `make test-unit` + `make lint`. Обнови STATUS, CHANGELOG, backlog.
+4. **Gate**: `make test-unit` + `make lint`. Обнови STATUS, CHANGELOG (backlog генерируется автоматически командой `make backlog`).
 
 **Review Trigger**: изменение `shared/contracts/` или схемы БД, не описанное в плане → **STOP**, спроси пользователя.
 
@@ -97,11 +97,10 @@ make test-{service}-unit     # Per-service: api, langgraph, scheduler, telegram
 
 | Skill | Описание |
 |-------|----------|
-| `/next [#ID]` | Выбрать задачу из backlog → STATUS.md |
-| `/plan [#ID]` | Декомпозировать задачу на шаги |
-| `/implement [#ID]` | TDD цикл, обновление артефактов |
+| `/plan [#ID]` | Декомпозировать задачу на шаги, обновить WorkItem.plan |
+| `/implement [#ID]` | Взять задачу в работу (status: in_dev), TDD цикл, запись WorkItem events |
 | `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | Запуск E2E теста (полный цикл: engineering → CI → deploy → verify, `--feature` пропускает scaffolding) |
-| `/triage` | Разбор отчётов → backlog / service-template |
+| `/triage` | Разбор отчётов → создание новых задач через WorkItems API |
 | `/brainstorm <topic>` | Brainstorm документ |
-| `/checkpoint` | Обновить CHANGELOG/ROADMAP/STATUS |
-| `/audit` | Аудит кода → backlog |
+| `/checkpoint` | Сбор статистики через API, обновление CHANGELOG/ROADMAP/STATUS |
+| `/audit` | Аудит кода → создание задачи в бэклог |

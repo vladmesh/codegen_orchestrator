@@ -21,8 +21,24 @@ Before writing:
 - Read relevant code, docs, and existing brainstorms
 - Check `docs/backlog.md` for related tasks
 - Check `docs/brainstorms/` for prior work on the topic
+- Check existing brainstorms via API: `curl -sf "http://localhost:8000/api/brainstorms/?project_id=codegen-orchestrator"`
 
-### 2. Create brainstorm document
+### 2. Create brainstorm in DB
+
+Register the brainstorm via API:
+```bash
+API="http://localhost:8000"
+BS=$(curl -sf -X POST "$API/api/brainstorms/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "codegen-orchestrator",
+    "title": "<Topic>",
+    "created_by": "claude"
+  }')
+BS_ID=$(echo "$BS" | jq -r '.id')
+```
+
+### 3. Create brainstorm document
 
 Write to `docs/brainstorms/<topic-slug>.md`:
 
@@ -61,22 +77,34 @@ Write to `docs/brainstorms/<topic-slug>.md`:
 - → backlog #XX (if task already exists)
 ```
 
-### 3. Interactive discussion
+### 4. Sync content to DB
+
+After writing the document, update the brainstorm content in the DB:
+```bash
+CONTENT=$(cat docs/brainstorms/<topic-slug>.md | jq -Rs .)
+curl -sf -X PATCH "$API/api/brainstorms/$BS_ID" \
+  -H "Content-Type: application/json" \
+  -d "{\"content\": $CONTENT}"
+```
+
+### 5. Interactive discussion
 
 After writing the initial document, present the key findings and open questions to the user.
 
-If the user wants to continue discussing — update the document with new insights.
+If the user wants to continue discussing — update the document with new insights (and sync to DB via PATCH).
 
-When the discussion is complete, set `Status: done` in the header.
+When the discussion is complete:
+1. Set `Status: done` in the markdown header
+2. Mark done in DB: `curl -sf -X POST "$API/api/brainstorms/$BS_ID/done" -H "Content-Type: application/json" -d '{"actor": "claude"}'`
 
-### 4. Commit
+### 6. Commit
 
 ```bash
 git add docs/brainstorms/<topic-slug>.md
 git commit -m "brainstorm: <topic>"
 ```
 
-### 5. Important
+### 7. Important
 
 - Brainstorms are for **thinking**, not deciding. The user makes final decisions.
 - Always end with concrete Action Items — a brainstorm without action items is wasted work.
