@@ -136,56 +136,48 @@ async def test_list_with_filters(async_client: AsyncClient, _work_items_project)
 
 
 @pytest.mark.asyncio
-async def test_step_events_lifecycle(async_client: AsyncClient, _work_items_project):
-    """create → start → step_start → step_done → complete, verify step events in history."""
+async def test_comment_events_lifecycle(async_client: AsyncClient, _work_items_project):
+    """create → start → comment events → complete, verify comment events in history."""
     # Create and start
     resp = await async_client.post(
         "/api/work-items/",
-        json={"project_id": WI_TEST_PROJECT_ID, "title": "Step events test", "type": "feature"},
+        json={"project_id": WI_TEST_PROJECT_ID, "title": "Comment events test", "type": "feature"},
     )
     assert resp.status_code == 201  # noqa: PLR2004
     wi_id = resp.json()["id"]
     await async_client.post(f"/api/work-items/{wi_id}/start", json={"actor": "claude"})
 
-    # Step 1: start + done
+    # Comment 1
     resp = await async_client.post(
         f"/api/work-items/{wi_id}/events",
         json={
-            "event_type": "step_start",
-            "details": {"step": 1, "title": "Add enum values"},
-            "actor": "claude",
+            "event_type": "comment",
+            "details": {"text": "Starting implementation"},
+            "actor": "engineer",
         },
     )
     assert resp.status_code == 201  # noqa: PLR2004
-    assert resp.json()["event_type"] == "step_start"
+    assert resp.json()["event_type"] == "comment"
 
+    # Note with commit info
     resp = await async_client.post(
         f"/api/work-items/{wi_id}/events",
         json={
-            "event_type": "step_done",
-            "details": {"step": 1, "title": "Add enum values", "commit_sha": "abc1234"},
+            "event_type": "note",
+            "details": {"action": "step_done", "step": 1, "commit_sha": "abc1234"},
             "actor": "claude",
         },
     )
     assert resp.status_code == 201  # noqa: PLR2004
-    assert resp.json()["event_type"] == "step_done"
     assert resp.json()["details"]["commit_sha"] == "abc1234"
 
-    # Step 2: start + done
+    # Comment 2
     await async_client.post(
         f"/api/work-items/{wi_id}/events",
         json={
-            "event_type": "step_start",
-            "details": {"step": 2, "title": "Update skill"},
-            "actor": "claude",
-        },
-    )
-    await async_client.post(
-        f"/api/work-items/{wi_id}/events",
-        json={
-            "event_type": "step_done",
-            "details": {"step": 2, "title": "Update skill", "commit_sha": "def5678"},
-            "actor": "claude",
+            "event_type": "comment",
+            "details": {"text": "CI passed, deploying"},
+            "actor": "ci",
         },
     )
 
@@ -201,19 +193,12 @@ async def test_step_events_lifecycle(async_client: AsyncClient, _work_items_proj
     assert resp.status_code == 200  # noqa: PLR2004
     assert resp.json()["status"] == "done"
 
-    # Verify all events
-    resp = await async_client.get(f"/api/work-items/{wi_id}/events")
-    events = resp.json()
-    step_starts = [e for e in events if e["event_type"] == "step_start"]
-    step_dones = [e for e in events if e["event_type"] == "step_done"]
-    assert len(step_starts) == 2  # noqa: PLR2004
-    assert len(step_dones) == 2  # noqa: PLR2004
-    assert step_dones[0]["details"]["commit_sha"] == "abc1234"
-    assert step_dones[1]["details"]["commit_sha"] == "def5678"
-
-    # Filter by event_type
-    resp = await async_client.get(f"/api/work-items/{wi_id}/events?event_type=step_done")
-    assert len(resp.json()) == 2  # noqa: PLR2004
+    # Verify comment events
+    resp = await async_client.get(f"/api/work-items/{wi_id}/events?event_type=comment")
+    comments = resp.json()
+    assert len(comments) == 2  # noqa: PLR2004
+    assert comments[0]["details"]["text"] == "Starting implementation"
+    assert comments[1]["details"]["text"] == "CI passed, deploying"
 
 
 @pytest.mark.asyncio
