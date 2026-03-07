@@ -53,6 +53,7 @@ def _to_read(wi: WorkItem, last_event: str | None = None) -> WorkItemRead:
         max_iterations=wi.max_iterations,
         created_by=wi.created_by,
         source_brainstorm_id=getattr(wi, "source_brainstorm_id", None),
+        milestone_id=getattr(wi, "milestone_id", None),
         created_at=wi.created_at,
         updated_at=wi.updated_at,
         last_event=last_event,
@@ -153,6 +154,7 @@ async def create_work_item(
         max_iterations=body.max_iterations,
         created_by=body.created_by,
         source_brainstorm_id=body.source_brainstorm_id,
+        milestone_id=body.milestone_id,
         created_at=now,
         updated_at=now,
     )
@@ -169,6 +171,7 @@ async def list_work_items(
     project_id: str | None = None,
     status_filter: str | None = Query(None, alias="status"),
     type_filter: str | None = Query(None, alias="type"),
+    milestone_id: str | None = Query(None),
     since: datetime | None = Query(None),
     limit: int | None = Query(None, ge=1),
     sort: str | None = Query(None),
@@ -182,6 +185,8 @@ async def list_work_items(
         query = query.where(WorkItem.status == status_filter)
     if type_filter:
         query = query.where(WorkItem.type == type_filter)
+    if milestone_id:
+        query = query.where(WorkItem.milestone_id == milestone_id)
     if since:
         query = query.where(WorkItem.updated_at >= since)
 

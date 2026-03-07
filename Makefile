@@ -1,6 +1,6 @@
 .PHONY: lint format test-unit test-integration test-e2e-scaffold test-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations shell \
-	setup-hooks lock-deps cleanup-agents backlog \
+	setup-hooks lock-deps cleanup-agents backlog roadmap \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
 	check-worker-images .nuke-common .nuke-hard-prune
 
@@ -310,6 +310,9 @@ nuke-hard: .nuke-hard-prune .nuke-common
 
 backlog:
 	@uv run python scripts/generate_backlog.py
+
+roadmap:
+	@uv run python scripts/generate_roadmap.py
 
 # === Seeding ===
 

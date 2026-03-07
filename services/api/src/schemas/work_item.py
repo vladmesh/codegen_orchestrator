@@ -20,6 +20,7 @@ class WorkItemCreate(BaseModel):
     max_iterations: int = 3
     created_by: str = "system"
     source_brainstorm_id: str | None = None
+    milestone_id: str | None = None
 
 
 class WorkItemRead(BaseModel):
@@ -38,6 +39,7 @@ class WorkItemRead(BaseModel):
     max_iterations: int
     created_by: str
     source_brainstorm_id: str | None = None
+    milestone_id: str | None = None
     created_at: datetime
     updated_at: datetime
     last_event: str | None = None
@@ -55,6 +57,7 @@ class WorkItemUpdate(BaseModel):
     plan: str | None = None
     acceptance_criteria: str | None = None
     priority: int | None = None
+    milestone_id: str | None = None
 
 
 class WorkItemTransition(BaseModel):

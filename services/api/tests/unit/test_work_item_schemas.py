@@ -41,7 +41,17 @@ def test_work_item_create_full():
     assert schema.max_iterations == 5
 
 
-def test_work_item_create_requires_project_id():
+def test_work_item_create_with_milestone_id():
+    schema = WorkItemCreate(project_id="proj-1", title="Task in milestone", milestone_id="ms-abc")
+    assert schema.milestone_id == "ms-abc"
+
+
+def test_work_item_create_milestone_id_optional():
+    schema = WorkItemCreate(project_id="proj-1", title="No milestone")
+    assert schema.milestone_id is None
+
+
+def test_work_item_requires_project_id():
     with pytest.raises(ValidationError):
         WorkItemCreate(title="Test without project")
 
@@ -106,6 +116,12 @@ def test_work_item_update_partial():
     data = update.model_dump(exclude_unset=True)
     assert data == {"title": "New title"}
     assert "description" not in data
+
+
+def test_work_item_update_with_milestone_id():
+    update = WorkItemUpdate(milestone_id="ms-abc")
+    data = update.model_dump(exclude_unset=True)
+    assert data == {"milestone_id": "ms-abc"}
 
 
 def test_work_item_update_with_plan():
