@@ -1,10 +1,10 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: —
+- **Backlog**: #53 Compose runner: стрипать ports из worker compose files
 - **Plan**: —
 - **Step**: —
-- **Done Steps**: —
+- **Done Steps**:
 
 ## Blocked
 (нет)
