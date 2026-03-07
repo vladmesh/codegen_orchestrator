@@ -44,6 +44,8 @@ def test_work_item_event_type_values():
     assert WorkItemEventType.ITERATION_START == "iteration_start"
     assert WorkItemEventType.ITERATION_END == "iteration_end"
     assert WorkItemEventType.NOTE == "note"
+    assert WorkItemEventType.STEP_START == "step_start"
+    assert WorkItemEventType.STEP_DONE == "step_done"
 
 
 # --- Transition matrix tests ---
