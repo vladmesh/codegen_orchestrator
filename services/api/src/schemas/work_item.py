@@ -1,0 +1,85 @@
+"""WorkItem API schemas."""
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict
+
+from shared.contracts.dto.work_item import WorkItemEventType, WorkItemType
+
+
+class WorkItemCreate(BaseModel):
+    """Schema for creating a work item."""
+
+    project_id: str | None = None
+    type: WorkItemType = WorkItemType.FEATURE
+    title: str
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    priority: int = 0
+    max_iterations: int = 3
+    created_by: str = "system"
+
+
+class WorkItemRead(BaseModel):
+    """Schema for reading a work item."""
+
+    id: str
+    project_id: str | None
+    type: str
+    title: str
+    description: str | None
+    status: str
+    priority: int
+    acceptance_criteria: str | None
+    current_iteration: int
+    max_iterations: int
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+    last_event: str | None = None
+    elapsed_minutes: float | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkItemUpdate(BaseModel):
+    """Schema for updating a work item (non-status fields only)."""
+
+    title: str | None = None
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    priority: int | None = None
+
+
+class WorkItemTransition(BaseModel):
+    """Schema for action endpoints (start, complete, fail, reopen, transition)."""
+
+    reason: str | None = None
+    actor: str = "system"
+    details: dict[str, Any] = {}
+
+
+class WorkItemEventCreate(BaseModel):
+    """Schema for creating a work item event (iteration_start, iteration_end, note)."""
+
+    event_type: WorkItemEventType
+    iteration: int | None = None
+    details: dict[str, Any] = {}
+    actor: str = "system"
+
+
+class WorkItemEventRead(BaseModel):
+    """Schema for reading a work item event."""
+
+    id: int
+    work_item_id: str
+    event_type: str
+    from_status: str | None
+    to_status: str | None
+    iteration: int | None
+    details: dict[str, Any]
+    actor: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

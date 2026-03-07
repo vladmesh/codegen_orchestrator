@@ -14,6 +14,14 @@ from .service_deployment import (
 )
 from .task import TaskCreate, TaskRead, TaskUpdate
 from .user import UserCreate, UserRead, UserUpdate, UserUpsert
+from .work_item import (
+    WorkItemCreate,
+    WorkItemEventCreate,
+    WorkItemEventRead,
+    WorkItemRead,
+    WorkItemTransition,
+    WorkItemUpdate,
+)
 
 __all__ = [
     "AgentConfigCreate",
@@ -47,4 +55,10 @@ __all__ = [
     "TaskRead",
     "TaskUpdate",
     "UserUpsert",
+    "WorkItemCreate",
+    "WorkItemEventCreate",
+    "WorkItemEventRead",
+    "WorkItemRead",
+    "WorkItemTransition",
+    "WorkItemUpdate",
 ]
