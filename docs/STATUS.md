@@ -2,8 +2,8 @@
 
 ## Current Task
 - **Backlog**: #57 /implement work item events (Step 2)
-- **Plan**: —
-- **Step**: —
+- **Plan**: docs/plans/57-implement-work-item-events.md
+- **Step**: 1/4 — Add step_start / step_done event types
 - **Done Steps**:
 
 ## Blocked

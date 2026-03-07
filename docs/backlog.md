@@ -99,7 +99,7 @@
 ### #57 `/implement` work item events (Step 2)
 - **Priority**: HIGH
 - **User Story**: —
-- **Plan**: —
+- **Plan**: [docs/plans/57-implement-work-item-events.md](plans/57-implement-work-item-events.md)
 - **Status**: pending
 - **Brief**: `/implement` при старте/завершении каждого шага плана пишет events через `POST /api/work-items/{id}/events` (step_start, step_done с commit_sha). При завершении задачи — `POST /api/work-items/{id}/complete`. История шагов/итераций в БД. Источник: brainstorm orchestrator-v2-task-management (Step 2).
 
