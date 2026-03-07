@@ -1,11 +1,11 @@
 # STATUS
 
 ## Current Task
-- **Backlog**: #58 /triage + /checkpoint via API (Step 3)
-- **WorkItem**: wi-4c0731f8
-- **Plan**: docs/plans/triage-checkpoint-via-api.md
-- **Step**: 1/8 — Model + API changes
-- **Done Steps**:
+- **Backlog**: —
+- **WorkItem**: —
+- **Plan**: —
+- **Step**: —
+- **Done Steps**: —
 
 ## Blocked
 (нет)
@@ -22,6 +22,7 @@
 
 | # | Задача |
 |---|--------|
+| 58 | Skills → API + Simplified Model (Step 3) |
 | 57 | `/implement` work item events (Step 2) |
 | 56 | `/next` skill via API (Step 1) |
 | 55 | WorkItem Model + API + Backlog Migration (Step 0) |

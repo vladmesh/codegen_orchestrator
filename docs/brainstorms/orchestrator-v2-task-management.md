@@ -469,7 +469,7 @@ async def process_work_item(work_item_id: str):
 - Средне: + iteration start/end, CI results, errors
 - Максимум: + каждый шаг плана, каждый коммит, каждый CI poll
 
-**Склоняюсь к среднему**: status changes, iteration boundaries, CI results, step completions, errors. Расширять по мере необходимости.
+**Решено**: Jira-style comment log через WorkItemEvent. Добавлен `COMMENT = "comment"` event type. Исполнитель, CI, тестировщик, ПО — все пишут комментарии через `POST /work-items/{id}/events` с `event_type="comment"`, `actor`, `details.text`. Хронологическая дискуссия = `GET /events?event_type=comment`. Отдельная сущность "Iteration" не нужна — достаточно event'ов с `iteration` полем + комментариев.
 
 ### Q4: Как create_project ложится в эту модель?
 

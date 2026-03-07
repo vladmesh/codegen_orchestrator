@@ -25,11 +25,12 @@ expanded after architectural review:
 
 ## Steps
 
-1. [ ] Model + API changes
+1. [x] Model + API changes
    - **Input**: `shared/models/work_item.py`, `shared/contracts/dto/work_item.py`, `services/api/src/routers/work_items.py`, `services/api/src/schemas/work_item.py`
    - **Output**:
      - Migration: add `plan` text column to `work_items`
      - Remove `STEP_START`/`STEP_DONE` from `WorkItemEventType`
+     - Add `COMMENT = "comment"` to `WorkItemEventType` — Jira-style discussion log on work items. Anyone (engineer, CI, tester, PO) posts comments via `POST /work-items/{id}/events` with `event_type="comment"`, `actor="engineer"|"ci"|"tester"|"po"`, `details={"text": "..."}`. Chronological discussion retrieved via `GET /work-items/{id}/events?event_type=comment`.
      - `WorkItemUpdate` schema: add `project_id` and `plan` fields
      - `WorkItemRead` schema: include `plan` field
      - `GET /api/work-items/?since=<ISO datetime>` — filter by `updated_at >= since`
@@ -37,7 +38,7 @@ expanded after architectural review:
      - `GET /api/work-items/next-tag` — `{"next_tag": 61}` (max tag + 1)
    - **Test**: Unit tests for new endpoints, updated schema tests, removed step event references
 
-2. [ ] Backlog generation script
+2. [x] Backlog generation script
    - **Input**: Work Items API, `docs/backlog.md` (current format as reference)
    - **Output**:
      - `scripts/generate_backlog.py` — fetches work items from API, generates `docs/backlog.md`
@@ -46,7 +47,7 @@ expanded after architectural review:
      - `Makefile` target: `make backlog`
    - **Test**: Unit test with mocked API responses
 
-3. [ ] Update `/plan` skill
+3. [x] Update `/plan` skill
    - **Input**: `.claude/skills/plan/SKILL.md`
    - **Output**: Updated skill that:
      - Writes plan text to work item via `PATCH /api/work-items/{id}` (`plan` field)
@@ -54,7 +55,7 @@ expanded after architectural review:
      - No longer updates STATUS.md
    - **Test**: Manual — run `/plan`, verify plan text in API response
 
-4. [ ] Update `/implement` skill
+4. [x] Update `/implement` skill
    - **Input**: `.claude/skills/implement/SKILL.md`
    - **Output**: Updated skill that:
      - On start: queries `GET /api/work-items/?status=in_dev&limit=1` or accepts `#ID` argument
@@ -67,7 +68,7 @@ expanded after architectural review:
      - Removes all step tracking logic
    - **Test**: Manual — run `/implement`, verify branch created, plan read from API
 
-5. [ ] Update `/triage` skill
+5. [x] Update `/triage` skill
    - **Input**: `.claude/skills/triage/SKILL.md`
    - **Output**: Updated skill that:
      - Creates tasks via `POST /api/work-items/` with `project_id: "codegen-orchestrator"`
@@ -77,7 +78,7 @@ expanded after architectural review:
      - No direct backlog.md editing
    - **Test**: Manual — run triage on test brainstorm
 
-6. [ ] Update `/checkpoint` skill
+6. [x] Update `/checkpoint` skill
    - **Input**: `.claude/skills/checkpoint/SKILL.md`
    - **Output**: Updated skill that:
      - Stats via `GET /api/work-items/stats`
@@ -85,7 +86,7 @@ expanded after architectural review:
      - Runs `make backlog` after triage step
    - **Test**: Manual — run checkpoint
 
-7. [ ] Cleanup
+7. [x] Cleanup
    - **Input**: `docs/STATUS.md`, `docs/plans/`, `.claude/skills/next/`, `docs/backlog.md`
    - **Output**:
      - Delete `.claude/skills/next/` (absorbed into `/implement`)
@@ -96,7 +97,14 @@ expanded after architectural review:
      - Update CLAUDE.md if it references STATUS.md or /next
    - **Test**: `make test-unit` passes, no broken references
 
-8. [ ] Integration tests + service tests
+8. [x] Integration tests + service tests
    - **Input**: `services/api/tests/`
    - **Output**: Service tests for `since`, `/stats`, `/next-tag`, `plan` field PATCH
    - **Test**: CI green
+
+## Deviations
+
+- Steps 3-6 (skill updates) were committed together since they are pure markdown changes with no testable code
+- Step 7 (cleanup): did NOT delete `docs/STATUS.md` or `docs/plans/*.md` yet — these will be removed in a follow-up once the new API-driven flow is validated in practice
+- Step 7: did NOT delete existing plan files — kept for reference during transition
+- `shared` package needed reinstall (`uv pip install -e shared/`) after modifying DTO — site-packages had stale copy

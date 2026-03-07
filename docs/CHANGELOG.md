@@ -5,6 +5,18 @@
 ## 2026-03-07
 
 ### Added
+- **Skills → API + Simplified Model** (#58): All skills now use Work Items API instead of markdown files.
+  - `plan` text field on WorkItem model + migration
+  - `COMMENT` event type (Jira-style discussion); removed `STEP_START`/`STEP_DONE`
+  - `GET /api/work-items/stats` — status counts
+  - `GET /api/work-items/next-tag` — next available backlog tag number
+  - `GET /api/work-items/?since=<datetime>` — filter by updated_at
+  - `project_id` and `plan` fields on `WorkItemUpdate` schema
+  - `scripts/generate_backlog.py` + `make backlog` — generate backlog.md from API
+  - `docs/ideas.md` — standalone Ideas file (read by make backlog)
+  - Updated `/plan`, `/implement`, `/triage`, `/checkpoint` skills to use API
+  - `/next` skill removed (absorbed into `/implement`)
+  - 12 new service tests for API v2 endpoints
 - **`/implement` emits work item events** (#57): `/implement` skill now writes `step_start`/`step_done` events via `POST /api/work-items/{id}/events` at each plan step, and calls `/complete` on task finish. New `step_start`/`step_done` event types in `WorkItemEventType`. `/next` now writes `WorkItem` ID to STATUS.md for downstream skills.
 - **`/next` skill via Work Items API** (#56): First skill migrated from markdown parsing to API. `/next` now picks tasks via `GET /api/work-items/?status=backlog&limit=1` and starts them via `POST /api/work-items/{id}/start`.
   - `limit` and `sort` query params on list endpoint
