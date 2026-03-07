@@ -139,51 +139,115 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
   -d "{\"event_type\": \"note\", \"details\": {\"action\": \"step_done\", \"step\": N, \"title\": \"Step title\", \"commit_sha\": \"$SHA\"}, \"actor\": \"claude\"}" || true
 ```
 
-### 6. Push and wait for CI
+### 6. Push + PR + CI
 
 **MANDATORY — this is a HARD GATE. Do NOT touch docs (CHANGELOG, backlog) until CI is green.**
 
 After the last step is committed:
-1. **Push**: `git push` (or `git push -u origin <branch>` if no upstream)
-2. **Poll CI**: `gh run list --branch <branch> --limit 1 --json status` every 60s (up to 15 min)
-3. **CI green** -> proceed to step 7
-4. **CI red** -> read logs via `gh run view --log-failed`:
-   - **Failure related to current task** — fix, commit, re-push, wait again. Do NOT touch any docs.
-   - **Pre-existing failure** (unrelated to current changes) — note it, proceed to step 7.
 
-While CI is running or red: NO changes to CHANGELOG.md or backlog generation. These are completion artifacts.
+1. **Push branch**:
+```bash
+git push -u origin "$BRANCH"
+```
 
-### 7. Task completion (only after CI green)
+2. **Create PR** targeting main:
+```bash
+gh pr create --title "#$TAG — $TITLE" --body "Implements #$TAG"
+```
 
-**Gate**: only enter this step when CI is green (or pre-existing failure documented).
+3. **Transition to in_ci**:
+```bash
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/transition?to_status=in_ci" \
+  -H "Content-Type: application/json" \
+  -d '{"actor": "claude"}' || true
+```
 
-When all steps are done AND CI is green:
+4. **Poll CI on the PR** — every 60s, up to 15 min:
+```bash
+gh run list --branch "$BRANCH" --limit 1 --json status,conclusion
+```
 
-**Complete task via API** (best-effort):
+5. **CI red** — read logs via `gh run view --log-failed`:
+   - **Failure related to current task** — fix, commit, push, re-poll. Do NOT touch docs.
+   - **Pre-existing failure** (unrelated) — note it, proceed to step 7.
+
+6. **CI green** — proceed to step 7.
+
+While CI is running or red: NO changes to CHANGELOG.md or backlog generation.
+
+### 7. Testing (smoke or E2E)
+
+**Gate**: only enter when CI is green (or pre-existing failure documented).
+
+1. **Transition to testing**:
+```bash
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/transition?to_status=testing" \
+  -H "Content-Type: application/json" \
+  -d '{"actor": "claude"}' || true
+```
+
+2. **Build fresh images** (MANDATORY before any testing):
+```bash
+make build
+```
+
+3. **Check need_e2e flag**:
+```bash
+NEED_E2E=$(echo "$WI" | jq -r '.need_e2e')
+```
+
+**Simple tasks (need_e2e=false) — Smoke test:**
+- `make up` if stack is not running
+- Curl API endpoints affected by the change, verify responses
+- Check Redis streams if relevant (`docker compose exec redis redis-cli XLEN <stream>`)
+- Review structlog output: `docker compose logs --tail=50 <service>` — look for errors
+- Confirm no crashes, no unhandled exceptions
+
+**Complex tasks (need_e2e=true) — Full E2E:**
+- Run Agent tool with `/e2e-run <test> --no-nuke` in background
+- Wait for result
+
+4. **Test red** — fix, commit, push, re-poll CI (step 6.4), re-test.
+5. **Test green** — proceed to step 8.
+
+### 8. Merge + Complete
+
+**Gate**: only enter when both CI and testing are green.
+
+1. **Merge PR** (Claude MUST merge — do not leave PR open):
+```bash
+gh pr merge --squash --delete-branch
+```
+
+2. **Switch to main and pull**:
+```bash
+git checkout main && git pull
+```
+
+3. **Complete task via API**:
 ```bash
 curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/complete" \
   -H "Content-Type: application/json" \
   -d '{"actor": "claude"}' || true
 ```
 
-**Update `docs/CHANGELOG.md`**:
+4. **Update `docs/CHANGELOG.md`**:
 - Add entry under today's date
 - Use correct section: Added / Changed / Fixed / Removed
 - Reference backlog item ID
 
-**Regenerate backlog**:
+5. **Regenerate backlog**:
 ```bash
 make backlog
 ```
 
-**Merge branch** (if on a feature branch):
+6. **Commit** doc updates on main:
 ```bash
-git checkout main && git merge --no-ff "$BRANCH"
+git add docs/CHANGELOG.md docs/backlog.md
+git commit -m "docs: complete #<ID> — <title>"
 ```
 
-**Commit** doc updates: `docs: complete #<ID> — <title>`
-
-### 8. Report
+### 9. Report
 
 Print a summary:
 - Task: #ID — Title

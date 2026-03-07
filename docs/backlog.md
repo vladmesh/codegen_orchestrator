@@ -4,15 +4,9 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Rename WorkItem→Task, Task→Run
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Переименовать сущности: WorkItem становится Task (planning layer), Task становится Run (execution layer). Одна alembic миграция: rename table work_items→tasks, tasks→runs. Rename моделей, DTO, enums, API routes (/work-items/→/tasks/, /tasks/→/runs/), тестов, скиллов.
-
 ### #64 Implement skill: PR flow + in_ci status + need_e2e
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: ## Зачем  Скилл /implement сейчас не закрывает задачи корректно: вызывает /complete из in_dev (невалидный переход), не создаёт PR (CI не триггерится на wi/* ветки), не мёржит надёжно. Статусы in_review и testing не используются. Нужен чистый автоматический flow от кода до done.  ## Что меняем  ##...
 
@@ -127,6 +121,7 @@
 
 ## Done (last 10)
 
+- Rename WorkItem→Task, Task→Run — 2026-03-07
 - #63 Milestone model + ROADMAP generation — 2026-03-07
 - #61 Brainstorm model in DB — 2026-03-07
 - #58 Skills → API + Simplified Model — 2026-03-07
@@ -136,7 +131,6 @@
 - #43 PO: Сократический диалог и формирование ТЗ — 2026-03-07
 - #44 PO: DuckDuckGo Search Tool — 2026-03-07
 - #45 PO: Context-Aware Env Variables & Hints — 2026-03-07
-- #42 Fix API Integration Test (test_post_projects_pure_db) — 2026-03-07
 
 ## Ideas
 

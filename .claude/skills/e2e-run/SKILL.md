@@ -182,7 +182,7 @@ where `deployed_url` is absent, resolve IP from `service-deployments` or the ser
 
 ```bash
 # Option 1 (preferred): from deploy task result — always has IP:port if deploy ran
-DEPLOY_RESULT=$(curl -s "http://localhost:8000/api/tasks/$DEPLOY_TASK")
+DEPLOY_RESULT=$(curl -s "http://localhost:8000/api/runs/$DEPLOY_TASK")
 DEPLOYED_URL=$(echo "$DEPLOY_RESULT" | jq -r '.result.deployed_url // empty')
 if [ -n "$DEPLOYED_URL" ]; then
   SERVER_IP=$(echo "$DEPLOYED_URL" | sed -E 's|https?://([^:/]+).*|\1|')
@@ -401,7 +401,7 @@ Skip this step if `--with-po` is set. Go to Step 2-PO instead.
 TASK_ID="eng-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')"
 
 # Create task in API
-curl -s -X POST http://localhost:8000/api/tasks/ \
+curl -s -X POST http://localhost:8000/api/runs/ \
   -H "Content-Type: application/json" \
   -d "$(jq -n \
     --arg id "$TASK_ID" \
@@ -410,7 +410,7 @@ curl -s -X POST http://localhost:8000/api/tasks/ \
       id: $id,
       type: "engineering",
       project_id: $pid,
-      task_metadata: {triggered_by: "cli", action: "create"},
+      run_metadata: {triggered_by: "cli", action: "create"},
       callback_stream: "agent:events:manual-test"
     }')" | jq .
 
@@ -554,7 +554,7 @@ PROJECT_ID=$(curl -s "http://localhost:8000/api/projects/" \
   | jq -r --arg name "$PROJECT_NAME" '.[] | select(.name == $name) | .id' | head -1)
 
 # Find engineering task for this project
-TASK_ID=$(curl -s "http://localhost:8000/api/tasks/?type=engineering&project_id=$PROJECT_ID" \
+TASK_ID=$(curl -s "http://localhost:8000/api/runs/?type=engineering&project_id=$PROJECT_ID" \
   | jq -r '.[0].id // empty')
 
 echo "PROJECT_ID=$PROJECT_ID TASK_ID=$TASK_ID"
@@ -650,7 +650,7 @@ This data is essential for the report — include each CI fix attempt in the Tim
 ```bash
 # Poll every 30s, timeout after 60 minutes
 for i in $(seq 1 120); do
-  STATUS=$(curl -s http://localhost:8000/api/tasks/$TASK_ID | jq -r '.status')
+  STATUS=$(curl -s http://localhost:8000/api/runs/$TASK_ID | jq -r '.status')
   echo "[$i/120] Task status: $STATUS"
   if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
     break
@@ -663,11 +663,11 @@ done
 
 ```bash
 # Find deploy task
-DEPLOY_TASK=$(curl -s "http://localhost:8000/api/tasks/?type=deploy&project_id=$PROJECT_ID" | jq -r '.[0].id')
+DEPLOY_TASK=$(curl -s "http://localhost:8000/api/runs/?type=deploy&project_id=$PROJECT_ID" | jq -r '.[0].id')
 
 # Poll deploy every 30s, timeout after 30 minutes
 for i in $(seq 1 60); do
-  STATUS=$(curl -s http://localhost:8000/api/tasks/$DEPLOY_TASK | jq -r '.status')
+  STATUS=$(curl -s http://localhost:8000/api/runs/$DEPLOY_TASK | jq -r '.status')
   echo "[$i/60] Deploy status: $STATUS"
   if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
     break
@@ -676,7 +676,7 @@ for i in $(seq 1 60); do
 done
 
 # Extract smoke_result from deploy task (distinguishes deploy fail vs smoke fail)
-DEPLOY_RESULT=$(curl -s http://localhost:8000/api/tasks/$DEPLOY_TASK)
+DEPLOY_RESULT=$(curl -s http://localhost:8000/api/runs/$DEPLOY_TASK)
 SMOKE_STATUS=$(echo "$DEPLOY_RESULT" | jq -r '.result.smoke_result.status // "none"')
 DEPLOYED_URL=$(echo "$DEPLOY_RESULT" | jq -r '.result.deployed_url // empty')
 echo "Deploy status: $STATUS, Smoke: $SMOKE_STATUS, URL: $DEPLOYED_URL"
@@ -728,7 +728,7 @@ First, extract server IP and port from the deploy task result (see "Server Acces
 
 ```bash
 # Extract IP and port from deployed_url (most reliable source)
-DEPLOY_RESULT=$(curl -s "http://localhost:8000/api/tasks/$DEPLOY_TASK")
+DEPLOY_RESULT=$(curl -s "http://localhost:8000/api/runs/$DEPLOY_TASK")
 DEPLOYED_URL=$(echo "$DEPLOY_RESULT" | jq -r '.result.deployed_url // empty')
 if [ -n "$DEPLOYED_URL" ]; then
   SERVER_IP=$(echo "$DEPLOYED_URL" | sed -E 's|https?://([^:/]+).*|\1|')
@@ -780,7 +780,7 @@ bash infra/scripts/ssh-to-server.sh $SERVER_IP "
 
 # Read smoke_result from deploy task (automated post-deploy check)
 echo "=== Smoke Test Result ==="
-curl -s http://localhost:8000/api/tasks/$DEPLOY_TASK | jq '.result.smoke_result // "no smoke result"'
+curl -s http://localhost:8000/api/runs/$DEPLOY_TASK | jq '.result.smoke_result // "no smoke result"'
 
 # Independent cross-check: curl the health endpoint directly
 curl -sf "http://$SERVER_IP:$DEPLOY_PORT/health" | jq . || echo "Health endpoint not responding"
@@ -931,7 +931,7 @@ FEATURE_TASK_ID="eng-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')"
 FEATURE_DESCRIPTION="<from Feature Add Matrix>"
 
 # Create task in API
-curl -s -X POST http://localhost:8000/api/tasks/ \
+curl -s -X POST http://localhost:8000/api/runs/ \
   -H "Content-Type: application/json" \
   -d "$(jq -n \
     --arg id "$FEATURE_TASK_ID" \
@@ -940,7 +940,7 @@ curl -s -X POST http://localhost:8000/api/tasks/ \
       id: $id,
       type: "engineering",
       project_id: $pid,
-      task_metadata: {triggered_by: "cli", action: "feature"},
+      run_metadata: {triggered_by: "cli", action: "feature"},
       callback_stream: "agent:events:manual-test"
     }')" | jq .
 
@@ -999,7 +999,7 @@ Same as Step 4, but poll `$FEATURE_TASK_ID` instead. Also find and poll the feat
 ```bash
 # Poll feature engineering task
 for i in $(seq 1 120); do
-  STATUS=$(curl -s http://localhost:8000/api/tasks/$FEATURE_TASK_ID | jq -r '.status')
+  STATUS=$(curl -s http://localhost:8000/api/runs/$FEATURE_TASK_ID | jq -r '.status')
   echo "[$i/120] Feature task status: $STATUS"
   if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
     break
@@ -1008,12 +1008,12 @@ for i in $(seq 1 120); do
 done
 
 # Find and poll feature deploy task
-FEATURE_DEPLOY_TASK=$(curl -s "http://localhost:8000/api/tasks/?type=deploy&project_id=$PROJECT_ID" \
+FEATURE_DEPLOY_TASK=$(curl -s "http://localhost:8000/api/runs/?type=deploy&project_id=$PROJECT_ID" \
   | jq -r '[.[] | select(.id != "'$DEPLOY_TASK'")] | sort_by(.created_at) | last | .id // empty')
 
 if [ -n "$FEATURE_DEPLOY_TASK" ]; then
   for i in $(seq 1 60); do
-    STATUS=$(curl -s http://localhost:8000/api/tasks/$FEATURE_DEPLOY_TASK | jq -r '.status')
+    STATUS=$(curl -s http://localhost:8000/api/runs/$FEATURE_DEPLOY_TASK | jq -r '.status')
     echo "[$i/60] Feature deploy status: $STATUS"
     if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
       break
@@ -1098,7 +1098,7 @@ DEPLOYMENTS=$(curl -s "http://localhost:8000/api/service-deployments/?project_id
 # Primary: from deployed_url (already extracted in Step 4/5)
 # SERVER_IP should already be set from verification step. If not, re-extract:
 if [ -z "$SERVER_IP" ]; then
-  DEPLOYED_URL=$(curl -s "http://localhost:8000/api/tasks/$DEPLOY_TASK" | jq -r '.result.deployed_url // empty')
+  DEPLOYED_URL=$(curl -s "http://localhost:8000/api/runs/$DEPLOY_TASK" | jq -r '.result.deployed_url // empty')
   [ -n "$DEPLOYED_URL" ] && SERVER_IP=$(echo "$DEPLOYED_URL" | sed -E 's|https?://([^:/]+).*|\1|')
 fi
 

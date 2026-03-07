@@ -51,6 +51,7 @@ def _to_read(task: Task, last_event: str | None = None) -> TaskRead:
         acceptance_criteria=task.acceptance_criteria,
         current_iteration=task.current_iteration,
         max_iterations=task.max_iterations,
+        need_e2e=getattr(task, "need_e2e", False),
         created_by=task.created_by,
         source_brainstorm_id=getattr(task, "source_brainstorm_id", None),
         milestone_id=getattr(task, "milestone_id", None),
@@ -152,6 +153,7 @@ async def create_task(
         acceptance_criteria=body.acceptance_criteria,
         current_iteration=0,
         max_iterations=body.max_iterations,
+        need_e2e=body.need_e2e,
         created_by=body.created_by,
         source_brainstorm_id=body.source_brainstorm_id,
         milestone_id=body.milestone_id,
@@ -343,6 +345,14 @@ async def start_task(
     return _to_read(task)
 
 
+# Path from working statuses to done (auto-promotion chain)
+_COMPLETE_PATH: dict[str, list[str]] = {
+    TaskStatus.IN_DEV: [TaskStatus.IN_CI, TaskStatus.TESTING, TaskStatus.DONE],
+    TaskStatus.IN_CI: [TaskStatus.TESTING, TaskStatus.DONE],
+    TaskStatus.TESTING: [TaskStatus.DONE],
+}
+
+
 @router.post("/{task_id}/complete", response_model=TaskRead)
 async def complete_task(
     task_id: str,
@@ -352,11 +362,18 @@ async def complete_task(
     body = body or TaskTransition()
     task = await _get_task(task_id, db)
 
-    _validate_transition(task.status, TaskStatus.DONE)
+    path = _COMPLETE_PATH.get(task.status)
+    if path is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot complete task from status '{task.status}'",
+        )
 
-    old_status = task.status
-    task.status = TaskStatus.DONE
-    await _create_status_event(task, old_status, TaskStatus.DONE, body.actor, body.details, db)
+    for next_status in path:
+        old_status = task.status
+        task.status = next_status
+        await _create_status_event(task, old_status, next_status, body.actor, body.details, db)
+
     await db.commit()
     await db.refresh(task)
 

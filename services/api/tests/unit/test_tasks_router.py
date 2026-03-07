@@ -438,11 +438,60 @@ async def test_complete_from_testing():
 
     assert resp.status_code == 200  # noqa: PLR2004
     assert task.status == "done"
+    # Direct transition: testing → done (1 event)
+    assert session.add.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_from_in_ci():
+    """Complete from in_ci should auto-promote: in_ci → testing → done."""
+    task = _make_task(id="task-abc", status="in_ci")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/tasks/task-abc/complete")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert task.status == "done"
+    # Two events: in_ci → testing, testing → done
+    assert session.add.call_count == 2  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_complete_from_in_dev():
+    """Complete from in_dev should auto-promote: in_dev → in_ci → testing → done."""
+    task = _make_task(id="task-abc", status="in_dev")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/tasks/task-abc/complete")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert task.status == "done"
+    # Three events: in_dev → in_ci, in_ci → testing, testing → done
+    assert session.add.call_count == 3  # noqa: PLR2004
 
 
 @pytest.mark.asyncio
 async def test_complete_from_backlog_fails():
     task = _make_task(id="task-abc", status="backlog")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/tasks/task-abc/complete")
+
+    assert resp.status_code == 422  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_complete_from_cancelled_fails():
+    task = _make_task(id="task-abc", status="cancelled")
     session = _mock_session(scalar_one_or_none=task)
     _override_session(session)
 
@@ -508,10 +557,10 @@ async def test_generic_transition():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/api/tasks/task-abc/transition?to_status=testing")
+        resp = await client.post("/api/tasks/task-abc/transition?to_status=in_ci")
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert task.status == "testing"
+    assert task.status == "in_ci"
 
 
 @pytest.mark.asyncio
@@ -526,6 +575,80 @@ async def test_generic_transition_invalid():
 
     assert resp.status_code == 422  # noqa: PLR2004
     assert "Cannot transition" in resp.json()["detail"]
+
+
+# --- Full transition flow ---
+
+
+@pytest.mark.asyncio
+async def test_full_flow_backlog_to_done():
+    """Verify the full lifecycle: backlog → start → in_ci → testing → done."""
+    task = _make_task(id="task-flow", status="backlog", need_e2e=False)
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Start: backlog → todo → in_dev
+        resp = await client.post("/api/tasks/task-flow/start", json={"actor": "claude"})
+        assert resp.status_code == 200  # noqa: PLR2004
+        assert task.status == "in_dev"
+
+        # Transition to in_ci
+        session.add.reset_mock()
+        resp = await client.post(
+            "/api/tasks/task-flow/transition?to_status=in_ci", json={"actor": "claude"}
+        )
+        assert resp.status_code == 200  # noqa: PLR2004
+        assert task.status == "in_ci"
+
+        # Transition to testing
+        session.add.reset_mock()
+        resp = await client.post(
+            "/api/tasks/task-flow/transition?to_status=testing", json={"actor": "claude"}
+        )
+        assert resp.status_code == 200  # noqa: PLR2004
+        assert task.status == "testing"
+
+        # Complete: testing → done
+        session.add.reset_mock()
+        resp = await client.post("/api/tasks/task-flow/complete", json={"actor": "claude"})
+        assert resp.status_code == 200  # noqa: PLR2004
+        assert task.status == "done"
+        assert session.add.call_count == 1  # single event
+
+
+@pytest.mark.asyncio
+async def test_complete_auto_promotes_full_chain():
+    """Verify /complete auto-walks in_dev → in_ci → testing → done."""
+    task = _make_task(id="task-auto", status="in_dev")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/tasks/task-auto/complete", json={"actor": "claude"})
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert task.status == "done"
+    # 3 events: in_dev→in_ci, in_ci→testing, testing→done
+    assert session.add.call_count == 3  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_ci_red_back_to_dev():
+    """Verify in_ci → in_dev transition (CI failure)."""
+    task = _make_task(id="task-cifix", status="in_ci")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/tasks/task-cifix/transition?to_status=in_dev", json={"actor": "claude"}
+        )
+        assert resp.status_code == 200  # noqa: PLR2004
+        assert task.status == "in_dev"
 
 
 # --- Events ---
