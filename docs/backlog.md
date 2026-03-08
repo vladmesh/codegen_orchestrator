@@ -7,15 +7,9 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Decouple shared/ from Docker builds — reduce rebuild blast radius
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: ## Problem  `shared/` is a monolithic package (11 submodules) installed via `pip install ./shared` in every Dockerfile. Any change to ANY file in shared/ triggers: - Rebuild of ALL 8 service Docker images (COPY shared invalidates the layer) - Rebuild of ALL worker base images (WORKER_SOURCE_HASH ...
-
 ### #18 Split engineering_worker.py (1088 LOC)
 - **Priority**: LOW
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули.
 
@@ -253,6 +247,7 @@
 
 ## Done (last 10)
 
+- Decouple shared/ from Docker builds — reduce rebuild blast radius — 2026-03-08
 - Fix compose.dev.yml ports conflict with orchestrator worker containers
  — 2026-03-08
 - Add E2E CI job for unified handlers (dual-transport pipeline)
@@ -270,8 +265,6 @@
 - Fix tg_bot AGENTS.md wrong env var + add router/list examples
  — 2026-03-08
 - Add CreatedAtMixin (ORMBase forced updated_at on all models)
- — 2026-03-08
-- Fix compose.dev.yml PATH + make setup idempotency
  — 2026-03-08
 
 ## Ideas

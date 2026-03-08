@@ -74,7 +74,8 @@ Caddy (/webhooks/*) → API
 **Packages** (`packages/`): `orchestrator-cli` (CLI tools for agents), `worker-wrapper` (agent container entrypoint).
 
 **Shared** (`shared/`): Logging setup (structlog), contracts (DTOs, queue schemas), models, configuration.
-  - Installed as a package (`hatchling`) in the uv venv. Uses `force-include` (static copy, not symlink). After adding/removing files in `shared/`, run `uv sync --reinstall-package shared` before running tests.
+  - **Docker**: plain `COPY shared ./shared` + `PYTHONPATH=/app` (not pip-installed). Shared's pip deps are in each service's own pyproject.toml.
+  - **Local dev**: installed as editable package via `uv sync`. Uses `force-include` (static copy, not symlink). After adding/removing files in `shared/`, run `uv sync --reinstall-package shared` before running tests.
 
 **External Coding Agents**: Claude Code and Factory.ai Droid for actual code generation (not custom agents).
 
