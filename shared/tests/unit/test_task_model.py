@@ -284,6 +284,47 @@ def test_task_with_project_id():
         assert task.priority == 1
 
 
+def test_task_blocked_by_task_id():
+    engine = _setup_db()
+
+    with Session(engine) as session:
+        # Create blocker task
+        session.execute(
+            insert(Task).values(
+                id="task-blocker",
+                project_id="proj-test",
+                title="Blocker task",
+                type="feature",
+                status="in_dev",
+                priority=0,
+                current_iteration=0,
+                max_iterations=3,
+                created_by="system",
+            )
+        )
+        # Create blocked task
+        session.execute(
+            insert(Task).values(
+                id="task-blocked",
+                project_id="proj-test",
+                title="Blocked task",
+                type="feature",
+                status="blocked",
+                priority=0,
+                current_iteration=0,
+                max_iterations=3,
+                created_by="system",
+                blocked_by_task_id="task-blocker",
+            )
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        task = session.execute(select(Task).where(Task.id == "task-blocked")).scalar_one()
+        assert task.blocked_by_task_id == "task-blocker"
+        assert task.status == "blocked"
+
+
 def test_multiple_events_for_task():
     engine = _setup_db()
 

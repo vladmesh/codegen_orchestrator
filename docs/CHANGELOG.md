@@ -5,7 +5,7 @@
 ## 2026-03-08
 
 ### Added
-- **TaskStatus.BLOCKED** [hotfix]: Added `blocked` status to task state machine. Transitions: `in_dev → blocked` (blocker found), `blocked → in_dev | backlog | cancelled`. 2 new unit tests.
+- **TaskStatus.BLOCKED + blocked_by_task_id** [hotfix]: Added `blocked` status to task state machine with `blocked_by_task_id` FK (self-referencing). Transitions: `in_dev → blocked`, `blocked → in_dev | backlog | cancelled`. `/implement` skill updated: auto-unblocks tasks when blocker is done. Migration, schemas (create/read/update), 3 new unit tests.
 
 
 - **Story: priority + blocked_by fields** (task-9d288940): Added `priority` (int, default 0) and `blocked_by_story_id` (FK → stories.id) to Story model. Migration with indexes. Schemas updated (create/read/update). List endpoint gains `priority` filter and `sort` param. Validation: cannot start a story if its blocker is not completed (422). 8 new unit tests.

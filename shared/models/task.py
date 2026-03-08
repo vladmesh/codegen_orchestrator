@@ -44,6 +44,9 @@ class Task(Base):
     story_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("stories.id"), nullable=True, index=True
     )
+    blocked_by_task_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("tasks.id"), nullable=True
+    )
 
 
 class TaskEvent(Base):

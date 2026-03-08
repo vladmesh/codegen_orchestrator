@@ -11,7 +11,7 @@ The main development skill. Implements the current task (or a specific one) usin
 
 ## Input
 
-- No arguments: continue working on the current in_dev task, or auto-pick the highest-priority backlog task
+- No arguments: continue working on the current in_dev task, or try to unblock a blocked task, or auto-pick the highest-priority backlog task
 - `#ID` (e.g. `#8`): start that task (calls /start if needed)
 
 ## Protocol
@@ -39,12 +39,45 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/start" \
   -d '{"actor": "claude"}' || true
 ```
 
-**If no argument:**
+**If no argument — priority chain:**
+
+**Step A: Check for in_dev task**
 ```bash
 WI=$(curl -sf "http://localhost:8000/api/tasks/?status=in_dev&limit=1" | jq '.[0]')
 ```
 
-If no in_dev item found — **auto-pick highest-priority backlog task**:
+**Step B: If no in_dev — check blocked tasks**
+```bash
+BLOCKED=$(curl -sf "http://localhost:8000/api/tasks/?status=blocked&limit=10" \
+  | jq 'sort_by(.priority)')
+```
+
+For each blocked task, check if its blocker is resolved:
+```bash
+for row in $(echo "$BLOCKED" | jq -c '.[]'); do
+  BLOCKER_ID=$(echo "$row" | jq -r '.blocked_by_task_id')
+  if [ "$BLOCKER_ID" != "null" ]; then
+    BLOCKER_STATUS=$(curl -sf "http://localhost:8000/api/tasks/$BLOCKER_ID" | jq -r '.status')
+    if [ "$BLOCKER_STATUS" = "done" ]; then
+      # Auto-unblock: transition blocked → in_dev, clear blocked_by_task_id
+      TASK_ID=$(echo "$row" | jq -r '.id')
+      curl -sf -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=in_dev" \
+        -H "Content-Type: application/json" \
+        -d '{"actor": "claude", "details": {"action": "auto_unblock", "blocker": "'"$BLOCKER_ID"'"}}'
+      curl -sf -X PATCH "http://localhost:8000/api/tasks/$TASK_ID" \
+        -H "Content-Type: application/json" \
+        -d '{"blocked_by_task_id": null}'
+      WI=$(curl -sf "http://localhost:8000/api/tasks/$TASK_ID")
+      break
+    fi
+  fi
+done
+```
+Print: "Auto-unblocked: **$TITLE** (blocker $BLOCKER_ID is done)"
+
+If no blocked tasks can be unblocked, proceed to Step C.
+
+**Step C: Auto-pick highest-priority backlog task**
 ```bash
 WI=$(curl -sf "http://localhost:8000/api/tasks/?status=backlog&limit=50" \
   | jq 'sort_by(.priority) | .[0]')

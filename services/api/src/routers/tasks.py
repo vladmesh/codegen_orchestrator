@@ -57,6 +57,7 @@ def _to_read(task: Task, last_event: str | None = None) -> TaskRead:
         milestone_id=getattr(task, "milestone_id", None),
         repository_id=getattr(task, "repository_id", None),
         story_id=getattr(task, "story_id", None),
+        blocked_by_task_id=getattr(task, "blocked_by_task_id", None),
         created_at=task.created_at,
         updated_at=task.updated_at,
         last_event=last_event,
@@ -160,6 +161,7 @@ async def create_task(
         source_brainstorm_id=body.source_brainstorm_id,
         milestone_id=body.milestone_id,
         story_id=body.story_id,
+        blocked_by_task_id=body.blocked_by_task_id,
         created_at=now,
         updated_at=now,
     )
@@ -199,6 +201,7 @@ async def push_task(
         source_brainstorm_id=body.source_brainstorm_id,
         milestone_id=body.milestone_id,
         story_id=body.story_id,
+        blocked_by_task_id=body.blocked_by_task_id,
         created_at=now,
         updated_at=now,
     )
