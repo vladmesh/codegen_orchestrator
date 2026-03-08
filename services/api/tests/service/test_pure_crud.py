@@ -4,7 +4,7 @@ from fastapi import status
 from httpx import AsyncClient
 import pytest
 
-PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
+PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000099"))
 
 
 @pytest.mark.asyncio

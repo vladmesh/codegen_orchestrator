@@ -22,9 +22,9 @@ async def test_github_sync_notifies_admins_for_unknown_repo(mock_github, api_cli
     with patch("src.tasks.github_sync.notify_admins", new_callable=AsyncMock) as mock_notify:
         await github_sync._sync_single_repo(mock_github, repo, missing_counters={})
 
-    # Project should NOT be created
-    project = await api_client.get_project_by_repo_id(repo.id)
-    assert project is None
+    # Repository should NOT be tracked
+    repo_entry = await api_client.get_repository_by_provider_id(repo.id)
+    assert repo_entry is None
 
     # Admin notification should have been sent
     mock_notify.assert_called_once()
