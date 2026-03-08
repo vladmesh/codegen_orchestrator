@@ -13,6 +13,8 @@ class StoryCreate(BaseModel):
     description: str | None = None
     acceptance_criteria: str | None = None
     parent_story_id: str | None = None
+    priority: int = 0
+    blocked_by_story_id: str | None = None
     created_by: str = "system"
 
 
@@ -26,6 +28,8 @@ class StoryRead(BaseModel):
     description: str | None
     acceptance_criteria: str | None
     status: str
+    priority: int
+    blocked_by_story_id: str | None
     created_by: str
     created_at: datetime
     updated_at: datetime
@@ -40,6 +44,8 @@ class StoryUpdate(BaseModel):
     description: str | None = None
     acceptance_criteria: str | None = None
     parent_story_id: str | None = None
+    priority: int | None = None
+    blocked_by_story_id: str | None = None
 
 
 class StoryTransition(BaseModel):

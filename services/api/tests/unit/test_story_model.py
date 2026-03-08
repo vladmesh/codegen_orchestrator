@@ -18,11 +18,28 @@ class TestStoryModel:
             "description",
             "acceptance_criteria",
             "status",
+            "priority",
+            "blocked_by_story_id",
             "created_by",
             "created_at",
             "updated_at",
         }
         assert expected.issubset(cols)
+
+    def test_priority_default(self):
+        col = Story.__table__.c.priority
+        assert col.default.arg == 0
+
+    def test_priority_not_nullable(self):
+        assert not Story.__table__.c.priority.nullable
+
+    def test_blocked_by_story_id_fk(self):
+        col = Story.__table__.c.blocked_by_story_id
+        fk_targets = [fk.target_fullname for fk in col.foreign_keys]
+        assert "stories.id" in fk_targets
+
+    def test_blocked_by_story_id_nullable(self):
+        assert Story.__table__.c.blocked_by_story_id.nullable
 
     def test_project_id_fk(self):
         col = Story.__table__.c.project_id

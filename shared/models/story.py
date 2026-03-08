@@ -1,6 +1,6 @@
 """Story model — product-level entity representing what the user wants."""
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.story import StoryStatus
@@ -24,4 +24,8 @@ class Story(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default=StoryStatus.CREATED.value, index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    blocked_by_story_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("stories.id"), nullable=True, index=True
+    )
     created_by: Mapped[str] = mapped_column(String(50), default="system")

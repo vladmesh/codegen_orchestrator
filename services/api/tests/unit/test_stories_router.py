@@ -20,6 +20,8 @@ def _make_story(**overrides):
         "description": None,
         "acceptance_criteria": None,
         "status": "created",
+        "priority": 0,
+        "blocked_by_story_id": None,
         "created_by": "system",
         "created_at": now,
         "updated_at": now,
@@ -89,6 +91,44 @@ async def test_create_story():
     assert story.status == "created"
     assert story.project_id == "proj-1"
     assert story.id.startswith("story-")
+
+
+@pytest.mark.asyncio
+async def test_create_story_with_priority():
+    session = _mock_session()
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/stories/",
+            json={"title": "High prio", "project_id": "proj-1", "priority": 5},
+        )
+
+    assert resp.status_code == 201  # noqa: PLR2004
+    story = session.add.call_args[0][0]
+    assert story.priority == 5
+
+
+@pytest.mark.asyncio
+async def test_create_story_with_blocked_by():
+    session = _mock_session()
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/stories/",
+            json={
+                "title": "Blocked",
+                "project_id": "proj-1",
+                "blocked_by_story_id": "story-dep",
+            },
+        )
+
+    assert resp.status_code == 201  # noqa: PLR2004
+    story = session.add.call_args[0][0]
+    assert story.blocked_by_story_id == "story-dep"
 
 
 @pytest.mark.asyncio
@@ -280,3 +320,120 @@ async def test_archive_from_created():
 
     assert resp.status_code == 200  # noqa: PLR2004
     assert story.status == "archived"
+
+
+# --- Priority filter + sort ---
+
+
+@pytest.mark.asyncio
+async def test_list_stories_filter_by_priority():
+    session = _mock_session(scalars_all=[])
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/stories/?priority=3")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_list_stories_with_sort():
+    session = _mock_session(scalars_all=[])
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/stories/?sort=-created_at")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+
+
+# --- Blocked-by validation ---
+
+
+@pytest.mark.asyncio
+async def test_start_story_blocked_by_incomplete():
+    """Cannot start a story whose blocker is not completed."""
+    blocker = _make_story(id="story-blocker", status="in_progress")
+    story = _make_story(id="story-abc", status="created", blocked_by_story_id="story-blocker")
+
+    call_count = 0
+    mock_result_story = MagicMock()
+    mock_result_story.scalar_one_or_none = MagicMock(return_value=story)
+    mock_result_blocker = MagicMock()
+    mock_result_blocker.scalar_one_or_none = MagicMock(return_value=blocker)
+
+    session = AsyncMock()
+
+    async def _execute_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return mock_result_story
+        return mock_result_blocker
+
+    session.execute = AsyncMock(side_effect=_execute_side_effect)
+
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/start")
+
+    assert resp.status_code == 422  # noqa: PLR2004
+    assert "blocked by story" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_start_story_blocked_by_completed():
+    """Can start a story whose blocker is completed."""
+    blocker = _make_story(id="story-blocker", status="completed")
+    story = _make_story(id="story-abc", status="created", blocked_by_story_id="story-blocker")
+
+    call_count = 0
+    mock_result_story = MagicMock()
+    mock_result_story.scalar_one_or_none = MagicMock(return_value=story)
+    mock_result_blocker = MagicMock()
+    mock_result_blocker.scalar_one_or_none = MagicMock(return_value=blocker)
+
+    session = AsyncMock()
+
+    async def _execute_side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return mock_result_story
+        return mock_result_blocker
+
+    session.execute = AsyncMock(side_effect=_execute_side_effect)
+    session.commit = AsyncMock()
+
+    async def _refresh(obj):
+        pass
+
+    session.refresh = _refresh
+
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/start")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_start_story_no_blocker():
+    """Can start a story with no blocked_by set."""
+    story = _make_story(id="story-abc", status="created", blocked_by_story_id=None)
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/start")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "in_progress"
