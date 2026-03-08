@@ -43,7 +43,6 @@ Worker swarm, cost tracking, self-hosted CI.
 ## Backlog
 
 - [ ] /architect skill — Story decomposition into Tasks
-- [ ] Project ID → UUID + schema cleanup
 - [ ] #52 Scaffold script не экранирует task_description
 - [ ] #18 Split engineering_worker.py (1088 LOC)
 - [ ] #54 Deploy: inter-service URL должен использовать docker service name

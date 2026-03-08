@@ -13,12 +13,6 @@
 - **Status**: backlog
 - **Brief**: New skill that takes a Story and decomposes it into Tasks.  Flow: 1. Read Story from API (by ID or pick next created story) 2. Load project context (existing tasks, repos, architecture) 3. Use LLM to decompose story into concrete tasks with titles, descriptions, acceptance criteria 4. Create task...
 
-### Project ID → UUID + schema cleanup
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: 1. Project ID: значимый string → UUID. Миграция всех FK (stories, tasks, brainstorms, repositories). 2. ProjectUpdate: добавить поле name. Переименовать проект codegen-orchestrator → project-factory. 3. Repository: добавить поле visibility (public/private). 4. Project: убрать github_repo_id (лега...
-
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: MEDIUM
 - **Plan**: yes (in work item)
@@ -124,6 +118,7 @@
 
 ## Done (last 10)
 
+- Project ID → UUID + schema cleanup — 2026-03-08
 - Story: priority + blocked_by fields — 2026-03-08
 - #999 Smoke test task — 2026-03-07
 - make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms) — 2026-03-07
@@ -133,7 +128,6 @@
 - Rename WorkItem→Task, Task→Run — 2026-03-07
 - #63 Milestone model + ROADMAP generation — 2026-03-07
 - #61 Brainstorm model in DB — 2026-03-07
-- #58 Skills → API + Simplified Model — 2026-03-07
 
 ## Ideas
 
