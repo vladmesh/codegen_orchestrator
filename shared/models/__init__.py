@@ -14,6 +14,7 @@ from .resource import Resource
 from .run import Run
 from .server import Server, ServerStatus
 from .service_deployment import ServiceDeployment
+from .story import Story
 from .task import Task, TaskEvent
 from .user import User
 
@@ -42,4 +43,5 @@ __all__ = [
     "IncidentStatus",
     "IncidentType",
     "ServiceDeployment",
+    "Story",
 ]
