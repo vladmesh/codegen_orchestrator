@@ -9,6 +9,7 @@ import json
 import os
 import time
 from typing import TYPE_CHECKING
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete, func, select
@@ -360,7 +361,7 @@ async def _search_chunks(
     *,
     scope: str,
     user_id: int | None,
-    project_id: str | None,
+    project_id: uuid.UUID | None,
     top_k: int,
     min_similarity: float,
 ) -> list[tuple[RAGChunk, float, RAGDocument]]:
@@ -553,7 +554,7 @@ def _apply_document_fields(
     doc: RAGDocumentPayload,
     scope: RAGScope,
     user_id: int | None,
-    project_id: str | None,
+    project_id: uuid.UUID | None,
     content_hash: str,
 ) -> None:
     document.user_id = user_id

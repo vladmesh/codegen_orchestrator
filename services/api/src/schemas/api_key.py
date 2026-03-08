@@ -1,5 +1,7 @@
 """API Key schemas."""
 
+import uuid
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -8,7 +10,7 @@ class APIKeyBase(BaseModel):
 
     service: str
     type: str = "system"
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
 
 
 class APIKeyCreate(APIKeyBase):

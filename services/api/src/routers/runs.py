@@ -1,5 +1,7 @@
 """Runs router (execution layer)."""
 
+import uuid
+
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -112,7 +114,7 @@ async def get_run(
 
 @router.get("/", response_model=list[RunRead])
 async def list_runs(
-    project_id: str | None = None,
+    project_id: uuid.UUID | None = None,
     run_type: str | None = None,
     status: str | None = None,
     db: AsyncSession = Depends(get_async_session),

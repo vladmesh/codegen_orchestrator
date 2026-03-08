@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 import secrets
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -99,7 +100,7 @@ async def create_story(
 
 @router.get("/", response_model=list[StoryRead])
 async def list_stories(
-    project_id: str | None = None,
+    project_id: uuid.UUID | None = None,
     status_filter: str | None = Query(None, alias="status"),
     parent_story_id: str | None = Query(None),
     priority: int | None = Query(None),

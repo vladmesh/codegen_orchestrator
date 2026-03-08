@@ -12,7 +12,7 @@ from src.schemas.milestone import (
     MilestoneUpdate,
 )
 
-PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
+PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 def test_milestone_create_minimal():

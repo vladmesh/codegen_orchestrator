@@ -15,8 +15,8 @@ from src.schemas.task import (
     TaskUpdate,
 )
 
-PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
-PROJECT_UUID_2 = str(uuid.UUID("00000000-0000-0000-0000-000000000002"))
+PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+PROJECT_UUID_2 = uuid.UUID("00000000-0000-0000-0000-000000000002")
 
 
 def test_task_create_minimal():
@@ -175,9 +175,9 @@ def test_task_update_with_plan():
 
 
 def test_task_update_with_project_id():
-    update = TaskUpdate(project_id=str(uuid.UUID("00000000-0000-0000-0000-000000000003")))
+    update = TaskUpdate(project_id=uuid.UUID("00000000-0000-0000-0000-000000000003"))
     data = update.model_dump(exclude_unset=True)
-    assert data == {"project_id": str(uuid.UUID("00000000-0000-0000-0000-000000000003"))}
+    assert data == {"project_id": uuid.UUID("00000000-0000-0000-0000-000000000003")}
 
 
 def test_task_transition():

@@ -1,6 +1,7 @@
 """Unit tests for brainstorms router — CRUD + action endpoints."""
 
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -15,7 +16,7 @@ def _make_brainstorm(**overrides):
     now = datetime.now(UTC)
     defaults = {
         "id": "bs-test1",
-        "project_id": "proj-test",
+        "project_id": uuid.UUID("00000000-0000-0000-0000-000000000001"),
         "title": "Test brainstorm",
         "content": None,
         "status": "draft",
@@ -78,7 +79,10 @@ async def test_create_brainstorm():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/brainstorms/",
-            json={"title": "Worker isolation", "project_id": "proj-1"},
+            json={
+                "title": "Worker isolation",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+            },
         )
 
     assert resp.status_code == 201
@@ -86,7 +90,7 @@ async def test_create_brainstorm():
     bs = session.add.call_args[0][0]
     assert bs.title == "Worker isolation"
     assert bs.status == "draft"
-    assert bs.project_id == "proj-1"
+    assert bs.project_id == uuid.UUID("00000000-0000-0000-0000-000000000001")
     assert bs.id.startswith("bs-")
 
 
@@ -125,7 +129,9 @@ async def test_list_brainstorms_with_filters():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/brainstorms/?status=done&project_id=proj-1")
+        resp = await client.get(
+            "/api/brainstorms/?status=done&project_id=00000000-0000-0000-0000-000000000001"
+        )
 
     assert resp.status_code == 200
 

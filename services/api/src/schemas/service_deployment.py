@@ -1,6 +1,7 @@
 """Pydantic schemas for service deployments."""
 
 from datetime import datetime
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 class ServiceDeploymentBase(BaseModel):
     """Base schema for service deployment."""
 
-    project_id: str
+    project_id: uuid.UUID
     service_name: str
     server_handle: str
     port: int

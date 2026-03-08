@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -12,7 +13,7 @@ class RunBase(BaseModel):
     id: str
     type: str
     status: str
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     user_id: int | None = None
     run_metadata: dict[str, Any] = {}
     result: dict[str, Any] | None = None
@@ -27,7 +28,7 @@ class RunCreate(BaseModel):
 
     id: str
     type: str
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     user_id: int | None = None
     run_metadata: dict[str, Any] = {}
     callback_stream: str | None = None

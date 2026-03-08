@@ -1,6 +1,7 @@
 """Brainstorm API schemas."""
 
 from datetime import datetime
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 class BrainstormCreate(BaseModel):
     """Schema for creating a brainstorm."""
 
-    project_id: str
+    project_id: uuid.UUID
     title: str
     content: str | None = None
     created_by: str = "system"
@@ -18,7 +19,7 @@ class BrainstormRead(BaseModel):
     """Schema for reading a brainstorm."""
 
     id: str
-    project_id: str
+    project_id: uuid.UUID
     title: str
     content: str | None
     status: str

@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 import secrets
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -115,7 +116,7 @@ async def create_brainstorm(
 
 @router.get("/", response_model=list[BrainstormRead])
 async def list_brainstorms(
-    project_id: str | None = None,
+    project_id: uuid.UUID | None = None,
     status_filter: str | None = Query(None, alias="status"),
     db: AsyncSession = Depends(get_async_session),
 ) -> list[BrainstormRead]:

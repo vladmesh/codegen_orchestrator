@@ -1,6 +1,7 @@
 """Unit tests for tasks router — CRUD, actions, events (planning layer)."""
 
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -15,7 +16,7 @@ def _make_task(**overrides):
     now = datetime.now(UTC)
     defaults = {
         "id": "task-test1",
-        "project_id": "proj-test",
+        "project_id": uuid.UUID("00000000-0000-0000-0000-000000000001"),
         "type": "feature",
         "title": "Test feature",
         "description": None,
@@ -119,7 +120,11 @@ async def test_create_task():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/tasks/",
-            json={"title": "Add stats button", "type": "feature", "project_id": "proj-1"},
+            json={
+                "title": "Add stats button",
+                "type": "feature",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+            },
         )
 
     assert resp.status_code == 201  # noqa: PLR2004
@@ -128,7 +133,7 @@ async def test_create_task():
     assert task.title == "Add stats button"
     assert task.type == "feature"
     assert task.status == "backlog"
-    assert task.project_id == "proj-1"
+    assert task.project_id == uuid.UUID("00000000-0000-0000-0000-000000000001")
     assert task.id.startswith("task-")
 
 
@@ -197,7 +202,9 @@ async def test_list_tasks_with_filters():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/tasks/?status=todo&type=fix&project_id=proj-1")
+        resp = await client.get(
+            "/api/tasks/?status=todo&type=fix&project_id=00000000-0000-0000-0000-000000000001"
+        )
 
     assert resp.status_code == 200  # noqa: PLR2004
 
@@ -768,7 +775,7 @@ async def test_push_task_sets_priority_below_min():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/tasks/push",
-            json={"title": "Urgent fix", "project_id": "proj-1"},
+            json={"title": "Urgent fix", "project_id": "00000000-0000-0000-0000-000000000001"},
         )
 
     assert resp.status_code == 201  # noqa: PLR2004
@@ -799,7 +806,7 @@ async def test_push_task_empty_backlog():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/tasks/push",
-            json={"title": "First task", "project_id": "proj-1"},
+            json={"title": "First task", "project_id": "00000000-0000-0000-0000-000000000001"},
         )
 
     assert resp.status_code == 201  # noqa: PLR2004
@@ -831,11 +838,11 @@ async def test_push_twice_decreasing_priority():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         await client.post(
             "/api/tasks/push",
-            json={"title": "Task A", "project_id": "proj-1"},
+            json={"title": "Task A", "project_id": "00000000-0000-0000-0000-000000000001"},
         )
         await client.post(
             "/api/tasks/push",
-            json={"title": "Task B", "project_id": "proj-1"},
+            json={"title": "Task B", "project_id": "00000000-0000-0000-0000-000000000001"},
         )
 
     for call in session.add.call_args_list:

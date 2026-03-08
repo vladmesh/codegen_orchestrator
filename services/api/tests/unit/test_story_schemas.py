@@ -8,7 +8,7 @@ import pytest
 
 from src.schemas.story import StoryCreate, StoryRead, StoryUpdate
 
-PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
+PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 class TestStoryCreate:

@@ -1,6 +1,7 @@
 """Milestone API schemas."""
 
 from datetime import datetime
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 class MilestoneCreate(BaseModel):
     """Schema for creating a milestone."""
 
-    project_id: str
+    project_id: uuid.UUID
     title: str
     description: str | None = None
     sort_order: int = 0
@@ -20,7 +21,7 @@ class MilestoneRead(BaseModel):
     """Schema for reading a milestone."""
 
     id: str
-    project_id: str
+    project_id: uuid.UUID
     title: str
     description: str | None
     sort_order: int
