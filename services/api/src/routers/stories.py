@@ -83,6 +83,8 @@ async def create_story(
         description=body.description,
         acceptance_criteria=body.acceptance_criteria,
         status=StoryStatus.CREATED.value,
+        priority=body.priority,
+        blocked_by_story_id=body.blocked_by_story_id,
         created_by=body.created_by,
         created_at=now,
         updated_at=now,
@@ -100,6 +102,8 @@ async def list_stories(
     project_id: str | None = None,
     status_filter: str | None = Query(None, alias="status"),
     parent_story_id: str | None = Query(None),
+    priority: int | None = Query(None),
+    sort: str | None = Query(None),
     db: AsyncSession = Depends(get_async_session),
 ) -> list[StoryRead]:
     query = select(Story)
@@ -110,8 +114,17 @@ async def list_stories(
         query = query.where(Story.status == status_filter)
     if parent_story_id:
         query = query.where(Story.parent_story_id == parent_story_id)
+    if priority is not None:
+        query = query.where(Story.priority == priority)
 
-    query = query.order_by(Story.created_at.asc())
+    if sort == "-created_at":
+        query = query.order_by(Story.created_at.desc())
+    elif sort == "created_at":
+        query = query.order_by(Story.created_at.asc())
+    elif sort == "-priority":
+        query = query.order_by(Story.priority.desc(), Story.created_at.asc())
+    else:
+        query = query.order_by(Story.priority.asc(), Story.created_at.asc())
 
     result = await db.execute(query)
     items = result.scalars().all()
@@ -162,6 +175,17 @@ async def start_story(
 ) -> StoryRead:
     body = body or StoryTransition()
     story = await _get_story(story_id, db)
+
+    if story.blocked_by_story_id:
+        blocker = await _get_story(story.blocked_by_story_id, db)
+        if blocker.status != StoryStatus.COMPLETED.value:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Cannot start: blocked by story {blocker.id} "
+                    f"(status: {blocker.status}, must be completed)"
+                ),
+            )
 
     _do_transition(story, StoryStatus.IN_PROGRESS)
     await db.commit()

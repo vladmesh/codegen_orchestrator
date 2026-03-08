@@ -16,6 +16,8 @@ class TestStoryCreate:
         assert s.description is None
         assert s.acceptance_criteria is None
         assert s.parent_story_id is None
+        assert s.priority == 0
+        assert s.blocked_by_story_id is None
         assert s.created_by == "system"
 
     def test_all_fields(self):
@@ -53,6 +55,8 @@ class TestStoryRead:
         mock.description = "Details"
         mock.acceptance_criteria = None
         mock.status = "created"
+        mock.priority = 5
+        mock.blocked_by_story_id = "story-blocker"
         mock.created_by = "po"
         mock.created_at = now
         mock.updated_at = now
@@ -60,6 +64,8 @@ class TestStoryRead:
         r = StoryRead.model_validate(mock, from_attributes=True)
         assert r.id == "story-abc123"
         assert r.status == "created"
+        assert r.priority == 5
+        assert r.blocked_by_story_id == "story-blocker"
 
 
 class TestStoryUpdate:
@@ -79,6 +85,10 @@ class TestStoryUpdate:
             description="Desc",
             acceptance_criteria="AC",
             parent_story_id="story-parent",
+            priority=3,
+            blocked_by_story_id="story-dep",
         )
         data = u.model_dump(exclude_unset=True)
-        assert len(data) == 4  # noqa: PLR2004
+        assert len(data) == 6  # noqa: PLR2004
+        assert data["priority"] == 3
+        assert data["blocked_by_story_id"] == "story-dep"
