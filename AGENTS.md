@@ -30,6 +30,7 @@
 | Исследование | `/brainstorm <topic>` | Запись в БД `brainstorms` (или markdown Spike) |
 | Обнаружение | `/audit` | Находки → Создание Task в БД |
 | Приоритизация | `/triage` | Создание новых Tasks в БД (API) |
+| Архитектура | `/architect` *(в разработке)* | Макро-декомпозиция Story → Tasks |
 | Декомпозиция | `/plan [#ID]` | `docs/plans/<task>.md` — шаги с Input/Output/Test |
 | Реализация | `/implement [#ID]` | Код + тесты (TDD цикл по шагам плана) |
 | Валидация | `/e2e-run` | `docs/e2e_results/<scenario>-<date>.md` |
@@ -102,6 +103,7 @@ make test-{service}-unit     # Per-service: api, langgraph, scheduler, telegram
 | `/implement [#ID]` | Взять задачу в работу (status: in_dev), TDD цикл, запись Task events |
 | `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | Запуск E2E теста (полный цикл: engineering → CI → deploy → verify, `--feature` пропускает scaffolding) |
 | `/triage` | Разбор отчётов → создание новых задач через API |
+| `/architect` *(в разработке)* | Разделение крупных Story на набор технических Tasks |
 | `/brainstorm <topic>` | Создание/обсуждение Brainstorm записи в БД |
 | `/checkpoint` | Сбор статистики через API, обновление CHANGELOG/ROADMAP |
 | `/audit` | Аудит кода → создание задачи в БД |
