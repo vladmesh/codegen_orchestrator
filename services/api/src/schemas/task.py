@@ -23,6 +23,7 @@ class TaskCreate(BaseModel):
     source_brainstorm_id: str | None = None
     milestone_id: str | None = None
     repository_id: str | None = None
+    story_id: str | None = None
 
 
 class TaskRead(BaseModel):
@@ -44,6 +45,7 @@ class TaskRead(BaseModel):
     source_brainstorm_id: str | None = None
     milestone_id: str | None = None
     repository_id: str | None = None
+    story_id: str | None = None
     created_at: datetime
     updated_at: datetime
     last_event: str | None = None
@@ -64,6 +66,7 @@ class TaskUpdate(BaseModel):
     need_e2e: bool | None = None
     milestone_id: str | None = None
     repository_id: str | None = None
+    story_id: str | None = None
 
 
 class TaskTransition(BaseModel):

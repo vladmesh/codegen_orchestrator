@@ -41,6 +41,9 @@ class Task(Base):
     repository_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("repositories.id"), nullable=True
     )
+    story_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("stories.id"), nullable=True, index=True
+    )
 
 
 class TaskEvent(Base):

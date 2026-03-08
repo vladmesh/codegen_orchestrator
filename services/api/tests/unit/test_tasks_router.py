@@ -29,6 +29,7 @@ def _make_task(**overrides):
         "source_brainstorm_id": None,
         "milestone_id": None,
         "repository_id": None,
+        "story_id": None,
         "need_e2e": False,
         "created_at": now,
         "updated_at": now,

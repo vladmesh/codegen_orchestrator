@@ -110,3 +110,24 @@ git commit -m "brainstorm: <topic>"
 - Always end with concrete Action Items — a brainstorm without action items is wasted work.
 - Don't create backlog tasks directly. That's `/triage`'s job. Just write Action Items.
 - If the brainstorm reveals the topic is simple enough to just do — say so. Not everything needs a brainstorm.
+
+## Self-Feedback
+
+After completing this skill, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
+
+- A command or path in this skill was **wrong or outdated**
+- A step was **missing context** that you had to figure out yourself
+- A step could be **simplified or reordered** for better flow
+- The skill **gave ambiguous instructions** that led to a wrong first attempt
+
+Entry format:
+
+```markdown
+## [brainstorm] — <today's date>
+- **Type**: bug | missing-info | optimization
+- **Quote**: "<exact line or section from this skill>"
+- **Problem**: <what went wrong or was missing>
+- **Suggested fix**: <concrete change to the skill text>
+```
+
+Only write feedback that is **specific and actionable**. Skip vague impressions.

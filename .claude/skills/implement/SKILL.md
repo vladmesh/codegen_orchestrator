@@ -222,10 +222,11 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/transition?to_status=te
   -d '{"actor": "claude"}' || true
 ```
 
-2. **Build fresh images** (MANDATORY before any testing):
+2. **Rebuild and restart services** (MANDATORY before any testing):
 ```bash
-make build
+make rebuild
 ```
+This rebuilds images and restarts containers in one step (faster than `make build` + `make up` separately, better cache usage).
 
 3. **Check need_e2e flag**:
 ```bash
@@ -305,3 +306,24 @@ Print a summary:
 - If tests are failing and you can't figure out why after 2 attempts — STOP and report the issue.
 - Don't skip tests. Every step should have at least one test unless it's pure documentation.
 - Run `make lint` before every commit.
+
+## Self-Feedback
+
+After completing this skill, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
+
+- A command or path in this skill was **wrong or outdated**
+- A step was **missing context** that you had to figure out yourself
+- A step could be **simplified or reordered** for better flow
+- The skill **gave ambiguous instructions** that led to a wrong first attempt
+
+Entry format:
+
+```markdown
+## [implement] — <today's date>
+- **Type**: bug | missing-info | optimization
+- **Quote**: "<exact line or section from this skill>"
+- **Problem**: <what went wrong or was missing>
+- **Suggested fix**: <concrete change to the skill text>
+```
+
+Only write feedback that is **specific and actionable**. Skip vague impressions.

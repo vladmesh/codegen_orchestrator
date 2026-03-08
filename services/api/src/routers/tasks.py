@@ -56,6 +56,7 @@ def _to_read(task: Task, last_event: str | None = None) -> TaskRead:
         source_brainstorm_id=getattr(task, "source_brainstorm_id", None),
         milestone_id=getattr(task, "milestone_id", None),
         repository_id=getattr(task, "repository_id", None),
+        story_id=getattr(task, "story_id", None),
         created_at=task.created_at,
         updated_at=task.updated_at,
         last_event=last_event,
@@ -158,6 +159,7 @@ async def create_task(
         created_by=body.created_by,
         source_brainstorm_id=body.source_brainstorm_id,
         milestone_id=body.milestone_id,
+        story_id=body.story_id,
         created_at=now,
         updated_at=now,
     )
@@ -196,6 +198,7 @@ async def push_task(
         created_by=body.created_by,
         source_brainstorm_id=body.source_brainstorm_id,
         milestone_id=body.milestone_id,
+        story_id=body.story_id,
         created_at=now,
         updated_at=now,
     )
@@ -207,46 +210,66 @@ async def push_task(
     return _to_read(task)
 
 
+class _TaskFilters:
+    def __init__(
+        self,
+        project_id: str | None = None,
+        status: str | None = Query(None),
+        type: str | None = Query(None),
+        milestone_id: str | None = Query(None),
+        source_brainstorm_id: str | None = Query(None),
+        repository_id: str | None = Query(None),
+        story_id: str | None = Query(None),
+        since: datetime | None = Query(None),
+        limit: int | None = Query(None, ge=1),
+        sort: str | None = Query(None),
+    ):
+        self.project_id = project_id
+        self.status = status
+        self.type = type
+        self.milestone_id = milestone_id
+        self.source_brainstorm_id = source_brainstorm_id
+        self.repository_id = repository_id
+        self.story_id = story_id
+        self.since = since
+        self.limit = limit
+        self.sort = sort
+
+
 @router.get("/", response_model=list[TaskRead])
 async def list_tasks(
-    project_id: str | None = None,
-    status_filter: str | None = Query(None, alias="status"),
-    type_filter: str | None = Query(None, alias="type"),
-    milestone_id: str | None = Query(None),
-    source_brainstorm_id: str | None = Query(None),
-    repository_id: str | None = Query(None),
-    since: datetime | None = Query(None),
-    limit: int | None = Query(None, ge=1),
-    sort: str | None = Query(None),
+    filters: _TaskFilters = Depends(),
     db: AsyncSession = Depends(get_async_session),
 ) -> list[TaskRead]:
     query = select(Task)
 
-    if project_id:
-        query = query.where(Task.project_id == project_id)
-    if status_filter:
-        query = query.where(Task.status == status_filter)
-    if type_filter:
-        query = query.where(Task.type == type_filter)
-    if milestone_id:
-        query = query.where(Task.milestone_id == milestone_id)
-    if source_brainstorm_id:
-        query = query.where(Task.source_brainstorm_id == source_brainstorm_id)
-    if repository_id:
-        query = query.where(Task.repository_id == repository_id)
-    if since:
-        query = query.where(Task.updated_at >= since)
+    if filters.project_id:
+        query = query.where(Task.project_id == filters.project_id)
+    if filters.status:
+        query = query.where(Task.status == filters.status)
+    if filters.type:
+        query = query.where(Task.type == filters.type)
+    if filters.milestone_id:
+        query = query.where(Task.milestone_id == filters.milestone_id)
+    if filters.source_brainstorm_id:
+        query = query.where(Task.source_brainstorm_id == filters.source_brainstorm_id)
+    if filters.repository_id:
+        query = query.where(Task.repository_id == filters.repository_id)
+    if filters.story_id:
+        query = query.where(Task.story_id == filters.story_id)
+    if filters.since:
+        query = query.where(Task.updated_at >= filters.since)
 
     # Sorting
-    if sort == "-created_at":
+    if filters.sort == "-created_at":
         query = query.order_by(Task.created_at.desc())
-    elif sort == "created_at":
+    elif filters.sort == "created_at":
         query = query.order_by(Task.created_at.asc())
     else:
         query = query.order_by(Task.priority.asc(), Task.created_at.asc())
 
-    if limit is not None:
-        query = query.limit(limit)
+    if filters.limit is not None:
+        query = query.limit(filters.limit)
 
     result = await db.execute(query)
     items = result.scalars().all()

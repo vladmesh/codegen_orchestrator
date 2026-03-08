@@ -9,7 +9,7 @@
 
 ### Story model + API
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Новая сущность Story (id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by). Alembic миграция + CRUD API + action-based status transitions. Task.story_id FK. parent_story_id — self-ref FK для epic-like группировки.
 
@@ -54,6 +54,12 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: /brainstorm должен уметь подхватить существующий draft из БД и продолжить дискуссию. Сценарий: /brainstorm resume → GET /api/brainstorms/?status=draft → список → выбор → дополнение content. Также: миграция 14 legacy brainstorms из docs/brainstorms/ в БД (status=draft/done/triaged по текущему стат...
+
+### Integrate Repository into production flows (webhook, scheduler, worker)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Подключить Repository модель в production pipeline. Сейчас webhook/scheduler/worker используют Project.repository_url и Project.github_repo_id напрямую.  1. webhooks.py: lookup через Repository.provider_repo_id вместо Project.github_repo_id 2. github_sync.py: создаёт Repository записи вместо обно...
 
 ### #59 PO work item tools (Step 4)
 - **Priority**: LOW
