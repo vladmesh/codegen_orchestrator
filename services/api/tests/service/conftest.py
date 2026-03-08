@@ -83,3 +83,12 @@ async def _tasks_project():
             )
 
     return TASK_TEST_PROJECT_ID
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _dispose_app_engine():
+    """Dispose the app's module-level DB engine after all tests to avoid ResourceWarnings."""
+    yield
+    from src.database import engine as app_engine
+
+    await app_engine.dispose()

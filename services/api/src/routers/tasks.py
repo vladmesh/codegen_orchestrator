@@ -115,20 +115,20 @@ def _validate_transition(from_status: str, to_status: str) -> None:
         from_s = TaskStatus(from_status)
     except ValueError:
         raise HTTPException(  # noqa: B904
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid status: {from_status}",
         )
     try:
         to_s = TaskStatus(to_status)
     except ValueError:
         raise HTTPException(  # noqa: B904
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid status: {to_status}",
         )
     if to_s not in VALID_TRANSITIONS[from_s]:
         allowed = [s.value for s in VALID_TRANSITIONS[from_s]]
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot transition from {from_status} to {to_status}. " f"Allowed: {allowed}",
         )
 
@@ -406,7 +406,7 @@ async def complete_task(
     path = _COMPLETE_PATH.get(task.status)
     if path is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Cannot complete task from status '{task.status}'",
         )
 

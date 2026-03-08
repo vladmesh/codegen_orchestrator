@@ -45,14 +45,14 @@ def _validate_transition(from_status: str, to_status: str) -> None:
         from_s = BrainstormStatus(from_status)
     except ValueError:
         raise HTTPException(  # noqa: B904
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid status: {from_status}",
         )
     try:
         to_s = BrainstormStatus(to_status)
     except ValueError:
         raise HTTPException(  # noqa: B904
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid status: {to_status}",
         )
     if to_s not in VALID_TRANSITIONS[from_s]:

@@ -209,7 +209,7 @@ async def ingest_documents(
         payload = RAGDocsIngest.model_validate(payload_dict)
     except Exception as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid payload schema: {exc}",
         ) from exc
 
