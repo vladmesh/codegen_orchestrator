@@ -8,7 +8,7 @@
 |-------|----------|-------------|-----|-------|
 | **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks) | Pre-push + CI | ~12s (parallel) |
 | **Service** | `services/{svc}/tests/service/` | Docker (single service) | CI | ~5-10 min |
-| **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI | ~10-30 min |
+| **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI (with `run-integration-tests` label) | ~10-30 min |
 | **E2E** | `.claude/skills/e2e-*` (manual), `tests/e2e/` (scripts) | Full stack + real LLM | Manual only | 10-60 min |
 
 ## Running Tests
@@ -24,6 +24,7 @@ uv run bash scripts/test-unit-local.sh --serial
 make test-service SERVICE=api
 
 # Integration (Docker Compose, full stack)
+# NOTE: In CI, these only run if the PR has the 'run-integration-tests' label.
 make test-integration          # All (auto-discovers docker/test/integration/*.yml)
 make test-integration-backend  # Specific suite
 

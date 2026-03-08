@@ -11,6 +11,10 @@ on:
       - develop
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Job 1: Detect Changes - Identify which services have been modified
   detect-changes:
@@ -61,32 +65,9 @@ jobs:
               - 'docker/test/**'
               - 'tests/integration/**'
 
-  # Job 2: Lint - Fast syntax and style checks (always run)
-  lint:
-    name: Lint (Ruff)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      - name: Install ruff
-        run: pip install ruff==0.8.4
-
-      - name: Check formatting
-        run: ruff format --check .
-
-      - name: Lint
-        run: ruff check .
-
-  # Job 3: Unit Tests - Fast tests without external dependencies
-  test-unit:
-    name: Unit Tests
+  # Job 2: Fast Checks - Style checks and unit tests (always run)
+  fast-checks:
+    name: Fast Checks (Ruff & Unit Tests)
     runs-on: ubuntu-latest
     needs: detect-changes
     steps:
@@ -101,16 +82,22 @@ jobs:
       - name: Install uv
         run: pip install uv
 
+      - name: Check formatting with Ruff
+        run: uv run ruff format --check .
+
+      - name: Lint with Ruff
+        run: uv run ruff check .
+
       - name: Run unit tests
         run: make test-unit
 
-  # Job 4: Service Tests - Tests requiring isolated Docker Compose infra
+  # Job 3: Service Tests - Tests requiring isolated Docker Compose infra
   test-service:
     name: Service Tests (${{ matrix.service }})
     runs-on: ubuntu-latest
-    needs: [detect-changes, test-unit]
-    # Run only if unit tests passed
-    if: needs.test-unit.result == 'success'
+    needs: [detect-changes, fast-checks]
+    # Run only if fast checks passed
+    if: needs.fast-checks.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -127,30 +114,26 @@ jobs:
         uses: docker/setup-buildx-action@v3
         if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
 
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-service-${{ matrix.service }}-${{ hashFiles(format('services/{0}/pyproject.toml', matrix.service)) }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-service-${{ matrix.service }}-
-            ${{ runner.os }}-buildx-service-
-            ${{ runner.os }}-buildx-
-
       - name: Run service tests
         if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
         run: make test-service SERVICE=${{ matrix.service }}
         env:
           DOCKER_BUILDKIT: 1
+          # Use Inline Buildx Caching with GitHub Actions cache backend
+          COMPOSE_DOCKER_CLI_BUILD: 1
+          BUILDX_CACHE_TO: type=gha,mode=max,scope=service-${{ matrix.service }}
+          BUILDX_CACHE_FROM: type=gha,scope=service-${{ matrix.service }}
 
-  # Job 5: Integration Tests - Parallel matrix across compose stacks
-  # Each suite runs only when relevant files changed (or shared/docker-test changed)
+  # Job 4: Integration Tests - Parallel matrix across compose stacks
+  # Runs only if requested via label on PR or manually via workflow_dispatch
   test-integration:
     name: Integration Tests (${{ matrix.suite }})
     runs-on: ubuntu-latest
     needs: [detect-changes, test-service]
-    if: needs.test-service.result == 'success'
+    if: >
+      needs.test-service.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       contains(github.event.pull_request.labels.*.name, 'run-integration-tests'))
     strategy:
       fail-fast: false
       matrix:
@@ -210,22 +193,15 @@ jobs:
         if: matrix.should_run == 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Cache Docker layers
-        if: matrix.should_run == 'true'
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-integration-${{ matrix.suite }}-${{ hashFiles('services/*/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-integration-${{ matrix.suite }}-
-            ${{ runner.os }}-buildx-integration-
-            ${{ runner.os }}-buildx-
-
       - name: Run integration tests
         if: matrix.should_run == 'true'
         run: make test-integration-${{ matrix.suite }}
         env:
           DOCKER_BUILDKIT: 1
+          # Use Inline Buildx Caching with GitHub Actions cache backend
+          COMPOSE_DOCKER_CLI_BUILD: 1
+          BUILDX_CACHE_TO: type=gha,mode=max,scope=integration-${{ matrix.suite }}
+          BUILDX_CACHE_FROM: type=gha,scope=integration-${{ matrix.suite }}
 
       - name: Skip notification
         if: matrix.should_run != 'true'
@@ -234,78 +210,4 @@ jobs:
       - name: Cleanup test containers
         if: always() && matrix.should_run == 'true'
         run: docker compose -p codegen_orchestrator_test_${{ matrix.suite }} -f docker/test/integration/${{ matrix.suite }}.yml down -v --remove-orphans 2>/dev/null || true
-
-  # Job 6: Build Worker Base Image
-  build-worker-base:
-    name: Build Worker Base
-    runs-on: ubuntu-latest
-    needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.worker-manager == 'true' || needs.detect-changes.outputs.shared == 'true' || needs.detect-changes.outputs.packages == 'true' || github.event_name == 'workflow_dispatch' }}
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build Common Base
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: services/worker-manager/images/worker-base-common/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:latest
-            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build Claude Base
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: services/worker-manager/images/worker-base-claude/Dockerfile
-          push: true
-          build-args: |
-            BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:${{ github.sha }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:latest
-            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build Factory Base
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: services/worker-manager/images/worker-base-factory/Dockerfile
-          push: true
-          build-args: |
-            BASE_IMAGE=ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-common:${{ github.sha }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:latest
-            ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Verify image healthchecks
-        run: |
-          # Verify the images we just built (using local tags if push: false, or pulling if needed)
-          # Note: build-push-action with load: true is needed to run locally if not pushing
-          docker run --rm ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-claude:${{ github.sha }} healthcheck
-          docker run --rm ghcr.io/${{ github.repository_owner }}/codegen-orchestrator/worker-base-factory:${{ github.sha }} healthcheck
-        if: github.event_name != 'pull_request'
 
