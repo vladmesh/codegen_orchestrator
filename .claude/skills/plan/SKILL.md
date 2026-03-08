@@ -134,4 +134,25 @@ Print:
 - Task: #ID — Title
 - Steps: N total
 - Estimated scope: files to touch, tests to write
-- ⚠️ flags: any steps needing approval, external dependencies, or risks
+- Flags: any steps needing approval, external dependencies, or risks
+
+## Self-Feedback
+
+After completing this skill, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
+
+- A command or path in this skill was **wrong or outdated**
+- A step was **missing context** that you had to figure out yourself
+- A step could be **simplified or reordered** for better flow
+- The skill **gave ambiguous instructions** that led to a wrong first attempt
+
+Entry format:
+
+```markdown
+## [plan] — <today's date>
+- **Type**: bug | missing-info | optimization
+- **Quote**: "<exact line or section from this skill>"
+- **Problem**: <what went wrong or was missing>
+- **Suggested fix**: <concrete change to the skill text>
+```
+
+Only write feedback that is **specific and actionable**. Skip vague impressions.
