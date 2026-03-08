@@ -12,7 +12,7 @@ from shared.contracts.queues.worker import ScaffoldConfig
 @pytest.fixture
 def scaffold_config():
     return ScaffoldConfig(
-        template_repo="gh:vladmesh/service-template",
+        template_repo="gh:project-factory-organization/service-template",
         project_name="my-project",
         modules="backend,tg_bot",
         task_description="Build a bot",
@@ -141,7 +141,7 @@ class TestScaffoldPhase:
         from src.manager import WorkerManager
 
         config = ScaffoldConfig(
-            template_repo="gh:vladmesh/service-template",
+            template_repo="gh:project-factory-organization/service-template",
             project_name="my-project",
             modules="backend",
             task_description=dangerous_desc,

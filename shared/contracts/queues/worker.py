@@ -32,7 +32,7 @@ class WorkerChannels(StrEnum):
 class ScaffoldConfig(BaseModel):
     """Configuration for scaffolding a new project via copier."""
 
-    template_repo: str  # "gh:vladmesh/service-template"
+    template_repo: str  # "gh:project-factory-organization/service-template"
     project_name: str  # sanitized name for copier
     modules: str  # "backend,tg_bot"
     task_description: str = ""

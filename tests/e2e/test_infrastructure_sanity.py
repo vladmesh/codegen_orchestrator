@@ -45,7 +45,9 @@ SKIP_REASON = "GitHub App credentials not configured (GITHUB_APP_ID, GITHUB_APP_
 GITHUB_CONFIGURED = GITHUB_APP_ID and (GITHUB_APP_KEY_PATH or GITHUB_APP_KEY_CONTENT)
 
 # Template for scaffolding
-SERVICE_TEMPLATE = os.getenv("SERVICE_TEMPLATE_PATH", "gh:vladmesh/service-template")
+SERVICE_TEMPLATE = os.getenv(
+    "SERVICE_TEMPLATE_PATH", "gh:project-factory-organization/service-template"
+)
 
 
 def run_copier(

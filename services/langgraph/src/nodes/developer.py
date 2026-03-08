@@ -284,7 +284,9 @@ class DeveloperNode(FunctionalNode):
         if not task_description:
             task_description = config.get("detailed_spec", "")
 
-        template_repo = os.getenv("SERVICE_TEMPLATE_REPO", "gh:vladmesh/service-template")
+        template_repo = os.getenv(
+            "SERVICE_TEMPLATE_REPO", "gh:project-factory-organization/service-template"
+        )
 
         logger.info(
             "scaffold_config_decision",

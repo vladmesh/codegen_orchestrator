@@ -108,7 +108,7 @@ System events (worker callbacks, reminders) → po:input → PO decides → po:p
 
 | Репозиторий | Использование |
 |-------------|---------------|
-| [service-template](https://github.com/vladmesh/service-template) | Copier шаблон для генерации проектов |
+| [service-template](https://github.com/project-factory-organization/service-template) | Copier шаблон для генерации проектов |
 
 ## Документация
 

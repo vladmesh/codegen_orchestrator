@@ -11,7 +11,7 @@
 - **Агенты как узлы графа**: Product Owner — это агент LangGraph, управляющий процессом.
 - **Worker Manager**: Запускает изолированные контейнеры для Engineering/DevOps задач (Claude Code, Factory.ai).
 - **Нелинейность**: Агенты могут вызывать друг друга в любом порядке
-- **Spec-first**: Используем [service-template](https://github.com/vladmesh/service-template) для генерации кода
+- **Spec-first**: Используем [service-template](https://github.com/project-factory-organization/service-template) для генерации кода
 
 ## Архитектура
 
@@ -60,7 +60,7 @@ graph TD
 
 | Проект | Описание | Репо |
 |--------|----------|------|
-| **service-template** | Spec-first фреймворк для генерации микросервисов | [GitHub](https://github.com/vladmesh/service-template) |
+| **service-template** | Spec-first фреймворк для генерации микросервисов | [GitHub](https://github.com/project-factory-organization/service-template) |
 
 ## Инфраструктура
 
@@ -79,7 +79,7 @@ graph TD
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/vladmesh/codegen_orchestrator.git
+   git clone https://github.com/project-factory-organization/codegen-orchestrator.git
    cd codegen_orchestrator
    ```
 
