@@ -20,7 +20,7 @@ make down                  # Stop services
 make build                 # Build all Docker images
 make migrate               # Run database migrations
 make makemigrations MSG='description'  # Create new migration
-make backlog               # Generate backlog.md from WorkItems API
+make backlog               # Generate backlog.md from Tasks API
 make seed                  # Seed database with API keys
 make nuke                  # Full reset (volumes, rebuild, migrate, seed)
 make shell                 # Open shell in tooling container
