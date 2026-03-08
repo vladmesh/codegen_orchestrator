@@ -9,96 +9,96 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from generate_roadmap import format_roadmap
 
 
-def test_format_roadmap_open_milestone_with_items():
-    milestones = [
-        {
-            "id": "ms-1",
-            "title": "Phase 1: Foundation",
-            "description": "Core pipeline",
-            "status": "open",
-            "sort_order": 0,
-        },
-    ]
-    tasks_by_milestone = {
-        "ms-1": [
-            {"title": "#1 Setup CI", "status": "done"},
-            {"title": "#2 Deploy pipeline", "status": "backlog"},
-        ],
+def _story(id="s-1", title="Story", description=None, status="active", type="product", tasks=None):
+    return {
+        "id": id,
+        "title": title,
+        "description": description,
+        "status": status,
+        "type": type,
+        "tasks": tasks or [],
     }
-    unsorted_items = []
 
-    result = format_roadmap(milestones, tasks_by_milestone, unsorted_items)
 
-    assert "## Phase 1: Foundation" in result
-    assert "Core pipeline" in result
+def test_format_roadmap_product_story_with_tasks():
+    stories = [
+        _story(
+            title="User can deploy projects",
+            description="Full deploy pipeline",
+            tasks=[
+                {"title": "#1 Setup CI", "status": "done"},
+                {"title": "#2 Deploy pipeline", "status": "backlog"},
+            ],
+        ),
+    ]
+
+    result = format_roadmap(stories, [])
+
+    assert "## User can deploy projects" in result
+    assert "Full deploy pipeline" in result
     assert "- [x] #1 Setup CI" in result
     assert "- [ ] #2 Deploy pipeline" in result
 
 
-def test_format_roadmap_completed_milestone():
-    milestones = [
-        {
-            "id": "ms-1",
-            "title": "Phase 1: Done stuff",
-            "description": "All done",
-            "status": "completed",
-            "sort_order": 0,
-        },
+def test_format_roadmap_completed_story():
+    stories = [
+        _story(title="MVP launch", status="completed"),
     ]
-    tasks_by_milestone = {"ms-1": []}
-    unsorted_items = []
 
-    result = format_roadmap(milestones, tasks_by_milestone, unsorted_items)
+    result = format_roadmap(stories, [])
 
-    assert "## Phase 1: Done stuff" in result
+    assert "## MVP launch" in result
     assert "COMPLETE" in result
 
 
-def test_format_roadmap_unsorted_items():
-    milestones = []
-    tasks_by_milestone = {}
-    unsorted_items = [
-        {"title": "#99 Orphan task", "status": "backlog"},
+def test_format_roadmap_technical_stories_separate_section():
+    stories = [
+        _story(title="User dashboard", type="product"),
+        _story(id="s-2", title="Rust migration", type="technical"),
     ]
 
-    result = format_roadmap(milestones, tasks_by_milestone, unsorted_items)
+    result = format_roadmap(stories, [])
 
-    assert "## Backlog" in result
+    assert "# Product Roadmap" in result
+    assert "## User dashboard" in result
+    assert "# Technical Initiatives" in result
+    assert "## Rust migration" in result
+
+
+def test_format_roadmap_unsorted_tasks():
+    unsorted = [{"title": "#99 Orphan task", "status": "backlog"}]
+
+    result = format_roadmap([], unsorted)
+
+    assert "## Unlinked Tasks" in result
     assert "- [ ] #99 Orphan task" in result
 
 
-def test_format_roadmap_multiple_milestones_ordered():
-    milestones = [
-        {
-            "id": "ms-1",
-            "title": "Phase 1",
-            "description": None,
-            "status": "completed",
-            "sort_order": 0,
-        },
-        {
-            "id": "ms-2",
-            "title": "Phase 2",
-            "description": "Current work",
-            "status": "open",
-            "sort_order": 1,
-        },
+def test_format_roadmap_ordering_product_before_technical():
+    stories = [
+        _story(id="s-1", title="Technical thing", type="technical"),
+        _story(id="s-2", title="Product thing", type="product"),
     ]
-    tasks_by_milestone = {
-        "ms-1": [{"title": "#1 Done task", "status": "done"}],
-        "ms-2": [{"title": "#2 Active task", "status": "in_dev"}],
-    }
-    unsorted_items = []
 
-    result = format_roadmap(milestones, tasks_by_milestone, unsorted_items)
+    result = format_roadmap(stories, [])
 
-    # Phase 1 should come before Phase 2
-    idx1 = result.index("Phase 1")
-    idx2 = result.index("Phase 2")
-    assert idx1 < idx2
+    idx_product = result.index("Product thing")
+    idx_technical = result.index("Technical thing")
+    assert idx_product < idx_technical
 
 
 def test_format_roadmap_header():
-    result = format_roadmap([], {}, [])
+    result = format_roadmap([], [])
     assert result.startswith("# Roadmap")
     assert "make sync" in result
+
+
+def test_format_roadmap_no_tasks_section_when_empty():
+    stories = [_story(title="Empty story", description="No tasks yet")]
+
+    result = format_roadmap(stories, [])
+
+    assert "## Empty story" in result
+    assert "No tasks yet" in result
+    # No checkbox lines
+    assert "- [" not in result

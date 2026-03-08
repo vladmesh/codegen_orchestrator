@@ -55,7 +55,6 @@ def _to_read(task: Task, last_event: str | None = None) -> TaskRead:
         need_e2e=getattr(task, "need_e2e", False),
         created_by=task.created_by,
         source_brainstorm_id=getattr(task, "source_brainstorm_id", None),
-        milestone_id=getattr(task, "milestone_id", None),
         repository_id=getattr(task, "repository_id", None),
         story_id=getattr(task, "story_id", None),
         blocked_by_task_id=getattr(task, "blocked_by_task_id", None),
@@ -160,7 +159,6 @@ async def create_task(
         need_e2e=body.need_e2e,
         created_by=body.created_by,
         source_brainstorm_id=body.source_brainstorm_id,
-        milestone_id=body.milestone_id,
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         created_at=now,
@@ -200,7 +198,6 @@ async def push_task(
         need_e2e=body.need_e2e,
         created_by=body.created_by,
         source_brainstorm_id=body.source_brainstorm_id,
-        milestone_id=body.milestone_id,
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         created_at=now,
@@ -220,7 +217,6 @@ class _TaskFilters:
         project_id: uuid.UUID | None = None,
         status: str | None = Query(None),
         type: str | None = Query(None),
-        milestone_id: str | None = Query(None),
         source_brainstorm_id: str | None = Query(None),
         repository_id: str | None = Query(None),
         story_id: str | None = Query(None),
@@ -231,7 +227,6 @@ class _TaskFilters:
         self.project_id = project_id
         self.status = status
         self.type = type
-        self.milestone_id = milestone_id
         self.source_brainstorm_id = source_brainstorm_id
         self.repository_id = repository_id
         self.story_id = story_id
@@ -253,8 +248,6 @@ async def list_tasks(
         query = query.where(Task.status == filters.status)
     if filters.type:
         query = query.where(Task.type == filters.type)
-    if filters.milestone_id:
-        query = query.where(Task.milestone_id == filters.milestone_id)
     if filters.source_brainstorm_id:
         query = query.where(Task.source_brainstorm_id == filters.source_brainstorm_id)
     if filters.repository_id:

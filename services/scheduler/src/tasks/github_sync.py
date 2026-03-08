@@ -315,8 +315,10 @@ async def sync_projects_worker() -> None:
 
             # 1. Get Organization
             try:
-                install_info = await github_client.get_first_org_installation()
-                org_name = install_info["org"]
+                org_name = os.getenv("GITHUB_ORG")
+                if not org_name:
+                    install_info = await github_client.get_first_org_installation()
+                    org_name = install_info["org"]
             except Exception as e:
                 logger.error(
                     "github_app_installation_resolve_failed",

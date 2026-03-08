@@ -20,6 +20,7 @@ def _make_story(**overrides):
         "title": "Test story",
         "description": None,
         "acceptance_criteria": None,
+        "type": "product",
         "status": "created",
         "priority": 0,
         "blocked_by_story_id": None,

@@ -45,16 +45,6 @@ def test_task_create_full():
     assert schema.max_iterations == 5
 
 
-def test_task_create_with_milestone_id():
-    schema = TaskCreate(project_id=PROJECT_UUID, title="Task in milestone", milestone_id="ms-abc")
-    assert schema.milestone_id == "ms-abc"
-
-
-def test_task_create_milestone_id_optional():
-    schema = TaskCreate(project_id=PROJECT_UUID, title="No milestone")
-    assert schema.milestone_id is None
-
-
 def test_task_requires_project_id():
     with pytest.raises(ValidationError):
         TaskCreate(title="Test without project")
@@ -160,12 +150,6 @@ def test_task_update_partial():
     data = update.model_dump(exclude_unset=True)
     assert data == {"title": "New title"}
     assert "description" not in data
-
-
-def test_task_update_with_milestone_id():
-    update = TaskUpdate(milestone_id="ms-abc")
-    data = update.model_dump(exclude_unset=True)
-    assert data == {"milestone_id": "ms-abc"}
 
 
 def test_task_update_with_plan():

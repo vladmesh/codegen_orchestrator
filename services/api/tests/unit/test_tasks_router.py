@@ -28,7 +28,6 @@ def _make_task(**overrides):
         "max_iterations": 3,
         "created_by": "system",
         "source_brainstorm_id": None,
-        "milestone_id": None,
         "repository_id": None,
         "story_id": None,
         "blocked_by_task_id": None,

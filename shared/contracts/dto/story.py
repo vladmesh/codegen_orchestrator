@@ -3,6 +3,11 @@
 from enum import StrEnum
 
 
+class StoryType(StrEnum):
+    PRODUCT = "product"
+    TECHNICAL = "technical"
+
+
 class StoryStatus(StrEnum):
     CREATED = "created"
     IN_PROGRESS = "in_progress"

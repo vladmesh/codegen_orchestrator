@@ -2,7 +2,7 @@
 
 import pytest
 
-from shared.contracts.dto.story import VALID_TRANSITIONS, StoryStatus
+from shared.contracts.dto.story import VALID_TRANSITIONS, StoryStatus, StoryType
 
 
 class TestStoryStatus:
@@ -49,3 +49,15 @@ class TestStoryTransitions:
     @pytest.mark.parametrize("status", list(StoryStatus))
     def test_all_statuses_have_transitions(self, status):
         assert status in VALID_TRANSITIONS
+
+
+class TestStoryType:
+    def test_values(self):
+        assert StoryType.PRODUCT == "product"
+        assert StoryType.TECHNICAL == "technical"
+
+    def test_membership(self):
+        values = list(StoryType)
+        assert len(values) == 2  # noqa: PLR2004
+        assert "product" in values
+        assert "technical" in values

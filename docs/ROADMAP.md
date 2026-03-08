@@ -43,7 +43,10 @@ Worker swarm, cost tracking, self-hosted CI.
 ## Backlog
 
 - [ ] Update Ruff to latest version and reformat codebase
+- [ ] Replace Milestone with Story type field (product/technical)
 - [ ] /architect skill — Story decomposition into Tasks
+- [ ] Fix compose.dev.yml ports conflict with orchestrator worker containers
+
 - [ ] #52 Scaffold script не экранирует task_description
 - [ ] #18 Split engineering_worker.py (1088 LOC)
 - [ ] #54 Deploy: inter-service URL должен использовать docker service name
@@ -51,9 +54,51 @@ Worker swarm, cost tracking, self-hosted CI.
 - [ ] Integrate Repository into production flows (webhook, scheduler, worker)
 - [ ] #59 PO work item tools (Step 4)
 - [ ] #60 Engineering worker work_item lifecycle (Step 5)
+- [ ] Fix eager import chains in scaffolded projects
+
+- [ ] Auto-generate routers from domain specs
+
+- [ ] Add predefined module to existing project (make add-module)
+
 - [ ] #19 Split github.py Client (986 LOC)
 - [ ] #20 API Key & SSH Key Encryption
+- [ ] Unified handlers: error handling strategy
+
+- [ ] Auto-update __init__.py re-exports after generation
+
+- [ ] Context packer for agents (make context service=backend)
+
 - [ ] #11 E2E Tests Completion
 - [ ] #26 Notifications via Redis Stream (убрать прямую зависимость от Telegram API)
 - [ ] #41 Parallel Server Provisioning
+- [ ] Auto-fuzzing and contract testing (schemathesis)
+
+- [ ] Extract type mappings into language-agnostic config
+
+- [ ] Enum types in model field definitions
+
+- [ ] CLI wrappers (my-framework init/sync/update)
+
+- [ ] Celery worker support
+
 - [ ] #46 Rename duckduckgo_search → ddgs
+- [ ] Audit scaffold templates for best practices
+
+- [ ] Unified handlers: transactional outbox pattern
+
+- [ ] High-level architecture spec (connectivity graph)
+
+- [ ] Spec-first observability (auto OpenTelemetry)
+
+- [ ] Make YAML specs fully language-agnostic
+
+- [ ] Spec-only module storage (long-term)
+
+- [ ] Rust PoC: backend service on Axum
+
+- [ ] Rust PoC: Telegram bot on teloxide
+
+- [ ] Research Tera as Jinja2 replacement for codegen
+
+- [ ] Add Rust service type to services.yml
+

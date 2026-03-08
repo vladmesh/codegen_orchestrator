@@ -83,6 +83,7 @@ async def create_story(
         title=body.title,
         description=body.description,
         acceptance_criteria=body.acceptance_criteria,
+        type=body.type,
         status=StoryStatus.CREATED.value,
         priority=body.priority,
         blocked_by_story_id=body.blocked_by_story_id,
@@ -103,6 +104,7 @@ async def list_stories(
     project_id: uuid.UUID | None = None,
     status_filter: str | None = Query(None, alias="status"),
     parent_story_id: str | None = Query(None),
+    type_filter: str | None = Query(None, alias="type"),
     priority: int | None = Query(None),
     sort: str | None = Query(None),
     db: AsyncSession = Depends(get_async_session),
@@ -115,6 +117,8 @@ async def list_stories(
         query = query.where(Story.status == status_filter)
     if parent_story_id:
         query = query.where(Story.parent_story_id == parent_story_id)
+    if type_filter:
+        query = query.where(Story.type == type_filter)
     if priority is not None:
         query = query.where(Story.priority == priority)
 

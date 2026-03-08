@@ -37,7 +37,7 @@ curl -sf "$API/api/tasks/?status=in_dev"
 
 Read:
 - `docs/CHANGELOG.md` — recent entries
-- `docs/ROADMAP.md` — milestone progress
+- `docs/ROADMAP.md` — story progress
 - `git log --oneline` since last checkpoint date
 
 ### 2. Audit (unless --skip-audit)
@@ -73,7 +73,7 @@ curl -sf "$API/api/tasks/?status=done&sort=-created_at"
 For each completed task:
 - Find it in ROADMAP.md
 - Mark as `[x]`
-- If all items in a milestone are done, update milestone status
+- If all tasks in a story are done, note it
 
 ### 6. Update User Stories
 
@@ -148,7 +148,7 @@ Print a comprehensive summary:
 - Template tasks: N
 
 ### ROADMAP Progress
-- <Milestone>: X/Y complete
+- <Story>: X/Y tasks complete
 
 ### Recommended Next Task
 - #<ID> — <Title> (<reason>)

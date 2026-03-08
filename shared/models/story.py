@@ -5,7 +5,7 @@ import uuid
 from sqlalchemy import ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.story import StoryStatus, StoryType
 
 from .base import Base
 
@@ -25,6 +25,7 @@ class Story(Base):
     title: Mapped[str] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
+    type: Mapped[str] = mapped_column(String(50), default=StoryType.PRODUCT.value, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default=StoryStatus.CREATED.value, index=True)
     priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
     blocked_by_story_id: Mapped[str | None] = mapped_column(

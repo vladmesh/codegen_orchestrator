@@ -22,6 +22,15 @@ class TestStoryCreate:
         assert s.priority == 0
         assert s.blocked_by_story_id is None
         assert s.created_by == "system"
+        assert s.type == "product"
+
+    def test_technical_type(self):
+        s = StoryCreate(project_id=PROJECT_UUID, title="Rust migration", type="technical")
+        assert s.type == "technical"
+
+    def test_invalid_type(self):
+        with pytest.raises(ValidationError):
+            StoryCreate(project_id=PROJECT_UUID, title="Bad", type="invalid")
 
     def test_all_fields(self):
         s = StoryCreate(
@@ -61,12 +70,14 @@ class TestStoryRead:
         mock.priority = 5
         mock.blocked_by_story_id = "story-blocker"
         mock.created_by = "po"
+        mock.type = "technical"
         mock.created_at = now
         mock.updated_at = now
 
         r = StoryRead.model_validate(mock, from_attributes=True)
         assert r.id == "story-abc123"
         assert r.status == "created"
+        assert r.type == "technical"
         assert r.priority == 5
         assert r.blocked_by_story_id == "story-blocker"
 

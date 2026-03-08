@@ -4,6 +4,18 @@
 
 ## 2026-03-08
 
+### Added
+- **Seed DB — stories, repositories, historical tasks** (task-f7cd9611):
+  - Updated project status to `developing`, migrated repo URLs to `project-factory-organization`
+  - Created repositories for hammurabi-game-bot and todo-api with correct `provider_repo_id`
+  - Created 2 new stories: "Refactoring & code health", "Dev process automation"
+  - Created technical story "Rust migration" (for future Story type field: product/technical)
+  - Linked all 40+ orchestrator tasks to stories
+  - Imported 11 done + 12 backlog + 5 Rust tasks from service-template backlog
+  - Cleaned up 8 smoke/test tasks and 3 test stories
+  - Created task for "Replace Milestone with Story type field"
+  - Updated `/triage` skill: story matching on task creation, template tasks via API with repository_id
+
 ### Changed
 - **Project ID → UUID + schema cleanup** (task-7163e7ac): Changed `Project.id` from `String(255)` to native PostgreSQL `UUID` with auto-generation. Migrated all 13 FK `project_id` columns to `Uuid` type. Removed legacy `github_repo_id` and `repository_url` from Project model. Added `visibility` column to Repository. Migrated webhook lookup to `Repository.provider_repo_id`. Added `get_primary_repository` to API clients. Updated all DTOs, schemas, routers, workers, tests, scripts, and skills. Alembic migration handles mixed-format ID conversion (short hex, strings, existing UUIDs).
 
@@ -16,6 +28,9 @@
 - **Story model + API** (wi-34761901): New `Story` entity (`id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by`). `StoryStatus` enum: `created | in_progress | completed | archived` with valid transitions. Full CRUD API at `/api/stories/` with action endpoints (`/start`, `/complete`, `/archive`). `Task.story_id` nullable FK. Self-referencing `parent_story_id` for epic-like grouping. Alembic migration. Refactored `list_tasks` to use `_TaskFilters` dependency class (PLR0913). 47 new unit tests.
 
 ### Fixed
+- **Missing Project warnings spam**: `github_sync` worker now respects `GITHUB_ORG` env var instead of indiscriminately checking the first organization the GitHub App is installed in, preventing false `MISSING` alerts when installed in multiple orgs.
+- **Admin notifications spam**: `notify_admins` now correctly filters out regular users based on the `is_admin` database flag instead of blasting messages to all users in the system.
+
 - **Test Infrastructure Audit**: Fixed 10 bugs and warnings, optimized run speed.
   - Parallelized `make test-unit` execution in bash (35s → ~12s, 2.6x speedup).
   - Fixed unmocked `notify_admins` in scheduler unit tests.

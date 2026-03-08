@@ -13,11 +13,24 @@
 - **Status**: backlog
 - **Brief**: Currently CI is pinned to ruff 0.8.4. Needs to be bumped to the latest version and ruff format executed across all modules.
 
+### Replace Milestone with Story type field (product/technical)
+- **Priority**: CRITICAL
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: 1. Add type field to Story model (product | technical, default product) 2. Migrate API + schemas 3. Drop Milestone model, table, routes, FK references 4. Update make sync and docs generation 5. Alembic migration  After implementation: set type=technical on story-63377d96 (Rust migration) — it was...
+
 ### /architect skill — Story decomposition into Tasks
 - **Priority**: HIGH
 - **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: New skill that takes a Story and decomposes it into Tasks.  Flow: 1. Read Story from API (by ID or pick next created story) 2. Load project context (existing tasks, repos, architecture) 3. Use LLM to decompose story into concrete tasks with titles, descriptions, acceptance criteria 4. Create task...
+
+### Fix compose.dev.yml ports conflict with orchestrator worker containers
+
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: CRITICAL: compose.dev.yml publishes ports 5432/6379. When running inside orchestrator worker container, host ports are already taken. Result: db container fails to start, DNS alias not registered, alembic fails. Fix: orchestrator compose_runner should inject override with ports: [].
 
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: MEDIUM
@@ -79,6 +92,27 @@
 - **Status**: backlog
 - **Brief**: engineering_worker при наличии work_item_id: пишет iteration_start/iteration_end events, CI fix attempts → events с деталями, обновляет work_item.status (in_dev → testing → done). Deploy worker обновляет status при успешном деплое. Полный audit trail: сколько итераций, что фейлилось, почему. Reop...
 
+### Fix eager import chains in scaffolded projects
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: __init__.py eagerly imports app/create_app, which triggers full import chain. Any broken import crashes everything including alembic. Fix: lazy imports or direct model import in env.py.
+
+### Auto-generate routers from domain specs
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Framework generates protocols and controller stubs but routers are manual. Router pattern is formulaic — generate stubs to reduce boilerplate and prevent spec drift.
+
+### Add predefined module to existing project (make add-module)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Allow adding tg_bot/notifications/frontend to a project generated without them. Currently requires re-generation.
+
 ### #2 Agent Hierarchy & Incident Response
 - **Priority**: LOW
 - **Plan**: —
@@ -96,6 +130,27 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Применить SecretsCipher (Fernet) к API key values и SSH keys. TODO-комменты в `api_keys.py:36,72` и `servers.py:66`.
+
+### Unified handlers: error handling strategy
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Define error handling for event handlers: DLQ, error events, or retries with exponential backoff.
+
+### Auto-update __init__.py re-exports after generation
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: After adding new models, schemas/__init__.py etc must be manually updated. Generate these files or remove re-export pattern.
+
+### Context packer for agents (make context service=backend)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Aggregate relevant spec, AGENTS.md, signatures, linter errors into single token-optimized file for agent context.
 
 ### #11 E2E Tests Completion
 - **Priority**: LOW
@@ -115,25 +170,140 @@
 - **Status**: backlog
 - **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task`...
 
+### Auto-fuzzing and contract testing (schemathesis)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Integrate schemathesis into CI. Reads openapi.json, fuzzes running service with valid/invalid inputs. Auto-detect 500 errors without manual tests.
+
+### Extract type mappings into language-agnostic config
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Partially done: type_spec_to_python() centralized in spec/types.py. Remaining: unify all mappings (Python, TypeScript, OpenAPI) via single table/config. Extract to YAML/TOML for adding new languages without code.
+
+### Enum types in model field definitions
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Support enum types in YAML specs. Generated Pydantic models would use Literal or Enum instead of plain strings.
+
+### CLI wrappers (my-framework init/sync/update)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Wrap make commands into standalone CLI tool. Simplify usage for humans and agents.
+
+### Celery worker support
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Add celery-worker service type. Pre-configured Redis/RabbitMQ in docker-compose, auto-generated celery_app and task decorators.
+
 ### #46 Rename duckduckgo_search → ddgs
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Пакет `duckduckgo_search` переименован в `ddgs`. Runtime warning в логах: `This package has been renamed to ddgs! Use pip install ddgs instead.` Заменить зависимость в `services/langgraph/pyproject.toml`, обновить импорт в `services/langgraph/src/po/tools.py`, перегенерировать lock-файл (`make lo...
 
+### Audit scaffold templates for best practices
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Review templates in .framework/framework/templates/scaffold/services/ to ensure they use latest patterns adopted by main services.
+
+### Unified handlers: transactional outbox pattern
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Events published directly after DB writes. Consider transactional outbox to avoid dual write problem.
+
+### High-level architecture spec (connectivity graph)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Define service relationships in services.yml: access, exposes, consumes. Generate typed clients and network policies.
+
+### Spec-first observability (auto OpenTelemetry)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Auto-embed traces and metrics into generated endpoints. Zero-config observability from spec definitions.
+
+### Make YAML specs fully language-agnostic
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Partially done: abstract types used. Remaining: replace list[string] shorthand with JSON Schema array+items for full language-agnosticity.
+
+### Spec-only module storage (long-term)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Store only specs and minimal scaffolds, generate all business logic on project creation. Zero distinction between built-in and custom services.
+
+### Rust PoC: backend service on Axum
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Proof of concept — Axum + SeaORM 2.0 + utoipa. Same API, same Docker, same compose as Python backend. Test how well AI agent handles Axum code generation.
+
+### Rust PoC: Telegram bot on teloxide
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: PoC Telegram bot on teloxide as alternative to python-telegram-bot. Compare developer and agent experience.
+
+### Research Tera as Jinja2 replacement for codegen
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Tera is Rust Jinja2 analog with near-identical syntax. Evaluate how many current templates can be reused. If 90%+ compatible, migration cost is low.
+
+### Add Rust service type to services.yml
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: New rust-axum service type. Scaffold template with Cargo.toml, multi-stage Dockerfile (cargo-chef), main.rs. Enables mixing Python and Rust services.
+
 
 ## Done (last 10)
 
-- Project ID → UUID + schema cleanup — 2026-03-08
-- Story: priority + blocked_by fields — 2026-03-08
-- #999 Smoke test task — 2026-03-07
-- make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms) — 2026-03-07
-- #64 Implement skill: PR flow + in_ci status + need_e2e — 2026-03-07
-- Story model + API — 2026-03-08
-- Repository model + migration — 2026-03-08
-- Rename WorkItem→Task, Task→Run — 2026-03-07
-- #63 Milestone model + ROADMAP generation — 2026-03-07
-- #61 Brainstorm model in DB — 2026-03-07
+- Add E2E CI job for unified handlers (dual-transport pipeline)
+ — 2026-03-08
+- Fix Jinja whitespace in doc templates + add cache mounts to Dockerfiles
+ — 2026-03-08
+- Fix codegen quality (cosmetic bugs + param types + optional schemas)
+ — 2026-03-08
+- Rewrite copier tests
+ — 2026-03-08
+- Spec-first async messaging (Redis Streams + FastStream)
+ — 2026-03-08
+- Add list_users operation to reference User domain
+ — 2026-03-08
+- Fix tg_bot AGENTS.md wrong env var + add router/list examples
+ — 2026-03-08
+- Add CreatedAtMixin (ORMBase forced updated_at on all models)
+ — 2026-03-08
+- Fix compose.dev.yml PATH + make setup idempotency
+ — 2026-03-08
+- Fix broken import in scaffolded user repository
+ — 2026-03-08
 
 ## Ideas
 

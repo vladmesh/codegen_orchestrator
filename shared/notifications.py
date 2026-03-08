@@ -152,9 +152,12 @@ async def notify_admins(message: str, level: str = "info") -> int:
         logger.warning("no_users_found", action="skip_notifications")
         return 0
 
-    # Filter admin users (for MVP, all users are admins)
-    # TODO: Add is_admin field filtering when implemented
-    admin_users = users
+    # Filter admin users
+    admin_users = [u for u in users if u.get("is_admin")]
+
+    if not admin_users:
+        logger.warning("no_admin_users_found", action="skip_notifications")
+        return 0
 
     # Prepare message with emoji
     emoji = EMOJI_MAP.get(level, "ℹ️")

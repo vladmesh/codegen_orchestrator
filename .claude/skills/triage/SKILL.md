@@ -26,10 +26,13 @@ API="http://localhost:8000"
 # Resolve project UUID (first project in the list)
 PROJECT_ID=$(curl -sf "$API/api/projects/" | jq -r '.[0].id')
 
+# Load stories for story matching
+STORIES=$(curl -sf "$API/api/stories/?project_id=$PROJECT_ID" | jq -r '.[] | select(.status == "created") | "\(.id) | \(.title)"')
+
 # Get next tag number
 NEXT_TAG=$(curl -sf "$API/api/tasks/next-tag" | jq -r '.next_tag')
 
-# Create a task
+# Create a task (always include story_id!)
 curl -sf -X POST "$API/api/tasks/" \
   -H "Content-Type: application/json" \
   -d '{
@@ -38,6 +41,7 @@ curl -sf -X POST "$API/api/tasks/" \
     "type": "feature",
     "description": "<Brief>",
     "priority": 1,
+    "story_id": "<matched_story_id>",
     "created_by": "triage"
   }'
 
@@ -51,6 +55,18 @@ curl -sf -X POST "$API/api/tasks/<wi_id>/reopen" \
 ```
 
 Priority mapping: `0 = CRITICAL, 1 = HIGH, 2 = MEDIUM, 3 = LOW`
+
+## Story Matching
+
+**Every task MUST have a `story_id`.** Before creating a task, match it to the best-fitting story from the loaded list.
+
+Stories are **product-level abstractions** (user value), not technical categories. Examples:
+- Pipeline bug, codegen fix, scaffold issue → "Stabilize core pipeline" (user gets working project)
+- Internal tooling, skills, dev workflow → "Dev process automation"
+- Code splitting, cleanup, refactoring → "Refactoring & code health"
+- Security fixes, encryption, audit → "Security hardening"
+
+If no story fits, create the task without `story_id` and list it in the triage report under `### Tasks without story (needs human decision)`.
 
 ## Sources
 
@@ -119,10 +135,17 @@ Search existing tasks via API before creating new ones.
 
 | Type | Action |
 |------|--------|
-| `orchestrator` | Create task via API with `project_id: "$PROJECT_ID"` (resolved at start) |
-| `template` | Add to `/home/vlad/projects/service-template/docs/backlog.md` (create file if missing, free format). Stage and commit in that repo. |
+| `orchestrator` | Create task via API with `project_id: "$PROJECT_ID"`, `repository_id` for codegen-orchestrator repo |
+| `template` | Create task via API with `project_id: "$PROJECT_ID"`, `repository_id` for service-template repo. All tasks go through the API — no more writing to service-template/docs/backlog.md |
 | `meta` | Create task via API with `[meta]` prefix in title |
 | `infra` | Don't create tasks. Collect and list at the end for human decision. |
+
+Resolve repository IDs at startup:
+```bash
+REPOS=$(curl -sf "$API/api/repositories/?project_id=$PROJECT_ID")
+ORCHESTRATOR_REPO_ID=$(echo "$REPOS" | jq -r '.[] | select(.name == "codegen-orchestrator") | .id')
+TEMPLATE_REPO_ID=$(echo "$REPOS" | jq -r '.[] | select(.name == "service-template") | .id')
+```
 
 ## Regression Detection
 
@@ -174,8 +197,8 @@ curl -sf -X PATCH "$API/api/tasks/<wi_id>" \
 ```
 
 Priority adjustments:
-- Task in current phase but MEDIUM → bump to HIGH if phase is a blocker milestone
-- Task deferred to future phase → downgrade to LOW
+- Task blocking active story → bump to HIGH if story is critical
+- Task deferred to future story → downgrade to LOW
 - Add note to description when priority changes
 
 ## Sync Docs
@@ -194,11 +217,7 @@ git add docs/backlog.md docs/e2e_results/ docs/brainstorms/ docs/ideas.md
 git commit -m "triage: <N> tasks created, <M> reports processed"
 ```
 
-If template backlog was updated, also commit in that repo:
-```bash
-git -C /home/vlad/projects/service-template add docs/backlog.md
-git -C /home/vlad/projects/service-template commit -m "triage: tasks from orchestrator E2E"
-```
+Note: template tasks now go through the API (not service-template/docs/backlog.md), so no separate repo commit needed.
 
 ## Output
 

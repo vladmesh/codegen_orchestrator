@@ -22,7 +22,6 @@ class TaskCreate(BaseModel):
     need_e2e: bool = False
     created_by: str = "system"
     source_brainstorm_id: str | None = None
-    milestone_id: str | None = None
     repository_id: str | None = None
     story_id: str | None = None
     blocked_by_task_id: str | None = None
@@ -45,7 +44,6 @@ class TaskRead(BaseModel):
     need_e2e: bool = False
     created_by: str
     source_brainstorm_id: str | None = None
-    milestone_id: str | None = None
     repository_id: str | None = None
     story_id: str | None = None
     blocked_by_task_id: str | None = None
@@ -67,7 +65,6 @@ class TaskUpdate(BaseModel):
     acceptance_criteria: str | None = None
     priority: int | None = None
     need_e2e: bool | None = None
-    milestone_id: str | None = None
     repository_id: str | None = None
     story_id: str | None = None
     blocked_by_task_id: str | None = None
