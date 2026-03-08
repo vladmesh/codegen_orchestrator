@@ -42,11 +42,12 @@ Worker swarm, cost tracking, self-hosted CI.
 
 ## Backlog
 
-- [ ] Story model + API
+- [ ] Task with story
 - [ ] #52 Scaffold script не экранирует task_description
 - [ ] #18 Split engineering_worker.py (1088 LOC)
 - [ ] #54 Deploy: inter-service URL должен использовать docker service name
 - [ ] #62 /brainstorm resume — продолжение обсуждения существующего драфта
+- [ ] Integrate Repository into production flows (webhook, scheduler, worker)
 - [ ] #59 PO work item tools (Step 4)
 - [ ] #60 Engineering worker work_item lifecycle (Step 5)
 - [ ] #19 Split github.py Client (986 LOC)

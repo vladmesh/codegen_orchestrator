@@ -4,6 +4,9 @@
 
 ## 2026-03-08
 
+### Added
+- **Story model + API** (wi-34761901): New `Story` entity (`id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by`). `StoryStatus` enum: `created | in_progress | completed | archived` with valid transitions. Full CRUD API at `/api/stories/` with action endpoints (`/start`, `/complete`, `/archive`). `Task.story_id` nullable FK. Self-referencing `parent_story_id` for epic-like grouping. Alembic migration. Refactored `list_tasks` to use `_TaskFilters` dependency class (PLR0913). 47 new unit tests.
+
 ### Fixed
 - **Test Infrastructure Audit**: Fixed 10 bugs and warnings, optimized run speed.
   - Parallelized `make test-unit` execution in bash (35s → ~12s, 2.6x speedup).

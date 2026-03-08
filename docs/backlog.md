@@ -7,11 +7,10 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Story model + API
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
+### Task with story
+- **Priority**: CRITICAL
+- **Plan**: —
 - **Status**: backlog
-- **Brief**: Новая сущность Story (id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by). Alembic миграция + CRUD API + action-based status transitions. Task.story_id FK. parent_story_id — self-ref FK для epic-like группировки.
 
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: MEDIUM
@@ -121,13 +120,13 @@
 - #999 Smoke test task — 2026-03-07
 - make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms) — 2026-03-07
 - #64 Implement skill: PR flow + in_ci status + need_e2e — 2026-03-07
+- Story model + API — 2026-03-08
 - Repository model + migration — 2026-03-08
 - Rename WorkItem→Task, Task→Run — 2026-03-07
 - #63 Milestone model + ROADMAP generation — 2026-03-07
 - #61 Brainstorm model in DB — 2026-03-07
 - #58 Skills → API + Simplified Model — 2026-03-07
 - #57 /implement work item events (Step 2) — 2026-03-07
-- #56 /next skill via API (Step 1) — 2026-03-07
 
 ## Ideas
 
