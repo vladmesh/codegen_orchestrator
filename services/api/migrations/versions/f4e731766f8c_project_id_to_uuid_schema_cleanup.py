@@ -1,6 +1,6 @@
 """project_id_to_uuid_schema_cleanup
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: f4e731766f8c
 Revises: 800ab7e1637d
 Create Date: 2026-03-08 03:00:00.000000
 
@@ -12,7 +12,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision: str = "a1b2c3d4e5f6"
+revision: str = "f4e731766f8c"
 down_revision: str | None = "800ab7e1637d"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
