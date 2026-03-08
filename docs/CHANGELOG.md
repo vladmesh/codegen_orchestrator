@@ -4,6 +4,9 @@
 
 ## 2026-03-08
 
+### Fixed
+- **Deploy: inter-service URL uses docker service name** (#54): `BACKEND_API_URL` and similar inter-service variables now resolve to `http://backend:8000` (docker DNS) instead of `http://<external_ip>:<port>`. Added `API_URL` to `COMPUTED_EXACT` in env_analyzer. External-facing URLs (`deployed_url`, `DEPLOY_HOST`) remain unchanged.
+
 ### Refactored
 - **Split engineering_worker.py** (#18): Extracted CI gate logic into `_ci_gate.py` (480 LOC) and repo setup into `_repo_setup.py` (124 LOC). Main file reduced from 1114 to 545 LOC. Pure internal refactoring — no behavior changes.
 

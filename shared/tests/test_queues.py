@@ -6,6 +6,8 @@ from fakeredis import aioredis
 import pytest
 
 from shared.queues import (
+    ARCHITECT_GROUP,
+    ARCHITECT_QUEUE,
     DEPLOY_QUEUE,
     ENGINEERING_QUEUE,
     INFRA_GROUP,
@@ -42,7 +44,7 @@ class TestQueueBinding:
 
 class TestQueueTopology:
     def test_has_expected_binding_count(self):
-        expected_count = 8  # noqa: PLR2004
+        expected_count = 9  # noqa: PLR2004
         assert len(QUEUE_TOPOLOGY) == expected_count
 
     def test_all_streams_present(self):
@@ -54,6 +56,7 @@ class TestQueueTopology:
         assert WORKER_COMMANDS in streams
         assert PO_INPUT_QUEUE in streams
         assert PO_PROACTIVE_QUEUE in streams
+        assert ARCHITECT_QUEUE in streams
 
     def test_all_groups_present(self):
         groups = {b.group for b in QUEUE_TOPOLOGY}
@@ -64,6 +67,7 @@ class TestQueueTopology:
         assert WORKER_MANAGER_GROUP in groups
         assert PO_CONSUMER_GROUP in groups
         assert PO_PROACTIVE_GROUP in groups
+        assert ARCHITECT_GROUP in groups
 
     def test_provisioner_results_has_two_consumers(self):
         pr_bindings = [b for b in QUEUE_TOPOLOGY if b.stream == PROVISIONER_RESULTS]

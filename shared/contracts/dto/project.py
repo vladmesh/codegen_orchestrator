@@ -12,7 +12,6 @@ class ProjectStatus(StrEnum):
 
     # Origin
     DRAFT = "draft"
-    DISCOVERED = "discovered"
 
     # Scaffolding
     SCAFFOLDING = "scaffolding"

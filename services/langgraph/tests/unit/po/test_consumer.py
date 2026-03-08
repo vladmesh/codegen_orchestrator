@@ -53,7 +53,8 @@ class TestHandleMessage:
         assert "[system:" not in msg.content
 
     @pytest.mark.asyncio
-    async def test_system_event_uses_human_message_with_prefix(self, mock_graph, mock_client):
+    async def test_system_event_dropped(self, mock_graph, mock_client):
+        """All system_event messages are dropped — PO only checks status via reminders."""
         data = {
             "type": "system_event",
             "event": "completed",
@@ -64,10 +65,7 @@ class TestHandleMessage:
 
         await _handle_message(mock_graph, mock_client, "user-1", data)
 
-        msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
-        assert isinstance(msg, HumanMessage)
-        assert msg.content.startswith("[system: system_event:completed]")
-        assert "engineering_completed" in msg.content
+        mock_graph.ainvoke.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reminder_uses_human_message_with_prefix(self, mock_graph, mock_client):
@@ -112,7 +110,7 @@ class TestHandleMessage:
     @pytest.mark.asyncio
     async def test_no_request_id_forwards_to_proactive(self, mock_graph, mock_client):
         """Without request_id, non-empty response should go to po:proactive."""
-        data = {"type": "system_event", "event": "completed", "text": "scaffolding_done"}
+        data = {"type": "reminder", "text": "check story story-abc12345"}
 
         await _handle_message(mock_graph, mock_client, "user-1", data)
 
@@ -161,12 +159,11 @@ class TestHandleMessage:
         assert config["configurable"]["user_id"] == "user-42"
 
     @pytest.mark.asyncio
-    async def test_system_event_includes_user_id_in_config(self, mock_graph, mock_client):
-        """System events should also pass user_id in config."""
+    async def test_reminder_includes_user_id_in_config(self, mock_graph, mock_client):
+        """Reminders should pass user_id in config."""
         data = {
-            "type": "system_event",
-            "event": "completed",
-            "text": "engineering_completed",
+            "type": "reminder",
+            "text": "check story story-abc12345",
             "user_id": "user-99",
         }
 
@@ -180,9 +177,8 @@ class TestHandleMessage:
         """Empty response without request_id should NOT write to po:proactive."""
         mock_graph.ainvoke.return_value = {"messages": [AIMessage(content="")]}
         data = {
-            "type": "system_event",
-            "event": "completed",
-            "text": "scaffolding_completed",
+            "type": "reminder",
+            "text": "check story story-abc12345",
         }
 
         await _handle_message(mock_graph, mock_client, "user-1", data)
@@ -206,41 +202,13 @@ class TestHandleMessage:
         mock_client.publish_flat.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_completed_event_includes_event_type(self, mock_graph, mock_client):
-        """Completed events should have event type in format tag."""
+    @pytest.mark.parametrize("event_type", ["completed", "failed", "progress", ""])
+    async def test_all_system_events_dropped(self, mock_graph, mock_client, event_type):
+        """All system_event messages are dropped — PO uses reminders for status."""
         data = {
             "type": "system_event",
-            "event": "completed",
-            "text": "Deploy completed",
-            "timestamp": "2026-02-15T10:00:00",
-        }
-
-        await _handle_message(mock_graph, mock_client, "user-1", data)
-
-        msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
-        assert "[system: system_event:completed]" in msg.content
-
-    @pytest.mark.asyncio
-    async def test_failed_event_includes_event_type(self, mock_graph, mock_client):
-        """Failed events should have event type in format tag."""
-        data = {
-            "type": "system_event",
-            "event": "failed",
-            "text": "Engineering failed: timeout",
-            "timestamp": "2026-02-15T10:00:00",
-        }
-
-        await _handle_message(mock_graph, mock_client, "user-1", data)
-
-        msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
-        assert "[system: system_event:failed]" in msg.content
-
-    @pytest.mark.asyncio
-    async def test_system_event_without_event_field_dropped(self, mock_graph, mock_client):
-        """System events without event field should be dropped."""
-        data = {
-            "type": "system_event",
-            "text": "legacy event",
+            "event": event_type,
+            "text": "some event",
             "timestamp": "2026-02-15T10:00:00",
         }
 
@@ -299,23 +267,6 @@ class TestHandleMessage:
         content = messages[0].content
         assert "user_id=42" in content
         assert "user_name=Vlad" in content
-
-    @pytest.mark.asyncio
-    async def test_system_event_no_context_prefix(self, mock_graph, mock_client):
-        """System events should NOT get context prefix."""
-        data = {
-            "type": "system_event",
-            "event": "completed",
-            "text": "task done",
-            "user_id": "42",
-            "timestamp": "2026-01-01T00:00:00",
-        }
-
-        await _handle_message(mock_graph, mock_client, "42", data)
-
-        messages = mock_graph.ainvoke.call_args[0][0]["messages"]
-        content = messages[0].content
-        assert "[context:" not in content
 
 
 class TestProcessMessage:

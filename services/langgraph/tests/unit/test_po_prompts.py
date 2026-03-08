@@ -1,7 +1,7 @@
 """Unit tests for PO system prompt and tool docstrings."""
 
 from src.po.prompts import SYSTEM_PROMPT
-from src.po.tools import trigger_engineering
+from src.po.tools import create_story
 
 MAX_PROMPT_LENGTH = 12000
 
@@ -38,11 +38,11 @@ class TestSystemPrompt:
 
     def test_preserves_existing_scenarios(self):
         assert "## Scenario: User Wants to Create a NEW Bot/Project" in SYSTEM_PROMPT
-        assert "## Scenario: User Wants to REDEPLOY" in SYSTEM_PROMPT
         assert "## Scenario: User Wants to ADD FEATURES or FIX BUGS" in SYSTEM_PROMPT
+        assert "## Scenario: User Asks About Status" in SYSTEM_PROMPT
 
-    def test_preserves_system_events_section(self):
-        assert "## System Events & Reminders" in SYSTEM_PROMPT
+    def test_preserves_reminders_section(self):
+        assert "## Reminders & Status Checking" in SYSTEM_PROMPT
 
     def test_preserves_key_principles(self):
         assert "## Key Principles" in SYSTEM_PROMPT
@@ -72,10 +72,19 @@ class TestSystemPrompt:
         assert "user_id" in SYSTEM_PROMPT
         assert "context" in SYSTEM_PROMPT.lower()
 
+    def test_story_based_workflow(self):
+        """Prompt should reference story-based workflow."""
+        assert "story" in SYSTEM_PROMPT.lower()
+        assert "create_story" in SYSTEM_PROMPT
 
-class TestTriggerEngineeringDocstring:
-    """Tests for trigger_engineering tool docstring."""
+    def test_no_trigger_engineering_references(self):
+        """Prompt should not reference deprecated trigger_engineering."""
+        assert "trigger_engineering" not in SYSTEM_PROMPT
+
+
+class TestCreateStoryDocstring:
+    """Tests for create_story tool docstring."""
 
     def test_mentions_gathered_requirements(self):
-        doc = trigger_engineering.description
+        doc = create_story.description
         assert "gathered requirements" in doc.lower() or "detailed" in doc.lower()

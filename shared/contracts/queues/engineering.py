@@ -21,6 +21,7 @@ class EngineeringMessage(BaseMessage):
     action: Literal["create", "feature", "fix"] = "create"
     description: str | None = None
     skip_deploy: bool = False
+    planning_task_id: str | None = None  # planning-layer Task ID for status updates
 
 
 class EngineeringResult(BaseResult):

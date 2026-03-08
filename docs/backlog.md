@@ -7,6 +7,18 @@
 
 ## Queue (ordered by priority, first = next)
 
+### Architect node — story decomposition into tasks + task dispatcher
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Implement the architect pipeline: story → tasks → runs.  Ref: brainstorm bs-4fc78a0e (architect-node-orchestration.md)  Scope: 1. Architect consumer — reads architect:queue, decomposes story into tasks via LLM (story description + project config + existing tasks as context) 2. Modify create_story...
+
+### PO tools contract tests — validate payloads against API schemas
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: PO unit tests mock the API client, so invalid payloads (e.g. 8-char ID instead of UUID) pass tests but fail at runtime. Add contract tests that validate PO tool payloads against actual Pydantic schemas (ProjectCreate, RunCreate, StoryCreate) without hitting a real DB. Alternatively, add service-l...
+
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
 - **Plan**: —
@@ -19,12 +31,6 @@
 - **Status**: backlog
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
 
-### #54 Deploy: inter-service URL должен использовать docker service name
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при f...
-
 ### #62 /brainstorm resume — продолжение обсуждения существующего драфта
 - **Priority**: LOW
 - **Plan**: —
@@ -36,18 +42,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Подключить Repository модель в production pipeline. Сейчас webhook/scheduler/worker используют Project.repository_url и Project.github_repo_id напрямую.  1. webhooks.py: lookup через Repository.provider_repo_id вместо Project.github_repo_id 2. github_sync.py: создаёт Repository записи вместо обно...
-
-### #59 PO work item tools (Step 4)
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Новые PO tools: create_work_item, list_work_items, get_work_item, start_work_item. start_work_item внутри вызывает trigger_engineering (старый механизм). PO промпт обновляется: мыслить фичами, не engineering tasks. К этому моменту API стабилен и проверен на десятках задач dogfooding. Источник: br...
-
-### #60 Engineering worker work_item lifecycle (Step 5)
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: engineering_worker при наличии work_item_id: пишет iteration_start/iteration_end events, CI fix attempts → events с деталями, обновляет work_item.status (in_dev → testing → done). Deploy worker обновляет status при успешном деплое. Полный audit trail: сколько итераций, что фейлилось, почему. Reop...
 
 ### Fix eager import chains in scaffolded projects
 

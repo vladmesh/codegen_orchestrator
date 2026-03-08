@@ -34,6 +34,53 @@ def _parse_telegram_id(user_id: str) -> dict:
 logger = structlog.get_logger(__name__)
 
 
+async def _update_task_status(
+    api, planning_task_id: str, status: str, actor: str = "engineering-worker"
+) -> None:
+    """Transition a planning-layer task to the given status (best-effort)."""
+    try:
+        await api.post(
+            f"tasks/{planning_task_id}/transition",
+            params={"to_status": status},
+            json={"actor": actor},
+        )
+    except Exception:
+        logger.warning(
+            "task_status_update_failed",
+            planning_task_id=planning_task_id,
+            target_status=status,
+            exc_info=True,
+        )
+
+
+async def _write_task_event(api, planning_task_id: str, event_type: str, details: dict) -> None:
+    """Write an event to a planning-layer task (best-effort)."""
+    try:
+        await api.post(
+            f"tasks/{planning_task_id}/events",
+            json={
+                "event_type": event_type,
+                "details": details,
+                "actor": "engineering-worker",
+            },
+        )
+    except Exception:
+        logger.warning(
+            "task_event_write_failed",
+            planning_task_id=planning_task_id,
+            event_type=event_type,
+            exc_info=True,
+        )
+
+
+async def _fail_job(task_id: str, error_msg: str, planning_task_id: str | None = None) -> dict:
+    """Mark a run as failed and optionally update planning task."""
+    await api_client.patch(f"runs/{task_id}", json={"status": "failed", "error_message": error_msg})
+    if planning_task_id:
+        await _update_task_status(api_client, planning_task_id, "failed")
+    return {"status": "failed", "error": error_msg}
+
+
 async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single engineering job by running Engineering Subgraph.
 
@@ -53,6 +100,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     description = job_data.get("description")
     skip_deploy = job_data.get("skip_deploy", False)
     user_id = job_data.get("user_id", "")
+    planning_task_id = job_data.get("planning_task_id")
 
     logger.info(
         "engineering_job_started",
@@ -82,12 +130,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         # Fetch project details (with user isolation)
         project = await api_client.get_project(project_id, **_parse_telegram_id(user_id))
         if not project:
-            error_msg = f"Project {project_id} not found"
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={"status": "failed", "error_message": error_msg},
-            )
-            return {"status": "failed", "error": error_msg}
+            return await _fail_job(task_id, f"Project {project_id} not found", planning_task_id)
 
         # Fallback: use project config description when queue message has none
         if not description:
@@ -107,10 +150,6 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 project_id=project_id,
                 action=action,
             )
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={"status": "failed", "error_message": error_msg},
-            )
             await publish_callback_event(
                 redis,
                 callback_stream,
@@ -120,7 +159,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 user_id=user_id,
                 project_id=project_id or "",
             )
-            return {"status": "failed", "error": error_msg}
+            return await _fail_job(task_id, error_msg, planning_task_id)
 
         # Create repo and set secrets for new project creation on draft projects
         if project_status == "draft" and action == "create":
@@ -244,47 +283,24 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 developer_started_at=developer_started_at,
                 user_id=user_id,
                 action=action,
+                planning_task_id=planning_task_id,
             )
 
-        elif result.get("engineering_status") == "blocked" or result.get("needs_human_approval"):
-            logger.info("engineering_job_blocked", task_id=task_id, errors=result.get("errors"))
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={
-                    "status": "failed",
-                    "error_message": "; ".join(result.get("errors", ["Task blocked"])),
-                },
-            )
-
+        else:
+            # Blocked, needs approval, or unknown status
+            errors = result.get("errors", ["Unknown engineering status"])
+            error_msg = "; ".join(errors)
+            logger.error("engineering_job_failed_status", task_id=task_id, errors=errors)
             await publish_callback_event(
                 redis,
                 callback_stream,
                 "failed",
                 task_id,
-                "Engineering task blocked or needs approval",
+                error_msg,
                 user_id=user_id,
                 project_id=project_id or "",
             )
-
-            return {
-                "status": "failed",
-                "error": "; ".join(result.get("errors", ["Task blocked"])),
-                "finished_at": datetime.now(UTC).isoformat(),
-            }
-
-        else:
-            # Unknown status
-            errors = result.get("errors", ["Unknown engineering status"])
-            logger.error("engineering_job_unknown_status", task_id=task_id, errors=errors)
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={"status": "failed", "error_message": "; ".join(errors)},
-            )
-            return {
-                "status": "failed",
-                "error": "; ".join(errors),
-                "finished_at": datetime.now(UTC).isoformat(),
-            }
+            return await _fail_job(task_id, error_msg, planning_task_id)
 
     except Exception as e:
         logger.error(
@@ -294,17 +310,11 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             error_type=type(e).__name__,
             exc_info=True,
         )
-        await api_client.patch(
-            f"runs/{task_id}",
-            json={"status": "failed", "error_message": str(e), "error_traceback": str(e)},
-        )
-        # Update project status to failed
         if project_id:
             await api_client.patch(
                 f"projects/{project_id}",
                 json={"status": ProjectStatus.FAILED.value},
             )
-
         await publish_callback_event(
             redis,
             callback_stream,
@@ -314,12 +324,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             user_id=user_id,
             project_id=project_id or "",
         )
-
-        return {
-            "status": "failed",
-            "error": str(e),
-            "finished_at": datetime.now(UTC).isoformat(),
-        }
+        return await _fail_job(task_id, str(e), planning_task_id)
 
 
 async def _handle_engineering_success(
@@ -333,6 +338,7 @@ async def _handle_engineering_success(
     *,
     user_id: str = "",
     action: str = "create",
+    planning_task_id: str | None = None,
 ) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
     project_id = project["id"]
@@ -405,6 +411,8 @@ async def _handle_engineering_success(
     if not ci_passed:
         fail_msg = f"CI failed after {len(ci_attempts)} attempt(s), retries exhausted"
         logger.error("ci_gate_failed", task_id=task_id, project_id=project_id)
+        if planning_task_id:
+            await _update_task_status(api_client, planning_task_id, "failed")
         await api_client.patch(
             f"runs/{task_id}",
             json={
@@ -441,11 +449,28 @@ async def _handle_engineering_success(
         },
     )
 
+    # Update planning-layer task if linked
+    if planning_task_id:
+        await _update_task_status(api_client, planning_task_id, "done")
+        await _write_task_event(
+            api_client,
+            planning_task_id,
+            "iteration_end",
+            {
+                "commit_sha": result.get("commit_sha"),
+                "ci_result": "passed",
+                "summary": f"Engineering run {task_id} completed",
+            },
+        )
+
     ci_summary = "CI passed"
     if failed_count:
         ci_summary = f"CI passed after {failed_count} failed attempt(s)"
 
-    if skip_deploy:
+    # When planning_task_id is set, skip deploy (dispatcher handles it on story complete)
+    effective_skip_deploy = skip_deploy or bool(planning_task_id)
+
+    if effective_skip_deploy:
         # This IS the final step — tell user we're done
         await publish_callback_event(
             redis,
@@ -468,8 +493,8 @@ async def _handle_engineering_success(
             project_id=project_id,
         )
 
-    # Auto-trigger deploy after CI passes (unless skip_deploy)
-    if not skip_deploy:
+    # Auto-trigger deploy after CI passes (unless skip_deploy or task-linked)
+    if not effective_skip_deploy:
         deploy_task_id = f"deploy-{task_id.replace('eng-', '')}"
         try:
             # Create deploy task in API

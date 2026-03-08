@@ -13,8 +13,10 @@
 **Инструменты** (`src/po/tools.py`):
 - `create_project`, `list_projects`, `get_project`: управление проектами через API
 - `set_project_secret`: сохранение секретов
-- `trigger_engineering`, `trigger_deploy`: запуск subgraphs через API + Redis
-- `get_task_status`: статус задач
+- `create_story`: создание user story + автоматический запуск engineering work
+- `list_stories`, `get_story`: просмотр stories и привязанных runs
+- `trigger_deploy`: ручной редеплой (engineering запускается через create_story)
+- `get_run_status`: статус engineering/deploy runs
 - `set_reminder`: отложенные проверки через Redis ZSET
 - `notify_user`: proactive message to user via `po:proactive` stream (Phase 2.3)
 

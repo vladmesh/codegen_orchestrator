@@ -17,13 +17,11 @@ from langchain_core.tools import tool
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus, ServiceModule
-from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
-from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.dto.story import StoryType
+from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.queues import (
-    DEPLOY_QUEUE,
-    ENGINEERING_QUEUE,
-    PO_INPUT_QUEUE,
+    ARCHITECT_QUEUE,
     PO_PROACTIVE_QUEUE,
     PO_REMINDERS_KEY,
 )
@@ -97,7 +95,7 @@ async def create_project(
     if "backend" not in modules_list:
         modules_list.insert(0, "backend")
 
-    project_id = str(uuid.uuid4())[:8]
+    project_id = str(uuid.uuid4())
     proj_config = {"modules": modules_list, "description": description, "name": name}
 
     payload = {
@@ -177,15 +175,19 @@ async def set_project_secret(
 
 
 @tool
-async def trigger_engineering(
+async def create_story(
     project_id: str,
-    action: str = "create",
-    description: str | None = None,
-    skip_deploy: bool = False,
+    title: str,
+    description: str,
+    story_type: str = "feature",
     *,
     config: RunnableConfig,
 ) -> str:
-    """Trigger engineering task (scaffold + develop + deploy).
+    """Create a user story for a project and send it to the architect for decomposition.
+
+    This is the main way to request work on a project — whether creating it
+    from scratch, adding features, or fixing bugs. The architect will decompose
+    the story into tasks and start engineering work automatically.
 
     IMPORTANT: The description should contain the full gathered requirements —
     not just the user's original short message. Compose a detailed spec from
@@ -193,46 +195,49 @@ async def trigger_engineering(
 
     Args:
         project_id: Project ID.
-        action: "create" (new project), "feature" (add feature), "fix" (bug fix).
+        title: Short title for the story (e.g. "Currency rate alerts",
+            "Fix login button", "Create telegram bot for recipes").
         description: Detailed description of what to build or fix.
-            For "create": gathered requirements from the conversation.
-            For "feature"/"fix": required — detailed description of the change.
-        skip_deploy: If true, skip auto-deploy after CI passes.
+            Include all requirements gathered from the conversation.
+        story_type: "feature" (new functionality or project creation),
+            "fix" (bug fix).
     """
-    if action in ("feature", "fix") and not description:
-        return f"Error: --description is required for action '{action}'."
-
     api = _get_api()
     headers = _user_headers(config)
 
-    user_id = config["configurable"].get("user_id", "unknown")
-    task_id = f"eng-{uuid.uuid4().hex[:12]}"
-    callback_stream = PO_INPUT_QUEUE
+    # Determine action from project status, not story_type
+    if story_type == "fix":
+        action = "fix"
+    else:
+        proj_resp = await api.get(f"/api/projects/{project_id}", headers=headers)
+        proj_resp.raise_for_status()
+        project_status = proj_resp.json().get("status", "draft")
+        action = "create" if project_status == "draft" else "feature"
 
-    task_data = {
-        "id": task_id,
-        "type": "engineering",
+    # 1. Create story via API (API generates the ID)
+    story_payload = {
         "project_id": project_id,
-        "task_metadata": {"triggered_by": "po", "action": action},
-        "callback_stream": callback_stream,
+        "title": title,
+        "description": description,
+        "type": StoryType.PRODUCT.value,
+        "created_by": "po",
     }
-
-    resp = await api.post("/api/tasks/", json=task_data, headers=headers)
+    resp = await api.post("/api/stories/", json=story_payload, headers=headers)
     resp.raise_for_status()
+    story_id = resp.json()["id"]
+    logger.info("po_story_created", story_id=story_id, project_id=project_id, title=title)
 
-    eng_msg = EngineeringMessage(
-        task_id=task_id,
+    # 2. Publish to architect:queue for decomposition into tasks
+    # Architect will: decompose → create tasks → transition story to in_progress
+    user_id = config["configurable"].get("user_id", "unknown")
+    arch_msg = ArchitectMessage(
+        story_id=story_id,
         project_id=project_id,
         user_id=user_id,
-        callback_stream=callback_stream,
-        action=action,
-        description=description,
-        skip_deploy=skip_deploy,
     )
-    await _get_stream_client().publish_message(ENGINEERING_QUEUE, eng_msg)
+    await _get_stream_client().publish_message(ARCHITECT_QUEUE, arch_msg)
 
-    # Persist description to project config for action=create so it survives
-    # queue consumption and is available via project_spec.detailed_spec
+    # 3. Persist description to project config for action=create
     if action == "create" and description:
         try:
             proj_resp = await api.get(f"/api/projects/{project_id}", headers=headers)
@@ -252,61 +257,76 @@ async def trigger_engineering(
                 exc_info=True,
             )
 
-    logger.info("po_engineering_triggered", task_id=task_id, project_id=project_id, action=action)
-    return f"Engineering task queued. Task ID: {task_id}"
+    logger.info("po_story_submitted_to_architect", story_id=story_id, action=action)
+    return (
+        f"Story created and sent to architect for decomposition.\n"
+        f"Story: {story_id} — {title}\n"
+        f"The architect will break it into tasks and start engineering work."
+    )
 
 
 @tool
-async def trigger_deploy(project_id: str, *, config: RunnableConfig) -> str:
-    """Trigger deploy-only task (no code changes, just deploy existing code).
+async def list_stories(project_id: str, *, config: RunnableConfig) -> str:
+    """List all stories for a project.
 
     Args:
         project_id: Project ID.
     """
     api = _get_api()
     headers = _user_headers(config)
-
-    user_id = config["configurable"].get("user_id", "unknown")
-    task_id = f"deploy-{uuid.uuid4().hex[:12]}"
-    callback_stream = PO_INPUT_QUEUE
-
-    task_data = {
-        "id": task_id,
-        "type": "deploy",
-        "project_id": project_id,
-        "task_metadata": {"triggered_by": "po"},
-        "callback_stream": callback_stream,
-    }
-
-    resp = await api.post("/api/tasks/", json=task_data, headers=headers)
+    resp = await api.get(f"/api/stories/?project_id={project_id}", headers=headers)
     resp.raise_for_status()
+    stories = resp.json()
 
-    deploy_msg = DeployMessage(
-        task_id=task_id,
-        project_id=project_id,
-        user_id=user_id,
-        callback_stream=callback_stream,
-        triggered_by=DeployTrigger.PO,
-    )
-    await _get_stream_client().publish_message(DEPLOY_QUEUE, deploy_msg)
+    if not stories:
+        return "No stories found for this project."
 
-    logger.info("po_deploy_triggered", task_id=task_id, project_id=project_id)
-    return f"Deploy task queued. Task ID: {task_id}"
+    lines = []
+    for s in stories:
+        lines.append(f"- [{s['status']}] {s['title']} (ID: {s['id']}, type: {s.get('type', '?')})")
+    return "\n".join(lines)
 
 
 @tool
-async def get_task_status(task_id: str, *, config: RunnableConfig) -> str:
-    """Get task status (engineering or deploy).
+async def get_story(story_id: str, *, config: RunnableConfig) -> str:
+    """Get story details including linked tasks and their statuses.
 
     Args:
-        task_id: Task ID (e.g. eng-abc123 or deploy-abc123).
+        story_id: Story ID (e.g. story-abc12345).
     """
     api = _get_api()
     headers = _user_headers(config)
-    resp = await api.get(f"/api/tasks/{task_id}", headers=headers)
+
+    # Get story
+    resp = await api.get(f"/api/stories/{story_id}", headers=headers)
     resp.raise_for_status()
-    task = resp.json()
-    return json.dumps(task, indent=2, ensure_ascii=False)
+    story = resp.json()
+
+    # Get tasks linked to this story
+    tasks_resp = await api.get(f"/api/tasks/?story_id={story_id}", headers=headers)
+    tasks_resp.raise_for_status()
+    tasks = tasks_resp.json()
+
+    result = {
+        "story": story,
+        "tasks": [{"id": t["id"], "status": t["status"], "type": t["type"]} for t in tasks],
+    }
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@tool
+async def get_run_status(run_id: str, *, config: RunnableConfig) -> str:
+    """Get status of an engineering or deploy run.
+
+    Args:
+        run_id: Run ID (e.g. eng-abc123 or deploy-abc123).
+    """
+    api = _get_api()
+    headers = _user_headers(config)
+    resp = await api.get(f"/api/runs/{run_id}", headers=headers)
+    resp.raise_for_status()
+    run = resp.json()
+    return json.dumps(run, indent=2, ensure_ascii=False)
 
 
 @tool
@@ -344,8 +364,8 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
     """Send an intermediate message to the user and continue working.
 
     Use this ONLY when you need to send a progress update while continuing
-    to use more tools. For example: "Starting deployment..." before calling
-    trigger_deploy. Your final response is always delivered to the user
+    to use more tools. For example: "Setting up your project..." before calling
+    create_story. Your final response is always delivered to the user
     automatically — do NOT use this tool for final replies.
 
     Args:
@@ -398,9 +418,10 @@ def get_all_tools() -> list:
         list_projects,
         get_project,
         set_project_secret,
-        trigger_engineering,
-        trigger_deploy,
-        get_task_status,
+        create_story,
+        list_stories,
+        get_story,
+        get_run_status,
         set_reminder,
         notify_user,
         web_search,

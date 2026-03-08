@@ -249,14 +249,12 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
     msg_type = data.get("type", "user_message")
     event = data.get("event", "")
 
-    # Drop system events that should not reach the LLM.
+    # Drop all run-level system events.
+    # PO operates at story level only — it checks status via reminders
+    # and will receive story-level events (story_completed, story_failed) in the future.
     if msg_type == "system_event":
-        if not event:
-            logger.warning("po_system_event_missing_type", user_id=user_id, text=text)
-            return
-        if event == "progress":
-            logger.info("po_progress_event_dropped", user_id=user_id, text=text)
-            return
+        logger.info("po_system_event_dropped", user_id=user_id, event_type=event, text=text)
+        return
 
     user_name = data.get("user_name", "")
 

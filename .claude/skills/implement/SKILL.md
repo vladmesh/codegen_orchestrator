@@ -319,14 +319,36 @@ git commit -m "docs: complete #<ID> — <title>"
 
 ### 9. Report
 
-**Emit summary event** (before printing):
+> **STOP. Before writing the summary, complete the Skill Feedback step below. Do NOT skip it.**
+
+**9a. Skill Feedback** — review the session for problems with THIS skill:
+
+Did you hit any of these during this task?
+- A command or path in this skill was **wrong or outdated**
+- A step was **missing context** that you had to figure out yourself
+- A step could be **simplified or reordered** for better flow
+- The skill **gave ambiguous instructions** that led to a wrong first attempt
+
+If yes — append an entry to `docs/skill-feedback.md` **right now**, before proceeding:
+
+```markdown
+## [implement] — <today's date>
+- **Type**: bug | missing-info | optimization
+- **Quote**: "<exact line or section from this skill>"
+- **Problem**: <what went wrong or was missing>
+- **Suggested fix**: <concrete change to the skill text>
+```
+
+If nothing went wrong — skip the file write, but you must still explicitly confirm: "Skill feedback: none."
+
+**9b. Emit summary event**:
 ```bash
 curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
   -H "Content-Type: application/json" \
   -d '{"event_type": "comment", "details": {"action": "implementation_summary", "steps_completed": N, "total_steps": N, "deviations": [], "notes": "<brief summary>"}, "actor": "claude"}' || true
 ```
 
-Print a summary:
+**9c. Print summary**:
 - Task: #ID — Title
 - Steps completed: N/N
 - Tests: X passed, Y added
@@ -339,30 +361,3 @@ Print a summary:
 - If tests are failing and you can't figure out why after 2 attempts — STOP and report the issue.
 - Don't skip tests. Every step should have at least one test unless it's pure documentation.
 - Run `make lint` before every commit.
-
-### Memory Review (Mandatory)
-
-**Before generating your final response, review your memory for feedback:**
-Did you have to fix any unexpected errors, correct wrong commands, or guess missing information during this task? 
-If yes, you **MUST** append an entry to `docs/skill-feedback.md` right now, following the format described in the **Self-Feedback** section below.
-
-## Self-Feedback
-
-During your final memory review, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
-
-- A command or path in this skill was **wrong or outdated**
-- A step was **missing context** that you had to figure out yourself
-- A step could be **simplified or reordered** for better flow
-- The skill **gave ambiguous instructions** that led to a wrong first attempt
-
-Entry format:
-
-```markdown
-## [implement] — <today's date>
-- **Type**: bug | missing-info | optimization
-- **Quote**: "<exact line or section from this skill>"
-- **Problem**: <what went wrong or was missing>
-- **Suggested fix**: <concrete change to the skill text>
-```
-
-Only write feedback that is **specific and actionable**. Skip vague impressions.

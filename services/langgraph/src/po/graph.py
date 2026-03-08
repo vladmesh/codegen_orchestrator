@@ -12,7 +12,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import create_react_agent
+from langgraph.prebuilt import ToolNode, create_react_agent
 from langgraph.prebuilt.chat_agent_executor import AgentState
 from langmem.short_term import SummarizationNode
 import structlog
@@ -131,9 +131,11 @@ async def create_po_graph(
         max_summary_tokens=summarization_max_summary_tokens,
     )
 
+    tool_node = ToolNode(get_all_tools(), handle_tool_errors=True)
+
     return create_react_agent(
         model=llm,
-        tools=get_all_tools(),
+        tools=tool_node,
         prompt=SYSTEM_PROMPT,
         pre_model_hook=summarization_hook,
         state_schema=POState,

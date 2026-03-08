@@ -11,16 +11,17 @@ import pytest
 from shared.queues import PO_REMINDERS_KEY
 from src.po.tools import (
     create_project,
+    create_story,
     get_all_tools,
     get_project,
-    get_task_status,
+    get_run_status,
+    get_story,
     init_po_clients,
     list_projects,
+    list_stories,
     notify_user,
     set_project_secret,
     set_reminder,
-    trigger_deploy,
-    trigger_engineering,
     web_search,
 )
 
@@ -249,186 +250,222 @@ class TestSetProjectSecret:
         mock_api_client.patch.assert_not_called()
 
 
-class TestTriggerEngineering:
+class TestCreateStory:
     @pytest.mark.asyncio
-    async def test_triggers_engineering(self, mock_api_client, mock_stream_client):
-        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
-
-        result = await trigger_engineering.ainvoke(
-            {"project_id": "abc"}, config=_make_config("user-42")
-        )
-
-        assert "Engineering task queued" in result
-        mock_api_client.post.assert_called_once()
-        mock_stream_client.publish_message.assert_called_once()
-
-        # Verify queue message
-        call_args = mock_stream_client.publish_message.call_args
-        assert call_args[0][0] == "engineering:queue"
-        eng_msg = call_args[0][1]
-        assert eng_msg.project_id == "abc"
-
-    @pytest.mark.asyncio
-    async def test_requires_description_for_feature(self, mock_api_client, mock_stream_client):
-        result = await trigger_engineering.ainvoke(
-            {"project_id": "abc", "action": "feature"},
-            config=_make_config("user-42"),
-        )
-
-        assert "Error" in result
-        mock_api_client.post.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_uses_po_input_as_callback(self, mock_api_client, mock_stream_client):
-        """callback_stream in queue message should be po:input (not po:events:*)."""
-        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
-
-        await trigger_engineering.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
-
-        eng_msg = mock_stream_client.publish_message.call_args[0][1]
-        assert eng_msg.callback_stream == "po:input"
-
-    @pytest.mark.asyncio
-    async def test_passes_real_user_id(self, mock_api_client, mock_stream_client):
-        """user_id in queue message should come from config, not hardcoded."""
-        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
-
-        await trigger_engineering.ainvoke({"project_id": "abc"}, config=_make_config("user-777"))
-
-        eng_msg = mock_stream_client.publish_message.call_args[0][1]
-        assert eng_msg.user_id == "user-777"
-
-    @pytest.mark.asyncio
-    async def test_passes_telegram_id_header_on_task_create(
+    async def test_creates_story_and_publishes_to_architect(
         self, mock_api_client, mock_stream_client
     ):
-        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
-
-        await trigger_engineering.ainvoke({"project_id": "abc"}, config=_make_config("44444"))
-
-        headers = mock_api_client.post.call_args[1].get("headers", {})
-        assert headers.get("X-Telegram-ID") == "44444"
-
-    @pytest.mark.asyncio
-    async def test_persists_description_to_detailed_spec_on_create(
-        self, mock_api_client, mock_stream_client
-    ):
-        """When action=create and description is provided, PATCH detailed_spec to DB."""
-        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
+        """create_story publishes ArchitectMessage to architect:queue."""
+        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
         mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "config": {"modules": ["backend"], "name": "my-bot"}}
+            {"id": "abc", "status": "draft", "config": {"modules": ["backend"], "name": "my-bot"}}
         )
         mock_api_client.patch.return_value = _make_response({"id": "abc"})
 
-        await trigger_engineering.ainvoke(
-            {"project_id": "abc", "action": "create", "description": "Build a todo app"},
+        result = await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Create todo bot",
+                "description": "Build a todo app with reminders",
+            },
             config=_make_config("user-42"),
         )
 
-        # Should GET project, then PATCH with detailed_spec merged into config
-        mock_api_client.get.assert_called_once()
-        assert "/api/projects/abc" in mock_api_client.get.call_args[0][0]
+        assert "Story created" in result
+        assert "architect" in result.lower()
 
+        # Should have 1 POST call: create story only (no run, no start)
+        assert mock_api_client.post.call_count == 1
+        story_call = mock_api_client.post.call_args_list[0]
+        assert story_call[0][0] == "/api/stories/"
+        story_payload = story_call[1]["json"]
+        assert story_payload["title"] == "Create todo bot"
+        assert story_payload["type"] == "product"
+        assert story_payload["created_by"] == "po"
+
+        # Should publish ArchitectMessage to architect:queue
+        from shared.contracts.queues.architect import ArchitectMessage
+        from shared.queues import ARCHITECT_QUEUE
+
+        pub_call = mock_stream_client.publish_message.call_args
+        assert pub_call[0][0] == ARCHITECT_QUEUE
+        arch_msg = pub_call[0][1]
+        assert isinstance(arch_msg, ArchitectMessage)
+        assert arch_msg.story_id == "story-xxx"
+        assert arch_msg.project_id == "abc"
+        assert arch_msg.user_id == "user-42"
+
+    @pytest.mark.asyncio
+    async def test_no_run_created(self, mock_api_client, mock_stream_client):
+        """create_story should NOT create a Run (dispatcher does that)."""
+        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get.return_value = _make_response(
+            {"id": "abc", "status": "active", "config": {}}
+        )
+
+        await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Add feature",
+                "description": "New feature",
+            },
+            config=_make_config("user-42"),
+        )
+
+        # Only 1 POST: story creation. No /api/runs/ call.
+        assert mock_api_client.post.call_count == 1
+        for call in mock_api_client.post.call_args_list:
+            assert "/api/runs/" not in call[0][0]
+
+    @pytest.mark.asyncio
+    async def test_persists_description_for_create(self, mock_api_client, mock_stream_client):
+        """For action=create, should persist description to project config."""
+        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get.return_value = _make_response(
+            {"id": "abc", "status": "draft", "config": {"modules": ["backend"], "name": "my-bot"}}
+        )
+        mock_api_client.patch.return_value = _make_response({"id": "abc"})
+
+        await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Create new bot",
+                "description": "Build a recipe bot",
+            },
+            config=_make_config("user-42"),
+        )
+
+        # Should PATCH project config with detailed_spec
         mock_api_client.patch.assert_called_once()
-        patch_args = mock_api_client.patch.call_args
-        assert "/api/projects/abc" in patch_args[0][0]
-        patched_config = patch_args[1]["json"]["config"]
-        assert patched_config["detailed_spec"] == "Build a todo app"
-        # Original config keys preserved
-        assert patched_config["modules"] == ["backend"]
-        assert patched_config["name"] == "my-bot"
+        patched_config = mock_api_client.patch.call_args[1]["json"]["config"]
+        assert patched_config["detailed_spec"] == "Build a recipe bot"
 
     @pytest.mark.asyncio
-    async def test_no_patch_when_action_is_feature(self, mock_api_client, mock_stream_client):
-        """For action=feature, do NOT persist description to DB (it's in queue message)."""
-        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
+    async def test_no_patch_for_feature_on_active(self, mock_api_client, mock_stream_client):
+        """For action=feature, should NOT persist description to project config."""
+        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get.return_value = _make_response(
+            {"id": "abc", "status": "active", "config": {}}
+        )
 
-        await trigger_engineering.ainvoke(
-            {"project_id": "abc", "action": "feature", "description": "Add auth"},
+        await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Add feature",
+                "description": "New feature",
+            },
             config=_make_config("user-42"),
         )
 
-        mock_api_client.get.assert_not_called()
         mock_api_client.patch.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_patch_when_description_is_none(self, mock_api_client, mock_stream_client):
-        """When description is None, do NOT patch."""
-        mock_api_client.post.return_value = _make_response({"id": "eng-xxx"})
+    async def test_no_patch_for_fix(self, mock_api_client, mock_stream_client):
+        """For action=fix, should NOT persist description to project config."""
+        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
 
-        await trigger_engineering.ainvoke(
-            {"project_id": "abc", "action": "create"},
+        await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Fix bug",
+                "description": "Fix the login",
+                "story_type": "fix",
+            },
             config=_make_config("user-42"),
         )
 
-        mock_api_client.get.assert_not_called()
         mock_api_client.patch.assert_not_called()
 
-
-class TestTriggerDeploy:
     @pytest.mark.asyncio
-    async def test_triggers_deploy(self, mock_api_client, mock_stream_client):
-        mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
+    async def test_passes_user_id_to_architect_message(self, mock_api_client, mock_stream_client):
+        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get.return_value = _make_response(
+            {"id": "abc", "status": "draft", "config": {}}
+        )
 
-        result = await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
+        await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Test",
+                "description": "Test desc",
+            },
+            config=_make_config("user-777"),
+        )
 
-        assert "Deploy task queued" in result
-        mock_stream_client.publish_message.assert_called_once()
-        call_args = mock_stream_client.publish_message.call_args
-        assert call_args[0][0] == "deploy:queue"
-        deploy_msg = call_args[0][1]
-        assert deploy_msg.triggered_by == "po"
+        from shared.contracts.queues.architect import ArchitectMessage
+
+        arch_msg = mock_stream_client.publish_message.call_args[0][1]
+        assert isinstance(arch_msg, ArchitectMessage)
+        assert arch_msg.user_id == "user-777"
+
+
+class TestListStories:
+    @pytest.mark.asyncio
+    async def test_lists_stories(self, mock_api_client):
+        mock_api_client.get.return_value = _make_response(
+            [
+                {"id": "s1", "title": "Create bot", "status": "in_progress", "type": "product"},
+                {"id": "s2", "title": "Fix bug", "status": "completed", "type": "product"},
+            ]
+        )
+
+        result = await list_stories.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
+
+        assert "Create bot" in result
+        assert "Fix bug" in result
+        assert "in_progress" in result
 
     @pytest.mark.asyncio
-    async def test_uses_po_input_as_callback(self, mock_api_client, mock_stream_client):
-        """callback_stream should be po:input."""
-        mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
+    async def test_empty_stories(self, mock_api_client):
+        mock_api_client.get.return_value = _make_response([])
 
-        await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
+        result = await list_stories.ainvoke({"project_id": "abc"}, config=_make_config("user-42"))
 
-        deploy_msg = mock_stream_client.publish_message.call_args[0][1]
-        assert deploy_msg.callback_stream == "po:input"
+        assert "No stories" in result
 
+
+class TestGetStory:
     @pytest.mark.asyncio
-    async def test_passes_real_user_id(self, mock_api_client, mock_stream_client):
-        """user_id should come from config."""
-        mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
+    async def test_gets_story_with_tasks(self, mock_api_client):
+        story = {"id": "s1", "title": "My story", "status": "in_progress"}
+        tasks = [
+            {"id": "eng-123", "status": "completed", "type": "engineering"},
+            {"id": "eng-456", "status": "running", "type": "engineering"},
+        ]
+        mock_api_client.get.side_effect = [
+            _make_response(story),
+            _make_response(tasks),
+        ]
 
-        await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("user-999"))
+        result = await get_story.ainvoke({"story_id": "s1"}, config=_make_config("user-42"))
 
-        deploy_msg = mock_stream_client.publish_message.call_args[0][1]
-        assert deploy_msg.user_id == "user-999"
+        parsed = json.loads(result)
+        assert parsed["story"]["title"] == "My story"
+        assert len(parsed["tasks"]) == 2
 
-    @pytest.mark.asyncio
-    async def test_passes_telegram_id_header_on_task_create(
-        self, mock_api_client, mock_stream_client
-    ):
-        mock_api_client.post.return_value = _make_response({"id": "deploy-xxx"})
-
-        await trigger_deploy.ainvoke({"project_id": "abc"}, config=_make_config("66666"))
-
-        headers = mock_api_client.post.call_args[1].get("headers", {})
-        assert headers.get("X-Telegram-ID") == "66666"
+        # Verify correct API calls
+        calls = mock_api_client.get.call_args_list
+        assert "/api/stories/s1" in calls[0][0][0]
+        assert "story_id=s1" in calls[1][0][0]
 
 
-class TestGetTaskStatus:
+class TestGetRunStatus:
     @pytest.mark.asyncio
     async def test_gets_status(self, mock_api_client):
-        task = {"id": "eng-123", "status": "completed", "type": "engineering"}
-        mock_api_client.get.return_value = _make_response(task)
+        run = {"id": "eng-123", "status": "completed", "type": "engineering"}
+        mock_api_client.get.return_value = _make_response(run)
 
-        result = await get_task_status.ainvoke(
-            {"task_id": "eng-123"}, config=_make_config("user-42")
-        )
+        result = await get_run_status.ainvoke({"run_id": "eng-123"}, config=_make_config("user-42"))
 
         parsed = json.loads(result)
         assert parsed["status"] == "completed"
+        assert "/api/runs/eng-123" in mock_api_client.get.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, mock_api_client):
         mock_api_client.get.return_value = _make_response({"id": "eng-1", "status": "running"})
 
-        await get_task_status.ainvoke({"task_id": "eng-1"}, config=_make_config("88888"))
+        await get_run_status.ainvoke({"run_id": "eng-1"}, config=_make_config("88888"))
 
         headers = mock_api_client.get.call_args[1].get("headers", {})
         assert headers.get("X-Telegram-ID") == "88888"
@@ -562,7 +599,7 @@ class TestWebSearch:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 10
+        expected_count = 11
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -573,9 +610,10 @@ class TestGetAllTools:
             "list_projects",
             "get_project",
             "set_project_secret",
-            "trigger_engineering",
-            "trigger_deploy",
-            "get_task_status",
+            "create_story",
+            "list_stories",
+            "get_story",
+            "get_run_status",
             "set_reminder",
             "notify_user",
             "web_search",

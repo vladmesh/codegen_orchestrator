@@ -99,6 +99,64 @@ class SchedulerAPIClient:
         )
         return ServerDTO.model_validate(resp.json())
 
+    # --- Runs ---
+
+    async def create_run(self, run_data: dict) -> dict:
+        resp = await self._request("POST", "runs/", json=run_data)
+        return resp.json()
+
+    # --- Stories ---
+
+    async def get_story(self, story_id: str) -> dict:
+        resp = await self._request("GET", f"stories/{story_id}")
+        return resp.json()
+
+    async def get_stories_by_status(self, status: str) -> list[dict]:
+        resp = await self._request("GET", "stories/", params={"status": status})
+        return resp.json()
+
+    async def transition_story(self, story_id: str, action: str) -> dict:
+        """Transition story status. action: 'start', 'complete', 'archive'."""
+        resp = await self._request(
+            "POST", f"stories/{story_id}/{action}", json={"actor": "architect"}
+        )
+        return resp.json()
+
+    # --- Tasks ---
+
+    async def get_tasks_by_status(self, status: str) -> list[dict]:
+        resp = await self._request("GET", "tasks/", params={"status": status})
+        return resp.json()
+
+    async def get_tasks_by_story(self, story_id: str) -> list[dict]:
+        resp = await self._request("GET", "tasks/", params={"story_id": story_id})
+        return resp.json()
+
+    async def create_task(self, task_data: dict) -> dict:
+        resp = await self._request("POST", "tasks/", json=task_data)
+        return resp.json()
+
+    async def get_task(self, task_id: str) -> dict:
+        resp = await self._request("GET", f"tasks/{task_id}")
+        return resp.json()
+
+    async def transition_task(self, task_id: str, to_status: str, actor: str = "architect") -> dict:
+        resp = await self._request(
+            "POST",
+            f"tasks/{task_id}/transition",
+            params={"to_status": to_status},
+            json={"actor": actor},
+        )
+        return resp.json()
+
+    async def create_task_event(self, task_id: str, event: dict) -> dict:
+        resp = await self._request("POST", f"tasks/{task_id}/events", json=event)
+        return resp.json()
+
+    async def get_task_events(self, task_id: str) -> list[dict]:
+        resp = await self._request("GET", f"tasks/{task_id}/events")
+        return resp.json()
+
     # --- API Keys ---
 
     async def get_api_key(self, service: str) -> dict | None:

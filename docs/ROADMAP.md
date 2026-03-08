@@ -23,7 +23,7 @@
 
 - [x] #52 Scaffold script не экранирует task_description
 - [x] #21 Deploy Pre-Check
-- [ ] #54 Deploy: inter-service URL должен использовать docker service name
+- [x] #54 Deploy: inter-service URL должен использовать docker service name
 - [ ] #60 Engineering worker work_item lifecycle (Step 5)
 - [ ] Fix eager import chains in scaffolded projects
 
