@@ -165,6 +165,18 @@ class LanggraphAPIClient:
             payload["env_hints"] = env_hints
         return await self._post_json(f"projects/{project_id}/config/secrets", json=payload)
 
+    async def get_project_repositories(self, project_id: str) -> list[dict]:
+        """Get repositories for a project."""
+        return await self._get_json("repositories/", params={"project_id": project_id})
+
+    async def get_primary_repository(self, project_id: str) -> dict | None:
+        """Get the primary repository for a project."""
+        repos = await self.get_project_repositories(project_id)
+        for repo in repos:
+            if repo.get("role") == "primary":
+                return repo
+        return repos[0] if repos else None
+
     # --- Phase 4: Allocation methods ---
 
     async def get_project_allocations(self, project_id: str) -> list[dict]:

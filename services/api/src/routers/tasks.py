@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 import re
 import secrets
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -216,7 +217,7 @@ async def push_task(
 class _TaskFilters:
     def __init__(
         self,
-        project_id: str | None = None,
+        project_id: uuid.UUID | None = None,
         status: str | None = Query(None),
         type: str | None = Query(None),
         milestone_id: str | None = Query(None),
@@ -281,7 +282,7 @@ async def list_tasks(
 
 @router.get("/stats")
 async def get_task_stats(
-    project_id: str | None = None,
+    project_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_async_session),
 ) -> dict:
     """Return counts of tasks by status."""

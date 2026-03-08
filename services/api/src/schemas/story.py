@@ -1,6 +1,7 @@
 """Story API schemas."""
 
 from datetime import datetime
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 class StoryCreate(BaseModel):
     """Schema for creating a story."""
 
-    project_id: str
+    project_id: uuid.UUID
     title: str
     description: str | None = None
     acceptance_criteria: str | None = None
@@ -22,7 +23,7 @@ class StoryRead(BaseModel):
     """Schema for reading a story."""
 
     id: str
-    project_id: str
+    project_id: uuid.UUID
     parent_story_id: str | None
     title: str
     description: str | None

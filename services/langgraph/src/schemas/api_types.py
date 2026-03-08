@@ -41,7 +41,6 @@ class ProjectConfig(TypedDict, total=False):
 
     secrets: dict[str, str]
     required_secrets: list[str]
-    repository_url: str
     modules: list[str]
     detailed_spec: str
 
@@ -52,15 +51,26 @@ class ProjectInfo(TypedDict, total=False):
     id: str
     name: str
     status: str
-    repository_url: str | None
-    github_repo_id: int | None
     config: ProjectConfig
     project_spec: dict | None
     owner_id: int
 
 
+class RepositoryInfo(TypedDict, total=False):
+    """Repository information from API."""
+
+    id: str
+    project_id: str
+    name: str
+    git_url: str
+    provider_repo_id: int | None
+    role: str
+    visibility: str
+    is_managed: bool
+
+
 class RepoInfo(TypedDict, total=False):
-    """Repository information."""
+    """GitHub repository information."""
 
     name: str
     full_name: str
@@ -71,8 +81,3 @@ class RepoInfo(TypedDict, total=False):
 def get_server_ip(server: ServerInfo) -> str | None:
     """Get server IP with fallback to host."""
     return server.get("public_ip") or server.get("host")
-
-
-def get_repo_url(project: ProjectInfo) -> str | None:
-    """Get repository URL from project, checking both locations."""
-    return project.get("repository_url") or (project.get("config") or {}).get("repository_url")

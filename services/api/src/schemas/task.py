@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -11,7 +12,7 @@ from shared.contracts.dto.task import TaskEventType, TaskType
 class TaskCreate(BaseModel):
     """Schema for creating a task."""
 
-    project_id: str
+    project_id: uuid.UUID
     type: TaskType = TaskType.FEATURE
     title: str
     description: str | None = None
@@ -31,7 +32,7 @@ class TaskRead(BaseModel):
     """Schema for reading a task."""
 
     id: str
-    project_id: str
+    project_id: uuid.UUID
     type: str
     title: str
     description: str | None
@@ -59,7 +60,7 @@ class TaskRead(BaseModel):
 class TaskUpdate(BaseModel):
     """Schema for updating a task (non-status fields only)."""
 
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     title: str | None = None
     description: str | None = None
     plan: str | None = None

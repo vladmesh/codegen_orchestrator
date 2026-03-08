@@ -14,7 +14,7 @@ import httpx
 from httpx import codes
 
 DEFAULT_API_URL = "http://localhost:8000"
-PROJECT_ID = "codegen-orchestrator"
+PROJECT_NAME = "project-factory"
 
 # Phases from existing ROADMAP.md
 PHASES = [
@@ -70,10 +70,22 @@ PHASES = [
 ]
 
 
+async def _resolve_project_id(client: httpx.AsyncClient) -> str:
+    """Find project UUID by name."""
+    resp = await client.get("/api/projects/")
+    resp.raise_for_status()
+    for p in resp.json():
+        if p["name"] == PROJECT_NAME:
+            return p["id"]
+    raise RuntimeError(f"Project '{PROJECT_NAME}' not found. Create it first.")
+
+
 async def seed(api_url: str) -> None:
     async with httpx.AsyncClient(base_url=api_url, timeout=10) as client:
+        project_id = await _resolve_project_id(client)
+
         # Check if milestones already exist
-        existing = await client.get("/api/milestones/", params={"project_id": PROJECT_ID})
+        existing = await client.get("/api/milestones/", params={"project_id": project_id})
         existing.raise_for_status()
         if existing.json():
             print(f"Milestones already exist ({len(existing.json())}). Skipping seed.")
@@ -84,7 +96,7 @@ async def seed(api_url: str) -> None:
             ms_resp = await client.post(
                 "/api/milestones/",
                 json={
-                    "project_id": PROJECT_ID,
+                    "project_id": project_id,
                     "title": phase["title"],
                     "description": phase["description"],
                     "sort_order": phase["sort_order"],

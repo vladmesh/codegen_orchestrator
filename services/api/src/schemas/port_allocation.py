@@ -1,5 +1,7 @@
 """Port Allocation schemas."""
 
+import uuid
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -9,7 +11,7 @@ class PortAllocationBase(BaseModel):
     server_handle: str
     port: int
     service_name: str
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
 
 
 class PortAllocationCreate(PortAllocationBase):
@@ -22,7 +24,7 @@ class AllocateNextPortRequest(BaseModel):
     """Schema for atomic allocate-next-port request."""
 
     service_name: str
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     start_port: int = 8000
 
 

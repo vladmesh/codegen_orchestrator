@@ -13,7 +13,6 @@ def _project(**overrides):
     base = {
         "id": "proj-1",
         "name": "test-project",
-        "repository_url": "https://github.com/org/test-project",
         "config": {"modules": ["backend"]},
     }
     base.update(overrides)
@@ -31,6 +30,10 @@ class TestDeveloperNodeWorkerId:
     async def test_success_includes_worker_id(self, mock_github_cls, mock_api, mock_spawn):
         """DeveloperNode should include worker_id from SpawnResult on success."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -97,6 +100,7 @@ class TestCIFixWorkerReuse:
         redis = MagicMock()
         passed, attempts = await _wait_for_ci_and_fix(
             project=_project(),
+            git_url="https://github.com/org/test-project",
             task_id="task-1",
             callback_stream="cb:1",
             redis=redis,
@@ -138,6 +142,7 @@ class TestCIFixWorkerReuse:
         redis = MagicMock()
         passed, attempts = await _wait_for_ci_and_fix(
             project=_project(),
+            git_url="https://github.com/org/test-project",
             task_id="task-1",
             callback_stream="cb:1",
             redis=redis,
@@ -164,6 +169,9 @@ class TestCIFixCleanup:
         mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}])
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_api.post = AsyncMock()
 
         from src.workers.engineering_worker import _handle_engineering_success
@@ -203,6 +211,9 @@ class TestCIFixCleanup:
         mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}])
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_api.post = AsyncMock()
 
         from src.workers.engineering_worker import _handle_engineering_success
@@ -241,6 +252,9 @@ class TestCIFixCleanup:
         mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}])
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_api.post = AsyncMock()
 
         from src.workers.engineering_worker import _handle_engineering_success
@@ -317,6 +331,7 @@ class TestCIFixFallback:
         redis = MagicMock()
         passed, attempts = await _wait_for_ci_and_fix(
             project=_project(),
+            git_url="https://github.com/org/test-project",
             task_id="task-1",
             callback_stream="cb:1",
             redis=redis,
@@ -370,6 +385,7 @@ class TestCIFixFallback:
         redis = MagicMock()
         passed, attempts = await _wait_for_ci_and_fix(
             project=_project(),
+            git_url="https://github.com/org/test-project",
             task_id="task-1",
             callback_stream="cb:1",
             redis=redis,
@@ -399,6 +415,7 @@ class TestTotalGateTimeout:
 
         passed, attempts = await _wait_for_ci_and_fix(
             project=_project(),
+            git_url="https://github.com/org/test-project",
             task_id="task-1",
             callback_stream="cb:1",
             redis=redis,

@@ -1,5 +1,7 @@
 """Unit tests for Task and TaskEvent models + enums + transition matrix."""
 
+import uuid
+
 from sqlalchemy import create_engine, insert, select
 from sqlalchemy.orm import Session
 
@@ -10,6 +12,9 @@ from shared.contracts.dto.task import (
     TaskType,
 )
 from shared.models.task import Task, TaskEvent
+
+TEST_PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+TEST_PROJECT_UUID_2 = uuid.UUID("00000000-0000-0000-0000-000000000002")
 
 
 def _setup_db():
@@ -117,7 +122,7 @@ def test_task_defaults():
     engine = _setup_db()
 
     with Session(engine) as session:
-        task = Task(id="task-test1", project_id="proj-test", title="Test feature")
+        task = Task(id="task-test1", project_id=TEST_PROJECT_UUID, title="Test feature")
         session.add(task)
         session.commit()
         session.refresh(task)
@@ -137,7 +142,7 @@ def test_task_persist_and_read():
         session.execute(
             insert(Task).values(
                 id="task-abc",
-                project_id="proj-test",
+                project_id=TEST_PROJECT_UUID,
                 title="Add statistics button",
                 description="Full description here",
                 type=TaskType.FEATURE.value,
@@ -166,7 +171,7 @@ def test_task_event_persist_and_read():
         session.execute(
             insert(Task).values(
                 id="task-abc",
-                project_id="proj-test",
+                project_id=TEST_PROJECT_UUID,
                 title="Test",
                 type="feature",
                 status="backlog",
@@ -205,7 +210,7 @@ def test_task_plan_field():
         session.execute(
             insert(Task).values(
                 id="task-plan",
-                project_id="proj-test",
+                project_id=TEST_PROJECT_UUID,
                 title="Feature with plan",
                 type="feature",
                 status="in_dev",
@@ -227,7 +232,7 @@ def test_task_need_e2e_defaults_to_false():
     engine = _setup_db()
 
     with Session(engine) as session:
-        task = Task(id="task-e2e", project_id="proj-test", title="E2E test")
+        task = Task(id="task-e2e", project_id=TEST_PROJECT_UUID, title="E2E test")
         session.add(task)
         session.commit()
         session.refresh(task)
@@ -239,7 +244,9 @@ def test_task_need_e2e_can_be_set():
     engine = _setup_db()
 
     with Session(engine) as session:
-        task = Task(id="task-e2e2", project_id="proj-test", title="Complex task", need_e2e=True)
+        task = Task(
+            id="task-e2e2", project_id=TEST_PROJECT_UUID, title="Complex task", need_e2e=True
+        )
         session.add(task)
         session.commit()
         session.refresh(task)
@@ -251,7 +258,7 @@ def test_task_plan_defaults_to_none():
     engine = _setup_db()
 
     with Session(engine) as session:
-        task = Task(id="task-noplan", project_id="proj-test", title="No plan")
+        task = Task(id="task-noplan", project_id=TEST_PROJECT_UUID, title="No plan")
         session.add(task)
         session.commit()
         session.refresh(task)
@@ -266,7 +273,7 @@ def test_task_with_project_id():
         session.execute(
             insert(Task).values(
                 id="task-proj",
-                project_id="proj-123",
+                project_id=TEST_PROJECT_UUID_2,
                 title="Feature for project",
                 type="feature",
                 status="backlog",
@@ -280,7 +287,7 @@ def test_task_with_project_id():
 
     with Session(engine) as session:
         task = session.execute(select(Task).where(Task.id == "task-proj")).scalar_one()
-        assert task.project_id == "proj-123"
+        assert task.project_id == TEST_PROJECT_UUID_2
         assert task.priority == 1
 
 
@@ -292,7 +299,7 @@ def test_task_blocked_by_task_id():
         session.execute(
             insert(Task).values(
                 id="task-blocker",
-                project_id="proj-test",
+                project_id=TEST_PROJECT_UUID,
                 title="Blocker task",
                 type="feature",
                 status="in_dev",
@@ -306,7 +313,7 @@ def test_task_blocked_by_task_id():
         session.execute(
             insert(Task).values(
                 id="task-blocked",
-                project_id="proj-test",
+                project_id=TEST_PROJECT_UUID,
                 title="Blocked task",
                 type="feature",
                 status="blocked",
@@ -332,7 +339,7 @@ def test_multiple_events_for_task():
         session.execute(
             insert(Task).values(
                 id="task-multi",
-                project_id="proj-test",
+                project_id=TEST_PROJECT_UUID,
                 title="Multi-event test",
                 type="feature",
                 status="in_dev",

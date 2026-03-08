@@ -34,8 +34,10 @@ def mock_api():
             return_value={
                 "name": "my-project",
                 "config": {"modules": ["backend"]},
-                "repository_url": "https://github.com/org/my-project",
             }
+        )
+        api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/my-project"}
         )
         yield api
 

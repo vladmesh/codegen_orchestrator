@@ -1,6 +1,8 @@
 """Project model."""
 
-from sqlalchemy import JSON, ForeignKey, Integer, String
+import uuid
+
+from sqlalchemy import JSON, ForeignKey, Integer, String, Uuid
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,14 +16,8 @@ class Project(Base):
 
     __tablename__ = "projects"
 
-    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255))
-
-    # GitHub Repo ID is immutable, tracking the source of truth
-    github_repo_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    # Repository URL for deployment (e.g., https://github.com/org/repo)
-    repository_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     status: Mapped[str] = mapped_column(String(50), default=ProjectStatus.DRAFT.value)
 

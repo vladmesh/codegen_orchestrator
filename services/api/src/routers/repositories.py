@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 import secrets
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -50,6 +51,7 @@ async def create_repository(
         git_url=body.git_url,
         provider_repo_id=body.provider_repo_id,
         role=body.role.value,
+        visibility=body.visibility.value,
         is_managed=body.is_managed,
         created_at=now,
         updated_at=now,
@@ -64,7 +66,7 @@ async def create_repository(
 
 @router.get("/", response_model=list[RepositoryRead])
 async def list_repositories(
-    project_id: str | None = None,
+    project_id: uuid.UUID | None = None,
     role: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_async_session),

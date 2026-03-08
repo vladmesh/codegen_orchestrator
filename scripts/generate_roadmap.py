@@ -17,11 +17,14 @@ DONE_STATUSES = {"done", "completed"}
 
 
 async def fetch_roadmap_data(
-    api_url: str, project_id: str
+    api_url: str, project_id: str | None
 ) -> tuple[list[dict], dict[str, list[dict]], list[dict]]:
     """Fetch milestones and their tasks from the API."""
     async with httpx.AsyncClient(base_url=api_url, timeout=10) as client:
-        ms_resp = await client.get("/api/milestones/", params={"project_id": project_id})
+        params: dict = {}
+        if project_id:
+            params["project_id"] = project_id
+        ms_resp = await client.get("/api/milestones/", params=params)
         ms_resp.raise_for_status()
         milestones = ms_resp.json()
 
@@ -32,9 +35,12 @@ async def fetch_roadmap_data(
             tasks_by_milestone[ms["id"]] = wi_resp.json()
 
         # Unsorted: work items without a milestone
+        backlog_params: dict = {"status": "backlog"}
+        if project_id:
+            backlog_params["project_id"] = project_id
         unsorted_resp = await client.get(
             "/api/tasks/",
-            params={"project_id": project_id, "status": "backlog"},
+            params=backlog_params,
         )
         unsorted_resp.raise_for_status()
         all_backlog = unsorted_resp.json()
@@ -112,7 +118,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate ROADMAP.md from API")
     parser.add_argument("--api-url", default=DEFAULT_API_URL)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
-    parser.add_argument("--project-id", default="codegen-orchestrator")
+    parser.add_argument(
+        "--project-id", default=None, help="Project UUID (resolves first project if omitted)"
+    )
     args = parser.parse_args()
 
     asyncio.run(main(args.api_url, args.output, args.project_id))

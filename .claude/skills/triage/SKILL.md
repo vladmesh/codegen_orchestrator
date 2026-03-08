@@ -23,6 +23,9 @@ All task creation/lookup goes through the API:
 ```bash
 API="http://localhost:8000"
 
+# Resolve project UUID (first project in the list)
+PROJECT_ID=$(curl -sf "$API/api/projects/" | jq -r '.[0].id')
+
 # Get next tag number
 NEXT_TAG=$(curl -sf "$API/api/tasks/next-tag" | jq -r '.next_tag')
 
@@ -30,7 +33,7 @@ NEXT_TAG=$(curl -sf "$API/api/tasks/next-tag" | jq -r '.next_tag')
 curl -sf -X POST "$API/api/tasks/" \
   -H "Content-Type: application/json" \
   -d '{
-    "project_id": "codegen-orchestrator",
+    "project_id": "'"$PROJECT_ID"'",
     "title": "#'"$NEXT_TAG"' <Title>",
     "type": "feature",
     "description": "<Brief>",
@@ -39,7 +42,7 @@ curl -sf -X POST "$API/api/tasks/" \
   }'
 
 # Search existing items (for dedup)
-curl -sf "$API/api/tasks/?project_id=codegen-orchestrator" | jq '.[].title'
+curl -sf "$API/api/tasks/?project_id=$PROJECT_ID" | jq '.[].title'
 
 # Reopen a done item (regression)
 curl -sf -X POST "$API/api/tasks/<wi_id>/reopen" \
@@ -73,7 +76,7 @@ If a report has no structured Problems section (old format), scan for issues man
 
 **Primary**: Query brainstorms with status=done from the API:
 ```bash
-BRAINSTORMS=$(curl -sf "$API/api/brainstorms/?status=done&project_id=codegen-orchestrator")
+BRAINSTORMS=$(curl -sf "$API/api/brainstorms/?status=done&project_id=$PROJECT_ID")
 ```
 
 For each brainstorm, read its `content` field (markdown text).
@@ -88,7 +91,7 @@ Find the `## Action Items` section in each brainstorm's content. For each item:
   curl -sf -X POST "$API/api/tasks/" \
     -H "Content-Type: application/json" \
     -d '{
-      "project_id": "codegen-orchestrator",
+      "project_id": "'"$PROJECT_ID"'",
       "title": "#'"$NEXT_TAG"' <Title>",
       "type": "feature",
       "description": "<Brief>",
@@ -116,7 +119,7 @@ Search existing tasks via API before creating new ones.
 
 | Type | Action |
 |------|--------|
-| `orchestrator` | Create task via API with `project_id: "codegen-orchestrator"` |
+| `orchestrator` | Create task via API with `project_id: "$PROJECT_ID"` (resolved at start) |
 | `template` | Add to `/home/vlad/projects/service-template/docs/backlog.md` (create file if missing, free format). Stage and commit in that repo. |
 | `meta` | Create task via API with `[meta]` prefix in title |
 | `infra` | Don't create tasks. Collect and list at the end for human decision. |
@@ -125,7 +128,7 @@ Search existing tasks via API before creating new ones.
 
 Before creating a new task, check done items via API:
 ```bash
-curl -sf "$API/api/tasks/?status=done&project_id=codegen-orchestrator"
+curl -sf "$API/api/tasks/?status=done&project_id=$PROJECT_ID"
 ```
 
 Search by keywords, affected service, error pattern. If a problem matches a completed item:
@@ -137,7 +140,7 @@ Search by keywords, affected service, error pattern. If a problem matches a comp
 
 Before creating any task, search existing items:
 ```bash
-curl -sf "$API/api/tasks/?project_id=codegen-orchestrator"
+curl -sf "$API/api/tasks/?project_id=$PROJECT_ID"
 ```
 Search by keywords from the problem description. If a matching item exists, skip (or update its description via PATCH if new info is available).
 

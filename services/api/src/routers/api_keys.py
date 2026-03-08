@@ -1,6 +1,7 @@
 """API Keys router."""
 
 import json
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -58,7 +59,7 @@ async def create_api_key(
 @router.get("/{service}", response_model=dict)
 async def get_api_key(
     service: str,
-    project_id: str | None = None,
+    project_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_async_session),
 ) -> dict:
     """Get decoded API key value."""

@@ -35,14 +35,14 @@ def mock_api():
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get_project = AsyncMock(return_value=None)
+        api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test"}
+        )
         yield api
 
 
-def _project(*, repo_url=None):
-    p = {"id": "proj-1", "name": "test-project", "config": {"modules": ["backend"]}}
-    if repo_url:
-        p["repository_url"] = repo_url
-    return p
+def _project():
+    return {"id": "proj-1", "name": "test-project", "config": {"modules": ["backend"]}}
 
 
 def _get_callback_events(mock_redis, stream="po:response:abc"):
@@ -69,7 +69,7 @@ class TestLevel1CascadeFailure:
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": None},
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,
@@ -104,7 +104,7 @@ class TestLevel1CascadeFailure:
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": ""},
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,
@@ -132,7 +132,7 @@ class TestLevel2NotificationDecoupling:
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc123"},
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,
@@ -164,7 +164,7 @@ class TestLevel2NotificationDecoupling:
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc123"},
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=True,
@@ -190,7 +190,7 @@ class TestLevel2NotificationDecoupling:
         await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc123"},
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,
@@ -220,7 +220,7 @@ class TestLevel2NotificationDecoupling:
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc123"},
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,

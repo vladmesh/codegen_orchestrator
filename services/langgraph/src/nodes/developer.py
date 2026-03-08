@@ -114,20 +114,19 @@ class DeveloperNode(FunctionalNode):
                     ],
                 }
 
-        # Refresh project spec if scaffolding (engineering worker just set repository_url)
-        if scaffold_config and project_id:
-            fresh = await api_client.get_project(project_id)
-            if fresh:
-                project_spec = fresh
-        elif action != "create" and project_id:
-            # Refresh project data for existing projects
+        # Refresh project data
+        if project_id:
             fresh = await api_client.get_project(project_id)
             if fresh:
                 project_spec = fresh
 
         try:
-            # Determine repository details
-            repo_details = self._determine_repository(project_spec, project_name)
+            # Get repository URL from Repository entity
+            primary_repo = (
+                await api_client.get_primary_repository(project_id) if project_id else None
+            )
+            git_url = primary_repo.get("git_url") if primary_repo else None
+            repo_details = self._determine_repository(git_url, project_name)
             repo_full_name = repo_details["full_name"]
             owner = repo_details["owner"]
             repo_name = repo_details["name"]
@@ -304,21 +303,20 @@ class DeveloperNode(FunctionalNode):
             task_description=task_description,
         )
 
-    def _determine_repository(self, project_spec: dict, project_name: str) -> dict:
+    def _determine_repository(self, git_url: str | None, project_name: str) -> dict:
         """Determine repository details (owner, name, full_name)."""
-        repository_url = project_spec.get("repository_url")
-        if repository_url and "github.com/" in repository_url:
-            repo_full_name = repository_url.split("github.com/")[-1].rstrip("/")
+        if git_url and "github.com/" in git_url:
+            repo_full_name = git_url.split("github.com/")[-1].rstrip("/").removesuffix(".git")
             owner, repo_name = repo_full_name.split("/", 1)
             logger.info(
-                "using_repository_url_from_project",
-                repository_url=repository_url,
+                "using_git_url_from_repository",
+                git_url=git_url,
                 repo_full_name=repo_full_name,
             )
         else:
             owner = os.getenv("GITHUB_ORG")
             if not owner:
-                raise RuntimeError("No repository_url in project and GITHUB_ORG env not set")
+                raise RuntimeError("No repository found for project and GITHUB_ORG env not set")
             repo_name = project_name.lower().replace(" ", "-").replace("_", "-")
             repo_full_name = f"{owner}/{repo_name}"
             logger.info(

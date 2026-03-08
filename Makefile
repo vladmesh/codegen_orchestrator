@@ -326,9 +326,10 @@ task:
 ifndef TITLE
 	$(error Usage: make task TITLE="task title" [DESC="description"])
 endif
-	@curl -sf -X POST "http://localhost:8000/api/tasks/push" \
+	@PID=$$(curl -sf "http://localhost:8000/api/projects/" | python3 -c "import sys,json; ps=json.load(sys.stdin); print(ps[0]['id'] if ps else '')") && \
+	curl -sf -X POST "http://localhost:8000/api/tasks/push" \
 		-H "Content-Type: application/json" \
-		-d '{"title": "$(TITLE)", "description": "$(DESC)", "project_id": "codegen-orchestrator"}' \
+		-d "{\"title\": \"$(TITLE)\", \"description\": \"$(DESC)\", \"project_id\": \"$$PID\"}" \
 		| python3 -c "import sys,json; t=json.load(sys.stdin); print(f'Created: {t[\"id\"]} (p={t[\"priority\"]}) {t[\"title\"]}')"
 
 # === Seeding ===

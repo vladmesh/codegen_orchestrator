@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -14,7 +15,7 @@ def _make_story(**overrides):
     now = datetime.now(UTC)
     defaults = {
         "id": "story-test1",
-        "project_id": "proj-test",
+        "project_id": uuid.UUID("00000000-0000-0000-0000-000000000001"),
         "parent_story_id": None,
         "title": "Test story",
         "description": None,
@@ -81,7 +82,7 @@ async def test_create_story():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/stories/",
-            json={"title": "User login", "project_id": "proj-1"},
+            json={"title": "User login", "project_id": "00000000-0000-0000-0000-000000000001"},
         )
 
     assert resp.status_code == 201  # noqa: PLR2004
@@ -89,7 +90,7 @@ async def test_create_story():
     story = session.add.call_args[0][0]
     assert story.title == "User login"
     assert story.status == "created"
-    assert story.project_id == "proj-1"
+    assert story.project_id == uuid.UUID("00000000-0000-0000-0000-000000000001")
     assert story.id.startswith("story-")
 
 
@@ -102,7 +103,11 @@ async def test_create_story_with_priority():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/stories/",
-            json={"title": "High prio", "project_id": "proj-1", "priority": 5},
+            json={
+                "title": "High prio",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "priority": 5,
+            },
         )
 
     assert resp.status_code == 201  # noqa: PLR2004
@@ -121,7 +126,7 @@ async def test_create_story_with_blocked_by():
             "/api/stories/",
             json={
                 "title": "Blocked",
-                "project_id": "proj-1",
+                "project_id": "00000000-0000-0000-0000-000000000001",
                 "blocked_by_story_id": "story-dep",
             },
         )
@@ -161,13 +166,13 @@ async def test_list_stories():
 
 @pytest.mark.asyncio
 async def test_list_stories_filter_by_project():
-    s1 = _make_story(id="story-1", project_id="proj-1")
+    s1 = _make_story(id="story-1", project_id=uuid.UUID("00000000-0000-0000-0000-000000000001"))
     session = _mock_session(scalars_all=[s1])
     _override_session(session)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/stories/?project_id=proj-1")
+        resp = await client.get("/api/stories/?project_id=00000000-0000-0000-0000-000000000001")
 
     assert resp.status_code == 200  # noqa: PLR2004
 

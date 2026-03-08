@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -9,16 +10,19 @@ import pytest
 from src.database import get_async_session
 from src.main import app
 
+PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
 
 def _make_repo(**overrides):
     now = datetime.now(UTC)
     defaults = {
         "id": "repo-test1",
-        "project_id": "proj-test",
+        "project_id": PROJECT_UUID,
         "name": "test-repo",
         "git_url": "https://github.com/org/test-repo",
         "provider_repo_id": None,
         "role": "primary",
+        "visibility": "private",
         "is_managed": True,
         "created_at": now,
         "updated_at": now,
@@ -69,7 +73,7 @@ async def test_create_repository():
         resp = await client.post(
             "/api/repositories/",
             json={
-                "project_id": "proj-test",
+                "project_id": str(PROJECT_UUID),
                 "name": "my-repo",
                 "git_url": "https://github.com/org/my-repo",
             },
@@ -104,7 +108,7 @@ async def test_list_repositories_filter_by_project():
     app.dependency_overrides[get_async_session] = lambda: session
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/api/repositories/?project_id=proj-1")
+        resp = await client.get(f"/api/repositories/?project_id={PROJECT_UUID}")
 
     assert resp.status_code == 200
 

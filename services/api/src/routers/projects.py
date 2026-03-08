@@ -1,5 +1,7 @@
 """Projects router."""
 
+import uuid
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,18 +67,19 @@ async def create_project(
 ) -> Project:
     """Create a new project."""
     try:
+        project_id = project_in.id or uuid.uuid4()
+
         logger.info(
             "creating_project",
-            project_id=project_in.id,
+            project_id=str(project_id),
             name=project_in.name,
             status=project_in.status,
-            config=project_in.config,
             telegram_id=x_telegram_id,
         )
 
         # Check if ID exists
-        if await db.get(Project, project_in.id):
-            logger.warning("project_creation_failed_duplicate", project_id=project_in.id)
+        if project_in.id and await db.get(Project, project_id):
+            logger.warning("project_creation_failed_duplicate", project_id=str(project_id))
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Project with this ID already exists",
@@ -97,12 +100,11 @@ async def create_project(
         owner_id = user.id
 
         project = Project(
-            id=project_in.id,
+            id=project_id,
             name=project_in.name,
-            status=project_in.status,
+            status=project_in.status or "draft",
             config=project_in.config,
             owner_id=owner_id,
-            github_repo_id=project_in.github_repo_id,
         )
         db.add(project)
         await db.commit()
@@ -110,7 +112,7 @@ async def create_project(
 
         logger.info(
             "project_created",
-            project_id=project.id,
+            project_id=str(project.id),
             status=project.status,
             owner_id=owner_id,
         )
@@ -137,23 +139,9 @@ async def create_project(
         raise
 
 
-@router.get("/by-repo-id/{repo_id}", response_model=ProjectRead)
-async def get_project_by_repo_id(
-    repo_id: int,
-    db: AsyncSession = Depends(get_async_session),
-) -> Project:
-    """Get project by GitHub repository ID. Used by scheduler github_sync."""
-    query = select(Project).where(Project.github_repo_id == repo_id)
-    result = await db.execute(query)
-    project = result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
-
-
 @router.get("/{project_id}", response_model=ProjectRead)
 async def get_project(
-    project_id: str,
+    project_id: uuid.UUID,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> Project:
@@ -197,7 +185,7 @@ async def list_projects(
 
 @router.put("/{project_id}", response_model=ProjectRead)
 async def update_project(
-    project_id: str,
+    project_id: uuid.UUID,
     project_in: ProjectUpdate,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
@@ -209,26 +197,24 @@ async def update_project(
 
     await _check_project_access(project, x_telegram_id, db)
 
+    if project_in.name is not None:
+        project.name = project_in.name
     if project_in.status is not None:
         project.status = project_in.status
     if project_in.config is not None:
         project.config = project_in.config
-    if project_in.repository_url is not None:
-        project.repository_url = project_in.repository_url
-    if project_in.github_repo_id is not None:
-        project.github_repo_id = project_in.github_repo_id
 
     await db.commit()
     await db.refresh(project)
 
-    logger.info("project_patched", project_id=project.id, status=project.status)
+    logger.info("project_patched", project_id=str(project.id), status=project.status)
 
     return project
 
 
 @router.patch("/{project_id}", response_model=ProjectRead)
 async def patch_project(
-    project_id: str,
+    project_id: uuid.UUID,
     project_in: ProjectUpdate,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
@@ -240,26 +226,24 @@ async def patch_project(
 
     await _check_project_access(project, x_telegram_id, db)
 
+    if project_in.name is not None:
+        project.name = project_in.name
     if project_in.status is not None:
         project.status = project_in.status
     if project_in.config is not None:
         project.config = project_in.config
-    if project_in.repository_url is not None:
-        project.repository_url = project_in.repository_url
-    if project_in.github_repo_id is not None:
-        project.github_repo_id = project_in.github_repo_id
 
     await db.commit()
     await db.refresh(project)
 
-    logger.info("project_patched", project_id=project.id, status=project.status)
+    logger.info("project_patched", project_id=str(project.id), status=project.status)
 
     return project
 
 
 @router.post("/{project_id}/config/secrets")
 async def merge_secrets(
-    project_id: str,
+    project_id: uuid.UUID,
     body: MergeSecretsRequest,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
@@ -310,7 +294,7 @@ async def merge_secrets(
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(
-    project_id: str,
+    project_id: uuid.UUID,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ):

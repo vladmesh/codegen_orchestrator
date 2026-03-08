@@ -1,6 +1,8 @@
 """API Key model."""
 
-from sqlalchemy import Integer, String
+import uuid
+
+from sqlalchemy import Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -17,4 +19,4 @@ class APIKey(Base):
     type: Mapped[str] = mapped_column(String(20), default="system")  # system, project
 
     # Optional project linkage for project-specific keys
-    project_id: Mapped[str] = mapped_column(String(255), nullable=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)

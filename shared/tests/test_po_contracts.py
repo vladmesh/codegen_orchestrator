@@ -75,7 +75,7 @@ class TestPOSystemEvent:
             text="Task finished",
             task_id="t1",
             user_id="42",
-            project_id="p1",
+            project_id="00000000-0000-0000-0000-000000000001",
             timestamp="2025-01-01T00:00:00+00:00",
         )
         fields = to_flat_fields(msg)

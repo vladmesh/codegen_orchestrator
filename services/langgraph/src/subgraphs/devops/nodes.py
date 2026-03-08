@@ -16,7 +16,7 @@ from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
-from ...schemas.api_types import AllocationInfo, get_repo_url
+from ...schemas.api_types import AllocationInfo
 from .dotenv_builder import build_dotenv, encode_dotenv
 from .env_groups import resolve_with_groups
 from .state import DevOpsState
@@ -181,7 +181,8 @@ class SecretResolverNode(FunctionalNode):
             registry_host = os.getenv("ORCHESTRATOR_HOSTNAME")
             if not registry_host:
                 raise RuntimeError("ORCHESTRATOR_HOSTNAME is not set")
-            repo_url = get_repo_url(project_spec)
+            repo_info = state.get("repo_info") or {}
+            repo_url = repo_info.get("html_url", "")
             if repo_url:
                 # Parse: https://github.com/org/repo -> org/repo
                 parts = repo_url.rstrip("/").split("/")
@@ -394,7 +395,8 @@ class DeployerNode(FunctionalNode):
         project_spec = state.get("project_spec") or {}
         allocated_resources = state.get("allocated_resources", {})
 
-        repo_url = get_repo_url(project_spec)
+        repo_info = state.get("repo_info") or {}
+        repo_url = repo_info.get("html_url", "")
         if not repo_url:
             return None
 

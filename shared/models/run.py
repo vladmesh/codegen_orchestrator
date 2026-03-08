@@ -1,8 +1,9 @@
 """Run model for tracking asynchronous operations (execution layer)."""
 
 from datetime import datetime
+import uuid
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.run import RunStatus
@@ -20,8 +21,8 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String(50), default=RunStatus.QUEUED.value, index=True)
 
     # Associated project
-    project_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("projects.id"), nullable=True, index=True
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("projects.id"), nullable=True, index=True
     )
 
     # Owner (User ID)

@@ -20,8 +20,11 @@ def base_state():
         "project_id": "proj-123",
         "project_spec": {
             "name": "my project",
-            "repository_url": "https://github.com/my-org/my-repo",
             "config": {"modules": ["backend"]},
+        },
+        "repo_info": {
+            "full_name": "my-org/my-repo",
+            "html_url": "https://github.com/my-org/my-repo",
         },
         "allocated_resources": {
             "backend": {

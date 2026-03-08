@@ -1,6 +1,10 @@
+import uuid
+
 from fastapi import status
 from httpx import AsyncClient
 import pytest
+
+PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
 
 
 @pytest.mark.asyncio
@@ -17,7 +21,7 @@ async def test_post_projects_pure_db(async_client: AsyncClient):
     assert user_resp.status_code == status.HTTP_201_CREATED
 
     payload = {
-        "id": "new-proj-001",
+        "id": PROJECT_UUID,
         "name": "New Project 001",
         "status": "created",
         "config": {"modules": ["backend"]},
@@ -38,5 +42,3 @@ async def test_post_projects_pure_db(async_client: AsyncClient):
     data = response.json()
     assert data["id"] == payload["id"]
     assert data["name"] == payload["name"]
-    # repository_url should be None as per new logic
-    assert data.get("repository_url") is None

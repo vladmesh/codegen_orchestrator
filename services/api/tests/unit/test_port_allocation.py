@@ -1,12 +1,15 @@
 """Unit tests for port allocation endpoints."""
 
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 
 from src.database import get_async_session
 from src.main import app
+
+PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 def _mock_session(
@@ -62,7 +65,9 @@ def _mock_session(
     return session, _session_gen
 
 
-def _make_allocation(server_handle="srv-1", port=8000, service_name="backend", project_id="p1"):
+def _make_allocation(
+    server_handle="srv-1", port=8000, service_name="backend", project_id=PROJECT_UUID
+):
     alloc = MagicMock()
     alloc.id = 1
     alloc.server_handle = server_handle
@@ -109,7 +114,7 @@ class TestAllocateNextPort:
                     "/api/servers/srv-1/ports/allocate-next",
                     json={
                         "service_name": "backend",
-                        "project_id": "proj-1",
+                        "project_id": str(PROJECT_UUID),
                     },
                 )
             assert resp.status_code == 200, resp.text  # noqa: PLR2004
@@ -142,7 +147,7 @@ class TestAllocateNextPort:
                     "/api/servers/srv-1/ports/allocate-next",
                     json={
                         "service_name": "backend",
-                        "project_id": "proj-1",
+                        "project_id": str(PROJECT_UUID),
                     },
                 )
             assert resp.status_code == 200, resp.text  # noqa: PLR2004
@@ -167,7 +172,7 @@ class TestAllocateNextPort:
                     "/api/servers/nonexistent/ports/allocate-next",
                     json={
                         "service_name": "backend",
-                        "project_id": "proj-1",
+                        "project_id": str(PROJECT_UUID),
                     },
                 )
             assert resp.status_code == 404  # noqa: PLR2004

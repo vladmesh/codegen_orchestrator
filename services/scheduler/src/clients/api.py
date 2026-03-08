@@ -46,24 +46,42 @@ class SchedulerAPIClient:
 
     # --- Projects ---
 
-    async def get_project_by_repo_id(self, repo_id: int) -> ProjectDTO | None:
+    async def get_projects(self) -> list[ProjectDTO]:
+        resp = await self._request("GET", "projects")
+        return [ProjectDTO.model_validate(p) for p in resp.json()]
+
+    async def get_project(self, project_id: str) -> ProjectDTO | None:
         try:
-            resp = await self._request("GET", f"projects/by-repo-id/{repo_id}")
+            resp = await self._request("GET", f"projects/{project_id}")
             return ProjectDTO.model_validate(resp.json())
         except httpx.HTTPStatusError as e:
             if e.response.status_code == httpx.codes.NOT_FOUND:
                 return None
             raise
 
-    async def get_projects(self) -> list[ProjectDTO]:
-        resp = await self._request("GET", "projects")
-        return [ProjectDTO.model_validate(p) for p in resp.json()]
-
     async def update_project(self, project_id: str, project: ProjectUpdate) -> ProjectDTO:
         resp = await self._request(
             "PATCH", f"projects/{project_id}", json=project.model_dump(exclude_unset=True)
         )
         return ProjectDTO.model_validate(resp.json())
+
+    # --- Repositories ---
+
+    async def get_repository_by_provider_id(self, provider_repo_id: int) -> dict | None:
+        try:
+            resp = await self._request("GET", f"repositories/by-provider-id/{provider_repo_id}")
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                return None
+            raise
+
+    async def get_repositories(self, project_id: str | None = None) -> list[dict]:
+        params = {}
+        if project_id:
+            params["project_id"] = project_id
+        resp = await self._request("GET", "repositories/", params=params)
+        return resp.json()
 
     # --- Servers ---
 

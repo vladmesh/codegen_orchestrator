@@ -1,6 +1,7 @@
 """Unit tests for Task API schemas (planning layer)."""
 
 from datetime import UTC, datetime
+import uuid
 
 from pydantic import ValidationError
 import pytest
@@ -14,20 +15,23 @@ from src.schemas.task import (
     TaskUpdate,
 )
 
+PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+PROJECT_UUID_2 = uuid.UUID("00000000-0000-0000-0000-000000000002")
+
 
 def test_task_create_minimal():
-    schema = TaskCreate(project_id="proj-1", title="Fix login bug")
+    schema = TaskCreate(project_id=PROJECT_UUID, title="Fix login bug")
     assert schema.title == "Fix login bug"
     assert schema.type == "feature"
     assert schema.priority == 0
     assert schema.max_iterations == 3
     assert schema.created_by == "system"
-    assert schema.project_id == "proj-1"
+    assert schema.project_id == PROJECT_UUID
 
 
 def test_task_create_full():
     schema = TaskCreate(
-        project_id="proj-123",
+        project_id=PROJECT_UUID_2,
         type="fix",
         title="Fix login bug",
         description="Users can't login with Google",
@@ -36,18 +40,18 @@ def test_task_create_full():
         max_iterations=5,
         created_by="po",
     )
-    assert schema.project_id == "proj-123"
+    assert schema.project_id == PROJECT_UUID_2
     assert schema.type == "fix"
     assert schema.max_iterations == 5
 
 
 def test_task_create_with_milestone_id():
-    schema = TaskCreate(project_id="proj-1", title="Task in milestone", milestone_id="ms-abc")
+    schema = TaskCreate(project_id=PROJECT_UUID, title="Task in milestone", milestone_id="ms-abc")
     assert schema.milestone_id == "ms-abc"
 
 
 def test_task_create_milestone_id_optional():
-    schema = TaskCreate(project_id="proj-1", title="No milestone")
+    schema = TaskCreate(project_id=PROJECT_UUID, title="No milestone")
     assert schema.milestone_id is None
 
 
@@ -58,7 +62,7 @@ def test_task_requires_project_id():
 
 def test_task_create_invalid_type():
     with pytest.raises(ValidationError):
-        TaskCreate(project_id="proj-1", title="Test", type="invalid_type")
+        TaskCreate(project_id=PROJECT_UUID, title="Test", type="invalid_type")
 
 
 def test_task_read_from_attributes():
@@ -66,7 +70,7 @@ def test_task_read_from_attributes():
 
     class FakeModel:
         id = "task-abc"
-        project_id = "proj-1"
+        project_id = PROJECT_UUID
         type = "feature"
         title = "Test"
         description = None
@@ -93,7 +97,7 @@ def test_task_read_with_plan():
 
     class FakeModel:
         id = "task-abc"
-        project_id = "proj-1"
+        project_id = PROJECT_UUID
         type = "feature"
         title = "Test"
         description = None
@@ -112,12 +116,12 @@ def test_task_read_with_plan():
 
 
 def test_task_create_with_need_e2e():
-    schema = TaskCreate(project_id="proj-1", title="Complex task", need_e2e=True)
+    schema = TaskCreate(project_id=PROJECT_UUID, title="Complex task", need_e2e=True)
     assert schema.need_e2e is True
 
 
 def test_task_create_need_e2e_defaults_false():
-    schema = TaskCreate(project_id="proj-1", title="Simple task")
+    schema = TaskCreate(project_id=PROJECT_UUID, title="Simple task")
     assert schema.need_e2e is False
 
 
@@ -126,7 +130,7 @@ def test_task_read_includes_need_e2e():
 
     class FakeModel:
         id = "task-abc"
-        project_id = "proj-1"
+        project_id = PROJECT_UUID
         type = "feature"
         title = "Test"
         description = None
@@ -171,9 +175,9 @@ def test_task_update_with_plan():
 
 
 def test_task_update_with_project_id():
-    update = TaskUpdate(project_id="proj-new")
+    update = TaskUpdate(project_id=uuid.UUID("00000000-0000-0000-0000-000000000003"))
     data = update.model_dump(exclude_unset=True)
-    assert data == {"project_id": "proj-new"}
+    assert data == {"project_id": uuid.UUID("00000000-0000-0000-0000-000000000003")}
 
 
 def test_task_transition():

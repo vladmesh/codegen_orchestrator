@@ -1,5 +1,7 @@
 """Service deployments router."""
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,7 +38,7 @@ async def create_service_deployment(
 @router.get("/", response_model=list[ServiceDeploymentRead])
 async def list_service_deployments(
     server_handle: str | None = Query(None, description="Filter by server handle"),
-    project_id: str | None = Query(None, description="Filter by project ID"),
+    project_id: uuid.UUID | None = Query(None, description="Filter by project ID"),
     status: str | None = Query(None, description="Filter by status"),
     db: AsyncSession = Depends(get_async_session),
 ) -> list[ServiceDeployment]:

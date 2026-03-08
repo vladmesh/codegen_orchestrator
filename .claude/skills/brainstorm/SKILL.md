@@ -21,17 +21,18 @@ Before writing:
 - Read relevant code, docs, and existing brainstorms
 - Check `docs/backlog.md` for related tasks
 - Check `docs/brainstorms/` for prior work on the topic
-- Check existing brainstorms via API: `curl -sf "http://localhost:8000/api/brainstorms/?project_id=codegen-orchestrator"`
+- Check existing brainstorms via API: `curl -sf "http://localhost:8000/api/brainstorms/"`
 
 ### 2. Create brainstorm in DB
 
-Register the brainstorm via API:
+Resolve project UUID and register the brainstorm via API:
 ```bash
 API="http://localhost:8000"
+PROJECT_ID=$(curl -sf "$API/api/projects/" | jq -r '.[0].id')
 BS=$(curl -sf -X POST "$API/api/brainstorms/" \
   -H "Content-Type: application/json" \
   -d '{
-    "project_id": "codegen-orchestrator",
+    "project_id": "'"$PROJECT_ID"'",
     "title": "<Topic>",
     "created_by": "claude"
   }')

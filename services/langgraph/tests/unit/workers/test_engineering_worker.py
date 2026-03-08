@@ -30,14 +30,14 @@ def mock_api():
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get_project = AsyncMock(return_value=None)
+        api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         yield api
 
 
-def _project(*, repo_url=None):
-    p = {"id": "proj-1", "name": "test-project", "config": {"modules": ["backend"]}}
-    if repo_url:
-        p["repository_url"] = repo_url
-    return p
+def _project():
+    return {"id": "proj-1", "name": "test-project", "config": {"modules": ["backend"]}}
 
 
 class TestHandleEngineeringSuccess:
@@ -57,7 +57,7 @@ class TestHandleEngineeringSuccess:
         out = await _handle_engineering_success(
             result=result_data,
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test-project"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,
@@ -100,7 +100,7 @@ class TestHandleEngineeringSuccess:
         out = await _handle_engineering_success(
             result=result_data,
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test-project"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,
@@ -125,7 +125,7 @@ class TestHandleEngineeringSuccess:
         await _handle_engineering_success(
             result=result_data,
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test-project"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,
@@ -172,7 +172,7 @@ class TestNotificationDecoupling:
         await _handle_engineering_success(
             result=result_data,
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test-project"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,
@@ -210,7 +210,7 @@ class TestNotificationDecoupling:
         await _handle_engineering_success(
             result=result_data,
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test-project"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=True,
@@ -246,7 +246,7 @@ class TestNotificationDecoupling:
         await _handle_engineering_success(
             result=result_data,
             task_id="eng-1",
-            project=_project(repo_url="https://github.com/org/test-project"),
+            project=_project(),
             callback_stream="po:response:abc",
             redis=mock_redis,
             skip_deploy=False,
@@ -265,12 +265,13 @@ class TestNotificationDecoupling:
 
 class TestCIGateFailClosed:
     @pytest.mark.asyncio
-    async def test_missing_repo_url_returns_false(self, mock_redis):
-        """CI gate must fail-closed (return False) when project has no repository_url."""
+    async def test_missing_git_url_returns_false(self, mock_redis):
+        """CI gate must fail-closed (return False) when git_url is empty."""
         from src.workers.engineering_worker import _wait_for_ci_and_fix
 
         passed, ci_attempts = await _wait_for_ci_and_fix(
             project={"id": "p1"},
+            git_url="",
             task_id="eng-1",
             callback_stream="po:response:abc",
             redis=mock_redis,
@@ -325,7 +326,8 @@ class TestCIGateFailClosed:
         mock_respawn.side_effect = fake_respawn
 
         passed, ci_attempts = await _wait_for_ci_and_fix(
-            project=_project(repo_url="https://github.com/org/repo"),
+            project=_project(),
+            git_url="https://github.com/org/repo",
             task_id="eng-1",
             callback_stream="po:response:abc",
             redis=mock_redis,
@@ -372,7 +374,8 @@ class TestCIGateFailClosed:
         )
 
         passed, ci_attempts = await _wait_for_ci_and_fix(
-            project=_project(repo_url="https://github.com/org/repo"),
+            project=_project(),
+            git_url="https://github.com/org/repo",
             task_id="eng-1",
             callback_stream="po:response:abc",
             redis=mock_redis,
@@ -403,7 +406,8 @@ class TestCIGateFailClosed:
         )
 
         passed, ci_attempts = await _wait_for_ci_and_fix(
-            project=_project(repo_url="https://github.com/org/repo"),
+            project=_project(),
+            git_url="https://github.com/org/repo",
             task_id="eng-1",
             callback_stream="po:response:abc",
             redis=mock_redis,
@@ -502,7 +506,8 @@ class TestCIInfraFailFast:
 
         with patch("asyncio.sleep", return_value=None):
             passed, ci_attempts = await _wait_for_ci_and_fix(
-                project=_project(repo_url="https://github.com/org/repo"),
+                project=_project(),
+                git_url="https://github.com/org/repo",
                 task_id="eng-1",
                 callback_stream="po:response:abc",
                 redis=mock_redis,
@@ -548,7 +553,8 @@ class TestCIInfraFailFast:
 
         with patch("asyncio.sleep", return_value=None):
             passed, ci_attempts = await _wait_for_ci_and_fix(
-                project=_project(repo_url="https://github.com/org/repo"),
+                project=_project(),
+                git_url="https://github.com/org/repo",
                 task_id="eng-1",
                 callback_stream="po:response:abc",
                 redis=mock_redis,
@@ -585,7 +591,8 @@ class TestCIInfraFailFast:
         mock_gh.rerun_failed_jobs = AsyncMock()
 
         passed, ci_attempts = await _wait_for_ci_and_fix(
-            project=_project(repo_url="https://github.com/org/repo"),
+            project=_project(),
+            git_url="https://github.com/org/repo",
             task_id="eng-1",
             callback_stream="po:response:abc",
             redis=mock_redis,
@@ -629,7 +636,8 @@ class TestCIInfraFailFast:
         mock_respawn.return_value = True
 
         passed, ci_attempts = await _wait_for_ci_and_fix(
-            project=_project(repo_url="https://github.com/org/repo"),
+            project=_project(),
+            git_url="https://github.com/org/repo",
             task_id="eng-1",
             callback_stream="po:response:abc",
             redis=mock_redis,
@@ -672,7 +680,6 @@ class TestFeatureActionFlow:
                 "name": "test-project",
                 "status": "active",
                 "config": {"modules": ["backend"], "description": "A todo API"},
-                "repository_url": "https://github.com/org/test-project",
             }
         )
         # Existing allocations
@@ -742,7 +749,6 @@ class TestFeatureActionFlow:
                 "name": "test-project",
                 "status": "active",
                 "config": {"modules": ["backend"], "description": "A todo API"},
-                "repository_url": "https://github.com/org/test-project",
             }
         )
 
@@ -833,7 +839,6 @@ class TestFeatureActionFlow:
                 "name": "test-project",
                 "status": "active",
                 "config": {"modules": ["backend"], "description": "A todo API"},
-                "repository_url": "https://github.com/org/test-project",
             }
         )
         mock_api.get_project_allocations = AsyncMock(
@@ -903,7 +908,6 @@ class TestFeatureActionFlow:
                 "name": "test-project",
                 "status": "active",
                 "config": {"modules": ["backend"], "description": "Original description"},
-                "repository_url": "https://github.com/org/test-project",
             }
         )
         mock_api.get_project_allocations = AsyncMock(

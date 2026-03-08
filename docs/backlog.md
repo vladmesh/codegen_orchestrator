@@ -15,7 +15,7 @@
 
 ### Project ID → UUID + schema cleanup
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: 1. Project ID: значимый string → UUID. Миграция всех FK (stories, tasks, brainstorms, repositories). 2. ProjectUpdate: добавить поле name. Переименовать проект codegen-orchestrator → project-factory. 3. Repository: добавить поле visibility (public/private). 4. Project: убрать github_repo_id (лега...
 

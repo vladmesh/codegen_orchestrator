@@ -209,14 +209,11 @@ async def set_project_maintenance(
 @tool
 async def update_project(
     project_id: Annotated[str, "Project ID to update"],
-    repository_url: Annotated[str | None, "New repository URL"] = None,
+    name: Annotated[str | None, "New project name"] = None,
     # Injected from graph state - not visible to LLM
     state: Annotated[dict, InjectedState] = None,
 ) -> ProjectInfo:
-    """Update project configuration (e.g. repository URL).
-
-    Use this when you need to fix or set specific project fields that couldn't be
-    determined automatically.
+    """Update project configuration (e.g. name).
 
     Note: To change project status, use dedicated tools:
     - set_project_maintenance for maintenance mode
@@ -230,8 +227,8 @@ async def update_project(
 
     # Prepare update payload
     payload = {}
-    if repository_url:
-        payload["repository_url"] = repository_url
+    if name:
+        payload["name"] = name
 
     if not payload:
         # Nothing to update, just return current state

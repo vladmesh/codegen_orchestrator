@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Literal
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -11,7 +12,7 @@ class RAGMessageCreate(BaseModel):
 
     user_id: int | None = None
     telegram_id: int | None = None
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     role: Literal["user", "assistant"]
     message_text: str
     message_id: str | None = None
@@ -23,7 +24,7 @@ class RAGMessageRead(BaseModel):
 
     id: int
     user_id: int
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     role: str
     message_text: str
     message_id: str | None = None
@@ -38,7 +39,7 @@ class RAGSummaryRead(BaseModel):
 
     id: int
     user_id: int
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     thread_id: str | None = None
     summary_text: str
     created_at: datetime
@@ -73,7 +74,7 @@ class RAGDocsIngest(BaseModel):
     """Webhook payload for RAG document ingestion."""
 
     event: str | None = None
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     user_id: int | None = None
     repo: RAGRepoInfo | None = None
     documents: list[RAGDocumentPayload]
@@ -95,7 +96,7 @@ class RAGQueryRequest(BaseModel):
 
     query: str
     user_id: int | None = None
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     scope: Literal["project", "user", "public"] = "project"
     top_k: int = 5
     max_tokens: int = 2000

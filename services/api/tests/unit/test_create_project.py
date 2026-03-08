@@ -1,12 +1,15 @@
 """Unit tests for POST /api/projects/ ownership enforcement."""
 
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 
 from src.database import get_async_session
 from src.main import app
+
+PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
 
 
 def _make_user(user_id=1, telegram_id=12345, is_admin=False):
@@ -37,7 +40,7 @@ def _mock_session(existing_project=None, resolve_user="NOT_SET"):
 
 
 PROJECT_PAYLOAD = {
-    "id": "test-123",
+    "id": PROJECT_UUID,
     "name": "my-project",
     "status": "draft",
     "config": {"modules": ["backend"]},
