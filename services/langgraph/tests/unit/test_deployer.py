@@ -169,6 +169,17 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
+    async def test_deployed_url_uses_external_ip(self, mock_api, mock_gh_cls, deployer, base_state):
+        """deployed_url should use the external server IP, not docker service name."""
+        _setup_happy_mocks(mock_api, mock_gh_cls)
+
+        result = await deployer.run(base_state)
+
+        assert result["deployed_url"] == "http://10.0.0.1:8080"
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
+    @patch("src.subgraphs.devops.nodes.api_client")
     async def test_updates_project_status_to_active(
         self, mock_api, mock_gh_cls, deployer, base_state
     ):

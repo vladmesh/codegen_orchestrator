@@ -171,10 +171,8 @@ class SecretResolverNode(FunctionalNode):
             return "8000"
 
         elif key_upper in {"BACKEND_API_URL", "API_URL", "API_BASE_URL", "BACKEND_URL"}:
-            alloc = self._find_allocation(state, "backend")
-            if alloc:
-                return f"http://{alloc[0]}:{alloc[1]}"
-            return "http://localhost:8000"
+            # Inter-service URL: use docker service name, not external IP
+            return "http://backend:8000"
 
         # Docker images from self-hosted registry
         elif key_upper.endswith("_IMAGE"):

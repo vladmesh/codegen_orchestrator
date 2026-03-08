@@ -101,8 +101,8 @@ class TestSecretResolverComputeSecret:
         assert self.node._compute_secret("POSTGRES_PORT", project_spec, state) == "5432"
         assert self.node._compute_secret("POSTGRES_REQUIRE_SSL", project_spec, state) == "false"
 
-    def test_compute_backend_url_with_resources(self):
-        """BACKEND_URL should use allocated resources when available."""
+    def test_compute_backend_url_uses_docker_service_name(self):
+        """BACKEND_API_URL should use docker service name for inter-service communication."""
         project_spec = {"name": "test"}
         state = {
             "allocated_resources": {
@@ -115,15 +115,24 @@ class TestSecretResolverComputeSecret:
         }
 
         result = self.node._compute_secret("BACKEND_API_URL", project_spec, state)
-        assert result == "http://192.168.1.100:8080"
+        assert result == "http://backend:8000"
 
-    def test_compute_backend_url_fallback(self):
-        """BACKEND_URL should fallback to localhost when no resources."""
+    def test_compute_backend_url_without_resources(self):
+        """BACKEND_API_URL should use docker service name even without allocated resources."""
         project_spec = {"name": "test"}
         state = {}
 
         result = self.node._compute_secret("BACKEND_API_URL", project_spec, state)
-        assert result == "http://localhost:8000"
+        assert result == "http://backend:8000"
+
+    def test_compute_api_url_variants(self):
+        """All inter-service URL variants should use docker service name."""
+        project_spec = {"name": "test"}
+        state = {}
+
+        for var in ("BACKEND_API_URL", "API_URL", "API_BASE_URL", "BACKEND_URL"):
+            result = self.node._compute_secret(var, project_spec, state)
+            assert result == "http://backend:8000", f"{var} should be http://backend:8000"
 
     def test_compute_backend_port_with_resources(self):
         """BACKEND_PORT should resolve to allocated port."""

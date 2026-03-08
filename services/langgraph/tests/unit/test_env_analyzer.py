@@ -41,6 +41,7 @@ class TestClassifyByPattern:
         assert _classify_by_pattern("APP_ENV") == "computed"
         assert _classify_by_pattern("DEBUG") == "computed"
         assert _classify_by_pattern("BACKEND_URL") == "computed"
+        assert _classify_by_pattern("API_URL") == "computed"
 
     def test_classify_user_patterns(self):
         """User pattern matches should be classified as user."""

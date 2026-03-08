@@ -7,12 +7,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #18 Split engineering_worker.py (1088 LOC)
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули.
-
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
 - **Plan**: —
@@ -27,7 +21,7 @@
 
 ### #54 Deploy: inter-service URL должен использовать docker service name
 - **Priority**: LOW
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при f...
 

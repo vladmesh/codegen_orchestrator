@@ -4,6 +4,9 @@
 
 ## 2026-03-08
 
+### Refactored
+- **Split engineering_worker.py** (#18): Extracted CI gate logic into `_ci_gate.py` (480 LOC) and repo setup into `_repo_setup.py` (124 LOC). Main file reduced from 1114 to 545 LOC. Pure internal refactoring — no behavior changes.
+
 ### Changed
 - **Decouple shared/ from Docker builds** (task-7e9aed9c): Replaced `pip install shared` with plain `COPY shared + PYTHONPATH=/app` in all 6 service Dockerfiles and worker-base-common. Moved shared's pip deps into each service's own pyproject.toml. Narrowed `WORKER_SOURCE_HASH` to only hash worker-relevant shared submodules. Fixed `.dockerignore` to exclude nested `.venv/` dirs. Rebuild after shared/ change: ~10s (was ~5min).
 

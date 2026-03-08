@@ -132,7 +132,7 @@ Internal tooling: task management system, skills, brainstorms, docs generation, 
 
 Code quality improvements: splitting large files, reducing complexity, cleanup.
 
-- [ ] #18 Split engineering_worker.py (1088 LOC)
+- [x] #18 Split engineering_worker.py (1088 LOC)
 - [ ] #19 Split github.py Client (986 LOC)
 - [ ] Extract type mappings into language-agnostic config
 
@@ -212,7 +212,3 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 - [ ] Add Rust service type to services.yml
 
-
-## Unlinked Tasks
-
-- [ ] Decouple shared/ from Docker builds — reduce rebuild blast radius
