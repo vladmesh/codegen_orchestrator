@@ -14,7 +14,7 @@
 
 ### /architect skill — Story decomposition into Tasks
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: New skill that takes a Story and decomposes it into Tasks.  Flow: 1. Read Story from API (by ID or pick next created story) 2. Load project context (existing tasks, repos, architecture) 3. Use LLM to decompose story into concrete tasks with titles, descriptions, acceptance criteria 4. Create task...
 
