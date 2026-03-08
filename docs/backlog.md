@@ -1,25 +1,21 @@
 # Backlog
 
 > [!WARNING]
-> **DEPRECATED**: Этот файл более не является источником правды. Задачи мигрировали в базу данных (таблица `tasks`). Этот файл автогенерируется скриптом исключительно для read-only просмотра.
+> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Актуально на**: 2026-03-07 (generated)
+> **Updated**: 2026-03-08
 
 ## Queue (ordered by priority, first = next)
 
-### Smoke test 2
-- **Priority**: CRITICAL
-- **Plan**: —
-- **Status**: backlog
-
-### Smoke test task
+### Story model + API
 - **Priority**: HIGH
 - **Plan**: —
 - **Status**: backlog
+- **Brief**: Новая сущность Story (id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by). Alembic миграция + CRUD API + action-based status transitions. Task.story_id FK. parent_story_id — self-ref FK для epic-like группировки.
 
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: MEDIUM
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из...
 
@@ -28,18 +24,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
-
-### Repository model + migration
-- **Priority**: MEDIUM
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Новая сущность Repository (id, project_id, name, git_url, provider_repo_id, role, is_managed). Alembic миграция + CRUD API. Миграция существующих Project.repository_url → Repository(role=primary). Task.repository_id nullable FK.
-
-### Story model + API
-- **Priority**: MEDIUM
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Новая сущность Story (id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by). Alembic миграция + CRUD API + action-based status transitions. Task.story_id FK. parent_story_id — self-ref FK для epic-like группировки.
 
 ### #18 Split engineering_worker.py (1088 LOC)
 - **Priority**: LOW
@@ -129,15 +113,15 @@
 ## Done (last 10)
 
 - #999 Smoke test task — 2026-03-07
+- make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms) — 2026-03-07
 - #64 Implement skill: PR flow + in_ci status + need_e2e — 2026-03-07
+- Repository model + migration — 2026-03-08
 - Rename WorkItem→Task, Task→Run — 2026-03-07
 - #63 Milestone model + ROADMAP generation — 2026-03-07
 - #61 Brainstorm model in DB — 2026-03-07
 - #58 Skills → API + Simplified Model — 2026-03-07
 - #57 /implement work item events (Step 2) — 2026-03-07
 - #56 /next skill via API (Step 1) — 2026-03-07
-- #8 Workspace Failure Counter — 2026-03-07
-- #43 PO: Сократический диалог и формирование ТЗ — 2026-03-07
 
 ## Ideas
 

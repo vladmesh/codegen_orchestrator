@@ -8,6 +8,8 @@
 - **Scaffold script task_description escaping** (#52): Pass `task_description` via copier `--data-file` instead of inline `--data` to prevent shell metacharacter injection (quotes, backticks, `$()`, parentheses). Base64-encode in Python, decode inside bash into YAML file. Added 9 parametrized tests for dangerous character patterns.
 
 ### Added
+- **Repository model + migration** (wi-ad3b4502): New `Repository` entity (`id, project_id, name, git_url, provider_repo_id, role, is_managed`). Full CRUD API at `/api/repositories/` with `by-provider-id` lookup. `Task.repository_id` nullable FK. Alembic migration. 10 unit tests + 2 integration tests. `RepositoryRole` enum: `primary | dependency`. Documented `uv sync --reinstall-package shared` requirement in CLAUDE.md.
+
 - **make sync — docs generation from DB** (task-94f2783f):
   - `POST /api/tasks/push` endpoint — auto-priority (`min(backlog) - 1`)
   - `source_brainstorm_id` filter on `GET /api/tasks/` for sibling lookup
