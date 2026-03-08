@@ -5,6 +5,13 @@
 ## 2026-03-08
 
 ### Fixed
+- **Test Infrastructure Audit**: Fixed 10 bugs and warnings, optimized run speed.
+  - Parallelized `make test-unit` execution in bash (35s → ~12s, 2.6x speedup).
+  - Fixed unmocked `notify_admins` in scheduler unit tests.
+  - Fixed missing `X-Telegram-ID` header in backend integration `seed_project` fixture.
+  - Replaced 9 deprecated `HTTP_422_UNPROCESSABLE_ENTITY` with `_CONTENT` across API routers.
+  - Disposed app DB engine in test teardown to fix 5 asyncpg `ResourceWarning` leaks.
+
 - **Scaffold script task_description escaping** (#52): Pass `task_description` via copier `--data-file` instead of inline `--data` to prevent shell metacharacter injection (quotes, backticks, `$()`, parentheses). Base64-encode in Python, decode inside bash into YAML file. Added 9 parametrized tests for dangerous character patterns.
 
 ### Added
