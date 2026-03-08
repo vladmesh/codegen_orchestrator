@@ -17,7 +17,7 @@ from langgraph.prebuilt.chat_agent_executor import AgentState
 from langmem.short_term import SummarizationNode
 import structlog
 
-from .prompts import SYSTEM_PROMPT
+from ..prompts.po import SYSTEM_PROMPT
 from .tools import get_all_tools
 
 logger = structlog.get_logger(__name__)

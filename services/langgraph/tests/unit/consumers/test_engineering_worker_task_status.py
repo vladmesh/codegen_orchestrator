@@ -26,7 +26,7 @@ def mock_redis():
 @pytest.fixture
 def mock_api():
     """Patch api_client methods used by the engineering worker."""
-    with patch("src.workers.engineering_worker.api_client") as api:
+    with patch("src.consumers.engineering.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get_project = AsyncMock(return_value={"id": "proj-1", "name": "test", "config": {}})
@@ -40,13 +40,13 @@ class TestTaskStatusUpdates:
     """When planning_task_id is present, worker updates task status."""
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
-    @patch("src.workers.engineering_worker.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
     async def test_updates_task_on_success(self, mock_delete, mock_ci_gate, mock_redis, mock_api):
         """On success with planning_task_id: task → done, event written."""
         mock_ci_gate.return_value = (True, [])
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         result = {
             "engineering_status": "done",
@@ -80,15 +80,15 @@ class TestTaskStatusUpdates:
         assert event_data["details"]["commit_sha"] == "abc123"
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
-    @patch("src.workers.engineering_worker.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
     async def test_skips_deploy_when_task_linked(
         self, mock_delete, mock_ci_gate, mock_redis, mock_api
     ):
         """With planning_task_id, deploy is skipped (dispatcher handles it)."""
         mock_ci_gate.return_value = (True, [])
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         result = {
             "engineering_status": "done",
@@ -113,8 +113,8 @@ class TestTaskStatusUpdates:
         assert len(deploy_calls) == 0
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
-    @patch("src.workers.engineering_worker.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
     async def test_backward_compat_no_task_id(
         self, mock_delete, mock_ci_gate, mock_redis, mock_api
     ):
@@ -122,7 +122,7 @@ class TestTaskStatusUpdates:
         mock_ci_gate.return_value = (True, [])
         mock_api.post.return_value = AsyncMock(status_code=201)
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         result = {
             "engineering_status": "done",
@@ -149,7 +149,7 @@ class TestTaskStatusUpdates:
     @pytest.mark.asyncio
     async def test_task_failed_on_engineering_failure(self, mock_redis, mock_api):
         """When engineering fails with planning_task_id, task → failed."""
-        from src.workers.engineering_worker import _update_task_status
+        from src.consumers.engineering import _update_task_status
 
         await _update_task_status(mock_api, "task-42", "failed")
 

@@ -16,7 +16,25 @@ The main development skill. Implements the current task (or a specific one) usin
 
 ## Protocol
 
-### 0. Sync docs
+### 0. Sync git + docs
+
+Ensure local repo is fully synchronized with remote before starting any work:
+
+```bash
+# 1. Check for uncommitted changes — commit or stash them
+git status --short
+# If there are changes: commit doc-only changes, stash anything else
+
+# 2. Pull latest main (fast-forward only to avoid surprise merges)
+git checkout main
+git pull --ff-only
+
+# 3. If ff-only fails (local diverged from remote), reset to remote:
+#    This happens when squash-merged PRs leave orphan local commits.
+git reset --hard origin/main
+```
+
+After this step, `git status` should show clean working tree on main, up to date with origin.
 
 ```bash
 make sync

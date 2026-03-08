@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-03-03
+> **Актуально на**: 2026-03-09
 
 ## Обзор
 
@@ -21,13 +21,21 @@ Codegen Orchestrator — мультиагентная система для ав
 
 ## Ключевые концепции
 
-### Planning Layer (Work Items)
+### Planning Layer (Stories → Tasks → Runs)
 
-Уровень абстракции для продуктового управления:
-- Вся работа (фичи, багфиксы) ведётся через API сущностей `Task` со статусами (`backlog` → `todo` → `in_dev` → `testing` → `done`).
-- Скиллы (`/plan`, `/implement`, `/triage`, `/checkpoint`) и в будущем Product Owner взаимодействуют с API для работы с бэклогом, сбора статистики и сохранения истории итераций (`TaskEvent`).
-- Файл `docs/backlog.md` является автогенерируемым (read-only) представлением базы данных для удобства человека (отвечает за это команда `make backlog`).
-- `Task` транслируется в `Run` (уровень Execution / Runtime) оркестратором.
+Трёхуровневая абстракция для продуктового управления:
+- **Story** — высокоуровневое требование от пользователя (через PO). Статусы: `draft` → `in_progress` → `completed`.
+- **Task** — конкретная техническая задача. Статусы: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done`. Задачи могут иметь зависимости (`blocked_by_task_id`).
+- **Run** — единица исполнения (engineering или deploy). Привязан к Task через `task_id`.
+
+**Architect Node** (scheduler service) автоматически декомпозирует Story в Tasks:
+1. PO создаёт Story и публикует `ArchitectMessage` в `architect:queue`
+2. Architect Consumer вызывает LLM для декомпозиции story → N tasks с зависимостями
+3. Task Dispatcher (каждые 30с) находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
+4. После завершения всех tasks — story автоматически завершается, триггерится deploy
+
+Скиллы (`/plan`, `/implement`, `/triage`, `/checkpoint`) взаимодействуют с API для работы с бэклогом, сбора статистики и сохранения истории итераций (`TaskEvent`).
+Файл `docs/backlog.md` является автогенерируемым (read-only) представлением базы данных (`make backlog`).
 
 ### Capabilities
 Возможности Developer агента конфигурируются через `WorkerConfig.capabilities`:
@@ -43,7 +51,7 @@ Codegen Orchestrator — мультиагентная система для ав
 | `telegram_bot` | Telegram интерфейс (PO via Redis Streams) |
 | `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment). Воркеры работают в изолированной сети `codegen_worker`. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker` and `deploy-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
-| `scheduler` | Background tasks (sync, health checks, garbage collection) |
+| `scheduler` | Background workers: architect consumer (story→tasks LLM decomposition), task dispatcher (dispatch unblocked tasks, complete stories), github_sync, server_sync, health_checker |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
 
 ## Граф
@@ -58,11 +66,19 @@ graph TD
     POResp --> Bot
 
     PO --> |"tools: API calls"| API[API Service]
-    PO --> |"XADD engineering:queue"| EngQueue[engineering:queue]
+    PO --> |"XADD architect:queue"| ArchQueue[architect:queue]
     PO --> |"XADD deploy:queue"| DeployQueue[deploy:queue]
     PO -.-> |"po:proactive"| Bot
 
     API --> |"data"| DB[(PostgreSQL)]
+
+    ArchQueue --> ArchConsumer[Architect Consumer<br/>scheduler]
+    ArchConsumer --> |"LLM: story → tasks"| API
+    ArchConsumer --> |"creates tasks with deps"| API
+
+    Dispatcher[Task Dispatcher<br/>scheduler, 30s poll] --> |"finds unblocked tasks"| API
+    Dispatcher --> |"XADD engineering:queue"| EngQueue[engineering:queue]
+    Dispatcher --> |"story complete → XADD deploy:queue"| DeployQueue
 
     EngQueue --> EngConsumer[Engineering Consumer]
     EngConsumer --> EngGraph[Engineering Subgraph]
@@ -71,8 +87,9 @@ graph TD
     DepConsumer --> DepGraph[DevOps Subgraph]
 
     %% Feedback Loops
-    EngGraph --> |"system events → po:input"| POInput
+    EngGraph --> |"task done → API"| API
     DepGraph --> |"system events → po:input"| POInput
+    Dispatcher -.-> |"story completed → po:proactive"| Bot
 ```
 
 ### Потоки данных
@@ -86,15 +103,24 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        │  • PostgreSQL checkpointer (per-user thread)
                        │  • Reminder poller
                        │
-                       ├──► API (create_project, set_secret, ...)
-                       ├──► XADD engineering:queue → Engineering Subgraph
+                       ├──► API (create_project, set_secret, create_story, ...)
+                       ├──► XADD architect:queue → Architect Consumer (scheduler)
+                       │                              │ LLM decomposition
+                       │                              ▼
+                       │                           API: create tasks with blocked_by chains
+                       │                              │
+                       │                              ▼
+                       │                           Task Dispatcher (scheduler, 30s poll)
+                       │                              ├──► XADD engineering:queue → Engineering Subgraph
+                       │                              └──► story complete → XADD deploy:queue + po:proactive
                        ├──► XADD deploy:queue → DevOps Subgraph
                        └──► XADD po:response:{request_id} {text}
                                   │
                                   ▼
                        Telegram Bot → User
 
-System events (worker callbacks, reminders) → po:input → PO decides → po:proactive → Bot → User
+Engineering completion → API (task done) → Dispatcher picks next unblocked task
+All tasks done → Dispatcher completes story → deploy + PO notification
 ```
 
 **Key Features:**

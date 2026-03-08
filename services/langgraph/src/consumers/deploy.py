@@ -1,6 +1,6 @@
 """Deploy Worker — consumes from jobs:deploy queue and runs DevOps.
 
-Run standalone: python -m src.workers.deploy_worker
+Run standalone: python -m src.consumers.deploy
 """
 
 from __future__ import annotations

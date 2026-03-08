@@ -6,7 +6,7 @@ Publishes messages to Redis Streams for communication with other services.
 import redis.asyncio as redis
 import structlog
 
-from ..config.settings import get_settings
+from .config.settings import get_settings
 
 logger = structlog.get_logger()
 

@@ -43,5 +43,5 @@ ENV PYTHONPATH=/app
 COPY services/langgraph/src ./src
 COPY secrets.yaml ./secrets.yaml
 
-# Run worker
-CMD ["python", "-m", "src.worker"]
+# Run service
+CMD ["python", "-m", "src"]

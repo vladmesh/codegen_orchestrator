@@ -9,8 +9,8 @@ import structlog
 
 from shared.schemas.worker_events import parse_worker_event
 
-from ..config.settings import get_settings
-from ..events import publish_event
+from .config.settings import get_settings
+from .events import publish_event
 
 logger = structlog.get_logger()
 

@@ -8,8 +8,8 @@ from langchain_core.messages import HumanMessage
 import redis.asyncio as redis
 import structlog
 
-from ..config.settings import get_settings
-from ..graph import OrchestratorState, create_graph
+from .config.settings import get_settings
+from .graph import OrchestratorState, create_graph
 
 logger = structlog.get_logger()
 

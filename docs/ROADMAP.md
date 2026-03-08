@@ -212,3 +212,8 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 - [ ] Add Rust service type to services.yml
 
+
+## Unlinked Tasks
+
+- [ ] PO tools contract tests — validate payloads against API schemas
+- [ ] #1000 Smoke tests — raise project stack via worker-manager

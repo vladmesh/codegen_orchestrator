@@ -21,7 +21,7 @@ def mock_redis():
 
 @pytest.fixture
 def mock_api():
-    with patch("src.workers.deploy_worker.api_client") as api:
+    with patch("src.consumers.deploy.api_client") as api:
         api.patch = AsyncMock()
         api.get = AsyncMock(return_value=[])
         api.get_project = AsyncMock(
@@ -48,7 +48,7 @@ def mock_allocations():
 
 @pytest.fixture
 def mock_devops_subgraph():
-    with patch("src.workers.deploy_worker.create_devops_subgraph") as factory:
+    with patch("src.consumers.deploy.create_devops_subgraph") as factory:
         graph = AsyncMock()
         factory.return_value = graph
         yield graph
@@ -80,7 +80,7 @@ async def test_deploy_worker_smoke_pass(
         }
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
@@ -96,7 +96,7 @@ async def test_deploy_worker_smoke_pass(
 @pytest.mark.asyncio
 async def test_build_subgraph_input_includes_smoke_result():
     """_build_subgraph_input must include smoke_result key so LangGraph tracks it."""
-    from src.workers.deploy_worker import _build_subgraph_input
+    from src.consumers.deploy import _build_subgraph_input
 
     result = _build_subgraph_input(
         project_id="proj-1",
@@ -128,7 +128,7 @@ async def test_deploy_worker_smoke_fail(
         }
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
@@ -162,7 +162,7 @@ async def test_deploy_worker_missing_secrets_resets_project_status(
         }
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 

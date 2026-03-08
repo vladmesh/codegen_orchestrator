@@ -1,6 +1,6 @@
 """Engineering Worker — consumes from jobs:engineering queue.
 
-Run standalone: python -m src.workers.engineering_worker
+Run standalone: python -m src.consumers.engineering
 """
 
 from __future__ import annotations

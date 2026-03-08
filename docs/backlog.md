@@ -7,17 +7,17 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Architect node — story decomposition into tasks + task dispatcher
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Implement the architect pipeline: story → tasks → runs.  Ref: brainstorm bs-4fc78a0e (architect-node-orchestration.md)  Scope: 1. Architect consumer — reads architect:queue, decomposes story into tasks via LLM (story description + project config + existing tasks as context) 2. Modify create_story...
-
 ### PO tools contract tests — validate payloads against API schemas
 - **Priority**: CRITICAL
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: PO unit tests mock the API client, so invalid payloads (e.g. 8-char ID instead of UUID) pass tests but fail at runtime. Add contract tests that validate PO tool payloads against actual Pydantic schemas (ProjectCreate, RunCreate, StoryCreate) without hitting a real DB. Alternatively, add service-l...
+
+### #1000 Smoke tests — raise project stack via worker-manager
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Give workers the ability to smoke-test by raising the project stack through worker-manager (same pattern as DB provisioning).  Current state: Workers request infra (postgres, redis) via worker:commands. Worker-manager raises containers on host in dev_proj network, flat structure, no DinD.  Goal: ...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -235,6 +235,7 @@
 
 ## Done (last 10)
 
+- Architect node — story decomposition into tasks + task dispatcher — 2026-03-08
 - Decouple shared/ from Docker builds — reduce rebuild blast radius — 2026-03-08
 - Fix compose.dev.yml ports conflict with orchestrator worker containers
  — 2026-03-08
@@ -251,8 +252,6 @@
 - Add list_users operation to reference User domain
  — 2026-03-08
 - Fix tg_bot AGENTS.md wrong env var + add router/list examples
- — 2026-03-08
-- Add CreatedAtMixin (ORMBase forced updated_at on all models)
  — 2026-03-08
 
 ## Ideas

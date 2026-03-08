@@ -32,7 +32,7 @@ services:
     build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
-    command: ["python", "-m", "src.workers.engineering_worker"]
+    command: ["python", "-m", "src.consumers.engineering"]
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000

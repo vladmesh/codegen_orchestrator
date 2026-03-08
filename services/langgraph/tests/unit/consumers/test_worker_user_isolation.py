@@ -18,7 +18,7 @@ def mock_redis():
 
 @pytest.fixture
 def mock_api():
-    with patch("src.workers.engineering_worker.api_client") as api:
+    with patch("src.consumers.engineering.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get_project = AsyncMock(return_value=None)
@@ -27,7 +27,7 @@ def mock_api():
 
 @pytest.fixture
 def mock_deploy_api():
-    with patch("src.workers.deploy_worker.api_client") as api:
+    with patch("src.consumers.deploy.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get = AsyncMock(return_value=[])
@@ -41,7 +41,7 @@ class TestEngineeringWorkerPassesTelegramId:
         """engineering_worker should pass user_id as telegram_id to get_project."""
         mock_api.get_project.return_value = None  # Project not found → early exit
 
-        from src.workers.engineering_worker import process_engineering_job
+        from src.consumers.engineering import process_engineering_job
 
         job_data = {
             "task_id": "eng-test",
@@ -60,7 +60,7 @@ class TestEngineeringWorkerPassesTelegramId:
         """Empty user_id should not pass telegram_id (graceful degradation)."""
         mock_api.get_project.return_value = None
 
-        from src.workers.engineering_worker import process_engineering_job
+        from src.consumers.engineering import process_engineering_job
 
         job_data = {
             "task_id": "eng-test",
@@ -81,7 +81,7 @@ class TestDeployWorkerPassesTelegramId:
         """deploy_worker should pass user_id as telegram_id to get_project."""
         mock_deploy_api.get_project.return_value = None
 
-        from src.workers.deploy_worker import process_deploy_job
+        from src.consumers.deploy import process_deploy_job
 
         job_data = {
             "task_id": "deploy-test",

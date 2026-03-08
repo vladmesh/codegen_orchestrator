@@ -14,7 +14,7 @@ from src.po.graph import (
     _create_summarization_hook,
     create_po_graph,
 )
-from src.po.prompts import SYSTEM_PROMPT
+from src.prompts.po import SYSTEM_PROMPT
 
 
 class TestPOState:

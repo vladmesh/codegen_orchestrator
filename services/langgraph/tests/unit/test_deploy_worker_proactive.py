@@ -27,7 +27,7 @@ def mock_redis():
 @pytest.fixture
 def mock_api():
     """Patch api_client methods used by the worker."""
-    with patch("src.workers.deploy_worker.api_client") as api:
+    with patch("src.consumers.deploy.api_client") as api:
         api.patch = AsyncMock()
         api.get = AsyncMock(return_value=[])  # no existing running deploys (dedup)
         api.get_project = AsyncMock(
@@ -56,7 +56,7 @@ def mock_allocations():
 @pytest.fixture
 def mock_devops_subgraph():
     """Patch DevOps subgraph creation."""
-    with patch("src.workers.deploy_worker.create_devops_subgraph") as factory:
+    with patch("src.consumers.deploy.create_devops_subgraph") as factory:
         graph = AsyncMock()
         factory.return_value = graph
         yield graph
@@ -80,7 +80,7 @@ async def test_deploy_worker_sends_proactive_on_success(
         return_value={"deployed_url": "http://1.2.3.4:8080", "deployment_result": {}}
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
@@ -104,7 +104,7 @@ async def test_deploy_worker_sends_proactive_on_missing_secrets(
         return_value={"missing_user_secrets": ["STRIPE_KEY", "SENTRY_DSN"]}
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
@@ -126,7 +126,7 @@ async def test_deploy_worker_sends_proactive_on_error(
 ):
     mock_devops_subgraph.ainvoke = AsyncMock(return_value={"errors": ["Workflow timed out"]})
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
@@ -149,7 +149,7 @@ async def test_deploy_worker_uses_callback_stream_when_present(
         return_value={"deployed_url": "http://1.2.3.4:8080", "deployment_result": {}}
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(callback_stream="po:response:abc"), mock_redis)
 
@@ -174,7 +174,7 @@ async def test_deploy_worker_skips_when_already_running(mock_redis, mock_api):
     # Mock API: running query returns existing task, queued query not reached
     mock_api.get = AsyncMock(return_value=[{"id": "deploy-existing-123"}])
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
@@ -198,7 +198,7 @@ async def test_deploy_worker_skips_when_another_queued(mock_redis, mock_api):
         ]
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
@@ -222,7 +222,7 @@ async def test_deploy_worker_dedup_ignores_self(
         return_value={"deployed_url": "http://1.2.3.4:8080", "deployment_result": {}}
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 

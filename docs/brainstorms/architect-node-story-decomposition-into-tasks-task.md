@@ -1,8 +1,13 @@
+# Architect Node: Story → Tasks orchestration
+
+> [!WARNING]
+> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
+
 # Brainstorm: Architect Node — Story → Tasks Orchestration
 
 > **Дата**: 2026-03-08
 > **Контекст**: Переход от 1 story = 1 run к story → tasks → runs с автоматической декомпозицией
-> **Status**: done
+> **Status**: draft
 > **Связано**: [product-technical-split](product-technical-split.md) (done)
 
 ---
@@ -195,3 +200,4 @@ for task in get_tasks(status="todo"):
 - → idea: "Context packer for architect — project codebase summary via GitHub API"
 - → idea: "Architect ↔ PO channel — ask clarifying questions through PO"
 - → idea: "Parallel task execution limits — rate-limit concurrent runs"
+

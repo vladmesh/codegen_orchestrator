@@ -34,7 +34,7 @@
 
 | File | Lines | Status |
 |------|------:|--------|
-| `services/langgraph/src/workers/engineering_worker.py` | 1088 | backlog #18 |
+| `services/langgraph/src/consumers/engineering.py` | 1088 | backlog #18 |
 | `shared/clients/github.py` | 986 | backlog #19 |
 | `services/worker-manager/src/manager.py` | 828 | not tracked |
 | `services/api/src/routers/rag.py` | 688 | not tracked |

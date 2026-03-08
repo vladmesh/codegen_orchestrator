@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.workers._events import publish_callback_event
+from src.consumers._events import publish_callback_event
 
 
 @pytest.fixture

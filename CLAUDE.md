@@ -45,8 +45,12 @@ make test-clean            # Cleanup test containers
 ```
 User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/Redis) → po:response → Telegram Bot → User
                                                                ↕
+                                                  architect:queue → scheduler (Architect Consumer: LLM → tasks)
+                                                                              (Task Dispatcher: 30s poll → unblocked tasks)
+                                                                    ↓
                                                   engineering:queue → engineering-worker → worker:commands → worker-manager
                                                   deploy:queue → deploy-worker → GitHub Actions (deploy.yml)
+                                                  (story complete → deploy:queue + po:proactive)
 
 GitHub (ci.yml success) → webhook → Caddy (HTTPS) → API → deploy:queue → deploy-worker → po:proactive → Telegram Bot → User
 
@@ -62,12 +66,12 @@ Caddy (/webhooks/*) → API
 **Services** (in `services/`):
 - `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs, GitHub webhook receiver (port 8000)
 - `langgraph`: LangGraph orchestration (Engineering, DevOps subgraphs)
-- `engineering-worker`: Redis stream consumer (`engineering:queue`), runs Engineering subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.workers.engineering_worker`)
-- `deploy-worker`: Redis stream consumer (`deploy:queue`), runs DevOps subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.workers.deploy_worker`)
+- `engineering-worker`: Redis stream consumer (`engineering:queue`), runs Engineering subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.consumers.engineering`)
+- `deploy-worker`: Redis stream consumer (`deploy:queue`), runs DevOps subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.consumers.deploy`)
 - `telegram_bot`: python-telegram-bot interface (PO via Redis Streams)
 - `worker-manager`: Docker container lifecycle for CLI agents, runs scaffold phase (copier + make setup) via docker exec
 - `infra-service`: Ansible execution for server provisioning only (consumes `provisioner:queue`)
-- `scheduler`: Background workers (github_sync, server_sync, health_checker)
+- `scheduler`: Background workers (architect_consumer, task_dispatcher, github_sync, server_sync, health_checker)
 - `caddy`: Reverse proxy + TLS termination (HTTPS for webhook + registry endpoints)
 - `registry`: Self-hosted Docker Registry (v2, accessible via Caddy basic auth)
 

@@ -65,9 +65,9 @@ class TestCIFixWorkerReuse:
     """Tests for _wait_for_ci_and_fix using existing worker."""
 
     @pytest.mark.asyncio
-    @patch("src.workers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate.publish_callback_event", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate.send_task_to_worker", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate.send_task_to_worker", new_callable=AsyncMock)
     @patch("shared.clients.github.GitHubAppClient")
     async def test_reuses_worker_when_worker_id_available(
         self, mock_github_cls, mock_send_task, mock_publish, mock_record
@@ -95,7 +95,7 @@ class TestCIFixWorkerReuse:
             worker_id="dev-test-abc",
         )
 
-        from src.workers._ci_gate import _wait_for_ci_and_fix
+        from src.consumers._ci_gate import _wait_for_ci_and_fix
 
         redis = MagicMock()
         passed, attempts = await _wait_for_ci_and_fix(
@@ -114,9 +114,9 @@ class TestCIFixWorkerReuse:
         assert call_kwargs.kwargs["worker_id"] == "dev-test-abc"
 
     @pytest.mark.asyncio
-    @patch("src.workers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate.publish_callback_event", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate._respawn_developer_for_ci_fix", new_callable=AsyncMock)
     @patch("shared.clients.github.GitHubAppClient")
     async def test_without_worker_id_uses_respawn(
         self, mock_github_cls, mock_respawn, mock_publish, mock_record
@@ -137,7 +137,7 @@ class TestCIFixWorkerReuse:
         mock_github.get_workflow_failure_logs = AsyncMock(return_value="test_foo.py FAILED")
         mock_respawn.return_value = True
 
-        from src.workers._ci_gate import _wait_for_ci_and_fix
+        from src.consumers._ci_gate import _wait_for_ci_and_fix
 
         redis = MagicMock()
         passed, attempts = await _wait_for_ci_and_fix(
@@ -158,10 +158,10 @@ class TestCIFixWorkerReuse:
 
 class TestCIFixCleanup:
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker.delete_worker", new_callable=AsyncMock)
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
-    @patch("src.workers.engineering_worker.api_client")
-    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
     async def test_delete_worker_called_after_ci_gate(
         self, mock_publish, mock_api, mock_ci_fix, mock_delete
     ):
@@ -174,7 +174,7 @@ class TestCIFixCleanup:
         )
         mock_api.post = AsyncMock()
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         result_data = {
             "engineering_status": "done",
@@ -200,10 +200,10 @@ class TestCIFixCleanup:
         mock_delete.assert_called_once_with("dev-test-abc", reason="completed")
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker.delete_worker", new_callable=AsyncMock)
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
-    @patch("src.workers.engineering_worker.api_client")
-    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
     async def test_no_delete_when_no_worker_id(
         self, mock_publish, mock_api, mock_ci_fix, mock_delete
     ):
@@ -216,7 +216,7 @@ class TestCIFixCleanup:
         )
         mock_api.post = AsyncMock()
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         result_data = {
             "engineering_status": "done",
@@ -241,10 +241,10 @@ class TestCIFixCleanup:
         mock_delete.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker.delete_worker", new_callable=AsyncMock)
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
-    @patch("src.workers.engineering_worker.api_client")
-    @patch("src.workers.engineering_worker.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
     async def test_worker_id_passed_to_ci_fix(
         self, mock_publish, mock_api, mock_ci_fix, mock_delete
     ):
@@ -257,7 +257,7 @@ class TestCIFixCleanup:
         )
         mock_api.post = AsyncMock()
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         result_data = {
             "engineering_status": "done",
@@ -290,10 +290,10 @@ class TestCIFixCleanup:
 
 class TestCIFixFallback:
     @pytest.mark.asyncio
-    @patch("src.workers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate.publish_callback_event", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate._respawn_developer_for_ci_fix", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate.send_task_to_worker", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate.send_task_to_worker", new_callable=AsyncMock)
     @patch("shared.clients.github.GitHubAppClient")
     async def test_fallback_on_send_task_timeout(
         self, mock_github_cls, mock_send_task, mock_respawn, mock_publish, mock_record
@@ -326,7 +326,7 @@ class TestCIFixFallback:
         # Fallback to respawn succeeds
         mock_respawn.return_value = True
 
-        from src.workers._ci_gate import _wait_for_ci_and_fix
+        from src.consumers._ci_gate import _wait_for_ci_and_fix
 
         redis = MagicMock()
         passed, attempts = await _wait_for_ci_and_fix(
@@ -343,10 +343,10 @@ class TestCIFixFallback:
         mock_respawn.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("src.workers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate.publish_callback_event", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate._respawn_developer_for_ci_fix", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate.send_task_to_worker", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate._respawn_developer_for_ci_fix", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate.send_task_to_worker", new_callable=AsyncMock)
     @patch("shared.clients.github.GitHubAppClient")
     async def test_fallback_resets_worker_id_for_next_iteration(
         self, mock_github_cls, mock_send_task, mock_respawn, mock_publish, mock_record
@@ -380,7 +380,7 @@ class TestCIFixFallback:
         )
         mock_respawn.return_value = True
 
-        from src.workers._ci_gate import _wait_for_ci_and_fix
+        from src.consumers._ci_gate import _wait_for_ci_and_fix
 
         redis = MagicMock()
         passed, attempts = await _wait_for_ci_and_fix(
@@ -405,11 +405,11 @@ class TestCIFixFallback:
 class TestTotalGateTimeout:
     @pytest.mark.asyncio
     @patch("src.config.constants.CI.TOTAL_GATE_TIMEOUT", 0)
-    @patch("src.workers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
-    @patch("src.workers._ci_gate.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate._record_ci_attempts", new_callable=AsyncMock)
+    @patch("src.consumers._ci_gate.publish_callback_event", new_callable=AsyncMock)
     async def test_total_gate_timeout_aborts_loop(self, mock_publish, mock_record):
         """Total gate timeout should abort CI loop even if individual turns don't timeout."""
-        from src.workers._ci_gate import _wait_for_ci_and_fix
+        from src.consumers._ci_gate import _wait_for_ci_and_fix
 
         redis = MagicMock()
 

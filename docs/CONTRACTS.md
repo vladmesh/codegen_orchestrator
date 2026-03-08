@@ -17,12 +17,20 @@
 >
 > **Source of Truth:** `shared/queues.py` (`QUEUE_TOPOLOGY`)
 
+### Architect Pipeline
+
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `architect:queue` | `architect-consumers` | ArchitectMessage | PO ReactAgent | scheduler | Story → tasks LLM decomposition |
+
+---
+
 ### Engineering Flows
 
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
 |-------|-------|-----|-----------|----------|---------|
-| `engineering:queue` | `capability-workers` | EngineeringMessage | PO ReactAgent | langgraph | Start development task |
-| `deploy:queue` | `capability-workers` | DeployMessage | PO ReactAgent | langgraph | Start deploy task |
+| `engineering:queue` | `capability-workers` | EngineeringMessage | Task Dispatcher (scheduler) | langgraph | Start development task |
+| `deploy:queue` | `capability-workers` | DeployMessage | Task Dispatcher (scheduler) / PO | langgraph | Start deploy task |
 
 ---
 
@@ -273,6 +281,7 @@ On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim
 | 6 | Scheduler | `scheduler/main.py` | `provisioner:results` | manual | `claim_pending` | `model_validate` |
 | 7 | Provisioner Notifier | `telegram_bot/notifications.py` | `provisioner:results` | auto | — | `model_validate` |
 | 8 | Proactive Listener | `telegram_bot/main.py` | `po:proactive` | auto | — | raw dict |
+| 9 | Architect Consumer | `scheduler/tasks/architect_consumer.py` | `architect:queue` | manual | `claim_pending` | `model_validate` |
 
 ---
 
@@ -743,10 +752,30 @@ class BaseResult(BaseModel):
 
 ---
 
+## ArchitectMessage
+
+**Queue:** `architect:queue`
+**Initiator:** PO ReactAgent (`create_story` tool)
+**Consumer:** scheduler (Architect Consumer)
+
+```python
+# shared/contracts/queues/architect.py
+
+class ArchitectMessage(BaseMessage):
+    """Trigger story decomposition into tasks."""
+    story_id: str
+    project_id: str
+    user_id: str
+```
+
+**Flow:** PO creates Story → publishes ArchitectMessage → Architect Consumer calls LLM to decompose story into N tasks with `blocked_by_task_id` dependency chains → Task Dispatcher picks up unblocked tasks and publishes EngineeringMessages.
+
+---
+
 ## EngineeringMessage
 
-**Queue:** `engineering:queue`  
-**Initiator:** PO-Worker  
+**Queue:** `engineering:queue`
+**Initiator:** Task Dispatcher (scheduler)
 **Consumer:** langgraph
 
 ```python
@@ -760,6 +789,7 @@ class EngineeringMessage(BaseMessage):
     action: Literal["create", "feature", "fix"] = "create"
     description: str | None = None
     skip_deploy: bool = False
+    planning_task_id: str | None = None  # planning-layer Task ID for status updates
 
 
 class EngineeringResult(BaseResult):
@@ -776,6 +806,7 @@ class EngineeringResult(BaseResult):
 
 **Flags:**
 - `skip_deploy=True` — skip auto-deploy after CI passes (develop → CI only)
+- `planning_task_id` — when set, engineering worker updates task status (in_dev → done/failed) and writes `iteration_end` events. Dispatcher-created runs always set this + `skip_deploy=True` (deploy handled at story level).
 
 ---
 

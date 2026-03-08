@@ -79,7 +79,7 @@ services:
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile
-    command: python -m src.workers.deploy_worker
+    command: python -m src.consumers.deploy
     env_file:
       - .env
     environment:
@@ -111,7 +111,7 @@ services:
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile
-    command: python -m src.workers.engineering_worker
+    command: python -m src.consumers.engineering
     env_file:
       - .env
     environment:

@@ -31,7 +31,7 @@ def mock_redis():
 @pytest.fixture
 def mock_api():
     """Patch api_client methods used by the engineering worker."""
-    with patch("src.workers.engineering_worker.api_client") as api:
+    with patch("src.consumers.engineering.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get_project = AsyncMock(return_value=None)
@@ -59,12 +59,12 @@ class TestLevel1CascadeFailure:
     """Verify commit_sha=None stops the entire pipeline and notifies user."""
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_no_commit_sha_full_event_chain(self, mock_ci_gate, mock_redis, mock_api):
         """commit_sha=None: task=failed, callback=failed, no CI check, no deploy."""
         mock_ci_gate.return_value = (True, [])  # Should never be reached
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": None},
@@ -94,12 +94,12 @@ class TestLevel1CascadeFailure:
         assert len(deploy_calls) == 0
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_empty_string_commit_sha_also_blocks(self, mock_ci_gate, mock_redis, mock_api):
         """Empty string commit_sha is also falsy — should block."""
         mock_ci_gate.return_value = (True, [])
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": ""},
@@ -120,14 +120,14 @@ class TestLevel2NotificationDecoupling:
     """Verify notification type matches actual pipeline state."""
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_deploy_path_sends_progress_then_no_completed(
         self, mock_ci_gate, mock_redis, mock_api
     ):
         """skip_deploy=False: user gets 'progress' not 'completed' from engineering worker."""
         mock_ci_gate.return_value = (True, [])
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc123"},
@@ -154,12 +154,12 @@ class TestLevel2NotificationDecoupling:
         assert "completed" not in event_types
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_skip_deploy_sends_completed(self, mock_ci_gate, mock_redis, mock_api):
         """skip_deploy=True: user gets 'completed' — this IS the final step."""
         mock_ci_gate.return_value = (True, [])
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc123"},
@@ -179,13 +179,13 @@ class TestLevel2NotificationDecoupling:
         assert "completed" in event_types
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_deploy_queue_failure_notifies_user(self, mock_ci_gate, mock_redis, mock_api):
         """When deploy trigger fails, user gets 'failed' event — not silence."""
         mock_ci_gate.return_value = (True, [])
         mock_api.post.side_effect = RuntimeError("API unreachable")
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc123"},
@@ -207,7 +207,7 @@ class TestLevel2NotificationDecoupling:
         assert any("deploy" in t.lower() for t in failed_texts)
 
     @pytest.mark.asyncio
-    @patch("src.workers.engineering_worker._wait_for_ci_and_fix", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_ci_failure_sends_failed_not_completed(self, mock_ci_gate, mock_redis, mock_api):
         """CI failure: user gets 'failed', never 'completed'."""
         mock_ci_gate.return_value = (
@@ -215,7 +215,7 @@ class TestLevel2NotificationDecoupling:
             [{"attempt": 0, "status": "failed", "failure_context": ""}],
         )
 
-        from src.workers.engineering_worker import _handle_engineering_success
+        from src.consumers.engineering import _handle_engineering_success
 
         out = await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc123"},
