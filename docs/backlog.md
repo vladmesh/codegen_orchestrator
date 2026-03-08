@@ -12,6 +12,24 @@
 - **Plan**: —
 - **Status**: backlog
 
+### Story: priority + blocked_by fields
+- **Priority**: HIGH
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Add priority (int) and blocked_by_story_id (FK to stories.id) to Story model.  - Migration adding both columns - API schemas updated (create, read, update) - Router: filter by priority, sort support - Validation: cannot start a story if blocked_by story is not completed - Unit tests for model, sc...
+
+### /architect skill — Story decomposition into Tasks
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: New skill that takes a Story and decomposes it into Tasks.  Flow: 1. Read Story from API (by ID or pick next created story) 2. Load project context (existing tasks, repos, architecture) 3. Use LLM to decompose story into concrete tasks with titles, descriptions, acceptance criteria 4. Create task...
+
+### Seed DB — stories, repositories, historical tasks
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Fill the database with real project data for richer context.  What to seed: - **Stories**: user stories for the orchestrator (what it should do, product vision) - **Repositories**: codegen_orchestrator + service-template (both real repos) - **Historical tasks**: migrate relevant old tasks from se...
+
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: MEDIUM
 - **Plan**: yes (in work item)
