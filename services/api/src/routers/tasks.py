@@ -55,6 +55,7 @@ def _to_read(task: Task, last_event: str | None = None) -> TaskRead:
         created_by=task.created_by,
         source_brainstorm_id=getattr(task, "source_brainstorm_id", None),
         milestone_id=getattr(task, "milestone_id", None),
+        repository_id=getattr(task, "repository_id", None),
         created_at=task.created_at,
         updated_at=task.updated_at,
         last_event=last_event,
@@ -213,6 +214,7 @@ async def list_tasks(
     type_filter: str | None = Query(None, alias="type"),
     milestone_id: str | None = Query(None),
     source_brainstorm_id: str | None = Query(None),
+    repository_id: str | None = Query(None),
     since: datetime | None = Query(None),
     limit: int | None = Query(None, ge=1),
     sort: str | None = Query(None),
@@ -230,6 +232,8 @@ async def list_tasks(
         query = query.where(Task.milestone_id == milestone_id)
     if source_brainstorm_id:
         query = query.where(Task.source_brainstorm_id == source_brainstorm_id)
+    if repository_id:
+        query = query.where(Task.repository_id == repository_id)
     if since:
         query = query.where(Task.updated_at >= since)
 
