@@ -19,10 +19,10 @@
 - [x] #8 Workspace Failure Counter
 - [ ] Update Ruff to latest version and reformat codebase
 - [x] Project ID → UUID + schema cleanup
-- [ ] Fix compose.dev.yml ports conflict with orchestrator worker containers
+- [x] Fix compose.dev.yml ports conflict with orchestrator worker containers
 
-- [ ] #52 Scaffold script не экранирует task_description
-- [ ] #21 Deploy Pre-Check
+- [x] #52 Scaffold script не экранирует task_description
+- [x] #21 Deploy Pre-Check
 - [ ] #54 Deploy: inter-service URL должен использовать docker service name
 - [ ] #60 Engineering worker work_item lifecycle (Step 5)
 - [ ] Fix eager import chains in scaffolded projects
@@ -212,3 +212,7 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 - [ ] Add Rust service type to services.yml
 
+
+## Unlinked Tasks
+
+- [ ] Decouple shared/ from Docker builds — reduce rebuild blast radius

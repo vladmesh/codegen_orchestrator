@@ -10,7 +10,13 @@ dependencies = [
     "pydantic>=2.0.0",
     "httpx>=0.25.0",
     "redis>=5.0.0",
-    "shared", # Local path dependency
+
+    # shared/ deps used by orchestrator-cli (shared is COPY'd, not pip-installed)
+    "pydantic-settings>=2.0.0",
+    "structlog>=25.1.0",
+    "cryptography>=43.0.0",
+    "pynacl>=1.5.0",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

@@ -73,12 +73,13 @@ Thumbs.db
 *.temp
 .cache/
 
-# Virtual environments
-.venv/
-venv/
+# Virtual environments (** matches nested dirs like shared/.venv/)
+**/.venv/
+**/venv/
 
 # Gemini artifacts (local development)
 .gemini/
 
 # uv
 uv.lock
+**/uv.lock

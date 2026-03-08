@@ -7,11 +7,11 @@
 
 ## Queue (ordered by priority, first = next)
 
-### #21 Deploy Pre-Check
+### Decouple shared/ from Docker builds — reduce rebuild blast radius
 - **Priority**: MEDIUM
 - **Plan**: yes (in work item)
 - **Status**: backlog
-- **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
+- **Brief**: ## Problem  `shared/` is a monolithic package (11 submodules) installed via `pip install ./shared` in every Dockerfile. Any change to ANY file in shared/ triggers: - Rebuild of ALL 8 service Docker images (COPY shared invalidates the layer) - Rebuild of ALL worker base images (WORKER_SOURCE_HASH ...
 
 ### #18 Split engineering_worker.py (1088 LOC)
 - **Priority**: LOW

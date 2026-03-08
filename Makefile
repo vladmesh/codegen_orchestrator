@@ -10,8 +10,14 @@ export
 
 DOCKER_COMPOSE ?= docker compose
 
-# Hash of source files baked into worker images (shared, packages, Dockerfiles)
-WORKER_SOURCE_HASH = $(shell find shared packages/worker-wrapper packages/orchestrator-cli \
+# Hash of source files baked into worker images.
+# Only includes shared submodules actually imported by worker-wrapper and orchestrator-cli,
+# plus the packages themselves and worker Dockerfiles.
+# Changes to e.g. shared/models/ or shared/schemas/ won't trigger a worker rebuild.
+WORKER_SOURCE_HASH = $(shell find \
+  shared/__init__.py shared/log_config shared/redis shared/redis_client.py \
+  shared/config.py shared/queues.py shared/contracts shared/crypto.py shared/constants.py \
+  packages/worker-wrapper packages/orchestrator-cli \
   services/worker-manager/images -type f \
   -not -path '*/__pycache__/*' -not -name '*.pyc' \
   | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)

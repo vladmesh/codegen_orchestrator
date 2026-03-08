@@ -18,6 +18,8 @@ dev = [
     "fakeredis>=2.34.1",
     "makefun",
     "copier>=9.4.0",
+    # shared/ is COPY'd in Docker (not pip-installed), but tests need it
+    "shared",
     # Workspace members (all services + packages)
     "api",
     "langgraph-orchestrator",

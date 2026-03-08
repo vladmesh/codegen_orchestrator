@@ -24,6 +24,12 @@ dependencies = [
 
     # Async HTTP for shared/notifications
     "aiohttp>=3.9.0",
+
+    # shared/ deps (shared is COPY'd as plain files, not pip-installed)
+    "pynacl>=1.5.0",
+    "pyyaml>=6.0",
+    "cryptography>=43.0.0",
+    "pgvector>=0.2.5",
 ]
 
 [build-system]

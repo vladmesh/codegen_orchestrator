@@ -34,6 +34,7 @@ click==8.3.1
     # via duckduckgo-search
 cryptography==46.0.3
     # via
+    #   langgraph-orchestrator (services/langgraph/pyproject.toml)
     #   asyncssh
     #   pyjwt
 distro==1.9.0
@@ -128,6 +129,8 @@ multidict==6.7.0
     # via
     #   aiohttp
     #   yarl
+numpy==2.4.2
+    # via pgvector
 openai==2.14.0
     # via langchain-openai
 orjson==3.11.5
@@ -141,6 +144,8 @@ packaging==25.0
     # via
     #   langchain-core
     #   langsmith
+pgvector==0.4.2
+    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 primp==1.1.2
     # via duckduckgo-search
 propcache==0.4.1
@@ -183,7 +188,9 @@ pynacl==1.6.1
 python-dotenv==1.2.1
     # via pydantic-settings
 pyyaml==6.0.3
-    # via langchain-core
+    # via
+    #   langgraph-orchestrator (services/langgraph/pyproject.toml)
+    #   langchain-core
 redis==7.1.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 regex==2025.11.3

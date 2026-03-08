@@ -4,6 +4,12 @@
 
 ## 2026-03-08
 
+### Added
+- **Deploy Pre-Check** (#21): Added `action` field (create/feature/fix) to `DeployMessage` contract. Engineering worker propagates action to deploy message on auto-deploy. Webhook-triggered deploys default to action=feature. Deploy worker SSH-checks `/opt/services/<name>/` before deploying: create fails if dir exists (leftover cleanup needed), feature/fix fails if dir absent (never deployed). Added `asyncssh` dependency.
+
+### Changed
+- **Dockerfile layer caching optimization** (#21 deviation): Split shared package install into deps-first + code-only steps across all service Dockerfiles for better layer caching. Multi-stage Claude CLI install in worker-base-claude avoids re-downloading on base image changes.
+
 ### Fixed
 - **compose.dev.yml ports conflict with worker containers** (task-f9aadfc1): Compose runner now injects `.codegen-ports.yml` override that clears published ports (5432, 6379) for worker projects. Workers communicate via Docker DNS on isolated networks, so published ports are unnecessary and conflicted with orchestrator's own postgres/redis.
 

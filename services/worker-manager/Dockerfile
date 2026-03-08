@@ -15,17 +15,8 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-26.
        -o /usr/local/lib/docker/cli-plugins/docker-compose \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-# Install shared dependencies first (cached when pyproject.toml is stable)
-COPY shared/pyproject.toml /tmp/shared-pyproject.toml
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python -c "import tomllib; deps=tomllib.load(open('/tmp/shared-pyproject.toml','rb'))['project']['dependencies']; print('\n'.join(deps))" \
-    > /tmp/shared-requirements.txt && \
-    pip install -r /tmp/shared-requirements.txt
-
-# Install shared package code (no deps — fast)
+# Copy shared as plain files (deps are in service pyproject.toml)
 COPY shared ./shared
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-deps ./shared
 
 # Install service dependencies
 COPY services/worker-manager/pyproject.toml .

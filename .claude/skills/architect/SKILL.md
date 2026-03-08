@@ -184,9 +184,15 @@ Print a summary:
 - **Don't over-decompose** — 3-8 tasks per story is typical. If you need more, consider whether the story should be split into child stories instead.
 - **Ask for confirmation** before creating tasks if the decomposition is ambiguous or the story description is vague.
 
+### Memory Review (Mandatory)
+
+**Before generating your final response, review your memory for feedback:**
+Did you have to fix any unexpected errors, correct wrong commands, or guess missing information during this task? 
+If yes, you **MUST** append an entry to `docs/skill-feedback.md` right now, following the format described in the **Self-Feedback** section below.
+
 ## Self-Feedback
 
-After completing this skill, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
+During your final memory review, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
 
 - A command or path in this skill was **wrong or outdated**
 - A step was **missing context** that you had to figure out yourself

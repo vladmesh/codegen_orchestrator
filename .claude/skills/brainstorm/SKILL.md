@@ -112,9 +112,15 @@ git commit -m "brainstorm: <topic>"
 - Don't create backlog tasks directly. That's `/triage`'s job. Just write Action Items.
 - If the brainstorm reveals the topic is simple enough to just do — say so. Not everything needs a brainstorm.
 
+### Memory Review (Mandatory)
+
+**Before generating your final response, review your memory for feedback:**
+Did you have to fix any unexpected errors, correct wrong commands, or guess missing information during this task? 
+If yes, you **MUST** append an entry to `docs/skill-feedback.md` right now, following the format described in the **Self-Feedback** section below.
+
 ## Self-Feedback
 
-After completing this skill, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
+During your final memory review, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
 
 - A command or path in this skill was **wrong or outdated**
 - A step was **missing context** that you had to figure out yourself
