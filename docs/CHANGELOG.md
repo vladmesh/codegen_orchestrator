@@ -5,6 +5,8 @@
 ## 2026-03-08
 
 ### Added
+- **Story: priority + blocked_by fields** (task-9d288940): Added `priority` (int, default 0) and `blocked_by_story_id` (FK → stories.id) to Story model. Migration with indexes. Schemas updated (create/read/update). List endpoint gains `priority` filter and `sort` param. Validation: cannot start a story if its blocker is not completed (422). 8 new unit tests.
+
 - **Story model + API** (wi-34761901): New `Story` entity (`id, project_id, parent_story_id, title, description, acceptance_criteria, status, created_by`). `StoryStatus` enum: `created | in_progress | completed | archived` with valid transitions. Full CRUD API at `/api/stories/` with action endpoints (`/start`, `/complete`, `/archive`). `Task.story_id` nullable FK. Self-referencing `parent_story_id` for epic-like grouping. Alembic migration. Refactored `list_tasks` to use `_TaskFilters` dependency class (PLR0913). 47 new unit tests.
 
 ### Fixed

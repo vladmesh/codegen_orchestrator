@@ -12,12 +12,6 @@
 - **Plan**: —
 - **Status**: backlog
 
-### Story: priority + blocked_by fields
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Add priority (int) and blocked_by_story_id (FK to stories.id) to Story model.  - Migration adding both columns - API schemas updated (create, read, update) - Router: filter by priority, sort support - Validation: cannot start a story if blocked_by story is not completed - Unit tests for model, sc...
-
 ### /architect skill — Story decomposition into Tasks
 - **Priority**: HIGH
 - **Plan**: —
@@ -135,6 +129,7 @@
 
 ## Done (last 10)
 
+- Story: priority + blocked_by fields — 2026-03-08
 - #999 Smoke test task — 2026-03-07
 - make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms) — 2026-03-07
 - #64 Implement skill: PR flow + in_ci status + need_e2e — 2026-03-07
@@ -144,7 +139,6 @@
 - #63 Milestone model + ROADMAP generation — 2026-03-07
 - #61 Brainstorm model in DB — 2026-03-07
 - #58 Skills → API + Simplified Model — 2026-03-07
-- #57 /implement work item events (Step 2) — 2026-03-07
 
 ## Ideas
 
