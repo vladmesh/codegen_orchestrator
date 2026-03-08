@@ -1,9 +1,6 @@
 # Roadmap
 
-> [!WARNING]
-> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
-
-> **Updated**: 2026-03-07
+> **Updated**: 2026-03-07 (generated)
 
 ## Phase 1: Stable Pipeline (scaffold -> code -> CI -> deploy) — COMPLETE
 
@@ -42,9 +39,11 @@ Worker swarm, cost tracking, self-hosted CI.
 
 ## Backlog
 
+- [ ] Smoke test 2
+- [ ] Smoke test task
+- [ ] #52 Scaffold script не экранирует task_description
 - [ ] Repository model + migration
 - [ ] Story model + API
-- [ ] #52 Scaffold script не экранирует task_description
 - [ ] #18 Split engineering_worker.py (1088 LOC)
 - [ ] #54 Deploy: inter-service URL должен использовать docker service name
 - [ ] #62 /brainstorm resume — продолжение обсуждения существующего драфта

@@ -1,5 +1,8 @@
 # Ideas
 
+> [!WARNING]
+> **DEPRECATED**: Этот файл более не является источником правды. Идеи мигрировали в базу данных (превращаются в `brainstorms` или `work_items`). Файл временно оставлен для генерации старого backlog.md.
+
 Manually maintained list of ideas and future improvements.
 Read by `make backlog` to include in generated backlog.md.
 

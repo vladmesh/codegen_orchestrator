@@ -38,6 +38,9 @@ class Task(Base):
     milestone_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("milestones.id"), nullable=True, index=True
     )
+    repository_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("repositories.id"), nullable=True
+    )
 
 
 class TaskEvent(Base):

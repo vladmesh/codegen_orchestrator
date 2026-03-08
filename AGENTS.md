@@ -6,6 +6,7 @@
 
 | Документ | Когда читать |
 |----------|-------------|
+| [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) | **ОБЯЗАТЕЛЬНО К ПРОЧТЕНИЮ** — жизненный цикл фичи и дата-дривен процесс |
 | [docs/STATUS.md](docs/STATUS.md) | **Всегда первым** — текущая задача и контекст |
 | [docs/backlog.md](docs/backlog.md) | Очередь задач, идеи (Read-only, генерируется из БД командой `make backlog`) |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | Перед изменением DTO, очередей, API |
@@ -21,21 +22,21 @@
 ## Dev Pipeline
 
 ```
-Идея → /brainstorm → backlog → /plan → /implement → /e2e-run → /checkpoint
+Идея → /brainstorm → БД Tasks → /plan → /implement → /e2e-run → /checkpoint
 ```
 
 | Этап | Скилл | Артефакт |
 |------|-------|----------|
-| Исследование | `/brainstorm <topic>` | `docs/brainstorms/<topic>.md` |
-| Обнаружение | `/audit` | Находки → backlog |
-| Приоритизация | `/triage` | Создание новых WorkItems через API |
+| Исследование | `/brainstorm <topic>` | Запись в БД `brainstorms` (или markdown Spike) |
+| Обнаружение | `/audit` | Находки → Создание Task в БД |
+| Приоритизация | `/triage` | Создание новых Tasks в БД (API) |
 | Декомпозиция | `/plan [#ID]` | `docs/plans/<task>.md` — шаги с Input/Output/Test |
 | Реализация | `/implement [#ID]` | Код + тесты (TDD цикл по шагам плана) |
 | Валидация | `/e2e-run` | `docs/e2e_results/<scenario>-<date>.md` |
-| Фиксация | `/checkpoint` | CHANGELOG, ROADMAP, STATUS |
-| Аудит | `/audit` | Находки → backlog |
+| Фиксация | `/checkpoint` | CHANGELOG, ROADMAP, закрытие Task в БД |
+| Аудит | `/audit` | Находки → Создание Task в БД |
 
-Скиллы по умолчанию берут текущую задачу из `docs/STATUS.md`. Скиллы больше не работают с markdown файлами напрямую (кроме планов), а пишут и читают состояние через API WorkItems.
+Скиллы по умолчанию получают свой контекст (в т.ч. текущую задачу) **через API**, а не из старого файла `docs/STATUS.md`. Скиллы больше не работают с markdown файлами напрямую (кроме планов), а пишут и читают состояние через API.
 
 **Планы не удаляются после реализации.** `/implement` дополняет план и отправляет API events с итерациями. `/checkpoint` удаляет план только если есть свежий E2E-результат.
 
@@ -97,10 +98,10 @@ make test-{service}-unit     # Per-service: api, langgraph, scheduler, telegram
 
 | Skill | Описание |
 |-------|----------|
-| `/plan [#ID]` | Декомпозировать задачу на шаги, обновить WorkItem.plan |
-| `/implement [#ID]` | Взять задачу в работу (status: in_dev), TDD цикл, запись WorkItem events |
+| `/plan [#ID]` | Декомпозировать задачу на шаги, обновить Task в БД (plan) |
+| `/implement [#ID]` | Взять задачу в работу (status: in_dev), TDD цикл, запись Task events |
 | `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | Запуск E2E теста (полный цикл: engineering → CI → deploy → verify, `--feature` пропускает scaffolding) |
-| `/triage` | Разбор отчётов → создание новых задач через WorkItems API |
-| `/brainstorm <topic>` | Brainstorm документ |
-| `/checkpoint` | Сбор статистики через API, обновление CHANGELOG/ROADMAP/STATUS |
-| `/audit` | Аудит кода → создание задачи в бэклог |
+| `/triage` | Разбор отчётов → создание новых задач через API |
+| `/brainstorm <topic>` | Создание/обсуждение Brainstorm записи в БД |
+| `/checkpoint` | Сбор статистики через API, обновление CHANGELOG/ROADMAP |
+| `/audit` | Аудит кода → создание задачи в БД |
