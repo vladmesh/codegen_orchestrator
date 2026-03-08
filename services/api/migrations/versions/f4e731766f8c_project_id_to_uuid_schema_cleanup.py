@@ -19,18 +19,24 @@ depends_on: str | Sequence[str] | None = None
 
 
 # All tables with FK to projects.id
+# FK names are the actual constraint names in the database
 FK_TABLES = [
-    ("tasks", "project_id", True, "fk_tasks_project_id"),
-    ("stories", "project_id", True, "fk_stories_project_id"),
-    ("brainstorms", "project_id", True, "fk_brainstorms_project_id"),
-    ("milestones", "project_id", True, "fk_milestones_project_id"),
-    ("repositories", "project_id", True, "fk_repositories_project_id"),
-    ("runs", "project_id", False, "fk_runs_project_id"),
-    ("port_allocations", "project_id", False, "fk_port_allocations_project_id"),
-    ("rag_documents", "project_id", False, "fk_rag_documents_project_id"),
-    ("rag_chunks", "project_id", False, "fk_rag_chunks_project_id"),
-    ("rag_conversation_summaries", "project_id", False, "fk_rag_conversation_summaries_project_id"),
-    ("rag_messages", "project_id", False, "fk_rag_messages_project_id"),
+    ("tasks", "project_id", True, "work_items_project_id_fkey"),
+    ("stories", "project_id", True, "stories_project_id_fkey"),
+    ("brainstorms", "project_id", True, "brainstorms_project_id_fkey"),
+    ("milestones", "project_id", True, "milestones_project_id_fkey"),
+    ("repositories", "project_id", True, "repositories_project_id_fkey"),
+    ("runs", "project_id", False, "fk_tasks_project_id"),
+    ("port_allocations", "project_id", False, "port_allocations_project_id_fkey"),
+    ("rag_documents", "project_id", False, "rag_documents_project_id_fkey"),
+    ("rag_chunks", "project_id", False, "rag_chunks_project_id_fkey"),
+    (
+        "rag_conversation_summaries",
+        "project_id",
+        False,
+        "rag_conversation_summaries_project_id_fkey",
+    ),
+    ("rag_messages", "project_id", False, "rag_messages_project_id_fkey"),
 ]
 
 # Tables with project_id but no FK constraint
