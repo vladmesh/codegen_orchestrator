@@ -364,12 +364,12 @@ class ProjectDTO(BaseModel):
     project_spec: dict | None = None
 ```
 
-## WorkItemDTO
+## TaskDTO
 
 ```python
-# services/api/src/schemas/work_item.py & shared/contracts/dto/work_item.py
+# services/api/src/schemas/task.py & shared/contracts/dto/task.py
 
-class WorkItemStatus(StrEnum):
+class TaskStatus(StrEnum):
     BACKLOG = "backlog"
     TODO = "todo"
     IN_DEV = "in_dev"
@@ -379,14 +379,14 @@ class WorkItemStatus(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
-class WorkItemType(StrEnum):
+class TaskType(StrEnum):
     CREATE = "create"
     FEATURE = "feature"
     FIX = "fix"
     REFACTOR = "refactor"
 
-class WorkItemRead(BaseModel):
-    """Schema for reading a work item."""
+class TaskRead(BaseModel):
+    """Schema for reading a task."""
     id: str
     project_id: str
     type: str
@@ -405,22 +405,22 @@ class WorkItemRead(BaseModel):
     elapsed_minutes: float | None = None
 ```
 
-## WorkItemEventDTO
+## TaskEventDTO
 
 ```python
-# services/api/src/schemas/work_item.py & shared/contracts/dto/work_item.py
+# services/api/src/schemas/task.py & shared/contracts/dto/task.py
 
-class WorkItemEventType(StrEnum):
+class TaskEventType(StrEnum):
     STATUS_CHANGE = "status_change"
     ITERATION_START = "iteration_start"
     ITERATION_END = "iteration_end"
     NOTE = "note"
     COMMENT = "comment"
 
-class WorkItemEventRead(BaseModel):
-    """Schema for reading a work item event."""
+class TaskEventRead(BaseModel):
+    """Schema for reading a task event."""
     id: int
-    work_item_id: str
+    task_id: str
     event_type: str
     from_status: str | None
     to_status: str | None
@@ -430,16 +430,16 @@ class WorkItemEventRead(BaseModel):
     created_at: datetime
 ```
 
-## TaskDTO
+## RunDTO
 
 ```python
-# shared/contracts/dto/task.py
+# shared/contracts/dto/run.py
 
 from enum import StrEnum
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
-class TaskStatus(StrEnum):
+class RunStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -447,27 +447,27 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-class TaskType(StrEnum):
+class RunType(StrEnum):
     ENGINEERING = "engineering"
     DEPLOY = "deploy"
 
 
-class TaskCreate(BaseModel):
-    """Create task request."""
+class RunCreate(BaseModel):
+    """Create run request."""
     project_id: str
-    type: TaskType
+    type: RunType
     spec: str | None = None
 
 
-class TaskDTO(BaseModel):
-    """Task response."""
+class RunDTO(BaseModel):
+    """Run response."""
     model_config = ConfigDict(from_attributes=True)
 
     id: str
     project_id: str
-    type: TaskType
-    status: TaskStatus
-    task_metadata: dict[str, Any] = {}
+    type: RunType
+    status: RunStatus
+    run_metadata: dict[str, Any] = {}
     spec: str | None = None
     result: dict | None = None
     created_at: datetime

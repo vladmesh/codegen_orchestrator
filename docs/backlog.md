@@ -7,18 +7,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Update Ruff to latest version and reformat codebase
-- **Priority**: CRITICAL
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Currently CI is pinned to ruff 0.8.4. Needs to be bumped to the latest version and ruff format executed across all modules.
-
-### Replace Milestone with Story type field (product/technical)
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: 1. Add type field to Story model (product | technical, default product) 2. Migrate API + schemas 3. Drop Milestone model, table, routes, FK references 4. Update make sync and docs generation 5. Alembic migration  After implementation: set type=technical on story-63377d96 (Rust migration) — it was...
-
 ### /architect skill — Story decomposition into Tasks
 - **Priority**: HIGH
 - **Plan**: yes (in work item)

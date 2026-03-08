@@ -208,7 +208,7 @@ After all API changes:
 make sync
 ```
 
-## Commit
+## Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 After all processing, commit changed files:
 

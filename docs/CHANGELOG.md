@@ -17,6 +17,7 @@
   - Updated `/triage` skill: story matching on task creation, template tasks via API with repository_id
 
 ### Changed
+- **Replace Milestone with Story type field** (task-6fe23f2a): Added `type` field (product/technical) to Story model, schemas, and router with filter support. Dropped `milestones` table, `milestone_id` from tasks, and all Milestone code (model, schemas, router, DTO, tests, seed script). Rewrote `generate_roadmap.py` to generate ROADMAP.md from stories grouped by type. Updated docs (DEV_PIPELINE, GLOSSARY, checkpoint, triage skills). Set Rust migration story to type=technical.
 - **Project ID → UUID + schema cleanup** (task-7163e7ac): Changed `Project.id` from `String(255)` to native PostgreSQL `UUID` with auto-generation. Migrated all 13 FK `project_id` columns to `Uuid` type. Removed legacy `github_repo_id` and `repository_url` from Project model. Added `visibility` column to Repository. Migrated webhook lookup to `Repository.provider_repo_id`. Added `get_primary_repository` to API clients. Updated all DTOs, schemas, routers, workers, tests, scripts, and skills. Alembic migration handles mixed-format ID conversion (short hex, strings, existing UUIDs).
 
 ### Added

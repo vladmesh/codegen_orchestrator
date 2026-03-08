@@ -119,7 +119,7 @@ echo "$PLAN" | jq -Rs '{plan: .}' | curl -sf -X PATCH "http://localhost:8000/api
 
 Run `make sync` to regenerate all read-only docs from API.
 
-### 8. Commit
+### 8. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/backlog.md

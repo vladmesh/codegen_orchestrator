@@ -311,7 +311,7 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/complete" \
 make sync
 ```
 
-6. **Commit** doc updates on main:
+6. **Commit** doc updates on main (DO NOT push — doc-only commits stay local to avoid wasting CI minutes):
 ```bash
 git add docs/CHANGELOG.md docs/backlog.md
 git commit -m "docs: complete #<ID> — <title>"

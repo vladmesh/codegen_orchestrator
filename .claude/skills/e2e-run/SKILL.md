@@ -1034,7 +1034,7 @@ Same as Step 5, but additionally verify the feature was added:
 
 Same as Step 6 — fetch AUDIT_REPORT.md again (it may have been updated by the feature worker).
 
-### Step 7.5: Commit reports
+### Step 7.5: Commit reports (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/e2e_results/<project_name>-<date>.md
@@ -1060,7 +1060,7 @@ Check for:
 - **Missing updates**: new features/changes from recent tasks not reflected in architecture or CLAUDE.md
 - **Backlog/STATUS inconsistencies**: done tasks still in queue, wrong plan links, stale checkpoint info
 
-If divergences are found — fix them in place and commit together:
+If divergences are found — fix them in place and commit together (DO NOT push):
 
 ```bash
 git add -A docs/ CLAUDE.md ARCHITECTURE.md

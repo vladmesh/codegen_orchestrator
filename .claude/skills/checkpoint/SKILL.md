@@ -112,7 +112,7 @@ For each file in `docs/e2e_results/`:
 - If processed AND older than 2 days — delete
 - Keep the latest passing report per scenario
 
-### 11. Commit
+### 11. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/CHANGELOG.md docs/ROADMAP.md docs/USER_STORIES.md docs/backlog.md docs/audit.md docs/plans/ docs/e2e_results/ docs/brainstorms/ docs/ideas.md ARCHITECTURE.md README.md CLAUDE.md docs/CONTRACTS.md

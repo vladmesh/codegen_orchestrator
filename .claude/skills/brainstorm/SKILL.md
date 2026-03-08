@@ -98,7 +98,7 @@ When the discussion is complete:
 1. Set `Status: done` in the markdown header
 2. Mark done in DB: `curl -sf -X POST "$API/api/brainstorms/$BS_ID/done" -H "Content-Type: application/json" -d '{"actor": "claude"}'`
 
-### 6. Commit
+### 6. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/brainstorms/<topic-slug>.md

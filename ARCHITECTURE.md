@@ -24,10 +24,10 @@ Codegen Orchestrator — мультиагентная система для ав
 ### Planning Layer (Work Items)
 
 Уровень абстракции для продуктового управления:
-- Вся работа (фичи, багфиксы) ведётся через API сущностей `WorkItem` со статусами (`backlog` → `todo` → `in_dev` → `testing` → `done`).
-- Скиллы (`/plan`, `/implement`, `/triage`, `/checkpoint`) и в будущем Product Owner взаимодействуют с API для работы с бэклогом, сбора статистики и сохранения истории итераций (`WorkItemEvent`).
+- Вся работа (фичи, багфиксы) ведётся через API сущностей `Task` со статусами (`backlog` → `todo` → `in_dev` → `testing` → `done`).
+- Скиллы (`/plan`, `/implement`, `/triage`, `/checkpoint`) и в будущем Product Owner взаимодействуют с API для работы с бэклогом, сбора статистики и сохранения истории итераций (`TaskEvent`).
 - Файл `docs/backlog.md` является автогенерируемым (read-only) представлением базы данных для удобства человека (отвечает за это команда `make backlog`).
-- `WorkItem` транслируется в `Task` (уровень Execution / Runtime) оркестратором.
+- `Task` транслируется в `Run` (уровень Execution / Runtime) оркестратором.
 
 ### Capabilities
 Возможности Developer агента конфигурируются через `WorkerConfig.capabilities`:

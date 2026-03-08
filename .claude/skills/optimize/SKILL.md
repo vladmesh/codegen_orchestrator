@@ -79,7 +79,7 @@ For each approved auto-fix:
 After all entries are processed (applied or discussed), remove them from `docs/skill-feedback.md`.
 Keep the file header and `<!-- entries below -->` marker.
 
-### 6. Commit
+### 6. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/skill-feedback.md .claude/skills/

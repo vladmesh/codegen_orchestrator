@@ -90,7 +90,7 @@ Write/overwrite `docs/audit.md`:
 ...
 ```
 
-### 3. Commit
+### 3. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/audit.md
