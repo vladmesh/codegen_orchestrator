@@ -110,12 +110,10 @@ Write the plan text to the task:
 
 ```bash
 WI_ID="<task_id from step 1>"
-curl -sf -X PATCH "http://localhost:8000/api/tasks/$WI_ID" \
+echo "$PLAN" | jq -Rs '{plan: .}' | curl -sf -X PATCH "http://localhost:8000/api/tasks/$WI_ID" \
   -H "Content-Type: application/json" \
-  -d '{"plan": "<escaped plan text>"}'
+  -d @- | jq '{id, title, status}'
 ```
-
-Use `jq -Rs .` to escape the plan text for JSON if needed.
 
 ### 7. Sync docs
 

@@ -16,10 +16,6 @@
 ```bash
 # Unit (fast, no deps — run before every push)
 make test-unit                 # All services (parallel, ~12s)
-make test-api-unit             # Per-service
-make test-langgraph-unit
-make test-scheduler-unit
-make test-telegram-unit
 
 # Serial mode (verbose output per service)
 uv run bash scripts/test-unit-local.sh --serial
@@ -34,9 +30,7 @@ make test-integration-backend  # Specific suite
 # E2E
 make test-e2e-scaffold         # Quick scaffold smoke test (~2-3 min)
 # Full E2E — use skills:
-#   /e2e-run todo_api C       # Level A (code) / B (+CI) / C (+deploy)
-#   /e2e-check                # Pre-flight check
-#   /e2e-cleanup todo_api     # Cleanup resources
+#   /e2e-run todo_api         # Runs full E2E test for the scenario
 
 # Cleanup
 make test-clean                # Remove all test containers/volumes
@@ -68,9 +62,7 @@ Both must pass.
 E2E tests are NOT in CI — they require a running stack + real LLM calls.
 
 **Skills** (preferred way to run E2E):
-- `/e2e-run <scenario> <level>` — 7 scenarios (todo_api, echo_bot, landing_page, weather_bot, url_shortener, bot_landing, expense_tracker), 3 levels (A/B/C)
-- `/e2e-check` — pre-flight: Docker services, API health, Redis
-- `/e2e-cleanup <scenario>` — remove GitHub repo, containers, DB records
+- `/e2e-run <scenario> [--with-po] [--no-cleanup] [--no-nuke] [--feature]` — 7 scenarios (todo_api, echo_bot, landing_page, weather_bot, url_shortener, bot_landing, expense_tracker)
 
 **Reports**: Written to `docs/e2e_results/`.
 

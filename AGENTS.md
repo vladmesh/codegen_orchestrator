@@ -90,7 +90,7 @@ make lint                    # Ruff linter
 make format                  # Ruff formatter
 make test-unit               # Unit tests (fast, no deps)
 make test-integration        # Integration tests (require DB/Redis)
-make test-{service}-unit     # Per-service: api, langgraph, scheduler, telegram
+make test-service SERVICE=api # Per-service integration test
 ```
 
 ## Skills (`.claude/skills/`)
@@ -103,6 +103,7 @@ make test-{service}-unit     # Per-service: api, langgraph, scheduler, telegram
 | `/implement [#ID]` | Взять задачу в работу (status: in_dev), TDD цикл, запись Task events |
 | `/e2e-run <test> [--with-po] [--no-cleanup] [--feature]` | Запуск E2E теста (полный цикл: engineering → CI → deploy → verify, `--feature` пропускает scaffolding) |
 | `/triage` | Разбор отчётов → создание новых задач через API |
+| `/optimize` | Обработка фидбека по скиллам (`docs/skill-feedback.md`) и авто-улучшение |
 | `/architect` *(в разработке)* | Разделение крупных Story на набор технических Tasks |
 | `/brainstorm <topic>` | Создание/обсуждение Brainstorm записи в БД |
 | `/checkpoint` | Сбор статистики через API, обновление CHANGELOG/ROADMAP |
