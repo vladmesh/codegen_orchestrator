@@ -133,7 +133,7 @@ def _validate_transition(from_status: str, to_status: str) -> None:
         allowed = [s.value for s in VALID_TRANSITIONS[from_s]]
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Cannot transition from {from_status} to {to_status}. " f"Allowed: {allowed}",
+            detail=f"Cannot transition from {from_status} to {to_status}. Allowed: {allowed}",
         )
 
 

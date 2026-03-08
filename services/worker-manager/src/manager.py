@@ -479,9 +479,7 @@ class WorkerManager:
             failure_count = int(await self.redis.get(failure_key) or 0)
 
             if failure_count >= 3:
-                raise RuntimeError(
-                    f"Max retries (3) exceeded for project {project_id}. " f"Reset with: DEL {failure_key}"
-                )
+                raise RuntimeError(f"Max retries (3) exceeded for project {project_id}. Reset with: DEL {failure_key}")
 
             if failure_count >= 2:
                 workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, project_id)
@@ -695,7 +693,7 @@ class WorkerManager:
 
     async def _refresh_git_token(self, container_id: str, repo: str, token: str, worker_id: str) -> bool:
         """Update git remote URL with fresh token in existing workspace."""
-        script = f"cd /workspace && git remote set-url origin " f"'https://x-access-token:{token}@github.com/{repo}'"
+        script = f"cd /workspace && git remote set-url origin 'https://x-access-token:{token}@github.com/{repo}'"
         encoded = base64.b64encode(script.encode()).decode()
         cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"
         exit_code, output = await self.docker.exec_in_container(container_id, cmd, timeout=30)

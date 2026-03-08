@@ -359,10 +359,10 @@ class TestCIFixFallback:
         mock_github.wait_for_workflow_completion = AsyncMock(
             side_effect=[
                 RuntimeError(
-                    "Workflow ci.yml failed. " "See: https://github.com/org/repo/actions/runs/111"
+                    "Workflow ci.yml failed. See: https://github.com/org/repo/actions/runs/111"
                 ),
                 RuntimeError(
-                    "Workflow ci.yml failed. " "See: https://github.com/org/repo/actions/runs/222"
+                    "Workflow ci.yml failed. See: https://github.com/org/repo/actions/runs/222"
                 ),
                 {"id": 333, "conclusion": "success"},
             ]

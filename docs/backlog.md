@@ -7,6 +7,12 @@
 
 ## Queue (ordered by priority, first = next)
 
+### Update Ruff to latest version and reformat codebase
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Currently CI is pinned to ruff 0.8.4. Needs to be bumped to the latest version and ruff format executed across all modules.
+
 ### /architect skill — Story decomposition into Tasks
 - **Priority**: HIGH
 - **Plan**: yes (in work item)

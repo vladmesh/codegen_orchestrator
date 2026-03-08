@@ -42,6 +42,7 @@ Worker swarm, cost tracking, self-hosted CI.
 
 ## Backlog
 
+- [ ] Update Ruff to latest version and reformat codebase
 - [ ] /architect skill — Story decomposition into Tasks
 - [ ] #52 Scaffold script не экранирует task_description
 - [ ] #18 Split engineering_worker.py (1088 LOC)

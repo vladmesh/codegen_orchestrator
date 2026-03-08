@@ -189,8 +189,7 @@ class DeveloperNode(FunctionalNode):
                     return {
                         "messages": [
                             AIMessage(
-                                content=f"Worker completed but made no commit"
-                                f" in '{project_name}'."
+                                content=f"Worker completed but made no commit in '{project_name}'."
                             )
                         ],
                         "engineering_status": "blocked",

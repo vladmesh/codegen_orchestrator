@@ -115,10 +115,14 @@ git push origin main
 Done! I've created the test marker file and pushed it to the repository.
 
 <result>
-{json.dumps({
-    "status": "success",
-    "summary": f"Created {file_name} and pushed to repository",
-    "file_created": file_name,
-    "repo_url": repo_url
-})}
+{
+        json.dumps(
+            {
+                "status": "success",
+                "summary": f"Created {file_name} and pushed to repository",
+                "file_created": file_name,
+                "repo_url": repo_url,
+            }
+        )
+    }
 </result>"""

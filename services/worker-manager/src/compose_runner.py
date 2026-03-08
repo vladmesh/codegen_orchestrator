@@ -28,7 +28,7 @@ def _generate_network_override(worker_id: str) -> str:
     resolves only to the project's own postgres on dev_proj_<id>.
     """
     network_name = f"dev_proj_{worker_id}"
-    return f"networks:\n" f"  default:\n" f"    name: {network_name}\n" f"    external: true\n"
+    return f"networks:\n  default:\n    name: {network_name}\n    external: true\n"
 
 
 class ComposeRunner:

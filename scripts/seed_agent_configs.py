@@ -70,8 +70,7 @@ def seed_agent_configs(api_base_url: str, configs_path: Path) -> bool:
                         print(f"  Updated agent config: {config['id']}")
                     else:
                         print(
-                            f"  Failed to update '{config['id']}': "
-                            f"{resp.status_code} - {resp.text}"
+                            f"  Failed to update '{config['id']}': {resp.status_code} - {resp.text}"
                         )
                         success = False
                     continue

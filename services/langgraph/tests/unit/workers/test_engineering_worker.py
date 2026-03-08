@@ -452,13 +452,13 @@ class TestCIFailureClassification:
     def test_ruff_lint_is_not_infra(self):
         from src.workers.engineering_worker import _is_infra_failure
 
-        ctx = "Job 'lint-and-test' failed:\n" "  Step 'Run ruff check' failed"
+        ctx = "Job 'lint-and-test' failed:\n  Step 'Run ruff check' failed"
         assert _is_infra_failure(ctx) is False
 
     def test_pytest_is_not_infra(self):
         from src.workers.engineering_worker import _is_infra_failure
 
-        ctx = "Job 'lint-and-test' failed:\n" "  Step 'Run tests' failed"
+        ctx = "Job 'lint-and-test' failed:\n  Step 'Run tests' failed"
         assert _is_infra_failure(ctx) is False
 
     def test_empty_context_is_not_infra(self):
@@ -494,8 +494,7 @@ class TestCIInfraFailFast:
         )
         mock_gh.get_workflow_failure_logs = AsyncMock(
             return_value=(
-                "Job 'build-and-push (backend)' failed:\n"
-                "  Step 'Log in to Docker Registry' failed"
+                "Job 'build-and-push (backend)' failed:\n  Step 'Log in to Docker Registry' failed"
             )
         )
         # Rerun also fails
@@ -542,8 +541,7 @@ class TestCIInfraFailFast:
         )
         mock_gh.get_workflow_failure_logs = AsyncMock(
             return_value=(
-                "Job 'build-and-push (backend)' failed:\n"
-                "  Step 'Log in to Docker Registry' failed"
+                "Job 'build-and-push (backend)' failed:\n  Step 'Log in to Docker Registry' failed"
             )
         )
         mock_gh.rerun_failed_jobs = AsyncMock(return_value=True)
@@ -631,7 +629,7 @@ class TestCIInfraFailFast:
 
         mock_gh.wait_for_workflow_completion = AsyncMock(side_effect=fake_wait)
         mock_gh.get_workflow_failure_logs = AsyncMock(
-            return_value=("Job 'lint-and-test' failed:\n" "  Step 'Run ruff check' failed")
+            return_value=("Job 'lint-and-test' failed:\n  Step 'Run ruff check' failed")
         )
         mock_respawn.return_value = True
 
