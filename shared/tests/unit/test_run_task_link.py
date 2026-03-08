@@ -1,10 +1,14 @@
 """Unit tests for Run ↔ Task linkage."""
 
+import uuid
+
 from sqlalchemy import create_engine, insert, select
 from sqlalchemy.orm import Session
 
 from shared.models.run import Run
 from shared.models.task import Task
+
+TEST_PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 def _setup_db():
@@ -42,7 +46,7 @@ def test_run_linked_to_task():
         session.execute(
             insert(Task).values(
                 id="task-abc",
-                project_id="proj-test",
+                project_id=TEST_PROJECT_UUID,
                 title="Feature X",
                 type="feature",
                 status="in_dev",

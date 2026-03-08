@@ -2,9 +2,10 @@
 
 from datetime import datetime
 from enum import StrEnum
+import uuid
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,8 +29,8 @@ class RAGDocument(Base):
     user_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("users.id"), nullable=True, index=True
     )
-    project_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("projects.id"), nullable=True, index=True
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("projects.id"), nullable=True, index=True
     )
     scope: Mapped[str] = mapped_column(String(20), default=RAGScope.USER.value, index=True)
 
@@ -55,8 +56,8 @@ class RAGChunk(Base):
     user_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("users.id"), nullable=True, index=True
     )
-    project_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("projects.id"), nullable=True, index=True
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("projects.id"), nullable=True, index=True
     )
     scope: Mapped[str] = mapped_column(String(20), default=RAGScope.USER.value, index=True)
 
@@ -77,8 +78,8 @@ class RAGConversationSummary(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
-    project_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("projects.id"), nullable=True, index=True
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("projects.id"), nullable=True, index=True
     )
     thread_id: Mapped[str | None] = mapped_column(String(255), index=True)
 
@@ -93,8 +94,8 @@ class RAGMessage(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
-    project_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("projects.id"), nullable=True, index=True
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("projects.id"), nullable=True, index=True
     )
     role: Mapped[str] = mapped_column(String(20))
     message_text: Mapped[str] = mapped_column(Text)

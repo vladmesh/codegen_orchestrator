@@ -17,13 +17,14 @@ class TestSecretResolverComputeSecret:
         self.node = SecretResolverNode()
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
-    def test_compute_image_value_with_repo_url(self):
-        """Image variables should generate registry URLs from repository URL."""
-        project_spec = {
-            "name": "reverse-bot",
-            "repository_url": "https://github.com/project-factory-org/reverse-bot",
+    def test_compute_image_value_with_repo_info(self):
+        """Image variables should generate registry URLs from repo_info in state."""
+        project_spec = {"name": "reverse-bot"}
+        state = {
+            "repo_info": {
+                "html_url": "https://github.com/project-factory-org/reverse-bot",
+            }
         }
-        state = {}
 
         result = self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
         assert result == "testhost.example.com/project-factory-org/reverse-bot-backend:latest"
@@ -32,22 +33,21 @@ class TestSecretResolverComputeSecret:
         assert result == "testhost.example.com/project-factory-org/reverse-bot-tg-bot:latest"
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
-    def test_compute_image_value_with_config_repo_url(self):
-        """Image variables should work with config.repository_url as well."""
-        project_spec = {
-            "name": "my-app",
-            "config": {
-                "repository_url": "https://github.com/my-org/my-app",
-            },
+    def test_compute_image_value_with_different_repo_info(self):
+        """Image variables should work with repo_info html_url."""
+        project_spec = {"name": "my-app"}
+        state = {
+            "repo_info": {
+                "html_url": "https://github.com/my-org/my-app",
+            }
         }
-        state = {}
 
         result = self.node._compute_secret("FRONTEND_IMAGE", project_spec, state)
         assert result == "testhost.example.com/my-org/my-app-frontend:latest"
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
-    def test_compute_image_value_without_repo_url(self):
-        """Image variables should fallback when no repo URL is available."""
+    def test_compute_image_value_without_repo_info(self):
+        """Image variables should fallback when no repo_info is available."""
         project_spec = {"name": "orphan-project"}
         state = {}
 
@@ -57,11 +57,10 @@ class TestSecretResolverComputeSecret:
     @patch.dict(os.environ, {}, clear=True)
     def test_compute_image_without_hostname_raises(self):
         """Image variables should raise RuntimeError when ORCHESTRATOR_HOSTNAME is not set."""
-        project_spec = {
-            "name": "test",
-            "repository_url": "https://github.com/org/repo",
+        project_spec = {"name": "test"}
+        state = {
+            "repo_info": {"html_url": "https://github.com/org/repo"},
         }
-        state = {}
 
         with pytest.raises(RuntimeError, match="ORCHESTRATOR_HOSTNAME"):
             self.node._compute_secret("BACKEND_IMAGE", project_spec, state)

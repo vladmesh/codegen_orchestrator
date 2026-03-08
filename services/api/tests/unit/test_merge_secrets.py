@@ -1,12 +1,15 @@
 """Unit tests for POST /api/projects/{id}/config/secrets atomic merge."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 
 from src.database import get_async_session
 from src.main import app
+
+PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 def _make_user(user_id=1, telegram_id=12345, is_admin=False):
@@ -17,15 +20,13 @@ def _make_user(user_id=1, telegram_id=12345, is_admin=False):
     return u
 
 
-def _make_project(project_id="proj-1", owner_id=1, config=None):
+def _make_project(project_id=PROJECT_UUID, owner_id=1, config=None):
     p = MagicMock()
     p.id = project_id
     p.owner_id = owner_id
     p.config = dict(config) if config else {}
     p.name = "test"
     p.status = "draft"
-    p.github_repo_id = None
-    p.repository_url = None
     return p
 
 
@@ -73,7 +74,7 @@ async def test_merge_secrets_adds_new_key(mock_decrypt, mock_encrypt):
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
-            "/api/projects/proj-1/config/secrets",
+            f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {"KEY_B": "val-b"}},
             headers={"X-Telegram-ID": "12345"},
         )
@@ -106,7 +107,7 @@ async def test_merge_secrets_with_env_hints(mock_decrypt, mock_encrypt):
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
-            "/api/projects/proj-1/config/secrets",
+            f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={
                 "secrets": {"KEY_A": "val-a"},
                 "env_hints": {"KEY_A": "Some API key"},
@@ -130,7 +131,7 @@ async def test_merge_secrets_project_not_found():
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
-            "/api/projects/nonexistent/config/secrets",
+            f"/api/projects/{uuid.UUID('00000000-0000-0000-0000-000000000099')}/config/secrets",
             json={"secrets": {"KEY_A": "val-a"}},
         )
 
@@ -142,7 +143,7 @@ async def test_merge_secrets_empty_secrets_rejected():
     """POST with empty secrets dict returns 422."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
-            "/api/projects/proj-1/config/secrets",
+            f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {}},
         )
 
@@ -171,7 +172,7 @@ async def test_merge_secrets_assigns_new_dict_object(mock_decrypt, mock_encrypt)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
-            "/api/projects/proj-1/config/secrets",
+            f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {"NEW_KEY": "new-val"}},
             headers={"X-Telegram-ID": "12345"},
         )
@@ -200,7 +201,7 @@ async def test_merge_secrets_overwrites_existing_key(mock_decrypt, mock_encrypt)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
-            "/api/projects/proj-1/config/secrets",
+            f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {"KEY_A": "new-val"}},
         )
 

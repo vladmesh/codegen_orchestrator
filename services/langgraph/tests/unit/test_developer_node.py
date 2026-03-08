@@ -23,7 +23,6 @@ def _make_state(*, action="create", status="scaffolded", modules=None):
                 "modules": modules or ["backend"],
                 "description": "A test project",
             },
-            "repository_url": "https://github.com/org/test-project",
         },
         "action": action,
         "errors": [],
@@ -40,6 +39,10 @@ class TestDeveloperNodeCommitValidation:
     ):
         """Worker success=True but commit_sha=None must return blocked, not done."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -65,6 +68,10 @@ class TestDeveloperNodeCommitValidation:
     ):
         """Worker success=True with commit_sha must return done."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -88,6 +95,10 @@ class TestDeveloperNodeCommitValidation:
     async def test_failure_still_returns_blocked(self, mock_github_cls, mock_api, mock_spawn):
         """Worker success=False must return blocked (existing behavior, sanity check)."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=False,
@@ -176,6 +187,10 @@ class TestScaffoldConfigConstruction:
     ):
         """action=create + status=scaffolded → proceeds normally (scaffold already done)."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -215,6 +230,9 @@ class TestScaffoldConfigConstruction:
         """ScaffoldConfig is forwarded to request_spawn."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -242,6 +260,9 @@ class TestScaffoldConfigConstruction:
         """Scaffold phase failure → status='scaffold_failed'."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=False,
@@ -280,8 +301,10 @@ class TestFeatureFlowIntegration:
                 "name": "test-project",
                 "status": "active",
                 "config": {"modules": ["backend"], "description": "A todo API"},
-                "repository_url": "https://github.com/org/test-project",
             }
+        )
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
         )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
@@ -317,6 +340,9 @@ class TestFeatureFlowIntegration:
         """action=fix → task title says 'Fix Issue', template says 'existing project'."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -346,6 +372,9 @@ class TestFeatureFlowIntegration:
         """action=feature on scaffolded (not yet deployed) project works."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -376,10 +405,12 @@ class TestFeatureFlowIntegration:
             "name": "test-project",
             "status": "active",
             "config": {"modules": ["backend"], "description": "A test project"},
-            "repository_url": "https://github.com/org/updated-repo-name",
         }
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=fresh_project)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/updated-repo-name"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -397,7 +428,7 @@ class TestFeatureFlowIntegration:
 
         # Should have refreshed project spec
         mock_api.get_project.assert_awaited_once_with("proj-1")
-        # Repo should use the refreshed URL
+        # Repo should use the refreshed URL from primary repository
         call_kwargs = mock_spawn.call_args[1]
         assert "updated-repo-name" in call_kwargs["repo"]
 
@@ -434,6 +465,10 @@ class TestTaskMessageDescription:
     ):
         """config.description must appear in the task_content passed to request_spawn."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"git_url": "https://github.com/org/test-project"}
+        )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,

@@ -206,36 +206,45 @@ async def _sync_single_repo(
     repo_id = r.id
     repo_name = r.name
 
-    # Try to find in DB by github_repo_id
-    project = await api_client.get_project_by_repo_id(repo_id)
+    # Try to find in DB by Repository.provider_repo_id
+    db_repo = await api_client.get_repository_by_provider_id(repo_id)
 
-    if not project:
+    if not db_repo:
         # Unknown repo — notify admins, do not create orphan project
         logger.warning(
             "github_repo_without_project",
             repo_name=repo_name,
-            github_repo_id=repo_id,
+            provider_repo_id=repo_id,
         )
         await notify_admins(
             f"⚠️ Repository *{repo_name}* (GitHub ID: {repo_id}) "
-            "found in org but has no matching project in DB. "
+            "found in org but has no matching repository in DB. "
             "Create it manually if needed.",
             level="warning",
         )
+        return
+
+    project_id = db_repo.get("project_id")
+    project = await api_client.get_project(str(project_id)) if project_id else None
+    if not project:
+        logger.warning("repo_orphaned", repo_name=repo_name, project_id=project_id)
         return
 
     # Sync project spec and README to RAG
     await _sync_project_docs(github_client, project, r)
 
     # Reset missing counter if it was missing
-    if project.id in missing_counters:
-        del missing_counters[project.id]
+    project_id_str = str(project.id)
+    if project_id_str in missing_counters:
+        del missing_counters[project_id_str]
         if project.status == ProjectStatus.MISSING:
-            await api_client.update_project(project.id, ProjectUpdate(status=ProjectStatus.ACTIVE))
+            await api_client.update_project(
+                project_id_str, ProjectUpdate(status=ProjectStatus.ACTIVE)
+            )
             logger.info(
                 "project_recovered",
                 project_name=project.name,
-                github_repo_id=repo_id,
+                provider_repo_id=repo_id,
             )
 
 
@@ -246,40 +255,46 @@ async def _detect_missing_projects(
     """Detect and alert on projects missing from GitHub."""
     db_projects = await api_client.get_projects()
 
-    # Filter for active projects that should be on GitHub
+    # For each active project, check if its repositories are present on GitHub
     active_projects = [
-        p
-        for p in db_projects
-        if p.github_repo_id is not None
-        and p.status not in (ProjectStatus.MISSING, ProjectStatus.ARCHIVED)
+        p for p in db_projects if p.status not in (ProjectStatus.MISSING, ProjectStatus.ARCHIVED)
     ]
 
     for proj in active_projects:
-        if proj.github_repo_id not in gh_repos_map:
-            count = missing_counters.get(proj.id, 0) + 1
-            missing_counters[proj.id] = count
+        project_id_str = str(proj.id)
+        repos = await api_client.get_repositories(project_id=project_id_str)
+        managed_repos = [r for r in repos if r.get("provider_repo_id") is not None]
+
+        if not managed_repos:
+            continue  # No repos with provider_repo_id to check
+
+        # Check if any managed repo is missing from GitHub
+        all_present = all(r.get("provider_repo_id") in gh_repos_map for r in managed_repos)
+
+        if not all_present:
+            count = missing_counters.get(project_id_str, 0) + 1
+            missing_counters[project_id_str] = count
 
             logger.warning(
                 "project_missing_from_github",
                 project_name=proj.name,
-                github_repo_id=proj.github_repo_id,
+                project_id=project_id_str,
                 attempt=count,
                 threshold=MISSING_THRESHOLD,
             )
 
             if count >= MISSING_THRESHOLD:
                 await api_client.update_project(
-                    proj.id, ProjectUpdate(status=ProjectStatus.MISSING)
+                    project_id_str, ProjectUpdate(status=ProjectStatus.MISSING)
                 )
                 logger.error(
                     "project_marked_missing",
                     project_name=proj.name,
-                    github_repo_id=proj.github_repo_id,
+                    project_id=project_id_str,
                     attempts=count,
                 )
                 await notify_admins(
-                    f"🚨 Project *{proj.name}* (GitHub ID: {proj.github_repo_id}) "
-                    "is MISSING! "
+                    f"🚨 Project *{proj.name}* is MISSING! "
                     f"Repository not found after {count} consecutive checks.",
                     level="critical",
                 )

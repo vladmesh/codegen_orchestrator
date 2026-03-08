@@ -187,17 +187,17 @@ async def _handle_deploy_success(
 
 
 def _build_subgraph_input(
-    project_id: str, project: dict, allocated_resources: dict, job_data: dict
+    project_id: str, project: dict, git_url: str, allocated_resources: dict, job_data: dict
 ) -> dict:
     """Build DevOps subgraph input from deploy job data."""
     return {
         "project_id": project_id,
         "project_spec": project,
         "repo_info": {
-            "full_name": project.get("repository_url", "")
-            .replace("https://github.com/", "")
-            .rstrip(".git"),
-            "html_url": project.get("repository_url"),
+            "full_name": git_url.replace("https://github.com/", "")
+            .rstrip("/")
+            .removesuffix(".git"),
+            "html_url": git_url,
         },
         "allocated_resources": allocated_resources,
         "provided_secrets": job_data.get("provided_secrets", {}),
@@ -295,9 +295,15 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             json={"status": ProjectStatus.DEPLOYING.value},
         )
 
+        # Resolve git_url from primary Repository entity
+        primary_repo = await api_client.get_primary_repository(project_id)
+        _git_url = primary_repo.get("git_url", "") if primary_repo else ""
+
         # Run DevOps subgraph
         devops_subgraph = create_devops_subgraph()
-        subgraph_input = _build_subgraph_input(project_id, project, allocated_resources, job_data)
+        subgraph_input = _build_subgraph_input(
+            project_id, project, _git_url, allocated_resources, job_data
+        )
         result = await devops_subgraph.ainvoke(subgraph_input)
 
         logger.info(

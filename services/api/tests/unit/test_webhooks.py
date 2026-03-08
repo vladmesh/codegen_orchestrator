@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -11,6 +12,8 @@ import pytest
 from src.main import app
 
 SECRET = "test-webhook-secret"  # noqa: S105
+
+PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 def _sign(payload: bytes) -> str:
@@ -41,12 +44,18 @@ def _make_payload(
     ).encode()
 
 
-def _mock_project(*, project_id="proj-1", status="active", owner_id=1, github_repo_id=12345):
+def _mock_repository(*, provider_repo_id=12345, project_id=PROJECT_UUID):
+    r = MagicMock()
+    r.provider_repo_id = provider_repo_id
+    r.project_id = project_id
+    return r
+
+
+def _mock_project(*, project_id=PROJECT_UUID, status="active", owner_id=1):
     p = MagicMock()
     p.id = project_id
     p.status = status
     p.owner_id = owner_id
-    p.github_repo_id = github_repo_id
     return p
 
 
@@ -64,13 +73,6 @@ def mock_env():
         {"GITHUB_WEBHOOK_SECRET": SECRET, "REDIS_URL": "redis://localhost:6379"},
     ):
         yield
-
-
-@pytest.fixture
-def mock_db():
-    """Mock the database session dependency."""
-    session = AsyncMock()
-    return session
 
 
 @pytest.fixture
@@ -145,14 +147,13 @@ async def test_webhook_ignores_failed_ci(mock_env):
 async def test_webhook_ignores_unknown_repo(mock_env):
     payload = _make_payload(repo_id=99999)
 
-    # Mock DB: no project found
+    # Mock DB session: Repository lookup returns None
     mock_session = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = None
     mock_session.execute = AsyncMock(return_value=mock_result)
 
     with patch("src.routers.webhooks.get_async_session", return_value=mock_session):
-        # Override the dependency
         from src.database import get_async_session as real_dep
 
         async def fake_session():
@@ -173,12 +174,16 @@ async def test_webhook_ignores_unknown_repo(mock_env):
 async def test_webhook_ignores_non_active_project(mock_env):
     payload = _make_payload()
 
+    repo = _mock_repository()
     project = _mock_project(status="deploying")
 
     mock_session = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = project
-    mock_session.execute = AsyncMock(return_value=mock_result)
+    # First execute: Repository lookup
+    repo_result = MagicMock()
+    repo_result.scalar_one_or_none.return_value = repo
+    mock_session.execute = AsyncMock(return_value=repo_result)
+    # db.get(Project, ...) returns the project
+    mock_session.get = AsyncMock(return_value=project)
 
     from src.database import get_async_session as real_dep
 
@@ -200,16 +205,19 @@ async def test_webhook_ignores_non_active_project(mock_env):
 async def test_webhook_ci_success_triggers_deploy(mock_env, mock_redis):
     payload = _make_payload()
 
+    repo = _mock_repository()
     project = _mock_project()
     user = _mock_user()
 
     mock_session = AsyncMock()
-    # First execute call returns project, second returns user
-    project_result = MagicMock()
-    project_result.scalar_one_or_none.return_value = project
+    # First execute: Repository lookup; Second execute: User lookup
+    repo_result = MagicMock()
+    repo_result.scalar_one_or_none.return_value = repo
     user_result = MagicMock()
     user_result.scalar_one_or_none.return_value = user
-    mock_session.execute = AsyncMock(side_effect=[project_result, user_result])
+    mock_session.execute = AsyncMock(side_effect=[repo_result, user_result])
+    # db.get(Project, ...) returns the project
+    mock_session.get = AsyncMock(return_value=project)
     mock_session.add = MagicMock()
     mock_session.commit = AsyncMock()
 
@@ -229,7 +237,7 @@ async def test_webhook_ci_success_triggers_deploy(mock_env, mock_redis):
     assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
     assert data["status"] == "accepted"
-    assert data["project_id"] == "proj-1"
+    assert data["project_id"] == str(PROJECT_UUID)
     assert data["run_id"].startswith("deploy-wh-")
 
     # Verify run was added to DB session
@@ -246,6 +254,6 @@ async def test_webhook_ci_success_triggers_deploy(mock_env, mock_redis):
     raw_fields = call_args[0][1]
     assert "data" in raw_fields
     deploy_data = json.loads(raw_fields["data"])
-    assert deploy_data["project_id"] == "proj-1"
+    assert deploy_data["project_id"] == str(PROJECT_UUID)
     assert deploy_data["user_id"] == "99999"
     assert deploy_data["triggered_by"] == "webhook"

@@ -15,7 +15,7 @@ from shared.clients.github import GitHubAppClient
 from ...clients.api import api_client
 from ...config.agent_config_cache import agent_config_cache
 from ...llm.factory import LLMFactory
-from ...schemas.api_types import ProjectInfo, get_repo_url
+from ...schemas.api_types import ProjectInfo
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -383,8 +383,9 @@ async def env_analyzer_run(state: DevOpsState) -> dict:
             "env_analysis": {},
         }
 
-    # Get and parse repository URL
-    repo_url = get_repo_url(project)
+    # Get repository URL from repo_info in state
+    repo_info = state.get("repo_info") or {}
+    repo_url = repo_info.get("html_url", "")
     if not repo_url:
         return {
             "errors": ["No repository URL found for project"],

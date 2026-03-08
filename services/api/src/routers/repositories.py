@@ -50,6 +50,7 @@ async def create_repository(
         git_url=body.git_url,
         provider_repo_id=body.provider_repo_id,
         role=body.role.value,
+        visibility=body.visibility.value,
         is_managed=body.is_managed,
         created_at=now,
         updated_at=now,

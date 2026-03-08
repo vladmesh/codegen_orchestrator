@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
-from shared.models import Project, Run, User
+from shared.models import Project, Repository, Run, User
 from shared.queues import DEPLOY_QUEUE
 
 from ..database import get_async_session
@@ -85,17 +85,22 @@ async def github_webhook(
             "reason": f"branch: {workflow_run.get('head_branch')}",
         }
 
-    # 7. Lookup project by repository ID
+    # 7. Lookup project via Repository.provider_repo_id
     repo_id = payload.get("repository", {}).get("id")
     if not repo_id:
         return {"status": "ignored", "reason": "no repository.id"}
 
-    query = select(Project).where(Project.github_repo_id == repo_id)
-    result = await db.execute(query)
-    project = result.scalar_one_or_none()
+    repo_query = select(Repository).where(Repository.provider_repo_id == repo_id)
+    repo_result = await db.execute(repo_query)
+    repo = repo_result.scalar_one_or_none()
 
-    if not project:
+    if not repo:
         logger.debug("webhook_unknown_repo", repo_id=repo_id)
+        return {"status": "ignored", "reason": "unknown repository"}
+
+    project = await db.get(Project, repo.project_id)
+    if not project:
+        logger.debug("webhook_repo_orphaned", repo_id=repo_id)
         return {"status": "ignored", "reason": "unknown repository"}
 
     # 8. Guard: project must be active
@@ -142,7 +147,7 @@ async def github_webhook(
 
     deploy_msg = DeployMessage(
         task_id=run_id,
-        project_id=project.id,
+        project_id=str(project.id),
         user_id=str(telegram_id or ""),
         triggered_by=DeployTrigger.WEBHOOK,
     )

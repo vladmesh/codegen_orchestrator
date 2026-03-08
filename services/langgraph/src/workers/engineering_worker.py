@@ -264,6 +264,7 @@ async def _attempt_developer_fix(
 
 async def _wait_for_ci_and_fix(
     project: dict,
+    git_url: str,
     task_id: str,
     callback_stream: str | None,
     redis: RedisStreamClient,
@@ -289,12 +290,11 @@ async def _wait_for_ci_and_fix(
 
     ci_attempts: list[dict] = []
 
-    repo_url = project.get("repository_url", "")
-    if not repo_url or "github.com/" not in repo_url:
+    if not git_url or "github.com/" not in git_url:
         logger.error("ci_check_fail_no_repo_url", task_id=task_id)
         return False, ci_attempts
 
-    repo_full_name = repo_url.split("github.com/")[-1].rstrip("/")
+    repo_full_name = git_url.split("github.com/")[-1].rstrip("/").removesuffix(".git")
     owner, repo_name = repo_full_name.split("/", 1)
 
     github_client = GitHubAppClient()
@@ -576,13 +576,23 @@ async def _create_repo_and_set_secrets(project: dict) -> None:
             has_password=bool(registry_password),
         )
 
-    # Step 3: Update project status and repository URL
+    # Step 3: Update project status and create Repository entity
     repo_url = f"https://github.com/{repo_full_name}"
     await api_client.patch(
         f"projects/{project_id}",
         json={
             "status": ProjectStatus.SCAFFOLDING.value,
-            "repository_url": repo_url,
+        },
+    )
+
+    # Create Repository entity so webhook lookup and developer node work
+    await api_client.post(
+        "repositories/",
+        json={
+            "project_id": project_id,
+            "name": repo_name,
+            "git_url": repo_url,
+            "role": "primary",
         },
     )
 
@@ -925,16 +935,21 @@ async def _handle_engineering_success(
         commit_sha=result.get("commit_sha"),
     )
 
-    # --- Refresh project before CI check (repo_url may have been updated) ---
+    # --- Refresh project before CI check ---
     fresh_project = await api_client.get_project(project_id, **_parse_telegram_id(user_id))
     if fresh_project:
         project = fresh_project
+
+    # Resolve git_url from primary Repository entity
+    primary_repo = await api_client.get_primary_repository(project_id)
+    _git_url = primary_repo.get("git_url", "") if primary_repo else ""
 
     # --- CI Gate: wait for ci.yml before triggering deploy ---
     worker_id = result.get("worker_id")
     try:
         ci_passed, ci_attempts = await _wait_for_ci_and_fix(
             project=project,
+            git_url=_git_url,
             task_id=task_id,
             callback_stream=callback_stream,
             redis=redis,

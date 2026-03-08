@@ -1,6 +1,7 @@
 """Unit tests for DELETE /api/projects/{project_id} endpoint."""
 
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -8,8 +9,10 @@ import pytest
 from src.database import get_async_session
 from src.main import app
 
+PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
-def _make_project(project_id="proj-1", name="test", owner_id=None):
+
+def _make_project(project_id=PROJECT_UUID, name="test", owner_id=None):
     """Create a mock Project object."""
     p = MagicMock()
     p.id = project_id
@@ -17,8 +20,6 @@ def _make_project(project_id="proj-1", name="test", owner_id=None):
     p.status = "draft"
     p.config = {"modules": ["backend"]}
     p.owner_id = owner_id
-    p.repository_url = None
-    p.github_repo_id = None
     return p
 
 
@@ -72,7 +73,9 @@ async def test_delete_project_not_found():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.delete("/api/projects/nonexistent")
+        resp = await client.delete(
+            f"/api/projects/{uuid.UUID('00000000-0000-0000-0000-000000000099')}"
+        )
 
     assert resp.status_code == 404  # noqa: PLR2004
     assert resp.json()["detail"] == "Project not found"
@@ -91,7 +94,7 @@ async def test_delete_project_success():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.delete("/api/projects/proj-1")
+        resp = await client.delete(f"/api/projects/{PROJECT_UUID}")
 
     assert resp.status_code == 204  # noqa: PLR2004
 
@@ -116,7 +119,7 @@ async def test_delete_project_access_denied():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.delete(
-            "/api/projects/proj-1",
+            f"/api/projects/{PROJECT_UUID}",
             headers={"X-Telegram-ID": "22222"},
         )
 
@@ -138,7 +141,7 @@ async def test_delete_project_admin_can_delete():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.delete(
-            "/api/projects/proj-1",
+            f"/api/projects/{PROJECT_UUID}",
             headers={"X-Telegram-ID": "99999"},
         )
 
@@ -159,6 +162,6 @@ async def test_delete_project_no_auth_header():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.delete("/api/projects/proj-1")
+        resp = await client.delete(f"/api/projects/{PROJECT_UUID}")
 
     assert resp.status_code == 204  # noqa: PLR2004

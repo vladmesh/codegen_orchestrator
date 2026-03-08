@@ -1,6 +1,8 @@
 """Port allocation model."""
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+import uuid
+
+from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -15,5 +17,7 @@ class PortAllocation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     server_handle: Mapped[str] = mapped_column(ForeignKey("servers.handle"), index=True)
     port: Mapped[int] = mapped_column(Integer)
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("projects.id"), nullable=True
+    )
     service_name: Mapped[str] = mapped_column(String(255))

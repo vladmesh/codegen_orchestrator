@@ -1,5 +1,7 @@
 """Unit tests for Milestone API schemas."""
 
+import uuid
+
 from pydantic import ValidationError
 import pytest
 
@@ -10,10 +12,12 @@ from src.schemas.milestone import (
     MilestoneUpdate,
 )
 
+PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
+
 
 def test_milestone_create_minimal():
-    ms = MilestoneCreate(project_id="proj-1", title="Phase 1")
-    assert ms.project_id == "proj-1"
+    ms = MilestoneCreate(project_id=PROJECT_UUID, title="Phase 1")
+    assert ms.project_id == PROJECT_UUID
     assert ms.title == "Phase 1"
     assert ms.description is None
     assert ms.sort_order == 0
@@ -23,7 +27,7 @@ def test_milestone_create_minimal():
 
 def test_milestone_create_full():
     ms = MilestoneCreate(
-        project_id="proj-1",
+        project_id=PROJECT_UUID,
         title="Phase 2",
         description="Post-alpha stability",
         sort_order=1,
@@ -43,7 +47,7 @@ def test_milestone_create_requires_project_id():
 
 def test_milestone_create_requires_title():
     with pytest.raises(ValidationError):
-        MilestoneCreate(project_id="proj-1")
+        MilestoneCreate(project_id=PROJECT_UUID)
 
 
 def test_milestone_read_from_attributes():
@@ -52,7 +56,7 @@ def test_milestone_read_from_attributes():
     now = datetime.now(UTC)
     ms = MilestoneRead(
         id="ms-0001",
-        project_id="proj-1",
+        project_id=PROJECT_UUID,
         title="Phase 1",
         description=None,
         sort_order=0,

@@ -1,6 +1,7 @@
 """Project schemas."""
 
 from typing import Any
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -10,17 +11,16 @@ from shared.contracts.dto.project import ServiceModule
 class ProjectBase(BaseModel):
     """Base project schema."""
 
-    id: str
+    id: uuid.UUID
     name: str
-    github_repo_id: int | None = None
-    status: str = "created"
+    status: str = "draft"
     config: dict[str, Any] = {}
-    repository_url: str | None = None
 
 
 class ProjectCreate(ProjectBase):
     """Schema for creating a project."""
 
+    id: uuid.UUID | None = None  # Auto-generated if not provided
     modules: list[ServiceModule] = [ServiceModule.BACKEND]
 
 
@@ -35,10 +35,9 @@ class ProjectRead(ProjectBase):
 class ProjectUpdate(BaseModel):
     """Schema for updating a project."""
 
+    name: str | None = None
     status: str | None = None
     config: dict[str, Any] | None = None
-    repository_url: str | None = None
-    github_repo_id: int | None = None
 
 
 class MergeSecretsRequest(BaseModel):

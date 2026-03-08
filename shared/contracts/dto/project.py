@@ -1,4 +1,5 @@
 from enum import StrEnum
+import uuid
 
 from pydantic import BaseModel, ConfigDict
 
@@ -50,11 +51,10 @@ class ServiceModule(StrEnum):
 class ProjectCreate(BaseModel):
     """Create project request."""
 
-    id: str | None = None
+    id: uuid.UUID | None = None
     name: str
     description: str | None = None
     modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
-    github_repo_id: int | None = None
     status: ProjectStatus | None = None
 
 
@@ -65,7 +65,6 @@ class ProjectUpdate(BaseModel):
     description: str | None = None
     status: ProjectStatus | None = None
     modules: list[ServiceModule] | None = None
-    github_repo_id: int | None = None
     project_spec: dict | None = None
 
 
@@ -74,12 +73,10 @@ class ProjectDTO(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
+    id: uuid.UUID
     name: str
     description: str | None = None
     status: ProjectStatus
     modules: list[ServiceModule] = []
-    repository_url: str | None = None
-    github_repo_id: int | None = None
     owner_id: int
     project_spec: dict | None = None

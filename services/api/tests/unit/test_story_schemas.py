@@ -1,17 +1,20 @@
 """Unit tests for Story API schemas — validation, defaults, from_attributes."""
 
 from datetime import UTC, datetime
+import uuid
 
 from pydantic import ValidationError
 import pytest
 
 from src.schemas.story import StoryCreate, StoryRead, StoryUpdate
 
+PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
+
 
 class TestStoryCreate:
     def test_minimal(self):
-        s = StoryCreate(project_id="proj-1", title="User login")
-        assert s.project_id == "proj-1"
+        s = StoryCreate(project_id=PROJECT_UUID, title="User login")
+        assert s.project_id == PROJECT_UUID
         assert s.title == "User login"
         assert s.description is None
         assert s.acceptance_criteria is None
@@ -22,7 +25,7 @@ class TestStoryCreate:
 
     def test_all_fields(self):
         s = StoryCreate(
-            project_id="proj-1",
+            project_id=PROJECT_UUID,
             title="User login",
             description="Allow users to log in",
             acceptance_criteria="Login form works",
@@ -39,7 +42,7 @@ class TestStoryCreate:
 
     def test_missing_required_title(self):
         with pytest.raises(ValidationError):
-            StoryCreate(project_id="proj-1")
+            StoryCreate(project_id=PROJECT_UUID)
 
 
 class TestStoryRead:
@@ -49,7 +52,7 @@ class TestStoryRead:
         now = datetime.now(UTC)
         mock = MagicMock()
         mock.id = "story-abc123"
-        mock.project_id = "proj-1"
+        mock.project_id = PROJECT_UUID
         mock.parent_story_id = None
         mock.title = "User login"
         mock.description = "Details"

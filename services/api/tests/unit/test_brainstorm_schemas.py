@@ -1,6 +1,7 @@
 """Unit tests for Brainstorm API schemas."""
 
 from datetime import UTC, datetime
+import uuid
 
 from pydantic import ValidationError
 import pytest
@@ -12,9 +13,11 @@ from src.schemas.brainstorm import (
     BrainstormUpdate,
 )
 
+PROJECT_UUID = str(uuid.UUID("00000000-0000-0000-0000-000000000001"))
+
 
 def test_brainstorm_create_minimal():
-    schema = BrainstormCreate(project_id="proj-1", title="Worker isolation")
+    schema = BrainstormCreate(project_id=PROJECT_UUID, title="Worker isolation")
     assert schema.title == "Worker isolation"
     assert schema.created_by == "system"
     assert schema.content is None
@@ -22,7 +25,7 @@ def test_brainstorm_create_minimal():
 
 def test_brainstorm_create_full():
     schema = BrainstormCreate(
-        project_id="proj-1",
+        project_id=PROJECT_UUID,
         title="Worker isolation",
         content="# Analysis\n\nLong text...",
         created_by="claude",
@@ -38,7 +41,7 @@ def test_brainstorm_create_requires_project_id():
 
 def test_brainstorm_create_requires_title():
     with pytest.raises(ValidationError):
-        BrainstormCreate(project_id="proj-1")
+        BrainstormCreate(project_id=PROJECT_UUID)
 
 
 def test_brainstorm_read_from_attributes():
@@ -46,7 +49,7 @@ def test_brainstorm_read_from_attributes():
 
     class FakeModel:
         id = "bs-abc1"
-        project_id = "proj-1"
+        project_id = PROJECT_UUID
         title = "Test brainstorm"
         content = "Some content"
         status = "draft"

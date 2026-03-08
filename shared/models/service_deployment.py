@@ -2,8 +2,9 @@
 
 from datetime import datetime
 from enum import StrEnum
+import uuid
 
-from sqlalchemy import JSON, ForeignKey
+from sqlalchemy import JSON, ForeignKey, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -26,7 +27,7 @@ class ServiceDeployment(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
 
     # Project and service identification
-    project_id: Mapped[str] = mapped_column(index=True)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
     service_name: Mapped[str]
 
     # Server reference

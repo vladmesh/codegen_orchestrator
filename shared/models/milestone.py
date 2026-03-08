@@ -1,6 +1,8 @@
 """Milestone model for grouping work items into phases/epics."""
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+import uuid
+
+from sqlalchemy import ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.milestone import MilestoneStatus
@@ -14,8 +16,8 @@ class Milestone(Base):
     __tablename__ = "milestones"
 
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    project_id: Mapped[str] = mapped_column(
-        String(255), ForeignKey("projects.id"), nullable=False, index=True
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("projects.id"), nullable=False, index=True
     )
     title: Mapped[str] = mapped_column(String(500))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
