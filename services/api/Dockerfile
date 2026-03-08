@@ -19,10 +19,17 @@ COPY services/api/requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --prefix=/install -r requirements.lock
 
-# Copy and install shared module (changes more often, but lightweight install)
+# Install shared dependencies first (changes rarely — only when pyproject.toml changes)
+COPY shared/pyproject.toml /tmp/shared-pyproject.toml
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -c "import tomllib; deps=tomllib.load(open('/tmp/shared-pyproject.toml','rb'))['project']['dependencies']; print('\n'.join(deps))" \
+    > /tmp/shared-requirements.txt && \
+    pip install --prefix=/install -r /tmp/shared-requirements.txt
+
+# Install shared package code (no deps to download — fast)
 COPY shared ./shared
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --prefix=/install ./shared
+    pip install --prefix=/install --no-deps ./shared
 
 # === Stage 2: Production ===
 # Create minimal runtime image

@@ -257,3 +257,4 @@ async def test_webhook_ci_success_triggers_deploy(mock_env, mock_redis):
     assert deploy_data["project_id"] == str(PROJECT_UUID)
     assert deploy_data["user_id"] == "99999"
     assert deploy_data["triggered_by"] == "webhook"
+    assert deploy_data["action"] == "feature"

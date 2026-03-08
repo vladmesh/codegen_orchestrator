@@ -1,4 +1,5 @@
 from enum import StrEnum
+from typing import Literal
 
 from shared.contracts.base import BaseMessage, BaseResult
 
@@ -18,6 +19,7 @@ class DeployMessage(BaseMessage):
     project_id: str
     user_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
+    action: Literal["create", "feature", "fix"] = "create"
 
 
 class DeployResult(BaseResult):

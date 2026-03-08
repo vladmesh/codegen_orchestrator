@@ -10,7 +10,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install dependencies
+# Install shared dependencies first (cached when pyproject.toml is stable)
+COPY shared/pyproject.toml /tmp/shared-pyproject.toml
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -c "import tomllib; deps=tomllib.load(open('/tmp/shared-pyproject.toml','rb'))['project']['dependencies']; print('\n'.join(deps))" \
+    > /tmp/shared-requirements.txt && \
+    pip install -r /tmp/shared-requirements.txt
+
+# Install shared package code (no deps — fast)
+COPY shared /app/shared
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps /app/shared
+
+# Install service dependencies + Ansible collections
 COPY services/infra-service/pyproject.toml .
 COPY services/infra-service/ansible/requirements.yml /app/ansible/requirements.yml
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -20,7 +32,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Copy source code
 COPY services/infra-service/src /app/src
 COPY services/infra-service/ansible /app/ansible
-COPY shared /app/shared
 
 ENV PYTHONPATH=/app
 

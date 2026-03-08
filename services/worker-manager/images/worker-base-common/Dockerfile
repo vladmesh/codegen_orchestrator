@@ -15,15 +15,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy packages
+# Install dependency wheels first (cached when pyproject.toml files are stable)
+COPY shared/pyproject.toml /build/shared/pyproject.toml
+COPY packages/worker-wrapper/pyproject.toml /build/packages/worker-wrapper/pyproject.toml
+COPY packages/orchestrator-cli/pyproject.toml /build/packages/orchestrator-cli/pyproject.toml
+RUN python -c "\
+import tomllib, itertools; \
+files=['/build/shared/pyproject.toml','/build/packages/worker-wrapper/pyproject.toml','/build/packages/orchestrator-cli/pyproject.toml']; \
+deps=set(itertools.chain.from_iterable(tomllib.load(open(f,'rb'))['project']['dependencies'] for f in files)); \
+deps = {d for d in deps if not d.strip().lower().startswith('shared')}; \
+print('\n'.join(sorted(deps)))" > /tmp/all-deps.txt && \
+    pip wheel --no-cache-dir --wheel-dir=/build/wheels -r /tmp/all-deps.txt
+
+# Copy package source and build code-only wheels (fast — deps already wheeled)
 COPY shared /build/shared
 COPY packages/worker-wrapper /build/packages/worker-wrapper
 COPY packages/orchestrator-cli /build/packages/orchestrator-cli
-
-# Build wheels for all packages
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels /build/shared
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels /build/packages/worker-wrapper
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels --find-links=/build/wheels /build/packages/orchestrator-cli
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir=/build/wheels /build/shared
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir=/build/wheels /build/packages/worker-wrapper
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir=/build/wheels /build/packages/orchestrator-cli
 
 # -----------------
 # Runtime Stage

@@ -150,6 +150,7 @@ async def github_webhook(
         project_id=str(project.id),
         user_id=str(telegram_id or ""),
         triggered_by=DeployTrigger.WEBHOOK,
+        action="feature",
     )
     r = aioredis.from_url(redis_url)
     try:

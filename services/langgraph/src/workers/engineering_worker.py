@@ -812,6 +812,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 skip_deploy=skip_deploy,
                 developer_started_at=developer_started_at,
                 user_id=user_id,
+                action=action,
             )
 
         elif result.get("engineering_status") == "blocked" or result.get("needs_human_approval"):
@@ -900,6 +901,7 @@ async def _handle_engineering_success(
     developer_started_at: datetime | None = None,
     *,
     user_id: str = "",
+    action: str = "create",
 ) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
     project_id = project["id"]
@@ -1056,6 +1058,7 @@ async def _handle_engineering_success(
                 user_id=user_id,
                 callback_stream=callback_stream,
                 triggered_by=DeployTrigger.ENGINEERING,
+                action=action,
             )
             await redis.redis.xadd(
                 DEPLOY_QUEUE,

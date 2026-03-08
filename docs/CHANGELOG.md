@@ -4,6 +4,9 @@
 
 ## 2026-03-08
 
+### Fixed
+- **compose.dev.yml ports conflict with worker containers** (task-f9aadfc1): Compose runner now injects `.codegen-ports.yml` override that clears published ports (5432, 6379) for worker projects. Workers communicate via Docker DNS on isolated networks, so published ports are unnecessary and conflicted with orchestrator's own postgres/redis.
+
 ### Added
 - **Seed DB — stories, repositories, historical tasks** (task-f7cd9611):
   - Updated project status to `developing`, migrated repo URLs to `project-factory-organization`

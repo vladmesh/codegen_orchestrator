@@ -7,28 +7,9 @@
 
 ## Queue (ordered by priority, first = next)
 
-### /architect skill — Story decomposition into Tasks
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: New skill that takes a Story and decomposes it into Tasks.  Flow: 1. Read Story from API (by ID or pick next created story) 2. Load project context (existing tasks, repos, architecture) 3. Use LLM to decompose story into concrete tasks with titles, descriptions, acceptance criteria 4. Create task...
-
-### Fix compose.dev.yml ports conflict with orchestrator worker containers
-
-- **Priority**: HIGH
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: CRITICAL: compose.dev.yml publishes ports 5432/6379. When running inside orchestrator worker container, host ports are already taken. Result: db container fails to start, DNS alias not registered, alembic fails. Fix: orchestrator compose_runner should inject override with ports: [].
-
-### #52 Scaffold script не экранирует task_description
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из...
-
 ### #21 Deploy Pre-Check
 - **Priority**: MEDIUM
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
 
@@ -272,6 +253,8 @@
 
 ## Done (last 10)
 
+- Fix compose.dev.yml ports conflict with orchestrator worker containers
+ — 2026-03-08
 - Add E2E CI job for unified handlers (dual-transport pipeline)
  — 2026-03-08
 - Fix Jinja whitespace in doc templates + add cache mounts to Dockerfiles
@@ -289,8 +272,6 @@
 - Add CreatedAtMixin (ORMBase forced updated_at on all models)
  — 2026-03-08
 - Fix compose.dev.yml PATH + make setup idempotency
- — 2026-03-08
-- Fix broken import in scaffolded user repository
  — 2026-03-08
 
 ## Ideas

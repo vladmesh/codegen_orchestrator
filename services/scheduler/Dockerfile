@@ -19,6 +19,18 @@ COPY services/scheduler/requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --prefix=/install -r requirements.lock
 
+# Install shared dependencies first (cached when pyproject.toml is stable)
+COPY shared/pyproject.toml /tmp/shared-pyproject.toml
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -c "import tomllib; deps=tomllib.load(open('/tmp/shared-pyproject.toml','rb'))['project']['dependencies']; print('\n'.join(deps))" \
+    > /tmp/shared-requirements.txt && \
+    pip install --prefix=/install -r /tmp/shared-requirements.txt
+
+# Install shared package code (no deps — fast)
+COPY shared ./shared
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --prefix=/install --no-deps ./shared
+
 # === Stage 2: Production ===
 # Create minimal runtime image
 FROM python:3.12-slim AS production
@@ -35,9 +47,6 @@ COPY --from=builder /install /usr/local
 
 # Copy source code
 COPY services/scheduler/src ./src
-
-
-COPY shared ./shared
 
 # Run application
 CMD ["python", "-m", "src.main"]
