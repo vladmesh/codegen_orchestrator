@@ -7,22 +7,17 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Task with story
-- **Priority**: CRITICAL
-- **Plan**: —
-- **Status**: backlog
-
 ### /architect skill — Story decomposition into Tasks
 - **Priority**: HIGH
 - **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: New skill that takes a Story and decomposes it into Tasks.  Flow: 1. Read Story from API (by ID or pick next created story) 2. Load project context (existing tasks, repos, architecture) 3. Use LLM to decompose story into concrete tasks with titles, descriptions, acceptance criteria 4. Create task...
 
-### Seed DB — stories, repositories, historical tasks
+### Project ID → UUID + schema cleanup
 - **Priority**: HIGH
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: Fill the database with real project data for richer context.  What to seed: - **Stories**: user stories for the orchestrator (what it should do, product vision) - **Repositories**: codegen_orchestrator + service-template (both real repos) - **Historical tasks**: migrate relevant old tasks from se...
+- **Brief**: 1. Project ID: значимый string → UUID. Миграция всех FK (stories, tasks, brainstorms, repositories). 2. ProjectUpdate: добавить поле name. Переименовать проект codegen-orchestrator → project-factory. 3. Repository: добавить поле visibility (public/private). 4. Project: убрать github_repo_id (лега...
 
 ### #52 Scaffold script не экранирует task_description
 - **Priority**: MEDIUM

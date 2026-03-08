@@ -10,6 +10,7 @@ class TaskStatus(StrEnum):
     IN_CI = "in_ci"
     TESTING = "testing"
     DONE = "done"
+    BLOCKED = "blocked"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -35,6 +36,7 @@ VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.TODO: {TaskStatus.IN_DEV, TaskStatus.BACKLOG, TaskStatus.CANCELLED},
     TaskStatus.IN_DEV: {
         TaskStatus.IN_CI,
+        TaskStatus.BLOCKED,
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
     },
@@ -50,6 +52,7 @@ VALID_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
     },
+    TaskStatus.BLOCKED: {TaskStatus.IN_DEV, TaskStatus.BACKLOG, TaskStatus.CANCELLED},
     TaskStatus.DONE: {TaskStatus.BACKLOG},
     TaskStatus.FAILED: {TaskStatus.BACKLOG, TaskStatus.CANCELLED},
     TaskStatus.CANCELLED: set(),

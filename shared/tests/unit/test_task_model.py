@@ -28,6 +28,7 @@ def test_task_status_values():
     assert TaskStatus.TODO == "todo"
     assert TaskStatus.IN_DEV == "in_dev"
     assert TaskStatus.DONE == "done"
+    assert TaskStatus.BLOCKED == "blocked"
     assert TaskStatus.FAILED == "failed"
     assert TaskStatus.CANCELLED == "cancelled"
 
@@ -91,6 +92,18 @@ def test_in_ci_transitions():
 def test_in_ci_status_value():
     assert TaskStatus.IN_CI == "in_ci"
     assert not hasattr(TaskStatus, "IN_REVIEW")
+
+
+def test_in_dev_can_go_to_blocked():
+    assert TaskStatus.BLOCKED in VALID_TRANSITIONS[TaskStatus.IN_DEV]
+
+
+def test_blocked_transitions():
+    allowed = VALID_TRANSITIONS[TaskStatus.BLOCKED]
+    assert TaskStatus.IN_DEV in allowed  # blocker resolved
+    assert TaskStatus.BACKLOG in allowed  # deprioritize
+    assert TaskStatus.CANCELLED in allowed
+    assert TaskStatus.DONE not in allowed  # can't skip to done
 
 
 def test_testing_can_return_to_in_dev():
