@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 import structlog
+import yaml
 
 logger = structlog.get_logger()
 
@@ -13,8 +14,45 @@ _NETWORK_INJECTION_COMMANDS = {"up", "run", "build"}
 # Network override file written in the workspace
 _NETWORK_OVERRIDE_FILENAME = ".codegen-network.yml"
 
+# Ports override file that clears published ports (avoids host port conflicts)
+_PORTS_OVERRIDE_FILENAME = ".codegen-ports.yml"
+
 # Default compose files for service-template projects (under infra/)
 _DEFAULT_COMPOSE_FILES = ["infra/compose.base.yml", "infra/compose.dev.yml"]
+
+
+def _generate_ports_override(compose_files: list[Path]) -> str | None:
+    """Generate a compose override that clears published ports for all services.
+
+    Parses the compose files to find services with `ports` defined,
+    then returns an override YAML that sets `ports: []` for each.
+    This prevents host port conflicts when workers run on a host
+    that already has those ports bound (e.g. orchestrator's own postgres/redis).
+
+    Returns None if no services have ports defined.
+    """
+    services_with_ports: set[str] = set()
+    for cf in compose_files:
+        if not cf.exists():
+            continue
+        try:
+            data = yaml.safe_load(cf.read_text())
+        except yaml.YAMLError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        services = data.get("services")
+        if not isinstance(services, dict):
+            continue
+        for svc_name, svc_config in services.items():
+            if isinstance(svc_config, dict) and svc_config.get("ports"):
+                services_with_ports.add(svc_name)
+
+    if not services_with_ports:
+        return None
+
+    override = {"services": {svc: {"ports": []} for svc in sorted(services_with_ports)}}
+    return yaml.dump(override, default_flow_style=False)
 
 
 def _generate_network_override(worker_id: str) -> str:
@@ -118,12 +156,28 @@ class ComposeRunner:
         # The override file is placed in effective_cwd and referenced by absolute path
         # so it works regardless of --project-directory / compose file location.
         network_args: list[str] = []
+        ports_args: list[str] = []
         if subcommand in _NETWORK_INJECTION_COMMANDS:
             override_path = effective_cwd / _NETWORK_OVERRIDE_FILENAME
             override_content = _generate_network_override(worker_id)
             override_path.write_text(override_content)
             abs_override = str(override_path)
             network_args = ["-f", abs_override]
+
+            # Clear published ports to avoid host port conflicts.
+            # Workers communicate via Docker DNS on the isolated network,
+            # so published ports are unnecessary and would conflict with
+            # the orchestrator's own postgres/redis.
+            all_compose_files = (
+                [effective_cwd / file_args[i + 1] for i in range(0, len(file_args), 2)]
+                if file_args
+                else [effective_cwd / cf for cf in _DEFAULT_COMPOSE_FILES]
+            )
+            ports_content = _generate_ports_override(all_compose_files)
+            if ports_content:
+                ports_path = effective_cwd / _PORTS_OVERRIDE_FILENAME
+                ports_path.write_text(ports_content)
+                ports_args = ["-f", str(ports_path)]
 
         # NOTE: We don't pass --project-directory. Docker compose uses the directory
         # of the first compose file by default, which preserves relative env_file
@@ -146,6 +200,7 @@ class ComposeRunner:
             *file_args,
             *default_file_args,
             *network_args,
+            *ports_args,
             *command_args,
         ]
 

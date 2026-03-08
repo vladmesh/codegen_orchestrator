@@ -206,3 +206,99 @@ class TestComposeRunner:
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="docker compose", timeout=1)):
             with pytest.raises(ValueError, match="[Tt]imed? ?out"):
                 await runner.run("worker-123", ["up", "-d"], timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_ports_override_generated_for_up(self, workspace):
+        """run() with 'up' should write .codegen-ports.yml clearing published ports."""
+        runner = ComposeRunner(str(workspace))
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            await runner.run("worker-123", ["up", "-d"])
+
+        call_args = mock_run.call_args[0][0]
+        override_path = workspace / "worker-123" / "workspace" / ".codegen-ports.yml"
+        assert str(override_path) in call_args
+
+        # Verify ports override clears db ports (from compose.dev.yml fixture)
+        assert override_path.exists()
+        import yaml
+
+        content = yaml.safe_load(override_path.read_text())
+        assert "services" in content
+        assert content["services"]["db"]["ports"] == []
+
+    @pytest.mark.asyncio
+    async def test_ports_override_not_generated_for_ps(self, workspace):
+        """run() with 'ps' should NOT inject ports override."""
+        runner = ComposeRunner(str(workspace))
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            await runner.run("worker-123", ["ps"])
+
+        override_path = workspace / "worker-123" / "workspace" / ".codegen-ports.yml"
+        assert not override_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_ports_override_order(self, workspace):
+        """Ports override should come after network override (last override wins)."""
+        runner = ComposeRunner(str(workspace))
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            await runner.run("worker-123", ["up", "-d"])
+
+        call_args = mock_run.call_args[0][0]
+        network_path = str(workspace / "worker-123" / "workspace" / ".codegen-network.yml")
+        ports_path = str(workspace / "worker-123" / "workspace" / ".codegen-ports.yml")
+        network_idx = call_args.index(network_path)
+        ports_idx = call_args.index(ports_path)
+        assert network_idx < ports_idx
+
+    @pytest.mark.asyncio
+    async def test_ports_override_with_redis(self, workspace):
+        """Ports override should clear ports for all services that publish them."""
+        # Add redis with ports to compose.dev.yml
+        infra = workspace / "worker-123" / "workspace" / "infra"
+        (infra / "compose.dev.yml").write_text(
+            "services:\n"
+            "  db:\n"
+            "    ports:\n"
+            "      - '5432:5432'\n"
+            "  redis:\n"
+            "    ports:\n"
+            "      - '6379:6379'\n"
+            "  backend:\n"
+            "    command: uvicorn main:app\n"
+        )
+        runner = ComposeRunner(str(workspace))
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            await runner.run("worker-123", ["up", "-d"])
+
+        import yaml
+
+        override_path = workspace / "worker-123" / "workspace" / ".codegen-ports.yml"
+        content = yaml.safe_load(override_path.read_text())
+        assert content["services"]["db"]["ports"] == []
+        assert content["services"]["redis"]["ports"] == []
+        # backend has no ports, should not be in override
+        assert "backend" not in content["services"]
