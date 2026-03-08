@@ -7,7 +7,7 @@ Verifies state machine transitions and filters.
 from httpx import AsyncClient
 import pytest
 
-BS_TEST_PROJECT_ID = "test-tasks-proj"
+BS_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 @pytest.mark.asyncio

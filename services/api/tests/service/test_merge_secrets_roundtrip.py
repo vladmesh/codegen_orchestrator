@@ -28,7 +28,7 @@ async def test_secrets_roundtrip_persisted(async_client: AsyncClient):
     proj_resp = await async_client.post(
         "/api/projects/",
         json={
-            "id": "secrets-roundtrip-test",
+            "id": "00000000-0000-0000-0000-000000000003",
             "name": "Secrets Roundtrip Test",
             "status": "draft",
             "config": {"modules": ["backend"], "estimated_ram_mb": 512},
@@ -42,7 +42,7 @@ async def test_secrets_roundtrip_persisted(async_client: AsyncClient):
 
     # Merge secrets
     secrets_resp = await async_client.post(
-        "/api/projects/secrets-roundtrip-test/config/secrets",
+        "/api/projects/00000000-0000-0000-0000-000000000003/config/secrets",
         json={
             "secrets": {"DB_URL": "postgres://localhost/mydb", "API_KEY": "sk-test-123"},
             "env_hints": {"DB_URL": "PostgreSQL connection string", "API_KEY": "OpenAI API key"},
@@ -54,7 +54,7 @@ async def test_secrets_roundtrip_persisted(async_client: AsyncClient):
 
     # Read back the project
     get_resp = await async_client.get(
-        "/api/projects/secrets-roundtrip-test",
+        "/api/projects/00000000-0000-0000-0000-000000000003",
         headers={"X-Telegram-ID": "300600"},
     )
     assert get_resp.status_code == status.HTTP_200_OK  # noqa: PLR2004
@@ -82,7 +82,7 @@ async def test_secrets_merge_additive(async_client: AsyncClient):
     proj_resp = await async_client.post(
         "/api/projects/",
         json={
-            "id": "secrets-additive-test",
+            "id": "00000000-0000-0000-0000-000000000004",
             "name": "Secrets Additive Test",
             "status": "draft",
             "config": {},
@@ -96,14 +96,14 @@ async def test_secrets_merge_additive(async_client: AsyncClient):
 
     # First merge
     await async_client.post(
-        "/api/projects/secrets-additive-test/config/secrets",
+        "/api/projects/00000000-0000-0000-0000-000000000004/config/secrets",
         json={"secrets": {"KEY_A": "val-a"}},
         headers={"X-Telegram-ID": "300600"},
     )
 
     # Second merge with different key
     resp2 = await async_client.post(
-        "/api/projects/secrets-additive-test/config/secrets",
+        "/api/projects/00000000-0000-0000-0000-000000000004/config/secrets",
         json={"secrets": {"KEY_B": "val-b"}},
         headers={"X-Telegram-ID": "300600"},
     )
@@ -111,7 +111,7 @@ async def test_secrets_merge_additive(async_client: AsyncClient):
 
     # Read back — both keys must be present
     get_resp = await async_client.get(
-        "/api/projects/secrets-additive-test",
+        "/api/projects/00000000-0000-0000-0000-000000000004",
         headers={"X-Telegram-ID": "300600"},
     )
     config = get_resp.json()["config"]

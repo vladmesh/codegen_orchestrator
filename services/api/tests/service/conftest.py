@@ -46,7 +46,7 @@ async def async_client() -> AsyncGenerator[AsyncClient, None]:
 
 
 TASK_TEST_TELEGRAM_ID = 999000999
-TASK_TEST_PROJECT_ID = "test-tasks-proj"
+TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 @pytest.fixture(scope="session")

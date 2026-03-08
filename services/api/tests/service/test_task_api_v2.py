@@ -3,7 +3,7 @@
 from httpx import AsyncClient
 import pytest
 
-TASK_TEST_PROJECT_ID = "test-tasks-proj"
+TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
 
 @pytest.mark.asyncio

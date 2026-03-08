@@ -30,7 +30,7 @@ async def test_concurrent_secret_writes_preserve_all_keys(async_client: AsyncCli
     proj_resp = await async_client.post(
         "/api/projects/",
         json={
-            "id": "concurrent-secrets-test",
+            "id": "00000000-0000-0000-0000-000000000002",
             "name": "Concurrent Secrets Test",
             "status": "created",
             "config": {},
@@ -47,7 +47,7 @@ async def test_concurrent_secret_writes_preserve_all_keys(async_client: AsyncCli
 
     async def set_secret(i: int):
         return await async_client.post(
-            "/api/projects/concurrent-secrets-test/config/secrets",
+            "/api/projects/00000000-0000-0000-0000-000000000002/config/secrets",
             json={
                 "secrets": {f"KEY_{i}": f"value_{i}"},
                 "env_hints": {f"KEY_{i}": f"hint_{i}"},
@@ -65,7 +65,7 @@ async def test_concurrent_secret_writes_preserve_all_keys(async_client: AsyncCli
 
     # Read back the project and verify all keys are present
     proj_resp = await async_client.get(
-        "/api/projects/concurrent-secrets-test",
+        "/api/projects/00000000-0000-0000-0000-000000000002",
         headers={"X-Telegram-ID": "200500"},
     )
     assert proj_resp.status_code == status.HTTP_200_OK  # noqa: PLR2004
