@@ -8,6 +8,9 @@ Multi-agent orchestrator using LangGraph for automated code generation and deplo
 
 **Philosophy**: Autonomous operation (human checks in periodically), agents as graph nodes, non-linear agent calls, spec-first code generation.
 
+> [!IMPORTANT]
+> **READ FIRST**: [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) describes the data-driven task lifecycle. It is mandatory reading for understanding how to pick up and process tasks via the DB/API.
+
 ## Commands
 
 ```bash
@@ -71,6 +74,7 @@ Caddy (/webhooks/*) → API
 **Packages** (`packages/`): `orchestrator-cli` (CLI tools for agents), `worker-wrapper` (agent container entrypoint).
 
 **Shared** (`shared/`): Logging setup (structlog), contracts (DTOs, queue schemas), models, configuration.
+  - Installed as a package (`hatchling`) in the uv venv. Uses `force-include` (static copy, not symlink). After adding/removing files in `shared/`, run `uv sync --reinstall-package shared` before running tests.
 
 **External Coding Agents**: Claude Code and Factory.ai Droid for actual code generation (not custom agents).
 

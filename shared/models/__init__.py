@@ -9,6 +9,7 @@ from .milestone import Milestone
 from .port_allocation import PortAllocation
 from .project import Project
 from .rag import RAGChunk, RAGConversationSummary, RAGDocument, RAGMessage, RAGScope
+from .repository import Repository
 from .resource import Resource
 from .run import Run
 from .server import Server, ServerStatus
@@ -28,6 +29,7 @@ __all__ = [
     "RAGDocument",
     "RAGMessage",
     "RAGScope",
+    "Repository",
     "Run",
     "Server",
     "ServerStatus",
