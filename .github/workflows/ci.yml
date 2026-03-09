@@ -115,10 +115,22 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
+        if: >-
+          ${{
+            matrix.changed == 'true' ||
+            needs.detect-changes.outputs.shared == 'true' ||
+            needs.detect-changes.outputs.docker-test == 'true' ||
+            github.event_name == 'workflow_dispatch'
+          }}
 
       - name: Run service tests
-        if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
+        if: >-
+          ${{
+            matrix.changed == 'true' ||
+            needs.detect-changes.outputs.shared == 'true' ||
+            needs.detect-changes.outputs.docker-test == 'true' ||
+            github.event_name == 'workflow_dispatch'
+          }}
         run: make test-service SERVICE=${{ matrix.service }}
         env:
           DOCKER_BUILDKIT: 1
@@ -182,6 +194,16 @@ jobs:
               ${{
                 needs.detect-changes.outputs.scheduler == 'true' ||
                 needs.detect-changes.outputs.infra-service == 'true' ||
+                needs.detect-changes.outputs.api == 'true' ||
+                needs.detect-changes.outputs.shared == 'true' ||
+                needs.detect-changes.outputs.docker-test == 'true' ||
+                github.event_name == 'workflow_dispatch'
+              }}
+          # po-tools: langgraph PO tools + api
+          - suite: po-tools
+            should_run: >-
+              ${{
+                needs.detect-changes.outputs.langgraph == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||

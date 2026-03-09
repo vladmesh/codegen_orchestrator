@@ -7,12 +7,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### PO tools contract tests — validate payloads against API schemas
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: PO unit tests mock the API client, so invalid payloads (e.g. 8-char ID instead of UUID) pass tests but fail at runtime. Add contract tests that validate PO tool payloads against actual Pydantic schemas (ProjectCreate, RunCreate, StoryCreate) without hitting a real DB. Alternatively, add service-l...
-
 ### #1000 Smoke tests — raise project stack via worker-manager
 - **Priority**: CRITICAL
 - **Plan**: —
@@ -238,6 +232,7 @@
 - #36 Architect: migrate from scheduler function to LangGraph ReAct agent — 2026-03-09
 - #35 LangGraph service directory refactoring (workers→consumers) — 2026-03-08
 - Architect node — story decomposition into tasks + task dispatcher — 2026-03-08
+- PO tools contract tests — validate payloads against API schemas — 2026-03-09
 - Decouple shared/ from Docker builds — reduce rebuild blast radius — 2026-03-08
 - Fix compose.dev.yml ports conflict with orchestrator worker containers
  — 2026-03-08
@@ -248,8 +243,6 @@
 - Fix codegen quality (cosmetic bugs + param types + optional schemas)
  — 2026-03-08
 - Rewrite copier tests
- — 2026-03-08
-- Spec-first async messaging (Redis Streams + FastStream)
  — 2026-03-08
 
 ## Ideas

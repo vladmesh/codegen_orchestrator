@@ -1,4 +1,4 @@
-"""Service-level integration tests: PO tools against real API.
+"""Integration tests: PO tools (langgraph) against real API.
 
 Full roundtrip: PO tool → HTTP → API → DB → response.
 Validates that payloads are accepted by the real API and data persists correctly.
@@ -32,10 +32,8 @@ class TestCreateProjectIntegration:
         )
 
         assert "Project created" in result
-        # Extract project ID from result
         project_id = result.split("ID: ")[1].split(",")[0]
 
-        # Verify via direct API call
         resp = await api_client.get(f"/api/projects/{project_id}")
         assert resp.status_code == 200
         project = resp.json()
@@ -55,7 +53,6 @@ class TestCreateProjectIntegration:
 class TestListProjectsIntegration:
     async def test_lists_created_projects(self, api_client):
         """list_projects returns projects created via API."""
-        # Create a project first
         await create_project.ainvoke(
             {"name": "list-test-proj", "modules": "backend"},
             config=make_config(),
@@ -121,7 +118,6 @@ class TestSetProjectSecretIntegration:
 class TestCreateStoryIntegration:
     async def test_creates_story_and_publishes_architect_message(self, api_client, redis_client):
         """create_story persists story and publishes to architect:queue."""
-        # Create project first
         create_result = await create_project.ainvoke(
             {"name": "story-test-proj", "modules": "backend"},
             config=make_config(),
@@ -152,7 +148,6 @@ class TestCreateStoryIntegration:
         # Verify architect:queue has a message
         messages = await redis_client.xrange("architect:queue", count=10)
         assert len(messages) > 0
-        # Find our message
         found = False
         for _msg_id, fields in messages:
             data_key = b"data" if b"data" in fields else "data"
