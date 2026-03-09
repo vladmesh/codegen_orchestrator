@@ -17,7 +17,7 @@
 - [x] #47 Race Condition in set_project_secret (parallel tool calls)
 - [x] #42 Fix API Integration Test (test_post_projects_pure_db)
 - [x] #8 Workspace Failure Counter
-- [ ] Update Ruff to latest version and reformat codebase
+- [x] Update Ruff to latest version and reformat codebase
 - [x] Project ID → UUID + schema cleanup
 - [x] Fix compose.dev.yml ports conflict with orchestrator worker containers
 

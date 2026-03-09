@@ -1,5 +1,5 @@
 .PHONY: lint format test-unit test-integration test-e2e-scaffold test-clean \
-	build up down stop logs help nuke nuke-hard seed migrate makemigrations shell \
+	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
 	check-worker-images .nuke-common .nuke-hard-prune
@@ -23,9 +23,6 @@ WORKER_SOURCE_HASH = $(shell find \
   | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
 
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
-DOCKER_COMPOSE_TOOLS := $(COMPOSE_ENV) $(DOCKER_COMPOSE) -f docker-compose.tools.yml -p codegen_orchestrator_tools
-TOOLING := $(DOCKER_COMPOSE_TOOLS) run --rm tooling
-TOOLING_NON_INT := $(DOCKER_COMPOSE_TOOLS) run --rm -T tooling
 
 # Test Project Name for Isolation
 TEST_PROJECT := codegen_orchestrator_test
@@ -54,7 +51,6 @@ help:
 	@echo "  make migrate     - Run database migrations"
 	@echo "  make makemigrations MSG='...' - Create new migration"
 	@echo ""
-	@echo "  make shell       - Open shell in tooling container"
 	@echo "  make nuke           - Full reset: clean workers, remove volumes, incremental rebuild"
 	@echo "  make nuke-hard      - Full reset: clean workers, remove volumes, NO-CACHE rebuild"
 	@echo "  make seed           - Seed database with API keys from env"
@@ -69,16 +65,14 @@ help:
 
 # === Dependency Lock Files ===
 
-TOOLING_UV := $(DOCKER_COMPOSE_TOOLS) run --rm -e XDG_CACHE_HOME=/workspace/.cache tooling
-
 lock-deps:
 	@echo "🔒 Generating requirements.lock files with uv..."
-	$(TOOLING_UV) uv pip compile services/langgraph/pyproject.toml -o services/langgraph/requirements.lock
-	$(TOOLING_UV) uv pip compile services/api/pyproject.toml -o services/api/requirements.lock
-	$(TOOLING_UV) uv pip compile services/scheduler/pyproject.toml -o services/scheduler/requirements.lock
-	$(TOOLING_UV) uv pip compile services/telegram_bot/pyproject.toml -o services/telegram_bot/requirements.lock
-	$(TOOLING_UV) uv pip compile services/worker-manager/pyproject.toml -o services/worker-manager/requirements.lock
-	$(TOOLING_UV) uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
+	uv pip compile services/langgraph/pyproject.toml -o services/langgraph/requirements.lock
+	uv pip compile services/api/pyproject.toml -o services/api/requirements.lock
+	uv pip compile services/scheduler/pyproject.toml -o services/scheduler/requirements.lock
+	uv pip compile services/telegram_bot/pyproject.toml -o services/telegram_bot/requirements.lock
+	uv pip compile services/worker-manager/pyproject.toml -o services/worker-manager/requirements.lock
+	uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
 	@echo "✅ All lock files updated!"
 
 # === Docker ===
@@ -172,10 +166,10 @@ check-worker-images:
 # === Quality ===
 
 lint:
-	@$(DOCKER_COMPOSE_TOOLS) run --rm tooling ruff check .
+	@uv run ruff check .
 
 format:
-	@$(DOCKER_COMPOSE_TOOLS) run --rm tooling sh -c "ruff format $(if $(FILES),$(FILES),.) && ruff check --fix $(if $(FILES),$(FILES),.)"
+	@uv run ruff format $(if $(FILES),$(FILES),.) && uv run ruff check --fix $(if $(FILES),$(FILES),.)
 
 # === Git Hooks ===
 
@@ -262,11 +256,6 @@ migrate:
 # Run migrations with correct user to avoid permission issues on generated files
 makemigrations:
 	$(COMPOSE_ENV) $(DOCKER_COMPOSE) run --rm --user $$(id -u):$$(id -g) api alembic revision --autogenerate -m "$(MSG)"
-
-# === Development ===
-
-shell:
-	$(TOOLING) bash
 
 # === Nuclear Option ===
 
