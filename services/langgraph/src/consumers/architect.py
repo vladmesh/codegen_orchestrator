@@ -14,7 +14,7 @@ from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
 from shared.redis_client import RedisStreamClient
 
-from ..architect.graph import create_architect_graph
+from ..agents.architect.graph import create_architect_graph
 from ..config.settings import get_settings
 from ._base import start_worker
 

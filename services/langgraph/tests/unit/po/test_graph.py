@@ -9,7 +9,7 @@ from langgraph.prebuilt.chat_agent_executor import AgentState
 from langmem.short_term import SummarizationNode
 import pytest
 
-from src.po.graph import (
+from src.agents.po.graph import (
     POState,
     _create_summarization_hook,
     create_po_graph,
@@ -108,8 +108,8 @@ class TestCreateSummarizationHook:
 
 class TestCreatePOGraph:
     @pytest.mark.asyncio
-    @patch("src.po.graph.get_all_tools", return_value=[])
-    @patch("src.po.graph.create_react_agent")
+    @patch("src.agents.po.graph.get_all_tools", return_value=[])
+    @patch("src.agents.po.graph.create_react_agent")
     async def test_creates_graph_with_summarization(self, mock_create_agent, mock_tools):
         mock_create_agent.return_value = MagicMock()
 
@@ -126,8 +126,8 @@ class TestCreatePOGraph:
         assert call_kwargs["state_schema"] is POState
 
     @pytest.mark.asyncio
-    @patch("src.po.graph.get_all_tools", return_value=[])
-    @patch("src.po.graph.create_react_agent")
+    @patch("src.agents.po.graph.get_all_tools", return_value=[])
+    @patch("src.agents.po.graph.create_react_agent")
     async def test_creates_graph_with_memory_saver_fallback(self, mock_create_agent, mock_tools):
         from langgraph.checkpoint.memory import MemorySaver
 

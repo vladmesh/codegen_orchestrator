@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
 
-from src.po.consumer import _handle_message, _process_message, _repair_orphan_tool_calls
+from src.consumers.po import _handle_message, _process_message, _repair_orphan_tool_calls
 
 
 @pytest.fixture
@@ -433,7 +433,7 @@ class TestHandleMessageRecovery:
     async def test_pre_invoke_repair_called(self, mock_graph, mock_client):
         """_repair_orphan_tool_calls is called before graph.ainvoke."""
         with patch(
-            "src.po.consumer._repair_orphan_tool_calls", new_callable=AsyncMock
+            "src.consumers.po._repair_orphan_tool_calls", new_callable=AsyncMock
         ) as mock_repair:
             mock_repair.return_value = 0
             data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
@@ -451,7 +451,7 @@ class TestHandleMessageRecovery:
         mock_graph.ainvoke.side_effect = [corrupt_error, {"messages": [AIMessage(content="ok")]}]
 
         with patch(
-            "src.po.consumer._repair_orphan_tool_calls", new_callable=AsyncMock
+            "src.consumers.po._repair_orphan_tool_calls", new_callable=AsyncMock
         ) as mock_repair:
             mock_repair.return_value = 0  # pre-check finds nothing (race condition)
             data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
@@ -469,7 +469,7 @@ class TestHandleMessageRecovery:
         mock_graph.ainvoke.side_effect = ValueError("some other error")
 
         with patch(
-            "src.po.consumer._repair_orphan_tool_calls", new_callable=AsyncMock
+            "src.consumers.po._repair_orphan_tool_calls", new_callable=AsyncMock
         ) as mock_repair:
             mock_repair.return_value = 0
             data = {"type": "user_message", "text": "hi", "request_id": "req-1"}
@@ -485,7 +485,7 @@ class TestHandleMessageRecovery:
         mock_graph.ainvoke.side_effect = [corrupt_error, corrupt_error]
 
         with patch(
-            "src.po.consumer._repair_orphan_tool_calls", new_callable=AsyncMock
+            "src.consumers.po._repair_orphan_tool_calls", new_callable=AsyncMock
         ) as mock_repair:
             mock_repair.return_value = 0
             data = {"type": "user_message", "text": "hi", "request_id": "req-1"}

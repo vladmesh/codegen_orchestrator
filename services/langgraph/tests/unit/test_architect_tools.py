@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def mock_api():
-    with patch("src.architect.tools.api_client") as api:
+    with patch("src.agents.architect.tools.api_client") as api:
         api.get_story = AsyncMock(
             return_value={"id": "story-abc", "title": "Add auth", "status": "created"}
         )
@@ -25,7 +25,7 @@ def mock_api():
 class TestGetStoryTool:
     @pytest.mark.asyncio
     async def test_returns_story(self, mock_api):
-        from src.architect.tools import get_story
+        from src.agents.architect.tools import get_story
 
         result = await get_story.ainvoke({"story_id": "story-abc"})
 
@@ -36,7 +36,7 @@ class TestGetStoryTool:
 class TestGetProjectSpecTool:
     @pytest.mark.asyncio
     async def test_returns_project(self, mock_api):
-        from src.architect.tools import get_project_spec
+        from src.agents.architect.tools import get_project_spec
 
         result = await get_project_spec.ainvoke({"project_id": "proj-1"})
 
@@ -45,7 +45,7 @@ class TestGetProjectSpecTool:
 
     @pytest.mark.asyncio
     async def test_returns_error_when_not_found(self, mock_api):
-        from src.architect.tools import get_project_spec
+        from src.agents.architect.tools import get_project_spec
 
         mock_api.get_project.return_value = None
         result = await get_project_spec.ainvoke({"project_id": "proj-missing"})
@@ -56,7 +56,7 @@ class TestGetProjectSpecTool:
 class TestGetTasksByStoryTool:
     @pytest.mark.asyncio
     async def test_returns_tasks(self, mock_api):
-        from src.architect.tools import get_tasks_by_story
+        from src.agents.architect.tools import get_tasks_by_story
 
         result = await get_tasks_by_story.ainvoke({"story_id": "story-abc"})
 
@@ -67,7 +67,7 @@ class TestGetTasksByStoryTool:
 class TestCreateTaskTool:
     @pytest.mark.asyncio
     async def test_creates_task(self, mock_api):
-        from src.architect.tools import create_task
+        from src.agents.architect.tools import create_task
 
         result = await create_task.ainvoke(
             {
@@ -89,7 +89,7 @@ class TestCreateTaskTool:
 
     @pytest.mark.asyncio
     async def test_creates_task_with_dependency(self, mock_api):
-        from src.architect.tools import create_task
+        from src.agents.architect.tools import create_task
 
         await create_task.ainvoke(
             {
@@ -110,7 +110,7 @@ class TestCreateTaskTool:
 class TestTransitionStoryTool:
     @pytest.mark.asyncio
     async def test_transitions_story(self, mock_api):
-        from src.architect.tools import transition_story
+        from src.agents.architect.tools import transition_story
 
         result = await transition_story.ainvoke({"story_id": "story-abc", "action": "start"})
 

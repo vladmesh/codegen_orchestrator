@@ -4,10 +4,10 @@ from unittest.mock import MagicMock, patch
 
 
 class TestCreateArchitectGraph:
-    @patch("src.architect.graph.ChatOpenAI")
+    @patch("src.agents.architect.graph.ChatOpenAI")
     def test_graph_compiles(self, mock_chat):
         mock_chat.return_value = MagicMock()
-        from src.architect.graph import create_architect_graph
+        from src.agents.architect.graph import create_architect_graph
 
         graph = create_architect_graph(
             model="test-model",
@@ -19,10 +19,10 @@ class TestCreateArchitectGraph:
         # Graph should have nodes
         assert len(graph.nodes) > 0
 
-    @patch("src.architect.graph.ChatOpenAI")
+    @patch("src.agents.architect.graph.ChatOpenAI")
     def test_graph_has_agent_node(self, mock_chat):
         mock_chat.return_value = MagicMock()
-        from src.architect.graph import create_architect_graph
+        from src.agents.architect.graph import create_architect_graph
 
         graph = create_architect_graph(
             model="test-model",
@@ -52,7 +52,7 @@ class TestArchitectPrompt:
 
 class TestArchitectState:
     def test_state_has_required_fields(self):
-        from src.architect.state import ArchitectState
+        from src.agents.architect.state import ArchitectState
 
         # TypedDict fields
         annotations = ArchitectState.__annotations__

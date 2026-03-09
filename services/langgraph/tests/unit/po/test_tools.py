@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from shared.queues import PO_REMINDERS_KEY
-from src.po.tools import (
+from src.agents.po.tools import (
     create_project,
     create_story,
     get_all_tools,

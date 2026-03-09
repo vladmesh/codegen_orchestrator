@@ -27,9 +27,9 @@ from shared.contracts.queues.po import (
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis_client import RedisStreamClient
 
+from ..agents.po.graph import create_po_graph
+from ..agents.po.tools import init_po_clients
 from ..config.settings import get_settings
-from .graph import create_po_graph
-from .tools import init_po_clients
 
 logger = structlog.get_logger(__name__)
 

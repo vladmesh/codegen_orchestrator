@@ -9,7 +9,7 @@ from __future__ import annotations
 from langchain_core.tools import tool
 import structlog
 
-from ..clients.api import api_client
+from ...clients.api import api_client
 
 logger = structlog.get_logger(__name__)
 

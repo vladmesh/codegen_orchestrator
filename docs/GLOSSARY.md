@@ -32,19 +32,29 @@ Docker-контейнер с CLI coding agent внутри. Использует
 **Управляется:** `worker-manager`
 **Конфигурация:** Промпты хранятся в `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory → `AGENTS.md`. Также инжектится `TASK.md` с конкретной задачей.
 
+### Service Agent (Сервисный Агент)
+LangGraph ReactAgent, живущий внутри сервиса langgraph, выполняющий специализированную профильную работу с доступом к инструментам консьюмера.
+В отличие от CLI-агента, не использует изолированный Docker-контейнер и является частью долгоживущего процесса.
+
+**Примеры:** Product Owner, Architect (располагаются в `services/langgraph/src/agents/`)
+
 ### Product Owner (PO)
-LangGraph ReactAgent в langgraph-сервисе (`services/langgraph/src/po/`).
+Сервисный агент в langgraph-сервисе (`services/langgraph/src/agents/po/`).
 - Принимает сообщения через `po:input`, отвечает через `po:response:{request_id}`.
 - Использует Python @tool функции для вызова API и Redis.
 - PostgreSQL checkpointer для сохранения контекста между сообщениями (per-user thread).
 - Делегирует задачи в "отделы" (Engineering, DevOps).
-- Не использует контейнер, CLI, Docker.
+
+### Architect (Архитектор)
+Сервисный агент в langgraph-сервисе (`services/langgraph/src/agents/architect/`).
+- Одноразовый (one-shot) агент, слушающий `architect:queue`.
+- Занимается анализом фичей (Stories) из базы данных и их декомпозицией на конкретные задачи разработки (Tasks).
 
 ### CLI-Agent (CLI-Агент)
 AI который работает внутри Developer Worker контейнера.
 **Реализации:** Claude Code, Factory.ai Droid.
 
-**Отличие от LangGraph Agent:** CLI-Agent — это "личность" в контейнере. LangGraph Node — это "функция" в графе.
+**Отличие от Service Agent:** CLI-Agent — это "личность" в эфемерном контейнере с доступом к bash и ФС, а Service Agent — нода в графе langgraph-сервиса, общающаяся через @tool.
 
 ### Engineering vs Developer
 

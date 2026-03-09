@@ -1,6 +1,6 @@
 """Unit tests for PO system prompt and tool docstrings."""
 
-from src.po.tools import create_story
+from src.agents.po.tools import create_story
 from src.prompts.po import SYSTEM_PROMPT
 
 MAX_PROMPT_LENGTH = 12000

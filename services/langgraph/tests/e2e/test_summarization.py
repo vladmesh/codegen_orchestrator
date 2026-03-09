@@ -18,7 +18,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 import pytest
 
-from src.po.graph import POState, _create_summarization_hook
+from src.agents.po.graph import POState, _create_summarization_hook
 
 # Very low thresholds to force summarization within a few messages
 SUMMARIZATION_MAX_TOKENS = 500

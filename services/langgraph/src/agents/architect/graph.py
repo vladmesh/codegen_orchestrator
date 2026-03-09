@@ -7,12 +7,11 @@ Uses MemorySaver only (one-shot sessions, no persistent checkpointing needed).
 from __future__ import annotations
 
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import create_react_agent
 import structlog
 
-from ..prompts.architect import SYSTEM_PROMPT
+from ...prompts.architect import SYSTEM_PROMPT
 from .state import ArchitectState
 from .tools import get_architect_tools
 
@@ -37,12 +36,9 @@ def create_architect_graph(
         api_key=api_key,
     )
 
-    checkpointer = MemorySaver()
-
     return create_react_agent(
         model=llm,
         tools=get_architect_tools(),
         prompt=SYSTEM_PROMPT,
         state_schema=ArchitectState,
-        checkpointer=checkpointer,
     )

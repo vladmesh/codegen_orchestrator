@@ -10,7 +10,7 @@ import pytest
 
 from shared.queues import PO_INPUT_QUEUE, PO_REMINDERS_KEY
 from shared.redis_client import RedisStreamClient
-from src.po.reminders import _poll_once
+from src.agents.po.reminders import _poll_once
 
 
 @pytest.fixture
