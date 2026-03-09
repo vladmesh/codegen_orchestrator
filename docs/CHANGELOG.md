@@ -4,6 +4,9 @@
 
 ## 2026-03-09
 
+### Changed
+- **Update Ruff to 0.15.5**: Bumped ruff from 0.8.4 to 0.15.5 across CI, tooling Dockerfile, pre-commit config, and pyproject.toml. Reformatted 17 test files (parenthesized assertion style). No functional changes.
+
 ### Refactored
 - **Architect: migrate to LangGraph ReAct agent** (#36): Moved architect from scheduler plain function to langgraph service as a ReAct agent with tool use. New `architect` Docker service (same langgraph image, separate entrypoint). Created 5 architect tools (get_story, get_project_spec, get_tasks_by_story, create_task, transition_story). Added `group` parameter to base worker for custom consumer groups. Removed architect code from scheduler service. 22 new unit tests.
 - **LangGraph service directory refactoring** (#35): Renamed `src/workers/` → `src/consumers/` (with `_worker` suffix dropped from files), dissolved `src/worker/` module into `src/` root, centralized PO prompts under `src/prompts/po/`. Updated Dockerfile, docker-compose, integration test config, and all imports. Pure structure change — no business logic modifications.

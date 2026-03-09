@@ -13,12 +13,6 @@
 - **Status**: backlog
 - **Brief**: ## Why  The Architect is currently a plain function (decompose_story()) in services/scheduler/src/tasks/architect_consumer.py. It does a single LLM call (raw HTTP to OpenRouter), parses JSON, creates tasks via API. Problems:  1. Not extensible — no tool use, no reasoning loop 2. Not uniform — eve...
 
-### Update Ruff to latest version and reformat codebase
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Currently CI is pinned to ruff 0.8.4. Needs to be bumped to the latest version and ruff format executed across all modules.
-
 ### PO tools contract tests — validate payloads against API schemas
 - **Priority**: CRITICAL
 - **Plan**: —
