@@ -115,6 +115,10 @@ class SchedulerAPIClient:
         resp = await self._request("GET", "stories/", params={"status": status})
         return resp.json()
 
+    async def get_stories_by_project(self, project_id: str) -> list[dict]:
+        resp = await self._request("GET", "stories/", params={"project_id": project_id})
+        return resp.json()
+
     async def fail_story(self, story_id: str) -> dict:
         """Transition story to failed status."""
         resp = await self._request("POST", f"stories/{story_id}/fail", json={"actor": "supervisor"})

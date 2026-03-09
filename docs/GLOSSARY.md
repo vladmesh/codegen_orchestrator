@@ -25,9 +25,9 @@ Docker-контейнер с CLI coding agent внутри. Использует
 
 | Type | Lifecycle | Queue Pattern | Session |
 |------|-----------|---------------|---------|
-| **Developer Worker** | Ephemeral (per task) | `worker:{worker_id}:*` | No (stateless) |
+| **Developer Worker** | Per-story (reused) or per-task (standalone) | `worker:{worker_id}:*` | No (stateless) |
 
-**Developer Worker** — Эфемерный. Выполняет одну задачу и завершается. Stateless — контекст это код в репо + ошибки.
+**Developer Worker** — Контейнер с coding agent. Для задач внутри Story — переиспользуется между задачами (worker_id хранится в Redis hash `story:workers`). Для standalone задач — эфемерный, удаляется после завершения. Stateless — контекст это код в репо + ошибки.
 
 **Управляется:** `worker-manager`
 **Конфигурация:** Промпты хранятся в `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md`. Worker-manager маппит их в agent-specific файлы через `get_instruction_path()`: Claude → `CLAUDE.md`, Factory → `AGENTS.md`. Также инжектится `TASK.md` с конкретной задачей.
@@ -175,6 +175,9 @@ Redis Stream для управления Workers.
 **Очереди:**
 - `worker:commands` — команды для worker-manager (create, delete)
 - `worker:responses:developer` — ответы от worker-manager для Developer воркеров
+
+### Story Worker Registry
+Redis Hash `story:workers` — маппинг `story_id → worker_id`. Engineering consumer записывает после первого spawn, читает для последующих задач в story. Scheduler очищает при завершении или провале story.
 
 ### Callback Stream
 Redis Stream для Events прогресса конкретного Run.

@@ -23,8 +23,15 @@ from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
 from shared.contracts.queues.worker import DeleteWorkerCommand
-from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_PROACTIVE_QUEUE
+from shared.queues import (
+    ARCHITECT_QUEUE,
+    DEPLOY_QUEUE,
+    ENGINEERING_QUEUE,
+    PO_PROACTIVE_QUEUE,
+)
 from shared.redis_client import RedisStreamClient
+
+from .scaffold_trigger import trigger_scaffolds
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
@@ -118,11 +125,25 @@ async def dispatch_todo_tasks(
         project_id = task.get("project_id")
         log = logger.bind(task_id=task_id, story_id=story_id)
 
+        # Skip internal project tasks — implemented manually via /implement
+        # TODO: replace with proper project.internal flag when going to prod
+        INTERNAL_PROJECT_ID = "033c2033-fc75-4d86-ade2-08efe7b15a5e"
+        if project_id == INTERNAL_PROJECT_ID:
+            continue
+
+        # Fetch siblings once — used for both guard and context
+        siblings = []
+        if story_id:
+            siblings = await api_client.get_tasks_by_story(story_id)
+
+            # Guard: max 1 in_dev task per story
+            if any(s.get("status") == "in_dev" for s in siblings):
+                log.info("task_skipped_story_busy")
+                continue
+
         # Build cumulative context from sibling tasks
         context = ""
-        if story_id:
-            # Get events from ALL sibling tasks (same story)
-            siblings = await api_client.get_tasks_by_story(story_id)
+        if siblings:
             all_events = []
             for sibling in siblings:
                 if sibling["id"] != task_id and sibling.get("status") == "done":
@@ -461,6 +482,7 @@ async def task_dispatcher_loop() -> None:
     try:
         while True:
             try:
+                scaffolds = await trigger_scaffolds(api_client, redis_client)
                 dispatched = await dispatch_todo_tasks(api_client, redis_client)
                 completed = await complete_stories(api_client, redis_client)
 
@@ -471,11 +493,12 @@ async def task_dispatcher_loop() -> None:
                 stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
                 failed_tasks = await supervise_failed_tasks(api_client, redis_client)
 
-                if dispatched or completed:
+                if dispatched or completed or scaffolds:
                     logger.info(
                         "dispatcher_cycle",
                         tasks_dispatched=dispatched,
                         stories_completed=completed,
+                        scaffolds_triggered=scaffolds,
                     )
                 supervisor_active = (
                     stuck_stories["retried"]

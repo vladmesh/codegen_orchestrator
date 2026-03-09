@@ -24,6 +24,7 @@ ENGINEERING_QUEUE = "engineering:queue"
 PROVISIONER_QUEUE = "provisioner:queue"
 PROVISIONER_RESULTS = "provisioner:results"
 ARCHITECT_QUEUE = "architect:queue"
+SCAFFOLD_QUEUE = "scaffold:queue"
 WORKER_COMMANDS = "worker:commands"
 PO_INPUT_QUEUE = "po:input"
 PO_PROACTIVE_QUEUE = "po:proactive"
@@ -36,6 +37,7 @@ WORKER_GROUP = "capability-workers"
 INFRA_GROUP = "infrastructure-workers"
 SCHEDULER_CONSUMER_GROUP = "scheduler-consumers"
 ARCHITECT_GROUP = "architect-consumers"
+SCAFFOLD_GROUP = "scaffold-consumers"
 TELEGRAM_BOT_GROUP = "telegram-bot"
 WORKER_MANAGER_GROUP = "worker_manager"
 PO_CONSUMER_GROUP = "po-consumer"
@@ -60,6 +62,7 @@ class QueueBinding:
 
 
 QUEUE_TOPOLOGY: list[QueueBinding] = [
+    QueueBinding(SCAFFOLD_QUEUE, SCAFFOLD_GROUP, "Project scaffolding"),
     QueueBinding(ARCHITECT_QUEUE, ARCHITECT_GROUP, "Story → task decomposition"),
     QueueBinding(ENGINEERING_QUEUE, WORKER_GROUP, "Engineering tasks"),
     QueueBinding(DEPLOY_QUEUE, WORKER_GROUP, "Deploy tasks"),

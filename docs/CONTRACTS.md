@@ -790,6 +790,7 @@ class EngineeringMessage(BaseMessage):
     description: str | None = None
     skip_deploy: bool = False
     planning_task_id: str | None = None  # planning-layer Task ID for status updates
+    story_id: str | None = None  # story ID for worker reuse across tasks
 
 
 class EngineeringResult(BaseResult):

@@ -263,6 +263,36 @@ services:
     networks:
       - internal
 
+  scaffolder:
+    build:
+      context: .
+      dockerfile: services/scaffolder/Dockerfile
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+      WORKSPACE_BASE_PATH: /data/workspaces
+      SERVICE_TEMPLATE_PATH: /data/service-template
+    volumes:
+      - ./services/scaffolder/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github-app.pem:ro
+      - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
+      - ${SERVICE_TEMPLATE_PATH:-../service-template}:/data/service-template:ro
+      - uv-cache:/root/.cache/uv
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
   # === Reverse Proxy + Registry ===
 
   caddy:

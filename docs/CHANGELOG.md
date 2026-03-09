@@ -5,6 +5,7 @@
 ## 2026-03-09
 
 ### Added
+- **Worker reuse per story** (#1002): Spawn worker container once per story, reuse for subsequent tasks (~50s saved per task). Redis hash `story:workers` maps story_id→worker_id. Engineering consumer looks up existing worker via `get_story_worker()`, passes to DeveloperNode which uses `send_task_to_worker()` (with fallback to `request_spawn()` on timeout). Scheduler cleans up worker on story complete/failure via `DeleteWorkerCommand`. Added `story_id` field to `EngineeringMessage`. Langgraph service tests added to CI matrix. 39 unit tests + 6 service tests.
 - **Pipeline failure supervisor** (#1001): Three supervisor functions in the 30s dispatch loop: `supervise_stuck_stories` retries architect for stories stuck in `created` >5min (up to 3 retries); `supervise_failed_tasks` reopens failed tasks (up to `max_iterations`) or fails story with sibling cancellation; `supervise_stuck_tasks` times out `in_dev` tasks after 30min. Terminal failures notify user via PO. Added `StoryStatus.FAILED` with `/stories/{id}/fail` endpoint, `current_iteration` to `TaskUpdate` schema. 16 new tests.
 - **PO tools contract tests**: 15 unit-level contract tests that import API Pydantic schemas directly and validate PO tool payloads (ProjectCreate, StoryCreate, MergeSecretsRequest). 9 integration tests that call PO tools against a real API with DB, validating full roundtrip (PO tool → HTTP → API → DB → response). New `po-tools` suite in CI integration tests matrix.
 

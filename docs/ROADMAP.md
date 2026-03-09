@@ -69,6 +69,18 @@
 - [x] Spec-first async messaging (Redis Streams + FastStream)
 
 
+## Create string reverser bot
+
+Create a Telegram bot that reverses text messages.
+
+Requirements:
+- Bot is public — no authentication, anyone can use it
+- When user sends any text message, bot replies with the reversed string (characters in reverse order)
+- Example: user sends "привет" → bot replies "тевирп"
+- Example: user sends "hello world" → bot replies "dlrow olleh"
+- Bot should handle any Unicode text correctly
+- Simple and straightforward — just reverse and reply
+
 ## Product decomposition + Architect node
 
 PO умеет принимать от юзера высокоуровневое описание и формулировать из него продуктовые stories. Architect нода берёт story + контекст проекта (спеки, кодбаза) и дробит на технические tasks с зависимостями. Юзер видит stories (продуктовый уровень), tasks абстрагированы. Юзер может влиять на stories через диалог с PO.
@@ -209,3 +221,7 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 - [ ] Add Rust service type to services.yml
 
+
+## Unlinked Tasks
+
+- [ ] #1003 Integration test: scheduler-langgraph story worker lifecycle

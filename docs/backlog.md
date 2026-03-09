@@ -19,12 +19,6 @@
 - **Status**: backlog
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
 
-### #62 /brainstorm resume — продолжение обсуждения существующего драфта
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: /brainstorm должен уметь подхватить существующий draft из БД и продолжить дискуссию. Сценарий: /brainstorm resume → GET /api/brainstorms/?status=draft → список → выбор → дополнение content. Также: миграция 14 legacy brainstorms из docs/brainstorms/ в БД (status=draft/done/triaged по текущему стат...
-
 ### Integrate Repository into production flows (webhook, scheduler, worker)
 - **Priority**: LOW
 - **Plan**: —
@@ -220,9 +214,16 @@
 - **Status**: backlog
 - **Brief**: New rust-axum service type. Scaffold template with Cargo.toml, multi-stage Dockerfile (cargo-chef), main.rs. Enables mixing Python and Rust services.
 
+### #1003 Integration test: scheduler-langgraph story worker lifecycle
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Create integration test compose (scheduler + langgraph + Redis) that verifies the cross-service story worker flow: dispatcher sends story_id in EngineeringMessage -> consumer reads it, spawns worker, stores in registry -> dispatcher cleanup on story complete removes worker.
+
 
 ## Done (last 10)
 
+- Worker reuse per story — spawn once, reuse for subsequent tasks — 2026-03-09
 - Sequential story processing — one active story per project — 2026-03-09
 - #1001 Pipeline failure supervisor — retry, fail-fast, admin logging — 2026-03-09
 - #36 Architect: migrate from scheduler function to LangGraph ReAct agent — 2026-03-09
@@ -237,8 +238,6 @@
 - Rewrite copier tests
  — 2026-03-08
 - Spec-first async messaging (Redis Streams + FastStream)
- — 2026-03-08
-- Add list_users operation to reference User domain
  — 2026-03-08
 
 ## Ideas

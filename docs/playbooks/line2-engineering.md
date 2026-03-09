@@ -50,7 +50,7 @@ vs what happened. This report is as valuable as the code itself.
 
 ### Level A: Code Generation (fastest)
 
-**What**: Engineering worker creates repo, scaffolds, spawns developer worker. Developer writes code and pushes. We verify code exists in GitHub. **Do not wait** for CI or deploy.
+**What**: Engineering worker creates repo, scaffolds, spawns developer worker (or reuses existing worker for story tasks). Developer writes code and pushes. We verify code exists in GitHub. **Do not wait** for CI or deploy.
 
 **Duration**: ~10-20 min per test.
 
