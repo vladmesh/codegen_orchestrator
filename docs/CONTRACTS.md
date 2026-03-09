@@ -17,6 +17,14 @@
 >
 > **Source of Truth:** `shared/queues.py` (`QUEUE_TOPOLOGY`)
 
+### Scaffolding
+
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `scaffold:queue` | `scaffold-consumers` | ScaffoldMessage | Task Dispatcher (scheduler) | scaffolder | Prepare repo: copier + make setup + git push |
+
+---
+
 ### Architect Pipeline
 
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
@@ -138,6 +146,8 @@ sequenceDiagram
     participant Redis
     participant PO as PO ReactAgent
     participant API
+    participant SCH as scheduler
+    participant SCF as scaffolder
     participant LG as langgraph
     participant WM as worker-manager
 
@@ -148,26 +158,31 @@ sequenceDiagram
     Note over PO: ReactAgent tool calls
     PO->>API: create_project(name, modules)
     API-->>PO: project_id
-    PO->>API: trigger_engineering(project_id)
-    API-->>PO: task_id
-    PO->>Redis: XADD engineering:queue
+    PO->>API: create_repository(project_id)
+    PO->>API: create_story(project_id, description)
     PO->>Redis: XADD po:response:{request_id} {text: "Начал разработку!"}
     Redis-->>TG: XREAD po:response:{request_id}
     TG->>User: "Начал разработку!"
 
+    Note over SCH: Task Dispatcher (30s poll) detects draft project + stories
+    SCH->>Redis: XADD scaffold:queue {project_id, repo_id, modules}
+    Redis-->>SCF: Consumer reads scaffold:queue
+    SCF->>API: PATCH /projects/{id} {status: SCAFFOLDING}
+    SCF->>SCF: copier copy + make setup + git push
+    SCF->>API: PATCH /projects/{id} {config.tree, status: SCAFFOLDED}
+
+    PO->>Redis: XADD architect:queue {story_id, project_id}
+    Redis-->>SCH: Architect Consumer reads architect:queue
+    SCH->>API: GET project (tree + specs)
+    Note over SCH: LLM: story → tasks (only business logic diff)
+    SCH->>API: create tasks with blocked_by chains
+
+    Note over SCH: Task Dispatcher finds unblocked tasks
+    SCH->>Redis: XADD engineering:queue {task_id}
     Redis-->>LG: Consumer reads engineering:queue
-    LG->>API: GET /api/projects/{id}
-    API-->>LG: {status: CREATED, modules: [...]}
-    Note over LG: Engineering worker: _create_repo_and_set_secrets()
-    LG->>API: Create GitHub repo + set registry secrets
-    LG->>API: PATCH /projects/{id} {status: SCAFFOLDING}
-    Note over LG: Developer node builds ScaffoldConfig
-    LG->>Redis: XADD worker:commands {create, scaffold_config}
+    LG->>Redis: XADD worker:commands {create}
     Redis-->>WM: Consumer reads worker:commands
-    WM->>WM: Create worker container
-    WM->>WM: docker exec: copier + make setup + git push
-    WM->>API: PATCH /projects/{id} {status: SCAFFOLDED}
-    WM->>Redis: XADD worker:responses:developer {ready}
+    WM->>WM: Create worker container (mounts workspace volume)
     Note over LG: Developer node sends task to worker
     LG->>LG: Continue to Developer node
 ```
@@ -749,6 +764,30 @@ class BaseResult(BaseModel):
     error: str | None = None
     duration_ms: int | None = None
 ```
+
+---
+
+## ScaffoldMessage
+
+**Queue:** `scaffold:queue`
+**Initiator:** Task Dispatcher (scheduler, 30s poll)
+**Consumer:** scaffolder service
+
+```python
+# shared/contracts/queues/scaffold.py
+
+class ScaffoldMessage(BaseMessage):
+    """Trigger scaffolding for a new project repository."""
+    project_id: str
+    repository_id: str
+    user_id: str
+    template_repo: str    # e.g. "gh:project-factory-organization/service-template"
+    project_name: str     # sanitized name for copier
+    modules: str          # comma-separated, e.g. "backend,tg_bot"
+    task_description: str = ""
+```
+
+**Flow:** Scheduler detects `project.status == draft` with stories → publishes ScaffoldMessage → Scaffolder runs copier + make setup + git push → saves tree to `project.config.tree` → sets `project.status = scaffolded`. Architect can then see the tree when decomposing stories.
 
 ---
 

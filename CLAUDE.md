@@ -44,8 +44,9 @@ make test-clean            # Cleanup test containers
 ```
 User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/Redis) → po:response → Telegram Bot → User
                                                                ↕
+                                                  scaffold:queue → scaffolder (copier + make setup + git push)
                                                   architect:queue → scheduler (Architect Consumer: LLM → tasks)
-                                                                              (Task Dispatcher: 30s poll → unblocked tasks)
+                                                                              (Task Dispatcher: 30s poll → scaffold trigger + unblocked tasks)
                                                                     ↓
                                                   engineering:queue → engineering-worker → worker:commands → worker-manager
                                                   deploy:queue → deploy-worker → GitHub Actions (deploy.yml)
@@ -68,9 +69,10 @@ Caddy (/webhooks/*) → API
 - `engineering-worker`: Redis stream consumer (`engineering:queue`), runs Engineering subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.consumers.engineering`)
 - `deploy-worker`: Redis stream consumer (`deploy:queue`), runs DevOps subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.consumers.deploy`)
 - `telegram_bot`: python-telegram-bot interface (PO via Redis Streams)
-- `worker-manager`: Docker container lifecycle for CLI agents, runs scaffold phase (copier + make setup) via docker exec
+- `scaffolder`: Lightweight service that prepares project repos before architect runs. Consumes `scaffold:queue`, runs copier + make setup + git push, saves tree to DB. No Docker SDK, no LLM.
+- `worker-manager`: Docker container lifecycle for CLI agents, mounts pre-scaffolded workspace volumes
 - `infra-service`: Ansible execution for server provisioning only (consumes `provisioner:queue`)
-- `scheduler`: Background workers (architect_consumer, task_dispatcher, github_sync, server_sync, health_checker)
+- `scheduler`: Background workers (architect_consumer, task_dispatcher with scaffold trigger, github_sync, server_sync, health_checker)
 - `caddy`: Reverse proxy + TLS termination (HTTPS for webhook + registry endpoints)
 - `registry`: Self-hosted Docker Registry (v2, accessible via Caddy basic auth)
 

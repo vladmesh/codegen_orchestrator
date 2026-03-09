@@ -28,11 +28,14 @@ Codegen Orchestrator — мультиагентная система для ав
 - **Task** — конкретная техническая задача. Статусы: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done`. Задачи могут иметь зависимости (`blocked_by_task_id`).
 - **Run** — единица исполнения (engineering или deploy). Привязан к Task через `task_id`.
 
-**Architect Node** (scheduler service) автоматически декомпозирует Story в Tasks:
-1. PO создаёт Story и публикует `ArchitectMessage` в `architect:queue`
-2. Architect Consumer вызывает LLM для декомпозиции story → N tasks с зависимостями
-3. Task Dispatcher (каждые 30с) находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
-4. После завершения всех tasks — story автоматически завершается, триггерится deploy
+**Pipeline** (scheduler + scaffolder services) автоматически готовит проект и декомпозирует Story в Tasks:
+1. PO создаёт Project + Repository + Story
+2. Task Dispatcher (каждые 30с) обнаруживает draft-проект со stories → публикует `ScaffoldMessage` в `scaffold:queue`
+3. Scaffolder выполняет copier + make setup + git push, сохраняет tree в DB, ставит `project.status = scaffolded`
+4. PO публикует `ArchitectMessage` в `architect:queue`
+5. Architect Consumer вызывает LLM — видит tree скафолдированного проекта → создаёт tasks только на diff (бизнес-логику)
+6. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
+7. После завершения всех tasks — story автоматически завершается, триггерится deploy
 
 Скиллы (`/plan`, `/implement`, `/triage`, `/checkpoint`) взаимодействуют с API для работы с бэклогом, сбора статистики и сохранения истории итераций (`TaskEvent`).
 Файл `docs/backlog.md` является автогенерируемым (read-only) представлением базы данных (`make backlog`).
@@ -49,9 +52,10 @@ Codegen Orchestrator — мультиагентная система для ав
 |--------|----------|
 | `api` | FastAPI + SQLAlchemy — проекты, серверы, users, configs |
 | `telegram_bot` | Telegram интерфейс (PO via Redis Streams) |
-| `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment). Воркеры работают в изолированной сети `codegen_worker`. |
+| `scaffolder` | Подготовка репозиториев новых проектов (copier + make setup + git push). Потребляет `scaffold:queue`, сохраняет tree в DB. Лёгкий образ без Docker SDK и LLM |
+| `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment). Монтирует pre-scaffolded workspace volumes. Воркеры работают в изолированной сети `codegen_worker`. |
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker` and `deploy-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
-| `scheduler` | Background workers: architect consumer (story→tasks LLM decomposition), task dispatcher (dispatch unblocked tasks, complete stories), github_sync, server_sync, health_checker |
+| `scheduler` | Background workers: architect consumer (story→tasks LLM decomposition), task dispatcher (scaffold trigger, dispatch unblocked tasks, complete stories), github_sync, server_sync, health_checker |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
 
 ## Граф
@@ -72,11 +76,16 @@ graph TD
 
     API --> |"data"| DB[(PostgreSQL)]
 
+    Dispatcher[Task Dispatcher<br/>scheduler, 30s poll] --> |"draft project + stories"| ScaffoldQueue[scaffold:queue]
+    ScaffoldQueue --> Scaffolder[Scaffolder Service]
+    Scaffolder --> |"copier + make setup + git push"| API
+    Scaffolder --> |"saves tree, status=scaffolded"| API
+
     ArchQueue --> ArchConsumer[Architect Consumer<br/>scheduler]
-    ArchConsumer --> |"LLM: story → tasks"| API
+    ArchConsumer --> |"LLM: story → tasks<br/>(sees tree + specs)"| API
     ArchConsumer --> |"creates tasks with deps"| API
 
-    Dispatcher[Task Dispatcher<br/>scheduler, 30s poll] --> |"finds unblocked tasks"| API
+    Dispatcher --> |"finds unblocked tasks"| API
     Dispatcher --> |"XADD engineering:queue"| EngQueue[engineering:queue]
     Dispatcher --> |"story complete → XADD deploy:queue"| DeployQueue
 
@@ -103,16 +112,23 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        │  • PostgreSQL checkpointer (per-user thread)
                        │  • Reminder poller
                        │
-                       ├──► API (create_project, set_secret, create_story, ...)
+                       ├──► API (create_project, create_repo, set_secret, create_story, ...)
+                       │
+                       │    Task Dispatcher (scheduler, 30s poll)
+                       │      ├──► draft project + stories → XADD scaffold:queue
+                       │      │                                │
+                       │      │                    Scaffolder Service
+                       │      │                    │ copier + make setup + git push
+                       │      │                    │ saves tree → API
+                       │      │                    └ project.status = scaffolded
+                       │      │
                        ├──► XADD architect:queue → Architect Consumer (scheduler)
-                       │                              │ LLM decomposition
+                       │                              │ LLM decomposition (sees tree + specs)
                        │                              ▼
                        │                           API: create tasks with blocked_by chains
                        │                              │
-                       │                              ▼
-                       │                           Task Dispatcher (scheduler, 30s poll)
-                       │                              ├──► XADD engineering:queue → Engineering Subgraph
-                       │                              └──► story complete → XADD deploy:queue + po:proactive
+                       │      ├──► XADD engineering:queue → Engineering Subgraph
+                       │      └──► story complete → XADD deploy:queue + po:proactive
                        ├──► XADD deploy:queue → DevOps Subgraph
                        └──► XADD po:response:{request_id} {text}
                                   │
@@ -126,9 +142,10 @@ All tasks done → Dispatcher completes story → deploy + PO notification
 **Key Features:**
 - **PO ReactAgent**: LangGraph agent with native Python tools, PostgreSQL checkpointer
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager. Network isolated (`codegen_worker` network) to prevent access to orchestrator DBs.
-- **Engineering Subgraph**: Repo creation → Scaffold (copier via worker-manager) → Developer → CI gate (max 3 fix iterations)
+- **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
+- **Engineering Subgraph**: Workspace mount → Developer → CI gate (max 3 fix iterations)
 - **DevOps Subgraph**: LLM-based env analysis, env groups for coherent secrets, Ansible deployment via infra-service
-- **Unified Redis Consumers**: All 9 consumers use `RedisStreamClient.consume()` with PEL recovery (`claim_pending=True`) — crashed messages are automatically re-delivered on restart. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns)
+- **Unified Redis Consumers**: All 10 consumers use `RedisStreamClient.consume()` with PEL recovery (`claim_pending=True`) — crashed messages are automatically re-delivered on restart. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns)
 
 ## Внешние зависимости
 

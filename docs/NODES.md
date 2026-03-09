@@ -36,12 +36,13 @@
 - При rework от Tester (до 3 итераций)
 
 **Реализация**:
-1. Engineering worker создает GitHub-репозиторий и устанавливает registry secrets (`_create_repo_and_set_secrets()`)
-2. Developer node строит `ScaffoldConfig` (modules, project_name, task description) и передаёт worker spawner
-3. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai) с `scaffold_config` в команде
-4. Worker-manager выполняет scaffold phase внутри контейнера (`docker exec`: copier + make setup + git push), затем устанавливает `project.status = "scaffolded"`
-5. Worker-manager инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` с project-specific задачей
-6. Агент клонирует scaffolded repo и пишет бизнес-логику
+1. Scaffolder service (отдельный микросервис) выполняет scaffold phase: copier + make setup + git push, сохраняет tree в DB, ставит `project.status = scaffolded`
+2. Architect Consumer (scheduler) декомпозирует story в tasks (видит tree скафолдированного проекта)
+3. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
+4. Engineering worker создает GitHub-репозиторий и устанавливает registry secrets
+5. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai)
+6. Worker-manager инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` с project-specific задачей
+7. Агент клонирует scaffolded repo и пишет бизнес-логику
 
 **Валидация**: Проверяет наличие commit SHA в результате.
 
@@ -181,7 +182,15 @@ PO ReactAgent (in langgraph container)
      │ tool calls (httpx/Redis)
      ├──────────────▶ po:response:{request_id} ──▶ Пользователь
      │
-     ├──────────────▶ trigger_engineering
+     ├──────────────▶ scaffold:queue → Scaffolder Service
+     │               (copier + make setup + git push, saves tree)
+     │                     │
+     │                     ▼
+     │               architect:queue → Architect Consumer
+     │               (LLM: story → tasks, sees scaffolded tree)
+     │                     │
+     │                     ▼
+     │               Task Dispatcher → engineering:queue
      │                     │
      │                     ▼
      │               Engineering Subgraph
@@ -189,7 +198,6 @@ PO ReactAgent (in langgraph container)
      │                     │
      │                     ▼
      │               Developer node → worker-manager
-     │               scaffold phase (copier + make setup)
      │               → agent writes code → Tester
      │                                     │
      ├──────────────▶ trigger_deploy ◄─────┘

@@ -22,10 +22,20 @@ async def get_story(story_id: str) -> dict:
 
 @tool
 async def get_project_spec(project_id: str) -> dict:
-    """Get project details including config with detailed_spec."""
+    """Get project details including tree, specs, and config.
+
+    Returns project with tree (from scaffolder) surfaced at top level.
+    Noisy config fields (secrets, env_hints) are stripped to save tokens.
+    """
     result = await api_client.get_project(project_id)
     if result is None:
         return {"error": f"Project {project_id} not found"}
+
+    config = result.get("config") or {}
+    result["tree"] = config.get("tree")
+    for key in ("secrets", "env_hints"):
+        config.pop(key, None)
+
     return result
 
 

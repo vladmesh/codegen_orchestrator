@@ -44,6 +44,61 @@ class TestGetProjectSpecTool:
         mock_api.get_project.assert_called_once_with("proj-1")
 
     @pytest.mark.asyncio
+    async def test_surfaces_tree_from_config(self, mock_api):
+        from src.agents.architect.tools import get_project_spec
+
+        mock_api.get_project.return_value = {
+            "id": "proj-1",
+            "name": "my-api",
+            "config": {"tree": ".\n├── src/\n│   └── main.py", "secrets": {"DB": "xxx"}},
+            "project_spec": {"modules": ["backend"]},
+        }
+
+        result = await get_project_spec.ainvoke({"project_id": "proj-1"})
+
+        assert result["tree"] == ".\n├── src/\n│   └── main.py"
+        assert result["project_spec"] == {"modules": ["backend"]}
+        assert "secrets" not in result.get("config", {})
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_tree(self, mock_api):
+        from src.agents.architect.tools import get_project_spec
+
+        mock_api.get_project.return_value = {
+            "id": "proj-1",
+            "name": "my-api",
+            "config": {},
+            "project_spec": None,
+        }
+
+        result = await get_project_spec.ainvoke({"project_id": "proj-1"})
+
+        assert result.get("tree") is None
+        assert result.get("project_spec") is None
+
+    @pytest.mark.asyncio
+    async def test_strips_noisy_config_fields(self, mock_api):
+        from src.agents.architect.tools import get_project_spec
+
+        mock_api.get_project.return_value = {
+            "id": "proj-1",
+            "name": "my-api",
+            "config": {
+                "tree": ".",
+                "secrets": {"key": "val"},
+                "env_hints": ["hint"],
+                "detailed_spec": "important spec",
+            },
+        }
+
+        result = await get_project_spec.ainvoke({"project_id": "proj-1"})
+
+        config = result.get("config", {})
+        assert "secrets" not in config
+        assert "env_hints" not in config
+        assert config.get("detailed_spec") == "important spec"
+
+    @pytest.mark.asyncio
     async def test_returns_error_when_not_found(self, mock_api):
         from src.agents.architect.tools import get_project_spec
 

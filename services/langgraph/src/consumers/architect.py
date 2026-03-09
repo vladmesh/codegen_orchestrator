@@ -15,10 +15,51 @@ from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..agents.architect.graph import create_architect_graph
+from ..clients.api import api_client
 from ..config.settings import get_settings
 from ._base import start_worker
 
 logger = structlog.get_logger(__name__)
+
+CI_CHECK_TITLE = "Run tests, verify CI green"
+CI_CHECK_DESCRIPTION = (
+    "Run full test suite. Push to GitHub. Wait for CI. If CI fails, read logs, fix, and push again."
+)
+
+
+async def append_ci_check_task(story_id: str, project_id: str) -> dict | None:
+    """Append a CI check task after architect-created tasks.
+
+    Finds the tail of the task dependency chain and creates a CI check task
+    blocked by it. Skips if no architect tasks exist for the story.
+
+    Returns:
+        Created CI task dict, or None if skipped.
+    """
+    tasks = await api_client.get_tasks_by_story(story_id)
+    architect_tasks = [t for t in tasks if t.get("created_by") == "architect"]
+    if not architect_tasks:
+        return None
+
+    # Find chain tail: a task that no other task is blocked by
+    blocker_ids = {t["blocked_by_task_id"] for t in architect_tasks if t.get("blocked_by_task_id")}
+    tail_tasks = [t for t in architect_tasks if t["id"] not in blocker_ids]
+    last_task_id = tail_tasks[-1]["id"] if tail_tasks else architect_tasks[-1]["id"]
+
+    ci_task = await api_client.create_task(
+        {
+            "title": CI_CHECK_TITLE,
+            "description": CI_CHECK_DESCRIPTION,
+            "type": "feature",
+            "acceptance_criteria": "All tests pass. CI is green. Code is pushed to GitHub.",
+            "story_id": story_id,
+            "project_id": project_id,
+            "blocked_by_task_id": last_task_id,
+            "created_by": "system",
+        }
+    )
+    logger.info("architect_ci_task_appended", task_id=ci_task.get("id"), blocked_by=last_task_id)
+    return ci_task
 
 
 async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dict:
@@ -70,6 +111,8 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 
         config = {"configurable": {"thread_id": str(uuid.uuid4())}}
         result = await graph.ainvoke(initial_state, config=config)
+
+        await append_ci_check_task(msg.story_id, msg.project_id)
 
         log.info(
             "architect_job_success",

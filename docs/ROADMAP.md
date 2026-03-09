@@ -69,25 +69,18 @@
 - [x] Spec-first async messaging (Redis Streams + FastStream)
 
 
-## Create string reverser bot
-
-Create a Telegram bot that reverses text messages.
-
-Requirements:
-- Bot is public — no authentication, anyone can use it
-- When user sends any text message, bot replies with the reversed string (characters in reverse order)
-- Example: user sends "привет" → bot replies "тевирп"
-- Example: user sends "hello world" → bot replies "dlrow olleh"
-- Bot should handle any Unicode text correctly
-- Simple and straightforward — just reverse and reply
-
 ## Product decomposition + Architect node
 
 PO умеет принимать от юзера высокоуровневое описание и формулировать из него продуктовые stories. Architect нода берёт story + контекст проекта (спеки, кодбаза) и дробит на технические tasks с зависимостями. Юзер видит stories (продуктовый уровень), tasks абстрагированы. Юзер может влиять на stories через диалог с PO.
 
+Текущий фокус: выстроить pipeline scaffold → architect → worker по спеке docs/PIPELINE_V2.md. Ключевой brainstorm: bs-d302b6a1 (Architect Context & Worker Knowledge).
+
 - [x] #45 PO: Context-Aware Env Variables & Hints
 - [x] #44 PO: DuckDuckGo Search Tool
 - [x] #43 PO: Сократический диалог и формирование ТЗ
+- [x] Create scaffolder microservice
+- [ ] Architect receives tree + specs, creates tasks for diff
+- [ ] Worker-manager mounts workspace volume by repo_id
 - [ ] /architect skill — Story decomposition into Tasks
 - [ ] #62 /brainstorm resume — продолжение обсуждения существующего драфта
 - [ ] #59 PO work item tools (Step 4)

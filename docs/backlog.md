@@ -9,7 +9,7 @@
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Очистка зависших контейнеров/образов после деплоев (`docker image prune`). SSH hardening уже done в ansible. Priority adjusted by triage (roadmap phase change).
 
@@ -223,6 +223,7 @@
 
 ## Done (last 10)
 
+- Create scaffolder microservice — 2026-03-09
 - Worker reuse per story — spawn once, reuse for subsequent tasks — 2026-03-09
 - Sequential story processing — one active story per project — 2026-03-09
 - #1001 Pipeline failure supervisor — retry, fail-fast, admin logging — 2026-03-09
@@ -236,8 +237,6 @@
 - Fix codegen quality (cosmetic bugs + param types + optional schemas)
  — 2026-03-08
 - Rewrite copier tests
- — 2026-03-08
-- Spec-first async messaging (Redis Streams + FastStream)
  — 2026-03-08
 
 ## Ideas
