@@ -115,6 +115,11 @@ class SchedulerAPIClient:
         resp = await self._request("GET", "stories/", params={"status": status})
         return resp.json()
 
+    async def fail_story(self, story_id: str) -> dict:
+        """Transition story to failed status."""
+        resp = await self._request("POST", f"stories/{story_id}/fail", json={"actor": "supervisor"})
+        return resp.json()
+
     async def transition_story(self, story_id: str, action: str) -> dict:
         """Transition story status. action: 'start', 'complete', 'archive'."""
         resp = await self._request(
@@ -134,6 +139,10 @@ class SchedulerAPIClient:
 
     async def create_task(self, task_data: dict) -> dict:
         resp = await self._request("POST", "tasks/", json=task_data)
+        return resp.json()
+
+    async def update_task(self, task_id: str, data: dict) -> dict:
+        resp = await self._request("PATCH", f"tasks/{task_id}", json=data)
         return resp.json()
 
     async def get_task(self, task_id: str) -> dict:

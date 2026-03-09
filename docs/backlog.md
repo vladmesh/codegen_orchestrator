@@ -7,6 +7,12 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #1001 Pipeline failure supervisor — retry, fail-fast, admin logging
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Dispatcher сейчас только диспатчит и завершает story. Нужно добавить третью роль — supervisor: обнаружение и обработка stuck states.  ## Scope  ### Stuck state detection (в 30с цикле dispatcher) 1. **Story в `created` дольше N минут** — architect не отработал. Retry: republish в architect:queue (...
+
 ### #1000 Smoke tests — raise project stack via worker-manager
 - **Priority**: CRITICAL
 - **Plan**: —

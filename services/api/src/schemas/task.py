@@ -68,6 +68,7 @@ class TaskUpdate(BaseModel):
     repository_id: str | None = None
     story_id: str | None = None
     blocked_by_task_id: str | None = None
+    current_iteration: int | None = None
 
 
 class TaskTransition(BaseModel):

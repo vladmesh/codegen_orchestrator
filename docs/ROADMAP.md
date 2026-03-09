@@ -215,4 +215,5 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 ## Unlinked Tasks
 
+- [ ] #1001 Pipeline failure supervisor — retry, fail-fast, admin logging
 - [ ] #1000 Smoke tests — raise project stack via worker-manager

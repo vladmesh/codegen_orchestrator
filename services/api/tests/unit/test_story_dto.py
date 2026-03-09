@@ -12,13 +12,17 @@ class TestStoryStatus:
         assert StoryStatus.COMPLETED == "completed"
         assert StoryStatus.ARCHIVED == "archived"
 
+    def test_failed_value(self):
+        assert StoryStatus.FAILED == "failed"
+
     def test_membership(self):
         values = list(StoryStatus)
-        assert len(values) == 4  # noqa: PLR2004
+        assert len(values) == 5  # noqa: PLR2004
         assert "created" in values
         assert "in_progress" in values
         assert "completed" in values
         assert "archived" in values
+        assert "failed" in values
 
 
 class TestStoryTransitions:
@@ -42,6 +46,15 @@ class TestStoryTransitions:
 
     def test_archived_no_transitions(self):
         assert VALID_TRANSITIONS[StoryStatus.ARCHIVED] == set()
+
+    def test_created_can_fail(self):
+        assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.CREATED]
+
+    def test_in_progress_can_fail(self):
+        assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.IN_PROGRESS]
+
+    def test_failed_no_transitions(self):
+        assert VALID_TRANSITIONS[StoryStatus.FAILED] == set()
 
     def test_invalid_transition_created_to_completed(self):
         assert StoryStatus.COMPLETED not in VALID_TRANSITIONS[StoryStatus.CREATED]

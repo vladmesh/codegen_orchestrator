@@ -359,6 +359,50 @@ async def test_list_stories_with_sort():
 
 
 @pytest.mark.asyncio
+async def test_fail_story_from_in_progress():
+    """Story in_progress can be failed."""
+    story = _make_story(id="story-abc", status="in_progress")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/fail")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_fail_story_from_created():
+    """Story in created can be failed."""
+    story = _make_story(id="story-abc", status="created")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/fail")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_fail_story_invalid_from_archived():
+    """Archived story cannot be failed."""
+    story = _make_story(id="story-abc", status="archived")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/fail")
+
+    assert resp.status_code == 422  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
 async def test_start_story_blocked_by_incomplete():
     """Cannot start a story whose blocker is not completed."""
     blocker = _make_story(id="story-blocker", status="in_progress")

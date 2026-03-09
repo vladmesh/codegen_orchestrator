@@ -217,6 +217,23 @@ async def complete_story(
     return StoryRead.model_validate(story, from_attributes=True)
 
 
+@router.post("/{story_id}/fail", response_model=StoryRead)
+async def fail_story(
+    story_id: str,
+    body: StoryTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    body = body or StoryTransition()
+    story = await _get_story(story_id, db)
+
+    _do_transition(story, StoryStatus.FAILED)
+    await db.commit()
+    await db.refresh(story)
+
+    logger.info("story_failed", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
 @router.post("/{story_id}/archive", response_model=StoryRead)
 async def archive_story(
     story_id: str,

@@ -11,7 +11,7 @@ _(no task in progress)_
 
 ## Stats
 
-| backlog: 33 | todo: 0 | in_dev: 0 | in_ci: 1 | testing: 0 | done: 52 |
+| backlog: 34 | todo: 0 | in_dev: 0 | in_ci: 1 | testing: 0 | done: 52 |
 
 ## Recently Completed
 

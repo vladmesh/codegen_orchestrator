@@ -164,6 +164,12 @@ def test_task_update_with_project_id():
     assert data == {"project_id": uuid.UUID("00000000-0000-0000-0000-000000000003")}
 
 
+def test_task_update_current_iteration():
+    update = TaskUpdate(current_iteration=2)
+    data = update.model_dump(exclude_unset=True)
+    assert data == {"current_iteration": 2}
+
+
 def test_task_transition():
     t = TaskTransition(reason="CI failed", actor="system")
     assert t.reason == "CI failed"

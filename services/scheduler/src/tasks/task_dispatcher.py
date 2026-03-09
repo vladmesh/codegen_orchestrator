@@ -1,9 +1,10 @@
-"""Task Dispatcher — dispatches todo tasks and completes stories.
+"""Task Dispatcher — dispatches todo tasks, completes stories, supervises pipeline.
 
-Two responsibilities:
+Responsibilities:
 A) Find todo tasks with no blocker (or blocker done), create Run,
    publish to engineering:queue, transition task to in_dev.
 B) Find stories where all tasks are done → complete story + trigger deploy.
+C) Supervise pipeline: detect stuck states, retry or fail-fast.
 
 Runs as a periodic scheduler job (every 30s).
 """
@@ -11,15 +12,17 @@ Runs as a periodic scheduler job (every 30s).
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
 import structlog
 
+from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
-from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_PROACTIVE_QUEUE
+from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis_client import RedisStreamClient
 
 if TYPE_CHECKING:
@@ -28,6 +31,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 DISPATCH_INTERVAL_SECONDS = 30
+
+# Supervisor thresholds
+STORY_STUCK_THRESHOLD_MINUTES = 5
+TASK_STUCK_THRESHOLD_MINUTES = 30
+STORY_MAX_ARCHITECT_RETRIES = 3
 
 
 def _build_cumulative_context(sibling_events: list[dict]) -> str:
@@ -187,6 +195,174 @@ async def complete_stories(
     return completed
 
 
+def _parse_datetime(iso_str: str) -> datetime:
+    """Parse ISO datetime string, handling both Z and +00:00 suffixes."""
+    if iso_str.endswith("Z"):
+        iso_str = iso_str[:-1] + "+00:00"
+    return datetime.fromisoformat(iso_str)
+
+
+async def supervise_stuck_stories(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    *,
+    _retry_counts: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Detect stories stuck in 'created' with no tasks and retry architect.
+
+    Returns dict with 'retried' and 'failed' counts.
+    """
+    stories = await api_client.get_stories_by_status("created")
+    retried = 0
+    failed = 0
+    retry_counts = _retry_counts or {}
+
+    now = datetime.now(UTC)
+
+    for story in stories:
+        story_id = story["id"]
+        created_at = _parse_datetime(story["created_at"])
+        age_minutes = (now - created_at).total_seconds() / 60
+
+        if age_minutes < STORY_STUCK_THRESHOLD_MINUTES:
+            continue
+
+        # Only retry if architect hasn't created any tasks yet
+        tasks = await api_client.get_tasks_by_story(story_id)
+        if tasks:
+            continue
+
+        log = logger.bind(story_id=story_id, age_minutes=round(age_minutes, 1))
+
+        current_retries = retry_counts.get(story_id, 0)
+
+        if current_retries >= STORY_MAX_ARCHITECT_RETRIES:
+            log.error(
+                "story_terminal_failure",
+                reason="architect_retries_exhausted",
+                retries=current_retries,
+            )
+            await api_client.fail_story(story_id)
+            failed += 1
+            continue
+
+        # Retry: republish to architect:queue
+        arch_msg = ArchitectMessage(
+            story_id=story_id,
+            project_id=story.get("project_id", ""),
+            user_id=story.get("user_id", ""),
+        )
+        await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
+        retry_counts[story_id] = current_retries + 1
+
+        log.warning(
+            "story_stuck_retry",
+            retry_attempt=retry_counts[story_id],
+            max_retries=STORY_MAX_ARCHITECT_RETRIES,
+        )
+        retried += 1
+
+    return {"retried": retried, "failed": failed}
+
+
+async def supervise_failed_tasks(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+) -> dict[str, int]:
+    """Detect failed tasks and retry or escalate to story failure.
+
+    Returns dict with 'retried' and 'failed' counts.
+    """
+    tasks = await api_client.get_tasks_by_status("failed")
+    retried = 0
+    failed = 0
+
+    for task in tasks:
+        task_id = task["id"]
+        story_id = task.get("story_id")
+
+        # Skip standalone tasks (not part of a story)
+        if not story_id:
+            continue
+
+        current_iter = task.get("current_iteration", 0)
+        max_iter = task.get("max_iterations", 3)
+        log = logger.bind(task_id=task_id, story_id=story_id, iteration=current_iter)
+
+        if current_iter < max_iter:
+            # Retry: failed → backlog → todo, bump iteration
+            await api_client.transition_task(task_id, "backlog", "supervisor")
+            await api_client.transition_task(task_id, "todo", "supervisor")
+            await api_client.update_task(task_id, {"current_iteration": current_iter + 1})
+            log.warning(
+                "task_retry",
+                new_iteration=current_iter + 1,
+                max_iterations=max_iter,
+            )
+            retried += 1
+        else:
+            # Terminal failure — cancel siblings, fail story, notify user
+            log.error(
+                "task_terminal_failure",
+                reason="retries_exhausted",
+            )
+            siblings = await api_client.get_tasks_by_story(story_id)
+            for sibling in siblings:
+                sib_status = sibling.get("status", "")
+                if sibling["id"] != task_id and sib_status not in (
+                    "done",
+                    "failed",
+                    "cancelled",
+                ):
+                    await api_client.transition_task(sibling["id"], "cancelled", "supervisor")
+
+            await api_client.fail_story(story_id)
+
+            # Notify user
+            story = await api_client.get_story(story_id) if story_id else {}
+            user_id = story.get("user_id", "")
+            if user_id:
+                proactive = POProactiveMessage(
+                    text=f"Story failed: task retries exhausted for {task_id}.",
+                    user_id=str(user_id),
+                )
+                await redis_client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
+
+            failed += 1
+
+    return {"retried": retried, "failed": failed}
+
+
+async def supervise_stuck_tasks(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+) -> dict[str, int]:
+    """Detect tasks stuck in in_dev and fail them.
+
+    Failed tasks will be picked up by supervise_failed_tasks for retry.
+    Returns dict with 'timed_out' count.
+    """
+    tasks = await api_client.get_tasks_by_status("in_dev")
+    timed_out = 0
+    now = datetime.now(UTC)
+
+    for task in tasks:
+        task_id = task["id"]
+        updated_at = _parse_datetime(task["updated_at"])
+        age_minutes = (now - updated_at).total_seconds() / 60
+
+        if age_minutes < TASK_STUCK_THRESHOLD_MINUTES:
+            continue
+
+        log = logger.bind(task_id=task_id, age_minutes=round(age_minutes, 1))
+        log.warning("task_stuck_timeout", threshold_minutes=TASK_STUCK_THRESHOLD_MINUTES)
+
+        await api_client.transition_task(task_id, "failed", "supervisor")
+        timed_out += 1
+
+    return {"timed_out": timed_out}
+
+
 async def task_dispatcher_loop() -> None:
     """Periodic loop: dispatch tasks + complete stories every 30s."""
     from ..clients.api import api_client
@@ -196,16 +372,42 @@ async def task_dispatcher_loop() -> None:
 
     logger.info("task_dispatcher_started", interval=DISPATCH_INTERVAL_SECONDS)
 
+    story_retry_counts: dict[str, int] = {}
+
     try:
         while True:
             try:
                 dispatched = await dispatch_todo_tasks(api_client, redis_client)
                 completed = await complete_stories(api_client, redis_client)
+
+                # Supervisor checks
+                stuck_stories = await supervise_stuck_stories(
+                    api_client, redis_client, _retry_counts=story_retry_counts
+                )
+                stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
+                failed_tasks = await supervise_failed_tasks(api_client, redis_client)
+
                 if dispatched or completed:
                     logger.info(
                         "dispatcher_cycle",
                         tasks_dispatched=dispatched,
                         stories_completed=completed,
+                    )
+                supervisor_active = (
+                    stuck_stories["retried"]
+                    + stuck_stories["failed"]
+                    + stuck_tasks["timed_out"]
+                    + failed_tasks["retried"]
+                    + failed_tasks["failed"]
+                )
+                if supervisor_active:
+                    logger.info(
+                        "supervisor_cycle",
+                        stories_retried=stuck_stories["retried"],
+                        stories_failed=stuck_stories["failed"],
+                        tasks_timed_out=stuck_tasks["timed_out"],
+                        tasks_retried=failed_tasks["retried"],
+                        tasks_failed=failed_tasks["failed"],
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")
