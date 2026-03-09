@@ -1,4 +1,4 @@
-"""Architect Worker — consumes from architect:queue and decomposes stories into tasks.
+"""Architect consumer — consumes from architect:queue and decomposes stories into tasks.
 
 Run standalone: python -m src.consumers.architect
 """
@@ -90,7 +90,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 def main():
     """Entry point for running as module."""
     start_worker(
-        service_name="architect-worker",
+        service_name="architect",
         queue=ARCHITECT_QUEUE,
         process_fn=process_architect_job,
         group=ARCHITECT_GROUP,

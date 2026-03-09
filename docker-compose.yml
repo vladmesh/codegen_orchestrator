@@ -136,7 +136,7 @@ services:
     deploy:
       replicas: 1
 
-  architect-worker:
+  architect:
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile

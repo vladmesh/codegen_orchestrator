@@ -46,7 +46,7 @@ services:
     networks:
       - backend-test
 
-  architect-worker:
+  architect:
     build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
