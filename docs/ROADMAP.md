@@ -79,7 +79,7 @@ PO умеет принимать от юзера высокоуровневое 
 - [x] #44 PO: DuckDuckGo Search Tool
 - [x] #43 PO: Сократический диалог и формирование ТЗ
 - [x] Create scaffolder microservice
-- [ ] Architect receives tree + specs, creates tasks for diff
+- [x] Architect receives tree + specs, creates tasks for diff
 - [ ] Worker-manager mounts workspace volume by repo_id
 - [ ] /architect skill — Story decomposition into Tasks
 - [ ] #62 /brainstorm resume — продолжение обсуждения существующего драфта

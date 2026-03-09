@@ -219,12 +219,14 @@ services:
       HOST_CLAUDE_DIR: ${HOST_CLAUDE_DIR:-/home/user/.claude}
       # Dev environment settings
       WORKSPACE_BASE_PATH: /tmp/codegen/workspaces
+      SCAFFOLDED_WORKSPACE_PATH: /data/workspaces
       INTERNAL_NETWORK: codegen_internal
       WORKER_NETWORK: codegen_worker
       WORKER_MANAGER_URL: http://worker-manager:8000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/codegen/workspaces:/tmp/codegen/workspaces
+      - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
       - ${HOST_CLAUDE_DIR:-/home/user/.claude}:/host-claude:ro
     depends_on:
       redis:

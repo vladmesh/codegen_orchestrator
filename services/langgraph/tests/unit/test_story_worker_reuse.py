@@ -181,6 +181,9 @@ class TestEngineeringConsumerStoryWorker:
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_project_allocations = AsyncMock(return_value=[])
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+        )
         mock_api.post = AsyncMock()
         mock_resource.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 
@@ -248,6 +251,9 @@ class TestEngineeringConsumerStoryWorker:
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_project_allocations = AsyncMock(return_value=[])
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+        )
         mock_api.post = AsyncMock()
         mock_resource.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 
@@ -311,6 +317,9 @@ class TestEngineeringConsumerStoryWorker:
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_project_allocations = AsyncMock(return_value=[])
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+        )
         mock_api.post = AsyncMock()
         mock_resource.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 

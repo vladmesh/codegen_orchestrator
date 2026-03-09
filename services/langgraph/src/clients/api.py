@@ -152,6 +152,9 @@ class LanggraphAPIClient:
     async def get_tasks_by_story(self, story_id: str) -> list[dict]:
         return await self._get_json("tasks/", params={"story_id": story_id})
 
+    async def get_task_events(self, task_id: str) -> list[dict]:
+        return await self._get_json(f"tasks/{task_id}/events")
+
     async def create_task(self, task_data: dict) -> dict:
         return await self._post_json("tasks/", json=task_data)
 

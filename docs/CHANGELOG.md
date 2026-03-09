@@ -11,6 +11,7 @@
 - **PO tools contract tests**: 15 unit-level contract tests that import API Pydantic schemas directly and validate PO tool payloads (ProjectCreate, StoryCreate, MergeSecretsRequest). 9 integration tests that call PO tools against a real API with DB, validating full roundtrip (PO tool → HTTP → API → DB → response). New `po-tools` suite in CI integration tests matrix.
 
 ### Changed
+- **Architect: scaffolded-aware decomposition** (task-2378004c): Rewrote architect system prompt to understand scaffolded project state — creates tasks only for business logic diff, not infrastructure. Enhanced `get_project_spec` tool to surface `tree` from config and strip noisy fields (secrets, env_hints). Auto-appends CI check task after architect LLM finishes creating tasks. 15 new tests.
 - **Update Ruff to 0.15.5**: Bumped ruff from 0.8.4 to 0.15.5 in pyproject.toml and CI. Reformatted 17 test files (parenthesized assertion style). No functional changes.
 - **Remove Docker tooling, use `uv run` everywhere**: Deleted `tooling/Dockerfile`, `docker-compose.tools.yml`, `.pre-commit-config.yaml`. Rewrote `make lint`/`format`/`lock-deps` to use `uv run` directly. Git hooks now require `uv` instead of Docker. CI uses `uv sync` + lockfile ruff instead of `--with ruff==VERSION`. Single source of truth for ruff version: `pyproject.toml` + `uv.lock`.
 

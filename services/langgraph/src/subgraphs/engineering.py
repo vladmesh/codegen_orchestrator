@@ -43,6 +43,12 @@ class EngineeringState(TypedDict):
     action: str  # "create" | "feature" | "fix"
     description: str | None  # Human-readable task description
 
+    # Story context (previous tasks + events for worker continuity)
+    story_context: str | None
+
+    # Repository info (for workspace mounting)
+    repo_id: str | None
+
     # Engineering result
     engineering_status: str  # "idle" | "working" | "done" | "blocked"
     commit_sha: str | None

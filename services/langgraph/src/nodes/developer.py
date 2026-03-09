@@ -1,19 +1,17 @@
 """Unified Developer node.
 
 Spawns a Claude Code worker to implement business logic. For new projects
-(action=create), builds a ScaffoldConfig so the worker-manager runs copier +
-make setup inside the container. For feature/fix actions on existing projects,
-works directly with the existing repository.
+(action=create), the scaffolder service has already prepared the workspace.
+Worker-manager mounts it by repo_id. For feature/fix actions on existing
+projects, works directly with the existing repository.
 """
 
 import os
-import re
 
 from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
-from shared.contracts.queues.worker import ScaffoldConfig
 
 from ..clients.api import api_client
 from ..clients.worker_spawner import request_spawn, send_task_to_worker
@@ -29,11 +27,10 @@ MAX_ERROR_MSG_LENGTH = 500
 class DeveloperNode(FunctionalNode):
     """Developer node - implements business logic in projects.
 
-    For new projects (action=create, status=scaffolding):
-        1. Build ScaffoldConfig from project spec
-        2. Spawn worker with scaffold_config (worker-manager runs copier + make setup)
+    For new projects (action=create, status=scaffolded):
+        1. Scaffolder has already prepared workspace at /data/workspaces/{repo_id}
+        2. Spawn worker with repo_id (worker-manager mounts pre-scaffolded workspace)
         3. Worker implements business logic according to /home/worker/TASK.md
-        4. Update project status to scaffolded
 
     For existing projects (action=feature/fix):
         1. Spawn Claude Code worker to clone existing repo
@@ -79,13 +76,9 @@ class DeveloperNode(FunctionalNode):
             action=action,
         )
 
-        # Build ScaffoldConfig for new projects in scaffolding status
-        scaffold_config = self._build_scaffold_config(project_spec, action)
-
-        # HARD FAIL: action=create + status=draft means scaffold was supposed to run
-        # but didn't (stale in-memory project dict). Refuse to spawn on empty repo.
-        # status=scaffolded/developing/deployed → scaffold already ran, proceed normally.
-        if action == "create" and scaffold_config is None:
+        # For action=create, scaffolder must have already run (status=scaffolded).
+        # Draft status means the pipeline didn't trigger scaffolder properly.
+        if action == "create":
             project_status = project_spec.get("status", "unknown")
             if project_status == "draft":
                 logger.error(
@@ -93,24 +86,19 @@ class DeveloperNode(FunctionalNode):
                     project_name=project_name,
                     project_status=project_status,
                     action=action,
-                    hint="action=create + status='draft' means the project dict was not "
-                    "refreshed after _create_repo_and_set_secrets() set DB status "
-                    "to 'scaffolding'. This is a bug in engineering_worker.",
                 )
                 return {
                     "messages": [
                         AIMessage(
                             content="FATAL: action=create but project status is still 'draft'. "
-                            "Scaffold phase cannot trigger — refusing to spawn worker on empty "
-                            "repo. Check that engineering_worker refreshes the project dict "
-                            "after _create_repo_and_set_secrets()."
+                            "Scaffolder must run before developer. Check pipeline."
                         )
                     ],
                     "engineering_status": "blocked",
                     "errors": state.get("errors", [])
                     + [
-                        "Scaffold required but project status is 'draft' "
-                        "(expected 'scaffolding'). Stale project_spec in state."
+                        "Scaffold required but project status is 'draft'. "
+                        "Scaffolder must run first."
                     ],
                 }
 
@@ -126,10 +114,15 @@ class DeveloperNode(FunctionalNode):
                 await api_client.get_primary_repository(project_id) if project_id else None
             )
             git_url = primary_repo.get("git_url") if primary_repo else None
+            repo_id = primary_repo.get("id") if primary_repo else None
             repo_details = self._determine_repository(git_url, project_name)
             repo_full_name = repo_details["full_name"]
             owner = repo_details["owner"]
             repo_name = repo_details["name"]
+
+            # Also check state for repo_id (passed from engineering consumer)
+            if not repo_id:
+                repo_id = state.get("repo_id")
 
             # Get GitHub App token
             github_client = GitHubAppClient()
@@ -144,6 +137,7 @@ class DeveloperNode(FunctionalNode):
                 project_spec=project_spec,
                 action=action,
                 feature_description=feature_description,
+                story_context=state.get("story_context"),
             )
 
             # Build task title based on action
@@ -151,7 +145,7 @@ class DeveloperNode(FunctionalNode):
 
             # Reuse existing worker if worker_id is in state (story-level reuse)
             existing_worker_id = state.get("worker_id")
-            if existing_worker_id and not scaffold_config:
+            if existing_worker_id:
                 logger.info(
                     "developer_reuse_worker",
                     worker_id=existing_worker_id,
@@ -176,6 +170,7 @@ class DeveloperNode(FunctionalNode):
                         task_title=task_title,
                         timeout_seconds=Timeouts.WORKER_SPAWN,
                         project_id=project_id,
+                        repo_id=repo_id,
                     )
             else:
                 # Spawn fresh worker
@@ -186,27 +181,8 @@ class DeveloperNode(FunctionalNode):
                     task_title=task_title,
                     timeout_seconds=Timeouts.WORKER_SPAWN,
                     project_id=project_id,
-                    scaffold_config=scaffold_config,
+                    repo_id=repo_id,
                 )
-
-            # Update project status based on scaffold result
-            if scaffold_config and project_id:
-                if worker_result.success:
-                    await api_client.patch(
-                        f"projects/{project_id}",
-                        json={"status": "scaffolded"},
-                    )
-                else:
-                    await api_client.patch(
-                        f"projects/{project_id}",
-                        json={"status": "scaffold_failed"},
-                    )
-                    error_msg = worker_result.error_message or "Scaffold phase failed"
-                    return {
-                        "messages": [AIMessage(content=f"Scaffolding failed: {error_msg}")],
-                        "engineering_status": "blocked",
-                        "errors": state.get("errors", []) + [f"Scaffold failed: {error_msg}"],
-                    }
 
             if worker_result.success:
                 if not worker_result.commit_sha:
@@ -276,63 +252,6 @@ class DeveloperNode(FunctionalNode):
                 "errors": state.get("errors", []) + [f"Developer error: {str(e)}"],
             }
 
-    def _build_scaffold_config(self, project_spec: dict, action: str) -> ScaffoldConfig | None:
-        """Build ScaffoldConfig for new projects that need scaffolding.
-
-        Returns ScaffoldConfig if scaffolding is needed, None otherwise.
-        """
-        project_status = project_spec.get("status", "draft")
-
-        if action != "create" or project_status != "scaffolding":
-            logger.info(
-                "scaffold_config_decision",
-                result="skip",
-                action=action,
-                project_status=project_status,
-                reason="action != 'create'"
-                if action != "create"
-                else f"project_status='{project_status}' != 'scaffolding'",
-            )
-            return None
-
-        config = project_spec.get("config") or {}
-        modules = config.get("modules", ["backend"])
-        modules_str = ",".join(modules)
-
-        # Sanitize project name for copier
-        project_name = project_spec.get("name", "project")
-        sanitized = project_name.lower().replace("_", "-").replace(" ", "-")
-        sanitized = re.sub(r"[^a-z0-9-]", "", sanitized)
-        sanitized = re.sub(r"-+", "-", sanitized).strip("-")
-        if not sanitized or not sanitized[0].isalpha():
-            sanitized = "project-" + sanitized
-
-        # Task description from config
-        task_description = config.get("description", "")
-        if not task_description:
-            task_description = config.get("detailed_spec", "")
-
-        template_repo = os.getenv(
-            "SERVICE_TEMPLATE_REPO", "gh:project-factory-organization/service-template"
-        )
-
-        logger.info(
-            "scaffold_config_decision",
-            result="will_scaffold",
-            action=action,
-            project_status=project_status,
-            template=template_repo,
-            project_name=sanitized,
-            modules=modules_str,
-        )
-
-        return ScaffoldConfig(
-            template_repo=template_repo,
-            project_name=sanitized,
-            modules=modules_str,
-            task_description=task_description,
-        )
-
     def _determine_repository(self, git_url: str | None, project_name: str) -> dict:
         """Determine repository details (owner, name, full_name)."""
         if git_url and "github.com/" in git_url:
@@ -373,6 +292,7 @@ class DeveloperNode(FunctionalNode):
         project_spec: dict,
         action: str = "create",
         feature_description: str | None = None,
+        story_context: str | None = None,
     ) -> str:
         """Build TASK.md content for the developer worker.
 
@@ -390,6 +310,7 @@ class DeveloperNode(FunctionalNode):
                 action=action,
                 feature_description=feature_description,
                 project_spec=project_spec,
+                story_context=story_context,
             )
 
         return self._build_create_task(
@@ -398,6 +319,7 @@ class DeveloperNode(FunctionalNode):
             modules=modules,
             project_spec=project_spec,
             feature_description=feature_description,
+            story_context=story_context,
         )
 
     def _format_env_hints(self, project_spec: dict) -> str:
@@ -426,6 +348,7 @@ class DeveloperNode(FunctionalNode):
         modules: list[str],
         project_spec: dict,
         feature_description: str | None = None,
+        story_context: str | None = None,
     ) -> str:
         """Build task message for new project creation (scaffolded)."""
         modules_str = ",".join(modules)
@@ -475,7 +398,19 @@ Implement the business logic according to the specification:
 - Follow patterns in AGENTS.md for code structure
 - Implement all required functionality
 - Use existing generated code as foundation
-"""
+{self._format_story_context(story_context)}"""
+
+    def _format_story_context(self, story_context: str | None) -> str:
+        """Format story context section for task message. Empty string if no context."""
+        if not story_context:
+            return ""
+        return f"""
+## Story Context (Previous Work)
+
+The following tasks were completed (or are in progress) as part of this story.
+Use this context to understand what has already been done — do NOT redo completed work.
+
+{story_context}"""
 
     def _build_feature_task(
         self,
@@ -485,6 +420,7 @@ Implement the business logic according to the specification:
         action: str,
         feature_description: str | None,
         project_spec: dict,
+        story_context: str | None = None,
     ) -> str:
         """Build task message for feature addition or bug fix."""
         action_label = "Add Feature" if action == "feature" else "Fix Issue"
@@ -513,7 +449,7 @@ Implement the business logic according to the specification:
 - Ensure all existing tests still pass after your changes
 - Add tests for new functionality where appropriate
 - Commit with descriptive message (e.g., "feat: add /stats command" or "fix: handle empty input")
-"""
+{self._format_story_context(story_context)}"""
 
 
 # Export singleton instance

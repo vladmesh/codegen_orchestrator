@@ -223,6 +223,7 @@
 
 ## Done (last 10)
 
+- Architect receives tree + specs, creates tasks for diff — 2026-03-09
 - Create scaffolder microservice — 2026-03-09
 - Worker reuse per story — spawn once, reuse for subsequent tasks — 2026-03-09
 - Sequential story processing — one active story per project — 2026-03-09
@@ -235,8 +236,6 @@
 - Fix Jinja whitespace in doc templates + add cache mounts to Dockerfiles
  — 2026-03-08
 - Fix codegen quality (cosmetic bugs + param types + optional schemas)
- — 2026-03-08
-- Rewrite copier tests
  — 2026-03-08
 
 ## Ideas

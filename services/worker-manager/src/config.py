@@ -30,6 +30,9 @@ class WorkerManagerSettings(BaseSettings):
     # Dev environment: workspace base path on the host
     WORKSPACE_BASE_PATH: str = "/tmp/codegen/workspaces"
 
+    # Path to pre-scaffolded workspaces (created by scaffolder service)
+    SCAFFOLDED_WORKSPACE_PATH: str = "/data/workspaces"
+
     # Fixed name of the internal bridge network shared by all services
     INTERNAL_NETWORK: str = "codegen_internal"
 

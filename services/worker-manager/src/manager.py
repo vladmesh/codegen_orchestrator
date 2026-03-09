@@ -456,6 +456,7 @@ class WorkerManager:
         env_vars: Dict[str, str] = None,
         worker_type: str = "developer",
         project_id: str | None = None,
+        repo_id: str | None = None,
         scaffold_config: "ScaffoldConfig | None" = None,
     ) -> str:
         """
@@ -514,8 +515,25 @@ class WorkerManager:
             api_key=api_key,
         )
 
-        # Create workspace on the host
-        if project_id:
+        # Resolve workspace on the host
+        if repo_id:
+            # Pre-scaffolded workspace from scaffolder service
+            ws_path, scaffolded_exists = workspace_mod.get_scaffolded_workspace(
+                settings.SCAFFOLDED_WORKSPACE_PATH, repo_id
+            )
+            if not scaffolded_exists:
+                raise RuntimeError(
+                    f"Scaffolded workspace not found for repo_id={repo_id} at {ws_path}. Scaffolder must run first."
+                )
+            config.workspace_host_path = str(ws_path)
+            workspace_existed = True
+            logger.info(
+                "using_scaffolded_workspace",
+                worker_id=worker_id,
+                repo_id=repo_id,
+                path=str(ws_path),
+            )
+        elif project_id:
             ws_path, workspace_existed = workspace_mod.get_or_create_project_workspace(
                 settings.WORKSPACE_BASE_PATH, project_id
             )
@@ -582,12 +600,21 @@ class WorkerManager:
             await self.redis.hset(f"worker:meta:{worker_id}", "project_id", project_id)
             await self.redis.sadd("workspace:active_projects", project_id)
 
-        # Scaffold phase: copier + make setup + git push (replaces scaffolder service)
-        # Must run BEFORE git clone (scaffold creates the repo content and pushes it)
+        # Scaffold/git phase
         repo_name = env_vars.get("REPO_NAME")
         github_token = env_vars.get("GITHUB_TOKEN")
 
-        if scaffold_config and repo_name and github_token:
+        if repo_id and repo_name and github_token:
+            # Pre-scaffolded workspace: just refresh git token (scaffolder already
+            # cloned, ran copier + make setup, committed and pushed)
+            logger.info(
+                "scaffold_phase_skipped_repo_id",
+                worker_id=worker_id,
+                repo_id=repo_id,
+                reason="workspace pre-scaffolded by scaffolder service",
+            )
+            await self._refresh_git_token(container_id, repo_name, github_token, worker_id)
+        elif scaffold_config and repo_name and github_token:
             logger.info(
                 "scaffold_phase_entering",
                 worker_id=worker_id,

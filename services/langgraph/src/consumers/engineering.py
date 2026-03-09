@@ -74,6 +74,88 @@ async def _write_task_event(api, planning_task_id: str, event_type: str, details
         )
 
 
+async def _build_story_context(story_id: str, current_task_id: str | None = None) -> str | None:
+    """Build a summary of previous story tasks with their events.
+
+    Returns a formatted string for inclusion in the worker's task message,
+    giving continuity context so the worker doesn't re-gather information.
+    Returns None if story has no tasks or fetch fails.
+    """
+    try:
+        tasks = await api_client.get_tasks_by_story(story_id)
+    except Exception:
+        logger.warning("story_context_fetch_failed", story_id=story_id, exc_info=True)
+        return None
+
+    if not tasks:
+        return None
+
+    # Sort by created_at for chronological order
+    tasks.sort(key=lambda t: t.get("created_at", ""))
+
+    lines: list[str] = []
+    for task in tasks:
+        tid = task.get("id", "?")
+        title = task.get("title", "Untitled")
+        status = task.get("status", "unknown")
+        is_current = tid == current_task_id
+        marker = " ← CURRENT" if is_current else ""
+        lines.append(f"### Task: {title} [{status}]{marker}")
+
+        if task.get("description"):
+            lines.append(f"Description: {task['description'][:300]}")
+
+        # Fetch events for this task
+        try:
+            events = await api_client.get_task_events(tid)
+        except Exception:
+            events = []
+
+        if events:
+            lines.append("Events:")
+            for ev in events:
+                etype = ev.get("event_type", "?")
+                actor = ev.get("actor", "?")
+                details = ev.get("details") or {}
+                detail_str = ""
+                if etype == "status_change":
+                    detail_str = f"{ev.get('from_status')} → {ev.get('to_status')}"
+                elif details:
+                    # Compact summary of details
+                    parts = [f"{k}={v}" for k, v in list(details.items())[:5]]
+                    detail_str = ", ".join(parts)
+                lines.append(f"  - [{etype}] {detail_str} (by {actor})")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+async def _resolve_allocations(task_id: str, project_id: str, project: dict) -> dict | None:
+    """Resolve or create resource allocations. Returns dict or None on failure."""
+    existing = await api_client.get_project_allocations(project_id)
+    if existing:
+        allocated = {f"{a['server_handle']}:{a['port']}": a for a in existing}
+        logger.info("using_existing_allocations", task_id=task_id, count=len(allocated))
+        return allocated
+
+    logger.info("allocating_resources", task_id=task_id, project_id=project_id)
+    result = await resource_allocator_node.run(
+        {"project_id": project_id, "project_spec": project, "allocated_resources": {}, "errors": []}
+    )
+    if result.get("errors"):
+        error_msg = "; ".join(result["errors"])
+        logger.error("resource_allocation_failed", task_id=task_id, errors=result["errors"])
+        await api_client.patch(
+            f"runs/{task_id}", json={"status": "failed", "error_message": error_msg}
+        )
+        return None
+
+    allocated = result.get("allocated_resources", {})
+    logger.info("resources_allocated", task_id=task_id, count=len(allocated))
+    return allocated
+
+
 async def _fail_job(task_id: str, error_msg: str, planning_task_id: str | None = None) -> dict:
     """Mark a run as failed and optionally update planning task."""
     await api_client.patch(f"runs/{task_id}", json={"status": "failed", "error_message": error_msg})
@@ -167,7 +249,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         if project_status == "draft" and action == "create":
             await _create_repo_and_set_secrets(project)
             # Refresh in-memory dict — _create_repo_and_set_secrets sets DB status
-            # to "scaffolding". Developer node needs to see this to trigger copier.
+            # to "scaffolding". Scaffolder service picks up from here.
             project["status"] = ProjectStatus.SCAFFOLDING.value
         elif project_status == "draft" and action != "create":
             logger.warning(
@@ -180,55 +262,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             )
 
         # Allocate resources if not already allocated
-        existing_allocations = await api_client.get_project_allocations(project_id)
-        if existing_allocations:
-            # Convert existing allocations to allocated_resources format
-            allocated_resources = {
-                f"{a['server_handle']}:{a['port']}": a for a in existing_allocations
-            }
-            logger.info(
-                "using_existing_allocations",
-                task_id=task_id,
-                project_id=project_id,
-                count=len(allocated_resources),
-            )
-        else:
-            # Run resource allocator to create allocations
-            logger.info(
-                "allocating_resources",
-                task_id=task_id,
-                project_id=project_id,
-            )
-            alloc_result = await resource_allocator_node.run(
-                {
-                    "project_id": project_id,
-                    "project_spec": project,
-                    "allocated_resources": {},
-                    "errors": [],
-                }
-            )
-
-            if alloc_result.get("errors"):
-                error_msg = "; ".join(alloc_result["errors"])
-                logger.error(
-                    "resource_allocation_failed",
-                    task_id=task_id,
-                    project_id=project_id,
-                    errors=alloc_result["errors"],
-                )
-                await api_client.patch(
-                    f"runs/{task_id}",
-                    json={"status": "failed", "error_message": error_msg},
-                )
-                return {"status": "failed", "error": error_msg}
-
-            allocated_resources = alloc_result.get("allocated_resources", {})
-            logger.info(
-                "resources_allocated",
-                task_id=task_id,
-                project_id=project_id,
-                count=len(allocated_resources),
-            )
+        allocated_resources = await _resolve_allocations(task_id, project_id, project)
+        if allocated_resources is None:
+            return {"status": "failed", "error": "Resource allocation failed"}
 
         # Look up existing worker for story-level reuse
         existing_worker_id = None
@@ -242,6 +278,12 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     task_id=task_id,
                 )
 
+        # Fetch repo_id for workspace mounting
+        repo_id = (await api_client.get_primary_repository(project_id) or {}).get("id")
+
+        # Build story context (previous tasks + events) for worker continuity
+        story_context = await _build_story_context(story_id, planning_task_id) if story_id else None
+
         # Prepare EngineeringState
         subgraph_input = {
             "messages": [],
@@ -250,6 +292,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "allocated_resources": allocated_resources,
             "action": action,
             "description": description,
+            "story_context": story_context,
+            "repo_id": repo_id,
             "commit_sha": None,
             "worker_id": existing_worker_id,
             "engineering_status": "idle",
@@ -259,13 +303,6 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "human_approval_reason": None,
             "errors": [],
         }
-
-        # NOTE: Do NOT update project status here.
-        # Status must remain "scaffolding" so the developer node's
-        # _build_scaffold_config() can detect it and trigger copier.
-        # The developer node updates status to "scaffolded" after scaffold
-        # succeeds, and engineering_worker sets "developing" after subgraph
-        # completes.
 
         # Create and run engineering subgraph
         engineering_subgraph = create_engineering_subgraph()
