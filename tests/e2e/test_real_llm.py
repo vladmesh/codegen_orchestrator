@@ -227,9 +227,9 @@ async def test_claude_real_session_memory(redis: RedisStreamClient, docker_clien
         print(f"[DEBUG] Q2 content: {content}")
 
         # Assert memory works - Claude should remember the previous question
-        assert (
-            "шесть" in content.lower() and "три" in content.lower()
-        ), f"Session memory failed. Expected previous question about 6+3. Got: {content}"
+        assert "шесть" in content.lower() and "три" in content.lower(), (
+            f"Session memory failed. Expected previous question about 6+3. Got: {content}"
+        )
 
     except Exception:
         # Dump logs for debugging

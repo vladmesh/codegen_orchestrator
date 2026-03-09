@@ -102,6 +102,6 @@ class TestResolveWithGroups:
             all_supported.extend(group.SUPPORTED)
 
         # Check for duplicates
-        assert len(all_supported) == len(
-            set(all_supported)
-        ), f"Overlapping variables: {[v for v in all_supported if all_supported.count(v) > 1]}"
+        assert len(all_supported) == len(set(all_supported)), (
+            f"Overlapping variables: {[v for v in all_supported if all_supported.count(v) > 1]}"
+        )

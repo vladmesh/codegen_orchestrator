@@ -46,9 +46,9 @@ def test_config_inplace_mutation_detected():
     # Re-read and verify
     with Session(engine) as session:
         project = session.execute(select(Project).where(Project.id == TEST_PROJECT_ID)).scalar_one()
-        assert (
-            "secrets" in project.config
-        ), "In-place mutation was not persisted — MutableDict.as_mutable(JSON) missing?"
+        assert "secrets" in project.config, (
+            "In-place mutation was not persisted — MutableDict.as_mutable(JSON) missing?"
+        )
         assert project.config["secrets"] == {"API_KEY": "encrypted-value"}
 
 

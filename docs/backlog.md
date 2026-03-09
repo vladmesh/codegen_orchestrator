@@ -15,7 +15,7 @@
 
 ### Update Ruff to latest version and reformat codebase
 - **Priority**: CRITICAL
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Currently CI is pinned to ruff 0.8.4. Needs to be bumped to the latest version and ruff format executed across all modules.
 

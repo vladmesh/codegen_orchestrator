@@ -107,9 +107,9 @@ async def test_summarization_triggers_and_preserves_context():
 
     # The summary should contain key facts from the conversation
     summary_text = str(running_summary)
-    assert (
-        "AlphaService" in summary_text or "inventory" in summary_text
-    ), f"Expected summary to contain project facts. Got: {summary_text}"
+    assert "AlphaService" in summary_text or "inventory" in summary_text, (
+        f"Expected summary to contain project facts. Got: {summary_text}"
+    )
 
     # Send a question that requires knowledge from early messages
     result = await graph.ainvoke(
@@ -125,6 +125,6 @@ async def test_summarization_triggers_and_preserves_context():
 
     response = result["messages"][-1].content
     assert "AlphaService" in response, f"Expected 'AlphaService' in response. Got: {response}"
-    assert (
-        "PostgreSQL" in response or "Postgres" in response
-    ), f"Expected 'PostgreSQL' in response. Got: {response}"
+    assert "PostgreSQL" in response or "Postgres" in response, (
+        f"Expected 'PostgreSQL' in response. Got: {response}"
+    )

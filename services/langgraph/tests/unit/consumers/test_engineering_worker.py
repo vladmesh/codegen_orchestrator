@@ -146,9 +146,9 @@ class TestHandleEngineeringSuccess:
         )
 
         deploy_data = json.loads(deploy_calls[0][0][1]["data"])
-        assert (
-            deploy_data["user_id"] == "625038902"
-        ), f"user_id mismatch. Full deploy_data: {deploy_data}"
+        assert deploy_data["user_id"] == "625038902", (
+            f"user_id mismatch. Full deploy_data: {deploy_data}"
+        )
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)

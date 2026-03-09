@@ -71,6 +71,6 @@ class TestSecretsInjection:
         ]
 
         for secret in required_for_deploy:
-            assert (
-                f"secrets.{secret}" in content
-            ), f"Required secret {secret} not found in deploy workflow"
+            assert f"secrets.{secret}" in content, (
+                f"Required secret {secret} not found in deploy workflow"
+            )

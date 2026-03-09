@@ -165,9 +165,9 @@ class TestWorkerExecution:
 
         assert worker_tag1, f"No worker tag found for container1: {tags1}"
         assert worker_tag2, f"No worker tag found for container2: {tags2}"
-        assert (
-            worker_tag1[0] != worker_tag2[0]
-        ), f"Tags should differ: {worker_tag1[0]} vs {worker_tag2[0]}"
+        assert worker_tag1[0] != worker_tag2[0], (
+            f"Tags should differ: {worker_tag1[0]} vs {worker_tag2[0]}"
+        )
 
     @pytest.mark.asyncio
     async def test_worker_executes_task_with_mocked_claude(self, redis_client, docker_client):

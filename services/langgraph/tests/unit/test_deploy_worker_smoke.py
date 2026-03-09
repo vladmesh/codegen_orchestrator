@@ -174,6 +174,6 @@ async def test_deploy_worker_missing_secrets_resets_project_status(
     # Should have: set to deploying, then rollback
     assert len(project_patch_calls) >= 2  # noqa: PLR2004
     last_project_status = project_patch_calls[-1][1]["json"]["status"]
-    assert (
-        last_project_status != "deploying"
-    ), "Project stuck in deploying — missing_user_secrets must roll back status"
+    assert last_project_status != "deploying", (
+        "Project stuck in deploying — missing_user_secrets must roll back status"
+    )

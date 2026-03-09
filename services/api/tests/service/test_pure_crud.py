@@ -35,9 +35,9 @@ async def test_post_projects_pure_db(async_client: AsyncClient):
     )
 
     # Assert success
-    assert (
-        response.status_code == status.HTTP_201_CREATED
-    ), f"Expected 201, got {response.status_code}: {response.text}"
+    assert response.status_code == status.HTTP_201_CREATED, (
+        f"Expected 201, got {response.status_code}: {response.text}"
+    )
 
     data = response.json()
     assert data["id"] == payload["id"]

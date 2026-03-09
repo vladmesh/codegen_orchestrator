@@ -92,9 +92,9 @@ class TestEnsureAllGroups:
         for binding in QUEUE_TOPOLOGY:
             groups = await fake_redis.xinfo_groups(binding.stream)
             group_names = [g["name"] for g in groups]
-            assert (
-                binding.group in group_names
-            ), f"Group {binding.group} missing on {binding.stream}"
+            assert binding.group in group_names, (
+                f"Group {binding.group} missing on {binding.stream}"
+            )
 
     @pytest.mark.asyncio
     async def test_idempotent(self, fake_redis):

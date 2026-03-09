@@ -69,9 +69,9 @@ class TestLangGraphIntegration:
         assert task["status"] == "failed"
         assert task["error_message"] is not None
         error_lower = task["error_message"].lower()
-        assert any(
-            keyword in error_lower for keyword in ["github", "github_org", "not set"]
-        ), f"Expected GitHub-related error, got: {task['error_message']}"
+        assert any(keyword in error_lower for keyword in ["github", "github_org", "not set"]), (
+            f"Expected GitHub-related error, got: {task['error_message']}"
+        )
 
     async def test_engineering_worker_missing_project_fails_task(
         self, redis_client, api_client, seed_task

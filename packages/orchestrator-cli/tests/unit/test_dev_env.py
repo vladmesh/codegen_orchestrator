@@ -35,9 +35,9 @@ def test_patch_db_hostname_removed():
     """_patch_db_hostname workaround removed — workers on codegen_worker (#22)."""
     import orchestrator_cli.commands.dev_env as mod
 
-    assert not hasattr(
-        mod, "_patch_db_hostname"
-    ), "_patch_db_hostname should be removed: workers on codegen_worker"
+    assert not hasattr(mod, "_patch_db_hostname"), (
+        "_patch_db_hostname should be removed: workers on codegen_worker"
+    )
 
 
 class TestDevEnvCompose:

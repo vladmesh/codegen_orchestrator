@@ -179,9 +179,9 @@ async def test_merge_secrets_assigns_new_dict_object(mock_decrypt, mock_encrypt)
 
     assert resp.status_code == 200  # noqa: PLR2004
     # The config dict assigned must be a NEW object, not the original
-    assert (
-        id(project.config) != original_config_id
-    ), "merge_secrets must create a new dict to trigger SQLAlchemy change detection"
+    assert id(project.config) != original_config_id, (
+        "merge_secrets must create a new dict to trigger SQLAlchemy change detection"
+    )
     # Original keys preserved
     assert project.config["modules"] == ["backend"]
 
