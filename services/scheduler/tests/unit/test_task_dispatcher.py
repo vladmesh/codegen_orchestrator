@@ -18,6 +18,10 @@ def redis_client():
     client = AsyncMock()
     client.publish_message = AsyncMock()
     client.publish_flat = AsyncMock()
+    client.redis = AsyncMock()
+    client.redis.hget = AsyncMock(return_value=None)
+    client.redis.hdel = AsyncMock()
+    client.redis.xadd = AsyncMock()
     return client
 
 
@@ -161,6 +165,58 @@ class TestDispatchTodoTasks:
         eng_msg = redis_client.publish_message.call_args[0][1]
         assert "User model" in eng_msg.description
         assert eng_msg.planning_task_id == "task-2"
+
+    @pytest.mark.asyncio
+    async def test_includes_story_id_in_engineering_message(self, api_client, redis_client):
+        """Dispatched task includes story_id for worker reuse."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-1",
+                "title": "Add user model",
+                "description": "Create model",
+                "type": "feature",
+                "project_id": "proj-1",
+                "story_id": "story-1",
+                "blocked_by_task_id": None,
+                "status": "todo",
+            }
+        ]
+        api_client.get_task_events.return_value = []
+        api_client.create_run.return_value = {"id": "run-1"}
+        api_client.transition_task.return_value = {}
+        api_client.get_story.return_value = {"user_id": "u-1"}
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        eng_msg = redis_client.publish_message.call_args[0][1]
+        assert eng_msg.story_id == "story-1"
+
+    @pytest.mark.asyncio
+    async def test_story_id_none_for_standalone_task(self, api_client, redis_client):
+        """Task without story_id → story_id=None in message."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-1",
+                "title": "Standalone task",
+                "description": "No story",
+                "type": "feature",
+                "project_id": "proj-1",
+                "story_id": None,
+                "blocked_by_task_id": None,
+                "status": "todo",
+            }
+        ]
+        api_client.create_run.return_value = {"id": "run-1"}
+        api_client.transition_task.return_value = {}
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        eng_msg = redis_client.publish_message.call_args[0][1]
+        assert eng_msg.story_id is None
 
 
 class TestCompleteStories:

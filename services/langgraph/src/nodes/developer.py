@@ -16,7 +16,7 @@ from shared.clients.github import GitHubAppClient
 from shared.contracts.queues.worker import ScaffoldConfig
 
 from ..clients.api import api_client
-from ..clients.worker_spawner import request_spawn
+from ..clients.worker_spawner import request_spawn, send_task_to_worker
 from ..config.constants import Timeouts
 from .base import FunctionalNode
 
@@ -149,16 +149,45 @@ class DeveloperNode(FunctionalNode):
             # Build task title based on action
             task_title = self._get_task_title(action, project_name)
 
-            # Spawn worker to implement business logic
-            worker_result = await request_spawn(
-                repo=repo_full_name,
-                github_token=access_token,
-                task_content=task_message,
-                task_title=task_title,
-                timeout_seconds=Timeouts.WORKER_SPAWN,
-                project_id=project_id,
-                scaffold_config=scaffold_config,
-            )
+            # Reuse existing worker if worker_id is in state (story-level reuse)
+            existing_worker_id = state.get("worker_id")
+            if existing_worker_id and not scaffold_config:
+                logger.info(
+                    "developer_reuse_worker",
+                    worker_id=existing_worker_id,
+                    project_name=project_name,
+                )
+                worker_result = await send_task_to_worker(
+                    worker_id=existing_worker_id,
+                    task_content=task_message,
+                    timeout_seconds=Timeouts.WORKER_SPAWN,
+                )
+                # Fall back to fresh spawn if worker is dead
+                if not worker_result.success and worker_result.error_message == "execution_timeout":
+                    logger.warning(
+                        "developer_reuse_failed_fallback",
+                        worker_id=existing_worker_id,
+                        project_name=project_name,
+                    )
+                    worker_result = await request_spawn(
+                        repo=repo_full_name,
+                        github_token=access_token,
+                        task_content=task_message,
+                        task_title=task_title,
+                        timeout_seconds=Timeouts.WORKER_SPAWN,
+                        project_id=project_id,
+                    )
+            else:
+                # Spawn fresh worker
+                worker_result = await request_spawn(
+                    repo=repo_full_name,
+                    github_token=access_token,
+                    task_content=task_message,
+                    task_title=task_title,
+                    timeout_seconds=Timeouts.WORKER_SPAWN,
+                    project_id=project_id,
+                    scaffold_config=scaffold_config,
+                )
 
             # Update project status based on scaffold result
             if scaffold_config and project_id:

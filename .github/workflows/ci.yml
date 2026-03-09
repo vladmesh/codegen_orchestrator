@@ -107,6 +107,8 @@ jobs:
         include:
           - service: api
             changed: ${{ needs.detect-changes.outputs.api }}
+          - service: langgraph
+            changed: ${{ needs.detect-changes.outputs.langgraph }}
           - service: scheduler
             changed: ${{ needs.detect-changes.outputs.scheduler }}
     steps:

@@ -17,7 +17,6 @@
 - [x] #47 Race Condition in set_project_secret (parallel tool calls)
 - [x] #42 Fix API Integration Test (test_post_projects_pure_db)
 - [x] #8 Workspace Failure Counter
-- [x] Update Ruff to latest version and reformat codebase
 - [x] Project ID → UUID + schema cleanup
 - [x] Fix compose.dev.yml ports conflict with orchestrator worker containers
 
@@ -81,11 +80,9 @@ PO умеет принимать от юзера высокоуровневое 
 - [ ] #62 /brainstorm resume — продолжение обсуждения существующего драфта
 - [ ] #59 PO work item tools (Step 4)
 
-## Admin dashboard v1
+## Admin dashboard v1 — COMPLETE
 
-Простейший веб-UI для оператора. Read-only: список юзеров, их проекты, статусы воркеров, переписки юзер↔PO. Минимальный стек.
-
-- [x] #49 Telegram: кнопка Add User для админов
+_Простейший веб-UI для оператора. Read-only: список юзеров, их проекты, статусы воркеров, переписки юзер↔PO. Минимальный стек._
 
 ## Frontend generation
 
@@ -212,8 +209,3 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 - [ ] Add Rust service type to services.yml
 
-
-## Unlinked Tasks
-
-- [ ] #1001 Pipeline failure supervisor — retry, fail-fast, admin logging
-- [ ] #1000 Smoke tests — raise project stack via worker-manager

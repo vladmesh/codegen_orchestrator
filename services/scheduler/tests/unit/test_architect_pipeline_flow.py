@@ -24,6 +24,10 @@ class TestDispatcherPipelineFlow:
         client = AsyncMock()
         client.publish_message = AsyncMock()
         client.publish_flat = AsyncMock()
+        client.redis = AsyncMock()
+        client.redis.hget = AsyncMock(return_value=None)
+        client.redis.hdel = AsyncMock()
+        client.redis.xadd = AsyncMock()
         return client
 
     @pytest.mark.asyncio

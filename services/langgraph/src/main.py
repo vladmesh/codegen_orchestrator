@@ -39,8 +39,8 @@ async def run_worker() -> None:
     if _po_enabled():
         from shared.redis_client import RedisStreamClient
 
-        from .po.consumer import run_po_consumer
-        from .po.reminders import run_reminder_poller
+        from .agents.po.reminders import run_reminder_poller
+        from .consumers.po import run_po_consumer
 
         settings = get_settings()
         poller_client = RedisStreamClient(redis_url=settings.redis_url)

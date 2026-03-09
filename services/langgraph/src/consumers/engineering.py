@@ -16,6 +16,7 @@ from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ..clients.story_worker_registry import get_story_worker, set_story_worker
 from ..clients.worker_spawner import delete_worker
 from ..nodes.resource_allocator import resource_allocator_node
 from ._base import start_worker
@@ -101,6 +102,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     skip_deploy = job_data.get("skip_deploy", False)
     user_id = job_data.get("user_id", "")
     planning_task_id = job_data.get("planning_task_id")
+    story_id = job_data.get("story_id")
 
     logger.info(
         "engineering_job_started",
@@ -228,6 +230,18 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 count=len(allocated_resources),
             )
 
+        # Look up existing worker for story-level reuse
+        existing_worker_id = None
+        if story_id:
+            existing_worker_id = await get_story_worker(redis.redis, story_id)
+            if existing_worker_id:
+                logger.info(
+                    "reusing_story_worker",
+                    story_id=story_id,
+                    worker_id=existing_worker_id,
+                    task_id=task_id,
+                )
+
         # Prepare EngineeringState
         subgraph_input = {
             "messages": [],
@@ -237,7 +251,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "action": action,
             "description": description,
             "commit_sha": None,
-            "worker_id": None,
+            "worker_id": existing_worker_id,
             "engineering_status": "idle",
             "iteration_count": 0,
             "test_results": None,
@@ -284,6 +298,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 user_id=user_id,
                 action=action,
                 planning_task_id=planning_task_id,
+                story_id=story_id,
             )
 
         else:
@@ -327,7 +342,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         return await _fail_job(task_id, str(e), planning_task_id)
 
 
-async def _handle_engineering_success(
+async def _handle_engineering_success(  # noqa: PLR0913
     result: dict,
     task_id: str,
     project: dict,
@@ -339,6 +354,7 @@ async def _handle_engineering_success(
     user_id: str = "",
     action: str = "create",
     planning_task_id: str | None = None,
+    story_id: str | None = None,
 ) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
     project_id = project["id"]
@@ -398,13 +414,26 @@ async def _handle_engineering_success(
             commit_sha=result.get("commit_sha"),
         )
     finally:
-        # Cleanup: delete worker container after CI gate (regardless of outcome)
+        # Worker lifecycle: keep alive for story reuse, or delete for standalone tasks
         if worker_id:
-            try:
-                await delete_worker(worker_id, reason="completed")
-                logger.info("worker_deleted_after_ci_gate", worker_id=worker_id)
-            except Exception as e:
-                logger.warning("worker_delete_failed", worker_id=worker_id, error=str(e))
+            if story_id:
+                # Story task: register worker for reuse by next task
+                try:
+                    await set_story_worker(redis.redis, story_id, worker_id)
+                except Exception as e:
+                    logger.warning(
+                        "story_worker_register_failed",
+                        worker_id=worker_id,
+                        story_id=story_id,
+                        error=str(e),
+                    )
+            else:
+                # Standalone task: delete worker immediately
+                try:
+                    await delete_worker(worker_id, reason="completed")
+                    logger.info("worker_deleted_after_ci_gate", worker_id=worker_id)
+                except Exception as e:
+                    logger.warning("worker_delete_failed", worker_id=worker_id, error=str(e))
 
     failed_count = sum(1 for a in ci_attempts if a["status"] == "failed")
 

@@ -22,6 +22,7 @@ from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
+from shared.contracts.queues.worker import DeleteWorkerCommand
 from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -36,6 +37,41 @@ DISPATCH_INTERVAL_SECONDS = 30
 STORY_STUCK_THRESHOLD_MINUTES = 5
 TASK_STUCK_THRESHOLD_MINUTES = 30
 STORY_MAX_ARCHITECT_RETRIES = 3
+
+# Story worker registry key (shared with langgraph service)
+STORY_WORKERS_KEY = "story:workers"
+WORKER_COMMANDS_STREAM = "worker:commands"
+
+
+async def _cleanup_story_worker(
+    redis_client: RedisStreamClient,
+    story_id: str,
+) -> None:
+    """Clean up the worker container associated with a story.
+
+    Reads worker_id from Redis registry, sends DeleteWorkerCommand,
+    then clears the registry entry.
+    """
+    redis = redis_client.redis
+    worker_id = await redis.hget(STORY_WORKERS_KEY, story_id)
+    if not worker_id:
+        return
+
+    if isinstance(worker_id, bytes):
+        worker_id = worker_id.decode()
+
+    # Send delete command to worker-manager
+    delete_cmd = DeleteWorkerCommand(
+        request_id=f"cleanup-story-{story_id}",
+        worker_id=worker_id,
+        reason="completed",
+    )
+    await redis.xadd(WORKER_COMMANDS_STREAM, {"data": delete_cmd.model_dump_json()})
+
+    # Clear registry entry
+    await redis.hdel(STORY_WORKERS_KEY, story_id)
+
+    logger.info("story_worker_cleaned_up", story_id=story_id, worker_id=worker_id)
 
 
 def _build_cumulative_context(sibling_events: list[dict]) -> str:
@@ -128,6 +164,7 @@ async def dispatch_todo_tasks(
             description=description,
             skip_deploy=True,  # Deploy handled at story level
             planning_task_id=task_id,
+            story_id=story_id,
         )
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
 
@@ -190,9 +227,44 @@ async def complete_stories(
         )
         await redis_client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
 
+        # Cleanup story worker container (no longer needed)
+        await _cleanup_story_worker(redis_client, story_id)
+
+        # Trigger next queued story for this project
+        await _trigger_next_story(api_client, redis_client, project_id)
+
         completed += 1
 
     return completed
+
+
+async def _trigger_next_story(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    project_id: str,
+) -> None:
+    """Find the next created story for a project and publish to architect:queue."""
+    created_stories = await api_client.get_stories_by_status("created")
+    # Filter to same project, sort by priority (lower = higher priority)
+    project_stories = sorted(
+        [s for s in created_stories if s.get("project_id") == project_id],
+        key=lambda s: s.get("priority", 0),
+    )
+    if not project_stories:
+        return
+
+    next_story = project_stories[0]
+    arch_msg = ArchitectMessage(
+        story_id=next_story["id"],
+        project_id=project_id,
+        user_id=next_story.get("user_id", ""),
+    )
+    await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
+    logger.info(
+        "next_story_triggered",
+        story_id=next_story["id"],
+        project_id=project_id,
+    )
 
 
 def _parse_datetime(iso_str: str) -> datetime:
@@ -217,14 +289,23 @@ async def supervise_stuck_stories(
     failed = 0
     retry_counts = _retry_counts or {}
 
+    # Build set of projects that already have an active story
+    active_stories = await api_client.get_stories_by_status("in_progress")
+    active_projects = {s.get("project_id") for s in active_stories}
+
     now = datetime.now(UTC)
 
     for story in stories:
         story_id = story["id"]
+        project_id = story.get("project_id")
         created_at = _parse_datetime(story["created_at"])
         age_minutes = (now - created_at).total_seconds() / 60
 
         if age_minutes < STORY_STUCK_THRESHOLD_MINUTES:
+            continue
+
+        # Skip if project already has an active story (sequential processing)
+        if project_id in active_projects:
             continue
 
         # Only retry if architect hasn't created any tasks yet
@@ -317,6 +398,9 @@ async def supervise_failed_tasks(
                     await api_client.transition_task(sibling["id"], "cancelled", "supervisor")
 
             await api_client.fail_story(story_id)
+
+            # Cleanup story worker container
+            await _cleanup_story_worker(redis_client, story_id)
 
             # Notify user
             story = await api_client.get_story(story_id) if story_id else {}

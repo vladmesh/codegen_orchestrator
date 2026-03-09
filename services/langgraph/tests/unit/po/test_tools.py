@@ -257,9 +257,15 @@ class TestCreateStory:
     ):
         """create_story publishes ArchitectMessage to architect:queue."""
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "status": "draft", "config": {"modules": ["backend"], "name": "my-bot"}}
-        )
+        project_data = {
+            "id": "abc",
+            "status": "draft",
+            "config": {"modules": ["backend"], "name": "my-bot"},
+        }
+        mock_api_client.get.side_effect = [
+            _make_response(project_data),
+            _make_response([]),  # no active stories
+        ]
         mock_api_client.patch.return_value = _make_response({"id": "abc"})
 
         result = await create_story.ainvoke(
@@ -299,9 +305,10 @@ class TestCreateStory:
     async def test_no_run_created(self, mock_api_client, mock_stream_client):
         """create_story should NOT create a Run (dispatcher does that)."""
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "status": "active", "config": {}}
-        )
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response([]),  # no active stories
+        ]
 
         await create_story.ainvoke(
             {
@@ -321,9 +328,14 @@ class TestCreateStory:
     async def test_persists_description_for_create(self, mock_api_client, mock_stream_client):
         """For action=create, should persist description to project config."""
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.return_value = _make_response(
+        project_resp = _make_response(
             {"id": "abc", "status": "draft", "config": {"modules": ["backend"], "name": "my-bot"}}
         )
+        mock_api_client.get.side_effect = [
+            project_resp,  # project status check
+            _make_response([]),  # no active stories
+            project_resp,  # re-fetch for config persist
+        ]
         mock_api_client.patch.return_value = _make_response({"id": "abc"})
 
         await create_story.ainvoke(
@@ -344,9 +356,10 @@ class TestCreateStory:
     async def test_no_patch_for_feature_on_active(self, mock_api_client, mock_stream_client):
         """For action=feature, should NOT persist description to project config."""
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "status": "active", "config": {}}
-        )
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response([]),  # no active stories
+        ]
 
         await create_story.ainvoke(
             {
@@ -363,6 +376,7 @@ class TestCreateStory:
     async def test_no_patch_for_fix(self, mock_api_client, mock_stream_client):
         """For action=fix, should NOT persist description to project config."""
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get.return_value = _make_response([])  # no active stories
 
         await create_story.ainvoke(
             {
@@ -379,9 +393,10 @@ class TestCreateStory:
     @pytest.mark.asyncio
     async def test_passes_user_id_to_architect_message(self, mock_api_client, mock_stream_client):
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
-        mock_api_client.get.return_value = _make_response(
-            {"id": "abc", "status": "draft", "config": {}}
-        )
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "draft", "config": {}}),
+            _make_response([]),  # no active stories
+        ]
 
         await create_story.ainvoke(
             {
@@ -397,6 +412,53 @@ class TestCreateStory:
         arch_msg = mock_stream_client.publish_message.call_args[0][1]
         assert isinstance(arch_msg, ArchitectMessage)
         assert arch_msg.user_id == "user-777"
+
+    @pytest.mark.asyncio
+    async def test_queues_story_when_active_story_exists(self, mock_api_client, mock_stream_client):
+        """If project has in_progress story, create story but don't publish to architect."""
+        mock_api_client.post.return_value = _make_response({"id": "story-new"})
+        # First GET: project status (active → action=feature)
+        # Second GET: stories list (has in_progress story)
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response([{"id": "story-old", "status": "in_progress"}]),
+        ]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Add feature",
+                "description": "New feature",
+            },
+            config=_make_config("user-42"),
+        )
+
+        # Story created
+        assert mock_api_client.post.call_count == 1
+        # But NOT published to architect:queue
+        mock_stream_client.publish_message.assert_not_called()
+        assert "queued" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_publishes_when_no_active_story(self, mock_api_client, mock_stream_client):
+        """If project has no in_progress story, publish to architect normally."""
+        mock_api_client.post.return_value = _make_response({"id": "story-new"})
+        mock_api_client.get.side_effect = [
+            _make_response({"id": "abc", "status": "active", "config": {}}),
+            _make_response([]),  # No active stories
+        ]
+
+        result = await create_story.ainvoke(
+            {
+                "project_id": "abc",
+                "title": "Add feature",
+                "description": "New feature",
+            },
+            config=_make_config("user-42"),
+        )
+
+        mock_stream_client.publish_message.assert_called_once()
+        assert "architect" in result.lower()
 
 
 class TestListStories:

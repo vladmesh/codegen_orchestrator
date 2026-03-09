@@ -7,19 +7,29 @@
 
 ## Current Task
 
-_(no task in progress)_
+**Worker reuse per story — spawn once, reuse for subsequent tasks** (`task-ff57dd21`)
+- **Status**: in_dev
+- **Plan**: yes
+- **Elapsed**: 2 min
+
+### Recent Events
+
+- `2026-03-09 13:00` backlog → todo
+- `2026-03-09 13:00` todo → in_dev
 
 ## Stats
 
-| backlog: 34 | todo: 0 | in_dev: 0 | in_ci: 1 | testing: 0 | done: 52 |
+| backlog: 32 | todo: 0 | in_dev: 1 | in_ci: 1 | testing: 0 | done: 49 |
 
 ## Recently Completed
 
+- Sequential story processing — one active story per project — 2026-03-09
+- #1001 Pipeline failure supervisor — retry, fail-fast, admin logging — 2026-03-09
 - #36 Architect: migrate from scheduler function to LangGraph ReAct agent — 2026-03-09
-- #35 LangGraph service directory refactoring (workers→consumers) — 2026-03-08
-- Architect node — story decomposition into tasks + task dispatcher — 2026-03-08
-- PO tools contract tests — validate payloads against API schemas — 2026-03-09
-- Decouple shared/ from Docker builds — reduce rebuild blast radius — 2026-03-08
+- Fix compose.dev.yml ports conflict with orchestrator worker containers
+ — 2026-03-08
+- Add E2E CI job for unified handlers (dual-transport pipeline)
+ — 2026-03-08
 
 ## Quick Links
 

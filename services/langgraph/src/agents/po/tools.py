@@ -227,9 +227,27 @@ async def create_story(
     story_id = resp.json()["id"]
     logger.info("po_story_created", story_id=story_id, project_id=project_id, title=title)
 
-    # 2. Publish to architect:queue for decomposition into tasks
-    # Architect will: decompose → create tasks → transition story to in_progress
+    # 2. Check if project already has an active story (sequential processing)
     user_id = config["configurable"].get("user_id", "unknown")
+    active_stories_resp = await api.get(
+        f"/api/stories/?project_id={project_id}&status=in_progress", headers=headers
+    )
+    active_stories = active_stories_resp.json() if active_stories_resp.is_success else []
+
+    if active_stories:
+        # Queue the story — it will be triggered when current story completes
+        logger.info(
+            "po_story_queued",
+            story_id=story_id,
+            project_id=project_id,
+            active_story=active_stories[0]["id"],
+        )
+        return (
+            f"Story created and queued (ID: {story_id}). "
+            f"Another story is in progress — this one will start automatically when it completes."
+        )
+
+    # No active story — publish to architect:queue for decomposition
     arch_msg = ArchitectMessage(
         story_id=story_id,
         project_id=project_id,

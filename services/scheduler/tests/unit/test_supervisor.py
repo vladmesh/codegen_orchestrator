@@ -19,6 +19,10 @@ def redis_client():
     client = AsyncMock()
     client.publish_message = AsyncMock()
     client.publish_flat = AsyncMock()
+    client.redis = AsyncMock()
+    client.redis.hget = AsyncMock(return_value=None)  # No story worker by default
+    client.redis.hdel = AsyncMock()
+    client.redis.xadd = AsyncMock()
     return client
 
 
@@ -35,14 +39,18 @@ class TestSuperviseStuckStories:
         from src.tasks.task_dispatcher import supervise_stuck_stories
 
         old = datetime.now(UTC) - timedelta(minutes=10)
-        api_client.get_stories_by_status.return_value = [
-            {
-                "id": "story-1",
-                "project_id": "proj-1",
-                "user_id": "u-1",
-                "created_at": _iso(old),
-            }
-        ]
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [
+                {
+                    "id": "story-1",
+                    "project_id": "proj-1",
+                    "user_id": "u-1",
+                    "created_at": _iso(old),
+                }
+            ]
+            if status == "created"
+            else []  # no in_progress stories
+        )
         # No tasks yet = architect hasn't run
         api_client.get_tasks_by_story.return_value = []
         # No previous retry events
@@ -60,14 +68,18 @@ class TestSuperviseStuckStories:
         from src.tasks.task_dispatcher import supervise_stuck_stories
 
         recent = datetime.now(UTC) - timedelta(minutes=1)
-        api_client.get_stories_by_status.return_value = [
-            {
-                "id": "story-1",
-                "project_id": "proj-1",
-                "user_id": "u-1",
-                "created_at": _iso(recent),
-            }
-        ]
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [
+                {
+                    "id": "story-1",
+                    "project_id": "proj-1",
+                    "user_id": "u-1",
+                    "created_at": _iso(recent),
+                }
+            ]
+            if status == "created"
+            else []
+        )
 
         result = await supervise_stuck_stories(api_client, redis_client)
 
@@ -80,14 +92,18 @@ class TestSuperviseStuckStories:
         from src.tasks.task_dispatcher import supervise_stuck_stories
 
         old = datetime.now(UTC) - timedelta(minutes=10)
-        api_client.get_stories_by_status.return_value = [
-            {
-                "id": "story-1",
-                "project_id": "proj-1",
-                "user_id": "u-1",
-                "created_at": _iso(old),
-            }
-        ]
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [
+                {
+                    "id": "story-1",
+                    "project_id": "proj-1",
+                    "user_id": "u-1",
+                    "created_at": _iso(old),
+                }
+            ]
+            if status == "created"
+            else []
+        )
         api_client.get_tasks_by_story.return_value = [{"id": "task-1"}]
 
         result = await supervise_stuck_stories(api_client, redis_client)
@@ -103,34 +119,23 @@ class TestSuperviseStuckStories:
             supervise_stuck_stories,
         )
 
-        old = datetime.now(UTC) - timedelta(minutes=10)
-        api_client.get_stories_by_status.return_value = [
-            {
-                "id": "story-1",
-                "project_id": "proj-1",
-                "user_id": "u-1",
-                "created_at": _iso(old),
-                "updated_at": _iso(old),
-            }
-        ]
-        api_client.get_tasks_by_story.return_value = []
-        # Story has been retried max times already (tracked via updated_at resets)
-        # We track retries via a counter stored in story metadata
-        # For now, simulate via updated_at being much older than threshold * retries
-        api_client.fail_story.return_value = {}
-
-        # Override the retry count getter to return max
         old_enough = datetime.now(UTC) - timedelta(minutes=10 * (STORY_MAX_ARCHITECT_RETRIES + 1))
-        api_client.get_stories_by_status.return_value = [
-            {
-                "id": "story-1",
-                "project_id": "proj-1",
-                "user_id": "u-1",
-                "created_at": _iso(old_enough),
-                "updated_at": _iso(old),
-            }
-        ]
+        old = datetime.now(UTC) - timedelta(minutes=10)
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [
+                {
+                    "id": "story-1",
+                    "project_id": "proj-1",
+                    "user_id": "u-1",
+                    "created_at": _iso(old_enough),
+                    "updated_at": _iso(old),
+                }
+            ]
+            if status == "created"
+            else []  # no in_progress stories
+        )
         api_client.get_tasks_by_story.return_value = []
+        api_client.fail_story.return_value = {}
 
         result = await supervise_stuck_stories(
             api_client, redis_client, _retry_counts={"story-1": STORY_MAX_ARCHITECT_RETRIES}
@@ -138,6 +143,109 @@ class TestSuperviseStuckStories:
 
         assert result["failed"] == 1
         api_client.fail_story.assert_called_once_with("story-1")
+
+    @pytest.mark.asyncio
+    async def test_skips_created_story_when_project_has_active(self, api_client, redis_client):
+        """Story stuck in created but project has an in_progress story → skip."""
+        from src.tasks.task_dispatcher import supervise_stuck_stories
+
+        old = datetime.now(UTC) - timedelta(minutes=10)
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [
+                {
+                    "id": "story-queued",
+                    "project_id": "proj-1",
+                    "user_id": "u-1",
+                    "created_at": _iso(old),
+                }
+            ]
+            if status == "created"
+            else [{"id": "story-active", "project_id": "proj-1"}]
+        )
+        api_client.get_tasks_by_story.return_value = []
+
+        result = await supervise_stuck_stories(api_client, redis_client)
+
+        assert result["retried"] == 0
+        assert result["failed"] == 0
+        redis_client.publish_message.assert_not_called()
+
+
+class TestCompleteStoriesTriggersNext:
+    """After completing a story, trigger the next queued story for the same project."""
+
+    @pytest.mark.asyncio
+    async def test_triggers_next_created_story(self, api_client, redis_client):
+        """Story completed → next created story for same project published to architect."""
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [
+                {
+                    "id": "story-done",
+                    "project_id": "proj-1",
+                    "user_id": "u-1",
+                }
+            ]
+            if status == "in_progress"
+            else [
+                {
+                    "id": "story-next",
+                    "project_id": "proj-1",
+                    "user_id": "u-2",
+                    "priority": 0,
+                    "created_at": _iso(datetime.now(UTC)),
+                }
+            ]
+        )
+        api_client.get_tasks_by_story.return_value = [
+            {"id": "task-1", "status": "done"},
+        ]
+        api_client.transition_story.return_value = {}
+        api_client.get_story.return_value = {"user_id": "u-1"}
+
+        completed = await complete_stories(api_client, redis_client)
+
+        assert completed == 1
+        # Should publish architect message for next story
+        from shared.queues import ARCHITECT_QUEUE
+
+        arch_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == ARCHITECT_QUEUE
+        ]
+        assert len(arch_calls) == 1
+        assert arch_calls[0][0][1].story_id == "story-next"
+
+    @pytest.mark.asyncio
+    async def test_no_next_story_when_none_queued(self, api_client, redis_client):
+        """Story completed but no created stories for project → no architect trigger."""
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.side_effect = lambda status: (
+            [
+                {
+                    "id": "story-done",
+                    "project_id": "proj-1",
+                    "user_id": "u-1",
+                }
+            ]
+            if status == "in_progress"
+            else []
+        )
+        api_client.get_tasks_by_story.return_value = [
+            {"id": "task-1", "status": "done"},
+        ]
+        api_client.transition_story.return_value = {}
+        api_client.get_story.return_value = {"user_id": "u-1"}
+
+        await complete_stories(api_client, redis_client)
+
+        from shared.queues import ARCHITECT_QUEUE
+
+        arch_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == ARCHITECT_QUEUE
+        ]
+        assert len(arch_calls) == 0
 
 
 class TestSuperviseFailedTasks:
@@ -290,3 +398,86 @@ class TestSuperviseStuckTasks:
 
         assert result["timed_out"] == 0
         api_client.transition_task.assert_not_called()
+
+
+class TestStoryWorkerCleanup:
+    """Cleanup story workers on story complete/fail."""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_story_complete(self, api_client, redis_client):
+        """Story completed → worker container deleted, registry cleared."""
+        from src.tasks.task_dispatcher import STORY_WORKERS_KEY, complete_stories
+
+        api_client.get_stories_by_status.return_value = [
+            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+        ]
+        api_client.get_tasks_by_story.return_value = [
+            {"id": "task-1", "status": "done"},
+        ]
+        api_client.transition_story.return_value = {}
+        api_client.get_story.return_value = {"user_id": "u-1"}
+
+        # Story has a worker registered
+        redis_client.redis.hget.return_value = b"dev-story-worker"
+
+        await complete_stories(api_client, redis_client)
+
+        # Should lookup worker
+        redis_client.redis.hget.assert_called_with(STORY_WORKERS_KEY, "story-1")
+        # Should send delete command
+        redis_client.redis.xadd.assert_called_once()
+        # Should clear registry
+        redis_client.redis.hdel.assert_called_with(STORY_WORKERS_KEY, "story-1")
+
+    @pytest.mark.asyncio
+    async def test_no_cleanup_when_no_worker(self, api_client, redis_client):
+        """Story completed but no worker registered → no cleanup."""
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.return_value = [
+            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+        ]
+        api_client.get_tasks_by_story.return_value = [
+            {"id": "task-1", "status": "done"},
+        ]
+        api_client.transition_story.return_value = {}
+        api_client.get_story.return_value = {"user_id": "u-1"}
+
+        # No worker registered
+        redis_client.redis.hget.return_value = None
+
+        await complete_stories(api_client, redis_client)
+
+        # Should not send delete command or clear registry
+        redis_client.redis.xadd.assert_not_called()
+        redis_client.redis.hdel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_story_failure(self, api_client, redis_client):
+        """Story failed (task retries exhausted) → worker cleaned up."""
+        from src.tasks.task_dispatcher import STORY_WORKERS_KEY, supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-1",
+                "story_id": "story-1",
+                "current_iteration": 3,
+                "max_iterations": 3,
+            }
+        ]
+        api_client.get_tasks_by_story.return_value = [
+            {"id": "task-1", "status": "failed"},
+        ]
+        api_client.transition_task.return_value = {}
+        api_client.fail_story.return_value = {}
+        api_client.get_story.return_value = {"user_id": "u-1"}
+
+        # Story has a worker registered
+        redis_client.redis.hget.return_value = b"dev-failed-worker"
+
+        await supervise_failed_tasks(api_client, redis_client)
+
+        # Should cleanup worker
+        redis_client.redis.hget.assert_called_with(STORY_WORKERS_KEY, "story-1")
+        redis_client.redis.xadd.assert_called_once()
+        redis_client.redis.hdel.assert_called_with(STORY_WORKERS_KEY, "story-1")
