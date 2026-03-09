@@ -7,6 +7,18 @@
 
 ## Queue (ordered by priority, first = next)
 
+### #36 Architect: migrate from scheduler function to LangGraph ReAct agent
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: ## Why  The Architect is currently a plain function (decompose_story()) in services/scheduler/src/tasks/architect_consumer.py. It does a single LLM call (raw HTTP to OpenRouter), parses JSON, creates tasks via API. Problems:  1. Not extensible — no tool use, no reasoning loop 2. Not uniform — eve...
+
+### Update Ruff to latest version and reformat codebase
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Currently CI is pinned to ruff 0.8.4. Needs to be bumped to the latest version and ruff format executed across all modules.
+
 ### PO tools contract tests — validate payloads against API schemas
 - **Priority**: CRITICAL
 - **Plan**: —
@@ -235,6 +247,7 @@
 
 ## Done (last 10)
 
+- #35 LangGraph service directory refactoring (workers→consumers) — 2026-03-08
 - Architect node — story decomposition into tasks + task dispatcher — 2026-03-08
 - Decouple shared/ from Docker builds — reduce rebuild blast radius — 2026-03-08
 - Fix compose.dev.yml ports conflict with orchestrator worker containers
@@ -250,8 +263,6 @@
 - Spec-first async messaging (Redis Streams + FastStream)
  — 2026-03-08
 - Add list_users operation to reference User domain
- — 2026-03-08
-- Fix tg_bot AGENTS.md wrong env var + add router/list examples
  — 2026-03-08
 
 ## Ideas

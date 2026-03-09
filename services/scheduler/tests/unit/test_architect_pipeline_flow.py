@@ -1,7 +1,7 @@
-"""Flow test for architect pipeline: story → architect → tasks → dispatcher → runs.
+"""Flow test for task dispatcher pipeline: tasks → dispatcher → runs.
 
-Validates the full pipeline with all external dependencies mocked.
-Tests the interaction between architect consumer and task dispatcher.
+Validates task dispatcher picks up tasks and completes stories.
+Architect decomposition is now in langgraph service (tested separately).
 """
 
 from __future__ import annotations
@@ -10,11 +10,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from shared.contracts.queues.architect import ArchitectMessage
 
-
-class TestArchitectPipelineFlow:
-    """End-to-end flow test with mocked API + LLM."""
+class TestDispatcherPipelineFlow:
+    """Test dispatcher flow with pre-created tasks (as architect would produce)."""
 
     @pytest.fixture
     def api_client(self):
@@ -29,72 +27,12 @@ class TestArchitectPipelineFlow:
         return client
 
     @pytest.mark.asyncio
-    async def test_full_flow_architect_then_dispatch(self, api_client, redis_client):
-        """Story → architect decomposes into 2 tasks → dispatcher picks them up."""
-        from unittest.mock import patch
-
-        from src.tasks.architect_consumer import decompose_story
+    async def test_dispatch_then_complete(self, api_client, redis_client):
+        """Tasks created by architect → dispatcher picks them up → story completes."""
         from src.tasks.task_dispatcher import complete_stories, dispatch_todo_tasks
 
-        # --- Phase 1: Architect decomposes story ---
+        # --- Phase 1: Dispatcher picks up first unblocked task ---
 
-        api_client.get_story.return_value = {
-            "id": "story-1",
-            "title": "Add auth",
-            "description": "JWT auth with login",
-            "project_id": "proj-1",
-            "user_id": "u-1",
-        }
-        api_client.get_project.return_value = {
-            "id": "proj-1",
-            "name": "my-api",
-            "config": {"detailed_spec": "REST API"},
-        }
-        api_client.get_tasks_by_story.return_value = []
-        api_client.create_task.side_effect = [
-            {"id": "task-A"},
-            {"id": "task-B"},
-        ]
-        api_client.transition_story.return_value = {}
-
-        llm_response = [
-            {
-                "title": "Add User model",
-                "description": "SQLAlchemy model",
-                "type": "feature",
-                "acceptance_criteria": "User table exists",
-                "blocked_by_index": None,
-            },
-            {
-                "title": "Add login endpoint",
-                "description": "POST /auth/login",
-                "type": "feature",
-                "acceptance_criteria": "Returns JWT",
-                "blocked_by_index": 0,
-            },
-        ]
-
-        msg = ArchitectMessage(story_id="story-1", project_id="proj-1", user_id="u-1")
-        with patch(
-            "src.tasks.architect_consumer.call_llm_decompose",
-            new_callable=AsyncMock,
-            return_value=llm_response,
-        ):
-            await decompose_story(msg, api_client)
-
-        # Architect created 2 tasks
-        assert api_client.create_task.call_count == 2
-
-        # Second task blocked by first
-        second_task_data = api_client.create_task.call_args_list[1][0][0]
-        assert second_task_data["blocked_by_task_id"] == "task-A"
-
-        # Story transitioned to in_progress
-        api_client.transition_story.assert_called_with("story-1", "start")
-
-        # --- Phase 2: Dispatcher picks up first task ---
-
-        api_client.reset_mock()
         api_client.get_tasks_by_status.return_value = [
             {
                 "id": "task-A",
@@ -137,7 +75,7 @@ class TestArchitectPipelineFlow:
         assert eng_msg.planning_task_id == "task-A"
         assert eng_msg.skip_deploy is True
 
-        # --- Phase 3: After task-A completes, task-B gets dispatched ---
+        # --- Phase 2: After task-A completes, task-B gets dispatched ---
 
         api_client.reset_mock()
         redis_client.reset_mock()
@@ -176,7 +114,7 @@ class TestArchitectPipelineFlow:
         # Should include context from task-A
         assert "User model created" in eng_msg.description
 
-        # --- Phase 4: After all tasks done, story completes ---
+        # --- Phase 3: After all tasks done, story completes ---
 
         api_client.reset_mock()
         redis_client.reset_mock()

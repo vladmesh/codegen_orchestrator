@@ -46,7 +46,7 @@ Ref: brainstorm bs-4fc78a0e (architect-node-orchestration.md)
    - **Test**: Unit test: mock API + Redis, verify ArchitectMessage published, no Run created, story transitioned. ⚠️ Changes PO tool contract.
 
 4. [ ] Engineering worker — task status updates + event writing, no deploy
-   - **Input**: `services/langgraph/src/consumers/engineering.py`, task events API
+   - **Input**: `services/langgraph/src/workers/engineering_worker.py`, task events API
    - **Output**: When run has linked `task_id`: (1) update task status alongside run status (in_dev → in_ci → done/failed via task API), (2) on completion write `iteration_end` event with details: `{files_changed, commit_sha, summary, ci_result}`, (3) **skip deploy trigger** — do not publish to deploy:queue (deploy moves to dispatcher on story complete). Graceful: skip task updates if no task_id linked (backward compat — old runs without task_id still trigger deploy as before).
    - **Test**: Unit test: mock API, verify task transitions + event written + no deploy when task_id present. Test backward compat (no task_id → old behavior with deploy).
 

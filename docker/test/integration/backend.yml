@@ -46,6 +46,22 @@ services:
     networks:
       - backend-test
 
+  architect-worker:
+    build:
+      context: ../../..
+      dockerfile: services/langgraph/Dockerfile
+    command: ["python", "-m", "src.consumers.architect"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - backend-test
+
   worker-manager:
     build:
       context: ../../..

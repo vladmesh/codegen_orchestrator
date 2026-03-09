@@ -39,6 +39,7 @@ async def run_queue_worker(
     service_name: str,
     queue: str,
     process_fn: ProcessFn,
+    group: str = WORKER_GROUP,
 ) -> None:
     """Generic worker loop for Redis Stream queue consumption.
 
@@ -46,6 +47,7 @@ async def run_queue_worker(
         service_name: Name for logging and consumer identification
         queue: Redis Stream queue name to consume from
         process_fn: Async function(job_data, redis) -> result dict
+        group: Consumer group name (defaults to WORKER_GROUP)
     """
     global _shutdown
     _shutdown = False
@@ -62,7 +64,7 @@ async def run_queue_worker(
     try:
         async for msg in redis.consume(
             queue,
-            WORKER_GROUP,
+            group,
             consumer_name,
             auto_ack=False,
             claim_pending=True,
@@ -74,7 +76,7 @@ async def run_queue_worker(
             try:
                 result = await process_fn(msg.data, redis)
                 msg.data.update(result)
-                await redis.ack(queue, WORKER_GROUP, msg.message_id)
+                await redis.ack(queue, group, msg.message_id)
                 logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
             except Exception as e:
                 logger.error(
@@ -93,6 +95,7 @@ def start_worker(
     service_name: str,
     queue: str,
     process_fn: ProcessFn,
+    group: str = WORKER_GROUP,
 ) -> None:
     """Entry point: register signal handlers and run the worker loop.
 
@@ -100,8 +103,9 @@ def start_worker(
         service_name: Name for logging and consumer identification
         queue: Redis Stream queue name to consume from
         process_fn: Async function(job_data, redis) -> result dict
+        group: Consumer group name (defaults to WORKER_GROUP)
     """
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
 
-    asyncio.run(run_queue_worker(service_name, queue, process_fn))
+    asyncio.run(run_queue_worker(service_name, queue, process_fn, group=group))

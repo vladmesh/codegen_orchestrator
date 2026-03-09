@@ -4,6 +4,9 @@
 
 ## 2026-03-09
 
+### Refactored
+- **LangGraph service directory refactoring** (#35): Renamed `src/workers/` → `src/consumers/` (with `_worker` suffix dropped from files), dissolved `src/worker/` module into `src/` root, centralized PO prompts under `src/prompts/po/`. Updated Dockerfile, docker-compose, integration test config, and all imports. Pure structure change — no business logic modifications.
+
 ### Added
 - **Architect node — story decomposition into tasks + task dispatcher** (#34): Full architect pipeline: story → architect:queue → LLM decomposition → N tasks with `blocked_by_task_id` chains → task dispatcher → engineering runs. Architect consumer runs in scheduler with concurrent processing (Semaphore(5)). Task dispatcher polls every 30s: dispatches unblocked todo tasks with cumulative context from sibling task events, completes stories when all tasks done (triggers deploy + PO notification). Engineering worker now updates task status alongside run status and skips per-task deploy. PO `create_story` tool publishes to architect:queue instead of engineering:queue.
 

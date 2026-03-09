@@ -201,3 +201,69 @@ for task in get_tasks(status="todo"):
 - → idea: "Architect ↔ PO channel — ask clarifying questions through PO"
 - → idea: "Parallel task execution limits — rate-limit concurrent runs"
 
+---
+
+## Post-Implementation Analysis (2026-03-09)
+
+#34 реализован и замержен. Пайплайн работает: PO → architect:queue → LLM decomposition → tasks с blocked_by → dispatcher → engineering:queue → worker → task done → story complete → deploy.
+
+### Что замкнуто
+- Story → tasks decomposition (LLM, concurrent consumer)
+- Task dispatch с проверкой blockers и cumulative context от sibling tasks
+- Engineering worker обновляет task status + пишет iteration_end events
+- Story auto-complete + deploy trigger + PO notification при all tasks done
+- Backward compatibility: старые runs без planning_task_id работают как раньше
+
+### Незамкнутые места (gaps)
+
+#### Gap 1: Task failure → story stuck
+Engineering worker ставит task в `failed`, но **никто не реагирует**. Dispatcher ищет только `todo` задачи. Story зависает навечно.
+
+Нужно:
+- Dispatcher должен обнаруживать failed tasks
+- Retry policy: автоматический reopen failed task (до N попыток)
+- Story failure: если task failed после N retries → story → failed
+- PO notification при каждом task failure (не только при story complete)
+
+#### Gap 2: PO не видит прогресс
+`po:proactive` шлётся только при story complete. Между "Story sent to architect" и "Story completed" — тишина. Юзер не знает что происходит.
+
+Нужно:
+- Architect done notification: "Story разбита на N задач: [список]"
+- Task started/completed notifications: "Задача 2/5 выполнена: Add login endpoint"
+- Task failure notification: "Задача 3 не удалась: <причина>. Перезапускаю..."
+
+#### Gap 3: Architect error handling
+Если LLM вернул невалидный ответ или API упал при создании tasks — story остаётся в `draft`, никто не узнает.
+
+Нужно:
+- Retry с exponential backoff при LLM/API errors
+- Fallback: если decomposition failed N раз → story → failed + PO notification
+- Валидация LLM output (минимум 1 task, корректные типы, нет циклических зависимостей)
+
+#### Gap 4: Worker reuse per story (optimization)
+Каждый task спавнит новый worker container + git clone. Для story из 5 tasks — 5x overhead (spawn ~30s + clone ~20s каждый).
+
+Решение (отложено, не блокер):
+- При первом task story: spawn worker, сохранить worker_id в run_metadata
+- При следующих tasks: найти живой worker по story_id, передать worker_id в EngineeringMessage
+- При story complete: kill worker через worker:commands
+
+#### Gap 5: Action mapping (create vs feature)
+PO передаёт action в story. Architect создаёт tasks с `type` (feature/fix). Dispatcher берёт task.type как action для EngineeringMessage. Но для первого проекта нужен `create` (scaffold), а для существующего — `feature`/`fix`. Сейчас architect не знает эту разницу.
+
+Решение: dispatcher проверяет project.status — если `draft` → action=create для первого task, feature для остальных.
+
+### Приоритет закрытия gaps
+
+1. **Gap 1 + Gap 3** (failure handling) — без этого pipeline unreliable, story зависает при любом сбое
+2. **Gap 2** (PO notifications) — UX, юзер в темноте
+3. **Gap 5** (action mapping) — баг для create-проектов
+4. **Gap 4** (worker reuse) — оптимизация, не блокер
+
+### Action Items (new)
+- → new task: "Task failure handling — retry policy, story failure, PO notification"
+- → new task: "Architect error handling — retry, validation, fallback to story failed"
+- → new task: "PO progress notifications — architect done, task progress, task failure"
+- → new task: "Dispatcher action mapping — create vs feature based on project status"
+- → idea (deferred): "Worker reuse per story — spawn once, reuse for subsequent tasks"

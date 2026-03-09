@@ -18,7 +18,6 @@ from shared.log_config import setup_logging
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from shared.redis_client import RedisStreamClient
 
-from .tasks.architect_consumer import architect_consumer_loop
 from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker
 from .tasks.provisioner_result_listener import process_provisioner_result
@@ -91,7 +90,6 @@ async def main():
             "health_checker",
             "rag_summarizer",
             "provisioner_results",
-            "architect_consumer",
             "task_dispatcher",
         ],
     )
@@ -103,7 +101,6 @@ async def main():
         asyncio.create_task(health_check_worker(), name="health_checker"),
         asyncio.create_task(rag_summarizer_worker(), name="rag_summarizer"),
         asyncio.create_task(provisioner_results_worker(), name="provisioner_results"),
-        asyncio.create_task(architect_consumer_loop(), name="architect_consumer"),
         asyncio.create_task(task_dispatcher_loop(), name="task_dispatcher"),
     ]
 

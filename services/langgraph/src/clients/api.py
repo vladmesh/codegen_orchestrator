@@ -144,6 +144,20 @@ class LanggraphAPIClient:
     async def update_incident(self, incident_id: int, payload: dict) -> dict:
         return await self._patch_json(f"incidents/{incident_id}", json=payload)
 
+    # --- Architect: story/task methods ---
+
+    async def get_story(self, story_id: str) -> dict:
+        return await self._get_json(f"stories/{story_id}")
+
+    async def get_tasks_by_story(self, story_id: str) -> list[dict]:
+        return await self._get_json("tasks/", params={"story_id": story_id})
+
+    async def create_task(self, task_data: dict) -> dict:
+        return await self._post_json("tasks/", json=task_data)
+
+    async def transition_story(self, story_id: str, action: str) -> dict:
+        return await self._post_json(f"stories/{story_id}/{action}")
+
     # --- Phase 4: Project methods ---
 
     async def get_project(self, project_id: str, *, telegram_id: int | None = None) -> dict | None:

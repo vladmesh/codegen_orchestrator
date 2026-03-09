@@ -136,6 +136,32 @@ services:
     deploy:
       replicas: 1
 
+  architect-worker:
+    build:
+      context: .
+      dockerfile: services/langgraph/Dockerfile
+    command: python -m src.consumers.architect
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+      ARCHITECT_LLM_API_KEY: ${ARCHITECT_LLM_API_KEY:-}
+      ARCHITECT_LLM_BASE_URL: ${ARCHITECT_LLM_BASE_URL:-}
+      ARCHITECT_LLM_MODEL: ${ARCHITECT_LLM_MODEL:-}
+    volumes:
+      - ./services/langgraph/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
+    depends_on:
+      - api
+      - redis
+    networks:
+      - internal
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
   infra-service:
     build:
       context: .
