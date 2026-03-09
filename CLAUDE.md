@@ -59,7 +59,7 @@ Caddy (/webhooks/*) → API
 ```
 
 **Key Components:**
-- **PO ReactAgent**: LangGraph agent (`services/langgraph/src/po/`), communicates via Redis Streams
+- **PO ReactAgent**: LangGraph agent (`services/langgraph/src/agents/po/`), communicates via Redis Streams
 - **Tool System**: PO uses native Python tools; Developer workers use CLI tools via OpenAPI
 - **Session Management**: PostgreSQL checkpointer (per-user thread), Redis streams for I/O
 

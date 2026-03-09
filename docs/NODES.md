@@ -8,9 +8,9 @@
 
 **Роль**: Центральный координатор. Управляет жизненным циклом проекта через API tools, единственная точка коммуникации с пользователем.
 
-**Реализация**: LangGraph `create_react_agent` в `services/langgraph/src/po/`. Runs as an async consumer inside the langgraph container — no separate Docker container needed. Conversation state persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); falls back to in-memory `MemorySaver` without `CHECKPOINT_DATABASE_URL`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) — old messages are summarized into a running summary stored in `state["context"]` instead of being silently dropped.
+**Реализация**: LangGraph `create_react_agent` в `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container — no separate Docker container needed. Conversation state persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); falls back to in-memory `MemorySaver` without `CHECKPOINT_DATABASE_URL`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) — old messages are summarized into a running summary stored in `state["context"]` instead of being silently dropped.
 
-**Инструменты** (`src/po/tools.py`):
+**Инструменты** (`src/agents/po/tools.py`):
 - `create_project`, `list_projects`, `get_project`: управление проектами через API
 - `set_project_secret`: сохранение секретов
 - `create_story`: создание user story + автоматический запуск engineering work
