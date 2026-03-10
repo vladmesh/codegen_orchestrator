@@ -62,8 +62,10 @@ async def trigger_scaffolds(
         repo = repos[0]  # Primary repo (1:1 for now)
         repo_id = repo["id"]
 
-        # Build scaffold message
-        modules = ",".join(m.value for m in project.modules) if project.modules else "backend"
+        # Build scaffold message — modules live in config, not as a top-level field
+        config = project.config or {}
+        config_modules = config.get("modules", ["backend"])
+        modules = ",".join(config_modules) if config_modules else "backend"
         msg = ScaffoldMessage(
             project_id=project_id,
             repository_id=repo_id,
@@ -71,7 +73,7 @@ async def trigger_scaffolds(
             template_repo=DEFAULT_TEMPLATE_REPO,
             project_name=project.name,
             modules=modules,
-            task_description=project.description or "",
+            task_description=config.get("description", project.description or ""),
         )
 
         await redis_client.redis.xadd(

@@ -78,5 +78,6 @@ class ProjectDTO(BaseModel):
     description: str | None = None
     status: ProjectStatus
     modules: list[ServiceModule] = []
+    config: dict = {}
     owner_id: int
     project_spec: dict | None = None
