@@ -7,12 +7,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Smart CI failure triage: worker reject signal + CI-fix task template
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: CI gate sends all failures to worker even infra issues. Worker cannot signal not my problem, causing wasted retries (3x supervisor + 2x CI gate = 5 useless cycles).  Solution (brainstorm bs-65cfb063): 1. CI gate pre-filter: transient failures -> backoff+rerun without worker 2. CI-fix TASK.md temp...
-
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
 - **Plan**: yes (in work item)
@@ -229,6 +223,7 @@
 
 ## Done (last 10)
 
+- Smart CI failure triage: worker reject signal + CI-fix task template — 2026-03-10
 - Worker-manager mounts workspace volume by repo_id — 2026-03-09
 - Architect receives tree + specs, creates tasks for diff — 2026-03-09
 - Create scaffolder microservice — 2026-03-09
@@ -239,8 +234,6 @@
 - Fix compose.dev.yml ports conflict with orchestrator worker containers
  — 2026-03-08
 - Add E2E CI job for unified handlers (dual-transport pipeline)
- — 2026-03-08
-- Fix Jinja whitespace in doc templates + add cache mounts to Dockerfiles
  — 2026-03-08
 
 ## Ideas

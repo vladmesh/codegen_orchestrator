@@ -4,6 +4,9 @@
 
 ## 2026-03-10
 
+### Added
+- **Smart CI failure triage: worker reject signal** (#task-61339aef): Workers can now signal `## REJECTED` when a CI failure is infrastructure-related (missing secrets, registry auth, Docker issues). ResultParser detects the marker, SpawnResult carries `reject_reason`, CI gate stops retries immediately. Engineering consumer transitions task to `failed` with `failure_metadata.failure_reason=worker_rejected`, story to `failed` with reject metadata, and calls `notify_admins()`. Dispatcher skips siblings of rejected tasks; supervisor skips rejected tasks from retry. CI-fix prompt template includes structured reject instructions. 27 new tests across 6 test files.
+
 ### Fixed
 - **Scaffolder: create GitHub repo before clone** (E2E pipeline blocker): Scaffolder tried to `git clone` a repo that didn't exist on GitHub. Added `create_repo()` call before clone (idempotent, ignores 422).
 - **Scaffolder: update `git_url` after repo creation** (E2E pipeline blocker): Repository `git_url` stayed as `pending://` placeholder — CI gate couldn't find the repo. Scaffolder now updates `git_url` to real GitHub URL after creating the repo.
