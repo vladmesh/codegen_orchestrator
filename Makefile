@@ -82,7 +82,7 @@ up:
 
 down:
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
-	$(DOCKER_COMPOSE) down
+	$(DOCKER_COMPOSE) down --remove-orphans
 	@docker network rm codegen_worker 2>/dev/null || true
 
 stop: down
@@ -99,7 +99,7 @@ build:
 rebuild:
 	@echo "🔄 Rebuilding everything..."
 	@echo "🛑 Stopping stack..."
-	$(DOCKER_COMPOSE) down
+	$(DOCKER_COMPOSE) down --remove-orphans
 	@echo "🔪 Killing worker containers..."
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
 	@echo "🧹 Cleaning cached worker:* images..."
@@ -273,7 +273,7 @@ nuke-hard: .nuke-hard-prune .nuke-common
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
 	@echo "🧹 Cleaning up worker images..."
 	@docker images --filter "reference=worker*" -q | xargs -r docker rmi -f 2>/dev/null || true
-	$(DOCKER_COMPOSE) down
+	$(DOCKER_COMPOSE) down --remove-orphans
 	@echo "🧹 Removing volumes (preserving caddy-data for TLS certificates)..."
 	@for vol in db_data redis_data caddy-config registry-data; do \
 		docker volume rm codegen_orchestrator_$$vol 2>/dev/null || true; \
