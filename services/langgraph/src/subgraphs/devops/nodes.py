@@ -89,6 +89,15 @@ class SecretResolverNode(FunctionalNode):
                 else:
                     missing_user.append(var)
 
+        # Phase 4: Inject PO-provided secrets not in .env.example
+        # env_analysis only covers vars from .env.example. PO may have set
+        # secrets (e.g. ADMIN_TELEGRAM_ID) that the worker used in code but
+        # didn't add to .env.example. Ensure they always reach the .env.
+        for var, val in config_secrets.items():
+            if var not in resolved:
+                resolved[var] = val
+                logger.info("secret_injected_from_config", var=var)
+
         # Save newly generated secrets to project config for reuse on redeploy
         if newly_generated and project_id != "unknown":
             await self._save_secrets_to_project(project_id, newly_generated)

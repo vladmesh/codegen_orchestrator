@@ -363,6 +363,43 @@ class TestSecretResolverGroupIntegration:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.api_client")
     @patch("src.subgraphs.devops.nodes.decrypt_dict")
+    async def test_config_secrets_injected_when_missing_from_env_analysis(
+        self, mock_decrypt, mock_api
+    ):
+        """PO-provided secrets not in .env.example must still appear in resolved."""
+        bot_token_key = "TELEGRAM_BOT_TOKEN"  # noqa: S105
+        admin_id_key = "ADMIN_TELEGRAM_ID"
+        mock_decrypt.return_value = {
+            bot_token_key: "decrypted-bot-token",
+            admin_id_key: "999",
+        }
+        mock_api.merge_secrets = AsyncMock(return_value={"keys": []})
+
+        state = {
+            # env_analysis only has bot token — admin ID missing from .env.example
+            "env_analysis": {bot_token_key: "user"},
+            "provided_secrets": {},
+            "project_spec": {
+                "name": "test",
+                "config": {
+                    "secrets": {
+                        bot_token_key: "enc-tok",
+                        admin_id_key: "enc-admin",
+                    }
+                },
+            },
+            "project_id": "proj-1",
+        }
+
+        result = await self.node.run(state)
+        secrets = result["resolved_secrets"]
+
+        assert secrets[bot_token_key] == "decrypted-bot-token"
+        assert secrets[admin_id_key] == "999"
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.nodes.decrypt_dict")
     async def test_non_grouped_infra_uses_fallback(self, mock_decrypt, mock_api):
         """Infra variables not covered by groups should use _generate_infra_secret fallback."""
         mock_decrypt.return_value = {}
