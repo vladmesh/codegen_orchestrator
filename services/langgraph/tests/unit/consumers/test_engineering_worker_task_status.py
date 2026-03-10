@@ -66,11 +66,13 @@ class TestTaskStatusUpdates:
             planning_task_id="task-42",
         )
 
-        # Should transition task to done
+        # Should transition task through in_ci → testing → done
         task_transition_calls = [
             c for c in mock_api.post.call_args_list if "tasks/task-42/transition" in str(c)
         ]
-        assert len(task_transition_calls) == 1
+        assert len(task_transition_calls) == 3
+        statuses = [c.kwargs["params"]["to_status"] for c in task_transition_calls]
+        assert statuses == ["in_ci", "testing", "done"]
 
         # Should write iteration_end event
         event_calls = [c for c in mock_api.post.call_args_list if "tasks/task-42/events" in str(c)]
