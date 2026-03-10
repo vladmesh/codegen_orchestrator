@@ -66,15 +66,44 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         repo_full_name = f"{org}/{msg.project_name}"
 
         # Create GitHub repo (idempotent — ignores 422 if already exists)
+        github_repo = None
         try:
-            await github.create_repo(org, msg.project_name, private=True)
+            github_repo = await github.create_repo(org, msg.project_name, private=True)
         except Exception as e:
             if "422" not in str(e):
                 raise
 
-        # Update repository git_url so CI gate can find the repo
+        # Update repository git_url + provider_repo_id so github_sync can match
         git_url = f"https://github.com/{repo_full_name}"
-        await api.update_repository(msg.repository_id, git_url=git_url)
+        update_fields: dict = {"git_url": git_url}
+        if github_repo:
+            update_fields["provider_repo_id"] = github_repo.id
+        await api.update_repository(msg.repository_id, **update_fields)
+
+        # Set registry secrets so CI build-and-push can work from first commit
+        registry_url = os.environ.get("ORCHESTRATOR_HOSTNAME", "")
+        registry_user = os.environ.get("REGISTRY_USER", "")
+        registry_password = os.environ.get("REGISTRY_PASSWORD", "")
+        if all([registry_url, registry_user, registry_password]):
+            github_token_for_secrets = await github.get_org_token(org)
+            count = await github.set_repository_secrets(
+                org,
+                msg.project_name,
+                {
+                    "REGISTRY_URL": registry_url,
+                    "REGISTRY_USER": registry_user,
+                    "REGISTRY_PASSWORD": registry_password,
+                },
+                token=github_token_for_secrets,
+            )
+            log.info("registry_secrets_set", count=count)
+        else:
+            log.warning(
+                "registry_secrets_skipped",
+                has_url=bool(registry_url),
+                has_user=bool(registry_user),
+                has_password=bool(registry_password),
+            )
 
         github_token = await github.get_org_token(org)
 

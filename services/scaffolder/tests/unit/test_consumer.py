@@ -1,5 +1,6 @@
 """Tests for scaffolder consumer."""
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,6 +45,7 @@ def mock_api():
 def mock_github():
     gh = AsyncMock()
     gh.get_org_token.return_value = "ghs_fake"  # noqa: S106
+    gh.create_repo.return_value = MagicMock(id=1177997641)
     return gh
 
 
@@ -59,6 +61,15 @@ class TestProcessScaffoldJob:
             patch("src.consumer.get_github_client", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(
+                os.environ,
+                {
+                    "GITHUB_ORG": "project-factory-organization",
+                    "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+                    "REGISTRY_USER": "admin",
+                    "REGISTRY_PASSWORD": "secret",
+                },
+            ),
         ):
             mock_settings.return_value = MagicMock()
             result = await process_scaffold_job(valid_job_data, mock_redis)
@@ -69,6 +80,25 @@ class TestProcessScaffoldJob:
         calls = [c[0] for c in mock_api.update_project_status.call_args_list]
         assert ("proj-123", "scaffolding") in calls
         assert ("proj-123", "scaffolded") in calls
+
+        # Should have updated repository with git_url and provider_repo_id
+        mock_api.update_repository.assert_called_once_with(
+            "repo-456",
+            git_url="https://github.com/project-factory-organization/my-project",
+            provider_repo_id=1177997641,
+        )
+
+        # Should have set registry secrets for CI build-and-push
+        mock_github.set_repository_secrets.assert_called_once_with(
+            "project-factory-organization",
+            "my-project",
+            {
+                "REGISTRY_URL": "registry.example.com",
+                "REGISTRY_USER": "admin",
+                "REGISTRY_PASSWORD": "secret",
+            },
+            token="ghs_fake",  # noqa: S106
+        )
 
         # Should have saved tree to config
         mock_api.update_project_config.assert_called_once()
@@ -86,6 +116,15 @@ class TestProcessScaffoldJob:
             patch("src.consumer.get_github_client", return_value=mock_github),
             patch("src.consumer.run_scaffold", return_value=scaffold_result),
             patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(
+                os.environ,
+                {
+                    "GITHUB_ORG": "project-factory-organization",
+                    "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+                    "REGISTRY_USER": "admin",
+                    "REGISTRY_PASSWORD": "secret",
+                },
+            ),
         ):
             mock_settings.return_value = MagicMock()
             result = await process_scaffold_job(valid_job_data, mock_redis)
@@ -96,6 +135,30 @@ class TestProcessScaffoldJob:
         # Should have set scaffold_failed
         calls = [c[0] for c in mock_api.update_project_status.call_args_list]
         assert ("proj-123", "scaffold_failed") in calls
+
+    @pytest.mark.asyncio
+    async def test_registry_secrets_skipped_when_env_missing(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """Scaffold succeeds even without registry env vars — secrets are just skipped."""
+        scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_scaffold", return_value=scaffold_result),
+            patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(os.environ, {"GITHUB_ORG": "test-org"}, clear=False),
+        ):
+            # Ensure registry vars are NOT set
+            os.environ.pop("ORCHESTRATOR_HOSTNAME", None)
+            os.environ.pop("REGISTRY_USER", None)
+            os.environ.pop("REGISTRY_PASSWORD", None)
+            mock_settings.return_value = MagicMock()
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "success"
+        mock_github.set_repository_secrets.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_invalid_message_returns_skipped(self, mock_redis):
