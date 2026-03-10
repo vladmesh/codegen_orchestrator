@@ -90,6 +90,34 @@ class TestDispatchTodoTasks:
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_skips_task_when_project_not_scaffolded(self, api_client, redis_client):
+        """Task is skipped if project is still scaffolding."""
+        from unittest.mock import MagicMock
+
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-1",
+                "title": "Add user model",
+                "description": "Create User SQLAlchemy model",
+                "type": "feature",
+                "project_id": "proj-1",
+                "story_id": "story-1",
+                "blocked_by_task_id": None,
+                "status": "todo",
+            }
+        ]
+        project_mock = MagicMock()
+        project_mock.status = "scaffolding"
+        api_client.get_project.return_value = project_mock
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_dispatches_task_when_blocker_done(self, api_client, redis_client):
         """Task whose blocker is done gets dispatched."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks

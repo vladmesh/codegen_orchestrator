@@ -275,7 +275,8 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
             "thread_id": thread_id,
             "user_id": user_id,
             "user_name": user_name,
-        }
+        },
+        "recursion_limit": 50,
     }
 
     # Pre-invoke: repair any orphan tool_calls from previous crashed invocations

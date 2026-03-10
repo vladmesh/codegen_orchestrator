@@ -134,6 +134,13 @@ async def dispatch_todo_tasks(
         if project_id == INTERNAL_PROJECT_ID:
             continue
 
+        # Guard: don't dispatch until scaffold is complete
+        if project_id:
+            project = await api_client.get_project(project_id)
+            if project and project.status in ("draft", "scaffolding", "scaffold_failed"):
+                log.info("task_skipped_not_scaffolded", project_status=project.status)
+                continue
+
         # Fetch siblings once — used for both guard and context
         siblings = []
         if story_id:
