@@ -9,6 +9,7 @@ from shared.contracts.base import QueueMeta
 class AgentType(StrEnum):
     CLAUDE = "claude"  # Claude Code
     FACTORY = "factory"  # Factory.ai Droid
+    NOOP = "noop"  # No-op runner for E2E testing (empty commit + push)
 
 
 class WorkerCapability(StrEnum):

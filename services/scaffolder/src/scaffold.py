@@ -131,10 +131,12 @@ async def run_scaffold(
         return result
 
     # Step 5: Git add, commit, push
+    # Re-disable hooks before push (make setup may re-enable them via `git config core.hooksPath`)
     log.info("scaffold_git_push_start")
     rc, out, err = await _run_cmd(
+        "git config core.hooksPath /dev/null && "
         "git add . && "
-        f'git commit --no-verify -m "feat: scaffold {project_name} with modules: {modules}" && '
+        f'git commit -m "feat: scaffold {project_name} with modules: {modules}" && '
         "git push origin main",
         cwd=workspace,
     )

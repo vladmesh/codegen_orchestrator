@@ -48,6 +48,7 @@ class TaskRead(BaseModel):
     repository_id: str | None = None
     story_id: str | None = None
     blocked_by_task_id: str | None = None
+    failure_metadata: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
     last_event: str | None = None
@@ -70,6 +71,7 @@ class TaskUpdate(BaseModel):
     story_id: str | None = None
     blocked_by_task_id: str | None = None
     current_iteration: int | None = None
+    failure_metadata: dict[str, Any] | None = None
 
 
 class TaskTransition(BaseModel):

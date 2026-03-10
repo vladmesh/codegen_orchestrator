@@ -83,7 +83,11 @@ def _build_ci_fix_prompt(failure_context: str, attempt: int, run_url: str | None
 2. Analyze the CI failure details above to understand the root cause.
    - Use `gh run list --branch main` and `gh run view <run-id> --log` for full CI logs.
 3. Determine if this is a code issue you can fix, or an infrastructure/config problem.
-4. **If you CAN fix it**: fix the root cause, run local checks, commit and push.
+4. **If you CAN fix it**:
+   a. Fix the root cause in the code.
+   b. Run `make lint` and fix ALL reported issues.
+   c. Run `make test-unit` if unit tests exist and fix any failures.
+   d. Only after all checks pass locally, commit and push ONCE.
 5. **If this is NOT a code issue** (infrastructure, missing secrets, orchestrator bug,
    registry auth, Docker config, etc.): do NOT make any commits. Instead, write a
    `## REJECTED` section in your response explaining:

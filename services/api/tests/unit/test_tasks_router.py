@@ -32,6 +32,7 @@ def _make_task(**overrides):
         "story_id": None,
         "blocked_by_task_id": None,
         "need_e2e": False,
+        "failure_metadata": None,
         "created_at": now,
         "updated_at": now,
     }

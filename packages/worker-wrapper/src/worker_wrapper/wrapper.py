@@ -275,11 +275,14 @@ class WorkerWrapper:
         # 2. Select Runner
         from .runners.claude import ClaudeRunner
         from .runners.factory import FactoryRunner
+        from .runners.noop import NoopRunner
 
         if self.config.agent_type == "claude":
             runner = ClaudeRunner(session_id=session_id)
         elif self.config.agent_type == "factory":
             runner = FactoryRunner()  # Factory runner might not need session or handled differently
+        elif self.config.agent_type == "noop":
+            runner = NoopRunner()
         else:
             raise ValueError(f"Unknown agent type: {self.config.agent_type}")
 

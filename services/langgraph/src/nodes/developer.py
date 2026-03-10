@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.queues.worker import AgentType
 
 from ..clients.api import api_client
 from ..clients.worker_spawner import request_spawn, send_task_to_worker
@@ -64,6 +65,13 @@ class DeveloperNode(FunctionalNode):
         config = project_spec.get("config") or {}
         project_description = config.get("description", "")
         modules = config.get("modules", ["backend"])
+
+        # Agent type from project config (default: claude)
+        agent_type_str = config.get("agent_type", "claude")
+        try:
+            agent_type = AgentType(agent_type_str)
+        except ValueError:
+            agent_type = AgentType.CLAUDE
 
         action = state.get("action", "create")
         feature_description = state.get("description")
@@ -171,6 +179,7 @@ class DeveloperNode(FunctionalNode):
                         timeout_seconds=Timeouts.WORKER_SPAWN,
                         project_id=project_id,
                         repo_id=repo_id,
+                        agent_type=agent_type,
                     )
             else:
                 # Spawn fresh worker
@@ -182,6 +191,7 @@ class DeveloperNode(FunctionalNode):
                     timeout_seconds=Timeouts.WORKER_SPAWN,
                     project_id=project_id,
                     repo_id=repo_id,
+                    agent_type=agent_type,
                 )
 
             if worker_result.success:

@@ -15,6 +15,8 @@ dependencies = [
     # GitHub App auth
     "pyjwt>=2.8.0",
     "cryptography>=42.0.0",
+    # GitHub Secrets API (encrypt secret values)
+    "pynacl>=1.5.0",
 ]
 
 [build-system]

@@ -1,4 +1,4 @@
-.PHONY: lint format test-unit test-integration test-e2e-scaffold test-clean \
+.PHONY: lint format test-unit test-integration test-e2e-scaffold test-live test-live-clean test-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -42,6 +42,8 @@ help:
 	@echo "  make test-unit            - Run all unit tests (fast)"
 	@echo "  make test-service SERVICE=name - Run service tests for a specific module"
 	@echo "  make test-integration     - Run all integration tests"
+	@echo "  make test-live            - Run all live tests (from host, no LLM)"
+	@echo "  make test-live N=health   - Run specific live test file"
 	@echo "  make test-e2e-scaffold    - Run scaffolding E2E tests"
 	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
@@ -73,6 +75,7 @@ lock-deps:
 	uv pip compile services/telegram_bot/pyproject.toml -o services/telegram_bot/requirements.lock
 	uv pip compile services/worker-manager/pyproject.toml -o services/worker-manager/requirements.lock
 	uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
+	uv pip compile services/scaffolder/pyproject.toml -o services/scaffolder/requirements.lock
 	@echo "✅ All lock files updated!"
 
 # === Docker ===
@@ -219,6 +222,58 @@ test-service:
 test-integration: $(INTEGRATION_TESTS)
 	@echo "✅ All integration tests completed"
 
+
+
+# Live tests: run from host against running `make up` stack (no LLM)
+N ?= ""
+test-live:
+ifeq ($(N),"")
+	@echo "Running all live tests (excluding pipeline)..."
+	@uv run pytest tests/live/ -v --tb=short --ignore=tests/live/test_pipeline_scaffold.py --ignore=tests/live/test_pipeline_engineering.py --ignore=tests/live/test_full_pipeline.py
+else
+	@echo "Running live test: $(N)..."
+	@uv run pytest tests/live/test_$(N).py -v --tb=short
+endif
+
+# Pipeline tests: scaffold → engineering → deploy (real GitHub, real queues)
+test-live-smoke:
+	@echo "Running scaffold pipeline test (~1-2 min)..."
+	@uv run pytest tests/live/test_pipeline_scaffold.py -v --tb=long -x -s
+
+test-live-engineering:
+	@echo "Running engineering pipeline test (~3-5 min)..."
+	@uv run pytest tests/live/test_pipeline_engineering.py -v --tb=long -x -s
+
+test-live-mega:
+	@echo "Running MEGA pipeline test (~7-10 min)..."
+	@uv run pytest tests/live/test_full_pipeline.py -v --tb=long -x -s
+
+test-live-pipeline:
+	@echo "Running ALL pipeline tests sequentially (~15 min)..."
+	@uv run pytest tests/live/test_pipeline_scaffold.py tests/live/test_pipeline_engineering.py tests/live/test_full_pipeline.py -v --tb=long -x -s
+
+
+# Cleanup DB artifacts left by live tests
+test-live-clean:
+	@echo "Cleaning live test data from DB..."
+	@docker compose exec -T db psql -U postgres -d orchestrator -c " \
+		DELETE FROM task_events WHERE task_id IN ( \
+			SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id \
+			WHERE p.name LIKE 'live-test-%' OR p.name LIKE 'live-crud-%'); \
+		DELETE FROM runs WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
+		DELETE FROM tasks WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
+		DELETE FROM stories WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
+		DELETE FROM repositories WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
+		DELETE FROM port_allocations WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
+		DELETE FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'; \
+		DELETE FROM users WHERE telegram_id = 999000001; \
+	"
+	@echo "Done."
 
 
 # E2E Scaffold Test: runs against running `make up` stack

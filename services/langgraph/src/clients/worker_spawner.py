@@ -154,6 +154,7 @@ async def request_spawn(
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
     project_id: str | None = None,
     repo_id: str | None = None,
+    agent_type: AgentType = AgentType.CLAUDE,
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 
@@ -193,7 +194,7 @@ async def request_spawn(
             config=WorkerConfig(
                 name=worker_name,
                 worker_type="developer",
-                agent_type=AgentType.CLAUDE,
+                agent_type=agent_type,
                 instructions=instructions,
                 task_content=task_content,
                 allowed_commands=["*"],

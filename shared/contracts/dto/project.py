@@ -30,6 +30,7 @@ class ProjectStatus(StrEnum):
     MAINTENANCE = "maintenance"
 
     # Issues
+    ERROR = "error"
     FAILED = "failed"
     MISSING = "missing"
     ARCHIVED = "archived"

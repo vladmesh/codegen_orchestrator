@@ -49,6 +49,9 @@ STORY_MAX_ARCHITECT_RETRIES = 3
 STORY_WORKERS_KEY = "story:workers"
 WORKER_COMMANDS_STREAM = "worker:commands"
 
+# Failure reasons that should not be retried by the supervisor
+NON_RETRYABLE_REASONS = {"worker_rejected", "ci_infra_failure"}
+
 
 async def _cleanup_story_worker(
     redis_client: RedisStreamClient,
@@ -141,9 +144,9 @@ async def dispatch_todo_tasks(
                 log.info("task_skipped_story_busy")
                 continue
 
-            # Guard: don't dispatch if any sibling was rejected by worker (infra issue)
+            # Guard: don't dispatch if any sibling has a non-retryable failure
             if any(
-                s.get("failure_metadata", {}).get("failure_reason") == "worker_rejected"
+                (s.get("failure_metadata") or {}).get("failure_reason") in NON_RETRYABLE_REASONS
                 for s in siblings
             ):
                 log.info("task_skipped_story_has_rejected_sibling")
@@ -217,6 +220,12 @@ async def complete_stories(
     stories = await api_client.get_stories_by_status("in_progress")
     completed = 0
 
+    if stories:
+        logger.info(
+            "complete_stories_check",
+            in_progress_stories=len(stories),
+        )
+
     for story in stories:
         story_id = story["id"]
         project_id = story.get("project_id")
@@ -226,10 +235,17 @@ async def complete_stories(
 
         # Skip if no tasks (architect may not have run yet)
         if not tasks:
+            logger.debug("complete_stories_skip_no_tasks", story_id=story_id)
             continue
 
+        task_statuses = [t.get("status") for t in tasks]
         # Check if all tasks are done
-        if not all(t.get("status") == "done" for t in tasks):
+        if not all(s == "done" for s in task_statuses):
+            logger.debug(
+                "complete_stories_skip_not_all_done",
+                story_id=story_id,
+                task_statuses=task_statuses,
+            )
             continue
 
         log = logger.bind(story_id=story_id, project_id=project_id)
@@ -238,8 +254,16 @@ async def complete_stories(
         await api_client.transition_story(story_id, "complete")
         log.info("story_completed", task_count=len(tasks))
 
-        # Trigger deploy
+        # Trigger deploy — create run record first (deploy consumer expects it)
         deploy_id = f"deploy-{uuid.uuid4().hex[:12]}"
+        await api_client.create_run(
+            {
+                "id": deploy_id,
+                "type": "deploy",
+                "project_id": project_id,
+                "status": "queued",
+            }
+        )
         deploy_msg = DeployMessage(
             task_id=deploy_id,
             project_id=project_id,
@@ -395,8 +419,9 @@ async def supervise_failed_tasks(
         if not story_id:
             continue
 
-        # Skip worker-rejected tasks — needs admin intervention, not retry
-        if task.get("failure_metadata", {}).get("failure_reason") == "worker_rejected":
+        # Skip non-retryable failures — needs admin intervention, not retry
+        failure_reason = (task.get("failure_metadata") or {}).get("failure_reason")
+        if failure_reason in NON_RETRYABLE_REASONS:
             continue
 
         current_iter = task.get("current_iteration", 0)
@@ -430,7 +455,10 @@ async def supervise_failed_tasks(
                 ):
                     await api_client.transition_task(sibling["id"], "cancelled", "supervisor")
 
-            await api_client.fail_story(story_id)
+            try:
+                await api_client.fail_story(story_id)
+            except Exception:
+                log.warning("fail_story_transition_failed", story_id=story_id, exc_info=True)
 
             # Cleanup story worker container
             await _cleanup_story_worker(redis_client, story_id)
@@ -505,13 +533,13 @@ async def task_dispatcher_loop() -> None:
                 stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
                 failed_tasks = await supervise_failed_tasks(api_client, redis_client)
 
-                if dispatched or completed or scaffolds:
-                    logger.info(
-                        "dispatcher_cycle",
-                        tasks_dispatched=dispatched,
-                        stories_completed=completed,
-                        scaffolds_triggered=scaffolds,
-                    )
+                # Always log the cycle summary for observability
+                logger.info(
+                    "dispatcher_cycle",
+                    tasks_dispatched=dispatched,
+                    stories_completed=completed,
+                    scaffolds_triggered=scaffolds,
+                )
                 supervisor_active = (
                     stuck_stories["retried"]
                     + stuck_stories["failed"]

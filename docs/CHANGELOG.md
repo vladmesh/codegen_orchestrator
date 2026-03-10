@@ -5,9 +5,11 @@
 ## 2026-03-10
 
 ### Added
+- **Live pipeline test suite** (3-tier E2E): Structured test suite split by pipeline phases — scaffold (~30s), engineering (~3.5min), full deploy (~7-10min). Module-scoped async fixtures share one pipeline run across multiple tests. Shared `pipeline_helpers.py` with all phase helpers, cleanup, and debug dump. Makefile targets: `test-live-smoke`, `test-live-engineering`, `test-live-mega`, `test-live-pipeline` (all). Auto-cleanup always runs (GitHub repos, server containers, DB records via SQL cascade, port allocations). Debug dump captures ctx + last 30 lines of docker logs on failure. Queue flush at fixture start prevents stale message pollution. 9/9 tests passing.
 - **Smart CI failure triage: worker reject signal** (#task-61339aef): Workers can now signal `## REJECTED` when a CI failure is infrastructure-related (missing secrets, registry auth, Docker issues). ResultParser detects the marker, SpawnResult carries `reject_reason`, CI gate stops retries immediately. Engineering consumer transitions task to `failed` with `failure_metadata.failure_reason=worker_rejected`, story to `failed` with reject metadata, and calls `notify_admins()`. Dispatcher skips siblings of rejected tasks; supervisor skips rejected tasks from retry. CI-fix prompt template includes structured reject instructions. 27 new tests across 6 test files.
 
 ### Fixed
+- **ProjectStatus enum missing "error"**: DevOps DeployerNode writes `"error"` string literal but `ProjectStatus` enum lacked `ERROR = "error"`. Scheduler's `get_projects()` → Pydantic ValidationError → crash loop → dispatcher never runs → tasks stuck at "todo". Added `ERROR = "error"` to enum.
 - **Scaffolder: create GitHub repo before clone** (E2E pipeline blocker): Scaffolder tried to `git clone` a repo that didn't exist on GitHub. Added `create_repo()` call before clone (idempotent, ignores 422).
 - **Scaffolder: update `git_url` after repo creation** (E2E pipeline blocker): Repository `git_url` stayed as `pending://` placeholder — CI gate couldn't find the repo. Scaffolder now updates `git_url` to real GitHub URL after creating the repo.
 - **github_sync UUID serialization**: `_ingest_to_rag` passed UUID object to `json.dumps`, causing `TypeError`. Fixed with `str(project.id)`.

@@ -39,20 +39,37 @@ logger = structlog.get_logger(__name__)
 async def _update_task_status(
     api, planning_task_id: str, status: str, actor: str = "engineering-worker"
 ) -> None:
-    """Transition a planning-layer task to the given status (best-effort)."""
-    try:
-        await api.post(
-            f"tasks/{planning_task_id}/transition",
-            params={"to_status": status},
-            json={"actor": actor},
-        )
-    except Exception:
-        logger.warning(
-            "task_status_update_failed",
-            planning_task_id=planning_task_id,
-            target_status=status,
-            exc_info=True,
-        )
+    """Transition a planning-layer task to the given status (best-effort).
+
+    The task state machine requires intermediate steps (in_dev → in_ci → testing → done).
+    This helper walks through them automatically when the target is 'done'.
+    """
+    # For "done", walk through the intermediate states the state machine requires
+    if status == "done":
+        steps = ["in_ci", "testing", "done"]
+    else:
+        steps = [status]
+
+    for step in steps:
+        try:
+            await api.post(
+                f"tasks/{planning_task_id}/transition",
+                params={"to_status": step},
+                json={"actor": actor},
+            )
+            logger.info(
+                "task_status_updated",
+                planning_task_id=planning_task_id,
+                new_status=step,
+            )
+        except Exception:
+            logger.warning(
+                "task_status_update_failed",
+                planning_task_id=planning_task_id,
+                target_status=step,
+                exc_info=True,
+            )
+            break
 
 
 async def _write_task_event(api, planning_task_id: str, event_type: str, details: dict) -> None:
@@ -642,6 +659,14 @@ async def _handle_engineering_success(  # noqa: PLR0913
 
     # When planning_task_id is set, skip deploy (dispatcher handles it on story complete)
     effective_skip_deploy = skip_deploy or bool(planning_task_id)
+
+    logger.info(
+        "deploy_decision",
+        task_id=task_id,
+        planning_task_id=planning_task_id,
+        skip_deploy=skip_deploy,
+        effective_skip_deploy=effective_skip_deploy,
+    )
 
     if effective_skip_deploy:
         # This IS the final step — tell user we're done
