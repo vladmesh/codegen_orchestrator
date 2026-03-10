@@ -23,10 +23,9 @@
 ### 3. Исполнение и Итерации
 - Через скилл `/implement` агент выполняет написанный план по TDD-циклу.
 - События (TaskEvent) пишутся в таблицу `task_events`:
-  - `step_start` / `step_done` — прогресс по шагам плана
-  - `ci_fix` — что сломалось в CI и как починили
-  - `plan_deviation` — отклонения от плана с причиной
-  - `implementation_summary` — итоговый отчёт
+  - `iteration_start` / `iteration_end` — прогресс по итерациям
+  - `comment` — обсуждение задачи (Jira-style), ci_fix, plan_deviation и т.д.
+  - `note` — внутренние заметки (implementation_summary и т.д.)
 - При возобновлении работы (resume/reopen) `/implement` и `/plan` читают историю events для контекста.
 - Sibling tasks (задачи из одного brainstorm) доступны через `source_brainstorm_id` фильтр.
 

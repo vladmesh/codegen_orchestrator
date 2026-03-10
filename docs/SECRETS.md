@@ -29,8 +29,8 @@
 *   **Graceful degradation**: При расшифровке plaintext-значений (legacy) — warning в лог, значение возвращается as-is. При следующей записи мигрирует в encrypted (encrypt-on-write).
 *   **Lifecycle**:
     1.  Пользователь вводит токен (например, Telegram Token) через PO в Telegram.
-    2.  PO tool `set_project_secret` → decrypt existing → add new → encrypt all → PATCH to API.
-    3.  DevOps subgraph `SecretResolverNode` → decrypt from DB → resolve → encrypt → save back.
+    2.  PO tool `set_project_secret` → atomic merge via `POST /projects/{id}/config/secrets` (server-side `SELECT FOR UPDATE` locking, handles concurrent writes).
+    3.  DevOps subgraph `SecretResolverNode` → decrypt from DB → resolve → encrypt → save back via atomic merge.
 *   **Usage**:
     *   Secrets доступны в расшифрованном виде только в runtime (при вызове `decrypt_dict`)
     *   В БД всегда зашифрованы — даже при прямом SELECT видны только Fernet-токены

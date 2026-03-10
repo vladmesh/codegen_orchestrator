@@ -221,4 +221,4 @@ Redis (deploy:queue) → deploy-worker → DevOps Subgraph
 Redis (po:proactive) → Telegram Bot → Пользователь
 ```
 
-**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Engineering worker создаёт репозиторий и устанавливает registry secrets inline. Worker-manager выполняет scaffold phase (copier + make setup + git push) внутри worker-контейнера через docker exec перед запуском агента. Webhook-triggered deploys обходят PO — API публикует напрямую в deploy:queue, результат уходит через po:proactive.
+**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder (отдельный сервис) подготавливает репозиторий (copier + make setup + git push) до запуска architect. Worker-manager монтирует pre-scaffolded workspace volume из `/data/workspaces/{repo_id}/` в контейнер воркера. Webhook-triggered deploys обходят PO — API публикует напрямую в deploy:queue, результат уходит через po:proactive.

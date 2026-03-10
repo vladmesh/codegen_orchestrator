@@ -42,7 +42,10 @@
    Воркеры (инжектированные AI-агенты) **не имеют доступа к Docker**. Для запуска инфраструктурных зависимостей (DB, Redis) агенты вызывают `orchestrator dev-env start-infra db`, который проксирует запрос в `worker-manager`.
 
 3. **Workspace Bind-Mount**:
-   Код клонируется агентом внутрь `/workspace` директории в контейнере, которая примонтирована на хост. При наличии `project_id` путь: `/tmp/codegen/workspaces/<project_id>/workspace` (сохраняется между воркерами). Без `project_id`: `/tmp/codegen/workspaces/<worker_id>/workspace` (эфемерный). `docker compose` на хосте использует файлы из этого воркспейса для поднятия сайдкар-контейнеров.
+   Scaffolded workspace монтируется в `/workspace` внутри контейнера. Два режима:
+   - **Pre-scaffolded** (story tasks): путь на хосте `/data/workspaces/{repo_id}/` — репозиторий уже подготовлен scaffolder'ом (copier + make setup + git push), workspace переиспользуется между задачами в story.
+   - **Ephemeral** (standalone tasks): `/tmp/codegen/workspaces/{worker_id}/workspace/` — создаётся на лету, удаляется после завершения.
+   `docker compose` на хосте использует файлы из этого воркспейса для поднятия сайдкар-контейнеров.
 
 ## Запрет портов и конвенции
 

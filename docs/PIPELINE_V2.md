@@ -198,8 +198,10 @@ created → in_progress → completed
 ### Task
 ```
 backlog (manual/standalone tasks, not in active story)
-todo → in_dev → done
+todo → in_dev → in_ci → testing → done
+              → blocked (waiting on another task)
               → failed → todo (retry, up to max_iterations)
+              → cancelled (sibling of failed task, or manual)
 ```
 
 ---

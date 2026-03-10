@@ -45,9 +45,9 @@ cat error.log | claude -p "Fix this error"
 Developer node в Engineering Subgraph использует coding agents через `worker-manager` сервис (PO не использует контейнеры — это LangGraph ReactAgent):
 
 1. Worker-manager создаёт контейнер из worker-base образа
-2. Контейнер клонирует репозиторий
+2. Монтирует pre-scaffolded workspace (`/data/workspaces/{repo_id}/`) — код уже на месте
 3. Инжектит статические инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` → agent-specific file (`CLAUDE.md` / `AGENTS.md`)
-4. Инжектит динамический `TASK.md` с project-specific задачей
+4. Инжектит динамический `TASK.md` с project-specific задачей + story context (events предыдущих задач)
 5. Запускает coding agent (Droid или Claude Code)
 6. Агент коммитит и пушит изменения
 

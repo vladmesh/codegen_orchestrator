@@ -288,15 +288,15 @@ On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim
 
 | # | Consumer | File | Queue | ACK | PEL Recovery | Validation |
 |---|----------|------|-------|-----|-------------|------------|
-| 1 | Engineering Worker | `workers/_base.py` | `engineering:queue` | manual | `claim_pending` | in `process_fn` |
-| 2 | Deploy Worker | `workers/_base.py` | `deploy:queue` | manual | `claim_pending` | in `process_fn` |
-| 3 | PO Consumer | `po/consumer.py` | `po:input` | manual (finally) | `xautoclaim` | `TypeAdapter` |
-| 4 | Worker Manager | `worker-manager/consumer.py` | `worker:commands` | manual | `claim_pending` | `validate_python` |
-| 5 | Infra Service | `infra-service/main.py` | `provisioner:queue` | manual | `claim_pending` | raw dict |
-| 6 | Scheduler | `scheduler/main.py` | `provisioner:results` | manual | `claim_pending` | `model_validate` |
-| 7 | Provisioner Notifier | `telegram_bot/notifications.py` | `provisioner:results` | auto | — | `model_validate` |
-| 8 | Proactive Listener | `telegram_bot/main.py` | `po:proactive` | auto | — | raw dict |
-| 9 | Architect Consumer | `scheduler/tasks/architect_consumer.py` | `architect:queue` | manual | `claim_pending` | `model_validate` |
+| 1 | Engineering Consumer | `langgraph/src/consumers/engineering.py` | `engineering:queue` | manual | `claim_pending` | in `process_fn` |
+| 2 | Deploy Consumer | `langgraph/src/consumers/deploy.py` | `deploy:queue` | manual | `claim_pending` | in `process_fn` |
+| 3 | PO Consumer | `langgraph/src/consumers/po.py` | `po:input` | manual (finally) | `xautoclaim` | `TypeAdapter` |
+| 4 | Worker Manager | `worker-manager/src/consumer.py` | `worker:commands` | manual | `claim_pending` | `validate_python` |
+| 5 | Infra Service | `infra-service/src/main.py` | `provisioner:queue` | manual | `claim_pending` | raw dict |
+| 6 | Scheduler | `scheduler/src/main.py` | `provisioner:results` | manual | `claim_pending` | `model_validate` |
+| 7 | Provisioner Notifier | `telegram_bot/src/notifications.py` | `provisioner:results` | auto | — | `model_validate` |
+| 8 | Proactive Listener | `telegram_bot/src/main.py` | `po:proactive` | auto | — | raw dict |
+| 9 | Architect Consumer | `langgraph/src/consumers/architect.py` | `architect:queue` | manual | `claim_pending` | `model_validate` |
 
 ---
 
@@ -355,11 +355,10 @@ class ServiceModule(StrEnum):
 
 class ProjectCreate(BaseModel):
     """Create project request."""
-    id: str | None = None
+    id: uuid.UUID | None = None
     name: str
     description: str | None = None
     modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
-    github_repo_id: int | None = None
     status: ProjectStatus | None = None
 
 
@@ -369,7 +368,6 @@ class ProjectUpdate(BaseModel):
     description: str | None = None
     status: ProjectStatus | None = None
     modules: list[ServiceModule] | None = None
-    github_repo_id: int | None = None
     project_spec: dict | None = None
 
 
@@ -377,13 +375,11 @@ class ProjectDTO(BaseModel):
     """Project response."""
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
+    id: uuid.UUID
     name: str
     description: str | None = None
     status: ProjectStatus
     modules: list[ServiceModule] = []
-    repository_url: str | None = None
-    github_repo_id: int | None = None
     owner_id: int
     project_spec: dict | None = None
 ```
@@ -397,9 +393,10 @@ class TaskStatus(StrEnum):
     BACKLOG = "backlog"
     TODO = "todo"
     IN_DEV = "in_dev"
-    IN_REVIEW = "in_review"
+    IN_CI = "in_ci"
     TESTING = "testing"
     DONE = "done"
+    BLOCKED = "blocked"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -420,8 +417,10 @@ class TaskRead(BaseModel):
     status: str
     priority: int
     acceptance_criteria: str | None
+    need_e2e: bool = False
     current_iteration: int
     max_iterations: int
+    failure_metadata: dict[str, Any] | None = None
     created_by: str
     created_at: datetime
     updated_at: datetime
@@ -439,7 +438,7 @@ class TaskEventType(StrEnum):
     ITERATION_START = "iteration_start"
     ITERATION_END = "iteration_end"
     NOTE = "note"
-    COMMENT = "comment"
+    COMMENT = "comment"  # Jira-style discussion on a task
 
 class TaskEventRead(BaseModel):
     """Schema for reading a task event."""
@@ -591,39 +590,6 @@ class ServerDTO(BaseModel):
     last_health_check: datetime | None = None
     provisioning_started_at: datetime | None = None
     provisioning_attempts: int = 0
-```
-
-## IncidentDTO
-
-```python
-# shared/contracts/dto/incident.py
-
-from enum import StrEnum
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
-
-class IncidentSeverity(StrEnum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
-
-class IncidentStatus(StrEnum):
-    OPEN = "open"
-    RESOLVED = "resolved"
-
-class IncidentDTO(BaseModel):
-    """Incident response."""
-    model_config = ConfigDict(from_attributes=True)
-    
-    id: int
-    server_id: int
-    severity: IncidentSeverity
-    status: IncidentStatus
-    title: str
-    description: str | None = None
-    created_at: datetime
-    resolved_at: datetime | None = None
 ```
 
 ## ServiceDeploymentDTO
@@ -852,8 +818,8 @@ class EngineeringResult(BaseResult):
 
 ## DeployMessage
 
-**Queue:** `deploy:queue`  
-**Initiator:** PO-Worker  
+**Queue:** `deploy:queue`
+**Initiator:** Task Dispatcher (scheduler) / PO
 **Consumer:** langgraph
 
 ```python
@@ -864,6 +830,7 @@ class DeployMessage(BaseMessage):
     task_id: str
     project_id: str
     user_id: int
+    action: Literal["create", "feature", "fix"] = "create"
 
 
 class DeployResult(BaseResult):
@@ -999,6 +966,7 @@ class DeleteWorkerCommand(QueueMeta):
     command: Literal["delete"] = "delete"
     request_id: str
     worker_id: str
+    reason: Literal["completed", "failed", "timeout"] | None = None
 
 
 class StatusWorkerCommand(QueueMeta):
@@ -1232,7 +1200,9 @@ shared/contracts/
 │   ├── task.py              # TaskDTO, TaskCreate
 │   ├── user.py              # UserDTO
 │   ├── server.py
-│   ├── incident.py
+│   ├── story.py              # StoryDTO, StoryCreate
+│   ├── repository.py         # RepositoryDTO, RepositoryCreate
+│   ├── brainstorm.py         # BrainstormDTO, BrainstormCreate
 │   ├── service_deployment.py
 │   ├── agent_config.py
 │   ├── allocation.py
@@ -1241,6 +1211,8 @@ shared/contracts/
     ├── __init__.py           # Re-exports PO contracts
     ├── engineering.py
     ├── deploy.py
+    ├── scaffold.py           # ScaffoldMessage
+    ├── architect.py          # ArchitectMessage
     ├── provisioner.py
     ├── workflow.py
     ├── worker.py
