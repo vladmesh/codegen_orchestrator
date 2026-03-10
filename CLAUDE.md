@@ -107,6 +107,7 @@ if not api_key:
 2. **Never use default values for env vars**: Fail fast with `RuntimeError` if missing.
 3. **Review Trigger**: If a change requires modifying `shared/contracts/` or DB schema not described in the plan — STOP and ask.
 4. **Structured logging**: Use `structlog` everywhere, never `print()`.
+5. **Use shared contracts, not literals**: Always use enums (`TaskStatus`, `StoryStatus`, `ProjectStatus`, etc.) instead of hardcoded status strings. Use queue constants from `shared/queues.py` instead of `"engineering:queue"` literals. Use Pydantic DTOs from `shared/contracts/queues/` when publishing to streams. Use `RedisStreamClient.publish_message()` instead of direct `redis.xadd()`.
 5. **Run tests before committing**: `make test-unit` at minimum.
 6. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the full flow (`/plan` → `/implement`).
 7. **Do not edit docs/backlog.md manually**: It is an auto-generated read-only view of the database. Use API or commands to manage tasks.
