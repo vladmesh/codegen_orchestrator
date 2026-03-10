@@ -45,7 +45,7 @@ class TestHandleEngineeringSuccess:
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_no_commit_sha_fails_fast(self, mock_ci_gate, mock_redis, mock_api):
         """commit_sha=None must return failed, not proceed to CI/deploy."""
-        mock_ci_gate.return_value = (True, [])  # Should never be reached
+        mock_ci_gate.return_value = (True, [], False, None)  # Should never be reached
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -88,7 +88,7 @@ class TestHandleEngineeringSuccess:
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_with_commit_sha_proceeds(self, mock_ci_gate, mock_redis, mock_api):
         """commit_sha present must proceed to CI gate and then deploy."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -116,7 +116,7 @@ class TestHandleEngineeringSuccess:
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_deploy_message_includes_user_id(self, mock_ci_gate, mock_redis, mock_api):
         """DeployMessage queued after CI must include user_id (BUG 17)."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -154,7 +154,7 @@ class TestHandleEngineeringSuccess:
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_deploy_message_includes_action(self, mock_ci_gate, mock_redis, mock_api):
         """DeployMessage queued after CI must include action from engineering job (#21)."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -193,7 +193,7 @@ class TestNotificationDecoupling:
         self, mock_ci_gate, mock_redis, mock_api
     ):
         """skip_deploy=False → event type is 'progress', not 'completed'."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -231,7 +231,7 @@ class TestNotificationDecoupling:
         self, mock_ci_gate, mock_redis, mock_api
     ):
         """skip_deploy=True → event type is 'completed' (this IS the final step)."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -265,7 +265,7 @@ class TestNotificationDecoupling:
         self, mock_ci_gate, mock_redis, mock_api
     ):
         """When deploy queuing fails, user gets a 'failed' notification."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
         # Make deploy task creation fail
         mock_api.post.side_effect = RuntimeError("API unreachable")
 
@@ -302,7 +302,7 @@ class TestCIGateFailClosed:
         """CI gate must fail-closed (return False) when git_url is empty."""
         from src.consumers._ci_gate import _wait_for_ci_and_fix
 
-        passed, ci_attempts = await _wait_for_ci_and_fix(
+        passed, ci_attempts, *_ = await _wait_for_ci_and_fix(
             project={"id": "p1"},
             git_url="",
             task_id="eng-1",
@@ -354,11 +354,11 @@ class TestCIGateFailClosed:
         async def fake_respawn(**kwargs):
             respawn_started_at.append(datetime.now(UTC))
             await asyncio.sleep(0)  # yield control without real delay
-            return True
+            return True, None  # (success, reject_reason)
 
         mock_respawn.side_effect = fake_respawn
 
-        passed, ci_attempts = await _wait_for_ci_and_fix(
+        passed, ci_attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/repo",
             task_id="eng-1",
@@ -406,7 +406,7 @@ class TestCIGateFailClosed:
             side_effect=WorkflowNotFoundError("ci.yml not found in org/repo"),
         )
 
-        passed, ci_attempts = await _wait_for_ci_and_fix(
+        passed, ci_attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/repo",
             task_id="eng-1",
@@ -438,7 +438,7 @@ class TestCIGateFailClosed:
             return_value={"id": 42, "conclusion": "success"}
         )
 
-        passed, ci_attempts = await _wait_for_ci_and_fix(
+        passed, ci_attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/repo",
             task_id="eng-1",
@@ -537,7 +537,7 @@ class TestCIInfraFailFast:
         )
 
         with patch("asyncio.sleep", return_value=None):
-            passed, ci_attempts = await _wait_for_ci_and_fix(
+            passed, ci_attempts, *_ = await _wait_for_ci_and_fix(
                 project=_project(),
                 git_url="https://github.com/org/repo",
                 task_id="eng-1",
@@ -583,7 +583,7 @@ class TestCIInfraFailFast:
         )
 
         with patch("asyncio.sleep", return_value=None):
-            passed, ci_attempts = await _wait_for_ci_and_fix(
+            passed, ci_attempts, *_ = await _wait_for_ci_and_fix(
                 project=_project(),
                 git_url="https://github.com/org/repo",
                 task_id="eng-1",
@@ -620,8 +620,9 @@ class TestCIInfraFailFast:
             return_value="Job 'build-and-push' failed:\n  Step 'docker login' failed"
         )
         mock_gh.rerun_failed_jobs = AsyncMock()
+        mock_respawn.return_value = (False, None)
 
-        passed, ci_attempts = await _wait_for_ci_and_fix(
+        passed, ci_attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/repo",
             task_id="eng-1",
@@ -664,9 +665,9 @@ class TestCIInfraFailFast:
         mock_gh.get_workflow_failure_logs = AsyncMock(
             return_value=("Job 'lint-and-test' failed:\n  Step 'Run ruff check' failed")
         )
-        mock_respawn.return_value = True
+        mock_respawn.return_value = (True, None)
 
-        passed, ci_attempts = await _wait_for_ci_and_fix(
+        passed, ci_attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/repo",
             task_id="eng-1",
@@ -728,7 +729,7 @@ class TestFeatureActionFlow:
             }
         )
         mock_create_subgraph.return_value = mock_subgraph
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         result = await process_engineering_job(
             {
@@ -797,7 +798,7 @@ class TestFeatureActionFlow:
             }
         )
         mock_create_subgraph.return_value = mock_subgraph
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         await process_engineering_job(
             {
@@ -885,7 +886,7 @@ class TestFeatureActionFlow:
             }
         )
         mock_create_subgraph.return_value = mock_subgraph
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         result = await process_engineering_job(
             {
@@ -954,7 +955,7 @@ class TestFeatureActionFlow:
             }
         )
         mock_create_subgraph.return_value = mock_subgraph
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         await process_engineering_job(
             {

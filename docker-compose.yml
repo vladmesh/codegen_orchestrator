@@ -277,10 +277,11 @@ services:
       PYTHONPATH: /app
       WORKSPACE_BASE_PATH: /data/workspaces
       SERVICE_TEMPLATE_PATH: /data/service-template
+      GITHUB_ORG: ${GITHUB_ORG}
     volumes:
       - ./services/scaffolder/src:/app/src:delegated
       - ./shared:/app/shared:delegated
-      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github-app.pem:ro
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
       - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
       - ${SERVICE_TEMPLATE_PATH:-../service-template}:/data/service-template:ro
       - uv-cache:/root/.cache/uv

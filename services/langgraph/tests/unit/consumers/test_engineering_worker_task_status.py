@@ -44,7 +44,7 @@ class TestTaskStatusUpdates:
     @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
     async def test_updates_task_on_success(self, mock_delete, mock_ci_gate, mock_redis, mock_api):
         """On success with planning_task_id: task → done, event written."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -86,7 +86,7 @@ class TestTaskStatusUpdates:
         self, mock_delete, mock_ci_gate, mock_redis, mock_api
     ):
         """With planning_task_id, deploy is skipped (dispatcher handles it)."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -119,7 +119,7 @@ class TestTaskStatusUpdates:
         self, mock_delete, mock_ci_gate, mock_redis, mock_api
     ):
         """Without planning_task_id, old behavior: deploy triggers as before."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
         mock_api.post.return_value = AsyncMock(status_code=201)
 
         from src.consumers.engineering import _handle_engineering_success

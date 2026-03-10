@@ -12,6 +12,7 @@ import structlog
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
+from shared.notifications import notify_admins
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -154,6 +155,101 @@ async def _resolve_allocations(task_id: str, project_id: str, project: dict) -> 
     allocated = result.get("allocated_resources", {})
     logger.info("resources_allocated", task_id=task_id, count=len(allocated))
     return allocated
+
+
+async def _handle_worker_reject(
+    task_id: str,
+    project_id: str,
+    planning_task_id: str | None,
+    story_id: str | None,
+    reject_reason: str,
+    ci_attempts: list[dict],
+) -> dict:
+    """Handle worker reject: task → blocked, story → failed, admin notified.
+
+    Worker reject means the CI failure is not a code issue (infrastructure,
+    missing secrets, orchestrator bug). The pipeline halts and an admin
+    is notified to investigate.
+    """
+    logger.warning(
+        "worker_rejected_ci_fix",
+        task_id=task_id,
+        project_id=project_id,
+        reject_reason=reject_reason[:200],
+    )
+
+    # Mark the engineering run as failed
+    await api_client.patch(
+        f"runs/{task_id}",
+        json={
+            "status": "failed",
+            "error_message": f"Worker rejected: {reject_reason[:500]}",
+        },
+    )
+
+    # Planning task → failed with reject metadata (supervisor skips worker_rejected)
+    if planning_task_id:
+        await _update_task_status(api_client, planning_task_id, "failed")
+        try:
+            await api_client.patch(
+                f"tasks/{planning_task_id}",
+                json={
+                    "failure_metadata": {
+                        "failure_reason": "worker_rejected",
+                        "reject_reason": reject_reason,
+                    },
+                },
+            )
+        except Exception:
+            logger.warning(
+                "task_failure_metadata_write_failed",
+                planning_task_id=planning_task_id,
+                exc_info=True,
+            )
+        await _write_task_event(
+            api_client,
+            planning_task_id,
+            "note",
+            {
+                "action": "worker_rejected",
+                "reject_reason": reject_reason,
+                "ci_attempts": len(ci_attempts),
+            },
+        )
+
+    # Story → failed with reject metadata
+    if story_id:
+        try:
+            await api_client.patch(
+                f"stories/{story_id}",
+                json={
+                    "status": "failed",
+                    "failure_metadata": {
+                        "failure_reason": "worker_rejected",
+                        "reject_reason": reject_reason,
+                        "task_id": task_id,
+                        "planning_task_id": planning_task_id,
+                    },
+                },
+            )
+        except Exception:
+            logger.warning("story_fail_on_reject_failed", story_id=story_id, exc_info=True)
+
+    # Notify admin (not PO, not user — this is an orchestrator issue)
+    try:
+        await notify_admins(
+            f"Worker rejected CI fix for task {task_id} (project {project_id}):\n{reject_reason}",
+            level="error",
+        )
+    except Exception:
+        logger.warning("admin_notify_on_reject_failed", task_id=task_id, exc_info=True)
+
+    return {
+        "status": "failed",
+        "rejected": True,
+        "reject_reason": reject_reason,
+        "finished_at": datetime.now(UTC).isoformat(),
+    }
 
 
 async def _fail_job(task_id: str, error_msg: str, planning_task_id: str | None = None) -> dict:
@@ -439,7 +535,7 @@ async def _handle_engineering_success(  # noqa: PLR0913
     # --- CI Gate: wait for ci.yml before triggering deploy ---
     worker_id = result.get("worker_id")
     try:
-        ci_passed, ci_attempts = await _wait_for_ci_and_fix(
+        ci_passed, ci_attempts, ci_rejected, ci_reject_reason = await _wait_for_ci_and_fix(
             project=project,
             git_url=_git_url,
             task_id=task_id,
@@ -473,6 +569,17 @@ async def _handle_engineering_success(  # noqa: PLR0913
                     logger.warning("worker_delete_failed", worker_id=worker_id, error=str(e))
 
     failed_count = sum(1 for a in ci_attempts if a["status"] == "failed")
+
+    # --- Worker rejected: infrastructure/config issue, not a code problem ---
+    if ci_rejected and ci_reject_reason:
+        return await _handle_worker_reject(
+            task_id=task_id,
+            project_id=project_id,
+            planning_task_id=planning_task_id,
+            story_id=story_id,
+            reject_reason=ci_reject_reason,
+            ci_attempts=ci_attempts,
+        )
 
     if not ci_passed:
         fail_msg = f"CI failed after {len(ci_attempts)} attempt(s), retries exhausted"

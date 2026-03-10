@@ -81,15 +81,11 @@ up:
 	$(DOCKER_COMPOSE) up -d 
 
 down:
-	$(DOCKER_COMPOSE) down
-	@docker rm -f $$(docker ps -aq --filter "name=worker-dev-") 2>/dev/null || true
-
-stop:
-	@echo "🛑 Stopping stack and killing workers..."
-	$(DOCKER_COMPOSE) down
-	@echo "🔪 Killing worker containers..."
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
-	@echo "✅ Stack stopped and workers killed"
+	$(DOCKER_COMPOSE) down
+	@docker network rm codegen_worker 2>/dev/null || true
+
+stop: down
 
 logs:
 	$(DOCKER_COMPOSE) logs -f
@@ -166,7 +162,7 @@ check-worker-images:
 # === Quality ===
 
 lint:
-	@uv run ruff check .
+	@uv run ruff check $(if $(LINT_PATH),$(LINT_PATH),.)
 
 format:
 	@uv run ruff format $(if $(FILES),$(FILES),.) && uv run ruff check --fix $(if $(FILES),$(FILES),.)

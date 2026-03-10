@@ -44,6 +44,7 @@ class SpawnResult:
     error_message: str | None = None
     logs_tail: str | None = None
     worker_id: str | None = None
+    reject_reason: str | None = None
 
 
 LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
@@ -257,8 +258,9 @@ async def request_spawn(
         )
 
         if output_resp:
-            # Worker outputs: {"content": "...", "status": "success|failed"}
-            is_success = output_resp.get("status") == "success" or output_resp.get("success", False)
+            # Worker outputs: {"content": "...", "status": "success|failed|rejected"}
+            status = output_resp.get("status", "")
+            is_success = status == "success" or output_resp.get("success", False)
             content = output_resp.get(
                 "content", output_resp.get("response", output_resp.get("output", ""))
             )
@@ -272,6 +274,7 @@ async def request_spawn(
                 files_changed=output_resp.get("files_changed"),
                 error_message=output_resp.get("error"),
                 worker_id=worker_id,
+                reject_reason=output_resp.get("reject_reason"),
             )
         else:
             # Timeout - cleanup the zombie container
@@ -366,7 +369,8 @@ async def send_task_to_worker(
         )
 
         if output_resp:
-            is_success = output_resp.get("status") == "success" or output_resp.get("success", False)
+            status = output_resp.get("status", "")
+            is_success = status == "success" or output_resp.get("success", False)
             content = output_resp.get(
                 "content", output_resp.get("response", output_resp.get("output", ""))
             )
@@ -380,6 +384,7 @@ async def send_task_to_worker(
                 files_changed=output_resp.get("files_changed"),
                 error_message=output_resp.get("error"),
                 worker_id=worker_id,
+                reject_reason=output_resp.get("reject_reason"),
             )
         else:
             return SpawnResult(

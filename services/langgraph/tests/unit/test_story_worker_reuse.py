@@ -372,7 +372,7 @@ class TestHandleSuccessWorkerLifecycle:
         self, mock_publish, mock_api, mock_ci_fix, mock_delete, mock_set_worker
     ):
         """With story_id: store worker in registry, don't delete."""
-        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}])
+        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}], False, None)
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_primary_repository = AsyncMock(
@@ -412,7 +412,7 @@ class TestHandleSuccessWorkerLifecycle:
         self, mock_publish, mock_api, mock_ci_fix, mock_delete, mock_set_worker
     ):
         """Without story_id: delete worker after CI."""
-        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}])
+        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}], False, None)
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_primary_repository = AsyncMock(

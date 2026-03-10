@@ -58,15 +58,24 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         # Set status to scaffolding
         await api.update_project_status(msg.project_id, "scaffolding")
 
-        # Get repository info for git URL
-        repo_data = await api.get_repository(msg.repository_id)
-        git_url = repo_data.get("git_url", "")
-        # Extract owner/repo from git_url (e.g. https://github.com/org/repo -> org/repo)
-        repo_full_name = "/".join(git_url.rstrip("/").split("/")[-2:])
-
         # Get GitHub token
         github = get_github_client()
-        org = repo_full_name.split("/")[0]
+        org = os.environ.get("GITHUB_ORG", "")
+        if not org:
+            raise RuntimeError("GITHUB_ORG environment variable is not set")
+        repo_full_name = f"{org}/{msg.project_name}"
+
+        # Create GitHub repo (idempotent — ignores 422 if already exists)
+        try:
+            await github.create_repo(org, msg.project_name, private=True)
+        except Exception as e:
+            if "422" not in str(e):
+                raise
+
+        # Update repository git_url so CI gate can find the repo
+        git_url = f"https://github.com/{repo_full_name}"
+        await api.update_repository(msg.repository_id, git_url=git_url)
+
         github_token = await github.get_org_token(org)
 
         # Run scaffold

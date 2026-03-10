@@ -141,6 +141,14 @@ async def dispatch_todo_tasks(
                 log.info("task_skipped_story_busy")
                 continue
 
+            # Guard: don't dispatch if any sibling was rejected by worker (infra issue)
+            if any(
+                s.get("failure_metadata", {}).get("failure_reason") == "worker_rejected"
+                for s in siblings
+            ):
+                log.info("task_skipped_story_has_rejected_sibling")
+                continue
+
         # Build cumulative context from sibling tasks
         context = ""
         if siblings:
@@ -385,6 +393,10 @@ async def supervise_failed_tasks(
 
         # Skip standalone tasks (not part of a story)
         if not story_id:
+            continue
+
+        # Skip worker-rejected tasks — needs admin intervention, not retry
+        if task.get("failure_metadata", {}).get("failure_reason") == "worker_rejected":
             continue
 
         current_iter = task.get("current_iteration", 0)

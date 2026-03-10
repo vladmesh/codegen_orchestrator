@@ -218,6 +218,72 @@ class TestDispatchTodoTasks:
         eng_msg = redis_client.publish_message.call_args[0][1]
         assert eng_msg.story_id is None
 
+    @pytest.mark.asyncio
+    async def test_skips_task_when_sibling_rejected(self, api_client, redis_client):
+        """Todo task in story with a worker-rejected sibling → not dispatched."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-2",
+                "title": "Add endpoint",
+                "description": "REST API",
+                "type": "feature",
+                "project_id": "proj-1",
+                "story_id": "story-1",
+                "blocked_by_task_id": None,
+                "status": "todo",
+            }
+        ]
+        # Sibling task-1 failed with worker_rejected metadata
+        api_client.get_tasks_by_story.return_value = [
+            {
+                "id": "task-1",
+                "status": "failed",
+                "failure_metadata": {"failure_reason": "worker_rejected"},
+            },
+            {"id": "task-2", "status": "todo"},
+        ]
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        # Should NOT dispatch — story has a rejected task
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatches_when_sibling_failed_normally(self, api_client, redis_client):
+        """Todo task with a normally-failed sibling (no reject) → still dispatched."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-2",
+                "title": "Add endpoint",
+                "description": "REST API",
+                "type": "feature",
+                "project_id": "proj-1",
+                "story_id": "story-1",
+                "blocked_by_task_id": None,
+                "status": "todo",
+            }
+        ]
+        # Sibling task-1 failed normally (no reject metadata)
+        api_client.get_tasks_by_story.return_value = [
+            {"id": "task-1", "status": "failed"},
+            {"id": "task-2", "status": "todo"},
+        ]
+        api_client.get_task_events.return_value = []
+        api_client.create_run.return_value = {"id": "run-1"}
+        api_client.transition_task.return_value = {}
+        api_client.get_story.return_value = {"user_id": "u-1"}
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        # Should dispatch — normal failure doesn't block siblings
+        api_client.create_run.assert_called_once()
+        redis_client.publish_message.assert_called_once()
+
 
 class TestCompleteStories:
     """Complete stories when all tasks are done."""
@@ -277,3 +343,29 @@ class TestCompleteStories:
         await complete_stories(api_client, redis_client)
 
         api_client.transition_story.assert_not_called()
+
+
+class TestSuperviseFailedTasks:
+    """Supervisor skips worker-rejected tasks."""
+
+    @pytest.mark.asyncio
+    async def test_skips_worker_rejected_task(self, api_client, redis_client):
+        """Failed task with worker_rejected metadata → not retried."""
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-1",
+                "story_id": "story-1",
+                "current_iteration": 0,
+                "max_iterations": 3,
+                "failure_metadata": {"failure_reason": "worker_rejected"},
+            }
+        ]
+
+        result = await supervise_failed_tasks(api_client, redis_client)
+
+        # Should NOT retry — worker rejected, needs admin
+        api_client.transition_task.assert_not_called()
+        assert result["retried"] == 0
+        assert result["failed"] == 0

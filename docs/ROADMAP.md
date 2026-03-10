@@ -80,7 +80,7 @@ PO умеет принимать от юзера высокоуровневое 
 - [x] #43 PO: Сократический диалог и формирование ТЗ
 - [x] Create scaffolder microservice
 - [x] Architect receives tree + specs, creates tasks for diff
-- [ ] Worker-manager mounts workspace volume by repo_id
+- [x] Worker-manager mounts workspace volume by repo_id
 - [ ] /architect skill — Story decomposition into Tasks
 - [ ] #62 /brainstorm resume — продолжение обсуждения существующего драфта
 - [ ] #59 PO work item tools (Step 4)

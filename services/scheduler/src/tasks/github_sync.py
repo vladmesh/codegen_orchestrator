@@ -191,7 +191,7 @@ async def _sync_project_docs(
     # Ingest documents to RAG (best-effort)
     if rag_documents:
         await _ingest_to_rag(
-            project_id=project.id,
+            project_id=str(project.id),
             repo_full_name=r.full_name,
             documents=rag_documents,
         )

@@ -98,7 +98,7 @@ class TestCIFixWorkerReuse:
         from src.consumers._ci_gate import _wait_for_ci_and_fix
 
         redis = MagicMock()
-        passed, attempts = await _wait_for_ci_and_fix(
+        passed, attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/test-project",
             task_id="task-1",
@@ -135,12 +135,12 @@ class TestCIFixWorkerReuse:
             ]
         )
         mock_github.get_workflow_failure_logs = AsyncMock(return_value="test_foo.py FAILED")
-        mock_respawn.return_value = True
+        mock_respawn.return_value = (True, None)
 
         from src.consumers._ci_gate import _wait_for_ci_and_fix
 
         redis = MagicMock()
-        passed, attempts = await _wait_for_ci_and_fix(
+        passed, attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/test-project",
             task_id="task-1",
@@ -166,7 +166,7 @@ class TestCIFixCleanup:
         self, mock_publish, mock_api, mock_ci_fix, mock_delete
     ):
         """delete_worker should be called after CI gate when worker_id is present."""
-        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}])
+        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}], False, None)
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_primary_repository = AsyncMock(
@@ -208,7 +208,7 @@ class TestCIFixCleanup:
         self, mock_publish, mock_api, mock_ci_fix, mock_delete
     ):
         """delete_worker should NOT be called when no worker_id."""
-        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}])
+        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}], False, None)
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_primary_repository = AsyncMock(
@@ -249,7 +249,7 @@ class TestCIFixCleanup:
         self, mock_publish, mock_api, mock_ci_fix, mock_delete
     ):
         """_handle_engineering_success should pass worker_id to _wait_for_ci_and_fix."""
-        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}])
+        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}], False, None)
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_primary_repository = AsyncMock(
@@ -324,12 +324,12 @@ class TestCIFixFallback:
         )
 
         # Fallback to respawn succeeds
-        mock_respawn.return_value = True
+        mock_respawn.return_value = (True, None)
 
         from src.consumers._ci_gate import _wait_for_ci_and_fix
 
         redis = MagicMock()
-        passed, attempts = await _wait_for_ci_and_fix(
+        passed, attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/test-project",
             task_id="task-1",
@@ -378,12 +378,12 @@ class TestCIFixFallback:
             error_message="execution_timeout",
             worker_id="dev-test-abc",
         )
-        mock_respawn.return_value = True
+        mock_respawn.return_value = (True, None)
 
         from src.consumers._ci_gate import _wait_for_ci_and_fix
 
         redis = MagicMock()
-        passed, attempts = await _wait_for_ci_and_fix(
+        passed, attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/test-project",
             task_id="task-1",
@@ -413,7 +413,7 @@ class TestTotalGateTimeout:
 
         redis = MagicMock()
 
-        passed, attempts = await _wait_for_ci_and_fix(
+        passed, attempts, *_ = await _wait_for_ci_and_fix(
             project=_project(),
             git_url="https://github.com/org/test-project",
             task_id="task-1",

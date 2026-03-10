@@ -62,7 +62,7 @@ class TestLevel1CascadeFailure:
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_no_commit_sha_full_event_chain(self, mock_ci_gate, mock_redis, mock_api):
         """commit_sha=None: task=failed, callback=failed, no CI check, no deploy."""
-        mock_ci_gate.return_value = (True, [])  # Should never be reached
+        mock_ci_gate.return_value = (True, [], False, None)  # Should never be reached
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -97,7 +97,7 @@ class TestLevel1CascadeFailure:
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_empty_string_commit_sha_also_blocks(self, mock_ci_gate, mock_redis, mock_api):
         """Empty string commit_sha is also falsy — should block."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -125,7 +125,7 @@ class TestLevel2NotificationDecoupling:
         self, mock_ci_gate, mock_redis, mock_api
     ):
         """skip_deploy=False: user gets 'progress' not 'completed' from engineering worker."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -157,7 +157,7 @@ class TestLevel2NotificationDecoupling:
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_skip_deploy_sends_completed(self, mock_ci_gate, mock_redis, mock_api):
         """skip_deploy=True: user gets 'completed' — this IS the final step."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -182,7 +182,7 @@ class TestLevel2NotificationDecoupling:
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     async def test_deploy_queue_failure_notifies_user(self, mock_ci_gate, mock_redis, mock_api):
         """When deploy trigger fails, user gets 'failed' event — not silence."""
-        mock_ci_gate.return_value = (True, [])
+        mock_ci_gate.return_value = (True, [], False, None)
         mock_api.post.side_effect = RuntimeError("API unreachable")
 
         from src.consumers.engineering import _handle_engineering_success
@@ -213,6 +213,8 @@ class TestLevel2NotificationDecoupling:
         mock_ci_gate.return_value = (
             False,
             [{"attempt": 0, "status": "failed", "failure_context": ""}],
+            False,
+            None,
         )
 
         from src.consumers.engineering import _handle_engineering_success

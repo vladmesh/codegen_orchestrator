@@ -61,12 +61,20 @@ def _extract_run_id_from_error(error_msg: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _build_ci_fix_prompt(failure_context: str, attempt: int) -> str:
-    """Build the prompt for CI fix task (used by both reuse and respawn paths)."""
+def _build_ci_fix_prompt(failure_context: str, attempt: int, run_url: str | None = None) -> str:
+    """Build the prompt for CI fix task (used by both reuse and respawn paths).
+
+    Includes reject instructions so the worker can signal when a failure
+    is not a code issue (infrastructure, missing secrets, orchestrator bug).
+    """
+    run_info = ""
+    if run_url:
+        run_info = f"\n**Run URL**: {run_url}\n"
+
     return f"""# Task: Fix CI Failures (Attempt {attempt})
 
 ## CI Failure Details
-
+{run_info}
 {failure_context or "CI workflow failed. Check the CI logs for details."}
 
 ## Instructions
@@ -74,14 +82,20 @@ def _build_ci_fix_prompt(failure_context: str, attempt: int) -> str:
 1. The repository is already cloned to `/workspace`. Pull latest changes with `git pull`.
 2. Analyze the CI failure details above to understand the root cause.
    - Use `gh run list --branch main` and `gh run view <run-id> --log` for full CI logs.
-3. Fix the root cause of the failure.
-4. Run any relevant checks locally (linting, tests) to verify your fix.
-5. Commit and push your fixes.
+3. Determine if this is a code issue you can fix, or an infrastructure/config problem.
+4. **If you CAN fix it**: fix the root cause, run local checks, commit and push.
+5. **If this is NOT a code issue** (infrastructure, missing secrets, orchestrator bug,
+   registry auth, Docker config, etc.): do NOT make any commits. Instead, write a
+   `## REJECTED` section in your response explaining:
+   - What failed and why
+   - Why you cannot fix it (e.g. "REGISTRY_PASSWORD secret is empty")
+   - Suggested action for the admin
 
 ## Important
 
 - Focus ONLY on fixing the CI failures, do not add new features.
 - Make a descriptive commit message explaining what you fixed.
+- If the problem is outside your control, use ## REJECTED — do not make empty commits.
 """
 
 
@@ -93,18 +107,20 @@ async def _respawn_developer_for_ci_fix(
     github_client: GitHubAppClient,
     failure_context: str,
     attempt: int,
-) -> bool:
+    run_url: str | None = None,
+) -> tuple[bool, str | None]:
     """Spawn a new developer worker to fix CI failures.
 
     Returns:
-        True if developer completed successfully, False otherwise
+        Tuple of (success, reject_reason). reject_reason is set when worker
+        signals that the failure is not a code issue.
     """
     from ..clients.worker_spawner import request_spawn
     from ..config.constants import Timeouts
 
     access_token = await github_client.get_token(owner, repo_name)
     project_name = project.get("name", "project")
-    task_message = _build_ci_fix_prompt(failure_context, attempt)
+    task_message = _build_ci_fix_prompt(failure_context, attempt, run_url=run_url)
 
     worker_result = await request_spawn(
         repo=repo_full_name,
@@ -115,7 +131,7 @@ async def _respawn_developer_for_ci_fix(
         project_id=project.get("id"),
     )
 
-    return worker_result.success
+    return worker_result.success, worker_result.reject_reason
 
 
 async def _try_infra_rerun(
@@ -185,16 +201,18 @@ async def _attempt_developer_fix(
     failure_context: str,
     attempt: int,
     task_id: str,
-) -> tuple[bool, str | None]:
+    run_url: str | None = None,
+) -> tuple[bool, str | None, str | None]:
     """Try to fix a CI code failure via an existing worker or by respawning.
 
     Returns:
-        Tuple of (success, updated_worker_id). worker_id may become None
-        if the existing worker timed out and a fresh respawn was used.
+        Tuple of (success, updated_worker_id, reject_reason).
+        worker_id may become None if the existing worker timed out.
+        reject_reason is set when worker signals failure is not a code issue.
     """
     from ..config.constants import Timeouts
 
-    task_message = _build_ci_fix_prompt(failure_context, attempt)
+    task_message = _build_ci_fix_prompt(failure_context, attempt, run_url=run_url)
 
     if worker_id:
         logger.info(
@@ -209,7 +227,9 @@ async def _attempt_developer_fix(
             timeout_seconds=Timeouts.WORKER_SPAWN,
         )
         if fix_result.success:
-            return True, worker_id
+            return True, worker_id, None
+        if fix_result.reject_reason:
+            return False, worker_id, fix_result.reject_reason
         if fix_result.error_message == "execution_timeout":
             # Worker likely dead, fall back to respawn
             logger.warning(
@@ -217,7 +237,7 @@ async def _attempt_developer_fix(
                 task_id=task_id,
                 worker_id=worker_id,
             )
-            success = await _respawn_developer_for_ci_fix(
+            success, reject_reason = await _respawn_developer_for_ci_fix(
                 project=project,
                 owner=owner,
                 repo_name=repo_name,
@@ -225,17 +245,18 @@ async def _attempt_developer_fix(
                 github_client=github_client,
                 failure_context=failure_context,
                 attempt=attempt,
+                run_url=run_url,
             )
-            return success, None  # worker_id invalidated
+            return success, None, reject_reason  # worker_id invalidated
         # Worker alive but fix failed (agent error)
-        return False, worker_id
+        return False, worker_id, None
 
     logger.info(
         "ci_fix_respawn_developer",
         task_id=task_id,
         attempt=attempt,
     )
-    success = await _respawn_developer_for_ci_fix(
+    success, reject_reason = await _respawn_developer_for_ci_fix(
         project=project,
         owner=owner,
         repo_name=repo_name,
@@ -243,8 +264,29 @@ async def _attempt_developer_fix(
         github_client=github_client,
         failure_context=failure_context,
         attempt=attempt,
+        run_url=run_url,
     )
-    return success, None
+    return success, None, reject_reason
+
+
+async def _fetch_failure_context(
+    github_client: GitHubAppClient, owner: str, repo_name: str, run_id: int | None
+) -> str:
+    """Fetch CI failure logs from GitHub. Returns empty string on failure."""
+    if not run_id:
+        return ""
+    try:
+        return await github_client.get_workflow_failure_logs(owner, repo_name, run_id)
+    except Exception as e:
+        logger.warning("ci_log_fetch_failed", error=str(e))
+        return ""
+
+
+def _build_run_url(repo_full_name: str, run_id: int | None) -> str | None:
+    """Build GitHub Actions run URL from repo name and run ID."""
+    if not run_id:
+        return None
+    return f"https://github.com/{repo_full_name}/actions/runs/{run_id}"
 
 
 async def _wait_for_ci_and_fix(
@@ -258,7 +300,7 @@ async def _wait_for_ci_and_fix(
     user_id: str = "",
     worker_id: str | None = None,
     commit_sha: str | None = None,
-) -> tuple[bool, list[dict]]:
+) -> tuple[bool, list[dict], bool, str | None]:
     """Wait for CI workflow to pass, re-spawning developer on failure.
 
     After the developer pushes code, CI runs on GitHub. This function monitors
@@ -266,8 +308,9 @@ async def _wait_for_ci_and_fix(
     the issues. Retries up to CI.MAX_FIX_RETRIES times.
 
     Returns:
-        Tuple of (passed, ci_attempts) where ci_attempts is a list of dicts
-        recording each CI attempt with status and failure context.
+        Tuple of (passed, ci_attempts, rejected, reject_reason).
+        rejected is True when a worker determined the failure is not a code issue.
+        reject_reason explains why (infrastructure, missing secrets, etc.).
     """
     from shared.clients.github import GitHubAppClient, WorkflowNotFoundError
 
@@ -277,7 +320,7 @@ async def _wait_for_ci_and_fix(
 
     if not git_url or "github.com/" not in git_url:
         logger.error("ci_check_fail_no_repo_url", task_id=task_id)
-        return False, ci_attempts
+        return False, ci_attempts, False, None
 
     repo_full_name = git_url.split("github.com/")[-1].rstrip("/").removesuffix(".git")
     owner, repo_name = repo_full_name.split("/", 1)
@@ -305,7 +348,7 @@ async def _wait_for_ci_and_fix(
             )
             ci_attempts.append({"attempt": attempt, "status": "gate_timeout"})
             await _record_ci_attempts(task_id, ci_attempts)
-            return False, ci_attempts
+            return False, ci_attempts, False, None
 
         try:
             logger.info(
@@ -347,7 +390,7 @@ async def _wait_for_ci_and_fix(
             )
             ci_attempts.append({"attempt": attempt, "status": "passed"})
             await _record_ci_attempts(task_id, ci_attempts)
-            return True, ci_attempts
+            return True, ci_attempts, False, None
 
         except WorkflowNotFoundError as e:
             # ci.yml doesn't exist — scaffold likely failed/skipped.
@@ -360,7 +403,7 @@ async def _wait_for_ci_and_fix(
             )
             ci_attempts.append({"attempt": attempt, "status": "workflow_not_found"})
             await _record_ci_attempts(task_id, ci_attempts)
-            return False, ci_attempts
+            return False, ci_attempts, False, None
 
         except RuntimeError as e:
             # CI failed
@@ -372,15 +415,7 @@ async def _wait_for_ci_and_fix(
                 error=str(e),
             )
 
-            # Fetch failure details for context
-            failure_context = ""
-            if run_id:
-                try:
-                    failure_context = await github_client.get_workflow_failure_logs(
-                        owner, repo_name, run_id
-                    )
-                except Exception as log_err:
-                    logger.warning("ci_log_fetch_failed", error=str(log_err))
+            failure_context = await _fetch_failure_context(github_client, owner, repo_name, run_id)
 
             ci_attempts.append(
                 {
@@ -397,7 +432,7 @@ async def _wait_for_ci_and_fix(
                     task_id=task_id,
                     max_retries=CI.MAX_FIX_RETRIES,
                 )
-                return False, ci_attempts
+                return False, ci_attempts, False, None
 
             # Classify failure: infra issues can't be fixed by a developer
             if failure_context and _is_infra_failure(failure_context):
@@ -418,19 +453,18 @@ async def _wait_for_ci_and_fix(
                     if rerun_ok is True:
                         ci_attempts.append({"attempt": attempt, "status": "passed_after_rerun"})
                         await _record_ci_attempts(task_id, ci_attempts)
-                        return True, ci_attempts
+                        return True, ci_attempts, False, None
                     if rerun_ok is False:
                         ci_attempts.append({"attempt": attempt, "status": "rerun_failed"})
                         await _record_ci_attempts(task_id, ci_attempts)
-                        return False, ci_attempts
-                    # rerun_ok is None → API error, fall through
+                        return False, ci_attempts, False, None
 
                 logger.error(
                     "ci_infra_failure",
                     task_id=task_id,
                     failure_context=failure_context,
                 )
-                return False, ci_attempts
+                return False, ci_attempts, False, None
 
             # Reset filters BEFORE fix: capture timestamp after the failed run
             # is observed (so it gets filtered out) but before the new push.
@@ -438,7 +472,7 @@ async def _wait_for_ci_and_fix(
             # with a different SHA — fall back to created_after filtering.
             created_after, commit_sha = datetime.now(UTC), None
 
-            fix_success, worker_id = await _attempt_developer_fix(
+            fix_success, worker_id, reject_reason = await _attempt_developer_fix(
                 worker_id=worker_id,
                 project=project,
                 owner=owner,
@@ -448,7 +482,20 @@ async def _wait_for_ci_and_fix(
                 failure_context=failure_context,
                 attempt=attempt + 1,
                 task_id=task_id,
+                run_url=_build_run_url(repo_full_name, run_id),
             )
+
+            if reject_reason:
+                logger.warning(
+                    "ci_fix_worker_rejected",
+                    task_id=task_id,
+                    reject_reason=reject_reason[:200],
+                )
+                ci_attempts.append(
+                    {"attempt": attempt, "status": "rejected", "reject_reason": reject_reason}
+                )
+                await _record_ci_attempts(task_id, ci_attempts)
+                return False, ci_attempts, True, reject_reason
 
             if not fix_success:
                 logger.error(
@@ -456,7 +503,7 @@ async def _wait_for_ci_and_fix(
                     task_id=task_id,
                     attempt=attempt + 1,
                 )
-                return False, ci_attempts
+                return False, ci_attempts, False, None
 
             # Loop continues: will wait for CI again
 
@@ -464,9 +511,9 @@ async def _wait_for_ci_and_fix(
             logger.error("ci_check_timeout", task_id=task_id, attempt=attempt)
             ci_attempts.append({"attempt": attempt, "status": "timeout"})
             await _record_ci_attempts(task_id, ci_attempts)
-            return False, ci_attempts
+            return False, ci_attempts, False, None
 
-    return False, ci_attempts
+    return False, ci_attempts, False, None
 
 
 async def _record_ci_attempts(task_id: str, ci_attempts: list[dict]) -> None:

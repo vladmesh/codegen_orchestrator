@@ -2,6 +2,24 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-10
+
+### Fixed
+- **Scaffolder: create GitHub repo before clone** (E2E pipeline blocker): Scaffolder tried to `git clone` a repo that didn't exist on GitHub. Added `create_repo()` call before clone (idempotent, ignores 422).
+- **Scaffolder: update `git_url` after repo creation** (E2E pipeline blocker): Repository `git_url` stayed as `pending://` placeholder — CI gate couldn't find the repo. Scaffolder now updates `git_url` to real GitHub URL after creating the repo.
+- **github_sync UUID serialization**: `_ingest_to_rag` passed UUID object to `json.dumps`, causing `TypeError`. Fixed with `str(project.id)`.
+- **TaskCreate schema: missing `status` field** (E2E pipeline blocker): `TaskCreate` Pydantic schema didn't include `status` — Pydantic silently dropped it, SQLAlchemy used `default=backlog`. Router also hardcoded `TaskStatus.BACKLOG` in both `create_task` and `push_task`. Now accepts `status` from request body (default: backlog). Architect tasks correctly created as `todo`.
+- **PO: missing Repository creation** (E2E pipeline blocker): `create_project` PO tool created Project + Story but no Repository. `scaffold_trigger` requires repository to exist (`get_repositories()` check). Added `POST /api/repositories/` call with placeholder `git_url` to `create_project` tool.
+- **Scaffolder container not running** (E2E pipeline blocker): `scaffolder` service defined in docker-compose.yml but never built/started. Built and started with `docker compose up -d --build scaffolder`.
+
+### Changed
+- **Architect prompt: prefer fewer tasks**: Rewrote task creation rules to prefer fewer, larger tasks. One task per story is fine for simple projects. Only split when genuinely different concerns.
+- **Makefile: `stop` is now alias for `down`**: Removed duplicated logic; `down` kills worker containers and cleans network.
+- **docker-compose: scaffolder gets `GITHUB_ORG`**: Scaffolder now receives `GITHUB_ORG` env var; fixed PEM mount path typo.
+
+### Added
+- **E2E Pipeline V2 smoke test** ([report](e2e_results/pipeline_v2-20260310.md)): First full-flow test of Pipeline V2 (PO → Scaffolder → Architect → Dispatcher → Worker). Confirmed PO→Architect flow works end-to-end. Found 3 blocking bugs (all fixed), 1 medium (self-resolving after fixes). Architect decomposed "string reverser bot" into 4 chained tasks in ~42s.
+
 ## 2026-03-09
 
 ### Added
@@ -11,6 +29,7 @@
 - **PO tools contract tests**: 15 unit-level contract tests that import API Pydantic schemas directly and validate PO tool payloads (ProjectCreate, StoryCreate, MergeSecretsRequest). 9 integration tests that call PO tools against a real API with DB, validating full roundtrip (PO tool → HTTP → API → DB → response). New `po-tools` suite in CI integration tests matrix.
 
 ### Changed
+- **Worker-manager mounts workspace by repo_id + story context** (#18): Worker-manager now mounts pre-scaffolded workspaces by `repo_id` instead of running copier+setup inside containers. Developer node passes `repo_id` instead of `ScaffoldConfig` to worker spawner. Engineering consumer builds story context (previous tasks + events) and passes it to worker via task message, giving full continuity so workers don't re-gather info each time. Extracted `_resolve_allocations()` helper. Added `get_task_events()` to langgraph API client, `story_context` field to `EngineeringState`. 11 new tests.
 - **Architect: scaffolded-aware decomposition** (task-2378004c): Rewrote architect system prompt to understand scaffolded project state — creates tasks only for business logic diff, not infrastructure. Enhanced `get_project_spec` tool to surface `tree` from config and strip noisy fields (secrets, env_hints). Auto-appends CI check task after architect LLM finishes creating tasks. 15 new tests.
 - **Update Ruff to 0.15.5**: Bumped ruff from 0.8.4 to 0.15.5 in pyproject.toml and CI. Reformatted 17 test files (parenthesized assertion style). No functional changes.
 - **Remove Docker tooling, use `uv run` everywhere**: Deleted `tooling/Dockerfile`, `docker-compose.tools.yml`, `.pre-commit-config.yaml`. Rewrote `make lint`/`format`/`lock-deps` to use `uv run` directly. Git hooks now require `uv` instead of Docker. CI uses `uv sync` + lockfile ruff instead of `--with ruff==VERSION`. Single source of truth for ruff version: `pyproject.toml` + `uv.lock`.

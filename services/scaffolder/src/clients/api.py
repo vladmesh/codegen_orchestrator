@@ -58,6 +58,10 @@ class ScaffolderAPIClient:
         )
         logger.info("project_status_updated", project_id=project_id, status=status)
 
+    async def update_repository(self, repo_id: str, **fields) -> None:
+        await self._request("PATCH", f"repositories/{repo_id}", json=fields)
+        logger.info("repository_updated", repo_id=repo_id, fields=list(fields.keys()))
+
     async def update_project_config(self, project_id: str, config: dict) -> None:
         await self._request(
             "PATCH",

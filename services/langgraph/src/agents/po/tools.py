@@ -110,6 +110,21 @@ async def create_project(
     resp = await api.post("/api/projects/", json=payload, headers=headers)
     resp.raise_for_status()
     project = resp.json()
+
+    # Create a Repository record so scaffold_trigger can detect this project.
+    # Scaffolder will create the actual GitHub repo and update git_url later.
+    repo_payload = {
+        "project_id": project_id,
+        "name": name,
+        "git_url": f"pending://{name}",  # placeholder until scaffolder creates GitHub repo
+    }
+    try:
+        repo_resp = await api.post("/api/repositories/", json=repo_payload, headers=headers)
+        repo_resp.raise_for_status()
+        logger.info("po_repository_created", project_id=project_id, repo_id=repo_resp.json()["id"])
+    except Exception:
+        logger.warning("po_repository_create_failed", project_id=project_id, exc_info=True)
+
     return f"Project created. ID: {project['id']}, Name: {project['name']}"
 
 

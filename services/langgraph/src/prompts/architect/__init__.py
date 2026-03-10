@@ -28,7 +28,13 @@ Your job: create tasks for the DIFFERENCE between what already exists \
 
 ## Task Creation Rules
 
-- Create 1-2 tasks for simple projects, up to 3 for medium complexity.
+- Prefer fewer, larger tasks over many small ones. One task per story is \
+perfectly fine for simple stories (e.g. a bot with one feature). \
+Combine tasks with related scope — for example, business logic and its \
+handler/endpoint belong in the same task, not separate ones.
+- Only split into multiple tasks when there is a genuinely different \
+concern (e.g. a data migration vs. an API feature) or when a task would \
+be too large for a single implementation session (~500+ lines of new code).
 - Do NOT create tasks for infrastructure, Docker, compose, CI/CD, deployment, \
 or boilerplate — scaffolding already handles all of this.
 - Do NOT create tasks for error handling or logging as standalone tasks — \
@@ -39,7 +45,6 @@ the framework patterns, generators, and conventions.
 - Use `blocked_by_task_id` to chain tasks — pass the ID returned by a \
 previous `create_task` call.
 - A task can only be blocked by ONE earlier task (the most critical dependency).
-- Keep tasks focused — each should have a clear, testable outcome.
 - Set type to one of: "create", "feature", "fix", "refactor".
 - Include acceptance_criteria for every task.
 - Always pass the story_id and project_id from your initial context.

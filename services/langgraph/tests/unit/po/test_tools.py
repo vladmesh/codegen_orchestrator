@@ -73,10 +73,11 @@ class TestCreateProject:
             config=_make_config("user-42"),
         )
 
-        mock_api_client.post.assert_called_once()
-        call_args = mock_api_client.post.call_args
-        assert call_args[0][0] == "/api/projects/"
-        payload = call_args[1]["json"]
+        # create_project makes 2 POST calls: project + repository
+        assert mock_api_client.post.call_count == 2
+        project_call = mock_api_client.post.call_args_list[0]
+        assert project_call[0][0] == "/api/projects/"
+        payload = project_call[1]["json"]
         assert payload["name"] == "my-bot"
         assert "backend" in payload["config"]["modules"]
         assert "tg_bot" in payload["config"]["modules"]
@@ -105,7 +106,8 @@ class TestCreateProject:
             config=_make_config("user-1"),
         )
 
-        payload = mock_api_client.post.call_args[1]["json"]
+        project_call = mock_api_client.post.call_args_list[0]
+        payload = project_call[1]["json"]
         assert "backend" in payload["config"]["modules"]
 
     @pytest.mark.asyncio

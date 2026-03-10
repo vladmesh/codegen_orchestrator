@@ -6,7 +6,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 
-from shared.contracts.dto.task import TaskEventType, TaskType
+from shared.contracts.dto.task import TaskEventType, TaskStatus, TaskType
 
 
 class TaskCreate(BaseModel):
@@ -15,6 +15,7 @@ class TaskCreate(BaseModel):
     project_id: uuid.UUID
     type: TaskType = TaskType.FEATURE
     title: str
+    status: TaskStatus = TaskStatus.BACKLOG
     description: str | None = None
     acceptance_criteria: str | None = None
     priority: int = 0
