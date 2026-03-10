@@ -5,15 +5,15 @@
 
 ## Summary
 - 🔴 Critical: 0
-- 🟡 Warning: 10
+- 🟡 Warning: 8
 - 🔵 Info: 8
-- **Total**: 18 issues
+- **Total**: 16 issues
 
 | Category | 🔴 | 🟡 | 🔵 |
 |----------|----|----|---|
-| CI Health | 0 | 1 | 0 |
+| CI Health | 0 | 0 | 0 |
 | Directory structure | 0 | 3 | 3 |
-| Glossary alignment | 0 | 1 | 0 |
+| Glossary alignment | 0 | 0 | 0 |
 | Docker-Compose alignment | 0 | 0 | 2 |
 | Dead code | 0 | 0 | 0 |
 | Code smells | 0 | 0 | 3 |
@@ -25,9 +25,7 @@
 
 ## CI Health
 
-🟡 `gh run list` timed out — `gh` CLI may not be authenticated on this machine. Unable to check latest CI status.
-
-**Action:** Configure `gh auth login` or check CI manually.
+✅ Last CI run passed (2026-03-10, commit `c91c4fb`). [View run](https://github.com/project-factory-organization/codegen-orchestrator/actions/runs/22911714679).
 
 ---
 
@@ -41,7 +39,6 @@
 | 🔵 | `services/api/src/schemas/` | 15 .py files flat | — | consider grouping if schemas grow further |
 | 🔵 | `services/worker-manager/src/` | 12 .py files flat at source root level | — | acceptable for now, monitor growth |
 | 🔵 | `shared/models/` | 17 .py files flat | — | acceptable — one model per file is a clear convention |
-| 🟡 | `docs/ARCHITECTURE.md` | Missing — Glossary references architecture but no `ARCHITECTURE.md` exists | ARCHITECTURE.md | create `docs/ARCHITECTURE.md` documenting the intended system layout |
 
 ---
 
