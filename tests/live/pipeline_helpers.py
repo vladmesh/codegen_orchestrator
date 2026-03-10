@@ -118,21 +118,16 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
 
 
 def flush_queues() -> None:
-    """Trim all pipeline queues to 0. Ensures a clean start for each test run."""
+    """Delete pipeline queues (stream + consumer groups + PEL).
+
+    Using DEL instead of XTRIM — XTRIM removes messages but leaves
+    the consumer group's PEL intact, causing consumers to hang on
+    stale pending entries. DEL removes everything; consumers recreate
+    the stream via XGROUP CREATE ... MKSTREAM on next startup.
+    """
     for queue in [SCAFFOLD_QUEUE, "engineering:queue", "deploy:queue"]:
         subprocess.run(
-            [
-                "docker",
-                "compose",
-                "exec",
-                "-T",
-                "redis",
-                "redis-cli",
-                "XTRIM",
-                queue,
-                "MAXLEN",
-                "0",
-            ],
+            ["docker", "compose", "exec", "-T", "redis", "redis-cli", "DEL", queue],
             capture_output=True,
             text=True,
             timeout=5,
