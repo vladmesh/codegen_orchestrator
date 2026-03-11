@@ -3,9 +3,20 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-10
+> **Updated**: 2026-03-11
 
 ## Queue (ordered by priority, first = next)
+
+### debug test
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+
+### #1004 CI gate: one push per story instead of per task
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: CI runs after every engineering task, wasting GitHub Actions minutes. Additionally, append_ci_check_task creates CI task without status:todo so it stays stuck in backlog.  Changes: 1. Fix append_ci_check_task: add status:todo to task creation 2. Engineering consumer: skip push + CI gate for ordin...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -223,6 +234,9 @@
 
 ## Done (last 10)
 
+- Run tests, verify CI green — 2026-03-10
+- Implement LessWrong random article bot with access control — 2026-03-10
+- Noop implementation task — 2026-03-10
 - Smart CI failure triage: worker reject signal + CI-fix task template — 2026-03-10
 - Worker-manager mounts workspace volume by repo_id — 2026-03-09
 - Architect receives tree + specs, creates tasks for diff — 2026-03-09
@@ -230,11 +244,6 @@
 - Worker reuse per story — spawn once, reuse for subsequent tasks — 2026-03-09
 - Sequential story processing — one active story per project — 2026-03-09
 - #1001 Pipeline failure supervisor — retry, fail-fast, admin logging — 2026-03-09
-- #36 Architect: migrate from scheduler function to LangGraph ReAct agent — 2026-03-09
-- Fix compose.dev.yml ports conflict with orchestrator worker containers
- — 2026-03-08
-- Add E2E CI job for unified handlers (dual-transport pipeline)
- — 2026-03-08
 
 ## Ideas
 
