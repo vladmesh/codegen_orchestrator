@@ -2,6 +2,15 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-11
+
+### Fixed
+- **Contract violations: hardcoded status strings → shared enums**: Replaced ~30 hardcoded status string literals (`"todo"`, `"done"`, `"failed"`, `"in_dev"`, `"scaffolding"`, etc.) with `TaskStatus`, `StoryStatus`, `ProjectStatus` enums from `shared/contracts/dto/` across 7 files in 4 services (scheduler, langgraph, scaffolder, api). Prevents silent breakage if enum values are renamed.
+- **Contract violations: hardcoded Redis queue names → shared constants**: Removed 4 locally-defined queue name constants (`PROVISIONER_QUEUE`, `COMMAND_STREAM`, `RESPONSE_STREAM`, `WORKER_COMMANDS_STREAM`) that duplicated `shared/queues.py`. Added `WORKER_RESPONSES` constant. Replaced 5 direct `redis.xadd()` calls with `RedisStreamClient.publish_message()`/`publish()` where the abstraction was available. Updated 5 test files.
+
+### Changed
+- **CI gate: one push per story instead of per task** (#1004): CI no longer runs after every engineering task — only once at story end via the CI check task. Ordinary story tasks commit but don't push; CI check task (created_by=system) pushes and runs CI gate. Saves GitHub Actions minutes proportional to task count. Fixed `append_ci_check_task` creating CI task without `status: "todo"` (stuck in backlog forever). Extracted `_should_run_ci_gate()` and `_run_ci_gate_and_handle_failure()` helpers. Updated worker prompt to "Do NOT push unless task explicitly tells you to". 9 new tests.
+
 ## 2026-03-10
 
 ### Added
