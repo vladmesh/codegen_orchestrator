@@ -41,6 +41,9 @@
 - **Severity**: critical
 - **Type**: template
 - **Backlog**: new
+- **Status**: ✅ FIXED (2 fixes applied)
+  1. **Deploy→engineering feedback loop** — deploy worker now re-dispatches fix task to `engineering:queue` on smoke/workflow failure, max 2 attempts. TDD: 7 unit tests passing.
+  2. **Root cause (service-template)** — removed `**/generated/` from template `.gitignore`. E2E verified: RED (tg_bot crash `ModuleNotFoundError`) → GREEN (containers start, imports resolve). Full pipeline: copier → framework.generate → docker build → push to registry → deploy to server.
 
 The generated code imports `from shared.generated.events import get_broker` in `services/tg_bot/src/main.py:23`, but `shared/generated/` directory does not exist in the repo. Only `shared/shared/__init__.py` and `shared/shared/http_client.py` exist.
 
@@ -54,6 +57,7 @@ The import fails at startup, crashing the container before the bot can initializ
 - **Severity**: major
 - **Type**: orchestrator
 - **Backlog**: new
+- **Status**: ✅ FIXED (`allow_no_commit` flag in EngineeringState + developer node + engineering consumer)
 
 Task 3 ("Run tests, verify CI green") is a verification-only task that doesn't produce code changes. The engineering worker requires a commit as proof of work (`developer_node_no_commit` error). When the agent reports "all tests pass, CI is green" but makes no commit, the worker marks it as failed.
 
@@ -70,6 +74,7 @@ The task retried 3 times (the maximum) and exhausted retries, causing the entire
 - **Severity**: minor
 - **Type**: orchestrator
 - **Backlog**: —
+- **Status**: ⬚ known, PO self-corrects — low priority
 
 PO agent called `set_project_secret("fortune-teller-bot", ...)` three times using the project name instead of UUID, getting 422 errors each time. Then created the project and used the correct UUID.
 
@@ -79,6 +84,7 @@ This is a known PO prompt issue — the agent tries to store secrets before havi
 - **Severity**: minor
 - **Type**: orchestrator
 - **Backlog**: —
+- **Status**: ⬚ TODO
 
 After the first deploy (action=create) failed due to tg_bot crash, the deploy worker's automatic retry used action=create again, hitting precheck failure "Service dir already exists". The scheduler also triggered a new deploy with action=create because `project.status` was still `developing` (not updated to `active` since deploy never succeeded).
 
@@ -88,6 +94,7 @@ Manual intervention with `action=feature` was needed. This is expected behavior 
 - **Severity**: major
 - **Type**: orchestrator
 - **Backlog**: new
+- **Status**: ⬚ TODO
 
 During the deploy retry loop, the user received **7 technical messages** in Telegram before the final success:
 - 4× "All 1 tasks done. Deploy triggered (create)."
@@ -109,6 +116,7 @@ PO already has reminders + `get_story` — it can poll for intermediate status o
 - **Severity**: major
 - **Type**: orchestrator
 - **Backlog**: new
+- **Status**: ⬚ TODO
 
 PO stores `TELEGRAM_BOT_TOKEN` as a secret but never validates it. If the token is invalid or expired, this is only discovered at deploy time when the tg_bot container crashes — after all code tasks and CI have completed.
 
@@ -143,11 +151,13 @@ Additionally, the bot's Telegram username (`@bot_name`) is never extracted or st
 
 ## Recommendations
 
-1. **CRITICAL**: Agent must not use relative imports in services run via `python file.py` — template AGENTS.md should document the import pattern
-2. **CRITICAL**: PO must validate bot token via Telegram `getMe` API immediately after receiving it. Store `TELEGRAM_BOT_USERNAME` as env var. Fail fast if token is invalid — don't waste CI/deploy cycles on a bad token
-3. **HIGH**: Remove CI-check task from architect decomposition — it's redundant and causes story failure via "no commit" error
-4. **HIGH**: Agent must not import `shared.generated.events` if it wasn't generated — need guard or AGENTS.md doc
-5. **HIGH**: Stop pushing deploy status to `po:proactive`. PO should poll story status via reminders if it wants updates. Only two events should reach the user proactively: (a) story completed — "your bot is live: t.me/...", (b) story permanently failed (retries exhausted, no auto-recovery possible) — "sorry, couldn't complete, admin will look into it". Everything else (deploy retries, precheck errors, intermediate failures) is internal
-6. **MEDIUM**: Add container crash logs to deploy failure output (currently just "FAILED: ['infra-tg_bot-1']" with no details)
-7. **MEDIUM**: Deploy action detection bug — after first failed deploy creates dir on server, subsequent deploys still use action=create because project.status isn't updated until deploy succeeds
-8. **LOW**: Allow `failed` → `in_progress` story transition for manual recovery
+1. ✅ **CRITICAL**: Deploy→engineering feedback loop — deploy worker re-dispatches fix task to `engineering:queue` on smoke/workflow failure (max 2 attempts). Implemented + 7 unit tests.
+2. ✅ **CRITICAL**: `.gitignore` fix — removed `**/generated/` from service-template. E2E RED→GREEN verified on real server.
+3. ✅ **HIGH**: CI-check task no longer fails on "no commit" — `allow_no_commit` flag allows verification-only success
+4. ⬚ **HIGH**: PO must validate bot token via Telegram `getMe` API immediately after receiving it. Store `TELEGRAM_BOT_USERNAME` as env var. Fail fast if token is invalid — don't waste CI/deploy cycles on a bad token
+5. ⬚ **HIGH**: Agent must not import `shared.generated.events` if it wasn't generated — need guard or AGENTS.md doc
+6. ⬚ **MEDIUM**: Document import pattern in template AGENTS.md — no relative imports in services run via `python file.py`
+7. ⬚ **HIGH**: Stop pushing deploy status to `po:proactive`. PO should poll story status via reminders if it wants updates. Only two events should reach the user proactively: (a) story completed — "your bot is live: t.me/...", (b) story permanently failed (retries exhausted, no auto-recovery possible) — "sorry, couldn't complete, admin will look into it". Everything else (deploy retries, precheck errors, intermediate failures) is internal
+8. ⬚ **MEDIUM**: Add container crash logs to deploy failure output (currently just "FAILED: ['infra-tg_bot-1']" with no details)
+9. ⬚ **MEDIUM**: Deploy action detection bug — after first failed deploy creates dir on server, subsequent deploys still use action=create because project.status isn't updated until deploy succeeds
+10. ⬚ **LOW**: Allow `failed` → `in_progress` story transition for manual recovery

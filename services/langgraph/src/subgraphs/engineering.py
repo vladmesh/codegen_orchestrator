@@ -62,6 +62,9 @@ class EngineeringState(TypedDict):
     needs_human_approval: bool
     human_approval_reason: str | None
 
+    # CI-check task flag: allow success without commit
+    allow_no_commit: bool
+
     # Errors (merges without duplicates)
     errors: Annotated[list[str], _merge_errors]
 

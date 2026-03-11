@@ -196,6 +196,23 @@ class DeveloperNode(FunctionalNode):
 
             if worker_result.success:
                 if not worker_result.commit_sha:
+                    if state.get("allow_no_commit"):
+                        logger.info(
+                            "developer_node_no_commit_allowed",
+                            project_name=project_name,
+                            output=worker_result.output[:500],
+                        )
+                        return {
+                            "messages": [
+                                AIMessage(
+                                    content=f"Worker verified '{project_name}' — no changes needed."
+                                )
+                            ],
+                            "engineering_status": "done",
+                            "commit_sha": None,
+                            "worker_id": worker_result.worker_id,
+                        }
+
                     logger.error(
                         "developer_node_no_commit",
                         project_name=project_name,

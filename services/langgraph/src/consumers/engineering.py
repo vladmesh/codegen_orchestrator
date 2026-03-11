@@ -299,6 +299,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     user_id = job_data.get("user_id", "")
     planning_task_id = job_data.get("planning_task_id")
     story_id = job_data.get("story_id")
+    deploy_fix_attempt = job_data.get("deploy_fix_attempt", 0)
 
     logger.info(
         "engineering_job_started",
@@ -398,6 +399,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         # Build story context (previous tasks + events) for worker continuity
         story_context = await _build_story_context(story_id, planning_task_id) if story_id else None
 
+        # CI-check tasks (created_by=system) may succeed without producing a commit
+        allow_no_commit = await _is_ci_check_task(planning_task_id)
+
         # Prepare EngineeringState
         subgraph_input = {
             "messages": [],
@@ -415,6 +419,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "test_results": None,
             "needs_human_approval": False,
             "human_approval_reason": None,
+            "allow_no_commit": allow_no_commit,
             "errors": [],
         }
 
@@ -450,6 +455,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 action=action,
                 planning_task_id=planning_task_id,
                 story_id=story_id,
+                deploy_fix_attempt=deploy_fix_attempt,
             )
 
         else:
@@ -493,6 +499,26 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         return await _fail_job(task_id, str(e), planning_task_id)
 
 
+async def _is_ci_check_task(planning_task_id: str | None) -> bool:
+    """Check if the task is a CI-check task (created_by=system).
+
+    CI-check tasks are auto-appended by the architect consumer and may
+    complete successfully without producing a commit (when all tests pass).
+    """
+    if not planning_task_id:
+        return False
+    try:
+        planning_task = await api_client.get(f"tasks/{planning_task_id}")
+        return planning_task.get("created_by") == "system"
+    except Exception:
+        logger.warning(
+            "planning_task_fetch_failed",
+            planning_task_id=planning_task_id,
+            exc_info=True,
+        )
+        return False
+
+
 async def _should_run_ci_gate(planning_task_id: str | None) -> bool:
     """Determine whether CI gate should run for this task.
 
@@ -504,16 +530,7 @@ async def _should_run_ci_gate(planning_task_id: str | None) -> bool:
     """
     if not planning_task_id:
         return True
-    try:
-        planning_task = await api_client.get(f"tasks/{planning_task_id}")
-        return planning_task.get("created_by") == "system"
-    except Exception:
-        logger.warning(
-            "planning_task_fetch_failed",
-            planning_task_id=planning_task_id,
-            exc_info=True,
-        )
-        return False
+    return await _is_ci_check_task(planning_task_id)
 
 
 async def _run_ci_gate_and_handle_failure(  # noqa: PLR0913
@@ -617,12 +634,38 @@ async def _handle_engineering_success(  # noqa: PLR0913
     action: str = "create",
     planning_task_id: str | None = None,
     story_id: str | None = None,
+    deploy_fix_attempt: int = 0,
 ) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
     project_id = project["id"]
 
     # --- commit_sha gate: fail fast if no code was committed ---
+    allow_no_commit = result.get("allow_no_commit", False)
     if not result.get("commit_sha"):
+        if allow_no_commit:
+            # CI-check task completed without changes — everything was already green
+            logger.info(
+                "ci_check_no_commit_ok",
+                task_id=task_id,
+                project_id=project_id,
+            )
+            if planning_task_id:
+                await _update_task_status(api_client, planning_task_id, TaskStatus.DONE)
+            await api_client.patch(f"runs/{task_id}", json={"status": RunStatus.COMPLETED.value})
+            await publish_callback_event(
+                redis,
+                callback_stream,
+                RunStatus.COMPLETED.value,
+                task_id,
+                "CI check passed — no changes needed",
+                user_id=user_id,
+                project_id=project_id,
+            )
+            return {
+                "status": RunStatus.COMPLETED.value,
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
+
         logger.error("no_commit_sha", task_id=task_id, project_id=project_id)
         await api_client.patch(
             f"runs/{task_id}",
@@ -771,6 +814,7 @@ async def _handle_engineering_success(  # noqa: PLR0913
                 callback_stream=callback_stream,
                 triggered_by=DeployTrigger.ENGINEERING,
                 action=action,
+                deploy_fix_attempt=deploy_fix_attempt,
             )
             await redis.publish_message(DEPLOY_QUEUE, deploy_msg)
             logger.info(

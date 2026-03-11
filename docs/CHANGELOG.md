@@ -4,6 +4,9 @@
 
 ## 2026-03-11
 
+### Fixed
+- **CI-check task fails on "no commit made"**: CI-check tasks (created_by=system) that find nothing to fix would fail with "Worker reported success but no commit was made", retry 3 times, then fail the entire story. Added `allow_no_commit` flag to `EngineeringState` — set for CI-check tasks via `_is_ci_check_task()`. Developer node returns `done` instead of `blocked` when worker succeeds without commit. Engineering consumer skips commit gate and CI gate, marks task done directly. E2E validated on fortune-teller-bot: "All 36 tests pass, CI green" → task done (previously: 3 retries → story failed). 5 new unit tests.
+
 ### Added
 - **Story `deploying` status — deploy gate before completion**: Story no longer transitions to `completed` until deploy succeeds. New `DEPLOYING` status in StoryStatus enum with transitions: IN_PROGRESS → DEPLOYING → COMPLETED (on success) / IN_PROGRESS (on failure). Scheduler's `complete_stories` now transitions to `deploying` + triggers deploy with correct `action` (`feature` for already-deployed projects, `create` for new). Deploy worker completes story on success, rolls back to `in_progress` on any failure. Added `story_id` to `DeployMessage` contract, `POST /stories/{id}/deploy` endpoint, `_handle_deploy_failure` helper. 4 new transition tests.
 

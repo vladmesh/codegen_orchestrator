@@ -64,6 +64,71 @@ class TestDeveloperNodeCommitValidation:
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
+    async def test_success_without_commit_sha_allowed_returns_done(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """Worker success=True, commit_sha=None, allow_no_commit=True → done."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+        )
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="All tests pass, CI green",
+            commit_sha=None,
+            worker_id="w-1",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state()
+        state["allow_no_commit"] = True
+        result = await node.run(state)
+
+        assert result["engineering_status"] == "done"
+        assert result["commit_sha"] is None
+        assert result["worker_id"] == "w-1"
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_success_with_commit_sha_and_allow_no_commit_returns_done(
+        self, mock_github_cls, mock_api, mock_spawn
+    ):
+        """CI-check task that DID make a commit still returns done with commit_sha."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+        )
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Fixed tests and pushed",
+            commit_sha="fix123",
+            worker_id="w-1",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state()
+        state["allow_no_commit"] = True
+        result = await node.run(state)
+
+        assert result["engineering_status"] == "done"
+        assert result["commit_sha"] == "fix123"
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
     async def test_success_with_commit_sha_returns_done(
         self, mock_github_cls, mock_api, mock_spawn
     ):

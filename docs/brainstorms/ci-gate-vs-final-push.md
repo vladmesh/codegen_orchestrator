@@ -77,6 +77,7 @@ Keep the CI check task, fix the flow, remove per-task CI gate.
 
 - Fix append_ci_check_task status + conditional CI gate + worker prompt → backlog #1004
 - `is_last_task` fallback flag → rejected (YAGNI)
+- ✅ **DONE**: CI-check task can succeed without commit (`allow_no_commit` flag in EngineeringState). Developer node and engineering consumer both respect it. 6 unit tests.
 
 ## Not in Scope
 
