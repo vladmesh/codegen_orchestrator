@@ -13,7 +13,8 @@ import structlog
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.queues.deploy import DeployMessage
-from shared.queues import DEPLOY_QUEUE
+from shared.contracts.queues.engineering import EngineeringMessage
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
@@ -25,6 +26,7 @@ from ._events import publish_callback_event, publish_proactive_message
 logger = structlog.get_logger(__name__)
 
 SERVICE_BASE_DIR = "/opt/services"
+MAX_DEPLOY_FIX_ATTEMPTS = 2
 
 
 async def _transition_story_safe(story_id: str, action: str) -> None:
@@ -137,6 +139,67 @@ async def _check_duplicate_deploy(task_id: str, project_id: str) -> dict | None:
     return None
 
 
+async def _redispatch_to_engineering(
+    *,
+    redis: RedisStreamClient,
+    msg: DeployMessage,
+    error_details: str,
+) -> bool:
+    """Re-dispatch a fix task to engineering when deploy fails due to a code bug.
+
+    Returns True if re-dispatched, False if retry limit reached.
+    """
+    attempt = msg.deploy_fix_attempt
+    if attempt >= MAX_DEPLOY_FIX_ATTEMPTS:
+        logger.warning(
+            "deploy_fix_retries_exhausted",
+            task_id=msg.task_id,
+            project_id=msg.project_id,
+            attempt=attempt,
+        )
+        return False
+
+    fix_task_id = f"eng-deploy-fix-{msg.task_id}-{attempt + 1}"
+
+    # Create a run record for the fix task
+    try:
+        await api_client.post(
+            "runs/",
+            json={
+                "id": fix_task_id,
+                "type": RunType.ENGINEERING.value,
+                "project_id": msg.project_id,
+                "status": RunStatus.QUEUED.value,
+            },
+        )
+    except Exception:
+        logger.warning("deploy_fix_run_create_failed", fix_task_id=fix_task_id, exc_info=True)
+
+    fix_msg = EngineeringMessage(
+        task_id=fix_task_id,
+        project_id=msg.project_id,
+        user_id=msg.user_id,
+        action="fix",
+        description=(
+            f"Deploy failed — fix the code so containers start cleanly.\n\n"
+            f"Error: {error_details}\n\n"
+            f"Run the service locally or check imports/dependencies before pushing."
+        ),
+        skip_deploy=False,
+        story_id=msg.story_id or None,
+        deploy_fix_attempt=attempt + 1,
+    )
+
+    await redis.publish_message(ENGINEERING_QUEUE, fix_msg)
+    logger.info(
+        "deploy_fix_redispatched",
+        fix_task_id=fix_task_id,
+        project_id=msg.project_id,
+        attempt=attempt + 1,
+    )
+    return True
+
+
 async def _handle_smoke_failure(
     *,
     result: dict,
@@ -148,6 +211,7 @@ async def _handle_smoke_failure(
     user_id: str,
     story_id: str,
     redis: RedisStreamClient,
+    msg: DeployMessage,
 ) -> dict:
     """Handle deploy success with smoke test failure."""
     smoke_details = "; ".join(
@@ -182,6 +246,13 @@ async def _handle_smoke_failure(
 
     # Roll story back — smoke failed, story not truly complete
     await _transition_story_safe(story_id, "start")
+
+    # Re-dispatch to engineering for a code fix
+    await _redispatch_to_engineering(
+        redis=redis,
+        msg=msg,
+        error_details=smoke_details,
+    )
 
     await publish_callback_event(
         redis,
@@ -444,9 +515,25 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         allocated_resources = alloc_result
 
         # Pre-check: validate server state via SSH before deploying
+        action = msg.action
         precheck_error = await _run_deploy_precheck(
-            allocated_resources, project, project_id, msg.action
+            allocated_resources, project, project_id, action
         )
+
+        # Auto-fallback: create → feature when dir already exists
+        if precheck_error and action == "create" and "already exists" in precheck_error:
+            logger.warning(
+                "deploy_action_auto_fallback",
+                task_id=task_id,
+                from_action="create",
+                to_action="feature",
+                reason=precheck_error,
+            )
+            action = "feature"
+            precheck_error = await _run_deploy_precheck(
+                allocated_resources, project, project_id, action
+            )
+
         if precheck_error:
             logger.warning("deploy_precheck_failed", task_id=task_id, error=precheck_error)
             return await _handle_deploy_failure(
@@ -504,6 +591,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                     user_id=user_id,
                     story_id=story_id,
                     redis=redis,
+                    msg=msg,
                 )
 
             return await _handle_deploy_success(
@@ -539,6 +627,14 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             logger.error("deploy_job_failed", task_id=task_id, errors=errors)
             error_msg = "; ".join(errors)
             project_name = project.get("name", project_id) if project else project_id
+
+            # Re-dispatch to engineering for a code fix
+            await _redispatch_to_engineering(
+                redis=redis,
+                msg=msg,
+                error_details=error_msg,
+            )
+
             return await _handle_deploy_failure(
                 task_id=task_id,
                 project_id=project_id,

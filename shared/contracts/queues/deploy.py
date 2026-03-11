@@ -21,6 +21,7 @@ class DeployMessage(BaseMessage):
     story_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: Literal["create", "feature", "fix"] = "create"
+    deploy_fix_attempt: int = 0
 
 
 class DeployResult(BaseResult):
