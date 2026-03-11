@@ -17,9 +17,10 @@ class TestStoryStatus:
 
     def test_membership(self):
         values = list(StoryStatus)
-        assert len(values) == 5  # noqa: PLR2004
+        assert len(values) == 6  # noqa: PLR2004
         assert "created" in values
         assert "in_progress" in values
+        assert "deploying" in values
         assert "completed" in values
         assert "archived" in values
         assert "failed" in values
@@ -32,8 +33,20 @@ class TestStoryTransitions:
     def test_created_can_archive(self):
         assert StoryStatus.ARCHIVED in VALID_TRANSITIONS[StoryStatus.CREATED]
 
+    def test_in_progress_can_deploy(self):
+        assert StoryStatus.DEPLOYING in VALID_TRANSITIONS[StoryStatus.IN_PROGRESS]
+
     def test_in_progress_can_complete(self):
         assert StoryStatus.COMPLETED in VALID_TRANSITIONS[StoryStatus.IN_PROGRESS]
+
+    def test_deploying_can_complete(self):
+        assert StoryStatus.COMPLETED in VALID_TRANSITIONS[StoryStatus.DEPLOYING]
+
+    def test_deploying_can_rollback(self):
+        assert StoryStatus.IN_PROGRESS in VALID_TRANSITIONS[StoryStatus.DEPLOYING]
+
+    def test_deploying_can_fail(self):
+        assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.DEPLOYING]
 
     def test_in_progress_can_archive(self):
         assert StoryStatus.ARCHIVED in VALID_TRANSITIONS[StoryStatus.IN_PROGRESS]

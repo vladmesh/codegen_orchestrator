@@ -227,9 +227,9 @@ async def complete_stories(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> int:
-    """Find stories where all tasks are done and complete them.
+    """Find stories where all tasks are done, transition to deploying, trigger deploy.
 
-    Returns the number of stories completed.
+    Returns the number of stories transitioned.
     """
     stories = await api_client.get_stories_by_status(StoryStatus.IN_PROGRESS)
     completed = 0
@@ -244,16 +244,17 @@ async def complete_stories(
         story_id = story["id"]
         project_id = story.get("project_id")
 
+        # Fetch project once — used for user resolution and deploy action
+        project = await api_client.get_project(project_id) if project_id else None
+
         # Story doesn't have user_id — resolve telegram_id from project.owner_id
         user_id = story.get("user_id", "")
-        if not user_id and project_id:
-            project = await api_client.get_project(project_id)
-            if project:
-                owner_id = getattr(project, "owner_id", None)
-                if owner_id:
-                    user = await api_client.get_user(int(owner_id))
-                    if user:
-                        user_id = str(user.get("telegram_id", ""))
+        if not user_id and project:
+            owner_id = getattr(project, "owner_id", None)
+            if owner_id:
+                user = await api_client.get_user(int(owner_id))
+                if user:
+                    user_id = str(user.get("telegram_id", ""))
 
         tasks = await api_client.get_tasks_by_story(story_id)
 
@@ -274,9 +275,14 @@ async def complete_stories(
 
         log = logger.bind(story_id=story_id, project_id=project_id)
 
-        # Complete story
-        await api_client.transition_story(story_id, "complete")
-        log.info("story_completed", task_count=len(tasks))
+        # Transition story to deploying (not completed — deploy must succeed first)
+        await api_client.transition_story(story_id, "deploy")
+        log.info("story_deploying", task_count=len(tasks))
+
+        # Determine deploy action based on project status
+        deploy_action = "create"
+        if project and project.status == ProjectStatus.ACTIVE:
+            deploy_action = "feature"
 
         # Trigger deploy — create run record first (deploy consumer expects it)
         deploy_id = f"deploy-{uuid.uuid4().hex[:12]}"
@@ -292,14 +298,16 @@ async def complete_stories(
             task_id=deploy_id,
             project_id=project_id,
             user_id=str(user_id),
+            story_id=story_id,
             triggered_by=DeployTrigger.ENGINEERING,
+            action=deploy_action,
         )
         await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
-        log.info("deploy_triggered", deploy_id=deploy_id)
+        log.info("deploy_triggered", deploy_id=deploy_id, action=deploy_action)
 
         # Notify PO
         proactive = POProactiveMessage(
-            text=f"Story completed: all {len(tasks)} tasks done. Deploy triggered.",
+            text=f"All {len(tasks)} tasks done. Deploy triggered ({deploy_action}).",
             user_id=str(user_id),
         )
         await redis_client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
@@ -307,7 +315,7 @@ async def complete_stories(
         # Cleanup story worker container (no longer needed)
         await _cleanup_story_worker(redis_client, story_id)
 
-        # Trigger next queued story for this project
+        # Trigger next queued story for this project (doesn't need deploy to finish)
         await _trigger_next_story(api_client, redis_client, project_id)
 
         completed += 1

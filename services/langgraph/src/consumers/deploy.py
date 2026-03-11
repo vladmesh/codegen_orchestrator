@@ -27,6 +27,17 @@ logger = structlog.get_logger(__name__)
 SERVICE_BASE_DIR = "/opt/services"
 
 
+async def _transition_story_safe(story_id: str, action: str) -> None:
+    """Transition story status, logging errors without raising."""
+    if not story_id:
+        return
+    try:
+        await api_client.transition_story(story_id, action)
+        logger.info("story_transitioned", story_id=story_id, action=action)
+    except Exception:
+        logger.warning("story_transition_failed", story_id=story_id, action=action, exc_info=True)
+
+
 async def _pre_check_server(
     server_ip: str,
     ssh_key: str,
@@ -135,6 +146,7 @@ async def _handle_smoke_failure(
     project_name: str,
     callback_stream: str,
     user_id: str,
+    story_id: str,
     redis: RedisStreamClient,
 ) -> dict:
     """Handle deploy success with smoke test failure."""
@@ -167,6 +179,9 @@ async def _handle_smoke_failure(
         f"projects/{project_id}",
         json={"status": ProjectStatus.ACTIVE.value},
     )
+
+    # Roll story back — smoke failed, story not truly complete
+    await _transition_story_safe(story_id, "start")
 
     await publish_callback_event(
         redis,
@@ -201,6 +216,7 @@ async def _handle_deploy_success(
     project: dict,
     callback_stream: str,
     user_id: str,
+    story_id: str,
     redis: RedisStreamClient,
 ) -> dict:
     """Handle successful deploy (with or without smoke)."""
@@ -225,6 +241,9 @@ async def _handle_deploy_success(
         json={"status": ProjectStatus.ACTIVE.value},
     )
 
+    # Complete the story now that deploy succeeded
+    await _transition_story_safe(story_id, "complete")
+
     await publish_callback_event(
         redis,
         callback_stream,
@@ -243,6 +262,49 @@ async def _handle_deploy_success(
     return {
         "status": "success",
         "deployed_url": result["deployed_url"],
+        "finished_at": datetime.now(UTC).isoformat(),
+    }
+
+
+async def _handle_deploy_failure(
+    *,
+    task_id: str,
+    project_id: str,
+    error_msg: str,
+    story_id: str,
+    callback_stream: str,
+    user_id: str,
+    proactive_text: str,
+    redis: RedisStreamClient,
+    rollback_project: bool = True,
+) -> dict:
+    """Common handler for deploy failures — update run, rollback story, notify."""
+    await api_client.patch(
+        f"runs/{task_id}",
+        json={"status": "failed", "error_message": error_msg},
+    )
+    if rollback_project:
+        await api_client.patch(
+            f"projects/{project_id}",
+            json={"status": ProjectStatus.FAILED.value},
+        )
+    await _transition_story_safe(story_id, "start")
+
+    await publish_callback_event(
+        redis,
+        callback_stream,
+        "failed",
+        task_id,
+        error_msg,
+        user_id=user_id,
+        project_id=project_id or "",
+    )
+    if not callback_stream:
+        await publish_proactive_message(redis, user_id, proactive_text)
+
+    return {
+        "status": "failed",
+        "error": error_msg,
         "finished_at": datetime.now(UTC).isoformat(),
     }
 
@@ -329,6 +391,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     msg = DeployMessage.model_validate(job_data)
     task_id = msg.task_id
     project_id = msg.project_id
+    story_id = msg.story_id
     callback_stream = msg.callback_stream
     user_id = msg.user_id
 
@@ -386,11 +449,17 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         )
         if precheck_error:
             logger.warning("deploy_precheck_failed", task_id=task_id, error=precheck_error)
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={"status": "failed", "error_message": precheck_error},
+            return await _handle_deploy_failure(
+                task_id=task_id,
+                project_id=project_id,
+                story_id=story_id,
+                error_msg=precheck_error,
+                callback_stream=callback_stream,
+                user_id=user_id,
+                redis=redis,
+                proactive_text=f"Deploy pre-check failed: {precheck_error}",
+                rollback_project=False,
             )
-            return {"status": "failed", "error": precheck_error}
 
         # Update project status to deploying
         await api_client.patch(
@@ -433,6 +502,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                     project_name=project_name,
                     callback_stream=callback_stream,
                     user_id=user_id,
+                    story_id=story_id,
                     redis=redis,
                 )
 
@@ -444,75 +514,42 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 project=project,
                 callback_stream=callback_stream,
                 user_id=user_id,
+                story_id=story_id,
                 redis=redis,
             )
         elif result.get("missing_user_secrets"):
             missing = result.get("missing_user_secrets")
             logger.info("deploy_job_missing_secrets", task_id=task_id, missing=missing)
-            error_msg = f"Missing secrets: {', '.join(missing)}"
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={"status": "failed", "error_message": error_msg},
-            )
-            # Roll back project status — don't leave it stuck in "deploying"
-            await api_client.patch(
-                f"projects/{project_id}",
-                json={"status": ProjectStatus.FAILED.value},
-            )
-
-            await publish_callback_event(
-                redis,
-                callback_stream,
-                "failed",
-                task_id,
-                error_msg,
+            project_name = project.get("name", project_id) if project else project_id
+            return await _handle_deploy_failure(
+                task_id=task_id,
+                project_id=project_id,
+                story_id=story_id,
+                error_msg=f"Missing secrets: {', '.join(missing)}",
+                callback_stream=callback_stream,
                 user_id=user_id,
-                project_id=project_id or "",
-            )
-            if not callback_stream:
-                project_name = project.get("name", project_id) if project else project_id
-                await publish_proactive_message(
-                    redis,
-                    user_id,
+                redis=redis,
+                proactive_text=(
                     f"Deploy blocked for {project_name} — missing: {', '.join(missing)}. "
-                    "Please provide via bot.",
-                )
-
-            return {
-                "status": "failed",
-                "error": error_msg,
-                "missing_secrets": missing,
-                "finished_at": datetime.now(UTC).isoformat(),
-            }
+                    "Please provide via bot."
+                ),
+            )
         else:
             errors = result.get("errors", ["Unknown deployment error"])
             logger.error("deploy_job_failed", task_id=task_id, errors=errors)
             error_msg = "; ".join(errors)
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={"status": "failed", "error_message": error_msg},
-            )
-
-            await publish_callback_event(
-                redis,
-                callback_stream,
-                "failed",
-                task_id,
-                error_msg,
+            project_name = project.get("name", project_id) if project else project_id
+            return await _handle_deploy_failure(
+                task_id=task_id,
+                project_id=project_id,
+                story_id=story_id,
+                error_msg=error_msg,
+                callback_stream=callback_stream,
                 user_id=user_id,
-                project_id=project_id or "",
+                redis=redis,
+                proactive_text=f"Deploy failed for {project_name}: {error_msg}",
+                rollback_project=False,
             )
-            if not callback_stream:
-                project_name = project.get("name", project_id) if project else project_id
-                await publish_proactive_message(
-                    redis, user_id, f"Deploy failed for {project_name}: {error_msg}"
-                )
-
-            return {
-                "status": "failed",
-                "error": error_msg,
-                "finished_at": datetime.now(UTC).isoformat(),
-            }
 
     except Exception as e:
         logger.error(
@@ -522,34 +559,16 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             error_type=type(e).__name__,
             exc_info=True,
         )
-        await api_client.patch(
-            f"runs/{task_id}",
-            json={"status": "failed", "error_message": str(e), "error_traceback": str(e)},
-        )
-        # Update project status to failed
-        if project_id:
-            await api_client.patch(
-                f"projects/{project_id}",
-                json={"status": ProjectStatus.FAILED.value},
-            )
-
-        await publish_callback_event(
-            redis,
-            callback_stream,
-            "failed",
-            task_id,
-            f"Deploy task failed: {e!s}",
+        return await _handle_deploy_failure(
+            task_id=task_id,
+            project_id=project_id,
+            story_id=story_id,
+            error_msg=str(e),
+            callback_stream=callback_stream,
             user_id=user_id,
-            project_id=project_id or "",
+            redis=redis,
+            proactive_text=f"Deploy failed: {e!s}",
         )
-        if not callback_stream:
-            await publish_proactive_message(redis, user_id, f"Deploy failed: {e!s}")
-
-        return {
-            "status": "failed",
-            "error": str(e),
-            "finished_at": datetime.now(UTC).isoformat(),
-        }
 
 
 def main():

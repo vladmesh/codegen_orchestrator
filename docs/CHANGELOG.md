@@ -4,7 +4,11 @@
 
 ## 2026-03-11
 
+### Added
+- **Story `deploying` status — deploy gate before completion**: Story no longer transitions to `completed` until deploy succeeds. New `DEPLOYING` status in StoryStatus enum with transitions: IN_PROGRESS → DEPLOYING → COMPLETED (on success) / IN_PROGRESS (on failure). Scheduler's `complete_stories` now transitions to `deploying` + triggers deploy with correct `action` (`feature` for already-deployed projects, `create` for new). Deploy worker completes story on success, rolls back to `in_progress` on any failure. Added `story_id` to `DeployMessage` contract, `POST /stories/{id}/deploy` endpoint, `_handle_deploy_failure` helper. 4 new transition tests.
+
 ### Fixed
+- **Deploy action always `create` for already-deployed projects**: `complete_stories` now checks `project.status == ACTIVE` to send `action=feature` instead of `create`, preventing pre-check failures on update deploys.
 - **Contract violations: hardcoded status strings → shared enums**: Replaced ~30 hardcoded status string literals (`"todo"`, `"done"`, `"failed"`, `"in_dev"`, `"scaffolding"`, etc.) with `TaskStatus`, `StoryStatus`, `ProjectStatus` enums from `shared/contracts/dto/` across 7 files in 4 services (scheduler, langgraph, scaffolder, api). Prevents silent breakage if enum values are renamed.
 - **Contract violations: hardcoded Redis queue names → shared constants**: Removed 4 locally-defined queue name constants (`PROVISIONER_QUEUE`, `COMMAND_STREAM`, `RESPONSE_STREAM`, `WORKER_COMMANDS_STREAM`) that duplicated `shared/queues.py`. Added `WORKER_RESPONSES` constant. Replaced 5 direct `redis.xadd()` calls with `RedisStreamClient.publish_message()`/`publish()` where the abstraction was available. Updated 5 test files.
 

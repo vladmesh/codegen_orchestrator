@@ -134,6 +134,6 @@ class TestDispatcherPipelineFlow:
         completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1
-        api_client.transition_story.assert_called_with("story-1", "complete")
+        api_client.transition_story.assert_called_with("story-1", "deploy")
         # Deploy triggered
         assert redis_client.publish_message.call_count >= 1

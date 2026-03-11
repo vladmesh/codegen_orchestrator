@@ -18,6 +18,7 @@ class DeployMessage(BaseMessage):
     task_id: str
     project_id: str
     user_id: str = ""
+    story_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: Literal["create", "feature", "fix"] = "create"
 

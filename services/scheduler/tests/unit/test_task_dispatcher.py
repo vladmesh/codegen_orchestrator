@@ -318,7 +318,7 @@ class TestCompleteStories:
 
     @pytest.mark.asyncio
     async def test_completes_story_when_all_tasks_done(self, api_client, redis_client):
-        """Story with all tasks done → completed + deploy triggered."""
+        """Story with all tasks done → deploying + deploy triggered."""
         from src.tasks.task_dispatcher import complete_stories
 
         api_client.get_stories_by_status.return_value = [
@@ -332,8 +332,8 @@ class TestCompleteStories:
 
         await complete_stories(api_client, redis_client)
 
-        # Should complete story
-        api_client.transition_story.assert_called_once_with("story-1", "complete")
+        # Should transition story to deploying (not completed — deploy completes it)
+        api_client.transition_story.assert_called_once_with("story-1", "deploy")
 
         # Should publish deploy message
         deploy_calls = [
