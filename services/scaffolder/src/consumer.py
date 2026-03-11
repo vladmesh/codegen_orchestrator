@@ -12,6 +12,7 @@ import signal
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.log_config import setup_logging
 from shared.queues import SCAFFOLD_GROUP, SCAFFOLD_QUEUE
@@ -56,7 +57,7 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
 
     try:
         # Set status to scaffolding
-        await api.update_project_status(msg.project_id, "scaffolding")
+        await api.update_project_status(msg.project_id, ProjectStatus.SCAFFOLDING)
 
         # Get GitHub token
         github = get_github_client()
@@ -128,18 +129,18 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
             await api.update_project_config(msg.project_id, config)
 
             # Set status to scaffolded
-            await api.update_project_status(msg.project_id, "scaffolded")
+            await api.update_project_status(msg.project_id, ProjectStatus.SCAFFOLDED)
             log.info("scaffold_job_success")
             return {"status": "success"}
         else:
-            await api.update_project_status(msg.project_id, "scaffold_failed")
+            await api.update_project_status(msg.project_id, ProjectStatus.SCAFFOLD_FAILED)
             log.error("scaffold_job_failed", error=result.error)
             return {"status": "failed", "error": result.error or "unknown error"}
 
     except Exception as e:
         log.error("scaffold_job_exception", error=str(e), exc_info=True)
         try:
-            await api.update_project_status(msg.project_id, "scaffold_failed")
+            await api.update_project_status(msg.project_id, ProjectStatus.SCAFFOLD_FAILED)
         except Exception:
             log.error("scaffold_status_update_failed_on_error")
         return {"status": "failed", "error": str(e)}

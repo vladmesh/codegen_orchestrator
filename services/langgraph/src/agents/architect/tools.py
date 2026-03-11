@@ -9,6 +9,8 @@ from __future__ import annotations
 from langchain_core.tools import tool
 import structlog
 
+from shared.contracts.dto.task import TaskStatus
+
 from ...clients.api import api_client
 
 logger = structlog.get_logger(__name__)
@@ -74,7 +76,7 @@ async def create_task(
         "acceptance_criteria": acceptance_criteria,
         "story_id": story_id,
         "project_id": project_id,
-        "status": "todo",
+        "status": TaskStatus.TODO,
         "blocked_by_task_id": blocked_by_task_id,
         "created_by": "architect",
     }

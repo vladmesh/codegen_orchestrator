@@ -226,8 +226,8 @@ async def create_story(
     else:
         proj_resp = await api.get(f"/api/projects/{project_id}", headers=headers)
         proj_resp.raise_for_status()
-        project_status = proj_resp.json().get("status", "draft")
-        action = "create" if project_status == "draft" else "feature"
+        project_status = proj_resp.json().get("status", ProjectStatus.DRAFT)
+        action = "create" if project_status == ProjectStatus.DRAFT else "feature"
 
     # 1. Create story via API (API generates the ID)
     story_payload = {

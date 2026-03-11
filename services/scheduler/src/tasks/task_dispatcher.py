@@ -18,6 +18,9 @@ import uuid
 
 import structlog
 
+from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
@@ -111,7 +114,7 @@ async def dispatch_todo_tasks(
 
     Returns the number of tasks dispatched.
     """
-    tasks = await api_client.get_tasks_by_status("todo")
+    tasks = await api_client.get_tasks_by_status(TaskStatus.TODO)
     dispatched = 0
 
     for task in tasks:
@@ -121,7 +124,7 @@ async def dispatch_todo_tasks(
         # Check if blocker is resolved
         if blocker_id:
             blocker = await api_client.get_task(blocker_id)
-            if blocker.get("status") != "done":
+            if blocker.get("status") != TaskStatus.DONE:
                 continue  # Still blocked
 
         story_id = task.get("story_id")
@@ -137,7 +140,11 @@ async def dispatch_todo_tasks(
         # Guard: don't dispatch until scaffold is complete
         if project_id:
             project = await api_client.get_project(project_id)
-            if project and project.status in ("draft", "scaffolding", "scaffold_failed"):
+            if project and project.status in (
+                ProjectStatus.DRAFT,
+                ProjectStatus.SCAFFOLDING,
+                ProjectStatus.SCAFFOLD_FAILED,
+            ):
                 log.info("task_skipped_not_scaffolded", project_status=project.status)
                 continue
 
@@ -147,7 +154,7 @@ async def dispatch_todo_tasks(
             siblings = await api_client.get_tasks_by_story(story_id)
 
             # Guard: max 1 in_dev task per story
-            if any(s.get("status") == "in_dev" for s in siblings):
+            if any(s.get("status") == TaskStatus.IN_DEV for s in siblings):
                 log.info("task_skipped_story_busy")
                 continue
 
@@ -164,7 +171,7 @@ async def dispatch_todo_tasks(
         if siblings:
             all_events = []
             for sibling in siblings:
-                if sibling["id"] != task_id and sibling.get("status") == "done":
+                if sibling["id"] != task_id and sibling.get("status") == TaskStatus.DONE:
                     events = await api_client.get_task_events(sibling["id"])
                     all_events.extend(events)
             context = _build_cumulative_context(all_events)
@@ -208,7 +215,7 @@ async def dispatch_todo_tasks(
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
 
         # Transition task to in_dev
-        await api_client.transition_task(task_id, "in_dev", "dispatcher")
+        await api_client.transition_task(task_id, TaskStatus.IN_DEV, "dispatcher")
 
         log.info("task_dispatched", run_id=run_id)
         dispatched += 1
@@ -224,7 +231,7 @@ async def complete_stories(
 
     Returns the number of stories completed.
     """
-    stories = await api_client.get_stories_by_status("in_progress")
+    stories = await api_client.get_stories_by_status(StoryStatus.IN_PROGRESS)
     completed = 0
 
     if stories:
@@ -253,7 +260,7 @@ async def complete_stories(
 
         task_statuses = [t.get("status") for t in tasks]
         # Check if all tasks are done
-        if not all(s == "done" for s in task_statuses):
+        if not all(s == TaskStatus.DONE for s in task_statuses):
             logger.debug(
                 "complete_stories_skip_not_all_done",
                 story_id=story_id,
@@ -310,7 +317,7 @@ async def _trigger_next_story(
     project_id: str,
 ) -> None:
     """Find the next created story for a project and publish to architect:queue."""
-    created_stories = await api_client.get_stories_by_status("created")
+    created_stories = await api_client.get_stories_by_status(StoryStatus.CREATED)
     # Filter to same project, sort by priority (lower = higher priority)
     project_stories = sorted(
         [s for s in created_stories if s.get("project_id") == project_id],
@@ -350,13 +357,13 @@ async def supervise_stuck_stories(
 
     Returns dict with 'retried' and 'failed' counts.
     """
-    stories = await api_client.get_stories_by_status("created")
+    stories = await api_client.get_stories_by_status(StoryStatus.CREATED)
     retried = 0
     failed = 0
     retry_counts = _retry_counts or {}
 
     # Build set of projects that already have an active story
-    active_stories = await api_client.get_stories_by_status("in_progress")
+    active_stories = await api_client.get_stories_by_status(StoryStatus.IN_PROGRESS)
     active_projects = {s.get("project_id") for s in active_stories}
 
     now = datetime.now(UTC)
@@ -420,7 +427,7 @@ async def supervise_failed_tasks(
 
     Returns dict with 'retried' and 'failed' counts.
     """
-    tasks = await api_client.get_tasks_by_status("failed")
+    tasks = await api_client.get_tasks_by_status(TaskStatus.FAILED)
     retried = 0
     failed = 0
 
@@ -443,8 +450,8 @@ async def supervise_failed_tasks(
 
         if current_iter < max_iter:
             # Retry: failed → backlog → todo, bump iteration
-            await api_client.transition_task(task_id, "backlog", "supervisor")
-            await api_client.transition_task(task_id, "todo", "supervisor")
+            await api_client.transition_task(task_id, TaskStatus.BACKLOG, "supervisor")
+            await api_client.transition_task(task_id, TaskStatus.TODO, "supervisor")
             await api_client.update_task(task_id, {"current_iteration": current_iter + 1})
             log.warning(
                 "task_retry",
@@ -462,11 +469,15 @@ async def supervise_failed_tasks(
             for sibling in siblings:
                 sib_status = sibling.get("status", "")
                 if sibling["id"] != task_id and sib_status not in (
-                    "done",
-                    "failed",
-                    "cancelled",
+                    TaskStatus.DONE,
+                    TaskStatus.FAILED,
+                    TaskStatus.CANCELLED,
                 ):
-                    await api_client.transition_task(sibling["id"], "cancelled", "supervisor")
+                    await api_client.transition_task(
+                        sibling["id"],
+                        TaskStatus.CANCELLED,
+                        "supervisor",
+                    )
 
             try:
                 await api_client.fail_story(story_id)
@@ -500,7 +511,7 @@ async def supervise_stuck_tasks(
     Failed tasks will be picked up by supervise_failed_tasks for retry.
     Returns dict with 'timed_out' count.
     """
-    tasks = await api_client.get_tasks_by_status("in_dev")
+    tasks = await api_client.get_tasks_by_status(TaskStatus.IN_DEV)
     timed_out = 0
     now = datetime.now(UTC)
 
@@ -515,7 +526,7 @@ async def supervise_stuck_tasks(
         log = logger.bind(task_id=task_id, age_minutes=round(age_minutes, 1))
         log.warning("task_stuck_timeout", threshold_minutes=TASK_STUCK_THRESHOLD_MINUTES)
 
-        await api_client.transition_task(task_id, "failed", "supervisor")
+        await api_client.transition_task(task_id, TaskStatus.FAILED, "supervisor")
         timed_out += 1
 
     return {"timed_out": timed_out}

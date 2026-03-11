@@ -11,6 +11,7 @@ import structlog
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.notifications import notify_admins
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE
@@ -45,8 +46,8 @@ async def _update_task_status(
     This helper walks through them automatically when the target is 'done'.
     """
     # For "done", walk through the intermediate states the state machine requires
-    if status == "done":
-        steps = ["in_ci", "testing", "done"]
+    if status == TaskStatus.DONE:
+        steps = [TaskStatus.IN_CI, TaskStatus.TESTING, TaskStatus.DONE]
     else:
         steps = [status]
 
@@ -206,7 +207,7 @@ async def _handle_worker_reject(
 
     # Planning task → failed with reject metadata (supervisor skips worker_rejected)
     if planning_task_id:
-        await _update_task_status(api_client, planning_task_id, "failed")
+        await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
         try:
             await api_client.patch(
                 f"tasks/{planning_task_id}",
@@ -273,7 +274,7 @@ async def _fail_job(task_id: str, error_msg: str, planning_task_id: str | None =
     """Mark a run as failed and optionally update planning task."""
     await api_client.patch(f"runs/{task_id}", json={"status": "failed", "error_message": error_msg})
     if planning_task_id:
-        await _update_task_status(api_client, planning_task_id, "failed")
+        await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
     return {"status": "failed", "error": error_msg}
 
 
@@ -335,7 +336,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
 
         # Fail fast if scaffold previously failed
         project_status = project.get("status")
-        if project_status == "scaffold_failed":
+        if project_status == ProjectStatus.SCAFFOLD_FAILED:
             error_msg = (
                 f"Project {project_id} has status 'scaffold_failed'. "
                 "Scaffold must succeed before developer can work. "
@@ -359,12 +360,12 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             return await _fail_job(task_id, error_msg, planning_task_id)
 
         # Create repo and set secrets for new project creation on draft projects
-        if project_status == "draft" and action == "create":
+        if project_status == ProjectStatus.DRAFT and action == "create":
             await _create_repo_and_set_secrets(project)
             # Refresh in-memory dict — _create_repo_and_set_secrets sets DB status
             # to "scaffolding". Scaffolder service picks up from here.
             project["status"] = ProjectStatus.SCAFFOLDING.value
-        elif project_status == "draft" and action != "create":
+        elif project_status == ProjectStatus.DRAFT and action != "create":
             logger.warning(
                 "feature_fix_on_draft_project",
                 task_id=task_id,
@@ -584,7 +585,7 @@ async def _run_ci_gate_and_handle_failure(  # noqa: PLR0913
         fail_msg = f"CI failed after {len(ci_attempts)} attempt(s), retries exhausted"
         logger.error("ci_gate_failed", task_id=task_id, project_id=project_id)
         if planning_task_id:
-            await _update_task_status(api_client, planning_task_id, "failed")
+            await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
         await api_client.patch(
             f"runs/{task_id}",
             json={"status": "failed", "error_message": fail_msg},
@@ -700,7 +701,7 @@ async def _handle_engineering_success(  # noqa: PLR0913
 
     # Update planning-layer task if linked
     if planning_task_id:
-        await _update_task_status(api_client, planning_task_id, "done")
+        await _update_task_status(api_client, planning_task_id, TaskStatus.DONE)
         await _write_task_event(
             api_client,
             planning_task_id,

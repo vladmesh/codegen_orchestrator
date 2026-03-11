@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.models import Project, Repository, Run, User
 from shared.queues import DEPLOY_QUEUE
@@ -104,7 +105,7 @@ async def github_webhook(
         return {"status": "ignored", "reason": "unknown repository"}
 
     # 8. Guard: project must be active
-    if project.status != "active":
+    if project.status != ProjectStatus.ACTIVE:
         logger.info(
             "webhook_skip_non_active",
             project_id=project.id,
