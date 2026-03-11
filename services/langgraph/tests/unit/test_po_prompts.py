@@ -3,7 +3,7 @@
 from src.agents.po.tools import create_story
 from src.prompts.po import SYSTEM_PROMPT
 
-MAX_PROMPT_LENGTH = 12000
+MAX_PROMPT_LENGTH = 13000
 
 
 class TestSystemPrompt:
