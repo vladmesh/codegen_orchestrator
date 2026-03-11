@@ -244,12 +244,16 @@ async def complete_stories(
         story_id = story["id"]
         project_id = story.get("project_id")
 
-        # Story doesn't have user_id — resolve from project.owner_id
+        # Story doesn't have user_id — resolve telegram_id from project.owner_id
         user_id = story.get("user_id", "")
         if not user_id and project_id:
             project = await api_client.get_project(project_id)
             if project:
-                user_id = str(getattr(project, "owner_id", "") or "")
+                owner_id = getattr(project, "owner_id", None)
+                if owner_id:
+                    user = await api_client.get_user(int(owner_id))
+                    if user:
+                        user_id = str(user.get("telegram_id", ""))
 
         tasks = await api_client.get_tasks_by_story(story_id)
 

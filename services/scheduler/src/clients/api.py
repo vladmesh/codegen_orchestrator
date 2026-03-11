@@ -170,6 +170,17 @@ class SchedulerAPIClient:
         resp = await self._request("GET", f"tasks/{task_id}/events")
         return resp.json()
 
+    # --- Users ---
+
+    async def get_user(self, user_id: int) -> dict | None:
+        try:
+            resp = await self._request("GET", f"users/{user_id}")
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == httpx.codes.NOT_FOUND:
+                return None
+            raise
+
     # --- API Keys ---
 
     async def get_api_key(self, service: str) -> dict | None:
