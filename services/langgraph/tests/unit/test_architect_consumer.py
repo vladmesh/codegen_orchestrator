@@ -217,6 +217,7 @@ class TestAppendCiCheckTask:
         call_data = mock_api.create_task.call_args[0][0]
         assert call_data["blocked_by_task_id"] == "task-002"
         assert call_data["created_by"] == "system"
+        assert call_data["status"] == "todo"
         assert "test" in call_data["title"].lower() or "ci" in call_data["title"].lower()
 
     @pytest.mark.asyncio

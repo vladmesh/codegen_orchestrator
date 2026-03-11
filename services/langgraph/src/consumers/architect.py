@@ -51,6 +51,7 @@ async def append_ci_check_task(story_id: str, project_id: str) -> dict | None:
             "title": CI_CHECK_TITLE,
             "description": CI_CHECK_DESCRIPTION,
             "type": "feature",
+            "status": "todo",
             "acceptance_criteria": "All tests pass. CI is green. Code is pushed to GitHub.",
             "story_id": story_id,
             "project_id": project_id,

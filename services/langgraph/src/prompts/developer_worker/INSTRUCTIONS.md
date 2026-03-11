@@ -51,12 +51,12 @@ This file persists across attempts — if you're interrupted, the next developer
 3. Create or update `/workspace/PROGRESS.md` with your plan
 4. Understand existing code before making changes
 5. Implement changes, checking off items in PROGRESS.md as you go
-6. Commit and push — CI will validate tests
+6. Commit your changes (do NOT push unless your task explicitly tells you to)
 
-## Commit and Push
+## Commit
 
-After implementation, commit and push your changes.
-Git hooks run ruff format on commit and ruff check on push. Full CI validates on GitHub.
+After implementation, commit your changes. Do NOT push to GitHub unless the task explicitly asks you to.
+Git hooks run ruff format on commit and ruff check on push.
 Make descriptive commit messages.
 
 ## Expected Output

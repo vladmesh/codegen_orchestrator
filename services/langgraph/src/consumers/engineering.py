@@ -492,6 +492,117 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         return await _fail_job(task_id, str(e), planning_task_id)
 
 
+async def _should_run_ci_gate(planning_task_id: str | None) -> bool:
+    """Determine whether CI gate should run for this task.
+
+    CI gate runs for:
+    - Standalone tasks (no planning_task_id)
+    - CI check tasks (created_by=system, appended by architect)
+
+    Ordinary story tasks skip CI gate — CI runs once at story end.
+    """
+    if not planning_task_id:
+        return True
+    try:
+        planning_task = await api_client.get(f"tasks/{planning_task_id}")
+        return planning_task.get("created_by") == "system"
+    except Exception:
+        logger.warning(
+            "planning_task_fetch_failed",
+            planning_task_id=planning_task_id,
+            exc_info=True,
+        )
+        return False
+
+
+async def _run_ci_gate_and_handle_failure(  # noqa: PLR0913
+    project: dict,
+    task_id: str,
+    callback_stream: str | None,
+    redis: RedisStreamClient,
+    developer_started_at: datetime | None,
+    user_id: str,
+    worker_id: str | None,
+    commit_sha: str | None,
+    planning_task_id: str | None,
+    story_id: str | None,
+) -> dict | None:
+    """Run CI gate, handle failures. Returns failure dict or None if CI passed."""
+    project_id = project["id"]
+
+    # Refresh project before CI check
+    fresh_project = await api_client.get_project(project_id, **_parse_telegram_id(user_id))
+    if fresh_project:
+        project = fresh_project
+
+    primary_repo = await api_client.get_primary_repository(project_id)
+    git_url = primary_repo.get("git_url", "") if primary_repo else ""
+
+    try:
+        ci_passed, ci_attempts, ci_rejected, ci_reject_reason = await _wait_for_ci_and_fix(
+            project=project,
+            git_url=git_url,
+            task_id=task_id,
+            callback_stream=callback_stream,
+            redis=redis,
+            developer_started_at=developer_started_at,
+            user_id=user_id,
+            worker_id=worker_id,
+            commit_sha=commit_sha,
+        )
+    finally:
+        # Worker lifecycle: keep alive for story reuse, or delete for standalone
+        if worker_id:
+            if story_id:
+                try:
+                    await set_story_worker(redis.redis, story_id, worker_id)
+                except Exception as e:
+                    logger.warning(
+                        "story_worker_register_failed",
+                        worker_id=worker_id,
+                        story_id=story_id,
+                        error=str(e),
+                    )
+            else:
+                try:
+                    await delete_worker(worker_id, reason="completed")
+                    logger.info("worker_deleted_after_ci_gate", worker_id=worker_id)
+                except Exception as e:
+                    logger.warning("worker_delete_failed", worker_id=worker_id, error=str(e))
+
+    if ci_rejected and ci_reject_reason:
+        return await _handle_worker_reject(
+            task_id=task_id,
+            project_id=project_id,
+            planning_task_id=planning_task_id,
+            story_id=story_id,
+            reject_reason=ci_reject_reason,
+            ci_attempts=ci_attempts,
+        )
+
+    if not ci_passed:
+        fail_msg = f"CI failed after {len(ci_attempts)} attempt(s), retries exhausted"
+        logger.error("ci_gate_failed", task_id=task_id, project_id=project_id)
+        if planning_task_id:
+            await _update_task_status(api_client, planning_task_id, "failed")
+        await api_client.patch(
+            f"runs/{task_id}",
+            json={"status": "failed", "error_message": fail_msg},
+        )
+        await publish_callback_event(
+            redis,
+            callback_stream,
+            "failed",
+            task_id,
+            fail_msg,
+            user_id=user_id,
+            project_id=project_id,
+        )
+        return {"status": "failed", "error": fail_msg, "finished_at": datetime.now(UTC).isoformat()}
+
+    return None  # CI passed
+
+
 async def _handle_engineering_success(  # noqa: PLR0913
     result: dict,
     task_id: str,
@@ -534,27 +645,21 @@ async def _handle_engineering_success(  # noqa: PLR0913
             "finished_at": datetime.now(UTC).isoformat(),
         }
 
+    logger.info("engineering_job_success", task_id=task_id, commit_sha=result.get("commit_sha"))
+
+    run_ci_gate = await _should_run_ci_gate(planning_task_id)
     logger.info(
-        "engineering_job_success",
+        "ci_gate_decision",
         task_id=task_id,
-        commit_sha=result.get("commit_sha"),
+        planning_task_id=planning_task_id,
+        run_ci_gate=run_ci_gate,
     )
 
-    # --- Refresh project before CI check ---
-    fresh_project = await api_client.get_project(project_id, **_parse_telegram_id(user_id))
-    if fresh_project:
-        project = fresh_project
-
-    # Resolve git_url from primary Repository entity
-    primary_repo = await api_client.get_primary_repository(project_id)
-    _git_url = primary_repo.get("git_url", "") if primary_repo else ""
-
-    # --- CI Gate: wait for ci.yml before triggering deploy ---
     worker_id = result.get("worker_id")
-    try:
-        ci_passed, ci_attempts, ci_rejected, ci_reject_reason = await _wait_for_ci_and_fix(
+
+    if run_ci_gate:
+        failure = await _run_ci_gate_and_handle_failure(
             project=project,
-            git_url=_git_url,
             task_id=task_id,
             callback_stream=callback_stream,
             redis=redis,
@@ -562,70 +667,24 @@ async def _handle_engineering_success(  # noqa: PLR0913
             user_id=user_id,
             worker_id=worker_id,
             commit_sha=result.get("commit_sha"),
-        )
-    finally:
-        # Worker lifecycle: keep alive for story reuse, or delete for standalone tasks
-        if worker_id:
-            if story_id:
-                # Story task: register worker for reuse by next task
-                try:
-                    await set_story_worker(redis.redis, story_id, worker_id)
-                except Exception as e:
-                    logger.warning(
-                        "story_worker_register_failed",
-                        worker_id=worker_id,
-                        story_id=story_id,
-                        error=str(e),
-                    )
-            else:
-                # Standalone task: delete worker immediately
-                try:
-                    await delete_worker(worker_id, reason="completed")
-                    logger.info("worker_deleted_after_ci_gate", worker_id=worker_id)
-                except Exception as e:
-                    logger.warning("worker_delete_failed", worker_id=worker_id, error=str(e))
-
-    failed_count = sum(1 for a in ci_attempts if a["status"] == "failed")
-
-    # --- Worker rejected: infrastructure/config issue, not a code problem ---
-    if ci_rejected and ci_reject_reason:
-        return await _handle_worker_reject(
-            task_id=task_id,
-            project_id=project_id,
             planning_task_id=planning_task_id,
             story_id=story_id,
-            reject_reason=ci_reject_reason,
-            ci_attempts=ci_attempts,
         )
+        if failure:
+            return failure
+    elif worker_id and story_id:
+        # Ordinary story task: skip CI gate, register worker for reuse
+        try:
+            await set_story_worker(redis.redis, story_id, worker_id)
+        except Exception as e:
+            logger.warning(
+                "story_worker_register_failed",
+                worker_id=worker_id,
+                story_id=story_id,
+                error=str(e),
+            )
 
-    if not ci_passed:
-        fail_msg = f"CI failed after {len(ci_attempts)} attempt(s), retries exhausted"
-        logger.error("ci_gate_failed", task_id=task_id, project_id=project_id)
-        if planning_task_id:
-            await _update_task_status(api_client, planning_task_id, "failed")
-        await api_client.patch(
-            f"runs/{task_id}",
-            json={
-                "status": "failed",
-                "error_message": fail_msg,
-            },
-        )
-        await publish_callback_event(
-            redis,
-            callback_stream,
-            "failed",
-            task_id,
-            fail_msg,
-            user_id=user_id,
-            project_id=project_id,
-        )
-        return {
-            "status": "failed",
-            "error": fail_msg,
-            "finished_at": datetime.now(UTC).isoformat(),
-        }
-
-    # CI passed — mark engineering task as completed
+    # CI passed (or skipped) — mark engineering task as completed
     await api_client.patch(
         f"runs/{task_id}",
         json={
@@ -653,9 +712,7 @@ async def _handle_engineering_success(  # noqa: PLR0913
             },
         )
 
-    ci_summary = "CI passed"
-    if failed_count:
-        ci_summary = f"CI passed after {failed_count} failed attempt(s)"
+    ci_summary = "Task completed (CI deferred)" if not run_ci_gate else "CI passed"
 
     # When planning_task_id is set, skip deploy (dispatcher handles it on story complete)
     effective_skip_deploy = skip_deploy or bool(planning_task_id)
