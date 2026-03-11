@@ -33,6 +33,7 @@ def mock_api():
     with patch("src.consumers.engineering.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
+        api.get = AsyncMock(return_value={"created_by": "system"})
         api.get_project = AsyncMock(
             return_value={
                 "id": "proj-reject",
