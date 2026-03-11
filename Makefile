@@ -259,18 +259,30 @@ test-live-clean:
 	@docker compose exec -T db psql -U postgres -d orchestrator -c " \
 		DELETE FROM task_events WHERE task_id IN ( \
 			SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id \
-			WHERE p.name LIKE 'live-test-%' OR p.name LIKE 'live-crud-%'); \
+			WHERE p.name LIKE 'live-test-%' OR p.name LIKE 'live-crud-%' OR p.name LIKE 'mega-test-%'); \
 		DELETE FROM runs WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
 		DELETE FROM tasks WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
 		DELETE FROM stories WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
+		DELETE FROM brainstorms WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
+		DELETE FROM rag_chunks WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
+		DELETE FROM rag_documents WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
+		DELETE FROM rag_conversation_summaries WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
+		DELETE FROM rag_messages WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
+		DELETE FROM service_deployments WHERE project_id IN ( \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
 		DELETE FROM repositories WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
 		DELETE FROM port_allocations WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'); \
-		DELETE FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%'; \
+			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
+		DELETE FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'; \
 		DELETE FROM users WHERE telegram_id = 999000001; \
 	"
 	@echo "Done."
