@@ -141,12 +141,11 @@ async def test_deploy_worker_smoke_fail(
     last_project_update = project_status_calls[-1]
     assert last_project_update[1]["json"]["status"] == "active"
 
-    # Should send proactive notification about smoke failure
+    # Smoke failure is internal — no proactive message (spam filter)
     proactive_calls = [
         c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
     ]
-    assert len(proactive_calls) == 1
-    assert "smoke" in proactive_calls[0][0][1]["text"].lower()
+    assert len(proactive_calls) == 0
 
 
 @pytest.mark.asyncio

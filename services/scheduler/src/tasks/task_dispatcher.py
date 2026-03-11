@@ -305,12 +305,9 @@ async def complete_stories(
         await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
         log.info("deploy_triggered", deploy_id=deploy_id, action=deploy_action)
 
-        # Notify PO
-        proactive = POProactiveMessage(
-            text=f"All {len(tasks)} tasks done. Deploy triggered ({deploy_action}).",
-            user_id=str(user_id),
-        )
-        await redis_client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
+        # No proactive message — "all tasks done, deploy triggered" is internal.
+        # User will be notified by deploy worker on success or by supervisor on
+        # permanent failure.
 
         # Cleanup story worker container (no longer needed)
         await _cleanup_story_worker(redis_client, story_id)
@@ -499,12 +496,16 @@ async def supervise_failed_tasks(
             # Cleanup story worker container
             await _cleanup_story_worker(redis_client, story_id)
 
-            # Notify user
+            # Notify user — permanent failure, no auto-recovery possible
             story = await api_client.get_story(story_id) if story_id else {}
             user_id = story.get("user_id", "")
             if user_id:
                 proactive = POProactiveMessage(
-                    text=f"Story failed: task retries exhausted for {task_id}.",
+                    text=(
+                        "Sorry, we couldn't complete your request — "
+                        "the task failed after several attempts. "
+                        "An admin will look into it."
+                    ),
                     user_id=str(user_id),
                 )
                 await redis_client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))

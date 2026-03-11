@@ -132,10 +132,10 @@ The deploy worker correctly handled this — both completed successfully — but
 
 ### From initial report — still open:
 3. ✅ **HIGH**: CI-check task no longer fails on "no commit" — `allow_no_commit` flag allows verification-only success
-5. ⬚ **HIGH**: Agent must not import `shared.generated.events` if it wasn't generated
-7. ⬚ **HIGH**: Stop pushing deploy status to `po:proactive` — user got 11 spam messages again
+5. ✅ **HIGH**: `shared/generated/events.py` now always generated as stub — import never fails (fix in service-template)
+7. ✅ **HIGH**: Stop pushing deploy status to `po:proactive` — spam filter implemented. Only deploy success and permanent story failure reach user
 
 ### New from this run:
-11. ⬚ **CRITICAL**: Deploy action detection must be resilient to stale project status. Options: (a) check server for existing dir as authoritative source, (b) auto-fallback from `create` to `feature` when precheck fails with "dir exists"
+11. ✅ **CRITICAL**: Deploy auto-fallback `create→feature` when precheck fails with "dir exists" (fixed 2026-03-11)
 12. ⬚ **MEDIUM**: Deduplicate deploy workflow triggers — prevent two `deploy.yml` runs on same commit
 13. ⬚ **LOW**: Story completion race — deploy worker and dispatcher both try to complete story, causing 422. Add idempotency or coordination.

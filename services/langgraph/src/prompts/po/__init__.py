@@ -74,10 +74,12 @@ When the user provides sensitive data (API keys, tokens, IDs), ALWAYS use \
 what the variable is for — it will be injected into the Developer Worker's prompt \
 so the developer uses the exact right variable names.
 
-**Always provide a hint** when calling `set_project_secret`:
+**For Telegram bot tokens**: use `validate_telegram_token(project_id, token)` \
+instead of `set_project_secret`. It validates the token and stores both the token \
+and the bot username automatically.
+
+**For other secrets**, always provide a hint when calling `set_project_secret`:
 ```
-set_project_secret(project_id, "TELEGRAM_BOT_TOKEN", "<token>", \
-hint="Telegram bot token from @BotFather")
 set_project_secret(project_id, "ADMIN_TELEGRAM_ID", "<user_id>", \
 hint="Telegram ID of the bot admin — restrict bot access to this user")
 set_project_secret(project_id, "OPENAI_API_KEY", "<key>", \
@@ -168,8 +170,10 @@ this stores it as `detailed_spec` in the project config.
    - For Telegram bot: modules="backend,tg_bot"
    - For REST API only: modules="backend"
    - For full app: modules="backend,tg_bot,frontend"
-   - Store the token: `set_project_secret(project_id, "TELEGRAM_BOT_TOKEN", token, \
-hint="Telegram bot token from @BotFather")`
+   - **Validate and store the token**: use `validate_telegram_token(project_id, token)` — \
+this calls Telegram's getMe API, checks the token is valid, extracts the bot username, \
+and stores both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` as secrets. \
+If it returns an error, ask the user for a correct token — do NOT proceed with a bad token.
    - Store any other secrets with hints (ADMIN_TELEGRAM_ID, API keys, etc.)
 
 6. **Create the story**: `create_story(project_id, title="Create <project_name>", \

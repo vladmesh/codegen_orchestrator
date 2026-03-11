@@ -12,6 +12,7 @@ import time
 from typing import TYPE_CHECKING
 import uuid
 
+import httpx
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 import structlog
@@ -413,6 +414,80 @@ async def notify_user(message: str, *, config: RunnableConfig) -> str:
     return "Message sent to user."
 
 
+HTTP_OK = 200
+TELEGRAM_API_TIMEOUT = 10
+
+
+@tool
+async def validate_telegram_token(project_id: str, token: str, *, config: RunnableConfig) -> str:
+    """Validate a Telegram bot token and store it as a project secret.
+
+    Call this INSTEAD of set_project_secret when the user provides a Telegram bot token.
+    Validates the token via Telegram's getMe API, extracts the bot username,
+    and stores both TELEGRAM_BOT_TOKEN and TELEGRAM_BOT_USERNAME as secrets.
+
+    Args:
+        project_id: Project ID.
+        token: Telegram bot token from @BotFather (e.g. "123456:ABC-DEF1234...").
+    """
+    # 1. Validate via getMe
+    try:
+        async with httpx.AsyncClient() as http:
+            resp = await http.get(
+                f"https://api.telegram.org/bot{token}/getMe",
+                timeout=TELEGRAM_API_TIMEOUT,
+            )
+    except (httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout) as e:
+        logger.warning("telegram_token_validation_failed", error=str(e))
+        return f"Error: could not reach Telegram API — {e}. Please try again."
+
+    data = resp.json()
+    if not data.get("ok") or resp.status_code != HTTP_OK:
+        description = data.get("description", "Unknown error")
+        logger.info("telegram_token_invalid", status=resp.status_code, description=description)
+        return (
+            f"Error: token is invalid — Telegram returned: {description}. "
+            f"Please check the token and try again."
+        )
+
+    bot_username = data.get("result", {}).get("username")
+    if not bot_username:
+        logger.warning("telegram_token_no_username", data=data)
+        return "Error: Telegram returned OK but no bot username. The token may be corrupted."
+
+    # 2. Store both secrets
+    api = _get_api()
+    headers = _user_headers(config)
+
+    await api.post(
+        f"/api/projects/{project_id}/config/secrets",
+        json={
+            "secrets": {"TELEGRAM_BOT_TOKEN": token},
+            "env_hints": {"TELEGRAM_BOT_TOKEN": "Telegram bot token from @BotFather"},
+        },
+        headers=headers,
+    )
+    await api.post(
+        f"/api/projects/{project_id}/config/secrets",
+        json={
+            "secrets": {"TELEGRAM_BOT_USERNAME": bot_username},
+            "env_hints": {
+                "TELEGRAM_BOT_USERNAME": (
+                    "Bot username (without @) for building t.me links and smoke tests"
+                )
+            },
+        },
+        headers=headers,
+    )
+
+    logger.info(
+        "telegram_token_validated",
+        project_id=project_id,
+        bot_username=bot_username,
+    )
+    return f"Token valid! Bot: @{bot_username} (https://t.me/{bot_username}). Secrets stored."
+
+
 @tool
 def web_search(query: str, max_results: int = 5) -> str:
     """Search the web using DuckDuckGo.
@@ -451,6 +526,7 @@ def get_all_tools() -> list:
         list_projects,
         get_project,
         set_project_secret,
+        validate_telegram_token,
         create_story,
         list_stories,
         get_story,

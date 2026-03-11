@@ -97,9 +97,10 @@ async def test_deploy_worker_sends_proactive_on_success(
 
 
 @pytest.mark.asyncio
-async def test_deploy_worker_sends_proactive_on_missing_secrets(
+async def test_deploy_worker_no_proactive_on_missing_secrets(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
+    """Deploy failures should NOT send proactive messages (spam filter)."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={"missing_user_secrets": ["STRIPE_KEY", "SENTRY_DSN"]}
     )
@@ -114,16 +115,14 @@ async def test_deploy_worker_sends_proactive_on_missing_secrets(
     proactive_calls = [
         c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
     ]
-    assert len(proactive_calls) == 1
-    msg = proactive_calls[0][0][1]
-    assert "Deploy blocked" in msg["text"]
-    assert "STRIPE_KEY" in msg["text"]
+    assert len(proactive_calls) == 0
 
 
 @pytest.mark.asyncio
-async def test_deploy_worker_sends_proactive_on_error(
+async def test_deploy_worker_no_proactive_on_error(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
+    """Deploy failures should NOT send proactive messages (spam filter)."""
     mock_devops_subgraph.ainvoke = AsyncMock(return_value={"errors": ["Workflow timed out"]})
 
     from src.consumers.deploy import process_deploy_job
@@ -135,9 +134,7 @@ async def test_deploy_worker_sends_proactive_on_error(
     proactive_calls = [
         c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
     ]
-    assert len(proactive_calls) == 1
-    msg = proactive_calls[0][0][1]
-    assert "Deploy failed" in msg["text"]
+    assert len(proactive_calls) == 0
 
 
 @pytest.mark.asyncio

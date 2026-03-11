@@ -116,7 +116,7 @@ PO already has reminders + `get_story` — it can poll for intermediate status o
 - **Severity**: major
 - **Type**: orchestrator
 - **Backlog**: new
-- **Status**: ⬚ TODO
+- **Status**: ✅ FIXED (`validate_telegram_token` PO tool — getMe validation + username extraction)
 
 PO stores `TELEGRAM_BOT_TOKEN` as a secret but never validates it. If the token is invalid or expired, this is only discovered at deploy time when the tg_bot container crashes — after all code tasks and CI have completed.
 
@@ -154,10 +154,10 @@ Additionally, the bot's Telegram username (`@bot_name`) is never extracted or st
 1. ✅ **CRITICAL**: Deploy→engineering feedback loop — deploy worker re-dispatches fix task to `engineering:queue` on smoke/workflow failure (max 2 attempts). Implemented + 7 unit tests.
 2. ✅ **CRITICAL**: `.gitignore` fix — removed `**/generated/` from service-template. E2E RED→GREEN verified on real server.
 3. ✅ **HIGH**: CI-check task no longer fails on "no commit" — `allow_no_commit` flag allows verification-only success
-4. ⬚ **HIGH**: PO must validate bot token via Telegram `getMe` API immediately after receiving it. Store `TELEGRAM_BOT_USERNAME` as env var. Fail fast if token is invalid — don't waste CI/deploy cycles on a bad token
-5. ⬚ **HIGH**: Agent must not import `shared.generated.events` if it wasn't generated — need guard or AGENTS.md doc
+4. ✅ **HIGH**: PO validates bot token via `validate_telegram_token` tool — calls `getMe`, stores `TELEGRAM_BOT_TOKEN` + `TELEGRAM_BOT_USERNAME`, fails fast on invalid token. 5 unit tests.
+5. ✅ **HIGH**: `shared/generated/events.py` now always generated (stub with `get_broker()` even when no events defined) — import never fails, agents have a clear place to add events
 6. ⬚ **MEDIUM**: Document import pattern in template AGENTS.md — no relative imports in services run via `python file.py`
-7. ⬚ **HIGH**: Stop pushing deploy status to `po:proactive`. PO should poll story status via reminders if it wants updates. Only two events should reach the user proactively: (a) story completed — "your bot is live: t.me/...", (b) story permanently failed (retries exhausted, no auto-recovery possible) — "sorry, couldn't complete, admin will look into it". Everything else (deploy retries, precheck errors, intermediate failures) is internal
-8. ⬚ **MEDIUM**: Add container crash logs to deploy failure output (currently just "FAILED: ['infra-tg_bot-1']" with no details)
-9. ⬚ **MEDIUM**: Deploy action detection bug — after first failed deploy creates dir on server, subsequent deploys still use action=create because project.status isn't updated until deploy succeeds
+7. ✅ **HIGH**: Stop pushing deploy status to `po:proactive`. Only two events reach user: (a) deploy success, (b) permanent story failure. All intermediate failures/retries are internal
+8. ✅ **MEDIUM**: Container crash logs now captured via SSH (`docker compose logs --tail=50`) and appended to smoke check detail. Engineering fix tasks receive actual tracebacks instead of bare "HTTP 500". 4 new unit tests.
+9. ✅ **MEDIUM**: Deploy auto-fallback `create→feature` when dir already exists (fixed 2026-03-11)
 10. ⬚ **LOW**: Allow `failed` → `in_progress` story transition for manual recovery

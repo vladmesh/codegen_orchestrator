@@ -2,6 +2,12 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-12
+
+### Added
+- **PO bot token validation** (`validate_telegram_token` tool): PO now validates Telegram bot tokens via `getMe` API immediately after receiving them. Extracts bot username and stores both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` as project secrets. Invalid tokens fail fast at PO stage instead of wasting 30+ min on engineering + CI + deploy. PO prompt updated to use new tool instead of raw `set_project_secret` for bot tokens. 5 new unit tests.
+- **Container crash logs in smoke failure output**: When smoke test fails, `SmokeTesterNode` SSHes into the deploy server and captures `docker compose logs --tail=50`. Logs are appended to the check `detail` field and flow through the existing deploy→engineering feedback loop, so the fix task receives actual tracebacks (e.g. `ModuleNotFoundError`) instead of bare "HTTP 500". Graceful fallback if SSH fails or `server_handle` is missing. 4 new unit tests.
+
 ## 2026-03-11
 
 ### Added
@@ -9,6 +15,8 @@
 - **PO proactive secret collection**: PO now identifies required paid API keys (OpenRouter, Stripe, etc.) from the project description and asks the user before starting engineering work.
 
 ### Fixed
+- **Proactive message spam filter**: Deploy failures, smoke failures, precheck errors, and "all tasks done" messages no longer reach the user via `po:proactive`. Only two events are sent: (1) deploy success, (2) permanent story failure (user-friendly message, no technical details). Eliminates the 11+ technical spam messages seen in e2e runs.
+
 - **Deploy auto-fallback create→feature when dir exists**: When `action=create` precheck fails with "dir already exists" (stale project.status after initial deploy), auto-switch to `action=feature` instead of failing. Eliminates the most common manual intervention from e2e runs. 4 new unit tests.
 
 - **CI-check task fails on "no commit made"**: CI-check tasks (created_by=system) that find nothing to fix would fail with "Worker reported success but no commit was made", retry 3 times, then fail the entire story. Added `allow_no_commit` flag to `EngineeringState` — set for CI-check tasks via `_is_ci_check_task()`. Developer node returns `done` instead of `blocked` when worker succeeds without commit. Engineering consumer skips commit gate and CI gate, marks task done directly. E2E validated on fortune-teller-bot: "All 36 tests pass, CI green" → task done (previously: 3 retries → story failed). 5 new unit tests.

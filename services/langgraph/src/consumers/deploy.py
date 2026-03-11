@@ -263,12 +263,7 @@ async def _handle_smoke_failure(
         user_id=user_id,
         project_id=project_id,
     )
-    if not callback_stream:
-        await publish_proactive_message(
-            redis,
-            user_id,
-            f"Deployed {project_name} but smoke test failed: {smoke_details}",
-        )
+    # No proactive message — smoke failure is internal (redispatched to engineering)
 
     return {
         "status": "failed",
@@ -345,7 +340,6 @@ async def _handle_deploy_failure(
     story_id: str,
     callback_stream: str,
     user_id: str,
-    proactive_text: str,
     redis: RedisStreamClient,
     rollback_project: bool = True,
 ) -> dict:
@@ -370,8 +364,7 @@ async def _handle_deploy_failure(
         user_id=user_id,
         project_id=project_id or "",
     )
-    if not callback_stream:
-        await publish_proactive_message(redis, user_id, proactive_text)
+    # No proactive message — deploy failures are internal (retried automatically)
 
     return {
         "status": "failed",
@@ -544,7 +537,6 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
-                proactive_text=f"Deploy pre-check failed: {precheck_error}",
                 rollback_project=False,
             )
 
@@ -617,10 +609,6 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
-                proactive_text=(
-                    f"Deploy blocked for {project_name} — missing: {', '.join(missing)}. "
-                    "Please provide via bot."
-                ),
             )
         else:
             errors = result.get("errors", ["Unknown deployment error"])
@@ -643,7 +631,6 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
-                proactive_text=f"Deploy failed for {project_name}: {error_msg}",
                 rollback_project=False,
             )
 
@@ -663,7 +650,6 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             callback_stream=callback_stream,
             user_id=user_id,
             redis=redis,
-            proactive_text=f"Deploy failed: {e!s}",
         )
 
 

@@ -663,7 +663,7 @@ class TestWebSearch:
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 11
+        expected_count = 12
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -674,6 +674,7 @@ class TestGetAllTools:
             "list_projects",
             "get_project",
             "set_project_secret",
+            "validate_telegram_token",
             "create_story",
             "list_stories",
             "get_story",
