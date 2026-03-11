@@ -7,7 +7,7 @@ to callback streams, eliminating the repeated boilerplate across workers.
 from __future__ import annotations
 
 from shared.contracts.queues.po import POProactiveMessage, POSystemEvent, to_flat_fields
-from shared.queues import PO_PROACTIVE_QUEUE
+from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis_client import RedisStreamClient
 
 
@@ -62,3 +62,21 @@ async def publish_proactive_message(
         return
     msg = POProactiveMessage(text=message, user_id=user_id)
     await redis.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(msg))
+
+
+async def publish_story_event(
+    redis: RedisStreamClient,
+    *,
+    user_id: str,
+    event: str,
+    text: str,
+) -> None:
+    """Send a story-level event to PO via po:input.
+
+    PO will craft a user-friendly message instead of forwarding raw text.
+    Use event="story_completed" or event="story_failed".
+    """
+    if not user_id:
+        return
+    msg = POSystemEvent(event=event, text=text, user_id=user_id)
+    await redis.publish_flat(PO_INPUT_QUEUE, to_flat_fields(msg))

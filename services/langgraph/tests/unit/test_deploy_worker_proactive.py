@@ -1,7 +1,8 @@
 """Unit tests for deploy worker proactive notifications.
 
 When callback_stream is absent (webhook-triggered deploy), the worker
-should send notifications to po:proactive instead.
+should send story events to po:input (routed through PO) instead of
+sending raw messages directly to po:proactive.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.contracts.queues.deploy import DeployTrigger
-from shared.queues import PO_PROACTIVE_QUEUE
+from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 
 
 @pytest.fixture
@@ -88,14 +89,19 @@ async def test_deploy_worker_sends_proactive_on_success(
 
     assert result["status"] == "success"
 
-    # Should have sent proactive message via publish_flat (no callback_stream)
+    # Should have sent story_completed event to po:input (not po:proactive)
+    story_calls = [c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_INPUT_QUEUE]
+    assert len(story_calls) == 1
+    msg = story_calls[0][0][1]
+    assert msg["event"] == "story_completed"
+    assert "my-project" in msg["text"]
+    assert msg["user_id"] == "12345"
+
+    # No direct proactive messages
     proactive_calls = [
         c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
     ]
-    assert len(proactive_calls) == 1
-    msg = proactive_calls[0][0][1]
-    assert "Deployed my-project" in msg["text"]
-    assert msg["user_id"] == "12345"
+    assert len(proactive_calls) == 0
 
 
 @pytest.mark.asyncio

@@ -53,8 +53,8 @@ class TestHandleMessage:
         assert "[system:" not in msg.content
 
     @pytest.mark.asyncio
-    async def test_system_event_dropped(self, mock_graph, mock_client):
-        """All system_event messages are dropped — PO only checks status via reminders."""
+    async def test_task_system_event_dropped(self, mock_graph, mock_client):
+        """Task-level system_event messages are dropped — PO only checks status via reminders."""
         data = {
             "type": "system_event",
             "event": "completed",
@@ -66,6 +66,23 @@ class TestHandleMessage:
         await _handle_message(mock_graph, mock_client, "user-1", data)
 
         mock_graph.ainvoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event_type", ["story_completed", "story_failed"])
+    async def test_story_event_passes_through(self, mock_graph, mock_client, event_type):
+        """Story-level events (story_completed, story_failed) should invoke PO."""
+        data = {
+            "type": "system_event",
+            "event": event_type,
+            "text": "Story completed. Project 'my-bot' is live at http://1.2.3.4:8080",
+            "timestamp": "2026-02-15T10:00:00",
+        }
+
+        await _handle_message(mock_graph, mock_client, "user-1", data)
+
+        mock_graph.ainvoke.assert_called_once()
+        msg = mock_graph.ainvoke.call_args[0][0]["messages"][0]
+        assert f"system_event:{event_type}" in msg.content
 
     @pytest.mark.asyncio
     async def test_reminder_uses_human_message_with_prefix(self, mock_graph, mock_client):
@@ -203,8 +220,8 @@ class TestHandleMessage:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("event_type", ["completed", "failed", "progress", ""])
-    async def test_all_system_events_dropped(self, mock_graph, mock_client, event_type):
-        """All system_event messages are dropped — PO uses reminders for status."""
+    async def test_task_level_system_events_dropped(self, mock_graph, mock_client, event_type):
+        """Task-level system_event messages are dropped — PO uses reminders for status."""
         data = {
             "type": "system_event",
             "event": event_type,

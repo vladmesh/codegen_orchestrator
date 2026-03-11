@@ -21,7 +21,7 @@ from ..clients.api import api_client
 from ..schemas.api_types import ProjectInfo
 from ..subgraphs.devops import create_devops_subgraph
 from ._base import start_worker
-from ._events import publish_callback_event, publish_proactive_message
+from ._events import publish_callback_event, publish_story_event
 
 logger = structlog.get_logger(__name__)
 
@@ -281,8 +281,11 @@ async def _handle_deploy_success(
     )
     if not callback_stream:
         project_name = project.get("name", project_id) if project else project_id
-        await publish_proactive_message(
-            redis, user_id, f"Deployed {project_name}: {result['deployed_url']}"
+        await publish_story_event(
+            redis,
+            user_id=user_id,
+            event="story_completed",
+            text=f"Story completed. Project '{project_name}' is live at {result['deployed_url']}",
         )
 
     return {

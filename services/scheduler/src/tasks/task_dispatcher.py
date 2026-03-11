@@ -24,13 +24,13 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.contracts.queues.po import POProactiveMessage, to_flat_fields
+from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.queues.worker import DeleteWorkerCommand
 from shared.queues import (
     ARCHITECT_QUEUE,
     DEPLOY_QUEUE,
     ENGINEERING_QUEUE,
-    PO_PROACTIVE_QUEUE,
+    PO_INPUT_QUEUE,
     WORKER_COMMANDS,
 )
 from shared.redis_client import RedisStreamClient
@@ -500,15 +500,12 @@ async def supervise_failed_tasks(
             story = await api_client.get_story(story_id) if story_id else {}
             user_id = story.get("user_id", "")
             if user_id:
-                proactive = POProactiveMessage(
-                    text=(
-                        "Sorry, we couldn't complete your request — "
-                        "the task failed after several attempts. "
-                        "An admin will look into it."
-                    ),
+                event = POSystemEvent(
+                    event="story_failed",
+                    text="Story permanently failed after several retry attempts.",
                     user_id=str(user_id),
                 )
-                await redis_client.publish_flat(PO_PROACTIVE_QUEUE, to_flat_fields(proactive))
+                await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
 
             failed += 1
 

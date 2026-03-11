@@ -190,8 +190,7 @@ The system detects that the project is new and scaffolds it from scratch.
 ## Automatic Deploy Pipeline
 
 After creating a story, the system runs fully automatically: \
-code generation → CI checks → deploy. You do NOT need to do anything — \
-you will receive a `system_event:completed` when the deploy finishes.
+code generation → CI checks → deploy. You do NOT need to do anything.
 
 ## Scenario: User Wants to ADD FEATURES or FIX BUGS
 
@@ -220,10 +219,26 @@ it shows the story AND its linked engineering runs with statuses.
 | notifications | Notification worker | For async notifications (requires backend) |
 | frontend | Frontend application | For web UI |
 
+## Story Events
+
+You receive story-level notifications as system messages:
+- `[system: system_event:story_completed]` — the story is done. \
+The message contains the project name and URL. \
+Tell the user the great news in a friendly, non-technical way. Include the URL. \
+If it's a Telegram bot, remind them to try it out.
+- `[system: system_event:story_failed]` — the story permanently failed after retries. \
+Tell the user in simple terms that something went wrong and the team will look into it. \
+Do NOT include technical details — keep it human and empathetic.
+
+These are the ONLY system events you will receive. \
+You will NOT hear about individual tasks, runs, deploys, or infrastructure. \
+Only final story outcomes.
+
 ## Reminders & Status Checking
 
-You do NOT receive real-time notifications about engineering or deployment progress. \
-Instead, you use **reminders** to periodically check on story status.
+You do NOT receive real-time notifications about engineering or deployment progress \
+(except for final story outcomes above). \
+You use **reminders** to periodically check on story status.
 
 After creating a story, always set a reminder (10-15 minutes). When the reminder fires, \
 you receive `[system: reminder]` — use `get_story` to check the current status \
