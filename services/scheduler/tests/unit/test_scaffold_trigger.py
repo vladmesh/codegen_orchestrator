@@ -36,8 +36,7 @@ def mock_api():
 @pytest.fixture
 def mock_redis():
     redis = AsyncMock()
-    redis.redis = AsyncMock()
-    redis.redis.xadd = AsyncMock()
+    redis.publish_message = AsyncMock()
     return redis
 
 
@@ -58,8 +57,8 @@ class TestTriggerScaffolds:
         count = await trigger_scaffolds(mock_api, mock_redis)
 
         assert count == 1
-        mock_redis.redis.xadd.assert_called_once()
-        call_args = mock_redis.redis.xadd.call_args
+        mock_redis.publish_message.assert_called_once()
+        call_args = mock_redis.publish_message.call_args
         assert call_args[0][0] == "scaffold:queue"
 
     @pytest.mark.asyncio
@@ -70,7 +69,7 @@ class TestTriggerScaffolds:
         count = await trigger_scaffolds(mock_api, mock_redis)
 
         assert count == 0
-        mock_redis.redis.xadd.assert_not_called()
+        mock_redis.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_scaffolded_project_is_skipped(self, mock_api, mock_redis):
@@ -80,7 +79,7 @@ class TestTriggerScaffolds:
         count = await trigger_scaffolds(mock_api, mock_redis)
 
         assert count == 0
-        mock_redis.redis.xadd.assert_not_called()
+        mock_redis.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_draft_project_without_stories_is_skipped(self, mock_api, mock_redis):
@@ -91,7 +90,7 @@ class TestTriggerScaffolds:
         count = await trigger_scaffolds(mock_api, mock_redis)
 
         assert count == 0
-        mock_redis.redis.xadd.assert_not_called()
+        mock_redis.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_draft_project_without_repo_is_skipped(self, mock_api, mock_redis):
@@ -103,4 +102,4 @@ class TestTriggerScaffolds:
         count = await trigger_scaffolds(mock_api, mock_redis)
 
         assert count == 0
-        mock_redis.redis.xadd.assert_not_called()
+        mock_redis.publish_message.assert_not_called()

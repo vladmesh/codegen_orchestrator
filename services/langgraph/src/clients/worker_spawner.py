@@ -19,14 +19,12 @@ from shared.contracts.queues.worker import (
     WorkerConfig,
 )
 from shared.log_config import get_logger
+from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
 
 from ..config.constants import Timeouts
 from ..config.settings import get_settings
 
 logger = get_logger(__name__)
-
-COMMAND_STREAM = "worker:commands"
-RESPONSE_STREAM = "worker:responses:developer"
 CREATION_TIMEOUT = 60
 
 
@@ -74,7 +72,7 @@ async def _wait_for_response(
     consumer_id: str,
     request_id: str | None,
     timeout_s: float,
-    stream: str = RESPONSE_STREAM,
+    stream: str = WORKER_RESPONSES,
     worker_id: str | None = None,
 ) -> dict | None:
     """Wait for a specific response in the stream.
@@ -174,7 +172,7 @@ async def request_spawn(
     try:
         # 1. Create consumer group for responses
         try:
-            await redis_client.xgroup_create(RESPONSE_STREAM, group_name, id="$", mkstream=True)
+            await redis_client.xgroup_create(WORKER_RESPONSES, group_name, id="$", mkstream=True)
         except redis.ResponseError as e:
             if "BUSYGROUP" not in str(e):
                 raise
@@ -209,7 +207,7 @@ async def request_spawn(
             context={"source": "langgraph", "repo": repo, "project_id": project_id or ""},
         )
 
-        await redis_client.xadd(COMMAND_STREAM, {"data": create_cmd.model_dump_json()})
+        await redis_client.xadd(WORKER_COMMANDS, {"data": create_cmd.model_dump_json()})
         logger.info("worker_spawn_requested", request_id=request_id, repo=repo)
 
         # 3. Wait for Creation Response
@@ -290,7 +288,7 @@ async def request_spawn(
                     worker_id=worker_id,
                     reason="timeout",
                 )
-                await redis_client.xadd(COMMAND_STREAM, {"data": delete_cmd.model_dump_json()})
+                await redis_client.xadd(WORKER_COMMANDS, {"data": delete_cmd.model_dump_json()})
 
             return SpawnResult(
                 request_id,
@@ -307,7 +305,7 @@ async def request_spawn(
     finally:
         # Cleanup consumer groups (ignore errors - groups may not exist)
         try:
-            await redis_client.xgroup_destroy(RESPONSE_STREAM, group_name)
+            await redis_client.xgroup_destroy(WORKER_RESPONSES, group_name)
         except Exception as e:
             logger.debug("cleanup_response_group_failed", error=str(e))
         if worker_id:
@@ -422,7 +420,7 @@ async def delete_worker(
             worker_id=worker_id,
             reason=reason,
         )
-        await redis_client.xadd(COMMAND_STREAM, {"data": delete_cmd.model_dump_json()})
+        await redis_client.xadd(WORKER_COMMANDS, {"data": delete_cmd.model_dump_json()})
         logger.info("worker_delete_requested", worker_id=worker_id)
     finally:
         await redis_client.aclose()

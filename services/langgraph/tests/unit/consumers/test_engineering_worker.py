@@ -18,7 +18,7 @@ def mock_redis():
     """Mock RedisStreamClient."""
     r = AsyncMock()
     r.redis = AsyncMock()
-    r.redis.xadd = AsyncMock()
+    r.publish_message = AsyncMock()
     r.publish_flat = AsyncMock()
     return r
 
@@ -80,8 +80,8 @@ class TestHandleEngineeringSuccess:
         assert len(failed_events) >= 1
 
         # Deploy queue must NOT have been written to
-        xadd_calls = mock_redis.redis.xadd.call_args_list
-        deploy_calls = [c for c in xadd_calls if "deploy" in str(c[0][0])]
+        pm_calls = mock_redis.publish_message.call_args_list
+        deploy_calls = [c for c in pm_calls if "deploy" in str(c[0][0])]
         assert len(deploy_calls) == 0
 
     @pytest.mark.asyncio
@@ -133,22 +133,18 @@ class TestHandleEngineeringSuccess:
             user_id="625038902",
         )
 
-        # Find the deploy queue xadd call
-        import json
-
+        # Find the deploy queue publish_message call
         from shared.queues import DEPLOY_QUEUE
 
-        xadd_calls = mock_redis.redis.xadd.call_args_list
-        deploy_calls = [c for c in xadd_calls if c[0][0] == DEPLOY_QUEUE]
+        pm_calls = mock_redis.publish_message.call_args_list
+        deploy_calls = [c for c in pm_calls if c[0][0] == DEPLOY_QUEUE]
         assert len(deploy_calls) == 1, (
             f"Expected 1 deploy queue call, got {len(deploy_calls)}. "
-            f"All xadd streams: {[c[0][0] for c in xadd_calls]}"
+            f"All publish_message streams: {[c[0][0] for c in pm_calls]}"
         )
 
-        deploy_data = json.loads(deploy_calls[0][0][1]["data"])
-        assert deploy_data["user_id"] == "625038902", (
-            f"user_id mismatch. Full deploy_data: {deploy_data}"
-        )
+        deploy_msg = deploy_calls[0][0][1]
+        assert deploy_msg.user_id == "625038902", f"user_id mismatch. Full deploy_msg: {deploy_msg}"
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
@@ -172,16 +168,14 @@ class TestHandleEngineeringSuccess:
             action="feature",
         )
 
-        import json
-
         from shared.queues import DEPLOY_QUEUE
 
-        xadd_calls = mock_redis.redis.xadd.call_args_list
-        deploy_calls = [c for c in xadd_calls if c[0][0] == DEPLOY_QUEUE]
+        pm_calls = mock_redis.publish_message.call_args_list
+        deploy_calls = [c for c in pm_calls if c[0][0] == DEPLOY_QUEUE]
         assert len(deploy_calls) == 1
 
-        deploy_data = json.loads(deploy_calls[0][0][1]["data"])
-        assert deploy_data["action"] == "feature"
+        deploy_msg = deploy_calls[0][0][1]
+        assert deploy_msg.action == "feature"
 
 
 class TestNotificationDecoupling:
@@ -905,17 +899,15 @@ class TestFeatureActionFlow:
         assert result["deploy_task_id"] is not None
 
         # Verify deploy was queued
-        import json
-
         from shared.queues import DEPLOY_QUEUE
 
-        xadd_calls = mock_redis.redis.xadd.call_args_list
-        deploy_calls = [c for c in xadd_calls if c[0][0] == DEPLOY_QUEUE]
+        pm_calls = mock_redis.publish_message.call_args_list
+        deploy_calls = [c for c in pm_calls if c[0][0] == DEPLOY_QUEUE]
         assert len(deploy_calls) == 1
 
-        deploy_data = json.loads(deploy_calls[0][0][1]["data"])
-        assert deploy_data["project_id"] == "proj-1"
-        assert deploy_data["user_id"] == "u1"
+        deploy_msg = deploy_calls[0][0][1]
+        assert deploy_msg.project_id == "proj-1"
+        assert deploy_msg.user_id == "u1"
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.engineering.create_engineering_subgraph")

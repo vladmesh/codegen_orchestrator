@@ -31,6 +31,7 @@ from shared.queues import (
     DEPLOY_QUEUE,
     ENGINEERING_QUEUE,
     PO_PROACTIVE_QUEUE,
+    WORKER_COMMANDS,
 )
 from shared.redis_client import RedisStreamClient
 
@@ -50,7 +51,6 @@ STORY_MAX_ARCHITECT_RETRIES = 3
 
 # Story worker registry key (shared with langgraph service)
 STORY_WORKERS_KEY = "story:workers"
-WORKER_COMMANDS_STREAM = "worker:commands"
 
 # Failure reasons that should not be retried by the supervisor
 NON_RETRYABLE_REASONS = {"worker_rejected", "ci_infra_failure"}
@@ -79,7 +79,7 @@ async def _cleanup_story_worker(
         worker_id=worker_id,
         reason="completed",
     )
-    await redis.xadd(WORKER_COMMANDS_STREAM, {"data": delete_cmd.model_dump_json()})
+    await redis_client.publish(WORKER_COMMANDS, delete_cmd.model_dump(mode="json"))
 
     # Clear registry entry
     await redis.hdel(STORY_WORKERS_KEY, story_id)

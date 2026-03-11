@@ -9,11 +9,10 @@ from __future__ import annotations
 import structlog
 
 from shared.contracts.queues.provisioner import ProvisionerMessage
+from shared.queues import PROVISIONER_QUEUE
 from shared.redis_client import RedisStreamClient
 
 logger = structlog.get_logger(__name__)
-
-PROVISIONER_QUEUE = "provisioner:queue"
 
 
 async def trigger_provisioning(

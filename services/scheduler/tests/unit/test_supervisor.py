@@ -19,10 +19,10 @@ def redis_client():
     client = AsyncMock()
     client.publish_message = AsyncMock()
     client.publish_flat = AsyncMock()
+    client.publish = AsyncMock()
     client.redis = AsyncMock()
     client.redis.hget = AsyncMock(return_value=None)  # No story worker by default
     client.redis.hdel = AsyncMock()
-    client.redis.xadd = AsyncMock()
     return client
 
 
@@ -425,7 +425,7 @@ class TestStoryWorkerCleanup:
         # Should lookup worker
         redis_client.redis.hget.assert_called_with(STORY_WORKERS_KEY, "story-1")
         # Should send delete command
-        redis_client.redis.xadd.assert_called_once()
+        redis_client.publish.assert_called_once()
         # Should clear registry
         redis_client.redis.hdel.assert_called_with(STORY_WORKERS_KEY, "story-1")
 
@@ -449,7 +449,7 @@ class TestStoryWorkerCleanup:
         await complete_stories(api_client, redis_client)
 
         # Should not send delete command or clear registry
-        redis_client.redis.xadd.assert_not_called()
+        redis_client.publish.assert_not_called()
         redis_client.redis.hdel.assert_not_called()
 
     @pytest.mark.asyncio
@@ -479,5 +479,5 @@ class TestStoryWorkerCleanup:
 
         # Should cleanup worker
         redis_client.redis.hget.assert_called_with(STORY_WORKERS_KEY, "story-1")
-        redis_client.redis.xadd.assert_called_once()
+        redis_client.publish.assert_called_once()
         redis_client.redis.hdel.assert_called_with(STORY_WORKERS_KEY, "story-1")

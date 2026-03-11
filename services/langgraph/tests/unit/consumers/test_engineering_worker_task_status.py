@@ -18,7 +18,7 @@ def mock_redis():
     """Mock RedisStreamClient."""
     r = AsyncMock()
     r.redis = AsyncMock()
-    r.redis.xadd = AsyncMock()
+    r.publish_message = AsyncMock()
     r.publish_flat = AsyncMock()
     return r
 
@@ -111,7 +111,7 @@ class TestTaskStatusUpdates:
         )
 
         # Should NOT publish to deploy queue
-        deploy_calls = [c for c in mock_redis.redis.xadd.call_args_list if "deploy" in str(c)]
+        deploy_calls = [c for c in mock_redis.publish_message.call_args_list if "deploy" in str(c)]
         assert len(deploy_calls) == 0
 
     @pytest.mark.asyncio
@@ -145,7 +145,7 @@ class TestTaskStatusUpdates:
         )
 
         # Should publish to deploy queue (old behavior)
-        deploy_calls = [c for c in mock_redis.redis.xadd.call_args_list if "deploy" in str(c)]
+        deploy_calls = [c for c in mock_redis.publish_message.call_args_list if "deploy" in str(c)]
         assert len(deploy_calls) == 1
 
     @pytest.mark.asyncio

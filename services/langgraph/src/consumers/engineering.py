@@ -772,10 +772,7 @@ async def _handle_engineering_success(  # noqa: PLR0913
                 triggered_by=DeployTrigger.ENGINEERING,
                 action=action,
             )
-            await redis.redis.xadd(
-                DEPLOY_QUEUE,
-                {"data": deploy_msg.model_dump_json()},
-            )
+            await redis.publish_message(DEPLOY_QUEUE, deploy_msg)
             logger.info(
                 "deploy_auto_triggered",
                 task_id=task_id,

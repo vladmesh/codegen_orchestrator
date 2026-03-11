@@ -12,7 +12,7 @@ from shared.contracts.queues.worker import (
     StatusWorkerResponse,
     WorkerResponse,
 )
-from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP
+from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
 from shared.redis_client import RedisStreamClient
 
 from .manager import WorkerManager
@@ -149,6 +149,4 @@ class WorkerCommandConsumer:
 
     async def publish_response(self, cmd: WorkerCommand, response: WorkerResponse):
         """Publish response to developer response queue."""
-        queue = "worker:responses:developer"
-
-        await self.client.redis.xadd(queue, {"data": response.model_dump_json()})
+        await self.client.publish(WORKER_RESPONSES, response.model_dump(mode="json"))

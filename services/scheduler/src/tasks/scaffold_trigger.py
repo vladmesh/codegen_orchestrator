@@ -76,10 +76,7 @@ async def trigger_scaffolds(
             task_description=config.get("description", project.description or ""),
         )
 
-        await redis_client.redis.xadd(
-            SCAFFOLD_QUEUE,
-            {"data": msg.model_dump_json()},
-        )
+        await redis_client.publish_message(SCAFFOLD_QUEUE, msg)
 
         log.info("scaffold_triggered", repository_id=repo_id, modules=modules)
         triggered += 1
