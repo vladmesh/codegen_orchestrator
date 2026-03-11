@@ -8,6 +8,9 @@
 - **PO bot token validation** (`validate_telegram_token` tool): PO now validates Telegram bot tokens via `getMe` API immediately after receiving them. Extracts bot username and stores both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` as project secrets. Invalid tokens fail fast at PO stage instead of wasting 30+ min on engineering + CI + deploy. PO prompt updated to use new tool instead of raw `set_project_secret` for bot tokens. 5 new unit tests.
 - **Container crash logs in smoke failure output**: When smoke test fails, `SmokeTesterNode` SSHes into the deploy server and captures `docker compose logs --tail=50`. Logs are appended to the check `detail` field and flow through the existing deploy→engineering feedback loop, so the fix task receives actual tracebacks (e.g. `ModuleNotFoundError`) instead of bare "HTTP 500". Graceful fallback if SSH fails or `server_handle` is missing. 4 new unit tests.
 
+### Fixed
+- **Deploy deduplication: Redis lock replaces DB race** — replaced non-atomic DB-based `_check_duplicate_deploy` with atomic `SET NX` Redis lock per project. Eliminates the race window where two consumers could both pass the DB check and trigger duplicate `deploy.yml` GitHub Actions runs on the same commit. Lock held for duration of deploy, released in `finally` block. 5 new unit tests.
+
 ## 2026-03-11
 
 ### Added

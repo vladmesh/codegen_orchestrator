@@ -137,5 +137,5 @@ The deploy worker correctly handled this — both completed successfully — but
 
 ### New from this run:
 11. ✅ **CRITICAL**: Deploy auto-fallback `create→feature` when precheck fails with "dir exists" (fixed 2026-03-11)
-12. ⬚ **MEDIUM**: Deduplicate deploy workflow triggers — prevent two `deploy.yml` runs on same commit
+12. ✅ **MEDIUM**: Deploy deduplication — atomic Redis lock (`SET NX`) per project replaces non-atomic DB check. 5 unit tests.
 13. ⬚ **LOW**: Story completion race — deploy worker and dispatcher both try to complete story, causing 422. Add idempotency or coordination.

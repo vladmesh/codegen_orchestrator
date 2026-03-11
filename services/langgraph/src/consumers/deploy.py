@@ -27,6 +27,7 @@ logger = structlog.get_logger(__name__)
 
 SERVICE_BASE_DIR = "/opt/services"
 MAX_DEPLOY_FIX_ATTEMPTS = 2
+DEPLOY_LOCK_TTL = 3600  # 1 hour — generous TTL for long deploys
 
 
 async def _transition_story_safe(story_id: str, action: str) -> None:
@@ -95,47 +96,6 @@ async def _pre_check_server(
         action=action,
         dir_exists=dir_exists,
     )
-    return None
-
-
-async def _check_duplicate_deploy(task_id: str, project_id: str) -> dict | None:
-    """Check if another deploy is already running or queued for this project.
-
-    Returns cancel result dict if duplicate found, None otherwise.
-    """
-    # API only supports single status filter, so check both running and queued
-    for check_status in (RunStatus.RUNNING, RunStatus.QUEUED):
-        existing = await api_client.get(
-            "runs/",
-            params={
-                "project_id": project_id,
-                "task_type": RunType.DEPLOY.value,
-                "status": check_status.value,
-            },
-        )
-        # Filter out self (current task may already be queued)
-        existing = [t for t in existing if t["id"] != task_id]
-        if existing:
-            existing_id = existing[0]["id"]
-            logger.info(
-                "deploy_skipped_duplicate",
-                task_id=task_id,
-                project_id=project_id,
-                existing_task_id=existing_id,
-                existing_status=check_status.value,
-            )
-            await api_client.patch(
-                f"runs/{task_id}",
-                json={
-                    "status": RunStatus.CANCELLED.value,
-                    "error_message": (
-                        f"Skipped: deploy {existing_id} is already"
-                        f" {check_status.value} for this project"
-                    ),
-                },
-            )
-            return {"status": "cancelled", "existing_task_id": existing_id}
-
     return None
 
 
@@ -466,11 +426,28 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         triggered_by=msg.triggered_by.value,
     )
 
+    lock_key = f"deploy:{project_id}:lock"
+
     try:
-        # Deduplication guard: skip if another deploy is already running for this project
-        cancel_result = await _check_duplicate_deploy(task_id, project_id)
-        if cancel_result:
-            return cancel_result
+        # Atomic Redis lock: only one consumer can process a deploy per project
+        acquired = await redis.redis.set(lock_key, task_id, nx=True, ex=DEPLOY_LOCK_TTL)
+        if not acquired:
+            logger.info(
+                "deploy_lock_not_acquired",
+                task_id=task_id,
+                project_id=project_id,
+                lock_key=lock_key,
+            )
+            await api_client.patch(
+                f"runs/{task_id}",
+                json={
+                    "status": RunStatus.CANCELLED.value,
+                    "error_message": (
+                        f"Skipped: another deploy is already in progress for project {project_id}"
+                    ),
+                },
+            )
+            return {"status": "cancelled", "reason": "deploy_lock_held"}
 
         # Update task status to running
         await api_client.patch(f"runs/{task_id}", json={"status": RunStatus.RUNNING.value})
@@ -651,6 +628,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             user_id=user_id,
             redis=redis,
         )
+    finally:
+        # Always release the deploy lock so the next deploy can proceed
+        await redis.redis.delete(lock_key)
 
 
 def main():
