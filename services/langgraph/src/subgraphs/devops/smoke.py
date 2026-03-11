@@ -150,11 +150,11 @@ class SmokeTesterNode(FunctionalNode):
 
             key = asyncssh.import_private_key(ssh_key)
             service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
-            cmd = (
-                f"cd {service_dir} && "
-                f"docker compose -f infra/compose.base.yml -f infra/compose.prod.yml "
-                f"logs --tail={CONTAINER_LOG_TAIL} --no-color 2>&1"
+            compose = (
+                f"docker compose -p {project_name}"
+                f" -f infra/compose.base.yml -f infra/compose.prod.yml"
             )
+            cmd = f"cd {service_dir} && {compose} logs --tail={CONTAINER_LOG_TAIL} --no-color 2>&1"
 
             async with asyncssh.connect(
                 server_ip,
