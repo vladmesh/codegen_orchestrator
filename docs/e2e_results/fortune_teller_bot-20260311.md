@@ -74,7 +74,7 @@ The task retried 3 times (the maximum) and exhausted retries, causing the entire
 - **Severity**: minor
 - **Type**: orchestrator
 - **Backlog**: —
-- **Status**: ⬚ known, PO self-corrects — low priority
+- **Status**: ✅ FIXED (PO prompt: explicit "FIRST create_project, THEN store secrets" + "project name is NOT a valid project_id")
 
 PO agent called `set_project_secret("fortune-teller-bot", ...)` three times using the project name instead of UUID, getting 422 errors each time. Then created the project and used the correct UUID.
 
@@ -156,8 +156,9 @@ Additionally, the bot's Telegram username (`@bot_name`) is never extracted or st
 3. ✅ **HIGH**: CI-check task no longer fails on "no commit" — `allow_no_commit` flag allows verification-only success
 4. ✅ **HIGH**: PO validates bot token via `validate_telegram_token` tool — calls `getMe`, stores `TELEGRAM_BOT_TOKEN` + `TELEGRAM_BOT_USERNAME`, fails fast on invalid token. 5 unit tests.
 5. ✅ **HIGH**: `shared/generated/events.py` now always generated (stub with `get_broker()` even when no events defined) — import never fails, agents have a clear place to add events
-6. ⬚ **MEDIUM**: Document import pattern in template AGENTS.md — no relative imports in services run via `python file.py`
+6. ✅ **MEDIUM**: Document import pattern in template AGENTS.md — each service now has "Import Rules" section with correct pattern + "forbidden" examples
 7. ✅ **HIGH**: Stop pushing deploy status to `po:proactive`. Only two events reach user: (a) deploy success, (b) permanent story failure. All intermediate failures/retries are internal
 8. ✅ **MEDIUM**: Container crash logs now captured via SSH (`docker compose logs --tail=50`) and appended to smoke check detail. Engineering fix tasks receive actual tracebacks instead of bare "HTTP 500". 4 new unit tests.
 9. ✅ **MEDIUM**: Deploy auto-fallback `create→feature` when dir already exists (fixed 2026-03-11)
 10. ⬚ **LOW**: Allow `failed` → `in_progress` story transition for manual recovery
+11. ✅ **MEDIUM**: PO prompt fix — explicit ordering (create_project FIRST, then secrets) + "project name is NOT a valid project_id"

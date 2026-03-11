@@ -48,7 +48,7 @@
 - **Severity**: critical
 - **Type**: orchestrator (data)
 - **Backlog**: existing (see initial report #4/#9)
-- **Status**: ⬚ TODO
+- **Status**: ✅ FIXED (deploy auto-fallback `create→feature` when "dir exists" — commit 44b4310)
 
 After the initial story's deploy was manually completed, `project.status` remained `developing` instead of being set to `active`. This caused the dispatcher to use `action=create` for the feature deploy, which failed with "Service dir already exists".
 
@@ -64,7 +64,7 @@ After the initial story's deploy was manually completed, `project.status` remain
 - **Severity**: major
 - **Type**: orchestrator
 - **Backlog**: existing (initial report #5)
-- **Status**: ⬚ TODO — same problem, now worse
+- **Status**: ✅ FIXED (deploy spam filter — only deploy success and permanent story failure reach user)
 
 User received **11 proactive messages** during the deploy cycle:
 - Multiple "tasks done, deploy triggered" messages
@@ -112,7 +112,7 @@ This is a bug in the original `tarot.py` from the initial story, not introduced 
 - **Severity**: minor
 - **Type**: orchestrator
 - **Backlog**: new
-- **Status**: ⬚ TODO
+- **Status**: ✅ FIXED (atomic Redis lock `SET NX` deduplication per project — commit b98877d)
 
 Two successful `deploy.yml` runs (22972442025, 22972507409) ran nearly simultaneously on the same commit `538410ba`. One was from the dispatcher's auto-retry (which used `action=create` and failed precheck — but the GitHub Actions workflow was already triggered), the other from the manual `action=feature` deploy.
 

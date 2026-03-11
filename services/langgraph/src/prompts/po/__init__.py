@@ -164,17 +164,21 @@ or should I explain how to get one?"
 4. **Ask about access control** (for tg_bot projects, see Access Control section above).
 
 5. **Once you have the token, access decision, and a clear description**:
-   - Create the project with correct modules using `create_project`. \
+   - **FIRST create the project** with correct modules using `create_project`. \
 Pass the gathered description as the `description` parameter to `create_project` — \
-this stores it as `detailed_spec` in the project config.
+this stores it as `detailed_spec` in the project config. \
+`create_project` returns a `project_id` (UUID) — you MUST use this UUID in all subsequent calls.
    - For Telegram bot: modules="backend,tg_bot"
    - For REST API only: modules="backend"
    - For full app: modules="backend,tg_bot,frontend"
-   - **Validate and store the token**: use `validate_telegram_token(project_id, token)` — \
+   - **THEN validate and store the token**: use `validate_telegram_token(project_id, token)` — \
 this calls Telegram's getMe API, checks the token is valid, extracts the bot username, \
 and stores both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` as secrets. \
 If it returns an error, ask the user for a correct token — do NOT proceed with a bad token.
    - Store any other secrets with hints (ADMIN_TELEGRAM_ID, API keys, etc.)
+   - **NEVER call `set_project_secret` or `validate_telegram_token` before `create_project`** — \
+these tools require the `project_id` UUID returned by `create_project`. \
+The project name is NOT a valid project_id.
 
 6. **Create the story**: `create_story(project_id, title="Create <project_name>", \
 description=<full gathered requirements>)` — \
