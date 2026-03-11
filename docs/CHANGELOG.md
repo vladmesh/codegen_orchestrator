@@ -4,7 +4,13 @@
 
 ## 2026-03-11
 
+### Added
+- **Deploy→engineering feedback loop**: When deploy succeeds but smoke test fails, or workflow fails entirely, re-dispatch a fix task to `engineering:queue` so the developer agent can fix the code bug. Capped at 2 retry attempts via `deploy_fix_attempt` counter on both `DeployMessage` and `EngineeringMessage` contracts. 7 new unit tests.
+- **PO proactive secret collection**: PO now identifies required paid API keys (OpenRouter, Stripe, etc.) from the project description and asks the user before starting engineering work.
+
 ### Fixed
+- **Deploy auto-fallback create→feature when dir exists**: When `action=create` precheck fails with "dir already exists" (stale project.status after initial deploy), auto-switch to `action=feature` instead of failing. Eliminates the most common manual intervention from e2e runs. 4 new unit tests.
+
 - **CI-check task fails on "no commit made"**: CI-check tasks (created_by=system) that find nothing to fix would fail with "Worker reported success but no commit was made", retry 3 times, then fail the entire story. Added `allow_no_commit` flag to `EngineeringState` — set for CI-check tasks via `_is_ci_check_task()`. Developer node returns `done` instead of `blocked` when worker succeeds without commit. Engineering consumer skips commit gate and CI gate, marks task done directly. E2E validated on fortune-teller-bot: "All 36 tests pass, CI green" → task done (previously: 3 retries → story failed). 5 new unit tests.
 
 ### Added

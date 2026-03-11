@@ -3,23 +3,30 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-10
+> **Updated**: 2026-03-11
 
 ## Current Task
 
-_(no task in progress)_
+**Deploy auto-fallback: create to feature when dir exists** (`task-8fe89afa`)
+- **Status**: in_dev
+- **Elapsed**: 7 min
+
+### Recent Events
+
+- `2026-03-11 21:23` backlog → todo
+- `2026-03-11 21:23` todo → in_dev
 
 ## Stats
 
-| backlog: 32 | todo: 0 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 54 |
+| backlog: 34 | todo: 0 | in_dev: 1 | in_ci: 0 | testing: 0 | done: 67 |
 
 ## Recently Completed
 
-- Smart CI failure triage: worker reject signal + CI-fix task template — 2026-03-10
-- Worker-manager mounts workspace volume by repo_id — 2026-03-09
-- Architect receives tree + specs, creates tasks for diff — 2026-03-09
-- Create scaffolder microservice — 2026-03-09
-- Worker reuse per story — spawn once, reuse for subsequent tasks — 2026-03-09
+- Run tests, verify CI green — 2026-03-11
+- Run tests, verify CI green — 2026-03-11
+- Make LessWrong articles relevant and integrate them into predictions — 2026-03-11
+- Remove nonexistent shared.generated.events import from tg_bot — 2026-03-11
+- Run tests, verify CI green — 2026-03-11
 
 ## Quick Links
 

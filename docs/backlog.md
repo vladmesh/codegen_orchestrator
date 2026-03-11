@@ -234,16 +234,16 @@
 
 ## Done (last 10)
 
-- Run tests, verify CI green — 2026-03-10
-- Implement LessWrong random article bot with access control — 2026-03-10
-- Noop implementation task — 2026-03-10
-- Smart CI failure triage: worker reject signal + CI-fix task template — 2026-03-10
-- Worker-manager mounts workspace volume by repo_id — 2026-03-09
-- Architect receives tree + specs, creates tasks for diff — 2026-03-09
-- Create scaffolder microservice — 2026-03-09
-- Worker reuse per story — spawn once, reuse for subsequent tasks — 2026-03-09
-- Sequential story processing — one active story per project — 2026-03-09
-- #1001 Pipeline failure supervisor — retry, fail-fast, admin logging — 2026-03-09
+- Run tests, verify CI green — 2026-03-11
+- Run tests, verify CI green — 2026-03-11
+- Make LessWrong articles relevant and integrate them into predictions — 2026-03-11
+- Remove nonexistent shared.generated.events import from tg_bot — 2026-03-11
+- Run tests, verify CI green — 2026-03-11
+- Implement fortune telling bot with tarot, AI predictions, and themed questions — 2026-03-11
+- Create prediction history database model — 2026-03-11
+- Run tests, verify CI green — 2026-03-11
+- Implement article summary feature with LLM integration — 2026-03-11
+- Add user context storage for tracking last shown article — 2026-03-11
 
 ## Ideas
 
