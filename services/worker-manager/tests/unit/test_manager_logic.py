@@ -285,3 +285,111 @@ async def test_gc_skips_known_workers():
     wrapper.remove_container.assert_not_awaited()
     wrapper.remove_network.assert_not_awaited()
     mock_rm_ws.assert_not_called()
+
+
+# --- Stale Worker Cleanup Tests ---
+
+
+@pytest.mark.asyncio
+async def test_check_project_lock_cleans_dead_worker():
+    """_check_project_lock should auto-cleanup DEAD workers and return None (unlocked)."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    project_id = "proj-stale-dead"
+    worker_id = "worker-dead-123"
+
+    # Simulate stale state: project in active set, worker keys exist but status is DEAD
+    await redis.sadd("workspace:active_projects", project_id)
+    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "DEAD"})
+
+    result = await manager._check_project_lock(project_id)
+
+    # Should return None (project is free) after cleaning stale keys
+    assert result is None
+    # Stale keys should be cleaned up
+    assert await redis.hgetall(f"worker:meta:{worker_id}") == {}
+    assert await redis.hgetall(f"worker:status:{worker_id}") == {}
+    assert not await redis.sismember("workspace:active_projects", project_id)
+
+
+@pytest.mark.asyncio
+async def test_check_project_lock_cleans_failed_worker():
+    """_check_project_lock should auto-cleanup FAILED workers."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    project_id = "proj-stale-failed"
+    worker_id = "worker-failed-456"
+
+    await redis.sadd("workspace:active_projects", project_id)
+    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "FAILED"})
+
+    result = await manager._check_project_lock(project_id)
+
+    assert result is None
+    assert await redis.hgetall(f"worker:meta:{worker_id}") == {}
+
+
+@pytest.mark.asyncio
+async def test_check_project_lock_cleans_stopped_worker():
+    """_check_project_lock should auto-cleanup STOPPED workers."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    project_id = "proj-stale-stopped"
+    worker_id = "worker-stopped-789"
+
+    await redis.sadd("workspace:active_projects", project_id)
+    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "STOPPED"})
+
+    result = await manager._check_project_lock(project_id)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_check_project_lock_keeps_running_worker():
+    """_check_project_lock should NOT clean up RUNNING workers."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    project_id = "proj-active"
+    worker_id = "worker-running-abc"
+
+    await redis.sadd("workspace:active_projects", project_id)
+    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
+
+    result = await manager._check_project_lock(project_id)
+
+    # Should return the worker_id — project is locked
+    assert result == worker_id
+    # Keys should remain
+    assert await redis.hgetall(f"worker:meta:{worker_id}") != {}
+
+
+@pytest.mark.asyncio
+async def test_check_project_lock_keeps_starting_worker():
+    """_check_project_lock should NOT clean up STARTING workers."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    project_id = "proj-starting"
+    worker_id = "worker-starting-def"
+
+    await redis.sadd("workspace:active_projects", project_id)
+    await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "STARTING"})
+
+    result = await manager._check_project_lock(project_id)
+
+    assert result == worker_id

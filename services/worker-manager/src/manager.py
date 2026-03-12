@@ -426,10 +426,14 @@ class WorkerManager:
             return FactoryDroidAgent()
         return ClaudeCodeAgent()
 
+    # Statuses that indicate the worker is no longer alive and can be cleaned up
+    _TERMINAL_STATUSES = frozenset({"DEAD", "FAILED", "STOPPED"})
+
     async def _check_project_lock(self, project_id: str) -> str | None:
         """Check if another worker is active for this project.
 
         Returns worker_id if locked, None if free.
+        Auto-cleans stale Redis keys for workers in terminal states (DEAD/FAILED/STOPPED).
         """
         if not await self.redis.sismember("workspace:active_projects", project_id):
             return None
@@ -437,7 +441,24 @@ class WorkerManager:
         async for key in self.redis.scan_iter(match="worker:meta:*"):
             meta = await self.redis.hgetall(key)
             if meta.get("project_id") == project_id:
-                return key.split(":")[-1]
+                worker_id = key.split(":")[-1]
+                status = await self.redis.hget(f"worker:status:{worker_id}", "status")
+                if status in self._TERMINAL_STATUSES:
+                    logger.warning(
+                        "stale_worker_auto_cleanup",
+                        worker_id=worker_id,
+                        project_id=project_id,
+                        status=status,
+                    )
+                    await self.redis.delete(
+                        f"worker:status:{worker_id}",
+                        f"worker:meta:{worker_id}",
+                        f"worker:error:{worker_id}",
+                        f"worker:last_activity:{worker_id}",
+                    )
+                    await self.redis.srem("workspace:active_projects", project_id)
+                    return None
+                return worker_id
         return None  # stale set entry, safe to proceed
 
     async def create_worker_with_capabilities(

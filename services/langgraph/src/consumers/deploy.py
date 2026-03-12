@@ -27,7 +27,9 @@ logger = structlog.get_logger(__name__)
 
 SERVICE_BASE_DIR = "/opt/services"
 MAX_DEPLOY_FIX_ATTEMPTS = 2
+MAX_DEPLOY_RETRIES = 3  # max deploy failures before story is marked failed
 DEPLOY_LOCK_TTL = 3600  # 1 hour — generous TTL for long deploys
+DEPLOY_RETRY_TTL = 86400  # 24h — counter expires after a day
 
 
 async def _transition_story_safe(story_id: str, action: str) -> None:
@@ -306,7 +308,12 @@ async def _handle_deploy_failure(
     redis: RedisStreamClient,
     rollback_project: bool = True,
 ) -> dict:
-    """Common handler for deploy failures — update run, rollback story, notify."""
+    """Common handler for deploy failures — update run, rollback story, notify.
+
+    Tracks consecutive deploy failures per story in Redis. After MAX_DEPLOY_RETRIES
+    failures, transitions story to failed instead of back to in_progress (prevents
+    infinite deploy-fail-retry loops).
+    """
     await api_client.patch(
         f"runs/{task_id}",
         json={"status": "failed", "error_message": error_msg},
@@ -316,7 +323,31 @@ async def _handle_deploy_failure(
             f"projects/{project_id}",
             json={"status": ProjectStatus.FAILED.value},
         )
-    await _transition_story_safe(story_id, "start")
+
+    # Track deploy attempts per story — fail permanently after limit
+    if story_id:
+        attempt_key = f"deploy:{story_id}:attempts"
+        attempts = await redis.redis.incr(attempt_key)
+        await redis.redis.expire(attempt_key, DEPLOY_RETRY_TTL)
+
+        if attempts >= MAX_DEPLOY_RETRIES:
+            logger.warning(
+                "deploy_max_retries_exceeded",
+                story_id=story_id,
+                attempts=attempts,
+                max_retries=MAX_DEPLOY_RETRIES,
+            )
+            await _transition_story_safe(story_id, "fail")
+        else:
+            logger.info(
+                "deploy_failure_rollback",
+                story_id=story_id,
+                attempt=attempts,
+                max_retries=MAX_DEPLOY_RETRIES,
+            )
+            await _transition_story_safe(story_id, "start")
+    else:
+        await _transition_story_safe(story_id, "start")
 
     await publish_callback_event(
         redis,
