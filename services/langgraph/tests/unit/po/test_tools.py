@@ -54,6 +54,7 @@ def _make_response(data, status_code: int = 200) -> MagicMock:
     """Create a mock httpx.Response (sync .json() and .raise_for_status())."""
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status_code
+    resp.is_success = 200 <= status_code < 300
     resp.json.return_value = data
     return resp
 
@@ -491,15 +492,37 @@ class TestListStories:
 
 class TestGetStory:
     @pytest.mark.asyncio
-    async def test_gets_story_with_tasks(self, mock_api_client):
+    async def test_gets_story_with_tasks_and_runs(self, mock_api_client):
         story = {"id": "s1", "title": "My story", "status": "in_progress"}
         tasks = [
             {"id": "eng-123", "status": "completed", "type": "engineering"},
             {"id": "eng-456", "status": "running", "type": "engineering"},
         ]
+        runs_for_task1 = [
+            {
+                "id": "run-1",
+                "status": "completed",
+                "type": "engineering",
+                "error_message": None,
+                "started_at": "2026-01-01T00:00:00",
+                "completed_at": "2026-01-01T00:10:00",
+            },
+        ]
+        runs_for_task2 = [
+            {
+                "id": "run-2",
+                "status": "running",
+                "type": "engineering",
+                "error_message": None,
+                "started_at": "2026-01-01T00:05:00",
+                "completed_at": None,
+            },
+        ]
         mock_api_client.get.side_effect = [
             _make_response(story),
             _make_response(tasks),
+            _make_response(runs_for_task1),
+            _make_response(runs_for_task2),
         ]
 
         result = await get_story.ainvoke({"story_id": "s1"}, config=_make_config("user-42"))
@@ -507,11 +530,15 @@ class TestGetStory:
         parsed = json.loads(result)
         assert parsed["story"]["title"] == "My story"
         assert len(parsed["tasks"]) == 2
+        assert parsed["tasks"][0]["runs"][0]["id"] == "run-1"
+        assert parsed["tasks"][1]["runs"][0]["id"] == "run-2"
 
         # Verify correct API calls
         calls = mock_api_client.get.call_args_list
         assert "/api/stories/s1" in calls[0][0][0]
         assert "story_id=s1" in calls[1][0][0]
+        assert "task_id=eng-123" in calls[2][0][0]
+        assert "task_id=eng-456" in calls[3][0][0]
 
 
 class TestGetRunStatus:

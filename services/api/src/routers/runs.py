@@ -115,6 +115,7 @@ async def get_run(
 @router.get("/", response_model=list[RunRead])
 async def list_runs(
     project_id: uuid.UUID | None = None,
+    task_id: str | None = None,
     run_type: str | None = None,
     status: str | None = None,
     db: AsyncSession = Depends(get_async_session),
@@ -126,6 +127,8 @@ async def list_runs(
     # Apply filters
     if project_id:
         query = query.where(Run.project_id == project_id)
+    if task_id:
+        query = query.where(Run.task_id == task_id)
     if run_type:
         query = query.where(Run.type == run_type)
     if status:

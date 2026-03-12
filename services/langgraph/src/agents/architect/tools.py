@@ -23,20 +23,58 @@ async def get_story(story_id: str) -> dict:
 
 
 @tool
-async def get_project_spec(project_id: str) -> dict:
-    """Get project details including tree, specs, and config.
+async def get_project_spec(project_id: str, detail: str = "") -> dict:
+    """Get project overview, file tree, and spec summaries.
 
-    Returns project with tree (from scaffolder) surfaced at top level.
-    Noisy config fields (secrets, env_hints) are stripped to save tokens.
+    By default returns a compact overview: project metadata, file tree,
+    module list, and specs_summary (model names, domains, events).
+    This is usually enough for task decomposition.
+
+    Use `detail` only when the summary is insufficient for a specific decision:
+        detail="models"  — full model definitions with fields and types
+        detail="events"  — full event definitions
+        detail="domains" — full domain operations with methods and paths
+
+    Args:
+        project_id: Project ID.
+        detail: Optional detail level. Empty for summary, or one of:
+            "models", "events", "domains".
     """
     result = await api_client.get_project(project_id)
     if result is None:
         return {"error": f"Project {project_id} not found"}
 
     config = result.get("config") or {}
+    specs_summary = config.get("specs_summary", {})
+
+    # Always include tree and basic info
     result["tree"] = config.get("tree")
-    for key in ("secrets", "env_hints"):
+
+    # Strip noisy fields
+    for key in ("secrets", "env_hints", "specs_summary"):
         config.pop(key, None)
+
+    if not detail:
+        # Compact summary: just names and counts
+        compact = {}
+        if specs_summary.get("models"):
+            compact["models"] = [m["name"] for m in specs_summary["models"]]
+        if specs_summary.get("events"):
+            compact["events"] = [e["name"] for e in specs_summary["events"]]
+        if specs_summary.get("domains"):
+            compact["domains"] = [
+                f"{d['service']}/{d['domain']} ({len(d['operations'])} ops)"
+                for d in specs_summary["domains"]
+            ]
+        result["specs"] = compact
+    elif detail == "models":
+        result["specs_detail"] = {"models": specs_summary.get("models", [])}
+    elif detail == "events":
+        result["specs_detail"] = {"events": specs_summary.get("events", [])}
+    elif detail == "domains":
+        result["specs_detail"] = {"domains": specs_summary.get("domains", [])}
+    else:
+        result["specs"] = {"error": f"Unknown detail: {detail}. Use: models, events, domains"}
 
     return result
 

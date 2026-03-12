@@ -2,6 +2,20 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-13
+
+### Added
+- **Architect specs context**: Scaffolder now parses YAML spec files (models, events, domain operations) from generated projects and saves a compact `specs_summary` to `project.config`. Architect agent sees model names, domain operations, and events when decomposing stories. New `spec_extractor.py` module in scaffolder with full test coverage.
+- **Architect scaffold wait**: Architect consumer now polls `project.status` before decomposing stories. For new projects, waits up to 5 min for scaffold completion (DRAFT → ACTIVE) instead of running blind without tree/specs context.
+- **Parameterized `get_project_spec` tool**: Architect can request detail levels — compact summary (default: model/event/domain names only) or full definitions (`detail="models"`, `"events"`, `"domains"`). Saves tokens by default, deep-dives only when needed.
+- **PO `get_story` enriched with runs**: `get_story` tool now fetches runs for each task (id, status, type, error, timing). PO can answer "how's it going?" without needing `get_run_status` for basic info.
+- **PO `story_blocked` event**: PO consumer now accepts `story_blocked` system event (previously dropped). PO prompt updated with calm messaging — "specialist is reviewing, work will resume automatically".
+- **Runs API `task_id` filter**: `GET /api/runs/` now accepts `task_id` query parameter. `RunRead` schema includes `task_id` field.
+
+### Changed
+- **Architect prompt rewrite**: Removed scaffold-centric framing. Focus on "existing service with specs" rather than "scaffolded from template". Added task decomposition philosophy: slice into logical iterations, focus on boundaries between tasks, leave developer freedom for implementation decisions.
+- **Developer blocker guidance**: INSTRUCTIONS.md "When You're Stuck" section rewritten. Emphasis on trying to solve problems first, but never shipping code that compromises product quality. "Better to ship nothing than ship something that works incorrectly."
+
 ## 2026-03-12
 
 ### Added

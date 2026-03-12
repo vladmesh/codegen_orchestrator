@@ -5,11 +5,13 @@ Run standalone: python -m src.consumers.architect
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
@@ -21,6 +23,9 @@ from ..config.settings import get_settings
 from ._base import start_worker
 
 logger = structlog.get_logger(__name__)
+
+SCAFFOLD_WAIT_INTERVAL = 10  # seconds between checks
+SCAFFOLD_WAIT_MAX = 300  # max wait time (5 min)
 
 CI_CHECK_TITLE = "Run tests, verify CI green"
 CI_CHECK_DESCRIPTION = (
@@ -82,6 +87,23 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
 
     log = logger.bind(story_id=msg.story_id, project_id=msg.project_id)
     log.info("architect_job_started")
+
+    # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing
+    project = await api_client.get_project(msg.project_id)
+    if project and project.get("status") == ProjectStatus.DRAFT:
+        log.info("architect_waiting_for_scaffold")
+        waited = 0
+        while waited < SCAFFOLD_WAIT_MAX:
+            await asyncio.sleep(SCAFFOLD_WAIT_INTERVAL)
+            waited += SCAFFOLD_WAIT_INTERVAL
+            project = await api_client.get_project(msg.project_id)
+            if not project or project.get("status") != ProjectStatus.DRAFT:
+                break
+            log.debug("architect_scaffold_poll", waited=waited)
+        if project and project.get("status") == ProjectStatus.DRAFT:
+            log.error("architect_scaffold_timeout", waited=waited)
+            return {"status": "failed", "error": "scaffold did not complete in time"}
+        log.info("architect_scaffold_ready", waited=waited)
 
     settings = get_settings()
 

@@ -370,7 +370,7 @@ async def reopen_story(story_id: str, user_report: str, *, config: RunnableConfi
 
 @tool
 async def get_story(story_id: str, *, config: RunnableConfig) -> str:
-    """Get story details including linked tasks and their statuses.
+    """Get story details including linked tasks, their statuses, and runs.
 
     Args:
         story_id: Story ID (e.g. story-abc12345).
@@ -388,9 +388,29 @@ async def get_story(story_id: str, *, config: RunnableConfig) -> str:
     tasks_resp.raise_for_status()
     tasks = tasks_resp.json()
 
+    # Fetch runs for each task
+    enriched_tasks = []
+    for t in tasks:
+        task_info = {"id": t["id"], "status": t["status"], "type": t["type"]}
+        runs_resp = await api.get(f"/api/runs/?task_id={t['id']}", headers=headers)
+        if runs_resp.is_success:
+            runs = runs_resp.json()
+            task_info["runs"] = [
+                {
+                    "id": r["id"],
+                    "status": r["status"],
+                    "type": r["type"],
+                    "error_message": r.get("error_message"),
+                    "started_at": r.get("started_at"),
+                    "completed_at": r.get("completed_at"),
+                }
+                for r in runs
+            ]
+        enriched_tasks.append(task_info)
+
     result = {
         "story": story,
-        "tasks": [{"id": t["id"], "status": t["status"], "type": t["type"]} for t in tasks],
+        "tasks": enriched_tasks,
     }
     return json.dumps(result, indent=2, ensure_ascii=False)
 

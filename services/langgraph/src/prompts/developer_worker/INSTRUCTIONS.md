@@ -118,7 +118,7 @@ If `make migrate` or `make makemigrations` fails with a database connection erro
 2. **Check `.env` values match compose**: `POSTGRES_HOST` must match the service name in `infra/compose.base.yml` (default: `db`). `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` must match the `db` service's `environment:` block.
 3. **If the error says "password authentication failed"**: This likely means DNS is resolving `db` to the wrong PostgreSQL instance. Record the exact error message and the output of `getent hosts db` in your PROGRESS.md — this is critical diagnostic info.
 4. **If the error says "connection refused" or "could not connect"**: The database container may not be running or not on the correct network. Record the error and output of `orchestrator dev-env compose -- ps` in PROGRESS.md.
-5. **Do not work around database errors silently.** If you cannot connect to the database after following steps 1-2, document the exact error and diagnostic output in PROGRESS.md and proceed with other parts of the task. Do not write migration files manually or change `POSTGRES_HOST` to `localhost`.
+5. **Do not work around database errors silently.** If you cannot connect to the database after following steps 1-2, document the exact error and diagnostic output in PROGRESS.md and proceed with other parts of the task.
 
 ## Running Tests and Tools
 
@@ -139,24 +139,32 @@ orchestrator dev-env compose -f infra/compose.tests.integration.yml run integrat
 
 ## When You're Stuck
 
-If you encounter a blocker that prevents you from completing the task — missing credentials, contradictory requirements, broken external dependencies, or any issue you cannot resolve on your own — use the `report-blocker` command:
+If you hit a problem — try to find a solution first. But the solution must be
+clean from a product perspective. If you can solve the task properly — solve it.
+
+**However**: if the only solution you can come up with would compromise the
+feature, produce incomplete functionality, or give the user something that
+doesn't work as expected — do NOT ship it. It's better to ship nothing than to
+ship code that behaves incorrectly. A missing feature is better than a broken one.
+
+When you determine that you cannot complete the task without compromising quality,
+use the `report-blocker` command:
 
 ```bash
 orch report-blocker --reason "Clear description of what is blocking you and why you cannot proceed"
 ```
 
-This escalates the issue to a human reviewer who can provide guidance. **Do not silently fail or produce incomplete work** — always report blockers explicitly.
+This escalates the issue to a human reviewer who can provide guidance.
+**Do not silently fail or produce incomplete work** — always report blockers
+explicitly.
 
 Examples of when to report a blocker:
 - Required API keys or credentials are missing from the environment
 - Task requirements contradict each other or the existing codebase
 - External URLs or services referenced in the task are unreachable
 - The codebase is in a broken state that prevents your changes from working
+- The only available approach would produce a degraded or incorrect user experience
 
-## Restrictions
-
-- **Never call `docker` or `docker compose` directly.** Use `orchestrator dev-env` commands instead — they handle network isolation, path translation, and security.
-- **Never add `ports:` directives** to compose files. Services communicate by hostname on the internal network. Publishing ports causes conflicts between parallel workers.
 
 ## Important Notes
 

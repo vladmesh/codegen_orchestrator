@@ -15,11 +15,14 @@
 - `set_project_secret`: сохранение секретов
 - `validate_telegram_token`: validates Telegram bot token via `getMe` API, extracts bot username, stores both token and username as project secrets. Invalid tokens fail fast at PO stage.
 - `create_story`: создание user story + автоматический запуск engineering work
-- `list_stories`, `get_story`: просмотр stories и привязанных runs
-- `trigger_deploy`: ручной редеплой (engineering запускается через create_story)
-- `get_run_status`: статус engineering/deploy runs
+- `reopen_story`: переоткрытие завершённой story с user_report (контекст проблемы)
+- `list_stories`, `get_story`: просмотр stories, привязанных tasks и их runs (с id, status, type, error, timing)
+- `get_run_status`: детальный статус конкретного engineering/deploy run
 - `set_reminder`: отложенные проверки через Redis ZSET
-- `notify_user`: proactive message to user via `po:proactive` stream (Phase 2.3)
+- `notify_user`: proactive message to user via `po:proactive` stream
+- `web_search`: поиск документации внешних API через DuckDuckGo
+
+**System events**: PO consumer принимает три story-level события: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW). Все остальные system events дропаются — PO проверяет прогресс через reminders.
 
 **Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). All PO streams use Pydantic contracts from `shared.contracts.queues.po` (`POInputMessage`, `POResponse`, `POProactiveMessage`) with flat-field serialization (`to_flat_fields()` / `from_flat_fields()`). PO Consumer has PEL recovery via `XAUTOCLAIM` on startup. Workers write system events to `po:input` via `callback_stream`. PO uses `notify_user` tool to send proactive messages when handling system events.
 
@@ -37,8 +40,8 @@
 - При rework от Tester (до 3 итераций)
 
 **Реализация**:
-1. Scaffolder service (отдельный микросервис) выполняет scaffold phase: copier + make setup + git push, сохраняет tree в DB, ставит `project.status = scaffolded`
-2. Architect Consumer (scheduler) декомпозирует story в tasks (видит tree скафолдированного проекта)
+1. Scaffolder service (отдельный микросервис) выполняет scaffold phase: copier + make setup + git push, сохраняет tree + specs_summary в DB, ставит `project.status = active`
+2. Architect Consumer (langgraph) ждёт завершения scaffold (poll project.status != draft, до 5 мин), затем декомпозирует story в tasks (видит tree, specs summary: модели, домены, события)
 3. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
 4. Engineering worker создает GitHub-репозиторий и устанавливает registry secrets
 5. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai)
@@ -197,11 +200,11 @@ PO ReactAgent (in langgraph container)
      ├──────────────▶ po:response:{request_id} ──▶ Пользователь
      │
      ├──────────────▶ scaffold:queue → Scaffolder Service
-     │               (copier + make setup + git push, saves tree)
+     │               (copier + make setup + git push, saves tree + specs_summary)
      │                     │
      │                     ▼
      │               architect:queue → Architect Consumer
-     │               (LLM: story → tasks, sees scaffolded tree)
+     │               (waits for scaffold, then LLM: story → tasks with specs context)
      │                     │
      │                     ▼
      │               Task Dispatcher → engineering:queue

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 import signal
 
 from pydantic import ValidationError
@@ -21,6 +22,7 @@ from src.clients.api import get_api_client
 from src.clients.github import get_github_client
 from src.config import get_settings
 from src.scaffold import run_scaffold
+from src.spec_extractor import extract_specs_summary
 
 logger = structlog.get_logger(__name__)
 
@@ -119,10 +121,14 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         )
 
         if result.success:
-            # Save tree to project config
+            # Save tree and specs summary to project config
+            workspace = Path(settings.workspace_base_path) / msg.repository_id
             project_data = await api.get_project(msg.project_id)
             config = project_data.get("config", {}) or {}
             config["tree"] = result.tree
+            specs_summary = extract_specs_summary(workspace)
+            if specs_summary:
+                config["specs_summary"] = specs_summary
             await api.update_project_config(msg.project_id, config)
 
             # Scaffold success → project becomes active

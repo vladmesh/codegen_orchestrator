@@ -167,14 +167,14 @@ sequenceDiagram
     Note over SCH: Task Dispatcher (30s poll) detects draft project + stories
     SCH->>Redis: XADD scaffold:queue {project_id, repo_id, modules}
     Redis-->>SCF: Consumer reads scaffold:queue
-    SCF->>API: PATCH /projects/{id} {status: SCAFFOLDING}
     SCF->>SCF: copier copy + make setup + git push
-    SCF->>API: PATCH /projects/{id} {config.tree, status: SCAFFOLDED}
+    SCF->>API: PATCH /projects/{id} {config.tree, config.specs_summary, status: active}
 
     PO->>Redis: XADD architect:queue {story_id, project_id}
     Redis-->>SCH: Architect Consumer reads architect:queue
-    SCH->>API: GET project (tree + specs)
-    Note over SCH: LLM: story → tasks (only business logic diff)
+    Note over SCH: Wait for project.status != draft (scaffold completion)
+    SCH->>API: GET project (tree + specs_summary)
+    Note over SCH: LLM: story → tasks (with project specs context)
     SCH->>API: create tasks with blocked_by chains
 
     Note over SCH: Task Dispatcher finds unblocked tasks
@@ -485,6 +485,7 @@ class RunDTO(BaseModel):
 
     id: str
     project_id: str
+    task_id: str | None = None
     type: RunType
     status: RunStatus
     run_metadata: dict[str, Any] = {}
@@ -750,7 +751,7 @@ class ScaffoldMessage(BaseMessage):
     task_description: str = ""
 ```
 
-**Flow:** Scheduler detects `project.status == draft` with stories → publishes ScaffoldMessage → Scaffolder runs copier + make setup + git push → saves tree to `project.config.tree` → sets `project.status = scaffolded`. Architect can then see the tree when decomposing stories.
+**Flow:** Scheduler detects `project.status == draft` with stories → publishes ScaffoldMessage → Scaffolder runs copier + make setup + git push → saves tree to `project.config.tree` + parses YAML specs into `project.config.specs_summary` (models, events, domains) → sets `project.status = active`. Architect consumer waits for scaffold completion (polls project.status != draft) before decomposing stories.
 
 ---
 
