@@ -393,6 +393,7 @@ class TaskStatus(StrEnum):
     TESTING = "testing"
     DONE = "done"
     BLOCKED = "blocked"
+    WAITING_HUMAN_REVIEW = "waiting_human_review"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -767,9 +768,13 @@ class ArchitectMessage(BaseMessage):
     story_id: str
     project_id: str
     user_id: str
+    is_reopen: bool = False          # True when story is being reopened (not first decomposition)
+    user_report: str | None = None   # User feedback on what's wrong (for reopened stories)
 ```
 
 **Flow:** PO creates Story → publishes ArchitectMessage → Architect Consumer calls LLM to decompose story into N tasks with `blocked_by_task_id` dependency chains → Task Dispatcher picks up unblocked tasks and publishes EngineeringMessages.
+
+**Reopen flow:** When user reports a problem with a completed story, PO calls `reopen_story` tool → story transitions back to `in_progress` → ArchitectMessage published with `is_reopen=True` and `user_report` containing user feedback. Architect reviews previous tasks before creating new fix tasks.
 
 ---
 
