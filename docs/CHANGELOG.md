@@ -4,6 +4,9 @@
 
 ## 2026-03-12
 
+### Added
+- **Story/Task reopen flow with user_report** (#task-ce845712): PO can now reopen completed stories instead of creating new ones, carrying a `user_report` field that describes what's wrong. New `reopen_story` PO tool calls `/api/stories/{id}/reopen` endpoint and publishes `ArchitectMessage` with `is_reopen=True` + `user_report`. Architect receives reopen context and reviews previous tasks before creating new ones. Developer sees user_report in story context (TASK.md). PO prompt updated to check `list_stories` before `create_story`. New Story model field + Alembic migration. ~20 new unit tests.
+
 ### Changed
 - **ProjectStatus split: lifecycle + service_status** (#cc4d1a65): Split 13-value `ProjectStatus` enum into 3 focused enums: `ProjectStatus` (lifecycle: draft/active/paused/archived), `ServiceStatus` (runtime: not_deployed/running/degraded/down/stopped), `RepositoryStatus` (active/missing). Engineering/deploy consumers no longer touch `project.status` — only `service_status`. Alembic data migration maps all old values. All status references use enum values, no hardcoded strings. 12+ new unit tests.
 

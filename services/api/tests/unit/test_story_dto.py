@@ -17,13 +17,14 @@ class TestStoryStatus:
 
     def test_membership(self):
         values = list(StoryStatus)
-        assert len(values) == 6  # noqa: PLR2004
+        assert len(values) == 7  # noqa: PLR2004
         assert "created" in values
         assert "in_progress" in values
         assert "deploying" in values
         assert "completed" in values
         assert "archived" in values
         assert "failed" in values
+        assert "waiting_human_review" in values
 
 
 class TestStoryTransitions:
@@ -66,8 +67,20 @@ class TestStoryTransitions:
     def test_in_progress_can_fail(self):
         assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.IN_PROGRESS]
 
-    def test_failed_no_transitions(self):
-        assert VALID_TRANSITIONS[StoryStatus.FAILED] == set()
+    def test_failed_can_reopen(self):
+        assert StoryStatus.IN_PROGRESS in VALID_TRANSITIONS[StoryStatus.FAILED]
+
+    def test_waiting_human_review_status_value(self):
+        assert StoryStatus.WAITING_HUMAN_REVIEW == "waiting_human_review"
+
+    def test_in_progress_can_go_to_whr(self):
+        assert StoryStatus.WAITING_HUMAN_REVIEW in VALID_TRANSITIONS[StoryStatus.IN_PROGRESS]
+
+    def test_whr_transitions(self):
+        allowed = VALID_TRANSITIONS[StoryStatus.WAITING_HUMAN_REVIEW]
+        assert StoryStatus.IN_PROGRESS in allowed  # admin resolves
+        assert StoryStatus.FAILED in allowed  # admin gives up
+        assert StoryStatus.COMPLETED not in allowed  # can't skip to completed
 
     def test_invalid_transition_created_to_completed(self):
         assert StoryStatus.COMPLETED not in VALID_TRANSITIONS[StoryStatus.CREATED]

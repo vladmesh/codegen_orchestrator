@@ -82,6 +82,13 @@ class TaskTransition(BaseModel):
     details: dict[str, Any] = {}
 
 
+class TaskResume(BaseModel):
+    """Schema for resuming a task from WAITING_HUMAN_REVIEW."""
+
+    guidance: str
+    actor: str = "admin"
+
+
 class TaskEventCreate(BaseModel):
     """Schema for creating a task event (iteration_start, iteration_end, note)."""
 

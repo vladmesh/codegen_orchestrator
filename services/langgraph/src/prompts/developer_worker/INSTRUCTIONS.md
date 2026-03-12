@@ -137,6 +137,22 @@ make tests unit
 orchestrator dev-env compose -f infra/compose.tests.integration.yml run integration-tests
 ```
 
+## When You're Stuck
+
+If you encounter a blocker that prevents you from completing the task — missing credentials, contradictory requirements, broken external dependencies, or any issue you cannot resolve on your own — use the `report-blocker` command:
+
+```bash
+orch report-blocker --reason "Clear description of what is blocking you and why you cannot proceed"
+```
+
+This escalates the issue to a human reviewer who can provide guidance. **Do not silently fail or produce incomplete work** — always report blockers explicitly.
+
+Examples of when to report a blocker:
+- Required API keys or credentials are missing from the environment
+- Task requirements contradict each other or the existing codebase
+- External URLs or services referenced in the task are unreachable
+- The codebase is in a broken state that prevents your changes from working
+
 ## Restrictions
 
 - **Never call `docker` or `docker compose` directly.** Use `orchestrator dev-env` commands instead — they handle network isolation, path translation, and security.

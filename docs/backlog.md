@@ -30,15 +30,9 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### Story/Task reopen flow with user_report field
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Implement the ability for PO to reopen completed stories and for Architect to reopen tasks, with a user_report field that carries the user's detailed feedback through the entire pipeline (PO → Architect → Developer).  ## Context  Currently the pipeline is one-way: PO always creates new stories, l...
-
 ### HITL MVP: WAITING_HUMAN_REVIEW status + report-blocker + admin resume/requeue
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Developer agent cannot escalate blockers — silently ships workarounds (e.g. 1964-byte placeholder stubs for 56/78 images). Add a human-in-the-loop flow: developer says 'I cannot solve this' → task/story freeze → admin resolves → work continues.  Ref: brainstorm docs/brainstorms/developer-blocker-...
 
@@ -258,6 +252,7 @@
 
 ## Done (last 10)
 
+- Story/Task reopen flow with user_report field — 2026-03-12
 - Run tests, verify CI green — 2026-03-11
 - Fix tarot card image display with local assets and fallback — 2026-03-11
 - Run tests, verify CI green — 2026-03-11
@@ -267,7 +262,6 @@
 - Run tests, verify CI green — 2026-03-11
 - Implement fortune telling bot with tarot, AI predictions, and themed questions — 2026-03-11
 - Create prediction history database model — 2026-03-11
-- Run tests, verify CI green — 2026-03-11
 
 ## Ideas
 

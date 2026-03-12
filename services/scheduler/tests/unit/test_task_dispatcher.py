@@ -408,3 +408,59 @@ class TestSuperviseFailedTasks:
         api_client.transition_task.assert_not_called()
         assert result["retried"] == 0
         assert result["failed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_skips_developer_blocked_task(self, api_client, redis_client):
+        """Failed task with developer_blocked metadata → not retried."""
+        from src.tasks.task_dispatcher import supervise_failed_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-1",
+                "story_id": "story-1",
+                "current_iteration": 0,
+                "max_iterations": 3,
+                "failure_metadata": {"failure_reason": "developer_blocked"},
+            }
+        ]
+
+        result = await supervise_failed_tasks(api_client, redis_client)
+
+        api_client.transition_task.assert_not_called()
+        assert result["retried"] == 0
+        assert result["failed"] == 0
+
+
+class TestDispatchSkipsDeveloperBlocked:
+    """Dispatcher skips stories with developer-blocked siblings."""
+
+    @pytest.mark.asyncio
+    async def test_skips_task_when_sibling_developer_blocked(self, api_client, redis_client):
+        """Todo task in story with a developer_blocked sibling → not dispatched."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-2",
+                "title": "Add endpoint",
+                "description": "REST API",
+                "type": "feature",
+                "project_id": "proj-1",
+                "story_id": "story-1",
+                "blocked_by_task_id": None,
+                "status": "todo",
+            }
+        ]
+        api_client.get_tasks_by_story.return_value = [
+            {
+                "id": "task-1",
+                "status": "waiting_human_review",
+                "failure_metadata": {"failure_reason": "developer_blocked"},
+            },
+            {"id": "task-2", "status": "todo"},
+        ]
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()

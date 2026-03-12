@@ -100,13 +100,9 @@ Agent downloaded real images for **22 Major Arcana** (~1MB each, valid JPEGs fro
 - **Severity**: major
 - **Type**: orchestrator
 - **Backlog**: existing (spam filter was implemented but didn't catch this pattern)
-- **Status**: ⬚ TODO
+- **Status**: ✅ FIXED (803cfbc)
 
-Despite the deploy spam filter implemented in the previous story, user 93459832 still received repeated "Deploy pre-check failed" and "All tasks done. Deploy triggered" messages — dozens of them over ~20 minutes.
-
-**Root cause**: The spam filter blocks duplicate deploy status messages, but the deploy loop generates alternating message patterns ("tasks done" → "deploy failed" → "tasks done" → ...) which bypass deduplication.
-
-**Fix**: Rate-limit proactive messages per user (e.g., max 1 message per 5 min for same project) or suppress all deploy-related messages except final success/failure.
+Deploy worker and dispatcher no longer send proactive messages directly. All user-facing notifications now route through PO (`po:input` with system events), which formulates user-friendly messages. Deploy failures are internal-only (no user notification, auto-retried up to limit). The alternating message pattern that bypassed deduplication is eliminated — the spam source no longer exists.
 
 ### 6. Developer agent has no feedback loop / escalation mechanism
 - **Severity**: critical
@@ -182,8 +178,8 @@ Task events for `task-0e34444e` contain only status transitions (`todo → in_de
 ### New from this run:
 14. ✅ **CRITICAL**: Stale worker Redis cleanup — `_check_project_lock()` auto-cleans DEAD/FAILED/STOPPED workers (fcaf242)
 15. ✅ **HIGH**: Deploy retry limit — max 3 retries per story, then story → failed (fcaf242)
-16. ⬚ **MEDIUM**: Proactive message rate-limiting per user/project — suppress repetitive deploy status messages
+16. ✅ **MEDIUM**: Proactive message spam — deploy/dispatcher no longer send direct proactive messages (803cfbc)
 17. ⬚ **CRITICAL**: Minor Arcana images are stubs — need real images. Agent created 1964-byte placeholders for 56/78 cards because Wikimedia thumb URLs are broken. User's bug is only 28% fixed (Major Arcana only)
 18. ⬚ **CRITICAL**: Developer feedback loop — developer agent has no escalation mechanism. When tasks hit blockers (404 URLs, missing deps, ambiguous requirements), developer silently works around instead of blocking. Need developer ↔ architect dialog channel so blockers get resolved instead of hidden
-19. ⬚ **HIGH**: PO story dedup/reopen — PO always creates new stories, never checks for existing ones. Add `list_stories()` check before `create_story()`, add `/reopen` endpoint, carry over context from previous attempts
+19. ✅ **HIGH**: PO story dedup/reopen — reopen flow + user_report field implemented (d059f65). PO prompt update for list_stories() check is TODO separately
 20. ⬚ **HIGH**: Worker progress reporting — task events contain only status transitions, no intermediate progress. Add `report-progress` tool to orchestrator-cli so agent can log problems (failed downloads, workarounds) as task events

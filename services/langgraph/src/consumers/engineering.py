@@ -11,6 +11,7 @@ import structlog
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.notifications import notify_admins
@@ -23,7 +24,7 @@ from ..clients.worker_spawner import delete_worker
 from ..nodes.resource_allocator import resource_allocator_node
 from ._base import start_worker
 from ._ci_gate import _wait_for_ci_and_fix
-from ._events import publish_callback_event
+from ._events import publish_callback_event, publish_story_event
 from ._repo_setup import _create_repo_and_set_secrets
 
 
@@ -280,6 +281,118 @@ async def _handle_worker_reject(
     }
 
 
+async def _handle_worker_blocked(
+    task_id: str,
+    project_id: str,
+    planning_task_id: str | None,
+    story_id: str | None,
+    block_reason: str,
+    user_id: str,
+    redis: RedisStreamClient,
+) -> dict:
+    """Handle developer blocker: task/story → WHR, admin notified, user informed.
+
+    Unlike rejection (terminal), blocked is a pause — admin resolves and work continues.
+    Worker container is kept alive so admin can inspect the workspace.
+    """
+    logger.warning(
+        "worker_blocked",
+        task_id=task_id,
+        project_id=project_id,
+        block_reason=block_reason[:200],
+    )
+
+    # Mark the engineering run as failed
+    await api_client.patch(
+        f"runs/{task_id}",
+        json={
+            "status": "failed",
+            "error_message": f"Developer blocked: {block_reason[:500]}",
+        },
+    )
+
+    # Planning task → WAITING_HUMAN_REVIEW with blocker metadata
+    if planning_task_id:
+        try:
+            await api_client.post(
+                f"tasks/{planning_task_id}/transition",
+                params={"to_status": TaskStatus.WAITING_HUMAN_REVIEW.value},
+                json={"actor": "engineering-worker"},
+            )
+        except Exception:
+            logger.warning(
+                "task_whr_transition_failed",
+                planning_task_id=planning_task_id,
+                exc_info=True,
+            )
+        try:
+            await api_client.patch(
+                f"tasks/{planning_task_id}",
+                json={
+                    "failure_metadata": {
+                        "failure_reason": "developer_blocked",
+                        "block_reason": block_reason,
+                    },
+                },
+            )
+        except Exception:
+            logger.warning(
+                "task_block_metadata_write_failed",
+                planning_task_id=planning_task_id,
+                exc_info=True,
+            )
+        await _write_task_event(
+            api_client,
+            planning_task_id,
+            "note",
+            {
+                "action": "developer_blocked",
+                "block_reason": block_reason,
+            },
+        )
+
+    # Story → WAITING_HUMAN_REVIEW (if was IN_PROGRESS)
+    if story_id:
+        try:
+            await api_client.patch(
+                f"stories/{story_id}",
+                json={"status": StoryStatus.WAITING_HUMAN_REVIEW.value},
+            )
+        except Exception:
+            logger.warning("story_whr_on_block_failed", story_id=story_id, exc_info=True)
+
+    # Notify admin (with blocker details)
+    try:
+        await notify_admins(
+            f"Developer blocked on task {planning_task_id or task_id} "
+            f"(project {project_id}):\n{block_reason}",
+            level="warning",
+        )
+    except Exception:
+        logger.warning("admin_notify_on_block_failed", task_id=task_id, exc_info=True)
+
+    # Notify user via PO (friendly message)
+    if user_id:
+        try:
+            await publish_story_event(
+                redis,
+                user_id=user_id,
+                event="story_blocked",
+                text=(
+                    f"Task hit a blocker: {block_reason[:200]}. "
+                    "Our specialist is reviewing — work will continue once resolved."
+                ),
+            )
+        except Exception:
+            logger.warning("po_notify_on_block_failed", task_id=task_id, exc_info=True)
+
+    return {
+        "status": "blocked",
+        "block_reason": block_reason,
+        "finished_at": datetime.now(UTC).isoformat(),
+    }
+
+
 async def _fail_job(task_id: str, error_msg: str, planning_task_id: str | None = None) -> dict:
     """Mark a run as failed and optionally update planning task."""
     await api_client.patch(f"runs/{task_id}", json={"status": "failed", "error_message": error_msg})
@@ -435,8 +548,20 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 deploy_fix_attempt=deploy_fix_attempt,
             )
 
+        elif result.get("engineering_status") == "developer_blocked":
+            # Developer explicitly reported a blocker — freeze, don't fail
+            block_reason = result.get("block_reason", "Unknown blocker")
+            return await _handle_worker_blocked(
+                task_id=task_id,
+                project_id=project_id,
+                planning_task_id=planning_task_id,
+                story_id=story_id,
+                block_reason=block_reason,
+                user_id=user_id,
+                redis=redis,
+            )
         else:
-            # Blocked, needs approval, or unknown status
+            # Generic failure or unknown status
             errors = result.get("errors", ["Unknown engineering status"])
             error_msg = "; ".join(errors)
             logger.error("engineering_job_failed_status", task_id=task_id, errors=errors)

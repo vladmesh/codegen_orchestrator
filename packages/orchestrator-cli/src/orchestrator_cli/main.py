@@ -1,6 +1,7 @@
 import typer
 
 from orchestrator_cli.commands import deploy, dev_env, engineering, project
+from orchestrator_cli.commands.report_blocker import report_blocker
 from orchestrator_cli.commands.respond import respond
 
 app = typer.Typer(
@@ -21,5 +22,6 @@ app.add_typer(engineering.app, name="engineering", help="Engineering tasks")
 app.add_typer(deploy.app, name="deploy", help="Manage deployments")
 app.add_typer(dev_env.app, name="dev-env", help="Manage development environment infrastructure")
 
-# Register respond as top-level command
+# Register top-level commands
 app.command()(respond)
+app.command(name="report-blocker")(report_blocker)

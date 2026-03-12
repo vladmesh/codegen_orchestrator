@@ -112,16 +112,13 @@ def sync_artifacts(
             path.write_text(content)
             written.append(str(path))
 
-    # Delete files not in the active window
+    # Delete plan files not in the active window
     for f in plans_dir.glob("*.md"):
         if f.name not in expected_plan_files:
             f.unlink()
             deleted.append(str(f))
 
-    for f in brainstorms_dir.glob("*.md"):
-        if f.name not in expected_bs_files:
-            f.unlink()
-            deleted.append(str(f))
+    # Never delete brainstorm files — they accumulate and are cleaned up manually.
 
     return {"written": written, "deleted": deleted}
 

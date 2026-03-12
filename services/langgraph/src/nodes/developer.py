@@ -249,6 +249,23 @@ class DeveloperNode(FunctionalNode):
                     "commit_sha": worker_result.commit_sha,
                     "worker_id": worker_result.worker_id,
                 }
+            elif worker_result.block_reason:
+                # Developer explicitly reported a blocker via orch report-blocker
+                logger.warning(
+                    "developer_node_blocked",
+                    project_name=project_name,
+                    block_reason=worker_result.block_reason[:200],
+                )
+                return {
+                    "messages": [
+                        AIMessage(content=f"Developer blocked: {worker_result.block_reason}")
+                    ],
+                    "engineering_status": "developer_blocked",
+                    "block_reason": worker_result.block_reason,
+                    "worker_id": worker_result.worker_id,
+                    "errors": state.get("errors", [])
+                    + [f"Developer blocked: {worker_result.block_reason}"],
+                }
             else:
                 error_msg = worker_result.error_message or worker_result.output or "Unknown error"
                 if len(error_msg) > MAX_ERROR_MSG_LENGTH:

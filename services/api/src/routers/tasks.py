@@ -23,6 +23,7 @@ from ..schemas.task import (
     TaskEventCreate,
     TaskEventRead,
     TaskRead,
+    TaskResume,
     TaskTransition,
     TaskUpdate,
 )
@@ -494,6 +495,43 @@ async def reopen_task(
     await db.refresh(task)
 
     logger.info("task_reopened", task_id=task.id, reason=body.reason)
+    return _to_read(task)
+
+
+@router.post("/{task_id}/resume", response_model=TaskRead)
+async def resume_task(
+    task_id: str,
+    body: TaskResume,
+    db: AsyncSession = Depends(get_async_session),
+) -> TaskRead:
+    """Resume a task from WAITING_HUMAN_REVIEW with admin guidance.
+
+    Transitions task WHR → IN_DEV and creates a 'guidance' event
+    containing the admin's instructions for the next worker attempt.
+    """
+    task = await _get_task(task_id, db)
+
+    _validate_transition(task.status, TaskStatus.IN_DEV)
+
+    old_status = task.status
+    task.status = TaskStatus.IN_DEV
+    await _create_status_event(
+        task, old_status, TaskStatus.IN_DEV, body.actor, {"guidance": body.guidance}, db
+    )
+
+    # Also create a guidance event for the worker to pick up
+    event = TaskEvent(
+        task_id=task.id,
+        event_type=TaskEventType.NOTE.value,
+        actor=body.actor,
+        details={"action": "guidance", "guidance": body.guidance},
+    )
+    db.add(event)
+
+    await db.commit()
+    await db.refresh(task)
+
+    logger.info("task_resumed", task_id=task.id, actor=body.actor)
     return _to_read(task)
 
 

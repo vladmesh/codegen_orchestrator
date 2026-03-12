@@ -53,7 +53,7 @@ STORY_MAX_ARCHITECT_RETRIES = 3
 STORY_WORKERS_KEY = "story:workers"
 
 # Failure reasons that should not be retried by the supervisor
-NON_RETRYABLE_REASONS = {"worker_rejected", "ci_infra_failure"}
+NON_RETRYABLE_REASONS = {"worker_rejected", "ci_infra_failure", "developer_blocked"}
 
 
 async def _cleanup_story_worker(

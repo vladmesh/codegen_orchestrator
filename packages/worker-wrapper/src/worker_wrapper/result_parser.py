@@ -23,6 +23,7 @@ class ResultParser:
 
     _RESULT_PATTERN = re.compile(r"<result>\s*(.*?)\s*</result>", re.DOTALL)
     _REJECTED_PATTERN = re.compile(r"^##\s+REJECTED\s*$", re.MULTILINE | re.IGNORECASE)
+    _BLOCKED_PATTERN = re.compile(r"^##\s+BLOCKED\s*$", re.MULTILINE | re.IGNORECASE)
 
     @classmethod
     def parse(cls, stdout: str) -> dict[str, Any] | None:
@@ -44,10 +45,15 @@ class ResultParser:
             except json.JSONDecodeError as e:
                 raise ResultParseError(f"Invalid JSON in result block: {e}") from e
 
-        # No <result> tags — check for ## REJECTED marker
+        # No <result> tags — check for ## REJECTED marker (infra issues)
         rejected = cls._parse_rejected(text_to_search)
         if rejected is not None:
             return rejected
+
+        # No rejection — check for ## BLOCKED marker (developer blocker)
+        blocked = cls._parse_blocked(text_to_search)
+        if blocked is not None:
+            return blocked
 
         return None
 
@@ -67,6 +73,24 @@ class ResultParser:
             reason = reason[:_REJECT_REASON_MAX_LENGTH]
 
         return {"status": "rejected", "reject_reason": reason}
+
+    @classmethod
+    def _parse_blocked(cls, text: str) -> dict[str, Any] | None:
+        """Detect ## BLOCKED marker and extract reason.
+
+        Returns {"status": "blocked", "block_reason": "..."} or None.
+        Used when the developer agent hits an unsolvable blocker (404 URLs,
+        missing credentials, contradictory requirements).
+        """
+        match = cls._BLOCKED_PATTERN.search(text)
+        if not match:
+            return None
+
+        reason = text[match.end() :].strip()
+        if len(reason) > _REJECT_REASON_MAX_LENGTH:
+            reason = reason[:_REJECT_REASON_MAX_LENGTH]
+
+        return {"status": "blocked", "block_reason": reason}
 
     @classmethod
     def extract_text(cls, stdout: str) -> str | None:
