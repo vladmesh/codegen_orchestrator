@@ -13,6 +13,7 @@
 **Инструменты** (`src/agents/po/tools.py`):
 - `create_project`, `list_projects`, `get_project`: управление проектами через API
 - `set_project_secret`: сохранение секретов
+- `validate_telegram_token`: validates Telegram bot token via `getMe` API, extracts bot username, stores both token and username as project secrets. Invalid tokens fail fast at PO stage.
 - `create_story`: создание user story + автоматический запуск engineering work
 - `list_stories`, `get_story`: просмотр stories и привязанных runs
 - `trigger_deploy`: ручной редеплой (engineering запускается через create_story)
@@ -121,6 +122,7 @@ devops/
 5. **SmokeTester (Functional)**:
    - Делает HTTP `/health` check для бекендов и Telethon `/start` check для tg_bot модулей.
    - Реализует retry logic (3 попытки, 5s delay) и graceful skip.
+   - On failure: SSHes into deploy server, captures `docker compose logs --tail=50`, appends to check `detail` field. Logs flow through deploy→engineering feedback loop so fix tasks get actual tracebacks.
    - Записывает `smoke_result` в `DevOpsState` для проброса статуса в deploy-worker.
 
 **Архитектура**:
@@ -138,8 +140,11 @@ Deployer → build_dotenv → set_repository_secrets (GitHub API)
 - `deployed_url` при успехе
 - `missing_user_secrets` если нужны секреты от пользователя
 
-**Proactive notifications** (webhook-triggered deploys):
-Когда deploy запущен через webhook (нет `callback_stream`), deploy-worker отправляет результат напрямую в `po:proactive` → telegram-bot → пользователь. Сообщения: успех (deployed URL), missing secrets, ошибка.
+**Proactive notifications**:
+Filtered to reduce spam — only two events reach user via `po:proactive`: (1) deploy success (deployed URL), (2) permanent story failure (user-friendly message). All intermediate failures (smoke, precheck, workflow) are routed through the deploy→engineering feedback loop for automated fixing.
+
+**Deploy→Engineering Feedback Loop**:
+When deploy succeeds but smoke test fails, or workflow fails entirely, deploy worker re-dispatches a fix task to `engineering:queue`. Capped at 2 retry attempts via `deploy_fix_attempt` counter. After limit, story fails permanently and user is notified.
 
 ---
 

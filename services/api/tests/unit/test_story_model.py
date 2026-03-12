@@ -78,3 +78,10 @@ class TestStoryModel:
 
     def test_acceptance_criteria_nullable(self):
         assert Story.__table__.c.acceptance_criteria.nullable
+
+    def test_user_report_column_exists(self):
+        cols = {c.name for c in Story.__table__.columns}
+        assert "user_report" in cols
+
+    def test_user_report_nullable(self):
+        assert Story.__table__.c.user_report.nullable

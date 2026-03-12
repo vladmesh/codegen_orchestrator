@@ -20,6 +20,7 @@ from src.agents.po.tools import (
     list_projects,
     list_stories,
     notify_user,
+    reopen_story,
     set_project_secret,
     set_reminder,
     web_search,
@@ -660,10 +661,51 @@ class TestWebSearch:
         assert "Search failed" in result
 
 
+class TestReopenStory:
+    @pytest.mark.asyncio
+    async def test_reopens_and_publishes_architect_message(
+        self, mock_api_client, mock_stream_client
+    ):
+        """reopen_story calls API + publishes ArchitectMessage with is_reopen=True."""
+        story_data = {
+            "id": "story-abc",
+            "title": "Fix images",
+            "project_id": "proj-1",
+            "status": "in_progress",
+            "user_report": "Images broken on mobile",
+        }
+        mock_api_client.post.return_value = _make_response(story_data)
+
+        result = await reopen_story.ainvoke(
+            {"story_id": "story-abc", "user_report": "Images broken on mobile"},
+            config=_make_config("user-42"),
+        )
+
+        assert "reopened" in result.lower()
+        assert "story-abc" in result
+
+        # Verify API call
+        api_call = mock_api_client.post.call_args
+        assert api_call[0][0] == "/api/stories/story-abc/reopen"
+        assert api_call[1]["json"]["user_report"] == "Images broken on mobile"
+
+        # Verify ArchitectMessage
+        from shared.contracts.queues.architect import ArchitectMessage
+        from shared.queues import ARCHITECT_QUEUE
+
+        pub_call = mock_stream_client.publish_message.call_args
+        assert pub_call[0][0] == ARCHITECT_QUEUE
+        arch_msg = pub_call[0][1]
+        assert isinstance(arch_msg, ArchitectMessage)
+        assert arch_msg.story_id == "story-abc"
+        assert arch_msg.is_reopen is True
+        assert arch_msg.user_report == "Images broken on mobile"
+
+
 class TestGetAllTools:
     def test_returns_all_tools(self):
         tools = get_all_tools()
-        expected_count = 12
+        expected_count = 13
         assert len(tools) == expected_count
 
     def test_tool_names(self):
@@ -677,6 +719,7 @@ class TestGetAllTools:
             "validate_telegram_token",
             "create_story",
             "list_stories",
+            "reopen_story",
             "get_story",
             "get_run_status",
             "set_reminder",

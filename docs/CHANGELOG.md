@@ -4,6 +4,9 @@
 
 ## 2026-03-12
 
+### Changed
+- **ProjectStatus split: lifecycle + service_status** (#cc4d1a65): Split 13-value `ProjectStatus` enum into 3 focused enums: `ProjectStatus` (lifecycle: draft/active/paused/archived), `ServiceStatus` (runtime: not_deployed/running/degraded/down/stopped), `RepositoryStatus` (active/missing). Engineering/deploy consumers no longer touch `project.status` — only `service_status`. Alembic data migration maps all old values. All status references use enum values, no hardcoded strings. 12+ new unit tests.
+
 ### Added
 - **PO bot token validation** (`validate_telegram_token` tool): PO now validates Telegram bot tokens via `getMe` API immediately after receiving them. Extracts bot username and stores both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` as project secrets. Invalid tokens fail fast at PO stage instead of wasting 30+ min on engineering + CI + deploy. PO prompt updated to use new tool instead of raw `set_project_secret` for bot tokens. 5 new unit tests.
 - **Container crash logs in smoke failure output**: When smoke test fails, `SmokeTesterNode` SSHes into the deploy server and captures `docker compose logs --tail=50`. Logs are appended to the check `detail` field and flow through the existing deploy→engineering feedback loop, so the fix task receives actual tracebacks (e.g. `ModuleNotFoundError`) instead of bare "HTTP 500". Graceful fallback if SSH fails or `server_handle` is missing. 4 new unit tests.

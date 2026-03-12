@@ -92,7 +92,26 @@ All consumers use unified `RedisStreamClient.consume()` API with two ACK modes:
 
 ---
 
-## 5. Dead Letter Queue (DLQ)
+## 5. Deploy Error Handling
+
+### Deploy Retry Limit
+Deploy worker tracks consecutive deploy failures per story in Redis. After **3 consecutive failures**, the story transitions to `failed` instead of looping back to `in_progress`. This prevents the infinite deploy→fail→redispatch loop.
+
+### Deploy→Engineering Feedback Loop
+When deploy succeeds but smoke test fails, or workflow fails entirely, the deploy worker re-dispatches a fix task to `engineering:queue`. Capped at **2 retry attempts** via `deploy_fix_attempt` counter on both `DeployMessage` and `EngineeringMessage`. After limit, story fails permanently.
+
+### Deploy Deduplication
+Atomic `SET NX` Redis lock per project prevents duplicate deploys. Replaces the non-atomic DB-based check that had a race window. Lock held for duration of deploy, released in `finally` block.
+
+### Stale Worker Cleanup
+`_check_project_lock()` in the engineering consumer verifies `worker:status` in Redis. Workers in terminal states (`DEAD`/`FAILED`/`STOPPED`) get their Redis keys cleaned up automatically, unblocking new task dispatch without manual intervention.
+
+### Proactive Message Spam Filter
+Only two events reach the user via `po:proactive`: (1) deploy success, (2) permanent story failure. All intermediate failures (smoke, precheck, workflow) are handled internally without spamming the user.
+
+---
+
+## 6. Dead Letter Queue (DLQ)
 
 **Naming Convention:** `{original_queue}:dlq`
 - `engineering:queue:dlq`

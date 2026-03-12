@@ -322,6 +322,53 @@ async def list_stories(project_id: str, *, config: RunnableConfig) -> str:
 
 
 @tool
+async def reopen_story(story_id: str, user_report: str, *, config: RunnableConfig) -> str:
+    """Reopen a completed story instead of creating a new one.
+
+    Use this when the user reports a problem with something that was already
+    built in a previous story. The user_report carries their feedback through
+    the entire pipeline (PO → Architect → Developer).
+
+    Args:
+        story_id: ID of the completed story to reopen.
+        user_report: User's description of what's wrong (e.g. "images work
+            sometimes but not always", "layout is broken on mobile").
+    """
+    api = _get_api()
+    headers = _user_headers(config)
+    user_id = config["configurable"].get("user_id", "unknown")
+
+    resp = await api.post(
+        f"/api/stories/{story_id}/reopen",
+        json={"user_report": user_report, "actor": "po"},
+        headers=headers,
+    )
+    resp.raise_for_status()
+    story = resp.json()
+
+    arch_msg = ArchitectMessage(
+        story_id=story_id,
+        project_id=story["project_id"],
+        user_id=user_id,
+        is_reopen=True,
+        user_report=user_report,
+    )
+    await _get_stream_client().publish_message(ARCHITECT_QUEUE, arch_msg)
+
+    logger.info(
+        "po_story_reopened",
+        story_id=story_id,
+        project_id=story["project_id"],
+    )
+    return (
+        f"Story reopened and sent to architect for re-decomposition.\n"
+        f"Story: {story_id} — {story['title']}\n"
+        f"User report: {user_report}\n"
+        f"The architect will review previous tasks and create new ones."
+    )
+
+
+@tool
 async def get_story(story_id: str, *, config: RunnableConfig) -> str:
     """Get story details including linked tasks and their statuses.
 
@@ -529,6 +576,7 @@ def get_all_tools() -> list:
         validate_telegram_token,
         create_story,
         list_stories,
+        reopen_story,
         get_story,
         get_run_status,
         set_reminder,

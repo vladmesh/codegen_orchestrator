@@ -32,3 +32,4 @@ class Story(Base):
         String(255), ForeignKey("stories.id"), nullable=True, index=True
     )
     created_by: Mapped[str] = mapped_column(String(50), default="system")
+    user_report: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -19,6 +19,7 @@ from ..database import get_async_session
 from ..schemas.story import (
     StoryCreate,
     StoryRead,
+    StoryReopen,
     StoryTransition,
     StoryUpdate,
 )
@@ -248,6 +249,26 @@ async def deploy_story(
     await db.refresh(story)
 
     logger.info("story_deploying", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+@router.post("/{story_id}/reopen", response_model=StoryRead)
+async def reopen_story(
+    story_id: str,
+    body: StoryReopen | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    body = body or StoryReopen()
+    story = await _get_story(story_id, db)
+
+    _do_transition(story, StoryStatus.IN_PROGRESS)
+    if body.user_report is not None:
+        story.user_report = body.user_report
+
+    await db.commit()
+    await db.refresh(story)
+
+    logger.info("story_reopened", story_id=story.id, actor=body.actor)
     return StoryRead.model_validate(story, from_attributes=True)
 
 

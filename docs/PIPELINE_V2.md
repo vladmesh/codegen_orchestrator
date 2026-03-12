@@ -139,13 +139,19 @@ This same directory is mounted into worker containers later.
 
 **Actor**: Deploy worker (consumes `deploy:queue`)
 
-**Trigger**: All tasks in story `done` → dispatcher completes story → publishes deploy
+**Trigger**: All tasks in story `done` → dispatcher transitions story to `deploying` → publishes deploy
 
 1. Resolve server for the project (or provision new one)
 2. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)
 3. Trigger GitHub Actions deploy workflow
 4. Wait for deploy to complete
-5. Verify service is reachable (healthcheck)
+5. Smoke test: HTTP `/health` for backends, Telethon `/start` for tg_bot
+6. On smoke failure: capture container logs via SSH, re-dispatch fix task to `engineering:queue` (max 2 retries via `deploy_fix_attempt`)
+7. On success: story → `completed`, user notified via PO
+
+**Deploy retry limit**: Max 3 consecutive deploy failures per story (tracked in Redis). After limit, story transitions to `failed`.
+
+**Deploy deduplication**: Atomic Redis `SET NX` lock per project prevents duplicate deploys.
 
 **Outputs**: Running service on server with domain + SSL
 
@@ -184,16 +190,20 @@ This same directory is mounted into worker containers later.
 
 ## Status Flow
 
-### Project
+### Project (Lifecycle)
 ```
-draft → scaffolding → scaffolded → developing → deployed
+draft → active → paused → archived
 ```
+Project status is now lifecycle-only. Process states (scaffolding, developing) are derived from child entities.
+Runtime state is tracked separately via `service_status`: `not_deployed → running → degraded / down / stopped`.
 
 ### Story
 ```
-created → in_progress → completed
+created → in_progress → deploying → completed
                       → failed (after max retries)
+         deploying → in_progress (on deploy failure, for retry)
 ```
+`deploying` is a deploy gate — story waits for successful deploy before completion.
 
 ### Task
 ```

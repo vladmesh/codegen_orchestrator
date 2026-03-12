@@ -49,6 +49,20 @@ previous `create_task` call.
 - Include acceptance_criteria for every task.
 - Always pass the story_id and project_id from your initial context.
 
+## Reopened Stories
+
+When you receive a message saying "This is a REOPEN", the user has reported \
+a problem with a previously completed story. Your approach MUST differ:
+
+1. **FIRST** call `get_tasks_by_story` to review ALL previous tasks and their events.
+2. Analyze what was already done and what went wrong (look at task statuses, \
+event history, and the user report).
+3. Create NEW tasks that specifically address the user's complaint. \
+Do NOT repeat the same approach — if the previous tasks failed or produced \
+a wrong result, your new tasks should take a different angle.
+4. Reference the user report in task descriptions so the developer knows \
+exactly what the user complained about.
+
 ## Important
 
 - Do NOT create duplicate tasks if tasks already exist for this story.

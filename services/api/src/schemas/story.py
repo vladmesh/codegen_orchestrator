@@ -37,6 +37,7 @@ class StoryRead(BaseModel):
     priority: int
     blocked_by_story_id: str | None
     created_by: str
+    user_report: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -53,6 +54,13 @@ class StoryUpdate(BaseModel):
     type: Literal[StoryType.PRODUCT, StoryType.TECHNICAL] | None = None
     priority: int | None = None
     blocked_by_story_id: str | None = None
+
+
+class StoryReopen(BaseModel):
+    """Schema for reopening a completed story with user feedback."""
+
+    user_report: str | None = None
+    actor: str = "system"
 
 
 class StoryTransition(BaseModel):

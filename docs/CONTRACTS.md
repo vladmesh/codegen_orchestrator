@@ -312,34 +312,26 @@ from pydantic import BaseModel, ConfigDict
 
 class ProjectStatus(StrEnum):
     """Project lifecycle status.
-    
-    Happy path: DRAFT → SCAFFOLDING → SCAFFOLDED → DEVELOPING → TESTING → DEPLOYING → ACTIVE
+
+    Lifecycle only — observable state, not process.
+    Activity is derived from child entities (Story/Run).
+    Runtime state is tracked by ServiceStatus.
     """
 
-    # Origin
     DRAFT = "draft"
-    DISCOVERED = "discovered"
-
-    # Scaffolding
-    SCAFFOLDING = "scaffolding"
-    SCAFFOLDED = "scaffolded"
-    SCAFFOLD_FAILED = "scaffold_failed"
-
-    # Development
-    DEVELOPING = "developing"
-    TESTING = "testing"
-
-    # Deployment
-    DEPLOYING = "deploying"
     ACTIVE = "active"
-
-    # Maintenance
-    MAINTENANCE = "maintenance"
-
-    # Issues
-    FAILED = "failed"
-    MISSING = "missing"
+    PAUSED = "paused"
     ARCHIVED = "archived"
+
+
+class ServiceStatus(StrEnum):
+    """Runtime state of a project's deployed service."""
+
+    NOT_DEPLOYED = "not_deployed"
+    RUNNING = "running"
+    DEGRADED = "degraded"
+    DOWN = "down"
+    STOPPED = "stopped"
 
 
 class ServiceModule(StrEnum):
@@ -360,6 +352,7 @@ class ProjectCreate(BaseModel):
     description: str | None = None
     modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
     status: ProjectStatus | None = None
+    service_status: ServiceStatus | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -367,6 +360,7 @@ class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     status: ProjectStatus | None = None
+    service_status: ServiceStatus | None = None
     modules: list[ServiceModule] | None = None
     project_spec: dict | None = None
 
@@ -379,7 +373,9 @@ class ProjectDTO(BaseModel):
     name: str
     description: str | None = None
     status: ProjectStatus
+    service_status: ServiceStatus = ServiceStatus.NOT_DEPLOYED
     modules: list[ServiceModule] = []
+    config: dict = {}
     owner_id: int
     project_spec: dict | None = None
 ```
@@ -790,12 +786,13 @@ class EngineeringMessage(BaseMessage):
     """Start engineering task."""
     task_id: str
     project_id: str
-    user_id: int
+    user_id: str
     action: Literal["create", "feature", "fix"] = "create"
     description: str | None = None
     skip_deploy: bool = False
     planning_task_id: str | None = None  # planning-layer Task ID for status updates
     story_id: str | None = None  # story ID for worker reuse across tasks
+    deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count
 
 
 class EngineeringResult(BaseResult):
@@ -825,12 +822,22 @@ class EngineeringResult(BaseResult):
 ```python
 # shared/contracts/queues/deploy.py
 
+class DeployTrigger(StrEnum):
+    """Origin of a deploy request."""
+    ENGINEERING = "engineering"
+    WEBHOOK = "webhook"
+    PO = "po"
+
+
 class DeployMessage(BaseMessage):
     """Start deploy task."""
     task_id: str
     project_id: str
-    user_id: int
+    user_id: str = ""
+    story_id: str = ""
+    triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: Literal["create", "feature", "fix"] = "create"
+    deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count (max 2)
 
 
 class DeployResult(BaseResult):
@@ -921,13 +928,13 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 class AgentType(StrEnum):
     CLAUDE = "claude"          # Claude Code
     FACTORY = "factory"        # Factory.ai Droid
+    NOOP = "noop"              # No-op runner for E2E testing
 
 
 class WorkerCapability(StrEnum):
     GIT = "git"
     GITHUB_CLI = "github_cli"
     CURL = "curl"
-    DOCKER = "docker"          # dind mount
 
 
 class WorkerChannels(StrEnum):

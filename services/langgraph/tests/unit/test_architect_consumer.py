@@ -75,6 +75,67 @@ class TestProcessArchitectJob:
         assert len(call_args["messages"]) == 1
 
     @pytest.mark.asyncio
+    async def test_reopen_message_includes_user_report(self, mock_redis):
+        """Reopen messages include user_report in the initial state."""
+        reopen_data = ArchitectMessage(
+            story_id="story-reopen",
+            project_id="proj-123",
+            user_id="user-1",
+            is_reopen=True,
+            user_report="Images broken on mobile",
+        ).model_dump(mode="json")
+
+        mock_graph = AsyncMock()
+        mock_graph.ainvoke.return_value = {"messages": [{"role": "assistant", "content": "done"}]}
+
+        with (
+            patch("src.consumers.architect.get_settings") as mock_settings,
+            patch("src.consumers.architect.create_architect_graph", return_value=mock_graph),
+            patch("src.consumers.architect.append_ci_check_task", new_callable=AsyncMock),
+        ):
+            mock_settings.return_value = MagicMock(
+                architect_llm_api_key="test-key",
+                architect_llm_model="test-model",
+                architect_llm_base_url="http://test",
+            )
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(reopen_data, mock_redis)
+
+        assert result["status"] == "success"
+        call_args = mock_graph.ainvoke.call_args[0][0]
+        user_msg = call_args["messages"][0]["content"]
+        assert "REOPEN" in user_msg
+        assert "Images broken on mobile" in user_msg
+        assert "get_tasks_by_story" in user_msg
+
+    @pytest.mark.asyncio
+    async def test_normal_message_no_reopen_context(self, mock_redis, valid_job_data):
+        """Normal messages use standard decomposition prompt."""
+        mock_graph = AsyncMock()
+        mock_graph.ainvoke.return_value = {"messages": [{"role": "assistant", "content": "done"}]}
+
+        with (
+            patch("src.consumers.architect.get_settings") as mock_settings,
+            patch("src.consumers.architect.create_architect_graph", return_value=mock_graph),
+            patch("src.consumers.architect.append_ci_check_task", new_callable=AsyncMock),
+        ):
+            mock_settings.return_value = MagicMock(
+                architect_llm_api_key="test-key",
+                architect_llm_model="test-model",
+                architect_llm_base_url="http://test",
+            )
+            from src.consumers.architect import process_architect_job
+
+            result = await process_architect_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "success"
+        call_args = mock_graph.ainvoke.call_args[0][0]
+        user_msg = call_args["messages"][0]["content"]
+        assert "REOPEN" not in user_msg
+        assert "Decompose story" in user_msg
+
+    @pytest.mark.asyncio
     async def test_handles_graph_error(self, mock_redis, valid_job_data):
         mock_graph = AsyncMock()
         mock_graph.ainvoke.side_effect = RuntimeError("LLM timeout")

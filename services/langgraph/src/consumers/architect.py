@@ -96,16 +96,23 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             api_key=settings.architect_llm_api_key,
         )
 
+        if msg.is_reopen:
+            user_content = (
+                f"This is a REOPEN of story {msg.story_id} for project {msg.project_id}. "
+                f"User report: {msg.user_report}\n\n"
+                f"IMPORTANT: Call get_tasks_by_story FIRST to review what was already tried. "
+                f"Then call get_story and get_project_spec. "
+                f"Create tasks that address the user's specific complaint, "
+                f"not repeat the same approach."
+            )
+        else:
+            user_content = (
+                f"Decompose story {msg.story_id} for project {msg.project_id}. "
+                f"Start by calling get_story and get_project_spec."
+            )
+
         initial_state = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": (
-                        f"Decompose story {msg.story_id} for project {msg.project_id}. "
-                        f"Start by calling get_story and get_project_spec."
-                    ),
-                }
-            ],
+            "messages": [{"role": "user", "content": user_content}],
             "story_id": msg.story_id,
             "project_id": msg.project_id,
             "user_id": msg.user_id,

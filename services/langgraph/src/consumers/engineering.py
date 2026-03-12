@@ -109,10 +109,20 @@ async def _build_story_context(story_id: str, current_task_id: str | None = None
     if not tasks:
         return None
 
+    # Include user_report if the story has one (set during reopen)
+    lines: list[str] = []
+    try:
+        story = await api_client.get_story(story_id)
+        user_report = story.get("user_report")
+        if user_report:
+            lines.append("## User Report")
+            lines.append(user_report)
+            lines.append("")
+    except Exception:
+        logger.debug("story_fetch_for_user_report_failed", story_id=story_id)
+
     # Sort by created_at for chronological order
     tasks.sort(key=lambda t: t.get("created_at", ""))
-
-    lines: list[str] = []
     for task in tasks:
         tid = task.get("id", "?")
         title = task.get("title", "Untitled")

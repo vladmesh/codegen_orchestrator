@@ -18,8 +18,65 @@ class TestBuildStoryContext:
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering.api_client")
+    async def test_includes_user_report_when_present(self, mock_api):
+        """Story with user_report prepends it to the context."""
+        mock_api.get_story = AsyncMock(
+            return_value={
+                "id": "story-1",
+                "user_report": "Images broken on mobile",
+            }
+        )
+        mock_api.get_tasks_by_story = AsyncMock(
+            return_value=[
+                {
+                    "id": "task-1",
+                    "title": "Fix images",
+                    "status": "done",
+                    "created_at": "2026-03-01T10:00:00",
+                },
+            ]
+        )
+        mock_api.get_task_events = AsyncMock(return_value=[])
+
+        from src.consumers.engineering import _build_story_context
+
+        result = await _build_story_context("story-1")
+        assert result is not None
+        assert "## User Report" in result
+        assert "Images broken on mobile" in result
+        # User report should appear before tasks
+        report_pos = result.index("User Report")
+        task_pos = result.index("Fix images")
+        assert report_pos < task_pos
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.engineering.api_client")
+    async def test_omits_user_report_when_none(self, mock_api):
+        """Story without user_report does not include User Report section."""
+        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_tasks_by_story = AsyncMock(
+            return_value=[
+                {
+                    "id": "task-1",
+                    "title": "Some task",
+                    "status": "done",
+                    "created_at": "2026-03-01T10:00:00",
+                },
+            ]
+        )
+        mock_api.get_task_events = AsyncMock(return_value=[])
+
+        from src.consumers.engineering import _build_story_context
+
+        result = await _build_story_context("story-1")
+        assert result is not None
+        assert "User Report" not in result
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.engineering.api_client")
     async def test_builds_context_with_tasks_and_events(self, mock_api):
         """Story with completed tasks + events produces formatted context."""
+        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
                 {
@@ -113,6 +170,7 @@ class TestBuildStoryContext:
     @patch("src.consumers.engineering.api_client")
     async def test_handles_event_fetch_failure(self, mock_api):
         """Event fetch failure for a task doesn't break the whole context."""
+        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
                 {
@@ -135,6 +193,7 @@ class TestBuildStoryContext:
     @patch("src.consumers.engineering.api_client")
     async def test_sorts_tasks_chronologically(self, mock_api):
         """Tasks are sorted by created_at."""
+        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
                 {
@@ -164,6 +223,7 @@ class TestBuildStoryContext:
     @patch("src.consumers.engineering.api_client")
     async def test_truncates_long_descriptions(self, mock_api):
         """Long descriptions are truncated to 300 chars."""
+        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
         long_desc = "x" * 500
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[

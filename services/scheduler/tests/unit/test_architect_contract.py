@@ -43,6 +43,37 @@ class TestArchitectMessage:
         restored = ArchitectMessage.model_validate_json(json_str)
         assert restored.story_id == msg.story_id
 
+    def test_defaults_without_reopen_fields(self):
+        msg = ArchitectMessage(
+            story_id="story-abc123",
+            project_id="proj-456",
+            user_id="user-789",
+        )
+        assert msg.is_reopen is False
+        assert msg.user_report is None
+
+    def test_reopen_fields(self):
+        msg = ArchitectMessage(
+            story_id="story-abc123",
+            project_id="proj-456",
+            user_id="user-789",
+            is_reopen=True,
+            user_report="Images broken on mobile",
+        )
+        assert msg.is_reopen is True
+        assert msg.user_report == "Images broken on mobile"
+
+    def test_backward_compatible_without_reopen_fields(self):
+        """Existing messages without is_reopen/user_report still parse."""
+        data = {
+            "story_id": "story-abc",
+            "project_id": "proj-1",
+            "user_id": "user-1",
+        }
+        msg = ArchitectMessage.model_validate(data)
+        assert msg.is_reopen is False
+        assert msg.user_report is None
+
 
 class TestArchitectQueueConstants:
     def test_queue_name(self):

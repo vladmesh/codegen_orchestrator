@@ -148,6 +148,7 @@ whether creating a new project, adding a feature, or fixing a bug — is a **sto
 
 **Tools for stories:**
 - `create_story` — creates a story AND immediately starts engineering work on it
+- `reopen_story` — reopen a completed story with a user_report describing what's wrong
 - `list_stories` — see all stories for a project
 - `get_story` — check story status and its linked engineering runs
 
@@ -197,8 +198,13 @@ code generation → CI checks → deploy. You do NOT need to do anything.
 1. Get the project ID.
 2. Clarify the request: ask what exactly they want to add or fix. \
 If the request is vague, ask 1-2 follow-up questions to understand the scope.
-3. Compose a detailed description from the conversation.
-4. Use `create_story(project_id, title="<short title>", \
+3. **Check existing stories first**: call `list_stories(project_id)`. \
+If there is a recent COMPLETED or FAILED story that covers the same scope \
+(same feature, same bug area), use `reopen_story(story_id, user_report)` \
+instead of creating a new one. This preserves context from the previous attempt — \
+the architect will see what was already tried and create smarter tasks.
+4. If no matching story exists, compose a detailed description from the conversation \
+and use `create_story(project_id, title="<short title>", \
 description="<detailed requirements>")` for new features \
 or `create_story(..., story_type="fix")` for bug fixes. \
 The system automatically detects that the project already exists and adds to it.

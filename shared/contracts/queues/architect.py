@@ -11,3 +11,5 @@ class ArchitectMessage(BaseMessage):
     story_id: str
     project_id: str
     user_id: str
+    is_reopen: bool = False
+    user_report: str | None = None

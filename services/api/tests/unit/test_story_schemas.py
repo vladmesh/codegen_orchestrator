@@ -6,7 +6,7 @@ import uuid
 from pydantic import ValidationError
 import pytest
 
-from src.schemas.story import StoryCreate, StoryRead, StoryUpdate
+from src.schemas.story import StoryCreate, StoryRead, StoryReopen, StoryUpdate
 
 PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
@@ -71,6 +71,7 @@ class TestStoryRead:
         mock.blocked_by_story_id = "story-blocker"
         mock.created_by = "po"
         mock.type = "technical"
+        mock.user_report = None
         mock.created_at = now
         mock.updated_at = now
 
@@ -80,6 +81,42 @@ class TestStoryRead:
         assert r.type == "technical"
         assert r.priority == 5
         assert r.blocked_by_story_id == "story-blocker"
+        assert r.user_report is None
+
+    def test_from_attributes_with_user_report(self):
+        from unittest.mock import MagicMock
+
+        now = datetime.now(UTC)
+        mock = MagicMock()
+        mock.id = "story-abc123"
+        mock.project_id = PROJECT_UUID
+        mock.parent_story_id = None
+        mock.title = "Fix images"
+        mock.description = None
+        mock.acceptance_criteria = None
+        mock.status = "in_progress"
+        mock.priority = 0
+        mock.blocked_by_story_id = None
+        mock.created_by = "po"
+        mock.type = "product"
+        mock.user_report = "Images still broken on mobile"
+        mock.created_at = now
+        mock.updated_at = now
+
+        r = StoryRead.model_validate(mock, from_attributes=True)
+        assert r.user_report == "Images still broken on mobile"
+
+
+class TestStoryReopen:
+    def test_defaults(self):
+        r = StoryReopen()
+        assert r.user_report is None
+        assert r.actor == "system"
+
+    def test_with_user_report(self):
+        r = StoryReopen(user_report="Images broken", actor="po")
+        assert r.user_report == "Images broken"
+        assert r.actor == "po"
 
 
 class TestStoryUpdate:
