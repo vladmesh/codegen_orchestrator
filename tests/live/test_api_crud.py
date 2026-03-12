@@ -5,6 +5,10 @@ import uuid
 
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
+
 
 @pytest.mark.asyncio
 async def test_create_and_get_project(api):
@@ -14,7 +18,7 @@ async def test_create_and_get_project(api):
 
     resp = await api.post(
         "/api/projects/",
-        json={"id": project_id, "name": name, "status": "draft", "config": {}},
+        json={"id": project_id, "name": name, "status": ProjectStatus.DRAFT, "config": {}},
     )
     assert resp.status_code == 201
     data = resp.json()
@@ -43,7 +47,7 @@ async def test_create_story_for_project(api, test_project):
     )
     assert resp.status_code == 201
     story = resp.json()
-    assert story["status"] == "created"
+    assert story["status"] == StoryStatus.CREATED
     assert story["project_id"] == test_project["id"]
 
     # verify list
@@ -66,7 +70,7 @@ async def test_create_and_list_tasks(api, test_project):
     )
     assert task_resp.status_code == 201
     task = task_resp.json()
-    assert task["status"] == "backlog"
+    assert task["status"] == TaskStatus.BACKLOG
 
     # list by project
     resp = await api.get(f"/api/tasks/?project_id={test_project['id']}")
@@ -89,19 +93,19 @@ async def test_task_transitions(api, test_project):
     task_id = resp.json()["id"]
 
     # backlog → todo
-    resp = await api.post(f"/api/tasks/{task_id}/transition?to_status=todo")
+    resp = await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "todo"
+    assert resp.json()["status"] == TaskStatus.TODO
 
     # todo → in_dev (via start)
     resp = await api.post(f"/api/tasks/{task_id}/start")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "in_dev"
+    assert resp.json()["status"] == TaskStatus.IN_DEV
 
     # in_dev → failed (via fail)
     resp = await api.post(f"/api/tasks/{task_id}/fail")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "failed"
+    assert resp.json()["status"] == TaskStatus.FAILED
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,8 @@ import uuid
 import httpx
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
+
 API_URL = "http://localhost:8000"
 TEST_TELEGRAM_ID = 999_000_001
 ORCHESTRATOR_ROOT = "/home/vlad/projects/codegen_orchestrator"
@@ -85,7 +87,7 @@ async def test_project(api):
         json={
             "id": project_id,
             "name": f"live-test-{secrets.token_hex(4)}",
-            "status": "draft",
+            "status": ProjectStatus.DRAFT,
             "config": {"description": "live test project"},
         },
     )

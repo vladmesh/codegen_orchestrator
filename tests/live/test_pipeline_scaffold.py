@@ -22,6 +22,8 @@ from pipeline_helpers import (
 import pytest
 import pytest_asyncio
 
+from shared.contracts.dto.project import ProjectStatus
+
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
@@ -37,7 +39,7 @@ async def scaffold_ctx():
 
         yield ctx
 
-        if ctx.get("scaffold_status") != "scaffolded":
+        if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
             dump_debug(ctx, "scaffold")
         await cleanup_all(api, None, ctx)
 
@@ -47,13 +49,13 @@ class TestScaffoldPipeline:
 
     async def test_project_scaffolded(self, scaffold_ctx):
         """Project status transitions to 'scaffolded'."""
-        assert scaffold_ctx["scaffold_status"] == "scaffolded", (
+        assert scaffold_ctx["scaffold_status"] == ProjectStatus.ACTIVE, (
             f"Scaffold failed — status: {scaffold_ctx.get('scaffold_status')}"
         )
 
     async def test_github_repo_has_ci(self, scaffold_ctx):
         """Scaffolded repo has .github/workflows/ci.yml."""
-        if scaffold_ctx.get("scaffold_status") != "scaffolded":
+        if scaffold_ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
             pytest.skip("scaffold failed — cannot check repo")
 
         repo_name = scaffold_ctx["repo_name"]
@@ -76,7 +78,7 @@ class TestScaffoldPipeline:
 
     async def test_github_repo_has_makefile(self, scaffold_ctx):
         """Scaffolded repo has a Makefile."""
-        if scaffold_ctx.get("scaffold_status") != "scaffolded":
+        if scaffold_ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
             pytest.skip("scaffold failed — cannot check repo")
 
         repo_name = scaffold_ctx["repo_name"]

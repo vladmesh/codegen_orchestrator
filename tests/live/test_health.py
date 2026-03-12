@@ -2,6 +2,8 @@
 
 import pytest
 
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE, SCAFFOLD_QUEUE
+
 
 @pytest.mark.asyncio
 async def test_api_health(api_no_auth):
@@ -26,10 +28,10 @@ def test_worker_manager_health(compose_exec):
 @pytest.mark.parametrize(
     "stream",
     [
-        "engineering:queue",
-        "scaffold:queue",
-        "deploy:queue",
-        "po:input",
+        ENGINEERING_QUEUE,
+        SCAFFOLD_QUEUE,
+        DEPLOY_QUEUE,
+        PO_INPUT_QUEUE,
     ],
 )
 def test_consumer_group_exists(redis, stream):

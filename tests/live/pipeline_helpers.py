@@ -13,6 +13,11 @@ import uuid
 
 import httpx
 
+from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
+
 # ── Constants ────────────────────────────────────────────────────────────
 API_URL = "http://localhost:8000"
 TEST_TELEGRAM_ID = 999_000_001
@@ -20,7 +25,6 @@ AUTH_HEADERS = {"X-Telegram-ID": str(TEST_TELEGRAM_ID)}
 
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:project-factory-organization/service-template"
-SCAFFOLD_QUEUE = "scaffold:queue"
 ORCHESTRATOR_ROOT = "/home/vlad/projects/codegen_orchestrator"
 
 # Timeouts (seconds)
@@ -89,7 +93,7 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
         json={
             "id": project_id,
             "name": project_name,
-            "status": "draft",
+            "status": ProjectStatus.DRAFT,
             "config": {
                 "description": "Pipeline E2E test — noop",
                 "modules": ["backend"],
@@ -125,7 +129,7 @@ def flush_queues() -> None:
     stale pending entries. DEL removes everything; consumers recreate
     the stream via XGROUP CREATE ... MKSTREAM on next startup.
     """
-    for queue in [SCAFFOLD_QUEUE, "engineering:queue", "deploy:queue"]:
+    for queue in [SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE]:
         subprocess.run(
             ["docker", "compose", "exec", "-T", "redis", "redis-cli", "DEL", queue],
             capture_output=True,
@@ -168,11 +172,15 @@ def trigger_scaffold(ctx: dict) -> None:
 
 
 async def wait_scaffold(api: httpx.AsyncClient, ctx: dict, timeout: int = SCAFFOLD_TIMEOUT) -> None:
-    """Wait for scaffold to complete. Updates ctx['scaffold_status']."""
+    """Wait for scaffold to complete. Updates ctx['scaffold_status'].
+
+    After ProjectStatus split (#22), scaffold success sets status to 'active'.
+    Failure leaves status as 'draft' — we detect that via timeout.
+    """
     status = await poll_status(
         api,
         f"/api/projects/{ctx['project_id']}",
-        {"scaffolded", "scaffold_failed"},
+        {ProjectStatus.ACTIVE},
         timeout,
     )
     ctx["scaffold_status"] = status
@@ -206,7 +214,7 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
             "type": "create",
             "title": "Noop implementation task",
             "description": "Empty commit via NoopRunner — pipeline test",
-            "status": "backlog",
+            "status": TaskStatus.BACKLOG,
         },
     )
     assert resp.status_code == 201, f"Create task failed: {resp.text}"
@@ -214,7 +222,7 @@ async def create_story_and_task(api: httpx.AsyncClient, ctx: dict) -> None:
 
     resp = await api.post(
         f"/api/tasks/{ctx['task_id']}/transition",
-        params={"to_status": "todo"},
+        params={"to_status": TaskStatus.TODO},
         json={"actor": "live-test"},
     )
     assert resp.status_code == 200, f"Task transition to todo failed: {resp.text}"
@@ -224,7 +232,7 @@ async def wait_engineering(
     api: httpx.AsyncClient, ctx: dict, timeout: int = ENGINEERING_TIMEOUT
 ) -> None:
     """Wait for engineering to complete. Updates ctx['task_status'], ctx['story_status']."""
-    done_statuses = {"done", "failed", "cancelled"}
+    done_statuses = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
     status = None
     elapsed = 0
     while elapsed < timeout:
@@ -238,19 +246,43 @@ async def wait_engineering(
     ctx["engineering_elapsed"] = elapsed
 
     # Wait for story completion (scheduler complete_stories cycle ~30s)
-    if "story_id" in ctx and status == "done":
+    if "story_id" in ctx and status == TaskStatus.DONE:
         for _ in range(20):  # up to 60s
             await asyncio.sleep(3)
             resp = await api.get(f"/api/stories/{ctx['story_id']}")
             if resp.status_code == 200:
                 story_status = resp.json().get("status")
                 ctx["story_status"] = story_status
-                if story_status in {"completed", "failed"}:
+                if story_status in {
+                    StoryStatus.DEPLOYING,
+                    StoryStatus.COMPLETED,
+                    StoryStatus.FAILED,
+                }:
                     break
     elif "story_id" in ctx:
         resp = await api.get(f"/api/stories/{ctx['story_id']}")
         if resp.status_code == 200:
             ctx["story_status"] = resp.json().get("status")
+
+
+async def poll_field(
+    api: httpx.AsyncClient,
+    endpoint: str,
+    field: str,
+    target_values: set[str],
+    timeout: int,
+) -> str | None:
+    """Poll an API endpoint until field is in target_values or timeout."""
+    value = None
+    for _ in range(timeout // 3):
+        await asyncio.sleep(3)
+        resp = await api.get(endpoint)
+        if resp.status_code != 200:
+            continue
+        value = resp.json().get(field)
+        if value in target_values:
+            return value
+    return value
 
 
 async def wait_deploy(
@@ -259,17 +291,21 @@ async def wait_deploy(
     ctx: dict,
     timeout: int = DEPLOY_TIMEOUT,
 ) -> None:
-    """Wait for deploy to complete. Updates ctx with deployment info."""
-    deploy_done = {"active", "error", "failed"}
-    status = await poll_status(
+    """Wait for deploy to complete. Updates ctx with deployment info.
+
+    After ProjectStatus split (#22), deploy sets service_status (not status).
+    """
+    deploy_done = {ServiceStatus.RUNNING, ServiceStatus.DOWN, ServiceStatus.DEGRADED}
+    service_status = await poll_field(
         api,
         f"/api/projects/{ctx['project_id']}",
+        "service_status",
         deploy_done,
         timeout,
     )
-    ctx["final_project_status"] = status
+    ctx["final_service_status"] = service_status
 
-    if status != "active":
+    if service_status != ServiceStatus.RUNNING:
         return
 
     # Find port allocation
@@ -294,15 +330,28 @@ async def wait_deploy(
 
 
 def cleanup_github_repo(repo_name: str) -> None:
-    """Delete GitHub repo via GitHubAppClient inside langgraph container."""
+    """Delete GitHub repo via org-level token inside langgraph container.
+
+    Uses get_org_token() instead of repo-level get_token() because after DB
+    cleanup the repo installation lookup may 404.
+    """
     script = (
         "import asyncio, sys\n"
         "sys.path.insert(0, '/app')\n"
         "from shared.clients.github import GitHubAppClient\n"
+        "import httpx\n"
         "async def cleanup():\n"
         "    gh = GitHubAppClient()\n"
         "    try:\n"
-        f"        await gh.delete_repo('{GITHUB_ORG}', '{repo_name}')\n"
+        f"        token = await gh.get_org_token('{GITHUB_ORG}')\n"
+        "        async with httpx.AsyncClient() as client:\n"
+        "            resp = await client.delete(\n"
+        f"                'https://api.github.com/repos/{GITHUB_ORG}/{repo_name}',\n"
+        "                headers={'Authorization': f'token {token}',\n"
+        "                         'Accept': 'application/vnd.github+json'},\n"
+        "            )\n"
+        "            if resp.status_code not in (204, 404):\n"
+        "                print(f'cleanup warning: {resp.status_code} {resp.text[:200]}')\n"
         "    except Exception as e:\n"
         "        print(f'cleanup warning: {e}')\n"
         "asyncio.run(cleanup())\n"
@@ -311,21 +360,55 @@ def cleanup_github_repo(repo_name: str) -> None:
 
 
 def cleanup_server_container(ctx: dict) -> None:
-    """Stop and remove deployed container on remote server via SSH."""
+    """Stop and remove deployed container on remote server via SSH.
+
+    Uses a multi-step approach matching how deploy.yml creates resources:
+    1. docker compose -p {name} down (graceful, using both compose files)
+    2. docker rm -f by container name pattern (force, catches leaked containers)
+    3. docker network prune (removes orphan networks)
+    4. rm -rf /opt/services/{name} (removes directory)
+
+    Logs warnings via structlog instead of silently swallowing errors.
+    """
     if "server_handle" not in ctx:
         return
     project_name = ctx["project_name"]
     server_ip = ctx.get("server_ip", "127.0.0.1")
     server_handle = ctx["server_handle"]
 
+    # Shell script that runs on the remote server
+    # Step 1: try compose down with project name (matches deploy.yml invocation)
+    # Step 2: force-remove any containers with matching project label
+    # Step 3: prune dangling networks left by compose
+    # Step 4: remove service directory
+    remote_cmd = (
+        f"set -e; "
+        f"SVC_DIR=/opt/services/{project_name}; "
+        f'if [ -d "$SVC_DIR/infra" ]; then '
+        f"  cd $SVC_DIR/infra && "
+        f"  docker compose -p {project_name} down --remove-orphans -v 2>&1 || true; "
+        f"fi; "
+        f"for c in $(docker ps -aq --filter label=com.docker.compose.project={project_name}); do "
+        f"  docker rm -f $c 2>&1 || true; "
+        f"done; "
+        f"docker network prune -f 2>&1 || true; "
+        f"rm -rf $SVC_DIR"
+    )
+
     script = (
         "import asyncio, sys, os\n"
         "sys.path.insert(0, '/app')\n"
+        "import structlog\n"
+        "logger = structlog.get_logger()\n"
         "async def main():\n"
         "    import httpx\n"
         "    api_url = os.environ.get('API_URL', 'http://api:8000')\n"
         "    async with httpx.AsyncClient(base_url=api_url, timeout=10) as client:\n"
         f"        resp = await client.get('/api/servers/{server_handle}/ssh-key')\n"
+        "        if resp.status_code != 200:\n"
+        f"            logger.warning('cleanup_ssh_key_fetch_failed', "
+        f"status=resp.status_code, server='{server_handle}')\n"
+        "            return\n"
         "        key = resp.json().get('ssh_key', '')\n"
         "    if not key.endswith('\\n'):\n"
         "        key += '\\n'\n"
@@ -334,18 +417,33 @@ def cleanup_server_container(ctx: dict) -> None:
         "        f.write(key)\n"
         "        key_path = f.name\n"
         "    os.chmod(key_path, 0o600)\n"
-        f"    name = '{project_name}'\n"
-        "    subprocess.run(\n"
-        "        ['ssh', '-i', key_path, '-o', 'StrictHostKeyChecking=no',\n"
-        f"         'root@{server_ip}',\n"
-        f"         f'cd /opt/services/{{name}}/infra && docker compose down --remove-orphans -v "
-        f"2>/dev/null; rm -rf /opt/services/{{name}}'],\n"
-        "        capture_output=True, text=True, timeout=30,\n"
-        "    )\n"
-        "    os.unlink(key_path)\n"
+        "    try:\n"
+        "        result = subprocess.run(\n"
+        "            ['ssh', '-i', key_path, '-o', 'StrictHostKeyChecking=no',\n"
+        "             '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes',\n"
+        f"             'root@{server_ip}',\n"
+        f"             {repr(remote_cmd)}],\n"
+        "            capture_output=True, text=True, timeout=60,\n"
+        "        )\n"
+        "        if result.returncode != 0:\n"
+        f"            logger.warning('cleanup_ssh_failed', server='{server_ip}', "
+        "rc=result.returncode, stderr=result.stderr[:300])\n"
+        "        else:\n"
+        f"            logger.info('cleanup_server_done', "
+        f"project='{project_name}', server='{server_ip}')\n"
+        "    finally:\n"
+        "        os.unlink(key_path)\n"
         "asyncio.run(main())\n"
     )
-    docker_exec("langgraph", script, timeout=45)
+    result = docker_exec("langgraph", script, timeout=75)
+    if result.returncode != 0:
+        import structlog
+
+        structlog.get_logger().warning(
+            "cleanup_server_exec_failed",
+            project=project_name,
+            stderr=result.stderr[:300],
+        )
 
 
 async def cleanup_all(
@@ -355,35 +453,45 @@ async def cleanup_all(
 ) -> None:
     """Full cleanup: server -> port allocation -> GitHub repo -> DB records.
 
-    Always runs (success or failure). Errors are swallowed to avoid masking
-    the original test failure.
+    Always runs (success or failure). Errors are logged to aid debugging
+    but don't mask the original test failure.
     """
+    import structlog
+
+    logger = structlog.get_logger()
+
     # 1. Server container (if deployed)
     try:
         cleanup_server_container(ctx)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("cleanup_server_error", error=str(exc), project=ctx.get("project_name"))
 
     # 2. Port allocation
     if "allocation_id" in ctx and api_no_auth:
         try:
-            await api_no_auth.delete(f"/api/allocations/{ctx['allocation_id']}")
-        except Exception:
-            pass
+            resp = await api_no_auth.delete(f"/api/allocations/{ctx['allocation_id']}")
+            if resp.status_code not in (200, 204, 404):
+                logger.warning(
+                    "cleanup_port_failed",
+                    status=resp.status_code,
+                    alloc=ctx["allocation_id"],
+                )
+        except Exception as exc:
+            logger.warning("cleanup_port_error", error=str(exc))
 
     # 3. GitHub repo
     if "repo_name" in ctx:
         try:
             cleanup_github_repo(ctx["repo_name"])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("cleanup_github_error", error=str(exc), repo=ctx.get("repo_name"))
 
     # 4. DB records (API delete doesn't cascade to stories/tasks, use SQL)
     if "project_id" in ctx:
         try:
             _cleanup_db(ctx["project_id"])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("cleanup_db_error", error=str(exc), project_id=ctx.get("project_id"))
 
 
 def _cleanup_db(project_id: str) -> None:
@@ -446,7 +554,7 @@ def dump_debug(ctx: dict, test_name: str) -> None:
         f"- task_id: `{ctx.get('task_id')}`",
         f"- task_status: `{ctx.get('task_status')}`",
         f"- story_status: `{ctx.get('story_status')}`",
-        f"- final_project_status: `{ctx.get('final_project_status')}`",
+        f"- final_service_status: `{ctx.get('final_service_status')}`",
         f"- deployed_url: `{ctx.get('deployed_url')}`",
         f"- engineering_elapsed: `{ctx.get('engineering_elapsed')}`",
         "",

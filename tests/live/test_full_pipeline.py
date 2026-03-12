@@ -37,6 +37,9 @@ from pipeline_helpers import (
 import pytest
 import pytest_asyncio
 
+from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+from shared.contracts.dto.task import TaskStatus
+
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
@@ -52,7 +55,7 @@ async def pipeline():
             # Phase 1: Scaffold
             trigger_scaffold(ctx)
             await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
-            if ctx.get("scaffold_status") != "scaffolded":
+            if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
                 yield ctx
                 dump_debug(ctx, "full-scaffold")
                 await cleanup_all(api, api_no_auth, ctx)
@@ -61,7 +64,7 @@ async def pipeline():
             # Phase 2: Engineering
             await create_story_and_task(api, ctx)
             await wait_engineering(api, ctx, timeout=ENGINEERING_TIMEOUT)
-            if ctx.get("task_status") != "done":
+            if ctx.get("task_status") != TaskStatus.DONE:
                 yield ctx
                 dump_debug(ctx, "full-engineering")
                 await cleanup_all(api, api_no_auth, ctx)
@@ -72,7 +75,7 @@ async def pipeline():
 
             yield ctx
 
-            if ctx.get("final_project_status") != "active":
+            if ctx.get("final_service_status") != ServiceStatus.RUNNING:
                 dump_debug(ctx, "full-deploy")
             await cleanup_all(api, api_no_auth, ctx)
 
@@ -81,27 +84,27 @@ class TestFullPipeline:
     """THE MEGA TEST: project → scaffold → noop worker → CI → deploy → health check."""
 
     async def test_project_active(self, pipeline):
-        """Project status should be 'active' after successful deploy."""
-        assert pipeline.get("scaffold_status") == "scaffolded", (
+        """Project status should be 'active' after successful scaffold + deploy."""
+        assert pipeline.get("scaffold_status") == ProjectStatus.ACTIVE, (
             f"Scaffold failed — status: {pipeline.get('scaffold_status')}"
         )
-        assert pipeline.get("task_status") == "done", (
+        assert pipeline.get("task_status") == TaskStatus.DONE, (
             f"Engineering failed — task status: {pipeline.get('task_status')}"
         )
-        assert pipeline.get("final_project_status") == "active", (
-            f"Deploy failed — project status: {pipeline.get('final_project_status')}"
+        assert pipeline.get("final_service_status") == ServiceStatus.RUNNING, (
+            f"Deploy failed — service_status: {pipeline.get('final_service_status')}"
         )
 
     async def test_port_allocated(self, pipeline):
         """A port should be allocated for the deployed service."""
-        if pipeline.get("final_project_status") != "active":
+        if pipeline.get("final_service_status") != ServiceStatus.RUNNING:
             pytest.skip("deploy failed")
         assert "port" in pipeline, "No port allocation found for project"
         assert pipeline["port"] >= 8000, f"Unexpected port: {pipeline['port']}"
 
     async def test_health_endpoint(self, pipeline):
         """GET /health on deployed service returns 200."""
-        if pipeline.get("final_project_status") != "active":
+        if pipeline.get("final_service_status") != ServiceStatus.RUNNING:
             pytest.skip("deploy failed")
         assert "deployed_url" in pipeline, "No deployed_url — port allocation missing?"
 

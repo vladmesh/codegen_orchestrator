@@ -13,6 +13,8 @@ import asyncio
 
 import pytest
 
+from shared.contracts.dto.task import TaskStatus
+
 
 @pytest.mark.asyncio
 async def test_failure_metadata_persists(api, test_project):
@@ -33,7 +35,7 @@ async def test_failure_metadata_persists(api, test_project):
     task_id = resp.json()["id"]
 
     # Transition: backlog → todo → in_dev → failed
-    await api.post(f"/api/tasks/{task_id}/transition?to_status=todo")
+    await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
     await api.post(f"/api/tasks/{task_id}/start")
     await api.post(f"/api/tasks/{task_id}/fail")
 
@@ -74,7 +76,7 @@ async def test_worker_rejected_metadata_persists(api, test_project):
     assert resp.status_code == 201
     task_id = resp.json()["id"]
 
-    await api.post(f"/api/tasks/{task_id}/transition?to_status=todo")
+    await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
     await api.post(f"/api/tasks/{task_id}/start")
     await api.post(f"/api/tasks/{task_id}/fail")
 
@@ -127,7 +129,7 @@ async def test_infra_failed_task_not_retried_by_supervisor(api, test_project):
     task_id = resp.json()["id"]
 
     # Transition to failed
-    await api.post(f"/api/tasks/{task_id}/transition?to_status=todo")
+    await api.post(f"/api/tasks/{task_id}/transition?to_status={TaskStatus.TODO}")
     await api.post(f"/api/tasks/{task_id}/start")
     await api.post(f"/api/tasks/{task_id}/fail")
 
@@ -148,7 +150,7 @@ async def test_infra_failed_task_not_retried_by_supervisor(api, test_project):
     # Task should still be "failed" — supervisor should NOT have retried it
     resp = await api.get(f"/api/tasks/{task_id}")
     task = resp.json()
-    assert task["status"] == "failed", (
+    assert task["status"] == TaskStatus.FAILED, (
         f"Expected task to stay 'failed' but got '{task['status']}'. "
         "Supervisor retried an infra-failed task (infinite loop bug)."
     )

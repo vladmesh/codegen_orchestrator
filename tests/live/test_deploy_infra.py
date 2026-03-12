@@ -18,6 +18,8 @@ import subprocess
 
 import pytest
 
+from shared.queues import DEPLOY_QUEUE
+
 ORCHESTRATOR_ROOT = "/home/vlad/projects/codegen_orchestrator"
 SERVICE_TEMPLATE_ROOT = "/home/vlad/projects/service-template"
 
@@ -205,7 +207,7 @@ class TestDeployConsumer:
     def test_deploy_consumer_group_active(self, redis):
         """deploy:queue has consumer group with active consumer."""
         try:
-            info = redis("XINFO", "GROUPS", "deploy:queue")
+            info = redis("XINFO", "GROUPS", DEPLOY_QUEUE)
         except RuntimeError:
             pytest.fail("deploy:queue stream does not exist — deploy consumer never started?")
 

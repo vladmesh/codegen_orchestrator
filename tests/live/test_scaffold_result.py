@@ -19,9 +19,12 @@ import uuid
 
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
+from shared.queues import SCAFFOLD_QUEUE
+
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:project-factory-organization/service-template"
-SCAFFOLD_QUEUE = "scaffold:queue"
+
 SCAFFOLD_TIMEOUT = 120  # seconds
 
 
@@ -39,7 +42,7 @@ async def scaffolded_project(api, compose_exec):
         json={
             "id": project_id,
             "name": project_name,
-            "status": "draft",
+            "status": ProjectStatus.DRAFT,
             "config": {"description": "live test scaffold"},
         },
     )
@@ -95,29 +98,37 @@ async def scaffolded_project(api, compose_exec):
     assert result.returncode == 0, f"XADD failed: {result.stderr}"
 
     # 4. Wait for scaffold to complete
+    # After ProjectStatus split (#22), scaffold success sets status to 'active'.
+    # Failure leaves status as 'draft' — we detect via timeout.
     for _ in range(SCAFFOLD_TIMEOUT // 2):
         await asyncio.sleep(2)
         resp = await api.get(f"/api/projects/{project_id}")
         status = resp.json().get("status")
-        if status == "scaffolded":
+        if status == ProjectStatus.ACTIVE:
             break
-        if status == "scaffold_failed":
-            pytest.fail(f"Scaffold failed for {project_name}")
     else:
-        pytest.fail(f"Scaffold timed out ({SCAFFOLD_TIMEOUT}s) for {project_name}")
+        pytest.fail(f"Scaffold timed out ({SCAFFOLD_TIMEOUT}s) for {project_name}, status={status}")
 
     yield {"project_id": project_id, "project_name": project_name, "repo_name": repo_name}
 
-    # Cleanup: delete GitHub repo
+    # Cleanup: delete GitHub repo (org-token to avoid installation 404)
     cleanup_script = f"""
 import asyncio, sys
 sys.path.insert(0, '/app')
 from shared.clients.github import GitHubAppClient
+import httpx
 async def cleanup():
     gh = GitHubAppClient()
     try:
-        await gh.delete_repo('{GITHUB_ORG}', '{repo_name}')
-        print('repo deleted')
+        token = await gh.get_org_token('{GITHUB_ORG}')
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(
+                'https://api.github.com/repos/{GITHUB_ORG}/{repo_name}',
+                headers={{'Authorization': f'token {{token}}',
+                         'Accept': 'application/vnd.github+json'}},
+            )
+            if resp.status_code not in (204, 404):
+                print(f'cleanup warning: {{resp.status_code}}')
     except Exception as e:
         print(f'cleanup warning: {{e}}')
 asyncio.run(cleanup())
@@ -130,8 +141,37 @@ asyncio.run(cleanup())
         cwd="/home/vlad/projects/codegen_orchestrator",
     )
 
-    # Cleanup: delete DB records
-    await api.delete(f"/api/projects/{project_id}")
+    # Cleanup: delete DB records (SQL cascade — API delete doesn't cascade)
+    sql = (
+        f"DELETE FROM task_events WHERE task_id IN "
+        f"(SELECT id FROM tasks WHERE project_id = '{project_id}');"
+        f"DELETE FROM runs WHERE project_id = '{project_id}';"
+        f"DELETE FROM tasks WHERE project_id = '{project_id}';"
+        f"DELETE FROM stories WHERE project_id = '{project_id}';"
+        f"DELETE FROM repositories WHERE project_id = '{project_id}';"
+        f"DELETE FROM port_allocations WHERE project_id = '{project_id}';"
+        f"DELETE FROM projects WHERE id = '{project_id}';"
+    )
+    subprocess.run(
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "db",
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "orchestrator",
+            "-c",
+            sql,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        cwd="/home/vlad/projects/codegen_orchestrator",
+    )
 
 
 def _get_file_from_github(compose_exec, repo_name: str, path: str) -> str | None:

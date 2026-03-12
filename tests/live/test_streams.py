@@ -2,6 +2,8 @@
 
 import pytest
 
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, PO_INPUT_QUEUE, SCAFFOLD_QUEUE
+
 
 def test_publish_and_read_test_stream(redis):
     """Can publish to a test stream and read it back."""
@@ -21,10 +23,10 @@ def test_publish_and_read_test_stream(redis):
 @pytest.mark.parametrize(
     "stream",
     [
-        "scaffold:queue",
-        "engineering:queue",
-        "deploy:queue",
-        "po:input",
+        SCAFFOLD_QUEUE,
+        ENGINEERING_QUEUE,
+        DEPLOY_QUEUE,
+        PO_INPUT_QUEUE,
     ],
 )
 def test_stream_has_consumer_group(redis, stream):
