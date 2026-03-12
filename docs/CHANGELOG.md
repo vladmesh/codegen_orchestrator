@@ -5,6 +5,7 @@
 ## 2026-03-12
 
 ### Added
+- **HITL MVP: WAITING_HUMAN_REVIEW + report-blocker + admin resume** (#task-477f5736): Developer agents can now escalate blockers instead of silently shipping workarounds. New `WAITING_HUMAN_REVIEW` status in TaskStatus and StoryStatus with full transition support. `## BLOCKED` marker in worker-wrapper (parallel to `## REJECTED`). `orch report-blocker` CLI command writes blocker reason to stdout. Engineering consumer `_handle_worker_blocked()` transitions task+story to WHR, notifies admin (Telegram, warning level), notifies user via PO (story_blocked event). `POST /tasks/{id}/resume` endpoint for admin to provide guidance and resume (WHR → IN_DEV). Task dispatcher skips WHR tasks and treats `developer_blocked` as non-retryable. Developer prompt updated with "When You're Stuck" section. ~27 new unit tests.
 - **Story/Task reopen flow with user_report** (#task-ce845712): PO can now reopen completed stories instead of creating new ones, carrying a `user_report` field that describes what's wrong. New `reopen_story` PO tool calls `/api/stories/{id}/reopen` endpoint and publishes `ArchitectMessage` with `is_reopen=True` + `user_report`. Architect receives reopen context and reviews previous tasks before creating new ones. Developer sees user_report in story context (TASK.md). PO prompt updated to check `list_stories` before `create_story`. New Story model field + Alembic migration. ~20 new unit tests.
 
 ### Changed
