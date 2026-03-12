@@ -191,11 +191,10 @@ async def set_project_maintenance(
     resp.raise_for_status()
     project = resp.json()
 
-    # Update status to maintenance
+    # Update config with maintenance request (project stays active)
     updated = await api_client.patch(
         f"/projects/{project_id}",
         json={
-            "status": ProjectStatus.MAINTENANCE.value,
             "config": {
                 **project.get("config", {}),
                 "maintenance_request": update_description,

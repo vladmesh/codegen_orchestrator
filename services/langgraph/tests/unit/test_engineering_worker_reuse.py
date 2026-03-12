@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
 from src.clients.worker_spawner import SpawnResult
 
 
@@ -48,7 +49,7 @@ class TestDeveloperNodeWorkerId:
         node = DeveloperNode()
         result = await node.run(
             {
-                "project_spec": _project(status="scaffolded"),
+                "project_spec": _project(status=ProjectStatus.ACTIVE.value),
                 "action": "create",
                 "errors": [],
             }

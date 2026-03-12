@@ -10,10 +10,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
 from src.clients.worker_spawner import SpawnResult
 
 
-def _make_state(*, action="create", status="scaffolded", modules=None, repo_id=None):
+def _make_state(*, action="create", status=ProjectStatus.ACTIVE.value, modules=None, repo_id=None):
     return {
         "project_spec": {
             "id": "proj-1",
@@ -206,7 +207,7 @@ class TestRepoIdPassing:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        state = _make_state(action="create", status="scaffolded")
+        state = _make_state(action="create", status=ProjectStatus.ACTIVE.value)
         await node.run(state)
 
         mock_spawn.assert_awaited_once()
@@ -235,7 +236,9 @@ class TestRepoIdPassing:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        state = _make_state(action="create", status="scaffolded", repo_id="repo-from-state")
+        state = _make_state(
+            action="create", status=ProjectStatus.ACTIVE.value, repo_id="repo-from-state"
+        )
         await node.run(state)
 
         call_kwargs = mock_spawn.call_args[1]
@@ -277,7 +280,7 @@ class TestRepoIdPassing:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        state = _make_state(action="create", status="scaffolded")
+        state = _make_state(action="create", status=ProjectStatus.ACTIVE.value)
         result = await node.run(state)
 
         assert result["engineering_status"] == "done"
@@ -412,7 +415,7 @@ class TestFeatureFlowIntegration:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        state = _make_state(action="feature", status="scaffolded")
+        state = _make_state(action="feature", status=ProjectStatus.ACTIVE.value)
         state["description"] = "Add logging"
         result = await node.run(state)
 
@@ -504,7 +507,7 @@ class TestTaskMessageDescription:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        state = _make_state(action="create", status="scaffolded")
+        state = _make_state(action="create", status=ProjectStatus.ACTIVE.value)
         # Override with specific description
         state["project_spec"]["config"]["description"] = "My specific task with audit"
         await node.run(state)

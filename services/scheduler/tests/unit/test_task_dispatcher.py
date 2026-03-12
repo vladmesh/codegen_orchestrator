@@ -9,7 +9,16 @@ import pytest
 
 @pytest.fixture
 def api_client():
+    from unittest.mock import MagicMock
+
+    from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+
     client = AsyncMock()
+    # Default project mock — active (scaffolded) project
+    project_mock = MagicMock()
+    project_mock.status = ProjectStatus.ACTIVE.value
+    project_mock.service_status = ServiceStatus.RUNNING.value
+    client.get_project.return_value = project_mock
     return client
 
 
@@ -90,8 +99,8 @@ class TestDispatchTodoTasks:
         redis_client.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_skips_task_when_project_not_scaffolded(self, api_client, redis_client):
-        """Task is skipped if project is still scaffolding."""
+    async def test_skips_task_when_project_is_draft(self, api_client, redis_client):
+        """Task is skipped if project is still in draft (not yet scaffolded)."""
         from unittest.mock import MagicMock
 
         from src.tasks.task_dispatcher import dispatch_todo_tasks
@@ -108,8 +117,10 @@ class TestDispatchTodoTasks:
                 "status": "todo",
             }
         ]
+        from shared.contracts.dto.project import ProjectStatus
+
         project_mock = MagicMock()
-        project_mock.status = "scaffolding"
+        project_mock.status = ProjectStatus.DRAFT.value
         api_client.get_project.return_value = project_mock
 
         await dispatch_todo_tasks(api_client, redis_client)

@@ -83,6 +83,10 @@ class SchedulerAPIClient:
         resp = await self._request("GET", "repositories/", params=params)
         return resp.json()
 
+    async def update_repository(self, repo_id: str, fields: dict) -> dict:
+        resp = await self._request("PATCH", f"repositories/{repo_id}", json=fields)
+        return resp.json()
+
     # --- Servers ---
 
     async def get_servers(self) -> list[ServerDTO]:

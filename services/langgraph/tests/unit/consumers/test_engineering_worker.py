@@ -814,18 +814,45 @@ class TestFeatureActionFlow:
         mock_allocator.run.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_feature_on_scaffold_failed_rejects(self, mock_redis, mock_api):
-        """action=feature on scaffold_failed project must fail fast."""
+    @patch("src.subgraphs.engineering.create_engineering_subgraph")
+    @patch("src.consumers.engineering.resource_allocator_node")
+    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
+    async def test_feature_on_draft_project_warns_but_continues(
+        self,
+        mock_ci_gate,
+        mock_publish,
+        mock_allocator,
+        mock_create_subgraph,
+        mock_redis,
+        mock_api,
+    ):
+        """action=feature on draft project logs warning but proceeds (no scaffold_failed)."""
+        from shared.contracts.dto.project import ProjectStatus
         from src.consumers.engineering import process_engineering_job
 
         mock_api.get_project = AsyncMock(
             return_value={
                 "id": "proj-1",
                 "name": "test-project",
-                "status": "scaffold_failed",
-                "config": {},
+                "status": ProjectStatus.DRAFT.value,
+                "config": {"modules": ["backend"], "description": "A test"},
             }
         )
+        mock_api.get_project_allocations = AsyncMock(
+            return_value=[{"server_handle": "srv1", "port": 8001}]
+        )
+
+        mock_subgraph = AsyncMock()
+        mock_subgraph.ainvoke = AsyncMock(
+            return_value={
+                "engineering_status": "done",
+                "commit_sha": "abc123",
+                "worker_id": "w1",
+            }
+        )
+        mock_create_subgraph.return_value = mock_subgraph
+        mock_ci_gate.return_value = (True, [], False, None)
 
         result = await process_engineering_job(
             {
@@ -839,8 +866,8 @@ class TestFeatureActionFlow:
             mock_redis,
         )
 
-        assert result["status"] == "failed"
-        assert "scaffold_failed" in result["error"]
+        # Draft + feature proceeds (with warning), no longer fails fast
+        assert result["status"] == "success"
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
@@ -1017,10 +1044,10 @@ class TestCreateRepoAndSetSecrets:
         assert secrets_arg["REGISTRY_USER"] == "admin"
         assert secrets_arg["REGISTRY_PASSWORD"] == "secret"  # noqa: S105
 
-        # Project status updated to scaffolding with repo URL
-        mock_api.patch.assert_called()
-        patch_calls = [c for c in mock_api.patch.call_args_list if "projects/" in str(c)]
-        assert any("scaffolding" in str(c) for c in patch_calls)
+        # Repository entity created (project stays draft — no status patch)
+        mock_api.post.assert_called()
+        post_calls = [c for c in mock_api.post.call_args_list if "repositories/" in str(c)]
+        assert len(post_calls) == 1
 
     @pytest.mark.asyncio
     @patch("shared.clients.github.GitHubAppClient")

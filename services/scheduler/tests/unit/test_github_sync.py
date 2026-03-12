@@ -4,6 +4,7 @@ import uuid
 import pytest
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.repository import RepositoryStatus
 from src.tasks import github_sync
 
 PROJ1_UUID = uuid.uuid4()
@@ -86,13 +87,14 @@ async def test_detect_missing_projects_marks_missing(mock_api_client, mock_notif
     proj_missing = ProjectDTO(id=PROJ2_UUID, name="gone", status=ProjectStatus.ACTIVE, owner_id=1)
 
     mock_api_client.get_projects = AsyncMock(return_value=[proj_ok, proj_missing])
-    mock_api_client.update_project = AsyncMock()
+    mock_api_client.update_repository = AsyncMock()
     # proj_ok has a repo with provider_repo_id=1 (present in gh_repos_map)
     # proj_missing has a repo with provider_repo_id=2 (missing from gh_repos_map)
     mock_api_client.get_repositories = AsyncMock(
         side_effect=[
-            [{"provider_repo_id": 1}],  # repos for proj_ok
-            [{"provider_repo_id": 2}],  # repos for proj_missing
+            [{"provider_repo_id": 1}],  # repos for proj_ok (initial check)
+            [{"provider_repo_id": 2}],  # repos for proj_missing (initial check)
+            [{"id": "repo-2", "provider_repo_id": 2}],  # repos for proj_missing (marking)
         ]
     )
 
@@ -102,8 +104,7 @@ async def test_detect_missing_projects_marks_missing(mock_api_client, mock_notif
     # Execution
     await github_sync._detect_missing_projects(gh_repos_map, missing_counters)
 
-    # Verification
-    # Threshold reached for p2
-    mock_api_client.update_project.assert_called_once()
-    assert mock_api_client.update_project.call_args[0][0] == str(PROJ2_UUID)
-    assert mock_api_client.update_project.call_args[0][1].status == ProjectStatus.MISSING
+    # Verification — repository marked missing, not the project
+    mock_api_client.update_repository.assert_called_once_with(
+        "repo-2", {"status": RepositoryStatus.MISSING.value}
+    )

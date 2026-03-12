@@ -335,37 +335,10 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         if not description:
             description = (project.get("config") or {}).get("description", "")
 
-        # Fail fast if scaffold previously failed
-        project_status = project.get("status")
-        if project_status == ProjectStatus.SCAFFOLD_FAILED:
-            error_msg = (
-                f"Project {project_id} has status 'scaffold_failed'. "
-                "Scaffold must succeed before developer can work. "
-                "Fix the scaffolding issue and retry."
-            )
-            logger.error(
-                "scaffold_failed_abort",
-                task_id=task_id,
-                project_id=project_id,
-                action=action,
-            )
-            await publish_callback_event(
-                redis,
-                callback_stream,
-                "error",
-                task_id,
-                error_msg,
-                user_id=user_id,
-                project_id=project_id or "",
-            )
-            return await _fail_job(task_id, error_msg, planning_task_id)
-
         # Create repo and set secrets for new project creation on draft projects
+        project_status = project.get("status")
         if project_status == ProjectStatus.DRAFT and action == "create":
             await _create_repo_and_set_secrets(project)
-            # Refresh in-memory dict — _create_repo_and_set_secrets sets DB status
-            # to "scaffolding". Scaffolder service picks up from here.
-            project["status"] = ProjectStatus.SCAFFOLDING.value
         elif project_status == ProjectStatus.DRAFT and action != "create":
             logger.warning(
                 "feature_fix_on_draft_project",
@@ -428,12 +401,6 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         developer_started_at = datetime.now(UTC)
         result = await engineering_subgraph.ainvoke(subgraph_input)
 
-        # Update project status to developing (after scaffold + code generation)
-        await api_client.patch(
-            f"projects/{project_id}",
-            json={"status": ProjectStatus.DEVELOPING.value},
-        )
-
         # Check result status
         if result.get("engineering_status") == "done":
             logger.info(
@@ -482,11 +449,6 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             error_type=type(e).__name__,
             exc_info=True,
         )
-        if project_id:
-            await api_client.patch(
-                f"projects/{project_id}",
-                json={"status": ProjectStatus.FAILED.value},
-            )
         await publish_callback_event(
             redis,
             callback_stream,

@@ -3,9 +3,15 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-11
+> **Updated**: 2026-03-12
 
 ## Queue (ordered by priority, first = next)
+
+### #1005 Standardize PYTHONPATH and import patterns across service-template services
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Currently tg_bot uses PYTHONPATH=/app:/app/services/tg_bot/src (allowing relative imports) while backend and notifications_worker use PYTHONPATH=/app (requiring fully qualified imports like services.backend.src.module). This inconsistency causes coding agents to guess wrong import patterns, leadi...
 
 ### debug test
 - **Priority**: CRITICAL
@@ -17,6 +23,18 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: CI runs after every engineering task, wasting GitHub Actions minutes. Additionally, append_ci_check_task creates CI task without status:todo so it stays stuck in backlog.  Changes: 1. Fix append_ci_check_task: add status:todo to task creation 2. Engineering consumer: skip push + CI gate for ordin...
+
+### #1006 Decouple deploy worker from story lifecycle
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
+
+### Split ProjectStatus: lifecycle (status) + runtime (service_status)
+- **Priority**: HIGH
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: ProjectStatus (13 values) mixes lifecycle, work activity, and deployment state in one enum. This causes recurring bug: engineering sets DEVELOPING, overwriting ACTIVE, leaving project stuck.  Split into: - ProjectStatus (lifecycle): draft, active, paused, archived - ServiceStatus (runtime): not_d...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -235,6 +253,8 @@
 ## Done (last 10)
 
 - Run tests, verify CI green — 2026-03-11
+- Fix tarot card image display with local assets and fallback — 2026-03-11
+- Run tests, verify CI green — 2026-03-11
 - Run tests, verify CI green — 2026-03-11
 - Make LessWrong articles relevant and integrate them into predictions — 2026-03-11
 - Remove nonexistent shared.generated.events import from tg_bot — 2026-03-11
@@ -242,8 +262,6 @@
 - Implement fortune telling bot with tarot, AI predictions, and themed questions — 2026-03-11
 - Create prediction history database model — 2026-03-11
 - Run tests, verify CI green — 2026-03-11
-- Implement article summary feature with LLM integration — 2026-03-11
-- Add user context storage for tracking last shown article — 2026-03-11
 
 ## Ideas
 

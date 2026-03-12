@@ -18,7 +18,7 @@ import uuid
 
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectStatus, ServiceStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
@@ -137,14 +137,10 @@ async def dispatch_todo_tasks(
         if project_id == INTERNAL_PROJECT_ID:
             continue
 
-        # Guard: don't dispatch until scaffold is complete
+        # Guard: don't dispatch until scaffold is complete (project must be active)
         if project_id:
             project = await api_client.get_project(project_id)
-            if project and project.status in (
-                ProjectStatus.DRAFT,
-                ProjectStatus.SCAFFOLDING,
-                ProjectStatus.SCAFFOLD_FAILED,
-            ):
+            if project and project.status == ProjectStatus.DRAFT:
                 log.info("task_skipped_not_scaffolded", project_status=project.status)
                 continue
 
@@ -279,9 +275,9 @@ async def complete_stories(
         await api_client.transition_story(story_id, "deploy")
         log.info("story_deploying", task_count=len(tasks))
 
-        # Determine deploy action based on project status
+        # Determine deploy action based on service_status
         deploy_action = "create"
-        if project and project.status == ProjectStatus.ACTIVE:
+        if project and getattr(project, "service_status", None) != ServiceStatus.NOT_DEPLOYED:
             deploy_action = "feature"
 
         # Trigger deploy — create run record first (deploy consumer expects it)

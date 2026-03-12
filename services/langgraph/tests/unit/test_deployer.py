@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.project import ServiceStatus
 from src.subgraphs.devops.nodes import DeployerNode
 
 
@@ -180,7 +181,7 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    async def test_updates_project_status_to_active(
+    async def test_updates_service_status_to_running(
         self, mock_api, mock_gh_cls, deployer, base_state
     ):
         _setup_happy_mocks(mock_api, mock_gh_cls)
@@ -189,7 +190,7 @@ class TestDeployerNodeHappyPath:
 
         mock_api.patch.assert_called_once_with(
             "/projects/proj-123",
-            json={"status": "active"},
+            json={"service_status": ServiceStatus.RUNNING.value},
         )
 
 
@@ -213,7 +214,7 @@ class TestDeployerNodeFailures:
         assert "failed" in result["errors"][0].lower()
         mock_api.patch.assert_called_once_with(
             "/projects/proj-123",
-            json={"status": "error"},
+            json={"service_status": ServiceStatus.DOWN.value},
         )
 
     @pytest.mark.asyncio
@@ -235,5 +236,5 @@ class TestDeployerNodeFailures:
         assert "timeout" in result["errors"][0].lower()
         mock_api.patch.assert_called_once_with(
             "/projects/proj-123",
-            json={"status": "error"},
+            json={"service_status": ServiceStatus.DOWN.value},
         )

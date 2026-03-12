@@ -9,6 +9,8 @@
 - **Container crash logs in smoke failure output**: When smoke test fails, `SmokeTesterNode` SSHes into the deploy server and captures `docker compose logs --tail=50`. Logs are appended to the check `detail` field and flow through the existing deploy→engineering feedback loop, so the fix task receives actual tracebacks (e.g. `ModuleNotFoundError`) instead of bare "HTTP 500". Graceful fallback if SSH fails or `server_handle` is missing. 4 new unit tests.
 
 ### Fixed
+- **Stale worker auto-cleanup**: `_check_project_lock()` now verifies `worker:status` — workers in terminal states (DEAD/FAILED/STOPPED) get their Redis keys cleaned up automatically, unblocking new task dispatch without manual Redis cleanup. 5 new unit tests.
+- **Deploy retry limit (max 3)**: `_handle_deploy_failure()` tracks consecutive deploy attempts per story in Redis. After 3 failures, story transitions to `failed` instead of looping back to `in_progress` — prevents the infinite deploy→fail→redispatch loop that caused hundreds of failed runs and proactive message spam. 4 new unit tests.
 - **Deploy deduplication: Redis lock replaces DB race** — replaced non-atomic DB-based `_check_duplicate_deploy` with atomic `SET NX` Redis lock per project. Eliminates the race window where two consumers could both pass the DB check and trigger duplicate `deploy.yml` GitHub Actions runs on the same commit. Lock held for duration of deploy, released in `finally` block. 5 new unit tests.
 
 ## 2026-03-11

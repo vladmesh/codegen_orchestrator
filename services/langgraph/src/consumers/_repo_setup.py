@@ -10,8 +10,6 @@ import re
 
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus
-
 from ..clients.api import api_client
 
 logger = structlog.get_logger(__name__)
@@ -97,14 +95,8 @@ async def _create_repo_and_set_secrets(project: dict) -> None:
             has_password=bool(registry_password),
         )
 
-    # Step 3: Update project status and create Repository entity
+    # Step 3: Create Repository entity (project stays DRAFT until scaffold completes)
     repo_url = f"https://github.com/{repo_full_name}"
-    await api_client.patch(
-        f"projects/{project_id}",
-        json={
-            "status": ProjectStatus.SCAFFOLDING.value,
-        },
-    )
 
     # Create Repository entity so webhook lookup and developer node work
     await api_client.post(

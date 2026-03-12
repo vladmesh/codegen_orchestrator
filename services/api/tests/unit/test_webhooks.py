@@ -9,6 +9,7 @@ import uuid
 from httpx import ASGITransport, AsyncClient
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
 from src.main import app
 
 SECRET = "test-webhook-secret"  # noqa: S105
@@ -175,7 +176,7 @@ async def test_webhook_ignores_non_active_project(mock_env):
     payload = _make_payload()
 
     repo = _mock_repository()
-    project = _mock_project(status="deploying")
+    project = _mock_project(status=ProjectStatus.PAUSED.value)
 
     mock_session = AsyncMock()
     # First execute: Repository lookup

@@ -14,6 +14,7 @@ import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus, ProjectUpdate
+from shared.contracts.dto.repository import RepositoryStatus
 from shared.notifications import notify_admins
 from shared.schemas.github import GitHubRepository
 from shared.schemas.project_spec import ProjectSpecYAML
@@ -237,15 +238,17 @@ async def _sync_single_repo(
     project_id_str = str(project.id)
     if project_id_str in missing_counters:
         del missing_counters[project_id_str]
-        if project.status == ProjectStatus.MISSING:
-            await api_client.update_project(
-                project_id_str, ProjectUpdate(status=ProjectStatus.ACTIVE)
+        # Recovery: set repository status back to active
+        repo_id_str = db_repo.get("id")
+        if repo_id_str:
+            await api_client.update_repository(
+                repo_id_str, {"status": RepositoryStatus.ACTIVE.value}
             )
-            logger.info(
-                "project_recovered",
-                project_name=project.name,
-                provider_repo_id=repo_id,
-            )
+        logger.info(
+            "repository_recovered",
+            project_name=project.name,
+            provider_repo_id=repo_id,
+        )
 
 
 async def _detect_missing_projects(
@@ -255,10 +258,8 @@ async def _detect_missing_projects(
     """Detect and alert on projects missing from GitHub."""
     db_projects = await api_client.get_projects()
 
-    # For each active project, check if its repositories are present on GitHub
-    active_projects = [
-        p for p in db_projects if p.status not in (ProjectStatus.MISSING, ProjectStatus.ARCHIVED)
-    ]
+    # For each non-archived project, check if its repositories are present on GitHub
+    active_projects = [p for p in db_projects if p.status != ProjectStatus.ARCHIVED]
 
     for proj in active_projects:
         project_id_str = str(proj.id)
@@ -284,11 +285,16 @@ async def _detect_missing_projects(
             )
 
             if count >= MISSING_THRESHOLD:
-                await api_client.update_project(
-                    project_id_str, ProjectUpdate(status=ProjectStatus.MISSING)
-                )
+                # Mark repositories as missing (not the project)
+                repos = await api_client.get_repositories(project_id=project_id_str)
+                for repo in repos:
+                    repo_id = repo.get("id")
+                    if repo_id:
+                        await api_client.update_repository(
+                            repo_id, {"status": RepositoryStatus.MISSING.value}
+                        )
                 logger.error(
-                    "project_marked_missing",
+                    "repositories_marked_missing",
                     project_name=proj.name,
                     project_id=project_id_str,
                     attempts=count,

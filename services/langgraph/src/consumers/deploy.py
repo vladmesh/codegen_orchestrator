@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import asyncssh
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ServiceStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.queues.deploy import DeployMessage
 from shared.contracts.queues.engineering import EngineeringMessage
@@ -200,10 +200,10 @@ async def _handle_smoke_failure(
             },
         },
     )
-    # Project stays active — deploy succeeded, service just unhealthy
+    # Service deployed but unhealthy
     await api_client.patch(
         f"projects/{project_id}",
-        json={"status": ProjectStatus.ACTIVE.value},
+        json={"service_status": ServiceStatus.DEGRADED.value},
     )
 
     # Roll story back — smoke failed, story not truly complete
@@ -266,7 +266,7 @@ async def _handle_deploy_success(
     )
     await api_client.patch(
         f"projects/{project_id}",
-        json={"status": ProjectStatus.ACTIVE.value},
+        json={"service_status": ServiceStatus.RUNNING.value},
     )
 
     # Complete the story now that deploy succeeded
@@ -321,7 +321,7 @@ async def _handle_deploy_failure(
     if rollback_project:
         await api_client.patch(
             f"projects/{project_id}",
-            json={"status": ProjectStatus.FAILED.value},
+            json={"service_status": ServiceStatus.DOWN.value},
         )
 
     # Track deploy attempts per story — fail permanently after limit
@@ -550,12 +550,6 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 redis=redis,
                 rollback_project=False,
             )
-
-        # Update project status to deploying
-        await api_client.patch(
-            f"projects/{project_id}",
-            json={"status": ProjectStatus.DEPLOYING.value},
-        )
 
         # Resolve git_url from primary Repository entity
         primary_repo = await api_client.get_primary_repository(project_id)

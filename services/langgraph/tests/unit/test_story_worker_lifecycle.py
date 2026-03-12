@@ -10,13 +10,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
+
 
 def _project(**overrides):
     base = {
         "id": "proj-1",
         "name": "test-project",
         "config": {"modules": ["backend"]},
-        "status": "developing",
+        "status": ProjectStatus.ACTIVE.value,
     }
     base.update(overrides)
     return base

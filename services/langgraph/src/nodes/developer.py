@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.worker import AgentType
 
 from ..clients.api import api_client
@@ -84,11 +85,11 @@ class DeveloperNode(FunctionalNode):
             action=action,
         )
 
-        # For action=create, scaffolder must have already run (status=scaffolded).
+        # For action=create, scaffolder must have already run (project is active).
         # Draft status means the pipeline didn't trigger scaffolder properly.
         if action == "create":
             project_status = project_spec.get("status", "unknown")
-            if project_status == "draft":
+            if project_status == ProjectStatus.DRAFT.value:
                 logger.error(
                     "scaffold_required_but_missing",
                     project_name=project_name,

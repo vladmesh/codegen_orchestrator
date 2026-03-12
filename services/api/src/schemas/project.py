@@ -5,7 +5,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 
-from shared.contracts.dto.project import ServiceModule
+from shared.contracts.dto.project import ProjectStatus, ServiceModule, ServiceStatus
 
 
 class ProjectBase(BaseModel):
@@ -13,7 +13,8 @@ class ProjectBase(BaseModel):
 
     id: uuid.UUID
     name: str
-    status: str = "draft"
+    status: str = ProjectStatus.DRAFT.value
+    service_status: str = ServiceStatus.NOT_DEPLOYED.value
     config: dict[str, Any] = {}
 
 
@@ -37,6 +38,7 @@ class ProjectUpdate(BaseModel):
 
     name: str | None = None
     status: str | None = None
+    service_status: str | None = None
     config: dict[str, Any] | None = None
 
 

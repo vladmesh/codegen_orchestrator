@@ -43,7 +43,7 @@ def mock_redis():
 class TestTriggerScaffolds:
     @pytest.mark.asyncio
     async def test_draft_project_with_stories_publishes_scaffold(self, mock_api, mock_redis):
-        project = _make_project("draft", ["backend", "tg_bot"])
+        project = _make_project(ProjectStatus.DRAFT.value, ["backend", "tg_bot"])
         mock_api.get_projects.return_value = [project]
         mock_api.get_stories_by_project.return_value = [{"id": "story-1", "status": "created"}]
         mock_api.get_repositories.return_value = [
@@ -62,8 +62,9 @@ class TestTriggerScaffolds:
         assert call_args[0][0] == "scaffold:queue"
 
     @pytest.mark.asyncio
-    async def test_scaffolding_project_is_skipped(self, mock_api, mock_redis):
-        project = _make_project("scaffolding")
+    async def test_active_project_is_skipped(self, mock_api, mock_redis):
+        """Active project (already scaffolded) should not be re-scaffolded."""
+        project = _make_project(ProjectStatus.ACTIVE.value)
         mock_api.get_projects.return_value = [project]
 
         count = await trigger_scaffolds(mock_api, mock_redis)
@@ -72,8 +73,8 @@ class TestTriggerScaffolds:
         mock_redis.publish_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_scaffolded_project_is_skipped(self, mock_api, mock_redis):
-        project = _make_project("scaffolded")
+    async def test_archived_project_is_skipped(self, mock_api, mock_redis):
+        project = _make_project(ProjectStatus.ARCHIVED.value)
         mock_api.get_projects.return_value = [project]
 
         count = await trigger_scaffolds(mock_api, mock_redis)
@@ -83,7 +84,7 @@ class TestTriggerScaffolds:
 
     @pytest.mark.asyncio
     async def test_draft_project_without_stories_is_skipped(self, mock_api, mock_redis):
-        project = _make_project("draft")
+        project = _make_project(ProjectStatus.DRAFT.value)
         mock_api.get_projects.return_value = [project]
         mock_api.get_stories_by_project.return_value = []
 
@@ -94,7 +95,7 @@ class TestTriggerScaffolds:
 
     @pytest.mark.asyncio
     async def test_draft_project_without_repo_is_skipped(self, mock_api, mock_redis):
-        project = _make_project("draft")
+        project = _make_project(ProjectStatus.DRAFT.value)
         mock_api.get_projects.return_value = [project]
         mock_api.get_stories_by_project.return_value = [{"id": "story-1", "status": "created"}]
         mock_api.get_repositories.return_value = []

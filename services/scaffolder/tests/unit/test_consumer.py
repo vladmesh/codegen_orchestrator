@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.contracts.dto.project import ProjectStatus
 from src.consumer import process_scaffold_job
 from src.scaffold import ScaffoldResult
 
@@ -76,10 +77,8 @@ class TestProcessScaffoldJob:
 
         assert result["status"] == "success"
 
-        # Should have set status to scaffolding then scaffolded
-        calls = [c[0] for c in mock_api.update_project_status.call_args_list]
-        assert ("proj-123", "scaffolding") in calls
-        assert ("proj-123", "scaffolded") in calls
+        # Should have set status to active on success (no scaffolding/scaffolded)
+        mock_api.update_project_status.assert_called_once_with("proj-123", ProjectStatus.ACTIVE)
 
         # Should have updated repository with git_url and provider_repo_id
         mock_api.update_repository.assert_called_once_with(
@@ -106,7 +105,7 @@ class TestProcessScaffoldJob:
         assert "tree" in config_call[0][1]
 
     @pytest.mark.asyncio
-    async def test_scaffold_failure_sets_scaffold_failed(
+    async def test_scaffold_failure_leaves_project_as_draft(
         self, valid_job_data, mock_redis, mock_api, mock_github
     ):
         scaffold_result = ScaffoldResult(success=False, error="copier crashed")
@@ -132,9 +131,8 @@ class TestProcessScaffoldJob:
         assert result["status"] == "failed"
         assert "copier crashed" in result["error"]
 
-        # Should have set scaffold_failed
-        calls = [c[0] for c in mock_api.update_project_status.call_args_list]
-        assert ("proj-123", "scaffold_failed") in calls
+        # Should NOT touch project status on failure (stays draft)
+        mock_api.update_project_status.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_registry_secrets_skipped_when_env_missing(

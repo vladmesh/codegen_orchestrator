@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.project import ServiceStatus
 from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
@@ -548,7 +549,7 @@ class DeployerNode(FunctionalNode):
             # 7. Update project status to active
             await api_client.patch(
                 f"/projects/{project_id}",
-                json={"status": "active"},
+                json={"service_status": ServiceStatus.RUNNING.value},
             )
 
             deployed_url = f"http://{server_ip}:{port}"
@@ -599,7 +600,7 @@ class DeployerNode(FunctionalNode):
 
                 await api_client.patch(
                     f"/projects/{project_id}",
-                    json={"status": "active"},
+                    json={"service_status": ServiceStatus.RUNNING.value},
                 )
 
                 deployed_url = f"http://{server_ip}:{port}"
@@ -620,7 +621,7 @@ class DeployerNode(FunctionalNode):
             try:
                 await api_client.patch(
                     f"/projects/{project_id}",
-                    json={"status": "error"},
+                    json={"service_status": ServiceStatus.DOWN.value},
                 )
             except Exception as status_err:
                 logger.warning("status_update_failed", error=str(status_err))
@@ -638,7 +639,7 @@ class DeployerNode(FunctionalNode):
             try:
                 await api_client.patch(
                     f"/projects/{project_id}",
-                    json={"status": "error"},
+                    json={"service_status": ServiceStatus.DOWN.value},
                 )
             except Exception as status_err:
                 logger.warning("status_update_failed", error=str(status_err))

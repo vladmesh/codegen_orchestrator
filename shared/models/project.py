@@ -6,7 +6,7 @@ from sqlalchemy import JSON, ForeignKey, Integer, String, Uuid
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column
 
-from shared.contracts.dto.project import ProjectStatus  # Single source of truth
+from shared.contracts.dto.project import ProjectStatus, ServiceStatus  # Single source of truth
 
 from .base import Base
 
@@ -20,6 +20,9 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255))
 
     status: Mapped[str] = mapped_column(String(50), default=ProjectStatus.DRAFT.value)
+    service_status: Mapped[str] = mapped_column(
+        String(50), default=ServiceStatus.NOT_DEPLOYED.value
+    )
 
     config: Mapped[dict] = mapped_column(MutableDict.as_mutable(JSON), default=dict)
 
