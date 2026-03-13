@@ -5,6 +5,7 @@ correctly when two concurrent requests compete for ports on the same server.
 """
 
 import asyncio
+import contextlib
 from uuid import uuid4
 
 import pytest
@@ -12,8 +13,12 @@ import pytest
 
 @pytest.fixture
 async def race_server(api_client):
-    """Create a dedicated server for race condition testing."""
-    handle = "race-test-srv"
+    """Create a dedicated server for race condition testing.
+
+    Uses a unique handle per test run to avoid stale port allocations
+    from previous runs polluting the test.
+    """
+    handle = f"race-{uuid4().hex[:8]}"
     body = {
         "handle": handle,
         "host": "race.example.com",
@@ -24,10 +29,16 @@ async def race_server(api_client):
         "is_managed": True,
     }
     resp = await api_client.post("/api/servers/", json=body)
-    # 201 = created, 400 = already exists (from previous test run)
-    if resp.status_code not in (201, 400):  # noqa: PLR2004
-        pytest.fail(f"Failed to seed server: {resp.text}")
+    assert resp.status_code == 201, f"Failed to create server: {resp.text}"
+
     yield handle
+
+    # Cleanup: delete all port allocations for this server
+    with contextlib.suppress(Exception):
+        resp = await api_client.get(f"/api/allocations/?server_handle={handle}")
+        if resp.status_code == 200:
+            for alloc in resp.json():
+                await api_client.delete(f"/api/allocations/{alloc['id']}")
 
 
 @pytest.mark.asyncio

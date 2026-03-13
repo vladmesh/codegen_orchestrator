@@ -5,7 +5,6 @@ import pytest
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
-    CreateWorkerResponse,
     DeleteWorkerCommand,
     WorkerCapability,
     WorkerConfig,
@@ -14,7 +13,7 @@ from shared.contracts.queues.worker import (
 from .conftest import (
     REDIS_STREAM_COMMANDS,
     REDIS_STREAM_DEV_RESPONSES,
-    wait_for_stream_message,
+    wait_for_create_response,
 )
 
 
@@ -51,12 +50,11 @@ class TestTaskInjection:
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
 
-        # Wait for response
-        response = await wait_for_stream_message(
-            redis_client, REDIS_STREAM_DEV_RESPONSES, timeout=120
+        # Use wait_for_create_response which filters by request_id
+        # (wait_for_stream_message picks up stale delete responses from cleanup)
+        result = await wait_for_create_response(
+            redis_client, REDIS_STREAM_DEV_RESPONSES, req_id, timeout=120
         )
-        data_str = response.get("data")
-        result = CreateWorkerResponse.model_validate_json(data_str)
 
         assert result.success is True, f"Worker creation failed: {result.error}"
         worker_id = result.worker_id
@@ -106,11 +104,10 @@ class TestTaskInjection:
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
 
-        response = await wait_for_stream_message(
-            redis_client, REDIS_STREAM_DEV_RESPONSES, timeout=120
+        # Use wait_for_create_response which filters by request_id
+        result = await wait_for_create_response(
+            redis_client, REDIS_STREAM_DEV_RESPONSES, req_id, timeout=120
         )
-        data_str = response.get("data")
-        result = CreateWorkerResponse.model_validate_json(data_str)
 
         assert result.success is True, f"Worker creation failed: {result.error}"
         worker_id = result.worker_id
