@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate, relativeTime, cn } from '@/lib/utils'
+import { langfuseUrl } from '@/lib/langfuse'
 import type { User, Project } from '@/types/api'
 
 type Tab = 'projects' | 'tracing'
@@ -139,7 +140,7 @@ export function UserDetailPage() {
       {activeTab === 'tracing' && (
         <div className="flex h-[600px] flex-col rounded-lg border border-border overflow-hidden">
           <iframe
-            src="/langfuse/"
+            src={langfuseUrl()}
             className="flex-1 w-full border-0"
             title="Langfuse Tracing"
           />

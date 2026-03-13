@@ -4,7 +4,8 @@ import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate } from '@/lib/utils'
-import type { Project, Story, Task } from '@/types/api'
+import { langfuseUrl } from '@/lib/langfuse'
+import type { Project, Story, Task, User } from '@/types/api'
 
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -13,6 +14,12 @@ export function ProjectDetailPage() {
     queryKey: ['project', id],
     queryFn: () => api.get<Project>(`/projects/${id}`),
     enabled: !!id,
+  })
+
+  const { data: owner } = useQuery({
+    queryKey: ['user', project?.owner_id],
+    queryFn: () => api.get<User>(`/users/${project!.owner_id}`),
+    enabled: !!project?.owner_id,
   })
 
   const { data: stories } = useQuery({
@@ -59,6 +66,18 @@ export function ProjectDetailPage() {
         <Card>
           <p className="text-sm text-muted-foreground">Stories</p>
           <p className="mt-1 text-2xl font-semibold text-foreground">{stories?.length ?? 0}</p>
+        </Card>
+        <Card>
+          <p className="text-sm text-muted-foreground">Owner</p>
+          <p className="mt-1 text-foreground">
+            {owner ? (
+              <Link to={`/users/${owner.id}`} className="text-primary hover:underline">
+                {owner.first_name ?? owner.username ?? `User #${owner.id}`}
+              </Link>
+            ) : (
+              '—'
+            )}
+          </p>
         </Card>
         <Card>
           <p className="text-sm text-muted-foreground">Created</p>
@@ -114,6 +133,17 @@ export function ProjectDetailPage() {
             </ul>
           </Card>
         )}
+      </div>
+
+      <div className="space-y-4">
+        <h2 className="text-lg font-semibold text-foreground">LLM Tracing</h2>
+        <div className="h-[500px] rounded-lg border border-border overflow-hidden">
+          <iframe
+            src={langfuseUrl()}
+            className="h-full w-full border-0"
+            title="Langfuse Tracing"
+          />
+        </div>
       </div>
     </div>
   )

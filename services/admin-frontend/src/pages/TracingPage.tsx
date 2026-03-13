@@ -1,3 +1,5 @@
+import { langfuseUrl } from '@/lib/langfuse'
+
 export function TracingPage() {
   return (
     <div className="flex h-full flex-col">
@@ -6,7 +8,7 @@ export function TracingPage() {
         <p className="text-sm text-muted-foreground">Agent execution traces via Langfuse</p>
       </div>
       <iframe
-        src="/langfuse/"
+        src={langfuseUrl()}
         className="flex-1 w-full border-0"
         title="Langfuse Tracing"
       />
