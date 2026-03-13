@@ -37,6 +37,8 @@ services:
       - ./shared:/app/shared:delegated
       - ./scripts:/app/scripts:ro
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
+    ports:
+      - "8000:8000"
 
   langgraph:
     build:

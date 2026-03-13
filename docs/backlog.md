@@ -7,12 +7,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Admin auth + single entry point — proxy Grafana through admin, close extra ports
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Единая точка входа в админку: один порт (3001), один логин, всё проксируется через admin-frontend.  См. brainstorm: docs/brainstorms/admin-panel.md  ## Проблема - Grafana на :3000 и API на :8000 торчат наружу без авторизации - Logs и Grafana открываются в новой вкладке - Нет авторизации вообще  #...
-
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —
@@ -258,6 +252,7 @@
 
 ## Done (last 10)
 
+- Admin auth + single entry point — proxy Grafana through admin, close extra ports — 2026-03-13
 - Admin frontend scaffold — React + Vite + shadcn/ui + nginx container + docker-compose — 2026-03-13
 - Observability stack: JSON logging + Loki + Grafana + correlation propagation — 2026-03-13
 - Run tests, verify CI green — 2026-03-13
@@ -267,7 +262,6 @@
 - Story/Task reopen flow with user_report field — 2026-03-12
 - Run tests, verify CI green — 2026-03-11
 - Fix tarot card image display with local assets and fallback — 2026-03-11
-- Run tests, verify CI green — 2026-03-11
 
 ## Ideas
 
