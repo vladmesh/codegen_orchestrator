@@ -1,3 +1,9 @@
+{
+    log {
+        format json
+    }
+}
+
 {$ORCHESTRATOR_HOSTNAME} {
     handle /v2/* {
         basic_auth {

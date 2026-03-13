@@ -352,7 +352,7 @@ services:
 
   loki:
     image: grafana/loki:3.4
-    command: -config.file=/etc/loki/loki.yml
+    command: -config.file=/etc/loki/loki.yml -log.format=json
     volumes:
       - ./infra/loki.yml:/etc/loki/loki.yml:ro
       - loki-data:/loki
@@ -368,7 +368,7 @@ services:
 
   promtail:
     image: grafana/promtail:3.4
-    command: -config.file=/etc/promtail/promtail.yml
+    command: -config.file=/etc/promtail/promtail.yml -log.format=json
     volumes:
       - ./infra/promtail.yml:/etc/promtail/promtail.yml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
@@ -409,6 +409,10 @@ services:
       GF_SERVER_ROOT_URL: "http://${ORCHESTRATOR_HOSTNAME:-localhost}:3001/grafana/"
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
       GF_LIVE_ALLOWED_ORIGINS: "*"
+      GF_INSTALL_PLUGINS: ""
+      GF_PLUGINS_DISABLE_PLUGINS: "grafana-lokiexplore-app"
+      GF_LOG_MODE: "console"
+      GF_LOG_CONSOLE_FORMAT: "json"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./infra/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
