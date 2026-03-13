@@ -1,6 +1,7 @@
 import asyncio
+
 import structlog
-from pydantic import ValidationError, TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from shared.contracts.queues.worker import (
     WorkerCommand,
@@ -12,6 +13,7 @@ from shared.contracts.queues.worker import (
     StatusWorkerResponse,
     WorkerResponse,
 )
+from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
 from shared.redis_client import RedisStreamClient
 
@@ -43,6 +45,7 @@ class WorkerCommandConsumer:
             if msg is None:
                 continue
             try:
+                bind_message_context(msg.data)
                 await self.process_message(msg.message_id, msg.data)
                 await self.client.ack(self.stream_name, self.group_name, msg.message_id)
             except asyncio.CancelledError:
@@ -54,6 +57,8 @@ class WorkerCommandConsumer:
                     message_id=msg.message_id,
                     error=str(e),
                 )
+            finally:
+                unbind_message_context()
 
     async def process_message(self, message_id: str, data: dict):
         """Process a single message."""

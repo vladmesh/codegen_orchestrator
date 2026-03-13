@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from shared.log_config.correlation import get_correlation_id
 from src.config.settings import get_settings
 
 
@@ -37,6 +38,11 @@ class LanggraphAPIClient:
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         client = await self._get_client()
+        correlation_id = get_correlation_id()
+        if correlation_id:
+            headers = kwargs.pop("headers", None) or {}
+            headers.setdefault("X-Correlation-ID", correlation_id)
+            kwargs["headers"] = headers
         resp = await client.request(method, self._api_path(path), **kwargs)
         resp.raise_for_status()
         return resp

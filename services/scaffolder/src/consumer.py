@@ -16,6 +16,7 @@ import structlog
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.log_config import setup_logging
+from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import SCAFFOLD_GROUP, SCAFFOLD_QUEUE
 from shared.redis_client import RedisStreamClient
 from src.clients.api import get_api_client
@@ -172,6 +173,7 @@ async def run_worker() -> None:
             if msg is None:
                 continue
             try:
+                bind_message_context(msg.data)
                 result = await process_scaffold_job(msg.data, redis)
                 msg.data.update(result)
                 await redis.ack(SCAFFOLD_QUEUE, SCAFFOLD_GROUP, msg.message_id)
@@ -182,6 +184,8 @@ async def run_worker() -> None:
                     entry_id=msg.message_id,
                     error=str(e),
                 )
+            finally:
+                unbind_message_context()
     finally:
         await redis.close()
         api = get_api_client()

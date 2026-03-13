@@ -14,6 +14,7 @@ import signal
 import structlog
 
 from shared.log_config import setup_logging
+from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import WORKER_GROUP
 from shared.redis_client import RedisStreamClient
 
@@ -74,6 +75,7 @@ async def run_queue_worker(
             if msg is None:
                 continue
             try:
+                bind_message_context(msg.data)
                 result = await process_fn(msg.data, redis)
                 msg.data.update(result)
                 await redis.ack(queue, group, msg.message_id)
@@ -85,6 +87,8 @@ async def run_queue_worker(
                     error=str(e),
                     worker=service_name,
                 )
+            finally:
+                unbind_message_context()
     finally:
         await redis.close()
         await api_client.close()

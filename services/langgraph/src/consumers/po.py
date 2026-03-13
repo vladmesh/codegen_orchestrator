@@ -24,6 +24,7 @@ from shared.contracts.queues.po import (
     POResponse,
     to_flat_fields,
 )
+from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -168,6 +169,7 @@ async def _process_message(
     data: dict,
 ) -> None:
     """Process a single message with concurrency control."""
+    bind_message_context(data)
     # Validate incoming message
     try:
         _po_input_adapter.validate_python(data)
@@ -198,6 +200,7 @@ async def _process_message(
                     )
             finally:
                 await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
+                unbind_message_context()
 
 
 async def _repair_orphan_tool_calls(graph, thread_id: str) -> int:

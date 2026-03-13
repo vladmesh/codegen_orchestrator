@@ -2,6 +2,38 @@
 
 > Structured logging implementation based on `structlog` with JSON output for Grafana Loki.
 
+## Collection Architecture
+
+```
+Services (structlog JSON) → stdout → Docker → Promtail → Loki → Grafana
+```
+
+### Stack
+- **Loki** (port 3100) — log aggregation, 7-day retention
+- **Promtail** — scrapes Docker container logs, ships to Loki
+- **Grafana** (port 3000) — dashboards, log viewer, alerting
+
+All services output `LOG_FORMAT=json` in Docker. Promtail reads log files
+non-destructively (`docker logs` still works).
+
+### Correlation ID propagation
+- `BaseMessage` (shared/contracts/base.py) auto-generates `correlation_id` per message
+- All consumers bind it via `bind_message_context()` on message receipt
+- All API clients inject `X-Correlation-ID` header in outgoing requests
+- API middleware binds it on receipt
+- Result: filter by `correlation_id` in Grafana → see full request flow across all services
+
+### Infrastructure files
+```
+infra/
+├── loki.yml                          # Loki config (TSDB, 7-day retention)
+├── promtail.yml                      # Scrape Docker container logs
+└── grafana/
+    ├── datasources.yml               # Auto-provision Loki datasource
+    ├── dashboards.yml                # Dashboard provisioning config
+    └── dashboards/service-logs.json  # Pre-built "Service Logs" dashboard
+```
+
 ## Quick Start
 
 ```python

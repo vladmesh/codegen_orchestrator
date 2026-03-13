@@ -1,0 +1,44 @@
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          __path__: /var/lib/docker/containers/*/*-json.log
+
+    pipeline_stages:
+      # Parse Docker JSON log format
+      - docker: {}
+
+      # Extract container name from filename path
+      - regex:
+          source: filename
+          expression: '/var/lib/docker/containers/(?P<container_id>[^/]+)/.*'
+
+      # Add container_name label from Docker labels
+      - labels:
+          container_id:
+
+      # Try to parse log line as JSON (structlog output)
+      - json:
+          expressions:
+            service: service
+            level: level
+            event: event
+            correlation_id: correlation_id
+          source: output
+
+      # Add extracted fields as labels for efficient filtering
+      - labels:
+          service:
+          level:

@@ -1,0 +1,113 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "loki", "uid": "" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "" },
+          "editorMode": "builder",
+          "expr": "sum by (level) (count_over_time({job=\"docker\"} | json | level != \"\" [$__interval]))",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Log Volume by Level",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 20, "w": 24, "x": 0, "y": 4 },
+      "id": 2,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "" },
+          "editorMode": "code",
+          "expr": "{job=\"docker\"} | json | service =~ `$service` | level =~ `$level` | correlation_id =~ `$correlation_id`",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "Service Logs",
+      "type": "logs"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["observability"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": ".*", "value": ".*" },
+        "description": "Filter by service name",
+        "name": "service",
+        "options": [],
+        "query": "{job=\"docker\"} | json | unwrap service",
+        "datasource": { "type": "loki", "uid": "" },
+        "type": "query",
+        "regex": "",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 2
+      },
+      {
+        "current": { "selected": true, "text": ".*", "value": ".*" },
+        "description": "Filter by log level",
+        "name": "level",
+        "options": [
+          { "selected": true, "text": "All", "value": ".*" },
+          { "selected": false, "text": "debug", "value": "debug" },
+          { "selected": false, "text": "info", "value": "info" },
+          { "selected": false, "text": "warning", "value": "warning" },
+          { "selected": false, "text": "error", "value": "error" }
+        ],
+        "type": "custom",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true
+      },
+      {
+        "current": { "selected": false, "text": "", "value": "" },
+        "description": "Filter by correlation ID",
+        "name": "correlation_id",
+        "type": "textbox",
+        "options": []
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Service Logs",
+  "uid": "service-logs",
+  "version": 1
+}

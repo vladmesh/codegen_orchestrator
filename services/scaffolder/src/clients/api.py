@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 import structlog
 
+from shared.log_config.correlation import get_correlation_id
 from src.config import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -38,6 +39,11 @@ class ScaffolderAPIClient:
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         client = await self._get_client()
+        correlation_id = get_correlation_id()
+        if correlation_id:
+            headers = kwargs.pop("headers", None) or {}
+            headers.setdefault("X-Correlation-ID", correlation_id)
+            kwargs["headers"] = headers
         resp = await client.request(method, f"/api/{path.lstrip('/')}", **kwargs)
         resp.raise_for_status()
         return resp

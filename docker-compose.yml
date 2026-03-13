@@ -14,6 +14,8 @@ services:
       PYTHONPATH: /app
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: api
     depends_on:
       db:
         condition: service_healthy
@@ -60,6 +62,8 @@ services:
       SUMMARIZATION_TRIGGER_TOKENS: ${SUMMARIZATION_TRIGGER_TOKENS}
       SUMMARIZATION_MAX_SUMMARY_TOKENS: ${SUMMARIZATION_MAX_SUMMARY_TOKENS}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: langgraph
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -93,6 +97,8 @@ services:
       TELETHON_API_ID: ${TELETHON_API_ID:-}
       TELETHON_API_HASH: ${TELETHON_API_HASH:-}
       TELETHON_SESSION_PATH: ${TELETHON_SESSION_PATH:-}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: deploy-worker
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -123,6 +129,8 @@ services:
       ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
       REGISTRY_USER: ${REGISTRY_USER}
       REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: engineering-worker
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -150,6 +158,8 @@ services:
       ARCHITECT_LLM_API_KEY: ${ARCHITECT_LLM_API_KEY:-}
       ARCHITECT_LLM_BASE_URL: ${ARCHITECT_LLM_BASE_URL:-}
       ARCHITECT_LLM_MODEL: ${ARCHITECT_LLM_MODEL:-}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: architect
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -172,6 +182,8 @@ services:
       API_BASE_URL: http://api:8000
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: infra-service
     volumes:
       - ./services/infra-service/src:/app/src:delegated
       - ./services/infra-service/ansible:/app/ansible:delegated
@@ -194,6 +206,8 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: telegram-bot
     volumes:
       - ./services/telegram_bot/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -215,6 +229,8 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: worker-manager
       # Host path for mounting .claude dir into workers
       HOST_CLAUDE_DIR: ${HOST_CLAUDE_DIR:-/home/user/.claude}
       # Dev environment settings
@@ -251,6 +267,8 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: scheduler
     volumes:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -278,6 +296,8 @@ services:
       WORKSPACE_BASE_PATH: /data/workspaces
       SERVICE_TEMPLATE_PATH: /data/service-template
       GITHUB_ORG: ${GITHUB_ORG}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: scaffolder
     volumes:
       - ./services/scaffolder/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -324,6 +344,59 @@ services:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
       - registry-data:/var/lib/registry
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # === Observability ===
+
+  loki:
+    image: grafana/loki:3.4
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./infra/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --quiet --tries=1 --output-document=- http://localhost:3100/ready | grep -q ready" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - internal
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.4
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ./infra/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./infra/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
     networks:
       - internal
     restart: unless-stopped
@@ -376,3 +449,5 @@ volumes:
   caddy-config:
   registry-data:
   uv-cache:
+  loki-data:
+  grafana-data:
