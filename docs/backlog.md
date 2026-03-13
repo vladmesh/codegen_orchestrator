@@ -7,6 +7,12 @@
 
 ## Queue (ordered by priority, first = next)
 
+### Admin frontend scaffold — React + Vite + shadcn/ui + nginx container + docker-compose
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Каркас админки оркестратора.  См. brainstorm: docs/brainstorms/admin-panel.md (Phase 1: Каркас + навигация)  ## Scope - React 19 + TypeScript + Vite scaffold - shadcn/ui + Tailwind для UI - TanStack Query для server state - React Router v7 для навигации - Layout: sidebar (Dashboard, Projects, Wor...
+
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —
