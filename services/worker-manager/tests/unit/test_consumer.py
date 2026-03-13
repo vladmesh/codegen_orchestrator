@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock
 from fakeredis import aioredis
 
+from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     DeleteWorkerCommand,
@@ -25,7 +26,7 @@ def mock_worker_manager():
     manager.create_worker = AsyncMock(return_value="test-worker-id")
     manager.create_worker_with_capabilities = AsyncMock(return_value="test-worker-id")
     manager.delete_worker = AsyncMock(return_value=None)
-    manager.get_worker_status = AsyncMock(return_value="RUNNING")
+    manager.get_worker_status = AsyncMock(return_value=WorkerStatus.RUNNING)
     return manager
 
 

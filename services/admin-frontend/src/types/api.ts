@@ -125,6 +125,33 @@ export interface PromptsResponse {
   task_md: string | null
 }
 
+// Queue message browser
+export interface StreamMessage {
+  id: string
+  timestamp: number
+  data: Record<string, unknown>
+  raw_fields: Record<string, string>
+}
+
+export interface QueueMessagesResponse {
+  stream: string
+  messages: StreamMessage[]
+  total: number
+}
+
+export interface PendingEntry {
+  id: string
+  consumer: string
+  idle_ms: number
+  delivery_count: number
+}
+
+export interface QueuePendingResponse {
+  stream: string
+  group: string
+  pending: PendingEntry[]
+}
+
 export interface Server {
   id: string
   name: string

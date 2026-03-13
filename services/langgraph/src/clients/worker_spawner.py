@@ -11,6 +11,7 @@ import uuid
 
 import redis.asyncio as redis
 
+from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
@@ -48,7 +49,6 @@ class SpawnResult:
 
 
 LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
-WORKER_DEAD_STATUS = "DEAD"
 
 
 async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool:
@@ -63,7 +63,7 @@ async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool
         return False
     # Handle both bytes and str (depends on decode_responses setting)
     status_str = status.decode() if isinstance(status, bytes) else status
-    if status_str == WORKER_DEAD_STATUS:
+    if status_str == WorkerStatus.DEAD:
         return False
     return True
 

@@ -3,6 +3,7 @@
 Handles direct API calls without going through LangGraph/LLM.
 """
 
+from http import HTTPStatus
 import re
 
 import httpx
@@ -372,7 +373,7 @@ async def handle_add_user_input(update: Update, context: ContextTypes.DEFAULT_TY
         )
     except httpx.HTTPStatusError as e:
         context.user_data.pop("awaiting_add_user", None)
-        if e.response.status_code == 400:  # noqa: PLR2004
+        if e.response.status_code == HTTPStatus.BAD_REQUEST:
             await update.message.reply_text(f"⚠️ Пользователь {new_telegram_id} уже существует.")
         else:
             await update.message.reply_text(f"⚠️ Ошибка API: {e.response.status_code}")

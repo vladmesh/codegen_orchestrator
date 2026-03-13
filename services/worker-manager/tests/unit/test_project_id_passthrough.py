@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fakeredis import aioredis
 
+from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
@@ -310,7 +311,7 @@ class TestDeleteWorkerPreservation:
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-7", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-7", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -337,7 +338,7 @@ class TestDeleteWorkerPreservation:
                 "workspace_path": "/tmp/ws/w-8/workspace",
             },
         )
-        await redis.hset("worker:status:w-8", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-8", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -403,7 +404,7 @@ class TestDeleteWorkerRemovesFromActiveSet:
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-9", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-9", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -436,7 +437,7 @@ class TestWorkspaceGC:
         redis = aioredis.FakeRedis(decode_responses=True)
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        old_mtime = time.time() - (25 * 3600)  # 25 hours ago
+        old_mtime = time.time() - (36 * 3600)  # 36 hours ago (> 35h default)
 
         mock_stat = MagicMock()
         mock_stat.st_mtime = old_mtime
@@ -450,17 +451,20 @@ class TestWorkspaceGC:
             mock_ws_dir.stat.return_value = mock_stat
             mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
 
-            await manager.garbage_collect_workspaces(max_age_hours=24)
+            await manager.garbage_collect_workspaces()
 
-        mock_rm.assert_called_once_with(settings.WORKSPACE_BASE_PATH, "old-proj")
+        # Called for both WORKSPACE_BASE_PATH and SCAFFOLDED_WORKSPACE_PATH
+        assert mock_rm.call_count == 2
 
     @pytest.mark.asyncio
     async def test_workspace_gc_preserves_active_workspaces(self, mock_docker):
-        """Workspaces in active_projects set should not be removed regardless of age."""
+        """Workspaces with a live worker should not be removed regardless of age."""
         import time
 
         redis = aioredis.FakeRedis(decode_responses=True)
         await redis.sadd("workspace:active_projects", "active-proj")
+        # Must have a worker:meta entry so active_projects isn't cleaned as stale
+        await redis.hset("worker:meta:w1", mapping={"project_id": "active-proj"})
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
         old_mtime = time.time() - (48 * 3600)  # 48 hours ago
@@ -477,7 +481,7 @@ class TestWorkspaceGC:
             mock_ws_dir.stat.return_value = mock_stat
             mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
 
-            await manager.garbage_collect_workspaces(max_age_hours=24)
+            await manager.garbage_collect_workspaces()
 
         mock_rm.assert_not_called()
 
@@ -629,7 +633,7 @@ class TestFailureCounter:
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-10", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-10", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -654,7 +658,7 @@ class TestFailureCounter:
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-11", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-11", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -681,7 +685,7 @@ class TestFailureCounter:
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-12", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-12", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -707,7 +711,7 @@ class TestFailureCounter:
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-13", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-13", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -732,7 +736,7 @@ class TestFailureCounter:
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-14", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-14", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 

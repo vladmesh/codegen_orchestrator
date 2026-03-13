@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Optional, Dict, List
 import structlog
 from redis.asyncio import Redis
 
+from shared.contracts.dto.worker import WorkerStatus
+
 from .config import settings
 from .docker_ops import DockerClientWrapper
 from .image_builder import ImageBuilder
@@ -92,7 +94,7 @@ class WorkerManager:
                 await self.docker.create_network(dev_network)
 
             # Update Redis status
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "STARTING"})
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STARTING})
 
             # Build run kwargs
             run_kwargs = {
@@ -123,13 +125,13 @@ class WorkerManager:
             await self.redis.hset(f"worker:meta:{worker_id}", mapping=meta)
 
             # Update Redis status
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
 
             return container.id
 
         except Exception as e:
             logger.error("worker_creation_failed", worker_id=worker_id, error=str(e))
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "FAILED"})
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
             await self.redis.set(f"worker:error:{worker_id}", str(e))
             raise
 
@@ -194,25 +196,27 @@ class WorkerManager:
                 f"worker:meta:{worker_id}",
                 f"worker:error:{worker_id}",
                 f"worker:last_activity:{worker_id}",
+                f"worker:{worker_id}:input",
+                f"worker:{worker_id}:output",
             ]
             await self.redis.delete(*keys_to_delete)
 
         except Exception as e:
             logger.error("worker_deletion_failed", worker_id=worker_id, error=str(e))
-            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "STOPPED"})
+            await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
 
     async def pause_worker(self, worker_id: str) -> None:
         """Pause a running worker."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         await self.docker.pause_container(container_name)
-        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "PAUSED"})
+        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.PAUSED})
         logger.info("worker_paused", worker_id=worker_id)
 
     async def resume_worker(self, worker_id: str) -> None:
         """Resume a paused worker."""
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         await self.docker.unpause_container(container_name)
-        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
+        await self.redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
         logger.info("worker_resumed", worker_id=worker_id)
 
     async def garbage_collect_orphaned_resources(self) -> None:
@@ -240,6 +244,8 @@ class WorkerManager:
             logger.error("orphan_gc_list_containers_failed", error=str(e))
             containers = []
 
+        # Collect live container IDs for reverse check
+        live_container_ids: set[str] = set()
         for container in containers:
             worker_id = container.labels.get("com.codegen.worker.id")
             if worker_id and worker_id not in known_ids:
@@ -248,6 +254,27 @@ class WorkerManager:
                     await self.delete_worker(worker_id)
                 except Exception as e:
                     logger.error("orphan_gc_delete_worker_failed", worker_id=worker_id, error=str(e))
+            elif worker_id:
+                live_container_ids.add(worker_id)
+
+        # --- Stale Redis entries (Redis says alive, but no container) ---
+        for worker_id in known_ids:
+            if worker_id not in live_container_ids:
+                status = await self.redis.hget(f"worker:status:{worker_id}", "status")
+                if status and status not in self._TERMINAL_STATUSES:
+                    logger.warning(
+                        "orphan_gc_stale_redis",
+                        worker_id=worker_id,
+                        redis_status=status,
+                    )
+                    try:
+                        await self.delete_worker(worker_id)
+                    except Exception as e:
+                        logger.error(
+                            "orphan_gc_stale_cleanup_failed",
+                            worker_id=worker_id,
+                            error=str(e),
+                        )
 
         # --- Orphaned networks ---
         try:
@@ -288,30 +315,59 @@ class WorkerManager:
 
         logger.info("orphan_gc_complete")
 
-    async def garbage_collect_workspaces(self, max_age_hours: int = 24) -> None:
-        """Remove project workspaces older than max_age_hours with no active workers."""
+    async def garbage_collect_workspaces(self, max_age_hours: int = 35) -> None:
+        """Remove project workspaces older than max_age_hours with no active workers.
+
+        Scans both WORKSPACE_BASE_PATH (project workspaces) and
+        SCAFFOLDED_WORKSPACE_PATH (scaffolder output). Also cleans
+        stale workspace:active_projects entries.
+        """
+        # Clean stale active_projects entries — remove projects with no live worker
+        active_projects = await self.redis.smembers("workspace:active_projects")
+        for project_id in active_projects:
+            has_worker = False
+            async for key in self.redis.scan_iter(match="worker:meta:*"):
+                meta = await self.redis.hgetall(key)
+                if meta.get("project_id") == project_id:
+                    has_worker = True
+                    break
+            if not has_worker:
+                await self.redis.srem("workspace:active_projects", project_id)
+                logger.info("workspace_gc_cleared_stale_project", project_id=project_id)
+
+        # Refresh after cleanup
         active_projects = await self.redis.smembers("workspace:active_projects")
 
-        try:
-            entries = os.listdir(settings.WORKSPACE_BASE_PATH)
-        except FileNotFoundError:
-            entries = []
-        except Exception as e:
-            logger.error("workspace_gc_list_failed", error=str(e))
-            return
-
         now = time.time()
-        for entry in entries:
-            if entry in active_projects:
-                continue
-            ws_dir = Path(settings.WORKSPACE_BASE_PATH) / entry
+        paths_to_scan = [
+            settings.WORKSPACE_BASE_PATH,
+            settings.SCAFFOLDED_WORKSPACE_PATH,
+        ]
+        for base_path in paths_to_scan:
             try:
-                age_hours = (now - ws_dir.stat().st_mtime) / 3600
-            except OSError:
+                entries = os.listdir(base_path)
+            except FileNotFoundError:
                 continue
-            if age_hours > max_age_hours:
-                workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, entry)
-                logger.info("workspace_gc_removed", project_id=entry, age_hours=round(age_hours, 1))
+            except Exception as e:
+                logger.error("workspace_gc_list_failed", base_path=base_path, error=str(e))
+                continue
+
+            for entry in entries:
+                if entry in active_projects:
+                    continue
+                ws_dir = Path(base_path) / entry
+                try:
+                    age_hours = (now - ws_dir.stat().st_mtime) / 3600
+                except OSError:
+                    continue
+                if age_hours > max_age_hours:
+                    workspace_mod.remove_workspace(base_path, entry)
+                    logger.info(
+                        "workspace_gc_removed",
+                        project_id=entry,
+                        base_path=base_path,
+                        age_hours=round(age_hours, 1),
+                    )
 
     async def garbage_collect_images(self, retention_seconds: int = 7 * 24 * 3600) -> None:
         """Remove unused images."""
@@ -345,7 +401,7 @@ class WorkerManager:
 
             # Check status first - only pause RUNNING workers
             status = await self.get_worker_status(worker_id)
-            if status != "RUNNING":
+            if status != WorkerStatus.RUNNING:
                 continue
 
             last_activity_ts = await self.redis.get(key)
@@ -366,7 +422,7 @@ class WorkerManager:
         status = await self.redis.hget(f"worker:status:{worker_id}", "status")
         if status:
             return status
-        return "UNKNOWN"
+        return WorkerStatus.UNKNOWN
 
     async def ensure_or_build_image(
         self,
@@ -427,7 +483,7 @@ class WorkerManager:
         return ClaudeCodeAgent()
 
     # Statuses that indicate the worker is no longer alive and can be cleaned up
-    _TERMINAL_STATUSES = frozenset({"DEAD", "FAILED", "STOPPED"})
+    _TERMINAL_STATUSES = frozenset({WorkerStatus.DEAD, WorkerStatus.FAILED, WorkerStatus.STOPPED})
 
     async def _check_project_lock(self, project_id: str) -> str | None:
         """Check if another worker is active for this project.

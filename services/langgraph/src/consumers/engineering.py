@@ -395,7 +395,9 @@ async def _handle_worker_blocked(
 
 async def _fail_job(task_id: str, error_msg: str, planning_task_id: str | None = None) -> dict:
     """Mark a run as failed and optionally update planning task."""
-    await api_client.patch(f"runs/{task_id}", json={"status": "failed", "error_message": error_msg})
+    await api_client.patch(
+        f"runs/{task_id}", json={"status": RunStatus.FAILED.value, "error_message": error_msg}
+    )
     if planning_task_id:
         await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
     return {"status": "failed", "error": error_msg}
@@ -435,7 +437,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         # Update task status to running
         await api_client.patch(
             f"runs/{task_id}",
-            json={"status": "running", "started_at": datetime.now(UTC).isoformat()},
+            json={"status": RunStatus.RUNNING.value, "started_at": datetime.now(UTC).isoformat()},
         )
 
         # Publish progress event

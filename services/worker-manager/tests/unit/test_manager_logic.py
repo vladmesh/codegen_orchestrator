@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import uuid
 from fakeredis import aioredis
 
+from shared.contracts.dto.worker import WorkerStatus
 from src.manager import WorkerManager
 
 
@@ -146,7 +147,7 @@ async def test_delete_worker_full_cleanup():
             "workspace_path": f"/tmp/codegen/workspaces/{worker_id}/workspace",
         },
     )
-    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
     await redis.set(f"worker:error:{worker_id}", "some error")
     await redis.set(f"worker:last_activity:{worker_id}", "12345")
 
@@ -256,7 +257,7 @@ async def test_gc_removes_orphaned_workspace():
 async def test_gc_skips_known_workers():
     """GC should not remove resources belonging to known workers."""
     redis = aioredis.FakeRedis(decode_responses=True)
-    await redis.hset("worker:status:alive-1", mapping={"status": "RUNNING"})
+    await redis.hset("worker:status:alive-1", mapping={"status": WorkerStatus.RUNNING})
 
     wrapper = _make_docker_mock()
 
@@ -303,7 +304,7 @@ async def test_check_project_lock_cleans_dead_worker():
     # Simulate stale state: project in active set, worker keys exist but status is DEAD
     await redis.sadd("workspace:active_projects", project_id)
     await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
-    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "DEAD"})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.DEAD})
 
     result = await manager._check_project_lock(project_id)
 
@@ -327,7 +328,7 @@ async def test_check_project_lock_cleans_failed_worker():
 
     await redis.sadd("workspace:active_projects", project_id)
     await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
-    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "FAILED"})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.FAILED})
 
     result = await manager._check_project_lock(project_id)
 
@@ -347,7 +348,7 @@ async def test_check_project_lock_cleans_stopped_worker():
 
     await redis.sadd("workspace:active_projects", project_id)
     await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
-    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "STOPPED"})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.STOPPED})
 
     result = await manager._check_project_lock(project_id)
 
@@ -366,7 +367,7 @@ async def test_check_project_lock_keeps_running_worker():
 
     await redis.sadd("workspace:active_projects", project_id)
     await redis.hset(f"worker:meta:{worker_id}", mapping={"project_id": project_id})
-    await redis.hset(f"worker:status:{worker_id}", mapping={"status": "RUNNING"})
+    await redis.hset(f"worker:status:{worker_id}", mapping={"status": WorkerStatus.RUNNING})
 
     result = await manager._check_project_lock(project_id)
 

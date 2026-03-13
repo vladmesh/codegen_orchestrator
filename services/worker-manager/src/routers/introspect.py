@@ -12,6 +12,8 @@ import structlog
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from shared.contracts.dto.worker import WorkerStatus
+
 from ..config import settings
 
 logger = structlog.get_logger()
@@ -113,6 +115,7 @@ def _safe_resolve(workspace: Path, relative_path: str) -> Path:
 async def list_workers(request: Request):
     """List all known workers with their status and metadata."""
     redis = request.app.state.redis
+    docker = request.app.state.docker
     keys = await redis.keys("worker:status:*")
 
     workers = []
@@ -123,10 +126,19 @@ async def list_workers(request: Request):
         last_activity = await redis.get(f"worker:last_activity:{worker_id}")
         error = await redis.get(f"worker:error:{worker_id}")
 
+        # Cross-check with Docker — override status if container is gone
+        redis_status = status_data.get("status", WorkerStatus.UNKNOWN)
+        container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
+        try:
+            await docker.inspect_container(container_name)
+        except Exception:
+            if redis_status == WorkerStatus.RUNNING:
+                redis_status = WorkerStatus.GONE
+
         workers.append(
             WorkerSummary(
                 id=worker_id,
-                status=status_data.get("status", "UNKNOWN"),
+                status=redis_status,
                 project_id=meta.get("project_id"),
                 workspace_path=meta.get("workspace_path"),
                 dev_network=meta.get("dev_network"),
@@ -151,17 +163,19 @@ async def get_worker(worker_id: str, request: Request):
 
     container_id = None
     image = None
+    redis_status = status_data.get("status", WorkerStatus.UNKNOWN)
     container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
     try:
         attrs = await docker.inspect_container(container_name)
         container_id = attrs.get("Id")
         image = attrs.get("Config", {}).get("Image")
     except Exception:
-        pass
+        if redis_status == "RUNNING":
+            redis_status = "GONE"
 
     return WorkerDetail(
         id=worker_id,
-        status=status_data.get("status", "UNKNOWN"),
+        status=redis_status,
         project_id=meta.get("project_id"),
         workspace_path=meta.get("workspace_path"),
         dev_network=meta.get("dev_network"),

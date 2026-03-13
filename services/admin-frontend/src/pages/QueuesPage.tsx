@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import type { DebugQueuesResponse } from '@/types/api'
@@ -47,44 +48,52 @@ export function QueuesPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {data.bindings.map((b) => (
-            <Card key={`${b.stream}-${b.group}`}>
-              <div className="flex items-start justify-between">
-                <div>
-                  <h3 className="font-mono text-sm font-medium text-foreground">{b.stream}</h3>
-                  <p className="text-xs text-muted-foreground">
-                    {b.group} &mdash; {b.description}
-                  </p>
+            <Link
+              key={`${b.stream}-${b.group}`}
+              to={`/queues/${encodeURIComponent(b.stream)}/${encodeURIComponent(b.group)}`}
+              className="block transition-colors"
+            >
+              <Card className="hover:border-primary/50">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="font-mono text-sm font-medium text-foreground">{b.stream}</h3>
+                    <p className="text-xs text-muted-foreground">
+                      {b.group} &mdash; {b.description}
+                    </p>
+                  </div>
                 </div>
-              </div>
-              <div className="mt-3 grid grid-cols-4 gap-4 text-sm">
-                <div>
-                  <p className="text-muted-foreground">Length</p>
-                  <p className="text-lg font-semibold text-foreground">{b.stream_info.length}</p>
+                <div className="mt-3 grid grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <p className="text-muted-foreground">Length</p>
+                    <p className="text-lg font-semibold text-foreground">
+                      {b.stream_info.length}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Pending</p>
+                    <p
+                      className={`text-lg font-semibold ${
+                        b.group_info.pending > 0 ? 'text-yellow-400' : 'text-foreground'
+                      }`}
+                    >
+                      {b.group_info.pending}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Consumers</p>
+                    <p className="text-lg font-semibold text-foreground">
+                      {b.group_info.consumers}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Last ID</p>
+                    <p className="truncate font-mono text-xs text-muted-foreground">
+                      {b.group_info.last_delivered_id ?? '-'}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-muted-foreground">Pending</p>
-                  <p
-                    className={`text-lg font-semibold ${
-                      b.group_info.pending > 0 ? 'text-yellow-400' : 'text-foreground'
-                    }`}
-                  >
-                    {b.group_info.pending}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Consumers</p>
-                  <p className="text-lg font-semibold text-foreground">
-                    {b.group_info.consumers}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground">Last ID</p>
-                  <p className="truncate font-mono text-xs text-muted-foreground">
-                    {b.group_info.last_delivered_id ?? '-'}
-                  </p>
-                </div>
-              </div>
-            </Card>
+              </Card>
+            </Link>
           ))}
         </div>
       )}

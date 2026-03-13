@@ -18,6 +18,8 @@ from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ..clients.story_worker_registry import clear_story_worker, get_story_worker
+from ..clients.worker_spawner import delete_worker
 from ..schemas.api_types import ProjectInfo
 from ..subgraphs.devops import create_devops_subgraph
 from ._base import start_worker
@@ -272,6 +274,17 @@ async def _handle_deploy_success(
     # Complete the story now that deploy succeeded
     await _transition_story_safe(story_id, "complete")
 
+    # Clean up story worker — container is no longer needed
+    if story_id:
+        try:
+            worker_id = await get_story_worker(redis.redis, story_id)
+            if worker_id:
+                await delete_worker(worker_id, reason="completed")
+                logger.info("story_worker_deleted", story_id=story_id, worker_id=worker_id)
+            await clear_story_worker(redis.redis, story_id)
+        except Exception as e:
+            logger.warning("story_worker_cleanup_failed", story_id=story_id, error=str(e))
+
     await publish_callback_event(
         redis,
         callback_stream,
@@ -338,6 +351,19 @@ async def _handle_deploy_failure(
                 max_retries=MAX_DEPLOY_RETRIES,
             )
             await _transition_story_safe(story_id, "fail")
+            # Clean up story worker on permanent failure
+            try:
+                worker_id = await get_story_worker(redis.redis, story_id)
+                if worker_id:
+                    await delete_worker(worker_id, reason="failed")
+                    logger.info(
+                        "story_worker_deleted_on_fail",
+                        story_id=story_id,
+                        worker_id=worker_id,
+                    )
+                await clear_story_worker(redis.redis, story_id)
+            except Exception as e:
+                logger.warning("story_worker_cleanup_failed", story_id=story_id, error=str(e))
         else:
             logger.info(
                 "deploy_failure_rollback",

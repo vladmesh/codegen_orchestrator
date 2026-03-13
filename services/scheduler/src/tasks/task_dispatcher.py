@@ -352,6 +352,10 @@ def _parse_datetime(iso_str: str) -> datetime:
     return datetime.fromisoformat(iso_str)
 
 
+STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
+STORY_RETRY_TTL = 3600  # 1 hour — retries expire after this
+
+
 async def supervise_stuck_stories(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
@@ -360,18 +364,20 @@ async def supervise_stuck_stories(
 ) -> dict[str, int]:
     """Detect stories stuck in 'created' with no tasks and retry architect.
 
+    Retry counts are persisted in Redis so they survive scheduler restarts.
+
     Returns dict with 'retried' and 'failed' counts.
     """
     stories = await api_client.get_stories_by_status(StoryStatus.CREATED)
     retried = 0
     failed = 0
-    retry_counts = _retry_counts or {}
 
     # Build set of projects that already have an active story
     active_stories = await api_client.get_stories_by_status(StoryStatus.IN_PROGRESS)
     active_projects = {s.get("project_id") for s in active_stories}
 
     now = datetime.now(UTC)
+    redis = redis_client._redis
 
     for story in stories:
         story_id = story["id"]
@@ -393,7 +399,9 @@ async def supervise_stuck_stories(
 
         log = logger.bind(story_id=story_id, age_minutes=round(age_minutes, 1))
 
-        current_retries = retry_counts.get(story_id, 0)
+        retry_key = f"{STORY_RETRY_KEY_PREFIX}{story_id}"
+        raw = await redis.get(retry_key)
+        current_retries = int(raw) if raw else 0
 
         if current_retries >= STORY_MAX_ARCHITECT_RETRIES:
             log.error(
@@ -402,6 +410,7 @@ async def supervise_stuck_stories(
                 retries=current_retries,
             )
             await api_client.fail_story(story_id)
+            await redis.delete(retry_key)
             failed += 1
             continue
 
@@ -412,11 +421,11 @@ async def supervise_stuck_stories(
             user_id=story.get("user_id", ""),
         )
         await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
-        retry_counts[story_id] = current_retries + 1
+        await redis.set(retry_key, current_retries + 1, ex=STORY_RETRY_TTL)
 
         log.warning(
             "story_stuck_retry",
-            retry_attempt=retry_counts[story_id],
+            retry_attempt=current_retries + 1,
             max_retries=STORY_MAX_ARCHITECT_RETRIES,
         )
         retried += 1
@@ -547,8 +556,6 @@ async def task_dispatcher_loop() -> None:
 
     logger.info("task_dispatcher_started", interval=DISPATCH_INTERVAL_SECONDS)
 
-    story_retry_counts: dict[str, int] = {}
-
     try:
         while True:
             try:
@@ -557,9 +564,7 @@ async def task_dispatcher_loop() -> None:
                 completed = await complete_stories(api_client, redis_client)
 
                 # Supervisor checks
-                stuck_stories = await supervise_stuck_stories(
-                    api_client, redis_client, _retry_counts=story_retry_counts
-                )
+                stuck_stories = await supervise_stuck_stories(api_client, redis_client)
                 stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
                 failed_tasks = await supervise_failed_tasks(api_client, redis_client)
 

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch, AsyncMock
 from fakeredis import aioredis
 
+from shared.contracts.dto.worker import WorkerStatus
 from src.manager import WorkerManager
 
 
@@ -47,7 +48,7 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
 
     assert container_id == "container-123"
     status = await manager.get_worker_status(worker_id)
-    assert status == "RUNNING"
+    assert status == WorkerStatus.RUNNING
     mock_docker_client.run_container.assert_called_once()
 
     # 2. Pause (Simulating auto-pause or manual pause)
@@ -56,21 +57,21 @@ async def test_worker_lifecycle_flow(mock_docker_client, worker_settings):
 
     mock_docker_client.pause_container.assert_called_with("worker-test-" + worker_id)
     status = await manager.get_worker_status(worker_id)
-    assert status == "PAUSED"
+    assert status == WorkerStatus.PAUSED
 
     # 3. Resume
     await manager.resume_worker(worker_id)  # API to be implemented
 
     mock_docker_client.unpause_container.assert_called_with("worker-test-" + worker_id)
     status = await manager.get_worker_status(worker_id)
-    assert status == "RUNNING"
+    assert status == WorkerStatus.RUNNING
 
     # 4. Delete
     await manager.delete_worker(worker_id)
 
     mock_docker_client.remove_container.assert_called_with("worker-test-" + worker_id, force=True)
     status = await manager.get_worker_status(worker_id)
-    assert status == "UNKNOWN"
+    assert status == WorkerStatus.UNKNOWN
 
 
 @pytest.mark.asyncio
@@ -172,8 +173,8 @@ async def test_auto_pause_workers(mock_docker_client, worker_settings):
     mock_docker_client.pause_container = AsyncMock()
 
     # Setup status
-    await redis.hset(f"worker:status:{active_worker}", mapping={"status": "RUNNING"})
-    await redis.hset(f"worker:status:{idle_worker}", mapping={"status": "RUNNING"})
+    await redis.hset(f"worker:status:{active_worker}", mapping={"status": WorkerStatus.RUNNING})
+    await redis.hset(f"worker:status:{idle_worker}", mapping={"status": WorkerStatus.RUNNING})
 
     # Setup activity timestamps
     # Auto-pause threshold e.g. 600s

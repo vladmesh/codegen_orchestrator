@@ -84,7 +84,7 @@ async def lifespan(app: FastAPI):
     # Workspace GC every 6 hours (21600s)
     workspace_gc_task = asyncio.create_task(
         run_periodic_task(
-            lambda: worker_manager.garbage_collect_workspaces(max_age_hours=24),
+            lambda: worker_manager.garbage_collect_workspaces(max_age_hours=35),
             interval=21600,
             name="workspace_gc",
         )

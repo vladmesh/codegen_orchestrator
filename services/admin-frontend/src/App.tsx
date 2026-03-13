@@ -9,6 +9,7 @@ import { TaskDetailPage } from '@/pages/TaskDetailPage'
 import { WorkersPage } from '@/pages/WorkersPage'
 import { WorkerDetailPage } from '@/pages/WorkerDetailPage'
 import { QueuesPage } from '@/pages/QueuesPage'
+import { QueueDetailPage } from '@/pages/QueueDetailPage'
 import { ServersPage } from '@/pages/ServersPage'
 import { LogsPage } from '@/pages/LogsPage'
 
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="workers" element={<WorkersPage />} />
             <Route path="workers/:id" element={<WorkerDetailPage />} />
             <Route path="queues" element={<QueuesPage />} />
+            <Route path="queues/:stream/:group" element={<QueueDetailPage />} />
             <Route path="servers" element={<ServersPage />} />
             <Route path="logs" element={<LogsPage />} />
           </Route>

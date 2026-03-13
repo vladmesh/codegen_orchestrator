@@ -19,7 +19,9 @@ class InfrastructureAPIClient:
     """HTTP client for infrastructure-worker's required API endpoints."""
 
     def __init__(self) -> None:
-        api_base_url = os.getenv("API_BASE_URL", "http://api:8000")
+        api_base_url = os.getenv("API_BASE_URL")
+        if not api_base_url:
+            raise RuntimeError("API_BASE_URL is not set")
         self.base_url = api_base_url.rstrip("/")
         if self.base_url.endswith("/api"):
             raise RuntimeError("API_BASE_URL must not include /api")

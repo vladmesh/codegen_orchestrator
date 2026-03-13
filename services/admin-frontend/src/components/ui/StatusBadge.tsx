@@ -23,6 +23,7 @@ const statusColors: Record<string, string> = {
   // Worker statuses
   running: 'bg-green-900 text-green-200',
   paused: 'bg-yellow-900 text-yellow-200',
+  gone: 'bg-red-900 text-red-200',
   unknown: 'bg-zinc-700 text-zinc-200',
 }
 

@@ -108,6 +108,21 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         log.info("architect_skipping_finished_story", status=story_status)
         return {"status": "skipped", "reason": f"story already {story_status}"}
 
+    # Skip if already in_progress with tasks (duplicate message from supervisor retry)
+    if story_status == StoryStatus.IN_PROGRESS:
+        existing_tasks = await api_client.get_tasks_by_story(msg.story_id)
+        if existing_tasks:
+            log.info("architect_skipping_already_decomposed", task_count=len(existing_tasks))
+            return {"status": "skipped", "reason": "already decomposed"}
+
+    # Transition to in_progress immediately to prevent supervisor retries
+    if story_status == StoryStatus.CREATED:
+        try:
+            await api_client.transition_story(msg.story_id, "start")
+            log.info("architect_story_started")
+        except Exception as e:
+            log.warning("architect_story_start_failed", error=str(e))
+
     # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing
     project = await api_client.get_project(msg.project_id)
     if project and project.get("status") == ProjectStatus.DRAFT:

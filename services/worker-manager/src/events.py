@@ -14,10 +14,12 @@ import docker
 import redis.asyncio as aioredis
 import structlog
 
+from shared.contracts.dto.worker import WorkerStatus
+
 logger = structlog.get_logger()
 
-# Status value set when a container dies unexpectedly
-WORKER_DEAD_STATUS = "DEAD"
+# Backward-compatible alias used in tests
+WORKER_DEAD_STATUS = WorkerStatus.DEAD
 
 
 class DockerEventsListener:

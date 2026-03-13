@@ -23,6 +23,11 @@ def redis_client():
     client.redis = AsyncMock()
     client.redis.hget = AsyncMock(return_value=None)  # No story worker by default
     client.redis.hdel = AsyncMock()
+    # _redis is used by supervise_stuck_stories for retry counter persistence
+    client._redis = AsyncMock()
+    client._redis.get = AsyncMock(return_value=None)  # No retries by default
+    client._redis.set = AsyncMock()
+    client._redis.delete = AsyncMock()
     return client
 
 
@@ -137,9 +142,10 @@ class TestSuperviseStuckStories:
         api_client.get_tasks_by_story.return_value = []
         api_client.fail_story.return_value = {}
 
-        result = await supervise_stuck_stories(
-            api_client, redis_client, _retry_counts={"story-1": STORY_MAX_ARCHITECT_RETRIES}
-        )
+        # Simulate retry count already at max in Redis
+        redis_client._redis.get.return_value = str(STORY_MAX_ARCHITECT_RETRIES)
+
+        result = await supervise_stuck_stories(api_client, redis_client)
 
         assert result["failed"] == 1
         api_client.fail_story.assert_called_once_with("story-1")

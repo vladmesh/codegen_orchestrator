@@ -83,7 +83,7 @@ class TestListWorkers:
                 "something broke",
             ]
         )
-        app = _make_app(redis=redis)
+        app = _make_app(redis=redis, docker=docker)
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/")
         assert resp.status_code == HTTPStatus.OK
@@ -94,6 +94,42 @@ class TestListWorkers:
         assert data[0]["project_id"] == "p1"
         assert data[1]["id"] == "w2"
         assert data[1]["error"] == "something broke"
+
+    def test_stale_worker_shown_as_gone(self, redis, docker):
+        """Worker in Redis says RUNNING but container doesn't exist → GONE."""
+        redis.keys = AsyncMock(return_value=["worker:status:w1"])
+        redis.hgetall = AsyncMock(
+            side_effect=[
+                {"status": "RUNNING"},  # status
+                {"workspace_path": "/tmp/ws/w1/workspace", "project_id": "p1"},  # meta
+            ]
+        )
+        redis.get = AsyncMock(return_value=None)
+        docker.inspect_container = AsyncMock(side_effect=Exception("Not Found"))
+        app = _make_app(redis=redis, docker=docker)
+        with TestClient(app) as c:
+            resp = c.get("/api/introspect/workers/")
+        assert resp.status_code == HTTPStatus.OK
+        data = resp.json()
+        assert data[0]["status"] == "GONE"
+
+    def test_non_running_worker_keeps_status_when_no_container(self, redis, docker):
+        """Worker with status != RUNNING should keep its status even without container."""
+        redis.keys = AsyncMock(return_value=["worker:status:w1"])
+        redis.hgetall = AsyncMock(
+            side_effect=[
+                {"status": "COMPLETED"},
+                {},
+            ]
+        )
+        redis.get = AsyncMock(return_value=None)
+        docker.inspect_container = AsyncMock(side_effect=Exception("Not Found"))
+        app = _make_app(redis=redis, docker=docker)
+        with TestClient(app) as c:
+            resp = c.get("/api/introspect/workers/")
+        assert resp.status_code == HTTPStatus.OK
+        data = resp.json()
+        assert data[0]["status"] == "COMPLETED"
 
 
 class TestGetWorker:
@@ -120,6 +156,24 @@ class TestGetWorker:
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/nonexistent")
         assert resp.status_code == HTTPStatus.NOT_FOUND
+
+    def test_stale_worker_detail_shown_as_gone(self, redis, docker):
+        """get_worker returns GONE when container is missing but Redis says RUNNING."""
+        redis.hgetall = AsyncMock(
+            side_effect=[
+                {"status": "RUNNING"},
+                {"workspace_path": "/tmp/ws/w1/workspace", "project_id": "p1"},
+            ]
+        )
+        redis.get = AsyncMock(return_value=None)
+        docker.inspect_container = AsyncMock(side_effect=Exception("Not Found"))
+        app = _make_app(redis=redis, docker=docker)
+        with TestClient(app) as c:
+            resp = c.get("/api/introspect/workers/w1")
+        assert resp.status_code == HTTPStatus.OK
+        data = resp.json()
+        assert data["status"] == "GONE"
+        assert data["container_id"] is None
 
 
 class TestGetWorkerLogs:
