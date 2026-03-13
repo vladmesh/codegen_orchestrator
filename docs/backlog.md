@@ -30,15 +30,9 @@
 - **Status**: backlog
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
-### #1007 Worker-manager introspection API — list, logs, tree, files, prompts, kill
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Add a lightweight FastAPI HTTP API inside worker-manager (port 8001, internal network only). Endpoints: GET /workers/ (list active workers from Redis), GET /workers/{id} (details), GET /workers/{id}/logs (stdout, optional ?follow=true for SSE), GET /workers/{id}/tree (workspace file listing), GET...
-
 ### #1008 Admin Phase 2 — worker inspector + queues + action buttons
 - **Priority**: CRITICAL
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Add Worker Inspector and Queue Health pages to admin-frontend React SPA. Workers page: list active workers with status/uptime/project link (from worker-manager API /wm-api/*). Worker detail: tabbed view with console (logs), prompts (CLAUDE.md + TASK.md), file tree + file viewer. Queue health page...
 
@@ -264,6 +258,7 @@
 
 ## Done (last 10)
 
+- #1007 Worker-manager introspection API — list, logs, tree, files, prompts, kill — 2026-03-13
 - Admin auth + single entry point — proxy Grafana through admin, close extra ports — 2026-03-13
 - Admin frontend scaffold — React + Vite + shadcn/ui + nginx container + docker-compose — 2026-03-13
 - Observability stack: JSON logging + Loki + Grafana + correlation propagation — 2026-03-13
@@ -273,7 +268,6 @@
 - HITL MVP: WAITING_HUMAN_REVIEW status + report-blocker + admin resume/requeue — 2026-03-12
 - Story/Task reopen flow with user_report field — 2026-03-12
 - Run tests, verify CI green — 2026-03-11
-- Fix tarot card image display with local assets and fallback — 2026-03-11
 
 ## Ideas
 

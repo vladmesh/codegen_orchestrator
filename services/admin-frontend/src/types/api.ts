@@ -65,6 +65,66 @@ export interface QueueHealth {
   }
 }
 
+// /debug/queues actual response
+export interface QueueBinding {
+  stream: string
+  group: string
+  description: string
+  stream_info: { length: number }
+  group_info: {
+    consumers: number
+    pending: number
+    last_delivered_id: string | null
+  }
+}
+
+export interface DebugQueuesResponse {
+  status: 'ok' | 'degraded'
+  bindings: QueueBinding[]
+  issues: string[]
+}
+
+// Worker-manager introspection API (/wm-api/*)
+export interface WorkerSummary {
+  id: string
+  status: string
+  project_id: string | null
+  workspace_path: string | null
+  dev_network: string | null
+  last_activity: string | null
+  error: string | null
+}
+
+export interface WorkerDetail extends WorkerSummary {
+  container_id: string | null
+  image: string | null
+}
+
+export interface WorkerLogsResponse {
+  worker_id: string
+  logs: string
+  tail: number
+}
+
+export interface FileTreeEntry {
+  path: string
+  is_dir: boolean
+  size: number
+}
+
+export interface FileContentResponse {
+  worker_id: string
+  path: string
+  content: string
+  size: number
+}
+
+export interface PromptsResponse {
+  worker_id: string
+  claude_md: string | null
+  task_md: string | null
+}
+
 export interface Server {
   id: string
   name: string

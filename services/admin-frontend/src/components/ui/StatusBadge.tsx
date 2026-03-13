@@ -20,6 +20,10 @@ const statusColors: Record<string, string> = {
   provisioning: 'bg-yellow-900 text-yellow-200',
   ready: 'bg-green-900 text-green-200',
   error: 'bg-red-900 text-red-200',
+  // Worker statuses
+  running: 'bg-green-900 text-green-200',
+  paused: 'bg-yellow-900 text-yellow-200',
+  unknown: 'bg-zinc-700 text-zinc-200',
 }
 
 export function StatusBadge({ status }: { status: string }) {

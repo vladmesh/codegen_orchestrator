@@ -7,6 +7,7 @@ import { ProjectDetailPage } from '@/pages/ProjectDetailPage'
 import { TasksPage } from '@/pages/TasksPage'
 import { TaskDetailPage } from '@/pages/TaskDetailPage'
 import { WorkersPage } from '@/pages/WorkersPage'
+import { WorkerDetailPage } from '@/pages/WorkerDetailPage'
 import { QueuesPage } from '@/pages/QueuesPage'
 import { ServersPage } from '@/pages/ServersPage'
 import { LogsPage } from '@/pages/LogsPage'
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="tasks" element={<TasksPage />} />
             <Route path="tasks/:id" element={<TaskDetailPage />} />
             <Route path="workers" element={<WorkersPage />} />
+            <Route path="workers/:id" element={<WorkerDetailPage />} />
             <Route path="queues" element={<QueuesPage />} />
             <Route path="servers" element={<ServersPage />} />
             <Route path="logs" element={<LogsPage />} />
