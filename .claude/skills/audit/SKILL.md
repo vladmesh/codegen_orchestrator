@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Scan codebase for dead code, code smells, security issues, contract violations, and architectural deviations. Creates/updates docs/audit.md and adds actionable items to backlog. Use when user says "audit", "scan", "check code quality", or wants to find hardcoded strings, bypassed abstractions, or drift from shared contracts.
+description: Scan codebase for dead code, code smells, security issues, contract violations, missing DTOs, and architectural deviations. Creates/updates docs/audit.md and adds actionable items to backlog. Use when user says "audit", "scan", "check code quality", or wants to find hardcoded strings, bypassed abstractions, missing schemas, untyped API boundaries, or drift from shared contracts.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[--scope <path>]"
 ---
@@ -62,6 +62,13 @@ Check each category:
 - Raw dicts published to streams instead of Pydantic DTOs
 - Hardcoded Redis key patterns without centralized constants
 
+**Missing DTOs & schema gaps** (see detailed guide in "Missing DTOs — How to Scan" below):
+- API client methods accepting or returning raw `dict` instead of Pydantic models
+- Raw dict literals constructed inline for API payloads (project creation, deployments, incidents, etc.)
+- API responses consumed as `response.json()["field"]` without model validation
+- TypedDicts used as stand-ins where a shared Pydantic DTO would enforce the contract
+- Inconsistent typing across services: one client validates through DTOs, another uses raw dicts for the same entity
+
 **Convention violations:**
 - `print()` in service code — must use `structlog` (see CLAUDE.md)
 - `os.getenv("VAR", "default")` with fallback values — must fail fast with `RuntimeError` (see CLAUDE.md)
@@ -87,6 +94,7 @@ Write/overwrite `docs/audit.md`:
 - Code smells: N issues
 - Security: N issues
 - Contract violations: N issues
+- Missing DTOs & schema gaps: N issues
 - Convention violations: N issues
 - Test gaps: N issues
 
@@ -109,6 +117,12 @@ Write/overwrite `docs/audit.md`:
 |-----------|-----------|-----------|----------|
 | `services/scheduler/src/tasks/task_dispatcher.py:114` | `"todo"` hardcoded | `TaskStatus.TODO.value` | high |
 | `services/scheduler/src/tasks/scaffold_trigger.py:77` | direct `redis.xadd()` | `redis_client.publish_message()` | medium |
+
+## Missing DTOs & Schema Gaps
+| File:Line | Pattern | Suggested DTO | Severity |
+|-----------|---------|---------------|----------|
+| `services/langgraph/src/clients/api.py:85` | `create_service_deployment(payload: dict)` | `ServiceDeploymentCreate` | high |
+| `services/langgraph/src/agents/po/tools.py:117` | inline `{"project_id": ..., "name": ...}` | `RepositoryCreate` | medium |
 
 ## Convention Violations
 | File:Line | Violation | Rule |
@@ -222,6 +236,96 @@ rg -n 'f"[a-z]+:[a-z]+:\{' services/ --type py --glob '!**/tests/**'
 ```
 
 **Severity**: low-medium — works but key pattern changes require multi-file grep.
+
+---
+
+## Missing DTOs — How to Scan
+
+This section detects places where code constructs or consumes data as raw dicts, but a Pydantic model should enforce the contract. The difference from "Contract Violations" above: contract violations catch cases where a shared DTO **already exists** but is bypassed. This section catches cases where the DTO **doesn't exist yet** and should be created.
+
+### Untyped API client methods
+
+API clients should accept Pydantic models as input and return validated models as output. Methods with `dict` signatures are schema gaps — the contract lives only in the caller's head.
+
+**How to detect**:
+
+```bash
+# Client methods with dict params or return types
+rg -n 'def \w+\(.*payload:\s*dict' services/ --type py --glob '!**/tests/**'
+rg -n '\) -> dict:|\) -> list\[dict\]:' services/ --type py --glob '!**/tests/**'
+```
+
+Then check: does a shared DTO exist for this entity in `shared/contracts/dto/`? If the API has a schema in `services/api/src/schemas/` but there's no matching shared DTO, that's a gap.
+
+**What to report**: the method signature, the entity it operates on, and whether an API schema already exists (makes the fix easier — just promote it to shared).
+
+**Severity**: high for write operations (create/update — invalid data silently accepted), medium for read operations (unvalidated responses).
+
+### Inline dict literals for API payloads
+
+When code builds a `{"project_id": ..., "status": ...}` dict and passes it to an API call, the schema is implicit. If a field is added or renamed in the API, the caller breaks at runtime with no static warning.
+
+**How to detect**:
+
+```bash
+# Dict literals passed to HTTP methods
+rg -n '\.post\(.*, json=\{' services/ --type py --glob '!**/tests/**'
+rg -n '\.put\(.*, json=\{' services/ --type py --glob '!**/tests/**'
+rg -n '\.patch\(.*, json=\{' services/ --type py --glob '!**/tests/**'
+
+# Dict literals passed to client methods
+rg -n 'await.*\.\w+\(\s*\{' services/ --type py --glob '!**/tests/**' -A2
+```
+
+**False positives to ignore**: simple query params like `{"status": enum.value}` used as `params=` (not `json=`). Focus on `json=` payloads with 2+ fields — those are the ones that benefit from a model.
+
+**Severity**: medium-high — works until the API schema changes.
+
+### Unvalidated API responses
+
+When a client does `resp.json()` and indexes into the result (`resp.json()["id"]`), or returns the raw dict to callers, there's no validation that the response matches expectations. Compare with the good pattern: `ProjectDTO.model_validate(resp.json())`.
+
+**How to detect**:
+
+```bash
+# Raw json access without model validation
+rg -n '\.json\(\)\[' services/ --type py --glob '!**/tests/**'
+rg -n 'return.*\.json\(\)$' services/ --type py --glob '!**/tests/**'
+```
+
+Then check: is there a DTO for this entity? If yes, the response should be validated through it. If no, that's a gap — both the DTO and the validation are missing.
+
+**Severity**: medium — silent breakage when API response shape changes.
+
+### TypedDicts that should be shared Pydantic DTOs
+
+TypedDicts provide type hints but no runtime validation. If a TypedDict is used at a service boundary (API responses, queue messages), it should be a Pydantic model in `shared/contracts/`.
+
+**How to detect**:
+
+```bash
+rg -n 'class \w+\(TypedDict\)' services/ --type py --glob '!**/tests/**'
+```
+
+Then check: is this TypedDict used purely internally (LangGraph state — fine), or does it describe data crossing a service boundary (API response shapes — should be a shared DTO)?
+
+**Severity**: low-medium for internal use, high for boundary types.
+
+### Cross-service consistency check
+
+Different services sometimes type the same entity differently. For example, one service might validate `Project` responses through `ProjectDTO`, while another uses raw dicts for the same API endpoint.
+
+**How to detect**: For each entity with a shared DTO, grep for both the DTO usage and raw dict patterns across all services:
+
+```bash
+# Example: who uses ProjectDTO vs raw dicts for projects?
+rg -n 'ProjectDTO' services/ --type py --glob '!**/tests/**'
+rg -n 'projects.*\.json\(\)' services/ --type py --glob '!**/tests/**'
+```
+
+If service A validates and service B doesn't for the same entity — flag service B.
+
+**Severity**: medium — inconsistency means one service is protected and another isn't.
 
 ---
 
