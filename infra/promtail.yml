@@ -48,6 +48,12 @@ scrape_configs:
             level: level
           source: output
 
+      # Normalize "warn" → "warning" (Go loggers use "warn", Python uses "warning")
+      - replace:
+          expression: '(^warn$)'
+          source: level
+          replace: warning
+
       # Add extracted fields as labels
       - labels:
           service:
