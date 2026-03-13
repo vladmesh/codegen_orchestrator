@@ -171,6 +171,19 @@ Worker-manager — единственный сервис с Docker socket и д�
 - ✅ /health excluded from auth (Docker healthcheck)
 - ✅ Sidebar simplified: all routes internal, no external link logic
 
+### Phase 1.5b: Observability fixes (hotfix после Phase 1.5)
+
+- ✅ Promtail: добавлен explicit `job=docker` label (docker_sd_configs не ставит автоматически)
+- ✅ Dashboard: stream selector переключён на `compose_service` (вместо `job="docker"`)
+- ✅ Dashboard: `allValue` исправлен `.*` → `.+` (Loki отвергает empty-compatible regex)
+- ✅ Dashboard: level filter переключён на `label_values(level)` (auto-populate из Loki)
+- ✅ Unified JSON logging: Loki (`-log.format=json`), Grafana (`GF_LOG_CONSOLE_FORMAT=json`), Promtail (`-log.format=json`), Caddy (`log { format json }`), nginx (custom `json_log` format)
+- ✅ Promtail pipeline упрощён до одного `json` stage (все сервисы теперь JSON)
+- ✅ Normalize `warn` → `warning` (Go vs Python)
+- ✅ `grafana-lokiexplore-app` плагин отключён (ломается с sub-path proxy, не критичен)
+- ✅ `GF_SERVER_ROOT_URL` указывает на внешний hostname (для корректного WebSocket URL)
+- ⚠️ Redis и PostgreSQL остаются plain text (нет JSON-режима / несовместим с Docker stdout)
+
 ### Phase 2: Worker inspector + очереди + операции
 - Worker-manager HTTP API (endpoints выше)
 - Workers page: list, status, uptime, project link
@@ -199,6 +212,7 @@ Worker-manager — единственный сервис с Docker socket и д�
 - ✅ ~~"Admin frontend scaffold — React + Vite + shadcn/ui + nginx container + docker-compose"~~ → #task-57cc3462
 - ✅ ~~"Grafana: expose port + allow iframe embedding for admin panel"~~ → сделано в рамках #task-57cc3462
 - ✅ ~~CORS middleware~~ → не нужен, решено nginx proxy
+- ✅ ~~Observability fixes: unified JSON logging + Grafana dashboard~~ → hotfix после Phase 1.5
 
 ### Backend
 - → new task: "Worker-manager introspection API — list, logs, tree, files, prompts, kill"
