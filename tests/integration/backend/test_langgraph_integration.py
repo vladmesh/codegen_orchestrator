@@ -18,18 +18,22 @@ from shared.contracts.queues.engineering import EngineeringMessage
 
 
 async def _create_run(
-    api_client, run_id: str, project_id: str, planning_task_id: str | None = None
+    api_client,
+    run_id: str,
+    project_id: str | None,
+    planning_task_id: str | None = None,
 ):
     """Create a Run record via API (replicates what task_dispatcher does)."""
-    body = {
+    body: dict = {
         "id": run_id,
         "type": "engineering",
-        "project_id": project_id,
         "run_metadata": {
             "triggered_by": "integration_test",
             "task_id": planning_task_id,
         },
     }
+    if project_id is not None:
+        body["project_id"] = project_id
     resp = await api_client.post("/api/runs/", json=body)
     assert resp.status_code == 201, f"Failed to create run: {resp.text}"
     return resp.json()
@@ -135,8 +139,10 @@ class TestLangGraphIntegration:
             project_id=project["id"],
         )
 
-        # Create run (referencing fake project)
-        await _create_run(api_client, run_id, fake_project_id, planning_task_id=task["id"])
+        # Create run WITHOUT project_id (Run.project_id has FK constraint,
+        # so we can't use a fake UUID). The engineering worker looks up
+        # the project by msg.project_id, not run.project_id.
+        await _create_run(api_client, run_id, project_id=None, planning_task_id=task["id"])
 
         # Queue message referencing non-existent project
         msg = EngineeringMessage(

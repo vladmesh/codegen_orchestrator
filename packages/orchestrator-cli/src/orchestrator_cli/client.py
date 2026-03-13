@@ -11,7 +11,10 @@ def get_config() -> Config:
 
 def get_api_client() -> httpx.AsyncClient:
     config = get_config()
-    return httpx.AsyncClient(base_url=config.api_url)
+    headers = {}
+    if config.telegram_id:
+        headers["X-Telegram-ID"] = config.telegram_id
+    return httpx.AsyncClient(base_url=config.api_url, headers=headers)
 
 
 def get_redis_client() -> redis.Redis:

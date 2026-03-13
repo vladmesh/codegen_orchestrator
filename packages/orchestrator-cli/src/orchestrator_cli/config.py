@@ -19,3 +19,9 @@ class Config(BaseSettings):
         alias="ORCHESTRATOR_WORKER_MANAGER_URL",
         description="URL of the Worker Manager service",
     )
+
+    telegram_id: str | None = Field(
+        None,
+        alias="ORCHESTRATOR_TELEGRAM_ID",
+        description="Telegram ID for user-scoped API requests",
+    )

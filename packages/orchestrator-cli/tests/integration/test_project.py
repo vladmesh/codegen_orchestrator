@@ -11,6 +11,24 @@ from shared.contracts.dto.project import ProjectDTO
 
 # Configuration
 API_URL = os.getenv("ORCHESTRATOR_API_URL", "http://api:8000")
+TEST_TELEGRAM_ID = "999000"
+
+
+@pytest.fixture(autouse=True)
+async def ensure_test_user():
+    """Ensure the test user exists before running CLI commands."""
+    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+        resp = await client.get(f"/api/users/by-telegram/{TEST_TELEGRAM_ID}")
+        if resp.status_code == 404:
+            resp = await client.post(
+                "/api/users/upsert",
+                json={
+                    "telegram_id": int(TEST_TELEGRAM_ID),
+                    "username": "cli-test-user",
+                },
+                headers={"X-Telegram-ID": TEST_TELEGRAM_ID},
+            )
+            resp.raise_for_status()
 
 
 @pytest.mark.asyncio
@@ -31,10 +49,14 @@ async def test_project_create():
         [orchestrator_cmd, "project", "create", "--name", project_name, "--json"],
         capture_output=True,
         text=True,
-        env={**os.environ, "ORCHESTRATOR_API_URL": API_URL},
+        env={
+            **os.environ,
+            "ORCHESTRATOR_API_URL": API_URL,
+            "ORCHESTRATOR_TELEGRAM_ID": TEST_TELEGRAM_ID,
+        },
     )
 
-    assert result.returncode == 0, f"CLI command failed: {result.stderr}"
+    assert result.returncode == 0, f"CLI command failed: {result.stdout}\n{result.stderr}"
 
     data = json.loads(result.stdout)
     project_id = data["id"]
