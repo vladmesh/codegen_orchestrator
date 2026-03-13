@@ -269,6 +269,7 @@ services:
       PYTHONPATH: /app
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scheduler
+      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-300}
     volumes:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated

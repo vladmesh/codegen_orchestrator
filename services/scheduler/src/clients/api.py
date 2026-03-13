@@ -151,6 +151,18 @@ class SchedulerAPIClient:
         resp = await self._request("GET", "tasks/", params={"story_id": story_id})
         return resp.json()
 
+    async def get_tasks_by_project_and_status(
+        self,
+        project_id: str,
+        status: str,
+    ) -> list[dict]:
+        resp = await self._request(
+            "GET",
+            "tasks/",
+            params={"project_id": project_id, "status": status},
+        )
+        return resp.json()
+
     async def create_task(self, task_data: dict) -> dict:
         resp = await self._request("POST", "tasks/", json=task_data)
         return resp.json()

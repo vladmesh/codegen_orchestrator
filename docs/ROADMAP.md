@@ -25,6 +25,7 @@
 - [x] #52 Scaffold script не экранирует task_description
 - [x] #21 Deploy Pre-Check
 - [x] Observability stack: JSON logging + Loki + Grafana + correlation propagation
+- [ ] Scaffolder: ensure-workspace gate — always verify workspace before pipeline proceeds
 - [x] #54 Deploy: inter-service URL должен использовать docker service name
 - [ ] #60 Engineering worker work_item lifecycle (Step 5)
 - [ ] Fix eager import chains in scaffolded projects
@@ -341,6 +342,27 @@ Bot username: @vlad_test_bot_factory_bot
 Token stored as TELEGRAM_BOT_TOKEN
 Admin ID stored as ADMIN_TELEGRAM_ID_
 
+## Add /revert command to reverse text
+
+Добавить команду /revert в бота, которая переворачивает текст задом наперёд.
+
+**Функционал:**
+- Команда: `/revert <текст>`
+- Принимает аргумент (слово или фразу) после команды
+- Возвращает этот текст в обратном порядке (задом наперёд)
+
+**Примеры использования:**
+- `/revert hello` → `olleh`
+- `/revert привет` → `тевирп`
+- `/revert hello world` → `dlrow olleh`
+
+**Технические детали:**
+- Команда доступна всем авторизованным пользователям бота (админ + добавленные через /add_user)
+- Если аргумент не передан, показать сообщение с примером использования: "Использование: /revert <текст>"
+- Просто развернуть строку в обратном порядке и отправить результат
+
+- [ ] Implement /revert command to reverse text
+
 ## Product decomposition + Architect node
 
 PO умеет принимать от юзера высокоуровневое описание и формулировать из него продуктовые stories. Architect нода берёт story + контекст проекта (спеки, кодбаза) и дробит на технические tasks с зависимостями. Юзер видит stories (продуктовый уровень), tasks абстрагированы. Юзер может влиять на stories через диалог с PO.
@@ -489,7 +511,6 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 ## Unlinked Tasks
 
-- [ ] Workspace browser — workspace как первичная сущность с project-level browsing
 - [ ] #1005 Standardize PYTHONPATH and import patterns across service-template services
 - [ ] debug test
 - [ ] Add TTL/cleanup for stale Redis queue messages

@@ -9,6 +9,9 @@ from shared.contracts.dto.project import ProjectStatus
 from src.consumer import process_scaffold_job
 from src.scaffold import ScaffoldResult
 
+# Shared env dict for tests needing GITHUB_ORG
+_GITHUB_ENV = {"GITHUB_ORG": "project-factory-organization"}
+
 
 @pytest.fixture
 def valid_job_data():
@@ -162,3 +165,90 @@ class TestProcessScaffoldJob:
     async def test_invalid_message_returns_skipped(self, mock_redis):
         result = await process_scaffold_job({"bad": "data"}, mock_redis)
         assert result["status"] == "skipped"
+
+
+class TestProcessScaffoldJobEnsureMode:
+    """Tests for mode=ensure path in consumer."""
+
+    @pytest.fixture
+    def ensure_job_data(self, valid_job_data):
+        return {**valid_job_data, "mode": "ensure"}
+
+    @pytest.mark.asyncio
+    async def test_ensure_calls_run_ensure_workspace(
+        self, ensure_job_data, mock_redis, mock_api, mock_github
+    ):
+        """mode=ensure should call run_ensure_workspace, not run_scaffold."""
+        ensure_result = ScaffoldResult(success=True, tree=".\n-- src")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_ensure_workspace", return_value=ensure_result) as mock_ensure,
+            patch("src.consumer.run_scaffold") as mock_full,
+            patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            mock_settings.return_value = MagicMock()
+            result = await process_scaffold_job(ensure_job_data, mock_redis)
+
+        assert result["status"] == "success"
+        mock_ensure.assert_called_once()
+        mock_full.assert_not_called()
+        # Should NOT change project status (project is already ACTIVE)
+        mock_api.update_project_status.assert_not_called()
+        # Should update config with workspace_ready
+        mock_api.update_project_config.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ensure_skipped_returns_skipped_status(
+        self, ensure_job_data, mock_redis, mock_api, mock_github
+    ):
+        """mode=ensure with existing workspace → status=skipped."""
+        ensure_result = ScaffoldResult(success=True, skipped=True)
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_ensure_workspace", return_value=ensure_result),
+            patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            mock_settings.return_value = MagicMock()
+            result = await process_scaffold_job(ensure_job_data, mock_redis)
+
+        assert result["status"] == "skipped"
+        # Should NOT update config when skipped
+        mock_api.update_project_config.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_full_mode_calls_run_scaffold(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """Default mode (full) should call run_scaffold, not run_ensure_workspace."""
+        scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_scaffold", return_value=scaffold_result) as mock_full,
+            patch("src.consumer.run_ensure_workspace") as mock_ensure,
+            patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(
+                os.environ,
+                {
+                    **_GITHUB_ENV,
+                    "ORCHESTRATOR_HOSTNAME": "registry.example.com",
+                    "REGISTRY_USER": "admin",
+                    "REGISTRY_PASSWORD": "secret",
+                },
+            ),
+        ):
+            mock_settings.return_value = MagicMock()
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "success"
+        mock_full.assert_called_once()
+        mock_ensure.assert_not_called()
+        # Full mode SHOULD set project status to ACTIVE
+        mock_api.update_project_status.assert_called_once_with("proj-123", ProjectStatus.ACTIVE)

@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from pathlib import Path
 
+import httpx
 from fakeredis import aioredis
 
 from shared.contracts.dto.worker import WorkerStatus
@@ -446,6 +447,7 @@ class TestWorkspaceGC:
             patch("os.listdir", return_value=["old-proj"]),
             patch("src.manager.Path") as mock_path_cls,
             patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+            patch.object(manager, "_notify_workspace_deleted", new_callable=AsyncMock),
         ):
             mock_ws_dir = MagicMock()
             mock_ws_dir.stat.return_value = mock_stat
@@ -455,6 +457,35 @@ class TestWorkspaceGC:
 
         # Called for both WORKSPACE_BASE_PATH and SCAFFOLDED_WORKSPACE_PATH
         assert mock_rm.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_workspace_gc_notifies_api_on_delete(self, mock_docker):
+        """GC calls _notify_workspace_deleted for each removed workspace."""
+        import time
+
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        old_mtime = time.time() - (48 * 3600)
+
+        mock_stat = MagicMock()
+        mock_stat.st_mtime = old_mtime
+
+        with (
+            patch("os.listdir", return_value=["repo-abc"]),
+            patch("src.manager.Path") as mock_path_cls,
+            patch("src.manager.workspace_mod.remove_workspace"),
+            patch.object(manager, "_notify_workspace_deleted", new_callable=AsyncMock) as mock_notify,
+        ):
+            mock_ws_dir = MagicMock()
+            mock_ws_dir.stat.return_value = mock_stat
+            mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
+
+            await manager.garbage_collect_workspaces()
+
+        # Called once per scan path (WORKSPACE_BASE_PATH + SCAFFOLDED_WORKSPACE_PATH)
+        assert mock_notify.call_count == 2
+        mock_notify.assert_any_call("repo-abc")
 
     @pytest.mark.asyncio
     async def test_workspace_gc_preserves_active_workspaces(self, mock_docker):
@@ -510,6 +541,41 @@ class TestWorkspaceGC:
             await manager.garbage_collect_workspaces(max_age_hours=24)
 
         mock_rm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_notify_workspace_deleted_calls_api(self, mock_docker):
+        """_notify_workspace_deleted POSTs to the API endpoint."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("src.manager.httpx.AsyncClient", return_value=mock_client):
+            await manager._notify_workspace_deleted("repo-xyz")
+
+        mock_client.post.assert_awaited_once()
+        call_url = mock_client.post.call_args[0][0]
+        assert "repo-xyz" in call_url
+        assert "notify-workspace-deleted" in call_url
+
+    @pytest.mark.asyncio
+    async def test_notify_workspace_deleted_handles_errors(self, mock_docker):
+        """_notify_workspace_deleted doesn't raise on API errors."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch(
+            "src.manager.httpx.AsyncClient",
+            side_effect=httpx.ConnectError("connection refused"),
+        ):
+            # Should not raise
+            await manager._notify_workspace_deleted("repo-xyz")
 
 
 # --- Phase 5: Project mutex ---

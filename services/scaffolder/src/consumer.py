@@ -22,7 +22,7 @@ from shared.redis_client import RedisStreamClient
 from src.clients.api import get_api_client
 from src.clients.github import get_github_client
 from src.config import get_settings
-from src.scaffold import run_scaffold
+from src.scaffold import run_ensure_workspace, run_scaffold
 from src.spec_extractor import extract_specs_summary
 
 logger = structlog.get_logger(__name__)
@@ -65,86 +65,138 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         if not org:
             raise RuntimeError("GITHUB_ORG environment variable is not set")
         repo_full_name = f"{org}/{msg.project_name}"
-
-        # Create GitHub repo (idempotent — ignores 422 if already exists)
-        github_repo = None
-        try:
-            github_repo = await github.create_repo(org, msg.project_name, private=True)
-        except Exception as e:
-            if "422" not in str(e):
-                raise
-
-        # Update repository git_url + provider_repo_id so github_sync can match
-        git_url = f"https://github.com/{repo_full_name}"
-        update_fields: dict = {"git_url": git_url}
-        if github_repo:
-            update_fields["provider_repo_id"] = github_repo.id
-        await api.update_repository(msg.repository_id, **update_fields)
-
-        # Set registry secrets so CI build-and-push can work from first commit
-        registry_url = os.environ.get("ORCHESTRATOR_HOSTNAME", "")
-        registry_user = os.environ.get("REGISTRY_USER", "")
-        registry_password = os.environ.get("REGISTRY_PASSWORD", "")
-        if all([registry_url, registry_user, registry_password]):
-            github_token_for_secrets = await github.get_org_token(org)
-            count = await github.set_repository_secrets(
-                org,
-                msg.project_name,
-                {
-                    "REGISTRY_URL": registry_url,
-                    "REGISTRY_USER": registry_user,
-                    "REGISTRY_PASSWORD": registry_password,
-                },
-                token=github_token_for_secrets,
-            )
-            log.info("registry_secrets_set", count=count)
-        else:
-            log.warning(
-                "registry_secrets_skipped",
-                has_url=bool(registry_url),
-                has_user=bool(registry_user),
-                has_password=bool(registry_password),
-            )
-
         github_token = await github.get_org_token(org)
 
-        # Run scaffold
-        result = await run_scaffold(
-            project_id=msg.project_id,
-            repository_id=msg.repository_id,
-            template_repo=msg.template_repo,
-            project_name=msg.project_name,
-            modules=msg.modules,
-            task_description=msg.task_description,
-            repo_full_name=repo_full_name,
-            github_token=github_token,
-            settings=settings,
-        )
-
-        if result.success:
-            # Save tree and specs summary to project config
-            workspace = Path(settings.workspace_base_path) / msg.repository_id
-            project_data = await api.get_project(msg.project_id)
-            config = project_data.get("config", {}) or {}
-            config["tree"] = result.tree
-            specs_summary = extract_specs_summary(workspace)
-            if specs_summary:
-                config["specs_summary"] = specs_summary
-            await api.update_project_config(msg.project_id, config)
-
-            # Scaffold success → project becomes active
-            await api.update_project_status(msg.project_id, ProjectStatus.ACTIVE)
-            log.info("scaffold_job_success")
-            return {"status": "success"}
-        else:
-            # Scaffold failure — leave project as draft (failure tracked on run/event)
-            log.error("scaffold_job_failed", error=result.error)
-            return {"status": "failed", "error": result.error or "unknown error"}
+        # Route by mode
+        args = (msg, repo_full_name, github, github_token, api, settings, log)
+        if msg.mode == "ensure":
+            return await _process_ensure_mode(*args)
+        return await _process_full_mode(*args)
 
     except Exception as e:
         log.error("scaffold_job_exception", error=str(e), exc_info=True)
-        # Leave project as draft — failure tracked on run/event
         return {"status": "failed", "error": str(e)}
+
+
+async def _process_full_mode(msg, repo_full_name, github, github_token, api, settings, log) -> dict:
+    """Full scaffold: create repo, copier, make setup, git push."""
+    org = repo_full_name.split("/")[0]
+
+    # Create GitHub repo (idempotent — ignores 422 if already exists)
+    github_repo = None
+    try:
+        github_repo = await github.create_repo(org, msg.project_name, private=True)
+    except Exception as e:
+        if "422" not in str(e):
+            raise
+
+    # Update repository git_url + provider_repo_id so github_sync can match
+    git_url = f"https://github.com/{repo_full_name}"
+    update_fields: dict = {"git_url": git_url}
+    if github_repo:
+        update_fields["provider_repo_id"] = github_repo.id
+    await api.update_repository(msg.repository_id, **update_fields)
+
+    # Set registry secrets so CI build-and-push can work from first commit
+    registry_url = os.environ.get("ORCHESTRATOR_HOSTNAME", "")
+    registry_user = os.environ.get("REGISTRY_USER", "")
+    registry_password = os.environ.get("REGISTRY_PASSWORD", "")
+    if all([registry_url, registry_user, registry_password]):
+        github_token_for_secrets = await github.get_org_token(org)
+        count = await github.set_repository_secrets(
+            org,
+            msg.project_name,
+            {
+                "REGISTRY_URL": registry_url,
+                "REGISTRY_USER": registry_user,
+                "REGISTRY_PASSWORD": registry_password,
+            },
+            token=github_token_for_secrets,
+        )
+        log.info("registry_secrets_set", count=count)
+    else:
+        log.warning(
+            "registry_secrets_skipped",
+            has_url=bool(registry_url),
+            has_user=bool(registry_user),
+            has_password=bool(registry_password),
+        )
+
+    # Run scaffold
+    result = await run_scaffold(
+        project_id=msg.project_id,
+        repository_id=msg.repository_id,
+        template_repo=msg.template_repo,
+        project_name=msg.project_name,
+        modules=msg.modules,
+        task_description=msg.task_description,
+        repo_full_name=repo_full_name,
+        github_token=github_token,
+        settings=settings,
+    )
+
+    if result.success:
+        await _update_project_on_success(msg, result, api, settings, log)
+        await api.update_project_status(msg.project_id, ProjectStatus.ACTIVE)
+        log.info("scaffold_job_success")
+        return {"status": "success"}
+
+    log.error("scaffold_job_failed", error=result.error)
+    return {"status": "failed", "error": result.error or "unknown error"}
+
+
+async def _process_ensure_mode(
+    msg,
+    repo_full_name,
+    github,
+    github_token,
+    api,
+    settings,
+    log,
+) -> dict:
+    """Ensure workspace exists. Skip if present, clone+setup if missing."""
+    org = repo_full_name.split("/")[0]
+
+    # Check if repo exists on GitHub
+    repo_exists = True
+    try:
+        await github.get_repo(org, msg.project_name)
+    except Exception:
+        repo_exists = False
+
+    result = await run_ensure_workspace(
+        repository_id=msg.repository_id,
+        project_name=msg.project_name,
+        repo_full_name=repo_full_name,
+        github_token=github_token,
+        settings=settings,
+        repo_exists_on_github=repo_exists,
+    )
+
+    if result.skipped:
+        log.info("ensure_workspace_skipped")
+        return {"status": "skipped"}
+
+    if result.success:
+        await _update_project_on_success(msg, result, api, settings, log)
+        log.info("ensure_workspace_success")
+        return {"status": "success"}
+
+    log.error("ensure_workspace_failed", error=result.error)
+    return {"status": "failed", "error": result.error or "unknown error"}
+
+
+async def _update_project_on_success(msg, result, api, settings, log) -> None:
+    """Update project config with tree and specs after successful scaffold/ensure."""
+    workspace = Path(settings.workspace_base_path) / msg.repository_id
+    project_data = await api.get_project(msg.project_id)
+    config = project_data.get("config", {}) or {}
+    config["tree"] = result.tree
+    config["workspace_ready"] = True
+    specs_summary = extract_specs_summary(workspace)
+    if specs_summary:
+        config["specs_summary"] = specs_summary
+    await api.update_project_config(msg.project_id, config)
 
 
 async def run_worker() -> None:

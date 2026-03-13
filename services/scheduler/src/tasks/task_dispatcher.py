@@ -137,11 +137,14 @@ async def dispatch_todo_tasks(
         if project_id == INTERNAL_PROJECT_ID:
             continue
 
-        # Guard: don't dispatch until scaffold is complete (project must be active)
+        # Guard: don't dispatch until scaffold is complete and workspace is ready
         if project_id:
             project = await api_client.get_project(project_id)
             if project and project.status == ProjectStatus.DRAFT:
                 log.info("task_skipped_not_scaffolded", project_status=project.status)
+                continue
+            if project and not (project.config or {}).get("workspace_ready"):
+                log.info("task_skipped_workspace_not_ready", project_id=project_id)
                 continue
 
         # Fetch siblings once — used for both guard and context

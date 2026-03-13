@@ -5,6 +5,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Dict, List
+
+import httpx
 import structlog
 from redis.asyncio import Redis
 
@@ -362,12 +364,31 @@ class WorkerManager:
                     continue
                 if age_hours > max_age_hours:
                     workspace_mod.remove_workspace(base_path, entry)
+                    await self._notify_workspace_deleted(entry)
                     logger.info(
                         "workspace_gc_removed",
                         project_id=entry,
                         base_path=base_path,
                         age_hours=round(age_hours, 1),
                     )
+
+    async def _notify_workspace_deleted(self, repo_id: str) -> None:
+        """Notify API that a workspace was GC'd so workspace_ready is cleared."""
+        api_url = settings.WORKER_API_URL or "http://api:8000"
+        url = f"{api_url}/api/repositories/{repo_id}/notify-workspace-deleted"
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(url)
+            if resp.status_code == 200:
+                logger.info("workspace_gc_notified_api", repo_id=repo_id)
+            else:
+                logger.warning(
+                    "workspace_gc_notify_failed",
+                    repo_id=repo_id,
+                    status=resp.status_code,
+                )
+        except Exception as exc:
+            logger.warning("workspace_gc_notify_error", repo_id=repo_id, error=str(exc))
 
     async def garbage_collect_images(self, retention_seconds: int = 7 * 24 * 3600) -> None:
         """Remove unused images."""

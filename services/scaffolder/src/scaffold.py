@@ -20,6 +20,7 @@ class ScaffoldResult:
     """Result of a scaffold operation."""
 
     success: bool
+    skipped: bool = False
     tree: str = ""
     error: str | None = None
     commands_log: list[str] = field(default_factory=list)
@@ -149,15 +150,110 @@ async def run_scaffold(
     # Step 6: Re-enable hooks and capture tree
     await _run_cmd("git config core.hooksPath .githooks", cwd=workspace)
 
+    result.success = True
+    result.tree = await _capture_tree(workspace)
+    log.info("scaffold_complete", tree_lines=len(result.tree.splitlines()))
+    return result
+
+
+async def _capture_tree(workspace: Path) -> str:
+    """Capture directory tree output for a workspace."""
     rc, tree_out, _ = await _run_cmd("tree -L 3 --noreport", cwd=workspace)
     if rc != 0:
-        # tree command might not be installed; use find as fallback
         rc, tree_out, _ = await _run_cmd(
             "find . -maxdepth 3 -not -path './.git/*' -not -path './.venv/*' | sort",
             cwd=workspace,
         )
+    return tree_out.strip()
+
+
+def _workspace_has_files(workspace: Path) -> bool:
+    """Check if workspace dir exists and has files beyond .git."""
+    if not workspace.is_dir():
+        return False
+    for entry in workspace.iterdir():
+        if entry.name != ".git":
+            return True
+    return False
+
+
+async def run_ensure_workspace(
+    *,
+    repository_id: str,
+    project_name: str,
+    repo_full_name: str,
+    github_token: str,
+    settings,
+    repo_exists_on_github: bool,
+) -> ScaffoldResult:
+    """Ensure a workspace exists on disk. Three outcomes:
+
+    1. Workspace already has files → skip (return success + skipped=True)
+    2. Workspace missing, repo exists on GitHub → git clone + make setup
+    3. Workspace missing, repo doesn't exist → error (caller should use full scaffold)
+
+    Args:
+        repository_id: Repository ID (workspace directory name).
+        project_name: Project name for logging.
+        repo_full_name: GitHub repo in "owner/repo" format.
+        github_token: GitHub token for git operations.
+        settings: Service settings (workspace_base_path).
+        repo_exists_on_github: Whether the repo exists on GitHub.
+
+    Returns:
+        ScaffoldResult with success/skipped status.
+    """
+    log = logger.bind(repository_id=repository_id, project_name=project_name)
+    workspace = Path(settings.workspace_base_path) / repository_id
+    result = ScaffoldResult(success=False)
+
+    # Case 1: workspace already has files → skip
+    if _workspace_has_files(workspace):
+        log.info("ensure_workspace_skip", reason="workspace_exists")
+        result.success = True
+        result.skipped = True
+        return result
+
+    # Case 3: no workspace and no repo on GitHub → can't recover
+    if not repo_exists_on_github:
+        result.error = (
+            f"Workspace missing and repo {repo_full_name} not found on GitHub. "
+            "Full scaffold required but project is not in draft."
+        )
+        log.error("ensure_workspace_no_repo", error=result.error)
+        return result
+
+    # Case 2: workspace missing, repo exists → git clone + make setup
+    log.info("ensure_workspace_clone_start", repo=repo_full_name)
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    clone_url = f"https://x-access-token:{github_token}@github.com/{repo_full_name}"
+    rc, out, err = await _run_cmd(
+        f'git clone "{clone_url}" . && '
+        f'git config user.email "ai@codegen.local" && '
+        f'git config user.name "Codegen Bot" && '
+        f"git config core.hooksPath /dev/null",
+        cwd=workspace,
+    )
+    result.commands_log.append(f"git clone: rc={rc}")
+    if rc != 0:
+        result.error = f"Git clone failed: {err}"
+        log.error("ensure_workspace_clone_failed", error=err)
+        return result
+
+    # Run make setup (installs deps, enables hooks)
+    log.info("ensure_workspace_make_setup")
+    rc, out, err = await _run_cmd("make setup", cwd=workspace)
+    result.commands_log.append(f"make setup: rc={rc}")
+    if rc != 0:
+        result.error = f"make setup failed: {err or out}"
+        log.error("ensure_workspace_setup_failed", error=err, stdout=out)
+        return result
+
+    # Re-enable hooks
+    await _run_cmd("git config core.hooksPath .githooks", cwd=workspace)
 
     result.success = True
-    result.tree = tree_out.strip()
-    log.info("scaffold_complete", tree_lines=len(result.tree.splitlines()))
+    result.tree = await _capture_tree(workspace)
+    log.info("ensure_workspace_complete", tree_lines=len(result.tree.splitlines()))
     return result

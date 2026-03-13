@@ -1,6 +1,9 @@
-"""Scaffold trigger — detects draft projects with stories and publishes to scaffold:queue.
+"""Scaffold trigger — ensures workspace readiness before pipeline proceeds.
 
 Runs as part of the task_dispatcher_loop cycle.
+
+For DRAFT projects: publishes mode=full (copier + make setup + git push).
+For ACTIVE projects with TODO tasks: publishes mode=ensure (clone + setup if missing).
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.queues import SCAFFOLD_QUEUE
 
@@ -28,12 +32,11 @@ async def trigger_scaffolds(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> int:
-    """Find draft projects with stories and publish scaffold jobs.
+    """Ensure workspace readiness for projects that need it.
 
-    Only publishes if:
-    - project.status == draft (not scaffolding/scaffolded/etc.)
-    - project has at least one story
-    - project has at least one repository
+    Publishes to scaffold:queue in two modes:
+    - DRAFT projects with stories → mode=full (first-time scaffold)
+    - ACTIVE projects with TODO tasks and workspace_ready=false → mode=ensure
 
     Returns:
         Number of scaffold jobs published.
@@ -42,43 +45,84 @@ async def trigger_scaffolds(
 
     triggered = 0
     for project in projects:
-        if project.status != ProjectStatus.DRAFT:
-            continue
-
         project_id = str(project.id)
         log = logger.bind(project_id=project_id, project_name=project.name)
 
-        # Check for stories
-        stories = await api_client.get_stories_by_project(project_id)
-        if not stories:
-            continue
-
-        # Check for repository
-        repos = await api_client.get_repositories(project_id)
-        if not repos:
-            log.debug("scaffold_skip_no_repo")
-            continue
-
-        repo = repos[0]  # Primary repo (1:1 for now)
-        repo_id = repo["id"]
-
-        # Build scaffold message — modules live in config, not as a top-level field
-        config = project.config or {}
-        config_modules = config.get("modules", ["backend"])
-        modules = ",".join(config_modules) if config_modules else "backend"
-        msg = ScaffoldMessage(
-            project_id=project_id,
-            repository_id=repo_id,
-            user_id=str(project.owner_id),
-            template_repo=DEFAULT_TEMPLATE_REPO,
-            project_name=project.name,
-            modules=modules,
-            task_description=config.get("description", project.description or ""),
-        )
-
-        await redis_client.publish_message(SCAFFOLD_QUEUE, msg)
-
-        log.info("scaffold_triggered", repository_id=repo_id, modules=modules)
-        triggered += 1
+        if project.status == ProjectStatus.DRAFT:
+            if await _trigger_full_scaffold(project, api_client, redis_client, log):
+                triggered += 1
+        elif project.status == ProjectStatus.ACTIVE:
+            if await _trigger_ensure_scaffold(
+                project,
+                api_client,
+                redis_client,
+                log,
+            ):
+                triggered += 1
 
     return triggered
+
+
+async def _trigger_full_scaffold(project, api_client, redis_client, log) -> bool:
+    """Trigger full scaffold for DRAFT projects."""
+    project_id = str(project.id)
+
+    stories = await api_client.get_stories_by_project(project_id)
+    if not stories:
+        return False
+
+    repos = await api_client.get_repositories(project_id)
+    if not repos:
+        log.debug("scaffold_skip_no_repo")
+        return False
+
+    repo = repos[0]
+    msg = _build_scaffold_message(project, repo["id"], mode="full")
+    await redis_client.publish_message(SCAFFOLD_QUEUE, msg)
+    log.info("scaffold_triggered", repository_id=repo["id"], mode="full")
+    return True
+
+
+async def _trigger_ensure_scaffold(project, api_client, redis_client, log) -> bool:
+    """Trigger ensure-workspace for ACTIVE projects with pending tasks."""
+    project_id = str(project.id)
+    config = project.config or {}
+
+    # Skip if workspace is already marked ready
+    if config.get("workspace_ready"):
+        return False
+
+    # Check for TODO tasks (pending dispatch)
+    todo_tasks = await api_client.get_tasks_by_project_and_status(
+        project_id,
+        TaskStatus.TODO,
+    )
+    if not todo_tasks:
+        return False
+
+    repos = await api_client.get_repositories(project_id)
+    if not repos:
+        return False
+
+    repo = repos[0]
+    msg = _build_scaffold_message(project, repo["id"], mode="ensure")
+    await redis_client.publish_message(SCAFFOLD_QUEUE, msg)
+    log.info("scaffold_triggered", repository_id=repo["id"], mode="ensure")
+    return True
+
+
+def _build_scaffold_message(project, repo_id: str, mode: str) -> ScaffoldMessage:
+    """Build a ScaffoldMessage from project data."""
+    config = project.config or {}
+    config_modules = config.get("modules", ["backend"])
+    modules = ",".join(config_modules) if config_modules else "backend"
+    return ScaffoldMessage(
+        project_id=str(project.id),
+        repository_id=repo_id,
+        user_id=str(project.owner_id),
+        template_repo=DEFAULT_TEMPLATE_REPO,
+        project_name=project.name,
+        modules=modules,
+        task_description=config.get("description", project.description or ""),
+        mode=mode,
+    )

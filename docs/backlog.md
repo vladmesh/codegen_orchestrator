@@ -7,12 +7,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Workspace browser — workspace как первичная сущность с project-level browsing
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Workspace как самостоятельная сущность, привязанная к project_id (не worker_id).  Backend (worker-manager): 1. Новый роутер workspaces.py (~80 LOC):    - GET /api/introspect/workspaces/{project_id}/tree — os.walk по workspace path    - GET /api/introspect/workspaces/{project_id}/files/{path} — чт...
-
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —
@@ -41,6 +35,12 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
+
+### Scaffolder: ensure-workspace gate — always verify workspace before pipeline proceeds
+- **Priority**: MEDIUM
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Scaffolder должен гарантировать наличие готового воркспейса перед тем как пайплайн продолжится. Сейчас проверка workspace — финальная точка (worker-manager RuntimeError), а до неё архитектор и engineering worker уже отработали вхолостую.  ## Проблема После GC (>35ч) воркспейс удаляется, но projec...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -258,6 +258,7 @@
 
 ## Done (last 10)
 
+- Workspace browser — workspace как первичная сущность с project-level browsing — 2026-03-13
 - Admin SPA — LLM Tracing page (Langfuse iframe) — 2026-03-13
 - LangChain → Langfuse tracing integration (env-var drop-in) — 2026-03-13
 - Langfuse v3 infra — docker-compose + ClickHouse + nginx proxy — 2026-03-13
@@ -267,7 +268,6 @@
 - Admin frontend scaffold — React + Vite + shadcn/ui + nginx container + docker-compose — 2026-03-13
 - Observability stack: JSON logging + Loki + Grafana + correlation propagation — 2026-03-13
 - Run tests, verify CI green — 2026-03-13
-- Implement Telegram bot with access control and message reversing — 2026-03-12
 
 ## Ideas
 

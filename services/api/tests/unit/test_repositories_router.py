@@ -189,3 +189,78 @@ async def test_delete_repository():
     assert resp.status_code == 200
     session.delete.assert_awaited_once()
     session.commit.assert_awaited_once()
+
+
+# --- notify-workspace-deleted ---
+
+
+def _make_project(**overrides):
+    defaults = {
+        "id": PROJECT_UUID,
+        "name": "test-project",
+        "status": "active",
+        "service_status": "not_deployed",
+        "config": {"workspace_ready": True, "modules": ["backend"]},
+        "owner_id": 1,
+    }
+    defaults.update(overrides)
+    obj = MagicMock()
+    for k, v in defaults.items():
+        setattr(obj, k, v)
+    return obj
+
+
+@pytest.mark.asyncio
+async def test_notify_workspace_deleted_clears_flag():
+    """POST /repositories/{repo_id}/notify-workspace-deleted clears workspace_ready."""
+    repo = _make_repo()
+    project = _make_project()
+    session = AsyncMock()
+
+    # First execute: find repo by id
+    repo_result = MagicMock()
+    repo_result.scalar_one_or_none = MagicMock(return_value=repo)
+    # session.get returns project
+    session.get = AsyncMock(return_value=project)
+    session.execute = AsyncMock(return_value=repo_result)
+    session.commit = AsyncMock()
+
+    app.dependency_overrides[get_async_session] = lambda: session
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/repositories/repo-test1/notify-workspace-deleted")
+
+    assert resp.status_code == 200
+    assert resp.json()["workspace_ready"] is False
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_notify_workspace_deleted_repo_not_found():
+    """Returns 404 if repo doesn't exist."""
+    session = _mock_session(scalar_one_or_none=None)
+    app.dependency_overrides[get_async_session] = lambda: session
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/repositories/repo-missing/notify-workspace-deleted")
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_notify_workspace_deleted_project_not_found():
+    """Returns 404 if linked project doesn't exist."""
+    repo = _make_repo()
+    session = AsyncMock()
+
+    repo_result = MagicMock()
+    repo_result.scalar_one_or_none = MagicMock(return_value=repo)
+    session.execute = AsyncMock(return_value=repo_result)
+    session.get = AsyncMock(return_value=None)
+
+    app.dependency_overrides[get_async_session] = lambda: session
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/repositories/repo-test1/notify-workspace-deleted")
+
+    assert resp.status_code == 404

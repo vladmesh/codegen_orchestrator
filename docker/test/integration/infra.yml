@@ -65,6 +65,7 @@ services:
       - GITHUB_ORG_NAME=test-org
       - TIME4VPS_USERNAME=test
       - TIME4VPS_PASSWORD=test
+      - HEALTH_CHECK_INTERVAL=300
     depends_on:
       api:
         condition: service_healthy

@@ -14,10 +14,11 @@ def api_client():
     from shared.contracts.dto.project import ProjectStatus, ServiceStatus
 
     client = AsyncMock()
-    # Default project mock — active (scaffolded) project
+    # Default project mock — active (scaffolded) project with workspace ready
     project_mock = MagicMock()
     project_mock.status = ProjectStatus.ACTIVE.value
     project_mock.service_status = ServiceStatus.RUNNING.value
+    project_mock.config = {"workspace_ready": True}
     client.get_project.return_value = project_mock
     return client
 
@@ -121,6 +122,37 @@ class TestDispatchTodoTasks:
 
         project_mock = MagicMock()
         project_mock.status = ProjectStatus.DRAFT.value
+        api_client.get_project.return_value = project_mock
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        api_client.create_run.assert_not_called()
+        redis_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_task_when_workspace_not_ready(self, api_client, redis_client):
+        """Task is skipped if project workspace is not ready."""
+        from unittest.mock import MagicMock
+
+        from shared.contracts.dto.project import ProjectStatus
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-1",
+                "title": "Add feature",
+                "description": "A feature",
+                "type": "feature",
+                "project_id": "proj-1",
+                "story_id": "story-1",
+                "blocked_by_task_id": None,
+                "status": "todo",
+            }
+        ]
+
+        project_mock = MagicMock()
+        project_mock.status = ProjectStatus.ACTIVE.value
+        project_mock.config = {}  # workspace_ready not set
         api_client.get_project.return_value = project_mock
 
         await dispatch_todo_tasks(api_client, redis_client)

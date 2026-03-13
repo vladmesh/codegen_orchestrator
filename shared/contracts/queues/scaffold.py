@@ -1,11 +1,17 @@
+from typing import Literal
+
 from shared.contracts.base import BaseMessage
 
 
 class ScaffoldMessage(BaseMessage):
-    """Trigger scaffolding for a new project repository.
+    """Trigger scaffolding for a project repository.
 
-    Published by scheduler when project.status == draft and has stories.
+    Published by scheduler for both new (draft) and existing (active) projects.
     Consumed by scaffolder service.
+
+    Modes:
+        full: Full scaffold — copier + make setup + git push (new projects).
+        ensure: Verify workspace exists; if missing, clone + setup (existing projects).
     """
 
     project_id: str
@@ -15,3 +21,4 @@ class ScaffoldMessage(BaseMessage):
     project_name: str  # sanitized name for copier
     modules: str  # comma-separated, e.g. "backend,tg_bot"
     task_description: str = ""
+    mode: Literal["full", "ensure"] = "full"
