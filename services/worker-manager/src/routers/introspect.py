@@ -4,7 +4,6 @@ Exposes worker status, logs, workspace files, and prompts.
 All data comes from Redis metadata + Docker + host filesystem.
 """
 
-import os
 from http import HTTPStatus
 from pathlib import Path
 
@@ -15,12 +14,12 @@ from pydantic import BaseModel
 from shared.contracts.dto.worker import WorkerStatus
 
 from ..config import settings
+from ._shared import FileTreeEntry, read_file, walk_workspace
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/api/introspect", tags=["introspect"])
 
-MAX_FILE_SIZE = 1_000_000  # 1 MB
 MAX_LOG_TAIL = 5000
 DEFAULT_LOG_TAIL = 100
 
@@ -49,12 +48,6 @@ class WorkerLogsResponse(BaseModel):
     tail: int
 
 
-class FileTreeEntry(BaseModel):
-    path: str
-    is_dir: bool
-    size: int
-
-
 class FileContentResponse(BaseModel):
     worker_id: str
     path: str
@@ -79,9 +72,34 @@ async def _check_worker_exists(redis, worker_id: str) -> dict:
     return status_data
 
 
-async def _get_workspace_path(redis, worker_id: str) -> Path:
-    """Get workspace path from Redis metadata, raise 404 if not found."""
+async def _get_workspace_path(redis, worker_id: str, request: Request | None = None) -> Path:
+    """Get workspace path for a worker.
+
+    If the worker has a project_id and base paths are available on app.state,
+    resolves via project workspace (WORKSPACE_BASE_PATH/{project_id}/workspace/
+    with fallback to SCAFFOLDED_WORKSPACE_PATH/{project_id}/).
+
+    Otherwise falls back to workspace_path from Redis metadata.
+    """
     meta = await redis.hgetall(f"worker:meta:{worker_id}")
+    project_id = meta.get("project_id")
+
+    # Try project-level workspace resolution if worker has a project_id
+    if project_id and request:
+        workspace_base = getattr(request.app.state, "workspace_base_path", None)
+        scaffolded_base = getattr(request.app.state, "scaffolded_workspace_path", None)
+
+        if workspace_base:
+            primary = Path(workspace_base) / project_id / "workspace"
+            if primary.exists() and primary.is_dir():
+                return primary
+
+        if scaffolded_base:
+            fallback = Path(scaffolded_base) / project_id
+            if fallback.exists() and fallback.is_dir():
+                return fallback
+
+    # Fallback: workspace_path from Redis metadata (ephemeral workers, legacy)
     workspace_path = meta.get("workspace_path")
     if not workspace_path:
         raise HTTPException(
@@ -95,17 +113,6 @@ async def _get_workspace_path(redis, worker_id: str) -> Path:
             detail="Workspace directory does not exist",
         )
     return path
-
-
-def _safe_resolve(workspace: Path, relative_path: str) -> Path:
-    """Resolve path safely, raising 403 on traversal attempts."""
-    resolved = (workspace / relative_path).resolve()
-    if not resolved.is_relative_to(workspace.resolve()):
-        raise HTTPException(
-            status_code=HTTPStatus.FORBIDDEN,
-            detail="Path traversal not allowed",
-        )
-    return resolved
 
 
 # --- Endpoints ---
@@ -209,37 +216,8 @@ async def get_worker_tree(worker_id: str, request: Request):
     """List files in the worker's workspace directory."""
     redis = request.app.state.redis
     await _check_worker_exists(redis, worker_id)
-    workspace = await _get_workspace_path(redis, worker_id)
-
-    entries = []
-    for dirpath, dirnames, filenames in os.walk(workspace):
-        rel_dir = Path(dirpath).relative_to(workspace)
-        # Add directories (skip root ".")
-        if str(rel_dir) != ".":
-            entries.append(
-                FileTreeEntry(
-                    path=str(rel_dir),
-                    is_dir=True,
-                    size=0,
-                )
-            )
-        # Add files
-        for fname in filenames:
-            full = Path(dirpath) / fname
-            rel = full.relative_to(workspace)
-            try:
-                size = full.stat().st_size
-            except OSError:
-                size = 0
-            entries.append(
-                FileTreeEntry(
-                    path=str(rel),
-                    is_dir=False,
-                    size=size,
-                )
-            )
-
-    return entries
+    workspace = await _get_workspace_path(redis, worker_id, request)
+    return walk_workspace(workspace)
 
 
 @router.get("/workers/{worker_id}/files/{file_path:path}", response_model=FileContentResponse)
@@ -247,34 +225,8 @@ async def get_worker_file(worker_id: str, file_path: str, request: Request):
     """Read a file from the worker's workspace."""
     redis = request.app.state.redis
     await _check_worker_exists(redis, worker_id)
-    workspace = await _get_workspace_path(redis, worker_id)
-
-    resolved = _safe_resolve(workspace, file_path)
-
-    if not resolved.exists():
-        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="File not found")
-
-    if not resolved.is_file():
-        raise HTTPException(
-            status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
-            detail="Path is not a regular file",
-        )
-
-    size = resolved.stat().st_size
-    if size > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
-            detail=f"File too large ({size} bytes, max {MAX_FILE_SIZE})",
-        )
-
-    try:
-        content = resolved.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
-            detail="Binary file cannot be read as text",
-        )
-
+    workspace = await _get_workspace_path(redis, worker_id, request)
+    content, size = read_file(workspace, file_path)
     return FileContentResponse(
         worker_id=worker_id,
         path=file_path,
@@ -288,7 +240,7 @@ async def get_worker_prompts(worker_id: str, request: Request):
     """Read CLAUDE.md and TASK.md from the worker's workspace."""
     redis = request.app.state.redis
     await _check_worker_exists(redis, worker_id)
-    workspace = await _get_workspace_path(redis, worker_id)
+    workspace = await _get_workspace_path(redis, worker_id, request)
 
     claude_md = None
     task_md = None

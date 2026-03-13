@@ -131,6 +131,13 @@ export interface FileContentResponse {
   size: number
 }
 
+export interface WorkspaceFileContentResponse {
+  project_id: string
+  path: string
+  content: string
+  size: number
+}
+
 export interface PromptsResponse {
   worker_id: string
   claude_md: string | null
@@ -175,4 +182,23 @@ export interface Server {
   last_health_check: string | null
   created_at: string
   updated_at: string
+}
+
+// Langfuse traces (proxied via /langfuse-api/)
+export interface LangfuseTrace {
+  id: string
+  name: string
+  timestamp: string
+  userId: string | null
+  sessionId: string | null
+  tags: string[]
+  latency: number | null
+  totalCost: number
+  metadata: Record<string, unknown>
+  htmlPath: string
+}
+
+export interface LangfuseTracesResponse {
+  data: LangfuseTrace[]
+  meta: { totalItems: number; page: number; totalPages: number }
 }

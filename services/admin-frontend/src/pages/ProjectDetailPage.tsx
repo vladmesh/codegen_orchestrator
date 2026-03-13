@@ -1,13 +1,18 @@
+import { useState } from 'react'
 import { useParams, Link } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
+import { WorkspaceBrowser } from '@/components/workspace'
 import { formatDate } from '@/lib/utils'
 import type { Project, Story, Task, User } from '@/types/api'
 
+type Tab = 'overview' | 'workspace'
+
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const [activeTab, setActiveTab] = useState<Tab>('overview')
 
   const { data: project, isLoading: projectLoading } = useQuery({
     queryKey: ['project', id],
@@ -41,6 +46,11 @@ export function ProjectDetailPage() {
     ;(acc[key] ??= []).push(t)
     return acc
   }, {})
+
+  const tabs: { key: Tab; label: string }[] = [
+    { key: 'overview', label: 'Overview' },
+    { key: 'workspace', label: 'Workspace' },
+  ]
 
   return (
     <div className="space-y-6">
@@ -91,49 +101,89 @@ export function ProjectDetailPage() {
         </Card>
       )}
 
-      <div className="space-y-4">
-        <h2 className="text-lg font-semibold text-foreground">Stories & Tasks</h2>
-        {(stories ?? []).map((story) => (
-          <Card key={story.id}>
-            <div className="flex items-center gap-2">
-              <h3 className="font-medium text-foreground">{story.title}</h3>
-              <StatusBadge status={story.status} />
-            </div>
-            {(tasksByStory[story.id] ?? []).length > 0 && (
-              <ul className="mt-3 space-y-1">
-                {(tasksByStory[story.id] ?? []).map((task) => (
-                  <li key={task.id} className="flex items-center gap-2 text-sm">
-                    <StatusBadge status={task.status} />
-                    <Link
-                      to={`/tasks/${task.id}`}
-                      className="text-primary hover:underline"
-                    >
-                      {task.title}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        ))}
+      {/* Tabs */}
+      <div className="border-b border-border">
+        <nav className="flex gap-4">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`border-b-2 px-1 pb-2 text-sm font-medium transition-colors ${
+                activeTab === tab.key
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </div>
 
-        {(tasksByStory['unlinked'] ?? []).length > 0 && (
-          <Card>
-            <h3 className="font-medium text-muted-foreground">Unlinked Tasks</h3>
+      {/* Tab content */}
+      {activeTab === 'overview' && (
+        <OverviewTab stories={stories ?? []} tasksByStory={tasksByStory} />
+      )}
+      {activeTab === 'workspace' && (
+        <WorkspaceBrowser
+          treeApiUrl={`/wm-api/workspaces/${id}/tree`}
+          fileApiUrlPrefix={`/wm-api/workspaces/${id}/files/`}
+          queryKeyPrefix={`workspace-${id}`}
+        />
+      )}
+    </div>
+  )
+}
+
+function OverviewTab({
+  stories,
+  tasksByStory,
+}: {
+  stories: Story[]
+  tasksByStory: Record<string, Task[]>
+}) {
+  return (
+    <div className="space-y-4">
+      <h2 className="text-lg font-semibold text-foreground">Stories & Tasks</h2>
+      {stories.map((story) => (
+        <Card key={story.id}>
+          <div className="flex items-center gap-2">
+            <h3 className="font-medium text-foreground">{story.title}</h3>
+            <StatusBadge status={story.status} />
+          </div>
+          {(tasksByStory[story.id] ?? []).length > 0 && (
             <ul className="mt-3 space-y-1">
-              {tasksByStory['unlinked'].map((task) => (
+              {(tasksByStory[story.id] ?? []).map((task) => (
                 <li key={task.id} className="flex items-center gap-2 text-sm">
                   <StatusBadge status={task.status} />
-                  <Link to={`/tasks/${task.id}`} className="text-primary hover:underline">
+                  <Link
+                    to={`/tasks/${task.id}`}
+                    className="text-primary hover:underline"
+                  >
                     {task.title}
                   </Link>
                 </li>
               ))}
             </ul>
-          </Card>
-        )}
-      </div>
+          )}
+        </Card>
+      ))}
 
+      {(tasksByStory['unlinked'] ?? []).length > 0 && (
+        <Card>
+          <h3 className="font-medium text-muted-foreground">Unlinked Tasks</h3>
+          <ul className="mt-3 space-y-1">
+            {tasksByStory['unlinked'].map((task) => (
+              <li key={task.id} className="flex items-center gap-2 text-sm">
+                <StatusBadge status={task.status} />
+                <Link to={`/tasks/${task.id}`} className="text-primary hover:underline">
+                  {task.title}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
     </div>
   )
 }

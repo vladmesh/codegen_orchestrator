@@ -7,6 +7,12 @@
 
 ## Queue (ordered by priority, first = next)
 
+### Workspace browser — workspace как первичная сущность с project-level browsing
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Workspace как самостоятельная сущность, привязанная к project_id (не worker_id).  Backend (worker-manager): 1. Новый роутер workspaces.py (~80 LOC):    - GET /api/introspect/workspaces/{project_id}/tree — os.walk по workspace path    - GET /api/introspect/workspaces/{project_id}/files/{path} — чт...
+
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —

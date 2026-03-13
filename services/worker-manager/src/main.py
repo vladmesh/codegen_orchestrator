@@ -13,6 +13,7 @@ from .events import DockerEventsListener
 from .compose_runner import ComposeRunner
 from .routers.compose import router as compose_router
 from .routers.introspect import router as introspect_router
+from .routers.workspaces import router as workspaces_router
 
 logger = structlog.get_logger()
 
@@ -49,6 +50,8 @@ async def lifespan(app: FastAPI):
     app.state.docker = worker_manager.docker
     app.state.redis = redis
     app.state.worker_manager = worker_manager
+    app.state.workspace_base_path = settings.WORKSPACE_BASE_PATH
+    app.state.scaffolded_workspace_path = settings.SCAFFOLDED_WORKSPACE_PATH
 
     # Start Consumer
     stream_client = RedisStreamClient(redis_url=settings.REDIS_URL)
@@ -125,6 +128,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Worker Manager", lifespan=lifespan)
 app.include_router(compose_router)
 app.include_router(introspect_router)
+app.include_router(workspaces_router)
 
 
 @app.get("/health")
