@@ -9,6 +9,7 @@ import {
   Server,
   ScrollText,
   BrainCircuit,
+  Users,
 } from 'lucide-react'
 
 interface NavItem {
@@ -20,13 +21,14 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: 'Dashboard', path: '/', icon: LayoutDashboard },
+  { label: 'Users', path: '/users', icon: Users },
   { label: 'Projects', path: '/projects', icon: FolderKanban },
   { label: 'Tasks', path: '/tasks', icon: ListTodo },
   { label: 'Workers', path: '/workers', icon: Container },
   { label: 'Queues', path: '/queues', icon: Layers },
   { label: 'Servers', path: '/servers', icon: Server },
   { label: 'Logs', path: '/logs', icon: ScrollText },
-  { label: 'LLM Tracing', path: '/tracing', icon: BrainCircuit, disabled: true },
+  { label: 'LLM Tracing', path: '/tracing', icon: BrainCircuit },
 ]
 
 export function Sidebar() {

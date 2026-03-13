@@ -1,8 +1,20 @@
+export interface User {
+  id: number
+  telegram_id: number
+  username: string | null
+  first_name: string | null
+  last_name: string | null
+  is_admin: boolean
+  created_at: string
+  last_seen: string
+}
+
 export interface Project {
   id: string
   name: string
   description: string | null
   status: string
+  owner_id: number
   github_repo: string | null
   domain: string | null
   created_at: string
