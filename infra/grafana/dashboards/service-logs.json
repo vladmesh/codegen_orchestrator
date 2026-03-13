@@ -25,7 +25,7 @@
         {
           "datasource": { "type": "loki", "uid": "" },
           "editorMode": "builder",
-          "expr": "sum by (level) (count_over_time({compose_service=~\"$service\"} | json | level != \"\" [$__interval]))",
+          "expr": "sum by (detected_level) (count_over_time({compose_service=~\"$service\"} [$__interval]))",
           "queryType": "range",
           "refId": "A"
         }
@@ -52,7 +52,7 @@
         {
           "datasource": { "type": "loki", "uid": "" },
           "editorMode": "code",
-          "expr": "{compose_service=~\"$service\"} | json | level =~ `$level` | correlation_id =~ `$correlation_id`",
+          "expr": "{compose_service=~\"$service\", detected_level=~\"$level\"} | json | correlation_id =~ `$correlation_id`",
           "queryType": "range",
           "refId": "A"
         }
@@ -83,15 +83,18 @@
         "current": { "selected": true, "text": "All", "value": ".+" },
         "description": "Filter by log level",
         "name": "level",
-        "options": [],
-        "query": "label_values(level)",
-        "datasource": { "type": "loki", "uid": "" },
-        "type": "query",
+        "options": [
+          { "selected": false, "text": "debug", "value": "debug" },
+          { "selected": false, "text": "info", "value": "info" },
+          { "selected": false, "text": "warn", "value": "warn" },
+          { "selected": false, "text": "warning", "value": "warning" },
+          { "selected": false, "text": "error", "value": "error" }
+        ],
+        "query": "debug,info,warn,warning,error",
+        "type": "custom",
         "includeAll": true,
         "allValue": ".+",
-        "multi": true,
-        "refresh": 2,
-        "sort": 1
+        "multi": true
       },
       {
         "current": { "selected": false, "text": "", "value": "" },
