@@ -7,6 +7,12 @@
 
 ## Queue (ordered by priority, first = next)
 
+### Admin auth + single entry point — proxy Grafana through admin, close extra ports
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Единая точка входа в админку: один порт (3001), один логин, всё проксируется через admin-frontend.  См. brainstorm: docs/brainstorms/admin-panel.md  ## Проблема - Grafana на :3000 и API на :8000 торчат наружу без авторизации - Logs и Grafana открываются в новой вкладке - Нет авторизации вообще  #...
+
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —
