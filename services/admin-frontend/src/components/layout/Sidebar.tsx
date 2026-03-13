@@ -16,6 +16,12 @@ interface NavItem {
   path: string
   icon: React.ElementType
   external?: boolean
+  /** External port — URL is built from current hostname at runtime */
+  externalPort?: number
+}
+
+function externalUrl(port: number): string {
+  return `${window.location.protocol}//${window.location.hostname}:${port}`
 }
 
 const navItems: NavItem[] = [
@@ -25,8 +31,8 @@ const navItems: NavItem[] = [
   { label: 'Workers', path: '/workers', icon: Container },
   { label: 'Queues', path: '/queues', icon: Layers },
   { label: 'Servers', path: '/servers', icon: Server },
-  { label: 'Logs', path: 'http://localhost:3000', icon: ScrollText, external: true },
-  { label: 'LLM Tracing', path: 'http://localhost:3002', icon: BrainCircuit, external: true },
+  { label: 'Logs', path: '', icon: ScrollText, external: true, externalPort: 3000 },
+  { label: 'LLM Tracing', path: '', icon: BrainCircuit, external: true, externalPort: 3002 },
 ]
 
 export function Sidebar() {
@@ -47,10 +53,11 @@ export function Sidebar() {
               : location.pathname.startsWith(item.path))
 
           if (item.external) {
+            const href = item.externalPort ? externalUrl(item.externalPort) : item.path
             return (
               <a
                 key={item.label}
-                href={item.path}
+                href={href}
                 target="_blank"
                 rel="noopener noreferrer"
                 className={cn(
