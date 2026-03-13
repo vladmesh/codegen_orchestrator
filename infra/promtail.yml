@@ -24,6 +24,9 @@ scrape_configs:
             values: ["com.codegen.type=worker"]
 
     relabel_configs:
+      # Explicit job label (docker_sd_configs doesn't set it automatically)
+      - replacement: docker
+        target_label: job
       # Compose service name (for orchestrator services)
       - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
         target_label: compose_service

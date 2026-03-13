@@ -25,7 +25,7 @@
         {
           "datasource": { "type": "loki", "uid": "" },
           "editorMode": "builder",
-          "expr": "sum by (level) (count_over_time({job=\"docker\"} | json | level != \"\" [$__interval]))",
+          "expr": "sum by (level) (count_over_time({compose_service=~\".+\"} | json | level != \"\" [$__interval]))",
           "queryType": "range",
           "refId": "A"
         }
@@ -52,7 +52,7 @@
         {
           "datasource": { "type": "loki", "uid": "" },
           "editorMode": "code",
-          "expr": "{job=\"docker\"} | json | service =~ `$service` | level =~ `$level` | correlation_id =~ `$correlation_id`",
+          "expr": "{compose_service=~\".+\"} | json | compose_service =~ `$service` | level =~ `$level` | correlation_id =~ `$correlation_id`",
           "queryType": "range",
           "refId": "A"
         }
@@ -70,7 +70,7 @@
         "description": "Filter by service name",
         "name": "service",
         "options": [],
-        "query": "{job=\"docker\"} | json | unwrap service",
+        "query": "label_values(compose_service)",
         "datasource": { "type": "loki", "uid": "" },
         "type": "query",
         "regex": "",
