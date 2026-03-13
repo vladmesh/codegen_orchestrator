@@ -18,10 +18,13 @@ interface NavItem {
   external?: boolean
   /** External port — URL is built from current hostname at runtime */
   externalPort?: number
+  /** Path appended after port (e.g. /d/service-logs) */
+  externalPath?: string
+  disabled?: boolean
 }
 
-function externalUrl(port: number): string {
-  return `${window.location.protocol}//${window.location.hostname}:${port}`
+function externalUrl(port: number, path = ''): string {
+  return `${window.location.protocol}//${window.location.hostname}:${port}${path}`
 }
 
 const navItems: NavItem[] = [
@@ -31,8 +34,8 @@ const navItems: NavItem[] = [
   { label: 'Workers', path: '/workers', icon: Container },
   { label: 'Queues', path: '/queues', icon: Layers },
   { label: 'Servers', path: '/servers', icon: Server },
-  { label: 'Logs', path: '', icon: ScrollText, external: true, externalPort: 3000 },
-  { label: 'LLM Tracing', path: '', icon: BrainCircuit, external: true, externalPort: 3002 },
+  { label: 'Logs', path: '', icon: ScrollText, external: true, externalPort: 3000, externalPath: '/d/service-logs/service-logs' },
+  { label: 'LLM Tracing', path: '', icon: BrainCircuit, external: true, externalPort: 3002, disabled: true },
 ]
 
 export function Sidebar() {
@@ -53,7 +56,21 @@ export function Sidebar() {
               : location.pathname.startsWith(item.path))
 
           if (item.external) {
-            const href = item.externalPort ? externalUrl(item.externalPort) : item.path
+            if (item.disabled) {
+              return (
+                <span
+                  key={item.label}
+                  className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground/40 cursor-not-allowed"
+                >
+                  <item.icon className="h-4 w-4" />
+                  {item.label}
+                  <span className="ml-auto text-xs">soon</span>
+                </span>
+              )
+            }
+            const href = item.externalPort
+              ? externalUrl(item.externalPort, item.externalPath)
+              : item.path
             return (
               <a
                 key={item.label}
