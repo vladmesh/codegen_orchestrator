@@ -83,17 +83,15 @@
         "current": { "selected": true, "text": "All", "value": ".+" },
         "description": "Filter by log level",
         "name": "level",
-        "options": [
-          { "selected": true, "text": "All", "value": ".*" },
-          { "selected": false, "text": "debug", "value": "debug" },
-          { "selected": false, "text": "info", "value": "info" },
-          { "selected": false, "text": "warning", "value": "warning" },
-          { "selected": false, "text": "error", "value": "error" }
-        ],
-        "type": "custom",
+        "options": [],
+        "query": "label_values(level)",
+        "datasource": { "type": "loki", "uid": "" },
+        "type": "query",
         "includeAll": true,
         "allValue": ".+",
-        "multi": true
+        "multi": true,
+        "refresh": 2,
+        "sort": 1
       },
       {
         "current": { "selected": false, "text": "", "value": "" },
