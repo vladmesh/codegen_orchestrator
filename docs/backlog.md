@@ -30,12 +30,6 @@
 - **Status**: backlog
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
-### Admin SPA — LLM Tracing page (Langfuse iframe)
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Страница LLM Tracing в админке — встроенный Langfuse через iframe.  См. brainstorm: docs/brainstorms/admin-panel.md (Phase 3: Langfuse + LLM tracing)  ## Scope - Новая страница /tracing в React SPA - iframe встраивает Langfuse UI через /langfuse/ proxy (аналогично Logs → Grafana) - Sidebar пункт ...
-
 ### #1006 Decouple deploy worker from story lifecycle
 - **Priority**: HIGH
 - **Plan**: —
@@ -258,6 +252,7 @@
 
 ## Done (last 10)
 
+- Admin SPA — LLM Tracing page (Langfuse iframe) — 2026-03-13
 - LangChain → Langfuse tracing integration (env-var drop-in) — 2026-03-13
 - Langfuse v3 infra — docker-compose + ClickHouse + nginx proxy — 2026-03-13
 - #1008 Admin Phase 2 — worker inspector + queues + action buttons — 2026-03-13
@@ -267,7 +262,6 @@
 - Observability stack: JSON logging + Loki + Grafana + correlation propagation — 2026-03-13
 - Run tests, verify CI green — 2026-03-13
 - Implement Telegram bot with access control and message reversing — 2026-03-12
-- Create whitelist database model and migrations — 2026-03-12
 
 ## Ideas
 

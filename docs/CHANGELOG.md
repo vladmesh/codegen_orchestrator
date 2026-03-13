@@ -5,6 +5,7 @@
 ## 2026-03-13
 
 ### Added
+- **Admin SPA: LLM Tracing + Users pages** (#task-df069084): New `/tracing` page with Langfuse iframe. New `/users` page (list) and `/users/:id` detail page with projects tab and tracing tab. Sidebar gains "Users" and enabled "LLM Tracing" items. Project detail page shows Owner link and LLM Tracing section. API `GET /projects/` supports `owner_id` query param filter. Nginx strips `X-Frame-Options`/`Content-Security-Policy` from Langfuse proxy to enable iframe embedding.
 - **LangChain → Langfuse tracing integration** (#task-300f55e6): Drop-in LLM tracing via `langfuse` v4 SDK. New `src/tracing.py` utility returns LangChain `CallbackHandler` when `LANGFUSE_PUBLIC_KEY` + `SECRET_KEY` env vars are set (empty = disabled). Wired into all 4 consumers (PO, architect, engineering, deploy) via `config={"callbacks": ...}`. Zero changes to agent/graph code. Env vars added to `.env.example`, picked up by all services via `env_file`.
 - **Langfuse v3 infra** (#task-a51fb1cf): Self-hosted LLM tracing stack. Docker-compose adds 4 new services: `langfuse-web` (UI on port 3002), `langfuse-worker` (background processor), `clickhouse` (trace analytics), `minio` (S3-compatible event/media storage). Separate `langfuse` PostgreSQL database via init script. Shared Redis (no auth). Nginx proxy at `/langfuse/` through admin-frontend. `make init-langfuse-db` for existing deployments. Env vars for ClickHouse, MinIO, and Langfuse secrets in `.env.example`.
 
