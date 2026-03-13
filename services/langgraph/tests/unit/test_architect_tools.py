@@ -120,6 +120,14 @@ class TestGetTasksByStoryTool:
 
 
 class TestCreateTaskTool:
+    @pytest.fixture(autouse=True)
+    def _reset_chain(self):
+        from src.agents.architect.tools import reset_task_chain
+
+        reset_task_chain()
+        yield
+        reset_task_chain()
+
     @pytest.mark.asyncio
     async def test_creates_task(self, mock_api):
         from src.agents.architect.tools import create_task
@@ -132,7 +140,6 @@ class TestCreateTaskTool:
                 "acceptance_criteria": "Model exists",
                 "story_id": "story-abc",
                 "project_id": "proj-1",
-                "blocked_by_task_id": None,
             }
         )
 
@@ -141,25 +148,46 @@ class TestCreateTaskTool:
         assert call_args["title"] == "Add User model"
         assert call_args["status"] == "todo"
         assert call_args["created_by"] == "architect"
+        # First task has no dependency
+        assert call_args["blocked_by_task_id"] is None
 
     @pytest.mark.asyncio
-    async def test_creates_task_with_dependency(self, mock_api):
+    async def test_auto_chains_tasks(self, mock_api):
+        """Second task is automatically blocked by the first."""
         from src.agents.architect.tools import create_task
+
+        mock_api.create_task = AsyncMock(
+            side_effect=[
+                {"id": "task-001", "title": "First"},
+                {"id": "task-002", "title": "Second"},
+            ]
+        )
 
         await create_task.ainvoke(
             {
-                "title": "Add login",
-                "description": "Login endpoint",
+                "title": "First task",
+                "description": "Do first thing",
                 "type": "feature",
-                "acceptance_criteria": "Login works",
+                "acceptance_criteria": "Done",
                 "story_id": "story-abc",
                 "project_id": "proj-1",
-                "blocked_by_task_id": "task-001",
+            }
+        )
+        await create_task.ainvoke(
+            {
+                "title": "Second task",
+                "description": "Do second thing",
+                "type": "feature",
+                "acceptance_criteria": "Done",
+                "story_id": "story-abc",
+                "project_id": "proj-1",
             }
         )
 
-        call_args = mock_api.create_task.call_args[0][0]
-        assert call_args["blocked_by_task_id"] == "task-001"
+        first_call = mock_api.create_task.call_args_list[0][0][0]
+        second_call = mock_api.create_task.call_args_list[1][0][0]
+        assert first_call["blocked_by_task_id"] is None
+        assert second_call["blocked_by_task_id"] == "task-001"
 
 
 class TestTransitionStoryTool:

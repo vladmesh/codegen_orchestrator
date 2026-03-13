@@ -364,7 +364,32 @@ class WorkerWrapper:
             logger.info("git_commit_sha_detected", sha=git_sha, source="git")
             result["commit_sha"] = git_sha
 
+        # 8. Collect worker report (REPORT.md) if the agent wrote one
+        report = self._read_worker_report()
+        if report:
+            result["worker_report"] = report
+
         return result
+
+    def _read_worker_report(self) -> str | None:
+        """Read and delete REPORT.md from workspace.
+
+        The report is saved to the API as a task event — it doesn't belong
+        in the git repo. Deleting after read prevents it from being committed
+        by the next task and keeps the workspace clean.
+        """
+        report_path = os.path.join(WORKSPACE_DIR, "REPORT.md")
+        if not os.path.isfile(report_path):
+            return None
+        try:
+            with open(report_path) as f:
+                content = f.read()
+            os.remove(report_path)
+            logger.info("worker_report_collected", size=len(content))
+            return content
+        except OSError as e:
+            logger.warning("worker_report_read_failed", error=str(e))
+            return None
 
     def _extract_session_id_from_output(self, stdout: str) -> str | None:
         """

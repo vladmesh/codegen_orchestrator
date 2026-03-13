@@ -2,6 +2,10 @@
 
 Tools for the architect ReAct agent to decompose stories into tasks.
 All tools use the shared LanggraphAPIClient singleton.
+
+Task chaining: create_task auto-chains tasks sequentially — each new task
+is blocked by the previous one. The LLM doesn't need to track task IDs
+or manage dependencies.
 """
 
 from __future__ import annotations
@@ -14,6 +18,16 @@ from shared.contracts.dto.task import TaskStatus
 from ...clients.api import api_client
 
 logger = structlog.get_logger(__name__)
+
+# Auto-chaining state: tracks the last created task ID per story.
+# Reset between architect invocations (module is long-lived but each graph
+# invocation starts fresh via reset_task_chain).
+_last_task_id: dict[str, str] = {}
+
+
+def reset_task_chain() -> None:
+    """Reset auto-chaining state. Call before each architect invocation."""
+    _last_task_id.clear()
 
 
 @tool
@@ -93,9 +107,12 @@ async def create_task(
     acceptance_criteria: str,
     story_id: str,
     project_id: str,
-    blocked_by_task_id: str | None = None,
 ) -> dict:
     """Create a new task for a story.
+
+    Tasks are automatically chained: each new task is blocked by the previous
+    one created for the same story. Just call create_task in the right order —
+    dependencies are handled for you.
 
     Args:
         title: Short task title.
@@ -104,9 +121,9 @@ async def create_task(
         acceptance_criteria: How to verify the task is done.
         story_id: Parent story ID.
         project_id: Parent project ID.
-        blocked_by_task_id: ID of task that must complete first (use IDs from
-            previously created tasks in this session).
     """
+    blocked_by = _last_task_id.get(story_id)
+
     task_data = {
         "title": title,
         "description": description,
@@ -115,15 +132,21 @@ async def create_task(
         "story_id": story_id,
         "project_id": project_id,
         "status": TaskStatus.TODO,
-        "blocked_by_task_id": blocked_by_task_id,
+        "blocked_by_task_id": blocked_by,
         "created_by": "architect",
     }
     result = await api_client.create_task(task_data)
+
+    # Track for auto-chaining
+    task_id = result.get("id")
+    if task_id:
+        _last_task_id[story_id] = task_id
+
     logger.info(
         "architect_task_created",
-        task_id=result.get("id"),
+        task_id=task_id,
         title=title,
-        blocked_by=blocked_by_task_id,
+        blocked_by=blocked_by,
     )
     return result
 

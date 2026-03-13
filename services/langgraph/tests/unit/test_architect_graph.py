@@ -46,7 +46,7 @@ class TestArchitectPrompt:
 
         assert "create_task" in SYSTEM_PROMPT
         assert "get_story" in SYSTEM_PROMPT
-        assert "blocked_by_task_id" in SYSTEM_PROMPT
+        assert "automatically chained" in SYSTEM_PROMPT
         assert "acceptance_criteria" in SYSTEM_PROMPT
 
 

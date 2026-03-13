@@ -12,12 +12,14 @@ from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..agents.architect.graph import create_architect_graph
+from ..agents.architect.tools import reset_task_chain
 from ..clients.api import api_client
 from ..config.settings import get_settings
 from ._base import start_worker
@@ -88,6 +90,24 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
     log = logger.bind(story_id=msg.story_id, project_id=msg.project_id)
     log.info("architect_job_started")
 
+    # Guard: skip stories that are already done or no longer exist
+    try:
+        story = await api_client.get_story(msg.story_id)
+    except Exception:
+        log.warning("architect_story_not_found", story_id=msg.story_id)
+        return {"status": "skipped", "error": "story not found"}
+
+    story_status = story.get("status")
+    skip_statuses = {
+        StoryStatus.COMPLETED,
+        StoryStatus.ARCHIVED,
+        StoryStatus.FAILED,
+        StoryStatus.DEPLOYING,
+    }
+    if story_status in skip_statuses:
+        log.info("architect_skipping_finished_story", status=story_status)
+        return {"status": "skipped", "reason": f"story already {story_status}"}
+
     # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing
     project = await api_client.get_project(msg.project_id)
     if project and project.get("status") == ProjectStatus.DRAFT:
@@ -112,6 +132,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         return {"status": "failed", "error": "ARCHITECT_LLM_API_KEY not set"}
 
     try:
+        reset_task_chain()
         graph = create_architect_graph(
             model=settings.architect_llm_model or "anthropic/claude-sonnet-4",
             base_url=settings.architect_llm_base_url or "https://openrouter.ai/api/v1",

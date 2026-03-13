@@ -5,6 +5,28 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 
 <!-- entries below -->
 
+## [escort] — 2026-03-13 (first real run)
+- **Type**: bug
+- **Quote**: "Find what the user recently submitted. Look for stories created in the last 10 minutes"
+- **Problem**: Discovery correctly found the story, but the skill doesn't mention that the architect queue may be clogged with stale messages from test runs. Should add a "queue health check" step after discovery to avoid waiting hours for a blocked architect consumer.
+- **Suggested fix**: Add a step between Discovery and Architect monitoring: "Check architect:queue health — if >10 pending messages, investigate and clear stale ones."
+
+## [escort] — 2026-03-13
+- **Type**: bug
+- **Quote**: Step 2 "Monitor Architect Phase" — "If architect hasn't run after 2 minutes"
+- **Problem**: The skill says to check scheduler logs if architect is late, but the architect is a separate container. The logs command should be `docker compose logs architect` not `docker compose logs scheduler`. Also, the skill doesn't mention checking queue depth/position — knowing that our story is at position 55 of 68 is more actionable than just "hasn't run yet".
+- **Suggested fix**: (a) Fix log command to `docker compose logs architect`. (b) Add queue introspection: check `xpending` and `xlen` on `architect:queue` to understand queue position.
+
+## [escort] — 2026-03-13
+- **Type**: missing
+- **Problem**: The skill doesn't mention that story must be in `in_progress` status for deploy to trigger. If tasks are created outside the normal flow (manual, escort), the story stays `created` and the dispatcher never completes it. The skill should proactively check story status when all tasks complete.
+- **Suggested fix**: Add a check after all tasks reach `done`: "Verify story status is `in_progress`. If still `created`, transition via `POST /api/stories/{id}/start`."
+
+## [escort] — 2026-03-13
+- **Type**: optimization
+- **Problem**: The skill's Quick Reference section has `from shared.github_app import GitHubAppClient` which is wrong — the correct import is `from shared.clients.github import GitHubAppClient`.
+- **Suggested fix**: Fix the import in the Quick Reference section.
+
 ## [plan] — 2026-03-08
 - **Type**: bug
 - **Quote**: "Run `make test-unit` at minimum" (from CLAUDE.md) vs plan step 5 "Run `make test-langgraph-unit`"

@@ -516,6 +516,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "needs_human_approval": False,
             "human_approval_reason": None,
             "allow_no_commit": allow_no_commit,
+            "worker_report": None,
             "errors": [],
         }
 
@@ -523,6 +524,22 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         engineering_subgraph = create_engineering_subgraph()
         developer_started_at = datetime.now(UTC)
         result = await engineering_subgraph.ainvoke(subgraph_input)
+
+        # Save worker report as task event (before any status branching)
+        worker_report = result.get("worker_report")
+        if worker_report and planning_task_id:
+            await _write_task_event(
+                api_client,
+                planning_task_id,
+                "worker_report",
+                {"report": worker_report},
+            )
+            logger.info(
+                "worker_report_saved",
+                task_id=task_id,
+                planning_task_id=planning_task_id,
+                report_size=len(worker_report),
+            )
 
         # Check result status
         if result.get("engineering_status") == "done":

@@ -2,7 +2,7 @@
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations \
 	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
-	check-worker-images .nuke-common .nuke-hard-prune
+	check-worker-images .nuke-common .nuke-hard-prune pull-worker-reports
 
 # Load .env file
 -include .env
@@ -253,39 +253,10 @@ test-live-pipeline:
 	@uv run pytest tests/live/test_pipeline_scaffold.py tests/live/test_pipeline_engineering.py tests/live/test_full_pipeline.py -v --tb=long -x -s
 
 
-# Cleanup DB artifacts left by live tests
+# Cleanup DB and artifacts left by live tests
 test-live-clean:
-	@echo "Cleaning live test data from DB..."
-	@docker compose exec -T db psql -U postgres -d orchestrator -c " \
-		DELETE FROM task_events WHERE task_id IN ( \
-			SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id \
-			WHERE p.name LIKE 'live-test-%' OR p.name LIKE 'live-crud-%' OR p.name LIKE 'mega-test-%'); \
-		DELETE FROM runs WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM tasks WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM stories WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM brainstorms WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM rag_chunks WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM rag_documents WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM rag_conversation_summaries WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM rag_messages WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM service_deployments WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM repositories WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM port_allocations WHERE project_id IN ( \
-			SELECT id FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'); \
-		DELETE FROM projects WHERE name LIKE 'live-test-%' OR name LIKE 'live-crud-%' OR name LIKE 'mega-test-%'; \
-		DELETE FROM users WHERE telegram_id = 999000001; \
-	"
-	@echo "Done."
+	@echo "🧹 Running comprehensive live test cleanup (DB, GitHub, Workers, Workspaces, Servers)..."
+	@uv run python scripts/clean_live_tests.py
 
 
 # E2E Scaffold Test: runs against running `make up` stack
@@ -374,6 +345,9 @@ roadmap:
 
 status:
 	@uv run python scripts/generate_status.py
+
+pull-worker-reports:
+	@uv run python scripts/pull_worker_reports.py
 
 recent-artifacts:
 	@uv run python scripts/sync_recent_artifacts.py

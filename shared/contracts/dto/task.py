@@ -29,6 +29,7 @@ class TaskEventType(StrEnum):
     ITERATION_END = "iteration_end"
     NOTE = "note"
     COMMENT = "comment"
+    WORKER_REPORT = "worker_report"
 
 
 # Valid status transitions: from_status -> set of allowed to_statuses

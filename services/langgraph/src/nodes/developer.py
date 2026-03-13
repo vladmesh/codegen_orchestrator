@@ -212,6 +212,7 @@ class DeveloperNode(FunctionalNode):
                             "engineering_status": "done",
                             "commit_sha": None,
                             "worker_id": worker_result.worker_id,
+                            "worker_report": worker_result.worker_report,
                         }
 
                     logger.error(
@@ -248,6 +249,7 @@ class DeveloperNode(FunctionalNode):
                     "engineering_status": "done",
                     "commit_sha": worker_result.commit_sha,
                     "worker_id": worker_result.worker_id,
+                    "worker_report": worker_result.worker_report,
                 }
             elif worker_result.block_reason:
                 # Developer explicitly reported a blocker via orch report-blocker
@@ -263,6 +265,7 @@ class DeveloperNode(FunctionalNode):
                     "engineering_status": "developer_blocked",
                     "block_reason": worker_result.block_reason,
                     "worker_id": worker_result.worker_id,
+                    "worker_report": worker_result.worker_report,
                     "errors": state.get("errors", [])
                     + [f"Developer blocked: {worker_result.block_reason}"],
                 }

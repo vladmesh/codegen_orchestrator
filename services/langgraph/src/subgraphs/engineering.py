@@ -53,6 +53,7 @@ class EngineeringState(TypedDict):
     engineering_status: str  # "idle" | "working" | "done" | "blocked"
     commit_sha: str | None
     worker_id: str | None
+    worker_report: str | None
 
     # Loop tracking
     iteration_count: int

@@ -106,22 +106,24 @@
 ### Problem 1: Architect queue clogged with stale messages
 - **Type**: orchestrator
 - **Severity**: major
-- **Status**: needs-fix
-- **Backlog**: new
+- **Status**: fixed
+- **Backlog**: `task-5066d388` (TTL/cleanup — remaining work)
 - **Description**: Live test runs leave messages in `architect:queue` for test stories that are never cleaned up. The architect consumer has no skip logic — every message triggers a full LLM call or 5-minute scaffold timeout wait, even for completed/deleted stories.
 - **Root cause**: No TTL or cleanup mechanism for queue messages. No guard in architect consumer to skip already-completed stories.
 - **Evidence**: 75 stale messages, our story at position 55 of 68
 - **Suggested fix**: (a) Add a guard in `process_architect_job` to skip stories with status `completed`/`archived`/`failed`. (b) Add TTL/cleanup for old queue messages. (c) Live test cleanup should drain its queue messages.
+- **Fix applied**: (a) Guard added in architect consumer — skips `completed`/`archived`/`failed`/`deploying` stories and 404s. (b) `flush_queues()` now includes `architect:queue`. (c) `cleanup_all()` calls `flush_queues()` in teardown (not only setup). (d) 75 stale messages and 7 stale GitHub repos cleaned up manually. TTL/cleanup deferred to `task-5066d388`.
 
 ### Problem 2: Architect LLM passes "None" string as blocked_by_task_id
 - **Type**: orchestrator
 - **Severity**: critical
-- **Status**: needs-fix
-- **Backlog**: new
+- **Status**: fixed
+- **Backlog**: —
 - **Description**: The architect LLM returned `blocked_by_task_id: "None"` (string) instead of `null`. The API FK constraint rejects this, causing a 500 error and partial task creation.
 - **Root cause**: LLM serialization issue — the architect tool's `create_task` function doesn't sanitize the `blocked_by_task_id` field before passing to API.
 - **Evidence**: `ForeignKeyViolationError: Key (blocked_by_task_id)=(None) is not present in table "tasks"`
 - **Suggested fix**: In the architect's `create_task` tool, coerce `"None"` / `"null"` / empty strings to `None` before passing to the API. Also add server-side validation in the task creation endpoint.
+- **Fix applied**: Eliminated the entire class of errors — removed `blocked_by_task_id` parameter from the LLM tool. Tasks are now auto-chained: each `create_task` call is automatically blocked by the previous one for the same story. The LLM just calls `create_task` in the right order; `_last_task_id` dict tracks chaining server-side. `reset_task_chain()` called before each graph invocation.
 
 ### Problem 3: Story not transitioned to in_progress when tasks created by non-standard flow
 - **Type**: orchestrator
@@ -139,6 +141,7 @@
 - **Backlog**: existing (known from previous escorts)
 - **Description**: Worker containers can't start their dev DB because port 5432 is already allocated at the Docker daemon level. Workers resort to creating migrations manually without DB validation.
 - **Root cause**: Multiple worker containers share the host's port space, and the orchestrator's own PostgreSQL binds 5432.
+- **Evidence**: See [worker report — task 1](worker_reports/reverse-message-bot-worker-2026-03-12-1da8d18a.md): `Bind for 0.0.0.0:5432 failed: port is already allocated`, DB container stuck in "Created" state, migration written manually.
 - **Suggested fix**: Use dynamic port allocation or internal Docker networking for worker dev databases.
 
 ### Problem 5: Broken shebangs in worker venv
@@ -148,6 +151,7 @@
 - **Backlog**: new
 - **Description**: Python venv binaries (pytest, xenon) have shebangs pointing to `/data/workspaces/repo-b8fc8def` instead of `/workspace`. Worker agents have to fix this with sed on every task.
 - **Root cause**: The worker-manager mounts the workspace at `/workspace` but the venv was created when the path was `/data/workspaces/repo-b8fc8def` (during scaffold).
+- **Evidence**: Reported independently by all workers: [task 2](worker_reports/reverse-message-bot-worker-2026-03-12-4f7d571b.md) and [task 3](worker_reports/reverse-message-bot-worker-2026-03-12-1d56bea1.md). Each worker had to run sed replacement. Task 3 also reported `ruff` missing from system PATH (only in `.venv/bin/`).
 - **Suggested fix**: Recreate the venv in the worker container at the correct path, or fix shebangs in worker-manager setup.
 
 ### Problem 6: Smoke test skipped for tg_bot module
@@ -174,9 +178,9 @@ Other stories running during escort: story-2ce3290c, story-35d8066f, story-d7239
 
 ## Recommendations
 
-1. **[CRITICAL]** Fix architect `blocked_by_task_id="None"` string bug — sanitize in tool and validate server-side. This causes partial task creation and breaks the entire story.
-2. **[MAJOR]** Add skip-guard in architect consumer for already-completed/failed/archived stories — saves LLM costs and prevents queue clog.
-3. **[MAJOR]** Add queue message cleanup to live test teardown — live tests should drain their architect queue messages.
+1. ~~**[CRITICAL]** Fix architect `blocked_by_task_id="None"` string bug~~ — **FIXED**: removed `blocked_by_task_id` from LLM tool entirely, auto-chaining server-side.
+2. ~~**[MAJOR]** Add skip-guard in architect consumer for already-completed/failed/archived stories~~ — **FIXED**: guard added, skips finished/deleted stories.
+3. ~~**[MAJOR]** Add queue message cleanup to live test teardown~~ — **FIXED**: `architect:queue` added to `flush_queues()`, called in both setup and teardown. Stale messages and GitHub repos cleaned up.
 4. **[MAJOR]** Handle story completion for stories in `created` status with all tasks done — either auto-start or check in dispatcher.
 5. **[MINOR]** Fix venv shebang issue in worker containers — either recreate venv at correct path or fix shebangs during setup.
 6. **[MINOR]** Consider dynamic port allocation for worker dev databases to avoid 5432 conflicts.

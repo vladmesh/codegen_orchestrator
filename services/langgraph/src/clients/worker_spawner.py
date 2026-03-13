@@ -44,6 +44,7 @@ class SpawnResult:
     worker_id: str | None = None
     reject_reason: str | None = None
     block_reason: str | None = None
+    worker_report: str | None = None
 
 
 LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
@@ -276,6 +277,7 @@ async def request_spawn(
                 worker_id=worker_id,
                 reject_reason=output_resp.get("reject_reason"),
                 block_reason=output_resp.get("block_reason"),
+                worker_report=output_resp.get("worker_report"),
             )
         else:
             # Timeout - cleanup the zombie container
@@ -387,6 +389,7 @@ async def send_task_to_worker(
                 worker_id=worker_id,
                 reject_reason=output_resp.get("reject_reason"),
                 block_reason=output_resp.get("block_reason"),
+                worker_report=output_resp.get("worker_report"),
             )
         else:
             return SpawnResult(

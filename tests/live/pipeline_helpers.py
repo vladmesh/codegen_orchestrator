@@ -16,7 +16,7 @@ import httpx
 from shared.contracts.dto.project import ProjectStatus, ServiceStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
-from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
+from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
 
 # ── Constants ────────────────────────────────────────────────────────────
 API_URL = "http://localhost:8000"
@@ -129,7 +129,7 @@ def flush_queues() -> None:
     stale pending entries. DEL removes everything; consumers recreate
     the stream via XGROUP CREATE ... MKSTREAM on next startup.
     """
-    for queue in [SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE]:
+    for queue in [SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE, ARCHITECT_QUEUE]:
         subprocess.run(
             ["docker", "compose", "exec", "-T", "redis", "redis-cli", "DEL", queue],
             capture_output=True,
@@ -492,6 +492,12 @@ async def cleanup_all(
             _cleanup_db(ctx["project_id"])
         except Exception as exc:
             logger.warning("cleanup_db_error", error=str(exc), project_id=ctx.get("project_id"))
+
+    # 5. Flush queues (remove stale messages left by this test run)
+    try:
+        flush_queues()
+    except Exception as exc:
+        logger.warning("cleanup_flush_queues_error", error=str(exc))
 
 
 def _cleanup_db(project_id: str) -> None:

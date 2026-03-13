@@ -50,9 +50,9 @@ or boilerplate — scaffolding handles this.
 these are part of each task's implementation.
 - Do NOT over-specify implementation details — the developer has AGENTS.md \
 and knows the framework conventions.
-- Order tasks by dependency: data models first, then API/business logic, then UI.
-- Use `blocked_by_task_id` to chain tasks. A task can only be blocked by \
-ONE earlier task (the most critical dependency).
+- Order tasks by dependency: data models first, then API/business logic, then UI. \
+Tasks are automatically chained in creation order — just call create_task \
+in the right sequence.
 - Set type to one of: "create", "feature", "fix", "refactor".
 - Include acceptance_criteria for every task — what must be true when done.
 - Always pass story_id and project_id from your initial context.

@@ -7,17 +7,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.architect import ArchitectMessage
 
 # Default project response (ACTIVE = scaffold done, no waiting)
 _ACTIVE_PROJECT = {"id": "proj-123", "status": ProjectStatus.ACTIVE, "config": {}}
 
+# Default story response (CREATED = ready for architect decomposition)
+_CREATED_STORY = {"id": "story-abc", "status": "created"}
+
 
 @pytest.fixture(autouse=True)
 def _mock_api_get_project():
-    """All tests get a pre-scaffolded (ACTIVE) project by default."""
+    """All tests get a pre-scaffolded (ACTIVE) project and CREATED story by default."""
     with patch("src.consumers.architect.api_client") as mock_api:
         mock_api.get_project = AsyncMock(return_value=_ACTIVE_PROJECT)
+        mock_api.get_story = AsyncMock(return_value=_CREATED_STORY)
         # Preserve other methods as AsyncMock so tests can override
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
         mock_api.create_task = AsyncMock(return_value={"id": "task-ci"})
@@ -46,6 +51,38 @@ class TestProcessArchitectJob:
         result = await process_architect_job({"bad": "data"}, mock_redis)
 
         assert result["status"] == "skipped"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [StoryStatus.COMPLETED, StoryStatus.ARCHIVED, StoryStatus.FAILED, StoryStatus.DEPLOYING],
+    )
+    async def test_skips_finished_story(
+        self, mock_redis, valid_job_data, _mock_api_get_project, status
+    ):
+        """Architect skips stories that are already completed/archived/failed/deploying."""
+        _mock_api_get_project.get_story = AsyncMock(
+            return_value={"id": "story-abc", "status": status}
+        )
+        from src.consumers.architect import process_architect_job
+
+        result = await process_architect_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "skipped"
+        assert status in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_skips_when_story_not_found(
+        self, mock_redis, valid_job_data, _mock_api_get_project
+    ):
+        """Architect skips when story no longer exists (404)."""
+        _mock_api_get_project.get_story = AsyncMock(side_effect=Exception("404 Not Found"))
+        from src.consumers.architect import process_architect_job
+
+        result = await process_architect_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "skipped"
+        assert "not found" in result["error"]
 
     @pytest.mark.asyncio
     async def test_fails_without_llm_config(self, mock_redis, valid_job_data):

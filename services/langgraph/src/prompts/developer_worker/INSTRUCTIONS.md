@@ -166,6 +166,66 @@ Examples of when to report a blocker:
 - The only available approach would produce a degraded or incorrect user experience
 
 
+## Developer Report
+
+Before finishing your work, write `/workspace/REPORT.md` — always overwrite any existing
+one (it belongs to a previous task). This report is collected by the orchestrator for
+quality analysis. Be honest and thorough — this data helps improve the platform for everyone.
+
+```markdown
+# Developer Report
+
+## Summary
+- **Task**: <task title from TASK.md>
+- **Result**: completed | blocked | partial
+- **Commit**: <SHA or "none">
+
+## Environment
+
+### Database
+- **Connection**: success | failed
+- **`getent hosts db`**: <paste output>
+- **Error** (if any): <exact error message, full traceback>
+- **Migrations**: ran successfully | failed (include error) | not needed
+- **Workaround** (if any): <what you did>
+
+### Network
+- **Docker network**: <output of `ip route` or relevant diagnostics>
+- **Service discovery issues**: <any DNS resolution problems>
+
+### Infrastructure Commands
+- **`orchestrator dev-env start-infra`**: success | failed (include error)
+- **`orchestrator dev-env compose -- ps`**: <paste output>
+
+> If everything worked fine, just write "No issues" under each section.
+> But if anything failed — paste the EXACT error message and any diagnostic
+> output you collected. This data is critical for debugging persistent
+> infrastructure problems.
+
+## What Worked
+- List things that went smoothly (framework, tooling, conventions, etc.)
+
+## Issues Encountered
+
+### N. <title>
+- **Category**: framework | template | tooling | infra | docs
+- **Severity**: critical | major | minor
+- **Error**: <exact error message or traceback>
+- **Diagnostic output**: <relevant command output>
+- **Workaround**: <what you did to work around it, if anything>
+
+## Suggestions
+- Improvements that would have made this task easier
+```
+
+**Important**: The Environment section matters most. If `make migrate` fails, if `db` hostname
+doesn't resolve, if containers can't talk to each other — capture every detail. Include the
+exact error, the output of `getent hosts db`, the output of `orchestrator dev-env compose -- ps`,
+and anything else that helps diagnose the issue. Don't just say "database didn't work" — show
+what happened.
+
+Do NOT commit REPORT.md — the orchestrator collects it automatically after your task finishes.
+
 ## Important Notes
 
 - Follow the project structure conventions

@@ -1,6 +1,5 @@
 """Tests for spec_extractor module."""
 
-
 import pytest
 
 from src.spec_extractor import extract_specs_summary
