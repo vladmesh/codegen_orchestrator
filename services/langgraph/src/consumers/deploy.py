@@ -22,7 +22,7 @@ from ..clients.story_worker_registry import clear_story_worker, get_story_worker
 from ..clients.worker_spawner import delete_worker
 from ..schemas.api_types import ProjectInfo
 from ..subgraphs.devops import create_devops_subgraph
-from ..tracing import get_langfuse_callbacks
+from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker
 from ._events import publish_callback_event, publish_story_event
 
@@ -588,7 +588,17 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             project_id, project, _git_url, allocated_resources, job_data
         )
         result = await devops_subgraph.ainvoke(
-            subgraph_input, config={"callbacks": get_langfuse_callbacks()}
+            subgraph_input,
+            config={
+                "callbacks": get_langfuse_callbacks(),
+                "metadata": build_langfuse_metadata(
+                    agent_type="deploy",
+                    user_id=user_id,
+                    project_id=project_id,
+                    task_id=task_id,
+                    story_id=story_id,
+                ),
+            },
         )
 
         logger.info(

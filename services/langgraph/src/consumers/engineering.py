@@ -22,7 +22,7 @@ from ..clients.api import api_client
 from ..clients.story_worker_registry import get_story_worker, set_story_worker
 from ..clients.worker_spawner import delete_worker
 from ..nodes.resource_allocator import resource_allocator_node
-from ..tracing import get_langfuse_callbacks
+from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker
 from ._ci_gate import _wait_for_ci_and_fix
 from ._events import publish_callback_event, publish_story_event
@@ -527,7 +527,17 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         engineering_subgraph = create_engineering_subgraph()
         developer_started_at = datetime.now(UTC)
         result = await engineering_subgraph.ainvoke(
-            subgraph_input, config={"callbacks": get_langfuse_callbacks()}
+            subgraph_input,
+            config={
+                "callbacks": get_langfuse_callbacks(),
+                "metadata": build_langfuse_metadata(
+                    agent_type="engineering",
+                    user_id=user_id,
+                    project_id=project_id,
+                    task_id=task_id,
+                    story_id=story_id,
+                ),
+            },
         )
 
         # Save worker report as task event (before any status branching)
