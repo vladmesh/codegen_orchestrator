@@ -6,7 +6,10 @@ import structlog
 logger = structlog.get_logger()
 
 # Configuration
-HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "60"))  # 1 minute
+_interval = os.getenv("HEALTH_CHECK_INTERVAL")
+if not _interval:
+    raise RuntimeError("HEALTH_CHECK_INTERVAL is not set")
+HEALTH_CHECK_INTERVAL = int(_interval)
 
 
 async def health_check_worker():

@@ -7,6 +7,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
@@ -31,6 +32,18 @@ from ..schemas.task import (
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+async def _commit_or_raise_fk(db: AsyncSession) -> None:
+    """Commit and convert FK violations into 422 responses."""
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Foreign key constraint violated: {exc.orig}",
+        ) from exc
 
 
 def _generate_id() -> str:
@@ -168,7 +181,7 @@ async def create_task(
         updated_at=now,
     )
     db.add(task)
-    await db.commit()
+    await _commit_or_raise_fk(db)
     await db.refresh(task)
 
     logger.info("task_created", task_id=task.id, title=task.title, type=task.type)
@@ -208,7 +221,7 @@ async def push_task(
         updated_at=now,
     )
     db.add(task)
-    await db.commit()
+    await _commit_or_raise_fk(db)
     await db.refresh(task)
 
     logger.info("task_pushed", task_id=task.id, title=task.title, priority=auto_priority)
@@ -357,7 +370,7 @@ async def update_task(
     for field, value in update_data.items():
         setattr(task, field, value)
 
-    await db.commit()
+    await _commit_or_raise_fk(db)
     await db.refresh(task)
 
     logger.info("task_updated", task_id=task.id, fields=list(update_data.keys()))
