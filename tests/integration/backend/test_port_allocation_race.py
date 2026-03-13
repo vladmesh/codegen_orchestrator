@@ -5,6 +5,7 @@ correctly when two concurrent requests compete for ports on the same server.
 """
 
 import asyncio
+from uuid import uuid4
 
 import pytest
 
@@ -38,7 +39,7 @@ async def test_concurrent_allocations_get_different_ports(api_client, race_serve
             f"/api/servers/{race_server}/ports/allocate-next",
             json={
                 "service_name": f"svc-{idx}",
-                "project_id": f"race-proj-{idx}",
+                "project_id": str(uuid4()),
             },
         )
         assert resp.status_code == 200, f"Allocation {idx} failed: {resp.text}"  # noqa: PLR2004
@@ -60,7 +61,7 @@ async def test_five_concurrent_allocations_all_unique(api_client, race_server):
             f"/api/servers/{race_server}/ports/allocate-next",
             json={
                 "service_name": f"burst-{idx}",
-                "project_id": f"burst-proj-{idx}",
+                "project_id": str(uuid4()),
             },
         )
         assert resp.status_code == 200, f"Allocation {idx} failed: {resp.text}"  # noqa: PLR2004

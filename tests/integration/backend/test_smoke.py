@@ -1,5 +1,4 @@
 import os
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -20,9 +19,8 @@ async def test_backend_integration_smoke():
 @pytest.mark.asyncio
 async def test_api_seed_and_read_project(api_client, seed_project):
     """Verify we can seed a project via API and read it back."""
-    pid = f"smoke-{uuid4().hex[:6]}"
-    created = await seed_project(pid, name="Smoke Test", config={"modules": ["backend"]})
-    assert created["id"] == pid
+    created = await seed_project(name="Smoke Test", config={"modules": ["backend"]})
+    pid = created["id"]
     assert created["status"] == "draft"
 
     resp = await api_client.get(f"/api/projects/{pid}")

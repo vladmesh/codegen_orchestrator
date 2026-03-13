@@ -26,18 +26,21 @@ class TestLangGraphIntegration:
         before that point works with real DB/Redis/API.
         """
         suffix = uuid4().hex[:6]
-        project_id = f"int-eng-{suffix}"
-        task_id = f"eng-task-{suffix}"
         server_handle = f"int-server-{suffix}"
 
         # Seed real data via API → DB
-        await seed_project(
-            project_id,
+        project = await seed_project(
             name="Integration Test Project",
             status="draft",
             config={"description": "Test project", "modules": ["backend"], "estimated_ram_mb": 512},
         )
-        await seed_task(task_id, task_type="engineering", project_id=project_id)
+        project_id = project["id"]
+        task = await seed_task(
+            title=f"Engineering task {suffix}",
+            task_type="feature",
+            project_id=project_id,
+        )
+        task_id = task["id"]
         await seed_server(server_handle, status="ready", capacity_ram_mb=8192)
 
         # Queue engineering message
@@ -56,7 +59,7 @@ class TestLangGraphIntegration:
             api_client, task_id, target_statuses={"running", "failed"}, timeout=30
         )
 
-        # Worker must have picked it up (status moved from "queued")
+        # Worker must have picked it up (status moved from "backlog")
         assert task["status"] in {"running", "failed"}, f"Unexpected status: {task['status']}"
 
         # If it reached "running", wait for it to fail at GitHub boundary
@@ -74,16 +77,19 @@ class TestLangGraphIntegration:
         )
 
     async def test_engineering_worker_missing_project_fails_task(
-        self, redis_client, api_client, seed_task
+        self, redis_client, api_client, seed_project, seed_task
     ):
         """Engineering worker fails task when project doesn't exist in DB."""
         suffix = uuid4().hex[:6]
-        task_id = f"eng-missing-{suffix}"
-        fake_project_id = f"nonexistent-{suffix}"
 
-        # Seed task without project_id (FK would reject non-existent project_id)
-        # The engineering worker reads project_id from the queue message, not the task record
-        await seed_task(task_id, task_type="engineering")
+        # Seed a project to own the task (FK constraint), then reference a fake project in the msg
+        project = await seed_project(name=f"Owner project {suffix}")
+        task = await seed_task(
+            title=f"Missing project task {suffix}",
+            project_id=project["id"],
+        )
+        task_id = task["id"]
+        fake_project_id = str(uuid4())
 
         # Queue message referencing non-existent project
         msg = EngineeringMessage(
@@ -105,17 +111,19 @@ class TestLangGraphIntegration:
     ):
         """Engineering worker aborts immediately for scaffold_failed projects."""
         suffix = uuid4().hex[:6]
-        project_id = f"int-scaffold-fail-{suffix}"
-        task_id = f"eng-sf-{suffix}"
 
         # Seed project with scaffold_failed status
-        await seed_project(
-            project_id,
+        project = await seed_project(
             name="Scaffold Failed Project",
             status="scaffold_failed",
             config={"description": "Previously failed scaffold"},
         )
-        await seed_task(task_id, task_type="engineering", project_id=project_id)
+        project_id = project["id"]
+        task = await seed_task(
+            title=f"Scaffold failed task {suffix}",
+            project_id=project_id,
+        )
+        task_id = task["id"]
 
         # Queue message
         msg = EngineeringMessage(

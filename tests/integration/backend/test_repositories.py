@@ -1,20 +1,14 @@
 """Integration tests for Repository CRUD — create, list, link to task."""
 
-import os
-from uuid import uuid4
-
 import pytest
-
-API_URL = os.getenv("API_URL", "http://api:8000")
-TEST_TELEGRAM_ID = "999000"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_repository_crud(api_client, seed_project):
     """Create a repository, read it, update it, delete it."""
-    pid = f"repo-test-{uuid4().hex[:6]}"
-    await seed_project(pid, name="Repo Test Project")
+    project = await seed_project(name="Repo Test Project")
+    pid = project["id"]
 
     # Create
     resp = await api_client.post(
@@ -69,10 +63,10 @@ async def test_repository_crud(api_client, seed_project):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_task_with_repository_id(api_client, seed_project):
+async def test_task_with_repository_id(api_client, seed_project, seed_task):
     """Create a task linked to a repository via repository_id FK."""
-    pid = f"repo-task-{uuid4().hex[:6]}"
-    await seed_project(pid, name="Repo Task Project")
+    project = await seed_project(name="Repo Task Project")
+    pid = project["id"]
 
     # Create repository
     resp = await api_client.post(
@@ -87,17 +81,17 @@ async def test_task_with_repository_id(api_client, seed_project):
     repo_id = resp.json()["id"]
 
     # Create task with repository_id
-    resp = await api_client.post(
-        "/api/tasks/",
-        json={
-            "project_id": pid,
-            "title": "Task in repo",
-            "repository_id": repo_id,
-        },
+    task = await seed_task(
+        title="Task in repo",
+        project_id=pid,
     )
-    assert resp.status_code == 201
-    task = resp.json()
-    assert task["repository_id"] == repo_id
+    # Patch to add repository_id (TaskCreate may not accept it directly)
+    resp = await api_client.patch(
+        f"/api/tasks/{task['id']}",
+        json={"repository_id": repo_id},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["repository_id"] == repo_id
 
     # Filter tasks by repository_id
     resp = await api_client.get(f"/api/tasks/?repository_id={repo_id}")

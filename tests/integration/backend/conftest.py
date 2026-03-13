@@ -148,13 +148,12 @@ async def seed_project(api_client):
         )
 
     async def _create(
-        project_id: str,
         name: str = "Test Project",
         status: str = "draft",
         config: dict | None = None,
         repository_url: str | None = None,
     ) -> dict:
-        body = {"id": project_id, "name": name, "status": status, "config": config or {}}
+        body = {"name": name, "status": status, "config": config or {}}
         if repository_url:
             body["repository_url"] = repository_url
         resp = await api_client.post(
@@ -163,8 +162,9 @@ async def seed_project(api_client):
             headers={"X-Telegram-ID": TEST_TELEGRAM_ID},
         )
         assert resp.status_code == 201, f"Failed to seed project: {resp.text}"
-        created_ids.append(project_id)
-        return resp.json()
+        data = resp.json()
+        created_ids.append(data["id"])
+        return data
 
     yield _create
 
@@ -179,11 +179,12 @@ async def seed_task(api_client):
     """Factory fixture to create tasks via API."""
 
     async def _create(
-        task_id: str,
-        task_type: str = "engineering",
+        title: str = "Test Task",
+        task_type: str = "feature",
         project_id: str | None = None,
+        status: str = "backlog",
     ) -> dict:
-        body = {"id": task_id, "type": task_type}
+        body = {"title": title, "type": task_type, "status": status}
         if project_id:
             body["project_id"] = project_id
         resp = await api_client.post("/api/tasks/", json=body)

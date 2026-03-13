@@ -18,8 +18,10 @@ from .conftest import (
 )
 
 
-async def cleanup_worker(redis_client, worker_id: str):
-    """Send delete command for worker."""
+async def cleanup_worker(redis_client, worker_id: str | None):
+    """Send delete command for worker (no-op if worker_id is None)."""
+    if not worker_id:
+        return
     cmd = DeleteWorkerCommand(request_id=f"cleanup-{worker_id}", worker_id=worker_id)
     await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
 
@@ -72,7 +74,7 @@ class TestTaskInjection:
             assert exit_code != 0, "TASK.md SHOULD NOT be in /workspace/"
 
         finally:
-            await cleanup_worker(redis_client, worker_id)
+            await cleanup_worker(redis_client, result.worker_id)
 
     async def test_env_hints_in_task_md(self, redis_client, docker_client):
         """Verify that env_hints content appears in TASK.md inside the worker."""
@@ -127,4 +129,4 @@ class TestTaskInjection:
             assert "os.getenv()" in task_text
 
         finally:
-            await cleanup_worker(redis_client, worker_id)
+            await cleanup_worker(redis_client, result.worker_id)
