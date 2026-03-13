@@ -45,9 +45,12 @@ async def redis_client():
 
 
 @pytest.fixture
-async def stream_client(redis_client):
+async def stream_client():
     """RedisStreamClient for PO tools."""
-    return RedisStreamClient(redis_client)
+    client = RedisStreamClient(REDIS_URL)
+    await client.connect()
+    yield client
+    await client.close()
 
 
 @pytest.fixture

@@ -67,4 +67,4 @@ async def test_project_create():
         assert response.status_code == 200  # noqa: PLR2004
         project = ProjectDTO.model_validate(response.json())
         assert project.name == project_name
-        assert project.id == project_id
+        assert str(project.id) == project_id
