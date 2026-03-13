@@ -406,8 +406,9 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_SECURITY_ALLOW_EMBEDDING: "true"
-      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+      GF_SERVER_ROOT_URL: "http://${ORCHESTRATOR_HOSTNAME:-localhost}:3001/grafana/"
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_LIVE_ALLOWED_ORIGINS: "*"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./infra/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro

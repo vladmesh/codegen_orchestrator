@@ -66,7 +66,7 @@
   "templating": {
     "list": [
       {
-        "current": { "selected": true, "text": ".*", "value": ".*" },
+        "current": { "selected": true, "text": "All", "value": ".+" },
         "description": "Filter by service name",
         "name": "service",
         "options": [],
@@ -75,12 +75,12 @@
         "type": "query",
         "regex": "",
         "includeAll": true,
-        "allValue": ".*",
+        "allValue": ".+",
         "multi": true,
         "refresh": 2
       },
       {
-        "current": { "selected": true, "text": ".*", "value": ".*" },
+        "current": { "selected": true, "text": "All", "value": ".+" },
         "description": "Filter by log level",
         "name": "level",
         "options": [
@@ -92,7 +92,7 @@
         ],
         "type": "custom",
         "includeAll": true,
-        "allValue": ".*",
+        "allValue": ".+",
         "multi": true
       },
       {
