@@ -11,14 +11,14 @@ _(no task in progress)_
 
 ## Stats
 
-| backlog: 41 | todo: 0 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 75 |
+| backlog: 37 | todo: 0 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 75 |
 
 ## Recently Completed
 
+- Observability stack: JSON logging + Loki + Grafana + correlation propagation — 2026-03-13
 - Run tests, verify CI green — 2026-03-13
 - Implement Telegram bot with access control and message reversing — 2026-03-12
 - Create whitelist database model and migrations — 2026-03-12
-- Noop task — 2026-03-12
 - HITL MVP: WAITING_HUMAN_REVIEW status + report-blocker + admin resume/requeue — 2026-03-12
 
 ## Quick Links

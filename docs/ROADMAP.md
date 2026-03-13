@@ -24,7 +24,7 @@
 - [x] #1004 CI gate: one push per story instead of per task
 - [x] #52 Scaffold script не экранирует task_description
 - [x] #21 Deploy Pre-Check
-- [ ] Observability stack: JSON logging + Loki + Grafana + correlation propagation
+- [x] Observability stack: JSON logging + Loki + Grafana + correlation propagation
 - [x] #54 Deploy: inter-service URL должен использовать docker service name
 - [ ] #60 Engineering worker work_item lifecycle (Step 5)
 - [ ] Fix eager import chains in scaffolded projects
@@ -312,30 +312,6 @@ Rider-Waite tarot deck в публичном домене, можно взять
 
 ## Smoke test reopen
 
-## Live test story
-
-Automated live test
-
-## Live test story
-
-Automated live test
-
-## Infra failure story
-
-- [ ] Infra failure task
-
-## Infra failure story
-
-- [ ] Infra failure task
-
-## Live test story
-
-Automated live test
-
-## Infra failure story
-
-- [ ] Infra failure task
-
 ## Create reverse message bot — COMPLETE
 
 _Create a Telegram bot that reverses any text message character by character (from last character to first).
@@ -496,10 +472,6 @@ Feature-стенды, полноценный CI перед деплоем. Previ
 
 # Technical Initiatives
 
-## Deploy test story — COMPLETE
-
-_Manual deploy test_
-
 ## Rust migration
 
 Rewrite service-template codegen and generated services from Python to Rust. Axum + SeaORM for services, Tera for templates. Goal: stricter feedback loop for agent-driven development, faster builds, fewer runtime bugs.
@@ -519,9 +491,6 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 - [ ] #1005 Standardize PYTHONPATH and import patterns across service-template services
 - [ ] debug test
-- [ ] Live test task
-- [ ] Live test task
-- [ ] Live test task
 - [ ] Add TTL/cleanup for stale Redis queue messages
 - [ ] API authorization: scope worker access, protect destructive endpoints
 - [ ] #1006 Decouple deploy worker from story lifecycle

@@ -18,24 +18,6 @@
 - **Plan**: —
 - **Status**: backlog
 
-### Live test task
-- **Priority**: CRITICAL
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Test task for live tests
-
-### Live test task
-- **Priority**: CRITICAL
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Test task for live tests
-
-### Live test task
-- **Priority**: CRITICAL
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Test task for live tests
-
 ### Add TTL/cleanup for stale Redis queue messages
 - **Priority**: CRITICAL
 - **Plan**: —
@@ -53,12 +35,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
-
-### Observability stack: JSON logging + Loki + Grafana + correlation propagation
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Deploy observability stack for admin log viewer.  Step 1: Enable JSON logging (5 min) - Add LOG_FORMAT=json to all services in docker-compose.yml - Keep console format for local docker-compose up (override or env default)  Step 2: Deploy Loki + Grafana + Promtail (30 min) - Add loki, grafana, pro...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -276,10 +252,10 @@
 
 ## Done (last 10)
 
+- Observability stack: JSON logging + Loki + Grafana + correlation propagation — 2026-03-13
 - Run tests, verify CI green — 2026-03-13
 - Implement Telegram bot with access control and message reversing — 2026-03-12
 - Create whitelist database model and migrations — 2026-03-12
-- Noop task — 2026-03-12
 - HITL MVP: WAITING_HUMAN_REVIEW status + report-blocker + admin resume/requeue — 2026-03-12
 - Story/Task reopen flow with user_report field — 2026-03-12
 - Run tests, verify CI green — 2026-03-11
