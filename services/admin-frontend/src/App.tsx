@@ -9,6 +9,7 @@ import { TaskDetailPage } from '@/pages/TaskDetailPage'
 import { WorkersPage } from '@/pages/WorkersPage'
 import { QueuesPage } from '@/pages/QueuesPage'
 import { ServersPage } from '@/pages/ServersPage'
+import { LogsPage } from '@/pages/LogsPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -34,6 +35,7 @@ export default function App() {
             <Route path="workers" element={<WorkersPage />} />
             <Route path="queues" element={<QueuesPage />} />
             <Route path="servers" element={<ServersPage />} />
+            <Route path="logs" element={<LogsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

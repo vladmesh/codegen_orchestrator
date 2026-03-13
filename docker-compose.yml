@@ -37,8 +37,6 @@ services:
       - ./shared:/app/shared:delegated
       - ./scripts:/app/scripts:ro
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
-    ports:
-      - "8000:8000"
 
   langgraph:
     build:
@@ -386,9 +384,14 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3001:80"
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     depends_on:
       api:
         condition: service_healthy
+      grafana:
+        condition: service_started
     networks:
       - internal
     restart: unless-stopped
@@ -401,6 +404,8 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./infra/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
@@ -409,8 +414,6 @@ services:
     depends_on:
       loki:
         condition: service_healthy
-    ports:
-      - "3000:3000"
     networks:
       - internal
     restart: unless-stopped
