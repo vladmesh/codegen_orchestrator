@@ -22,6 +22,7 @@ from ..clients.api import api_client
 from ..clients.story_worker_registry import get_story_worker, set_story_worker
 from ..clients.worker_spawner import delete_worker
 from ..nodes.resource_allocator import resource_allocator_node
+from ..tracing import get_langfuse_callbacks
 from ._base import start_worker
 from ._ci_gate import _wait_for_ci_and_fix
 from ._events import publish_callback_event, publish_story_event
@@ -525,7 +526,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         # Create and run engineering subgraph
         engineering_subgraph = create_engineering_subgraph()
         developer_started_at = datetime.now(UTC)
-        result = await engineering_subgraph.ainvoke(subgraph_input)
+        result = await engineering_subgraph.ainvoke(
+            subgraph_input, config={"callbacks": get_langfuse_callbacks()}
+        )
 
         # Save worker report as task event (before any status branching)
         worker_report = result.get("worker_report")

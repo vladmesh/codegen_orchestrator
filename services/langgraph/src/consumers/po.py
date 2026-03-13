@@ -31,6 +31,7 @@ from shared.redis_client import RedisStreamClient
 from ..agents.po.graph import create_po_graph
 from ..agents.po.tools import init_po_clients
 from ..config.settings import get_settings
+from ..tracing import get_langfuse_callbacks
 
 logger = structlog.get_logger(__name__)
 
@@ -280,6 +281,7 @@ async def _handle_message(graph, client: RedisStreamClient, user_id: str, data: 
             "user_name": user_name,
         },
         "recursion_limit": 50,
+        "callbacks": get_langfuse_callbacks(),
     }
 
     # Pre-invoke: repair any orphan tool_calls from previous crashed invocations

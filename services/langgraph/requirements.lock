@@ -19,6 +19,8 @@ asyncssh==2.22.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 attrs==25.4.0
     # via aiohttp
+backoff==2.2.1
+    # via langfuse
 certifi==2025.11.12
     # via
     #   httpcore
@@ -51,6 +53,8 @@ frozenlist==1.8.0
     # via
     #   aiohttp
     #   aiosignal
+googleapis-common-protos==1.73.0
+    # via opentelemetry-exporter-otlp-proto-http
 h11==0.16.0
     # via httpcore
 hiredis==3.3.0
@@ -61,6 +65,7 @@ httpx==0.28.1
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
     #   anthropic
+    #   langfuse
     #   langgraph-sdk
     #   langsmith
     #   openai
@@ -70,6 +75,8 @@ idna==3.11
     #   httpx
     #   requests
     #   yarl
+importlib-metadata==8.7.1
+    # via opentelemetry-api
 jiter==0.12.0
     # via
     #   anthropic
@@ -99,6 +106,8 @@ langchain-openai==1.1.6
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
     #   langmem
+langfuse==4.0.0
+    # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 langgraph==1.0.5
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
@@ -132,7 +141,29 @@ multidict==6.7.0
 numpy==2.4.2
     # via pgvector
 openai==2.14.0
-    # via langchain-openai
+    # via
+    #   langchain-openai
+    #   langfuse
+opentelemetry-api==1.40.0
+    # via
+    #   langfuse
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+opentelemetry-exporter-otlp-proto-common==1.40.0
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-proto-http==1.40.0
+    # via langfuse
+opentelemetry-proto==1.40.0
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-sdk==1.40.0
+    # via
+    #   langfuse
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-semantic-conventions==0.61b0
+    # via opentelemetry-sdk
 orjson==3.11.5
     # via
     #   langgraph-checkpoint-postgres
@@ -143,6 +174,7 @@ ormsgpack==1.12.1
 packaging==25.0
     # via
     #   langchain-core
+    #   langfuse
     #   langsmith
 pgvector==0.4.2
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
@@ -152,6 +184,10 @@ propcache==0.4.1
     # via
     #   aiohttp
     #   yarl
+protobuf==6.33.5
+    # via
+    #   googleapis-common-protos
+    #   opentelemetry-proto
 psycopg==3.3.2
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
@@ -173,6 +209,7 @@ pydantic==2.12.5
     #   langchain
     #   langchain-anthropic
     #   langchain-core
+    #   langfuse
     #   langgraph
     #   langsmith
     #   openai
@@ -198,6 +235,7 @@ regex==2025.11.3
 requests==2.32.5
     # via
     #   langsmith
+    #   opentelemetry-exporter-otlp-proto-http
     #   requests-toolbelt
     #   tiktoken
 requests-toolbelt==1.0.0
@@ -228,6 +266,10 @@ typing-extensions==4.15.0
     #   asyncssh
     #   langchain-core
     #   openai
+    #   opentelemetry-api
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
     #   psycopg
     #   psycopg-pool
     #   pydantic
@@ -243,9 +285,13 @@ uuid-utils==0.12.0
     # via
     #   langchain-core
     #   langsmith
+wrapt==1.17.3
+    # via langfuse
 xxhash==3.6.0
     # via langgraph
 yarl==1.22.0
     # via aiohttp
+zipp==3.23.0
+    # via importlib-metadata
 zstandard==0.25.0
     # via langsmith

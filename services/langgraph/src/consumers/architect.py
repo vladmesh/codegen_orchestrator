@@ -22,6 +22,7 @@ from ..agents.architect.graph import create_architect_graph
 from ..agents.architect.tools import reset_task_chain
 from ..clients.api import api_client
 from ..config.settings import get_settings
+from ..tracing import get_langfuse_callbacks
 from ._base import start_worker
 
 logger = structlog.get_logger(__name__)
@@ -176,7 +177,10 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
             "user_id": msg.user_id,
         }
 
-        config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+        config = {
+            "configurable": {"thread_id": str(uuid.uuid4())},
+            "callbacks": get_langfuse_callbacks(),
+        }
         result = await graph.ainvoke(initial_state, config=config)
 
         await append_ci_check_task(msg.story_id, msg.project_id)

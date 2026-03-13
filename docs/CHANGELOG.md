@@ -4,7 +4,11 @@
 
 ## 2026-03-13
 
+### Added
+- **Langfuse v3 infra** (#task-a51fb1cf): Self-hosted LLM tracing stack. Docker-compose adds 4 new services: `langfuse-web` (UI on port 3002), `langfuse-worker` (background processor), `clickhouse` (trace analytics), `minio` (S3-compatible event/media storage). Separate `langfuse` PostgreSQL database via init script. Shared Redis (no auth). Nginx proxy at `/langfuse/` through admin-frontend. `make init-langfuse-db` for existing deployments. Env vars for ClickHouse, MinIO, and Langfuse secrets in `.env.example`.
+
 ### Fixed
+- **Audit cleanup**: Use enums (`WorkerStatus.STARTING`, `RunStatus.FAILED/RUNNING`), proper exception chaining (B904), `HTTPStatus.BAD_REQUEST` in telegram handlers, fail-fast on missing `API_BASE_URL` in infra-service.
 - **Worker lifecycle cleanup**: `delete_worker()` now cleans `worker:{id}:input/output` streams (were orphaned forever). Orphan GC does reverse check (Redis → Docker) — cleans stale `worker:status` entries where container is gone. Deploy consumer deletes worker container on story complete/fail and calls `clear_story_worker` (was dead code). Workspace GC scans both `WORKSPACE_BASE_PATH` and `SCAFFOLDED_WORKSPACE_PATH`, max_age raised to 35h, cleans stale `workspace:active_projects` entries. Introspect API shows GONE status for stale workers.
 - **Architect story spam**: Architect consumer now transitions story to `IN_PROGRESS` immediately on pickup, preventing supervisor from re-publishing the same story every 30s. Also skips stories already decomposed (IN_PROGRESS + has tasks). Supervisor retry counter moved from in-memory dict to Redis (`story:architect_retries:{id}` with 1h TTL) — survives scheduler restarts.
 

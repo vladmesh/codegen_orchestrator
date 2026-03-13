@@ -40,6 +40,9 @@ dependencies = [
     # SSH for deploy pre-checks (server directory validation)
     "asyncssh>=2.14.0",
 
+    # LLM tracing via Langfuse (LangChain callback integration)
+    "langfuse>=2.0.0",
+
     # shared/ deps (shared is COPY'd as plain files, not pip-installed)
     "pgvector>=0.2.5",
     "pyyaml>=6.0",

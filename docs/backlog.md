@@ -30,15 +30,9 @@
 - **Status**: backlog
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
-### Langfuse v3 infra — docker-compose + ClickHouse + nginx proxy
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Инфраструктура Langfuse v3 для LLM tracing.  См. brainstorm: docs/brainstorms/admin-panel.md (Phase 3: Langfuse + LLM tracing)  ## Scope - Langfuse v3 контейнер в docker-compose (internal network, без внешнего порта) - ClickHouse контейнер (обязателен для v3 — хранит traces/observations) - Postgr...
-
 ### LangChain → Langfuse tracing integration (env-var drop-in)
 - **Priority**: CRITICAL
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Включить LLM tracing через Langfuse без изменений кода.  См. brainstorm: docs/brainstorms/admin-panel.md (Phase 3: Langfuse + LLM tracing)  ## Scope - Установить langfuse pip-пакет в langgraph сервис - Env vars: LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGCHAIN_TRACING_V2=true - ...
 
@@ -270,6 +264,7 @@
 
 ## Done (last 10)
 
+- Langfuse v3 infra — docker-compose + ClickHouse + nginx proxy — 2026-03-13
 - #1008 Admin Phase 2 — worker inspector + queues + action buttons — 2026-03-13
 - #1007 Worker-manager introspection API — list, logs, tree, files, prompts, kill — 2026-03-13
 - Admin auth + single entry point — proxy Grafana through admin, close extra ports — 2026-03-13
@@ -279,7 +274,6 @@
 - Implement Telegram bot with access control and message reversing — 2026-03-12
 - Create whitelist database model and migrations — 2026-03-12
 - HITL MVP: WAITING_HUMAN_REVIEW status + report-blocker + admin resume/requeue — 2026-03-12
-- Story/Task reopen flow with user_report field — 2026-03-12
 
 ## Ideas
 
