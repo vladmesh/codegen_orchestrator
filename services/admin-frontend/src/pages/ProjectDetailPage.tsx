@@ -4,7 +4,6 @@ import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate } from '@/lib/utils'
-import { langfuseUrl } from '@/lib/langfuse'
 import type { Project, Story, Task, User } from '@/types/api'
 
 export function ProjectDetailPage() {
@@ -135,16 +134,6 @@ export function ProjectDetailPage() {
         )}
       </div>
 
-      <div className="space-y-4">
-        <h2 className="text-lg font-semibold text-foreground">LLM Tracing</h2>
-        <div className="h-[500px] rounded-lg border border-border overflow-hidden">
-          <iframe
-            src={langfuseUrl()}
-            className="h-full w-full border-0"
-            title="Langfuse Tracing"
-          />
-        </div>
-      </div>
     </div>
   )
 }

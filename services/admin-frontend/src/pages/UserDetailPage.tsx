@@ -1,18 +1,15 @@
-import { useState } from 'react'
 import { useParams, Link } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
+import { ExternalLink } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
-import { formatDate, relativeTime, cn } from '@/lib/utils'
+import { formatDate, relativeTime } from '@/lib/utils'
 import { langfuseUrl } from '@/lib/langfuse'
 import type { User, Project } from '@/types/api'
 
-type Tab = 'projects' | 'tracing'
-
 export function UserDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const [activeTab, setActiveTab] = useState<Tab>('projects')
 
   const { data: user, isLoading } = useQuery({
     queryKey: ['user', id],
@@ -32,11 +29,6 @@ export function UserDetailPage() {
   const displayName = user.first_name
     ? `${user.first_name}${user.last_name ? ` ${user.last_name}` : ''}`
     : user.username ?? `User #${user.id}`
-
-  const tabs: { key: Tab; label: string }[] = [
-    { key: 'projects', label: `Projects (${projects?.length ?? 0})` },
-    { key: 'tracing', label: 'LLM Tracing' },
-  ]
 
   return (
     <div className="space-y-6">
@@ -72,78 +64,56 @@ export function UserDetailPage() {
         </Card>
       </div>
 
-      {/* Tabs */}
-      <div className="border-b border-border">
-        <nav className="-mb-px flex gap-4">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              className={cn(
-                'border-b-2 px-1 py-2 text-sm font-medium transition-colors',
-                activeTab === tab.key
-                  ? 'border-primary text-foreground'
-                  : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground',
-              )}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+      <div className="flex items-center gap-4">
+        <h2 className="text-lg font-semibold text-foreground">Projects</h2>
+        <a
+          href={langfuseUrl()}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          LLM Tracing
+          <ExternalLink className="h-3.5 w-3.5" />
+        </a>
       </div>
 
-      {/* Tab content */}
-      {activeTab === 'projects' && (
-        <div className="space-y-4">
-          {(projects ?? []).length === 0 ? (
-            <p className="text-muted-foreground">No projects yet</p>
-          ) : (
-            <div className="overflow-hidden rounded-lg border border-border">
-              <table className="w-full text-sm">
-                <thead className="border-b border-border bg-muted/50">
-                  <tr>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Name</th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Domain</th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Updated</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {(projects ?? []).map((project) => (
-                    <tr key={project.id} className="hover:bg-muted/30">
-                      <td className="px-4 py-3">
-                        <Link
-                          to={`/projects/${project.id}`}
-                          className="font-medium text-primary hover:underline"
-                        >
-                          {project.name}
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge status={project.status} />
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {project.domain ?? '—'}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {relativeTime(project.updated_at)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'tracing' && (
-        <div className="flex h-[600px] flex-col rounded-lg border border-border overflow-hidden">
-          <iframe
-            src={langfuseUrl()}
-            className="flex-1 w-full border-0"
-            title="Langfuse Tracing"
-          />
+      {(projects ?? []).length === 0 ? (
+        <p className="text-muted-foreground">No projects yet</p>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-border">
+          <table className="w-full text-sm">
+            <thead className="border-b border-border bg-muted/50">
+              <tr>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Name</th>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Domain</th>
+                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Updated</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {(projects ?? []).map((project) => (
+                <tr key={project.id} className="hover:bg-muted/30">
+                  <td className="px-4 py-3">
+                    <Link
+                      to={`/projects/${project.id}`}
+                      className="font-medium text-primary hover:underline"
+                    >
+                      {project.name}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3">
+                    <StatusBadge status={project.status} />
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {project.domain ?? '—'}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {relativeTime(project.updated_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

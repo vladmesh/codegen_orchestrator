@@ -1,9 +1,8 @@
 /**
- * Build the Langfuse base URL using the current hostname.
+ * Build the Langfuse URL using the current hostname + direct port.
  *
- * Langfuse is a Next.js app — proxying through `/langfuse/` breaks asset
- * loading because `NEXT_PUBLIC_BASE_PATH` is a build-time variable and the
- * prebuilt image doesn't support it. We use the direct port instead.
+ * Langfuse runs on port 3002. Proxying through nginx doesn't work well
+ * because Next.js hardcodes absolute asset/API paths without base prefix.
  */
 export function langfuseUrl(path = '/'): string {
   const host = window.location.hostname
