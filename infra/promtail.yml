@@ -9,36 +9,43 @@ clients:
 
 scrape_configs:
   - job_name: docker
-    static_configs:
-      - targets:
-          - localhost
-        labels:
-          job: docker
-          __path__: /var/lib/docker/containers/*/*-json.log
+    docker_sd_configs:
+      # Orchestrator compose services
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=codegen_orchestrator"]
+      # Worker containers spawned by worker-manager
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values: ["com.codegen.type=worker"]
+
+    relabel_configs:
+      # Compose service name (for orchestrator services)
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: compose_service
+      # Worker ID (for worker containers)
+      - source_labels: ['__meta_docker_container_label_com_codegen_worker_id']
+        target_label: worker_id
+      # Container type: "worker" or empty (orchestrator)
+      - source_labels: ['__meta_docker_container_label_com_codegen_type']
+        target_label: container_type
 
     pipeline_stages:
       # Parse Docker JSON log format
       - docker: {}
-
-      # Extract container name from filename path
-      - regex:
-          source: filename
-          expression: '/var/lib/docker/containers/(?P<container_id>[^/]+)/.*'
-
-      # Add container_name label from Docker labels
-      - labels:
-          container_id:
 
       # Try to parse log line as JSON (structlog output)
       - json:
           expressions:
             service: service
             level: level
-            event: event
-            correlation_id: correlation_id
           source: output
 
-      # Add extracted fields as labels for efficient filtering
+      # Add extracted fields as labels
       - labels:
           service:
           level:
