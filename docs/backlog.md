@@ -3,7 +3,7 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-12
+> **Updated**: 2026-03-13
 
 ## Queue (ordered by priority, first = next)
 
@@ -18,17 +18,47 @@
 - **Plan**: —
 - **Status**: backlog
 
-### #1004 CI gate: one push per story instead of per task
-- **Priority**: HIGH
+### Live test task
+- **Priority**: CRITICAL
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: CI runs after every engineering task, wasting GitHub Actions minutes. Additionally, append_ci_check_task creates CI task without status:todo so it stays stuck in backlog.  Changes: 1. Fix append_ci_check_task: add status:todo to task creation 2. Engineering consumer: skip push + CI gate for ordin...
+- **Brief**: Test task for live tests
+
+### Live test task
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Test task for live tests
+
+### Live test task
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Test task for live tests
+
+### Add TTL/cleanup for stale Redis queue messages
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Queue messages from failed/completed stories accumulate in architect:queue (and potentially other queues) with no expiry or cleanup mechanism. During the 2026-03-13 escort, 75 stale messages were found blocking a real story for hours.  Required: 1. Add periodic cleanup in scheduler: scan queue me...
+
+### API authorization: scope worker access, protect destructive endpoints
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
 ### #1006 Decouple deploy worker from story lifecycle
 - **Priority**: HIGH
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
+
+### Observability stack: JSON logging + Loki + Grafana + correlation propagation
+- **Priority**: MEDIUM
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Deploy observability stack for admin log viewer.  Step 1: Enable JSON logging (5 min) - Add LOG_FORMAT=json to all services in docker-compose.yml - Keep console format for local docker-compose up (override or env default)  Step 2: Deploy Loki + Grafana + Promtail (30 min) - Add loki, grafana, pro...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -246,16 +276,16 @@
 
 ## Done (last 10)
 
+- Run tests, verify CI green — 2026-03-13
+- Implement Telegram bot with access control and message reversing — 2026-03-12
+- Create whitelist database model and migrations — 2026-03-12
+- Noop task — 2026-03-12
 - HITL MVP: WAITING_HUMAN_REVIEW status + report-blocker + admin resume/requeue — 2026-03-12
 - Story/Task reopen flow with user_report field — 2026-03-12
 - Run tests, verify CI green — 2026-03-11
 - Fix tarot card image display with local assets and fallback — 2026-03-11
 - Run tests, verify CI green — 2026-03-11
 - Run tests, verify CI green — 2026-03-11
-- Make LessWrong articles relevant and integrate them into predictions — 2026-03-11
-- Remove nonexistent shared.generated.events import from tg_bot — 2026-03-11
-- Run tests, verify CI green — 2026-03-11
-- Implement fortune telling bot with tarot, AI predictions, and themed questions — 2026-03-11
 
 ## Ideas
 
