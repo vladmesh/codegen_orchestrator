@@ -36,12 +36,6 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### Scaffolder: ensure-workspace gate — always verify workspace before pipeline proceeds
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Scaffolder должен гарантировать наличие готового воркспейса перед тем как пайплайн продолжится. Сейчас проверка workspace — финальная точка (worker-manager RuntimeError), а до неё архитектор и engineering worker уже отработали вхолостую.  ## Проблема После GC (>35ч) воркспейс удаляется, но projec...
-
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
 - **Plan**: yes (in work item)
