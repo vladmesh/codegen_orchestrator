@@ -159,23 +159,25 @@ jobs:
           - suite: backend
             should_run: >-
               ${{
-                needs.detect-changes.outputs.langgraph == 'true' ||
+                (needs.detect-changes.outputs.langgraph == 'true' ||
                 needs.detect-changes.outputs.worker-manager == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch'
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
               }}
           # cli: orchestrator-cli + packages
           - suite: cli
             should_run: >-
               ${{
-                needs.detect-changes.outputs.cli == 'true' ||
+                (needs.detect-changes.outputs.cli == 'true' ||
                 needs.detect-changes.outputs.packages == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch'
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
               }}
           # template: always run (tests external copier template)
           - suite: template
@@ -184,32 +186,35 @@ jobs:
           - suite: frontend
             should_run: >-
               ${{
-                needs.detect-changes.outputs.telegram == 'true' ||
+                (needs.detect-changes.outputs.telegram == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch'
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
               }}
           # infra: scheduler + infra-service + api
           - suite: infra
             should_run: >-
               ${{
-                needs.detect-changes.outputs.scheduler == 'true' ||
+                (needs.detect-changes.outputs.scheduler == 'true' ||
                 needs.detect-changes.outputs.infra-service == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch'
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
               }}
           # po-tools: langgraph PO tools + api
           - suite: po-tools
             should_run: >-
               ${{
-                needs.detect-changes.outputs.langgraph == 'true' ||
+                (needs.detect-changes.outputs.langgraph == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch'
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
               }}
     steps:
       - name: Checkout code
