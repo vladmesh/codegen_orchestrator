@@ -4,8 +4,6 @@ Provides endpoints for managing port allocations across servers.
 Phase 4 addition for infrastructure capability.
 """
 
-import uuid
-
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +43,7 @@ async def _require_admin_if_user(
 
 @router.get("/", response_model=list[PortAllocationRead])
 async def list_allocations(
-    project_id: uuid.UUID | None = None,
+    application_id: int | None = None,
     server_handle: str | None = None,
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(_require_admin_if_user),
@@ -53,8 +51,8 @@ async def list_allocations(
     """List port allocations with optional filtering."""
     query = select(PortAllocation)
 
-    if project_id:
-        query = query.where(PortAllocation.project_id == project_id)
+    if application_id:
+        query = query.where(PortAllocation.application_id == application_id)
 
     if server_handle:
         query = query.where(PortAllocation.server_handle == server_handle)

@@ -41,9 +41,6 @@ def mock_api():
         api.get_primary_repository = AsyncMock(
             return_value={"git_url": "https://github.com/org/test-project"}
         )
-        api.get_project_allocations = AsyncMock(
-            return_value=[{"server_handle": "srv1", "port": 8001}]
-        )
         api.get_tasks_by_story = AsyncMock(return_value=[])
         api.get_task_events = AsyncMock(return_value=[])
         yield api

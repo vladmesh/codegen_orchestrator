@@ -708,9 +708,20 @@ class TestFeatureActionFlow:
                 "config": {"modules": ["backend"], "description": "A todo API"},
             }
         )
-        # Existing allocations
-        mock_api.get_project_allocations = AsyncMock(
-            return_value=[{"server_handle": "srv1", "port": 8001}]
+        # Resource allocator returns existing allocations
+        mock_allocator.run = AsyncMock(
+            return_value={
+                "allocated_resources": {
+                    "srv1:8001": {
+                        "server_handle": "srv1",
+                        "port": 8001,
+                        "server_ip": "1.2.3.4",
+                        "service_name": "backend",
+                        "application_id": 42,
+                    }
+                },
+                "errors": [],
+            }
         )
 
         # Subgraph returns success
@@ -749,9 +760,6 @@ class TestFeatureActionFlow:
         create_calls = [c for c in mock_api.patch.call_args_list if "scaffolding" in str(c)]
         assert len(create_calls) == 0
 
-        # Verify existing allocations were reused (no allocator call)
-        mock_allocator.run.assert_not_called()
-
     @pytest.mark.asyncio
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
@@ -778,10 +786,21 @@ class TestFeatureActionFlow:
             }
         )
 
-        existing_allocations = [
-            {"server_handle": "vps-1", "port": 8042, "service_name": "backend"},
-        ]
-        mock_api.get_project_allocations = AsyncMock(return_value=existing_allocations)
+        # Resource allocator returns existing allocations
+        mock_allocator.run = AsyncMock(
+            return_value={
+                "allocated_resources": {
+                    "vps-1:8042": {
+                        "server_handle": "vps-1",
+                        "port": 8042,
+                        "server_ip": "1.2.3.4",
+                        "service_name": "backend",
+                        "application_id": 42,
+                    }
+                },
+                "errors": [],
+            }
+        )
 
         mock_subgraph = AsyncMock()
         mock_subgraph.ainvoke = AsyncMock(
@@ -810,9 +829,6 @@ class TestFeatureActionFlow:
         subgraph_input = mock_subgraph.ainvoke.call_args[0][0]
         assert "vps-1:8042" in subgraph_input["allocated_resources"]
 
-        # Allocator should NOT have been called
-        mock_allocator.run.assert_not_called()
-
     @pytest.mark.asyncio
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
@@ -839,8 +855,19 @@ class TestFeatureActionFlow:
                 "config": {"modules": ["backend"], "description": "A test"},
             }
         )
-        mock_api.get_project_allocations = AsyncMock(
-            return_value=[{"server_handle": "srv1", "port": 8001}]
+        mock_allocator.run = AsyncMock(
+            return_value={
+                "allocated_resources": {
+                    "srv1:8001": {
+                        "server_handle": "srv1",
+                        "port": 8001,
+                        "server_ip": "1.2.3.4",
+                        "service_name": "backend",
+                        "application_id": 42,
+                    }
+                },
+                "errors": [],
+            }
         )
 
         mock_subgraph = AsyncMock()
@@ -894,8 +921,19 @@ class TestFeatureActionFlow:
                 "config": {"modules": ["backend"], "description": "A todo API"},
             }
         )
-        mock_api.get_project_allocations = AsyncMock(
-            return_value=[{"server_handle": "srv1", "port": 8001}]
+        mock_allocator.run = AsyncMock(
+            return_value={
+                "allocated_resources": {
+                    "srv1:8001": {
+                        "server_handle": "srv1",
+                        "port": 8001,
+                        "server_ip": "1.2.3.4",
+                        "service_name": "backend",
+                        "application_id": 42,
+                    }
+                },
+                "errors": [],
+            }
         )
 
         mock_subgraph = AsyncMock()
@@ -961,8 +999,19 @@ class TestFeatureActionFlow:
                 "config": {"modules": ["backend"], "description": "Original description"},
             }
         )
-        mock_api.get_project_allocations = AsyncMock(
-            return_value=[{"server_handle": "srv1", "port": 8001}]
+        mock_allocator.run = AsyncMock(
+            return_value={
+                "allocated_resources": {
+                    "srv1:8001": {
+                        "server_handle": "srv1",
+                        "port": 8001,
+                        "server_ip": "1.2.3.4",
+                        "service_name": "backend",
+                        "application_id": 42,
+                    }
+                },
+                "errors": [],
+            }
         )
 
         mock_subgraph = AsyncMock()

@@ -17,7 +17,6 @@ from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
 from ...nodes.base import FunctionalNode
-from ...schemas.api_types import AllocationInfo
 from .dotenv_builder import build_dotenv, encode_dotenv
 from .env_groups import resolve_with_groups
 from .state import DevOpsState
@@ -270,9 +269,12 @@ async def _create_deployment_record(
     deployment_info: dict,
     deployed_sha: str | None = None,
 ) -> bool:
-    """Create a deployment record and update/create the Application via API."""
+    """Create a deployment record and update the Application status via API.
+
+    Application should already exist (created during resource allocation).
+    """
     try:
-        # Get or create Application
+        # Find existing Application (created during allocation)
         application_id = None
         repo = await api_client.get_primary_repository(project_id)
         if repo:
@@ -280,7 +282,6 @@ async def _create_deployment_record(
                 repo_id=repo["id"],
                 server_handle=server_handle,
                 service_name=service_name,
-                port=port,
             )
             application_id = app.get("id")
 
@@ -542,27 +543,23 @@ class DeployerNode(FunctionalNode):
             )
 
             # 6. Create service deployment record
-            allocations: list[AllocationInfo] = await api_client.get_project_allocations(project_id)
-            target_alloc = allocations[0] if allocations else None
-
             config = project_spec.get("config") or {}
             modules = config.get("modules", "backend")
             if isinstance(modules, list):
                 modules = ",".join(modules)
 
-            if target_alloc:
-                await _create_deployment_record(
-                    project_id=project_id,
-                    service_name=project_name,
-                    server_handle=target_alloc.get("server_handle"),
-                    port=port,
-                    deployment_info={
-                        "repo_full_name": f"{owner}/{repo}",
-                        "branch": "main",
-                        "modules": modules,
-                    },
-                    deployed_sha=run_info.get("head_sha"),
-                )
+            await _create_deployment_record(
+                project_id=project_id,
+                service_name=project_name,
+                server_handle=server_handle,
+                port=port,
+                deployment_info={
+                    "repo_full_name": f"{owner}/{repo}",
+                    "branch": "main",
+                    "modules": modules,
+                },
+                deployed_sha=run_info.get("head_sha"),
+            )
 
             # 7. Update project status to active
             await api_client.patch(
@@ -592,29 +589,23 @@ class DeployerNode(FunctionalNode):
                     rerun=True,
                 )
 
-                allocations: list[AllocationInfo] = await api_client.get_project_allocations(
-                    project_id
-                )
-                target_alloc = allocations[0] if allocations else None
-
                 config = project_spec.get("config") or {}
                 modules = config.get("modules", "backend")
                 if isinstance(modules, list):
                     modules = ",".join(modules)
 
-                if target_alloc:
-                    await _create_deployment_record(
-                        project_id=project_id,
-                        service_name=project_name,
-                        server_handle=target_alloc.get("server_handle"),
-                        port=port,
-                        deployment_info={
-                            "repo_full_name": f"{owner}/{repo}",
-                            "branch": "main",
-                            "modules": modules,
-                        },
-                        deployed_sha=run_info.get("head_sha"),
-                    )
+                await _create_deployment_record(
+                    project_id=project_id,
+                    service_name=project_name,
+                    server_handle=server_handle,
+                    port=port,
+                    deployment_info={
+                        "repo_full_name": f"{owner}/{repo}",
+                        "branch": "main",
+                        "modules": modules,
+                    },
+                    deployed_sha=run_info.get("head_sha"),
+                )
 
                 await api_client.patch(
                     f"/projects/{project_id}",

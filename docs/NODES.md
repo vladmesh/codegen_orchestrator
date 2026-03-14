@@ -128,7 +128,8 @@ devops/
    - Тригерит `deploy.yml` через `trigger_workflow_dispatch`
    - Ждёт завершения через `wait_for_workflow_completion` (poll, timeout 600s)
    - Post-deployment операции:
-     * Создает service deployment record в БД (с `deployed_sha`)
+     * Creates or updates Application record (repo + server → runtime entity with `ApplicationStatus`)
+     * Создает Deployment record (immutable deploy log с `DeploymentResult` и `deployed_sha`)
      * Устанавливает статус проекта = active
 
 5. **SmokeTester (Functional)**:

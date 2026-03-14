@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from shared.contracts.dto.application import ApplicationStatus
 
@@ -11,7 +11,10 @@ from .base import Base
 
 
 class Application(Base):
-    """A deployable unit running on a server. Links a repository to a server."""
+    """A deployable unit running on a server. Links a repository to a server.
+
+    Ports are tracked via the port_allocations relationship (one-to-many).
+    """
 
     __tablename__ = "applications"
     __table_args__ = (
@@ -31,9 +34,6 @@ class Application(Base):
     # Human-readable name (e.g. "fortune-teller-bot")
     service_name: Mapped[str] = mapped_column(String(255))
 
-    # Network port on the server
-    port: Mapped[int]
-
     # Runtime state — updated by deploy consumer and health checker
     status: Mapped[str] = mapped_column(
         String(50), default=ApplicationStatus.NOT_DEPLOYED.value, index=True
@@ -43,6 +43,9 @@ class Application(Base):
     last_health_check: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+
+    # Ports allocated to this application (one per microservice/module)
+    port_allocations = relationship("PortAllocation", backref="application", lazy="selectin")
 
     def __repr__(self) -> str:
         return (

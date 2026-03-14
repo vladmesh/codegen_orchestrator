@@ -24,6 +24,8 @@ class AllocationError(Exception):
 
 async def ensure_project_allocations(
     project_id: str,
+    repo_id: str,
+    service_name: str,
     modules: list[str] | None = None,
     min_ram_mb: int = 512,
     min_disk_mb: int = 1024,
@@ -31,12 +33,15 @@ async def ensure_project_allocations(
     """Ensure a project has resource allocations, creating them if needed.
 
     This is the single source of truth for allocation logic. It:
-    1. Checks if allocations already exist for the project
-    2. If yes, returns existing allocations
-    3. If no, finds a suitable server and allocates ports
+    1. Gets or creates an Application for the repo+server
+    2. Checks if allocations already exist for the application
+    3. If yes, returns existing allocations
+    4. If no, finds a suitable server and allocates ports
 
     Args:
-        project_id: Project ID to allocate resources for
+        project_id: Project ID (for finding server/repo)
+        repo_id: Repository ID for the Application
+        service_name: Human-readable name (e.g. "fortune-teller-bot")
         modules: List of modules needing ports (default: ["backend"])
         min_ram_mb: Minimum RAM required
         min_disk_mb: Minimum disk required
@@ -50,51 +55,57 @@ async def ensure_project_allocations(
     if modules is None:
         modules = ["backend"]
 
-    # Check for existing allocations
-    existing: list[AllocationInfo] = await api_client.get_project_allocations(project_id)
-    if existing:
-        logger.info(
-            "allocations_already_exist",
-            project_id=project_id,
-            count=len(existing),
-        )
-        # Convert to expected format
-        result = {}
-        for alloc in existing:
-            server_handle = alloc["server_handle"]
-            port = alloc["port"]
-            key = f"{server_handle}:{port}"
-
-            # Get server IP if not present
-            server_ip = alloc.get("server_ip")
-            if not server_ip:
-                server: ServerInfo = await api_client.get_server(server_handle)
-                server_ip = get_server_ip(server)
-
-            result[key] = {
-                "port": port,
-                "server_handle": server_handle,
-                "server_ip": server_ip,
-                "service_name": alloc.get("service_name"),
-                "project_id": project_id,
-            }
-        return result
-
-    # No existing allocations - create new ones
-    logger.info(
-        "allocating_resources",
-        project_id=project_id,
-        modules=modules,
-        min_ram_mb=min_ram_mb,
-    )
-
-    # Find suitable server
+    # Find suitable server first (needed for Application creation)
     server = await _find_suitable_server(min_ram_mb, min_disk_mb)
     if not server:
         raise AllocationError("No suitable server found with enough resources")
 
     server_handle = server["handle"]
     server_ip = get_server_ip(server)
+
+    # Get or create Application
+    app = await api_client.get_or_create_application(
+        repo_id=repo_id,
+        server_handle=server_handle,
+        service_name=service_name,
+    )
+    application_id = app["id"]
+
+    # Check for existing allocations on this application
+    existing: list[AllocationInfo] = await api_client.get_application_allocations(application_id)
+    if existing:
+        logger.info(
+            "allocations_already_exist",
+            application_id=application_id,
+            count=len(existing),
+        )
+        result = {}
+        for alloc in existing:
+            alloc_server = alloc["server_handle"]
+            port = alloc["port"]
+            key = f"{alloc_server}:{port}"
+
+            alloc_ip = alloc.get("server_ip")
+            if not alloc_ip:
+                srv: ServerInfo = await api_client.get_server(alloc_server)
+                alloc_ip = get_server_ip(srv)
+
+            result[key] = {
+                "port": port,
+                "server_handle": alloc_server,
+                "server_ip": alloc_ip,
+                "service_name": alloc.get("service_name"),
+                "application_id": application_id,
+            }
+        return result
+
+    # No existing allocations - create new ones
+    logger.info(
+        "allocating_resources",
+        application_id=application_id,
+        modules=modules,
+        min_ram_mb=min_ram_mb,
+    )
 
     # Allocate port for each module atomically
     allocated = {}
@@ -103,7 +114,7 @@ async def ensure_project_allocations(
             server_handle,
             {
                 "service_name": module,
-                "project_id": project_id,
+                "application_id": application_id,
             },
         )
         port = alloc_result["port"]
@@ -113,12 +124,12 @@ async def ensure_project_allocations(
             "server_handle": server_handle,
             "server_ip": server_ip,
             "service_name": module,
-            "project_id": project_id,
+            "application_id": application_id,
         }
 
         logger.info(
             "port_allocated",
-            project_id=project_id,
+            application_id=application_id,
             module=module,
             server=server_handle,
             port=port,

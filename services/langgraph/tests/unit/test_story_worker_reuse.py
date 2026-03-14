@@ -181,7 +181,7 @@ class TestEngineeringConsumerStoryWorker:
         """First task in story: spawn → lookup worker, pass to subgraph."""
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
-        mock_api.get_project_allocations = AsyncMock(return_value=[])
+        mock_api.get_tasks_by_story = AsyncMock(return_value=[])
         mock_api.get_primary_repository = AsyncMock(
             return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
         )
@@ -251,7 +251,7 @@ class TestEngineeringConsumerStoryWorker:
         """Second task in story: lookup existing worker_id, pass to subgraph."""
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
-        mock_api.get_project_allocations = AsyncMock(return_value=[])
+        mock_api.get_tasks_by_story = AsyncMock(return_value=[])
         mock_api.get_primary_repository = AsyncMock(
             return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
         )
@@ -317,7 +317,7 @@ class TestEngineeringConsumerStoryWorker:
         """Task without story_id: no worker lookup."""
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
-        mock_api.get_project_allocations = AsyncMock(return_value=[])
+        mock_api.get_tasks_by_story = AsyncMock(return_value=[])
         mock_api.get_primary_repository = AsyncMock(
             return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
         )

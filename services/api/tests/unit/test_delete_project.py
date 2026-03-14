@@ -98,8 +98,8 @@ async def test_delete_project_success():
 
     assert resp.status_code == 204  # noqa: PLR2004
 
-    # 2 execute calls: delete tasks + delete port_allocations
-    assert session.execute.call_count == 2  # noqa: PLR2004
+    # 3 execute calls: delete runs, delete port_allocations (via app_ids), delete applications
+    assert session.execute.call_count == 3  # noqa: PLR2004
     session.delete.assert_called_once_with(project)
     session.commit.assert_called_once()
 

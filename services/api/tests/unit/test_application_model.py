@@ -15,13 +15,24 @@ class TestApplicationModel:
             "repo_id",
             "server_handle",
             "service_name",
-            "port",
             "status",
             "last_health_check",
             "created_at",
             "updated_at",
         }
         assert expected.issubset(cols)
+
+    def test_no_port_column(self):
+        """Application should NOT have a port column — ports live in PortAllocation."""
+        cols = {c.name for c in Application.__table__.columns}
+        assert "port" not in cols
+
+    def test_has_port_allocations_relationship(self):
+        """Application should have a port_allocations relationship."""
+        from sqlalchemy import inspect
+
+        mapper = inspect(Application)
+        assert "port_allocations" in mapper.relationships
 
     def test_repo_id_fk(self):
         col = Application.__table__.c.repo_id

@@ -7,6 +7,12 @@
 
 ## Queue (ordered by priority, first = next)
 
+### Bind PortAllocation to Application instead of Project
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: PortAllocation currently links to Project via project_id, but conceptually ports belong to Application — the thing actually running on a server. Project is a higher-level abstraction.  Changes: 1. PortAllocation: replace project_id FK with application_id FK to Application 2. Application: remove s...
+
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —
@@ -29,12 +35,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
-
-### Introduce Application entity and refactor Deployment model
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: ## Context  Currently ServiceDeployment serves as both deployment log and runtime state, creating duplicates (e.g. 21 records for 3 actual services on vps-267180). Need clean separation:  ## New Domain Model  ### Application (new entity) - Runtime representation of a deployable unit on a server -...
 
 ### #1006 Decouple deploy worker from story lifecycle
 - **Priority**: HIGH
@@ -258,6 +258,7 @@
 
 ## Done (last 10)
 
+- Introduce Application entity and refactor Deployment model — 2026-03-14
 - Run tests, verify CI green — 2026-03-14
 - Verify fix with production-like testing — 2026-03-14
 - Fix root cause of tarot image failures based on diagnosis — 2026-03-14
@@ -267,7 +268,6 @@
 - Fix /revert command - verify full integration (attempt #3) — 2026-03-13
 - Add /revert command with proper registration — 2026-03-13
 - Workspace browser — workspace как первичная сущность с project-level browsing — 2026-03-13
-- Admin SPA — LLM Tracing page (Langfuse iframe) — 2026-03-13
 
 ## Ideas
 

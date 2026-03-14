@@ -40,7 +40,6 @@ async def test_engineering_consumer_never_patches_project_status():
     api = AsyncMock()
     api.get_project = AsyncMock(return_value=_make_project())
     api.get_primary_repository = AsyncMock(return_value={"id": "repo-1"})
-    api.get_project_allocations = AsyncMock(return_value=[{"server_handle": "s1", "port": 8080}])
     api.get_tasks_by_story = AsyncMock(return_value=[])
     api.get = AsyncMock(return_value={"created_by": "claude"})
     api.patch = AsyncMock()
@@ -74,8 +73,9 @@ async def test_engineering_consumer_never_patches_project_status():
             "src.consumers.engineering._wait_for_ci_and_fix", return_value=(True, [], False, None)
         ),
         patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
-        patch("src.consumers.engineering.resource_allocator_node"),
+        patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
     ):
+        mock_alloc.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
         result = await process_engineering_job(_make_job_data(), redis)
 
     assert result["status"] == "success"

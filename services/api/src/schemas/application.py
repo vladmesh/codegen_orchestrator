@@ -2,10 +2,12 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.base import TimestampedDTO
+
+from .port_allocation import PortAllocationRead
 
 
 class ApplicationCreate(BaseModel):
@@ -14,7 +16,6 @@ class ApplicationCreate(BaseModel):
     repo_id: str
     server_handle: str
     service_name: str
-    port: int
     status: str = ApplicationStatus.NOT_DEPLOYED.value
 
 
@@ -25,14 +26,13 @@ class ApplicationRead(TimestampedDTO):
     repo_id: str
     server_handle: str
     service_name: str
-    port: int
     status: str
     last_health_check: datetime | None = None
+    ports: list[PortAllocationRead] = Field(default=[], validation_alias="port_allocations")
 
 
 class ApplicationUpdate(BaseModel):
     """Schema for updating an application."""
 
     status: str | None = None
-    port: int | None = None
     last_health_check: datetime | None = None

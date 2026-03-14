@@ -9,7 +9,7 @@ import structlog
 
 from shared.contracts.dto.project import ProjectStatus, ServiceStatus
 from shared.crypto import decrypt_dict, encrypt_dict
-from shared.models import PortAllocation, Project, Run, User
+from shared.models import Application, PortAllocation, Project, Repository, Run, User
 
 from ..database import get_async_session
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
@@ -318,7 +318,12 @@ async def delete_project(
 
     # Delete FK-constrained related records
     await db.execute(delete(Run).where(Run.project_id == project_id))
-    await db.execute(delete(PortAllocation).where(PortAllocation.project_id == project_id))
+
+    # Delete port allocations and applications via project's repositories
+    repo_ids_q = select(Repository.id).where(Repository.project_id == project_id)
+    app_ids_q = select(Application.id).where(Application.repo_id.in_(repo_ids_q))
+    await db.execute(delete(PortAllocation).where(PortAllocation.application_id.in_(app_ids_q)))
+    await db.execute(delete(Application).where(Application.repo_id.in_(repo_ids_q)))
 
     await db.delete(project)
     await db.commit()

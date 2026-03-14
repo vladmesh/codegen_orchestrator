@@ -153,7 +153,7 @@ class LanggraphAPIClient:
         return await self._patch_json(f"applications/{application_id}", json=payload)
 
     async def get_or_create_application(
-        self, repo_id: str, server_handle: str, service_name: str, port: int
+        self, repo_id: str, server_handle: str, service_name: str
     ) -> dict:
         """Find existing application or create a new one."""
         apps = await self.list_applications({"repo_id": repo_id, "server_handle": server_handle})
@@ -164,7 +164,6 @@ class LanggraphAPIClient:
                 "repo_id": repo_id,
                 "server_handle": server_handle,
                 "service_name": service_name,
-                "port": port,
                 "status": "not_deployed",
             }
         )
@@ -236,9 +235,9 @@ class LanggraphAPIClient:
 
     # --- Phase 4: Allocation methods ---
 
-    async def get_project_allocations(self, project_id: str) -> list[dict]:
-        """Get all port allocations for a project."""
-        return await self._get_json("allocations/", params={"project_id": project_id})
+    async def get_application_allocations(self, application_id: int) -> list[dict]:
+        """Get all port allocations for an application."""
+        return await self._get_json("allocations/", params={"application_id": application_id})
 
     async def get_allocation(self, allocation_id: int) -> dict | None:
         """Get a single allocation by ID."""

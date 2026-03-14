@@ -514,6 +514,5 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 - [ ] debug test
 - [ ] Add TTL/cleanup for stale Redis queue messages
 - [ ] API authorization: scope worker access, protect destructive endpoints
-- [ ] Introduce Application entity and refactor Deployment model
 - [ ] #1006 Decouple deploy worker from story lifecycle
 - [ ] #1003 Integration test: scheduler-langgraph story worker lifecycle

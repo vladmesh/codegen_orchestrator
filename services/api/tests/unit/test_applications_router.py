@@ -17,11 +17,11 @@ def _make_application(**overrides):
         "repo_id": "repo-test1",
         "server_handle": "vps-123",
         "service_name": "test-bot",
-        "port": 8000,
         "status": "running",
         "last_health_check": None,
         "created_at": now,
         "updated_at": now,
+        "port_allocations": [],
     }
     defaults.update(overrides)
 
@@ -46,7 +46,15 @@ def _mock_session(get_return=None, scalars_all=None):
     session.commit = AsyncMock()
 
     async def _refresh(obj):
-        pass
+        if not getattr(obj, "id", None):
+            obj.id = 1
+        now = datetime.now(UTC)
+        if not getattr(obj, "created_at", None):
+            obj.created_at = now
+        if not getattr(obj, "updated_at", None):
+            obj.updated_at = now
+        if not hasattr(obj, "port_allocations") or obj.port_allocations is None:
+            obj.port_allocations = []
 
     session.refresh = _refresh
 
@@ -85,6 +93,8 @@ class TestListApplications:
         data = resp.json()
         assert len(data) == 2
         assert data[0]["service_name"] == "test-bot"
+        assert "ports" in data[0]
+        assert isinstance(data[0]["ports"], list)
 
 
 class TestGetApplication:
@@ -98,7 +108,10 @@ class TestGetApplication:
             resp = await client.get("/api/applications/1")
 
         assert resp.status_code == 200
-        assert resp.json()["service_name"] == "test-bot"
+        data = resp.json()
+        assert data["service_name"] == "test-bot"
+        assert "ports" in data
+        assert "port" not in data
 
     @pytest.mark.asyncio
     async def test_get_not_found(self, _override_db):
@@ -109,6 +122,26 @@ class TestGetApplication:
             resp = await client.get("/api/applications/999")
 
         assert resp.status_code == 404
+
+
+class TestCreateApplication:
+    @pytest.mark.asyncio
+    async def test_create_without_port(self, _override_db):
+        """Create application should NOT accept port — ports are managed via PortAllocation."""
+        session = _mock_session()
+        app.dependency_overrides[get_async_session] = lambda: session
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/applications/",
+                json={
+                    "repo_id": "repo-test1",
+                    "server_handle": "vps-123",
+                    "service_name": "test-bot",
+                },
+            )
+
+        assert resp.status_code == 201
 
 
 class TestUpdateApplication:

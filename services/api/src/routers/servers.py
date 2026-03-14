@@ -221,7 +221,7 @@ async def allocate_next_port(
             server_handle=handle,
             port=port,
             service_name=req.service_name,
-            project_id=req.project_id,
+            application_id=req.application_id,
         )
         db.add(allocation)
         try:

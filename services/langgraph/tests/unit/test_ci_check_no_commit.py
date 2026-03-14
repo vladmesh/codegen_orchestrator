@@ -53,9 +53,6 @@ def _setup_api_mock(api, *, created_by="system"):
     api.get_primary_repository = AsyncMock(
         return_value={"id": "repo-1", "git_url": "https://github.com/org/test"}
     )
-    api.get_project_allocations = AsyncMock(
-        return_value=[{"server_handle": "srv-1", "port": 8000, "server_ip": "1.2.3.4"}]
-    )
     api.get_tasks_by_story = AsyncMock(return_value=[])
 
 
@@ -68,13 +65,14 @@ class TestCiCheckNoCommitSuccess:
         with (
             patch("src.consumers.engineering.api_client") as api,
             patch("src.subgraphs.engineering.create_engineering_subgraph") as factory,
-            patch("src.consumers.engineering.resource_allocator_node"),
+            patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
             patch("src.consumers.engineering.get_story_worker", return_value=None),
             patch("src.consumers.engineering._wait_for_ci_and_fix"),
             patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock),
             patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
         ):
             _setup_api_mock(api, created_by="system")
+            mock_alloc.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 
             graph = AsyncMock()
             graph.ainvoke = AsyncMock(
@@ -113,13 +111,14 @@ class TestCiCheckNoCommitSuccess:
         with (
             patch("src.consumers.engineering.api_client") as api,
             patch("src.subgraphs.engineering.create_engineering_subgraph") as factory,
-            patch("src.consumers.engineering.resource_allocator_node"),
+            patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
             patch("src.consumers.engineering.get_story_worker", return_value=None),
             patch("src.consumers.engineering._wait_for_ci_and_fix"),
             patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock),
             patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
         ):
             _setup_api_mock(api, created_by="architect")
+            mock_alloc.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 
             graph = AsyncMock()
             graph.ainvoke = AsyncMock(
@@ -146,13 +145,14 @@ class TestCiCheckNoCommitSuccess:
         with (
             patch("src.consumers.engineering.api_client") as api,
             patch("src.subgraphs.engineering.create_engineering_subgraph") as factory,
-            patch("src.consumers.engineering.resource_allocator_node"),
+            patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
             patch("src.consumers.engineering.get_story_worker", return_value=None),
             patch("src.consumers.engineering._wait_for_ci_and_fix") as ci_gate,
             patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock),
             patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
         ):
             _setup_api_mock(api, created_by="system")
+            mock_alloc.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 
             graph = AsyncMock()
             graph.ainvoke = AsyncMock(

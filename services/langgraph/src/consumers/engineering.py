@@ -164,12 +164,6 @@ async def _build_story_context(story_id: str, current_task_id: str | None = None
 
 async def _resolve_allocations(task_id: str, project_id: str, project: dict) -> dict | None:
     """Resolve or create resource allocations. Returns dict or None on failure."""
-    existing = await api_client.get_project_allocations(project_id)
-    if existing:
-        allocated = {f"{a['server_handle']}:{a['port']}": a for a in existing}
-        logger.info("using_existing_allocations", task_id=task_id, count=len(allocated))
-        return allocated
-
     logger.info("allocating_resources", task_id=task_id, project_id=project_id)
     result = await resource_allocator_node.run(
         {"project_id": project_id, "project_spec": project, "allocated_resources": {}, "errors": []}

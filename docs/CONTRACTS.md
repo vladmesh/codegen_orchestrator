@@ -591,27 +591,77 @@ class ServerDTO(BaseModel):
     provisioning_attempts: int = 0
 ```
 
-## ServiceDeploymentDTO
+## ApplicationDTO
 
 ```python
-# shared/contracts/dto/service_deployment.py
+# shared/contracts/dto/application.py
 
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
+from enum import StrEnum
 
-class ServiceDeploymentDTO(BaseModel):
-    """Service Deployment response."""
-    model_config = ConfigDict(from_attributes=True)
+class ApplicationStatus(StrEnum):
+    """Runtime state of an application on a server."""
+    NOT_DEPLOYED = "not_deployed"
+    RUNNING = "running"
+    STOPPED = "stopped"
+    DOWN = "down"
+    DEGRADED = "degraded"
 
+# services/api/src/schemas/application.py
+
+class ApplicationRead(TimestampedDTO):
+    """Application response — runtime entity linking a repo to a server."""
     id: int
-    project_id: str
-    server_id: int
+    repo_id: str
+    server_handle: str
     service_name: str
     port: int
     status: str
-    url: str | None = None
+    last_health_check: datetime | None = None
+```
+
+## DeploymentDTO
+
+```python
+# shared/contracts/dto/deployment.py
+
+from enum import StrEnum
+
+class DeploymentResult(StrEnum):
+    """Outcome of a deployment attempt. Immutable after completion."""
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+# services/api/src/schemas/service_deployment.py
+
+class DeploymentRead(TimestampedDTO):
+    """Immutable record of a deployment attempt."""
+    id: int
+    application_id: int | None = None
+    project_id: str
+    service_name: str
+    server_handle: str
+    port: int
+    result: str
     deployed_sha: str | None = None
     deployed_at: datetime
+    deployment_info: dict = {}
+```
+
+## Base DTOs
+
+```python
+# shared/contracts/dto/base.py
+
+class BaseDTO(BaseModel):
+    """Base DTO for all entities."""
+    model_config = ConfigDict(from_attributes=True)
+
+class TimestampedDTO(BaseDTO):
+    """Base DTO with timestamps."""
+    created_at: datetime
+    updated_at: datetime | None = None
 ```
 
 ## AgentConfigDTO
@@ -1245,7 +1295,10 @@ shared/contracts/
 │   ├── story.py              # StoryDTO, StoryCreate
 │   ├── repository.py         # RepositoryDTO, RepositoryCreate
 │   ├── brainstorm.py         # BrainstormDTO, BrainstormCreate
-│   ├── service_deployment.py
+│   ├── base.py              # BaseDTO, TimestampedDTO
+│   ├── application.py       # ApplicationStatus enum
+│   ├── deployment.py        # DeploymentResult enum
+│   ├── service_deployment.py  # ServiceDeploymentDTO (legacy alias)
 │   ├── agent_config.py
 │   ├── allocation.py
 │   ├── task_execution.py

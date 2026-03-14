@@ -55,7 +55,6 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
     gh = AsyncMock()
     mock_gh_cls.return_value = gh
     gh.wait_for_workflow_completion.return_value = _SUCCESS_RUN
-    mock_api.get_project_allocations = AsyncMock(return_value=_ALLOC_RESPONSE)
     mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
     mock_api.create_service_deployment = AsyncMock(return_value={})
     mock_api.create_deployment = AsyncMock(return_value={})
@@ -185,7 +184,6 @@ class TestDeployerNodeHappyPath:
             repo_id="repo-test1",
             server_handle="srv-1",
             service_name="my_project",
-            port=8080,
         )
         mock_api.update_application.assert_called_once_with(1, {"status": "running"})
 

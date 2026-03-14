@@ -52,7 +52,7 @@ class TestTwoTaskStoryLifecycle:
         Worker never deleted between tasks."""
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
-        mock_api.get_project_allocations = AsyncMock(return_value=[])
+        mock_api.get_tasks_by_story = AsyncMock(return_value=[])
         mock_api.get_primary_repository = AsyncMock(
             return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
         )

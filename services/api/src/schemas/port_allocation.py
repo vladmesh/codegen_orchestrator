@@ -1,7 +1,5 @@
 """Port Allocation schemas."""
 
-import uuid
-
 from pydantic import BaseModel
 
 from shared.contracts.dto.base import TimestampedDTO
@@ -13,7 +11,7 @@ class PortAllocationBase(BaseModel):
     server_handle: str
     port: int
     service_name: str
-    project_id: uuid.UUID | None = None
+    application_id: int | None = None
 
 
 class PortAllocationCreate(PortAllocationBase):
@@ -26,7 +24,7 @@ class AllocateNextPortRequest(BaseModel):
     """Schema for atomic allocate-next-port request."""
 
     service_name: str
-    project_id: uuid.UUID | None = None
+    application_id: int | None = None
     start_port: int = 8000
 
 
