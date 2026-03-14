@@ -46,11 +46,10 @@ async def lifespan(app: FastAPI):
     worker_manager = WorkerManager(redis)
 
     # Shared state for HTTP handlers
-    app.state.compose_runner = ComposeRunner(settings.WORKSPACE_BASE_PATH)
+    app.state.compose_runner = ComposeRunner(settings.SCAFFOLDED_WORKSPACE_PATH)
     app.state.docker = worker_manager.docker
     app.state.redis = redis
     app.state.worker_manager = worker_manager
-    app.state.workspace_base_path = settings.WORKSPACE_BASE_PATH
     app.state.scaffolded_workspace_path = settings.SCAFFOLDED_WORKSPACE_PATH
 
     # Start Consumer

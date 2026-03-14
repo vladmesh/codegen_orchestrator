@@ -216,22 +216,25 @@ class TestWorkerManagerCreateWithCapabilities:
         return docker
 
     @pytest.mark.asyncio
-    @patch("src.workspace._chown_recursive")
-    async def test_create_worker_with_capabilities(self, _mock_chown, mock_redis, mock_docker):
+    @patch("src.manager.workspace_mod")
+    async def test_create_worker_with_capabilities(self, mock_workspace, mock_redis, mock_docker):
         """create_worker should accept capabilities and build image if needed."""
-        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+        from pathlib import Path
 
-        # Now returns worker_id (not container.id) for logical referencing
+        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-1"), True)
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+        manager._refresh_git_token = AsyncMock(return_value=True)
+
         result = await manager.create_worker_with_capabilities(
             worker_id="test-worker-1",
             capabilities=["GIT", "CURL"],
             base_image="worker-base:latest",
+            repo_id="repo-1",
+            env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
         )
 
-        assert result == "test-worker-1"  # Returns worker_id for logical reference
-        # Should have ensured/built image first
+        assert result == "test-worker-1"
         mock_docker.image_exists.assert_awaited()
-        # Should have run container with correct image
         mock_docker.run_container.assert_awaited_once()
         call_kwargs = mock_docker.run_container.call_args[1]
         expected_hash = compute_image_hash(["GIT", "CURL"])

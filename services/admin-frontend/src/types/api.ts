@@ -96,11 +96,20 @@ export interface DebugQueuesResponse {
   issues: string[]
 }
 
+export interface Repository {
+  id: string
+  project_id: string
+  name: string
+  git_url: string | null
+  role: string
+}
+
 // Worker-manager introspection API (/wm-api/*)
 export interface WorkerSummary {
   id: string
   status: string
   project_id: string | null
+  repo_id: string | null
   workspace_path: string | null
   dev_network: string | null
   last_activity: string | null
@@ -132,7 +141,7 @@ export interface FileContentResponse {
 }
 
 export interface WorkspaceFileContentResponse {
-  project_id: string
+  repo_id: string
   path: string
   content: string
   size: number

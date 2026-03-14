@@ -53,6 +53,18 @@ Everything is sequential per project. One story at a time, one task at a time.
 **Key property**: workspace persists on disk at `/data/workspaces/{repo_id}/`.
 This same directory is mounted into worker containers later.
 
+### Ensure-Workspace Gate
+
+For existing (ACTIVE) projects, scaffold runs in `ensure` mode before tasks dispatch:
+
+1. Task dispatcher checks `repository.workspace_ready` flag before dispatching
+2. If not ready, scaffold_trigger publishes ScaffoldMessage with `mode=ensure`
+3. Scaffolder checks if workspace exists on disk; if missing, clones repo + runs setup
+4. Sets `workspace_ready = True` on the repository
+5. Worker-manager GC calls `POST /repositories/{repo_id}/notify-workspace-deleted` to clear `workspace_ready` when workspace is garbage-collected
+
+This prevents crashes when a workspace is GC'd between tasks in a story.
+
 ---
 
 ## Phase 3: Architecture
@@ -69,7 +81,8 @@ This same directory is mounted into worker containers later.
    - Strict linear chain: each task `blocked_by` the previous
    - Does NOT specify implementation details — worker has AGENTS.md
 6. System auto-appends a **final task**: "Run full test suite, verify CI green, smoke test"
-7. Transitions story to `in_progress`
+7. Transitions story to `in_progress` immediately on pickup (prevents supervisor from re-publishing the same story every 30s)
+8. Skips stories already decomposed (IN_PROGRESS + has tasks)
 
 **Outputs**: Tasks in `todo` status, linearly chained
 

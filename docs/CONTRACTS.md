@@ -297,6 +297,7 @@ On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim
 | 7 | Provisioner Notifier | `telegram_bot/src/notifications.py` | `provisioner:results` | auto | — | `model_validate` |
 | 8 | Proactive Listener | `telegram_bot/src/main.py` | `po:proactive` | auto | — | raw dict |
 | 9 | Architect Consumer | `langgraph/src/consumers/architect.py` | `architect:queue` | manual | `claim_pending` | `model_validate` |
+| 10 | Scaffolder | `scaffolder/src/consumer.py` | `scaffold:queue` | manual | `claim_pending` | `model_validate` |
 
 ---
 
@@ -741,7 +742,14 @@ class BaseResult(BaseModel):
 # shared/contracts/queues/scaffold.py
 
 class ScaffoldMessage(BaseMessage):
-    """Trigger scaffolding for a new project repository."""
+    """Trigger scaffolding for a project repository.
+
+    Published by scheduler for both new (draft) and existing (active) projects.
+
+    Modes:
+        full: Full scaffold — copier + make setup + git push (new projects).
+        ensure: Verify workspace exists; if missing, clone + setup (existing projects).
+    """
     project_id: str
     repository_id: str
     user_id: str
@@ -749,9 +757,12 @@ class ScaffoldMessage(BaseMessage):
     project_name: str     # sanitized name for copier
     modules: str          # comma-separated, e.g. "backend,tg_bot"
     task_description: str = ""
+    mode: Literal["full", "ensure"] = "full"
 ```
 
-**Flow:** Scheduler detects `project.status == draft` with stories → publishes ScaffoldMessage → Scaffolder runs copier + make setup + git push → saves tree to `project.config.tree` + parses YAML specs into `project.config.specs_summary` (models, events, domains) → sets `project.status = active`. Architect consumer waits for scaffold completion (polls project.status != draft) before decomposing stories.
+**Flow:**
+- **Full mode** (new projects): Scheduler detects `project.status == draft` with stories → publishes ScaffoldMessage (mode=full) → Scaffolder runs copier + make setup + git push → saves tree to `project.config.tree` + parses YAML specs into `project.config.specs_summary` (models, events, domains) → sets `project.status = active`. Architect consumer waits for scaffold completion (polls project.status != draft) before decomposing stories.
+- **Ensure mode** (existing projects): Scaffold trigger detects ACTIVE projects with TODO tasks → publishes ScaffoldMessage (mode=ensure) → Scaffolder checks if workspace exists; if missing, clones repo + runs setup → sets `repository.workspace_ready = True`. Task dispatcher checks `workspace_ready` flag before dispatching. Worker-manager GC calls `POST /repositories/{repo_id}/notify-workspace-deleted` to clear `workspace_ready` on deletion.
 
 ---
 
@@ -1021,6 +1032,24 @@ WorkerResponse = CreateWorkerResponse | DeleteWorkerResponse | StatusWorkerRespo
 > **Note:** Message passing goes **directly** to worker queues (`worker:{id}:input`, etc.),
 > NOT through worker-manager. The manager handles only container lifecycle.
 
+## WorkerStatus
+
+```python
+# shared/contracts/dto/worker.py
+
+class WorkerStatus(StrEnum):
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
+    DEAD = "DEAD"
+    FAILED = "FAILED"
+    STOPPED = "STOPPED"
+    GONE = "GONE"       # Stale Redis entry, container no longer exists
+    UNKNOWN = "UNKNOWN"
+```
+
+Used across worker-manager (manager, events, introspect router) and langgraph (worker_spawner). Replaces all hardcoded status strings.
+
 ---
 
 
@@ -1219,7 +1248,8 @@ shared/contracts/
 │   ├── service_deployment.py
 │   ├── agent_config.py
 │   ├── allocation.py
-│   └── task_execution.py
+│   ├── task_execution.py
+│   └── worker.py            # WorkerStatus enum
 └── queues/
     ├── __init__.py           # Re-exports PO contracts
     ├── engineering.py

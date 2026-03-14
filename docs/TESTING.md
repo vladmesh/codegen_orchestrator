@@ -1,6 +1,6 @@
 # Test Infrastructure
 
-> **Актуально на**: 2026-03-12
+> **Актуально на**: 2026-03-14
 
 ## Test Layers
 
@@ -57,7 +57,7 @@ Both must pass.
 | Service | Unit | Service | Integration | E2E |
 |---------|------|---------|-------------|-----|
 | api | 6 files | 2 files | via backend suite | via /e2e-run |
-| langgraph | 20+ files | 3 files (engineering, reject flow, PO tools) | 3 tests (engineering worker flow) | via /e2e-run |
+| langgraph | 20+ files | 3 files (engineering, reject flow, PO tools) | 3 tests (engineering worker flow) + po-tools suite (9 tests) | via /e2e-run |
 | worker-manager | 15 files | — | 4 tests (worker creation/execution) | via /e2e-run |
 | scheduler | 2 files | 2 files | — | — |
 | telegram_bot | 3 files | — | via frontend suite | — |

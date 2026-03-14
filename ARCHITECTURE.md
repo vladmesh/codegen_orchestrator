@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-03-09
+> **Актуально на**: 2026-03-14
 
 ## Обзор
 
@@ -14,24 +14,28 @@ Codegen Orchestrator — мультиагентная система для ав
 | **Developer Agents** | Claude Code, Factory.ai Droid via worker-manager (Docker + Redis) |
 | **Backend Orchestration** | LangGraph (subgraphs) |
 | **LLM** | Anthropic Claude (via CLI or API) |
+| **LLM Tracing** | Langfuse v3 (self-hosted, CallbackHandler integration) |
 | **Интерфейс** | Telegram Bot |
+| **Admin UI** | React SPA (admin-frontend, nginx proxy) |
 | **Кодогенерация** | service-template (Copier) |
 | **Инфраструктура** | `services/infra-service` (Ansible) |
 | **Хранение** | PostgreSQL + Redis |
+| **Observability** | Loki + Promtail + Grafana (logs), Langfuse (LLM traces) |
 
 ## Ключевые концепции
 
 ### Planning Layer (Stories → Tasks → Runs)
 
 Трёхуровневая абстракция для продуктового управления:
-- **Story** — высокоуровневое требование от пользователя (через PO). Статусы: `draft` → `in_progress` → `completed`.
-- **Task** — конкретная техническая задача. Статусы: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done`. Задачи могут иметь зависимости (`blocked_by_task_id`).
+- **Story** — высокоуровневое требование от пользователя (через PO). Статусы: `created` → `in_progress` → `deploying` → `completed` (также: `waiting_human_review`, `failed`).
+- **Task** — конкретная техническая задача. Статусы: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (также: `blocked`, `waiting_human_review`, `failed`, `cancelled`). Задачи могут иметь зависимости (`blocked_by_task_id`).
 - **Run** — единица исполнения (engineering или deploy). Привязан к Task через `task_id`.
 
 **Pipeline** (scheduler + scaffolder services) автоматически готовит проект и декомпозирует Story в Tasks:
 1. PO создаёт Project + Repository + Story
-2. Task Dispatcher (каждые 30с) обнаруживает draft-проект со stories → публикует `ScaffoldMessage` в `scaffold:queue`
-3. Scaffolder выполняет copier + make setup + git push, сохраняет tree в DB, ставит `project.status = scaffolded`
+2. Task Dispatcher (каждые 30с) обнаруживает draft-проект со stories → публикует `ScaffoldMessage` (mode=full) в `scaffold:queue`
+3. Scaffolder выполняет copier + make setup + git push, сохраняет tree в DB, ставит `project.status = active`
+   - Для existing проектов: ensure-workspace gate (mode=ensure) проверяет наличие workspace перед dispatch задач
 4. PO публикует `ArchitectMessage` в `architect:queue`
 5. Architect Consumer вызывает LLM — видит tree скафолдированного проекта → создаёт tasks только на diff (бизнес-логику)
 6. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
@@ -57,6 +61,14 @@ Codegen Orchestrator — мультиагентная система для ав
 | `langgraph` | Engineering/DevOps subgraphs. `engineering-worker` and `deploy-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `scheduler` | Background workers: architect consumer (story→tasks LLM decomposition), task dispatcher (scaffold trigger, dispatch unblocked tasks, complete stories), github_sync, server_sync, health_checker |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
+| `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues, users, LLM tracing pages. Nginx proxies `/api/*` → api:8000, `/wm-api/*` → worker-manager. Basic auth via htpasswd. Grafana embedded at `/grafana/`, Langfuse linked externally |
+| `langfuse-web` | Langfuse v3 UI (port 3002). LLM trace viewer |
+| `langfuse-worker` | Langfuse background processor |
+| `clickhouse` | ClickHouse — trace analytics for Langfuse |
+| `minio` | MinIO — S3-compatible event/media storage for Langfuse |
+| `loki` | Log aggregation (7-day retention) |
+| `promtail` | Docker log scraper → Loki |
+| `grafana` | Dashboards + log viewer. Proxied via admin-frontend at `/grafana/` |
 
 ## Граф
 
@@ -163,6 +175,9 @@ All tasks done → Dispatcher completes story → deploy + PO notification
 | **Glossary** | [docs/GLOSSARY.md](docs/GLOSSARY.md) |
 | **Error Handling** | [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) |
 | **Secrets** | [docs/SECRETS.md](docs/SECRETS.md) |
+| **Pipeline V2** | [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md) |
+| **Testing** | [docs/TESTING.md](docs/TESTING.md) |
+| **Deploy** | [docs/DEPLOY.md](docs/DEPLOY.md) |
 | Status & Progress | [docs/STATUS.md](docs/STATUS.md) |
 | Resource Management | [docs/resource-management.md](docs/resource-management.md) |
 | Coding Agents (Claude/Droid) | [docs/coding-agents.md](docs/coding-agents.md) |
@@ -172,12 +187,16 @@ All tasks done → Dispatcher completes story → deploy + PO notification
 
 ## Мониторинг
 
-### LangSmith
+### Observability Stack
 
-```bash
-export LANGCHAIN_TRACING_V2=true
-export LANGCHAIN_API_KEY=...
 ```
+Services (structlog JSON) → stdout → Docker → Promtail → Loki → Grafana
+All consumers → Langfuse CallbackHandler → langfuse-web (traces)
+```
+
+- **Grafana**: Pre-provisioned "Service Logs" dashboard. Filter by service, level, `correlation_id`. Proxied via admin-frontend at `/grafana/`.
+- **Langfuse**: Self-hosted LLM tracing. All 4 consumers (PO, architect, engineering, deploy) auto-attach `CallbackHandler` when `LANGFUSE_PUBLIC_KEY` + `SECRET_KEY` env vars are set. Traces enriched with user, project, and agent metadata.
+- **LangSmith** (optional): `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY`.
 
 ### Логирование
 

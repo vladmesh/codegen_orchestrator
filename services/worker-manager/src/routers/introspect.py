@@ -31,6 +31,7 @@ class WorkerSummary(BaseModel):
     id: str
     status: str
     project_id: str | None = None
+    repo_id: str | None = None
     workspace_path: str | None = None
     dev_network: str | None = None
     last_activity: str | None = None
@@ -75,31 +76,20 @@ async def _check_worker_exists(redis, worker_id: str) -> dict:
 async def _get_workspace_path(redis, worker_id: str, request: Request | None = None) -> Path:
     """Get workspace path for a worker.
 
-    If the worker has a project_id and base paths are available on app.state,
-    resolves via project workspace (WORKSPACE_BASE_PATH/{project_id}/workspace/
-    with fallback to SCAFFOLDED_WORKSPACE_PATH/{project_id}/).
-
-    Otherwise falls back to workspace_path from Redis metadata.
+    Resolves via repo_id from Redis metadata → SCAFFOLDED_WORKSPACE_PATH/{repo_id}/.
+    Falls back to workspace_path from Redis metadata for legacy workers.
     """
     meta = await redis.hgetall(f"worker:meta:{worker_id}")
-    project_id = meta.get("project_id")
+    repo_id = meta.get("repo_id")
 
-    # Try project-level workspace resolution if worker has a project_id
-    if project_id and request:
-        workspace_base = getattr(request.app.state, "workspace_base_path", None)
+    if repo_id and request:
         scaffolded_base = getattr(request.app.state, "scaffolded_workspace_path", None)
-
-        if workspace_base:
-            primary = Path(workspace_base) / project_id / "workspace"
-            if primary.exists() and primary.is_dir():
-                return primary
-
         if scaffolded_base:
-            fallback = Path(scaffolded_base) / project_id
-            if fallback.exists() and fallback.is_dir():
-                return fallback
+            workspace = Path(scaffolded_base) / repo_id
+            if workspace.exists() and workspace.is_dir():
+                return workspace
 
-    # Fallback: workspace_path from Redis metadata (ephemeral workers, legacy)
+    # Fallback: workspace_path from Redis metadata (legacy workers)
     workspace_path = meta.get("workspace_path")
     if not workspace_path:
         raise HTTPException(
@@ -147,6 +137,7 @@ async def list_workers(request: Request):
                 id=worker_id,
                 status=redis_status,
                 project_id=meta.get("project_id"),
+                repo_id=meta.get("repo_id"),
                 workspace_path=meta.get("workspace_path"),
                 dev_network=meta.get("dev_network"),
                 last_activity=last_activity,
@@ -184,6 +175,7 @@ async def get_worker(worker_id: str, request: Request):
         id=worker_id,
         status=redis_status,
         project_id=meta.get("project_id"),
+        repo_id=meta.get("repo_id"),
         workspace_path=meta.get("workspace_path"),
         dev_network=meta.get("dev_network"),
         last_activity=last_activity,

@@ -27,10 +27,8 @@ class WorkerManagerSettings(BaseSettings):
     # Worker subprocess timeout (seconds)
     WORKER_SUBPROCESS_TIMEOUT_SECONDS: int = 300
 
-    # Dev environment: workspace base path on the host
-    WORKSPACE_BASE_PATH: str = "/tmp/codegen/workspaces"
-
     # Path to pre-scaffolded workspaces (created by scaffolder service)
+    # All workspaces live here, keyed by repo_id: /data/workspaces/{repo_id}/
     SCAFFOLDED_WORKSPACE_PATH: str = "/data/workspaces"
 
     # Fixed name of the internal bridge network shared by all services

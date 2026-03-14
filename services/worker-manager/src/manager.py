@@ -151,7 +151,7 @@ class WorkerManager:
             # Tear down sidecar containers launched via compose before removing worker
             if stored_workspace:
                 try:
-                    runner = ComposeRunner(settings.WORKSPACE_BASE_PATH)
+                    runner = ComposeRunner(settings.SCAFFOLDED_WORKSPACE_PATH)
                     exit_code, stdout, stderr = await runner.run(
                         worker_id,
                         ["down", "-v"],
@@ -175,7 +175,8 @@ class WorkerManager:
             if dev_network:
                 await self.docker.remove_network(dev_network)
 
-            # Remove workspace directory from host (preserve project workspaces)
+            # Scaffolded workspaces are persistent — don't remove on worker delete.
+            # Only time-based GC removes them.
             project_id = meta.get("project_id") if meta else None
             if project_id:
                 logger.info("workspace_preserved", project_id=project_id, worker_id=worker_id)
@@ -189,8 +190,6 @@ class WorkerManager:
                         await self.redis.expire(failure_key, 48 * 3600)
                     elif reason == "completed":
                         await self.redis.delete(failure_key)
-            else:
-                workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
 
             # Clean up all Redis keys for this worker
             keys_to_delete = [
@@ -296,32 +295,12 @@ class WorkerManager:
                     except Exception as e:
                         logger.error("orphan_gc_remove_network_failed", network=name, error=str(e))
 
-        # --- Orphaned workspaces ---
-        active_projects = await self.redis.smembers("workspace:active_projects")
-
-        try:
-            entries = os.listdir(settings.WORKSPACE_BASE_PATH)
-        except FileNotFoundError:
-            entries = []
-        except Exception as e:
-            logger.error("orphan_gc_list_workspaces_failed", error=str(e))
-            entries = []
-
-        for entry in entries:
-            if entry not in known_ids and entry not in active_projects:
-                logger.info("orphan_gc_removing_workspace", worker_id=entry)
-                try:
-                    workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, entry)
-                except Exception as e:
-                    logger.error("orphan_gc_remove_workspace_failed", worker_id=entry, error=str(e))
-
         logger.info("orphan_gc_complete")
 
     async def garbage_collect_workspaces(self, max_age_hours: int = 35) -> None:
         """Remove project workspaces older than max_age_hours with no active workers.
 
-        Scans both WORKSPACE_BASE_PATH (project workspaces) and
-        SCAFFOLDED_WORKSPACE_PATH (scaffolder output). Also cleans
+        Scans SCAFFOLDED_WORKSPACE_PATH for old workspaces. Also cleans
         stale workspace:active_projects entries.
         """
         # Clean stale active_projects entries — remove projects with no live worker
@@ -341,11 +320,7 @@ class WorkerManager:
         active_projects = await self.redis.smembers("workspace:active_projects")
 
         now = time.time()
-        paths_to_scan = [
-            settings.WORKSPACE_BASE_PATH,
-            settings.SCAFFOLDED_WORKSPACE_PATH,
-        ]
-        for base_path in paths_to_scan:
+        for base_path in [settings.SCAFFOLDED_WORKSPACE_PATH]:
             try:
                 entries = os.listdir(base_path)
             except FileNotFoundError:
@@ -580,14 +555,6 @@ class WorkerManager:
             if failure_count >= 3:
                 raise RuntimeError(f"Max retries (3) exceeded for project {project_id}. Reset with: DEL {failure_key}")
 
-            if failure_count >= 2:
-                workspace_mod.remove_workspace(settings.WORKSPACE_BASE_PATH, project_id)
-                logger.warning(
-                    "workspace_force_cleaned",
-                    project_id=project_id,
-                    failure_count=failure_count,
-                )
-
         prefix = prefix or settings.WORKER_IMAGE_PREFIX
         env_vars = env_vars or {}
 
@@ -613,33 +580,24 @@ class WorkerManager:
             api_key=api_key,
         )
 
-        # Resolve workspace on the host
-        if repo_id:
-            # Pre-scaffolded workspace from scaffolder service
-            ws_path, scaffolded_exists = workspace_mod.get_scaffolded_workspace(
-                settings.SCAFFOLDED_WORKSPACE_PATH, repo_id
+        # Resolve workspace on the host — must be pre-scaffolded
+        if not repo_id:
+            raise RuntimeError(
+                "repo_id is required — all workers must use pre-scaffolded workspaces. "
+                "Ensure scaffolder has run before spawning workers."
             )
-            if not scaffolded_exists:
-                raise RuntimeError(
-                    f"Scaffolded workspace not found for repo_id={repo_id} at {ws_path}. Scaffolder must run first."
-                )
-            config.workspace_host_path = str(ws_path)
-            workspace_existed = True
-            logger.info(
-                "using_scaffolded_workspace",
-                worker_id=worker_id,
-                repo_id=repo_id,
-                path=str(ws_path),
+        ws_path, scaffolded_exists = workspace_mod.get_scaffolded_workspace(settings.SCAFFOLDED_WORKSPACE_PATH, repo_id)
+        if not scaffolded_exists:
+            raise RuntimeError(
+                f"Scaffolded workspace not found for repo_id={repo_id} at {ws_path}. Scaffolder must run first."
             )
-        elif project_id:
-            ws_path, workspace_existed = workspace_mod.get_or_create_project_workspace(
-                settings.WORKSPACE_BASE_PATH, project_id
-            )
-            config.workspace_host_path = str(ws_path)
-        else:
-            ws_path = workspace_mod.create_workspace(settings.WORKSPACE_BASE_PATH, worker_id)
-            workspace_existed = False
-            config.workspace_host_path = workspace_mod.get_workspace_host_path(settings.WORKSPACE_BASE_PATH, worker_id)
+        config.workspace_host_path = str(ws_path)
+        logger.info(
+            "using_scaffolded_workspace",
+            worker_id=worker_id,
+            repo_id=repo_id,
+            path=str(ws_path),
+        )
 
         # Generate container params
         # WORKER_REDIS_URL/WORKER_API_URL override for DinD (workers can't resolve compose DNS).
@@ -693,84 +651,24 @@ class WorkerManager:
         # is writable by the worker user regardless of the Docker environment.
         await self.docker.exec_in_container(container_id, "chown -R worker:worker /workspace", user="root")
 
-        # Persist project_id in Redis meta and active projects set
+        # Persist project_id and repo_id in Redis meta and active projects set
         if project_id:
             await self.redis.hset(f"worker:meta:{worker_id}", "project_id", project_id)
             await self.redis.sadd("workspace:active_projects", project_id)
+        if repo_id:
+            await self.redis.hset(f"worker:meta:{worker_id}", "repo_id", repo_id)
 
-        # Scaffold/git phase
+        # Git setup: workspace is pre-scaffolded, just refresh git token
         repo_name = env_vars.get("REPO_NAME")
         github_token = env_vars.get("GITHUB_TOKEN")
 
-        if repo_id and repo_name and github_token:
-            # Pre-scaffolded workspace: just refresh git token (scaffolder already
-            # cloned, ran copier + make setup, committed and pushed)
+        if repo_name and github_token:
             logger.info(
-                "scaffold_phase_skipped_repo_id",
+                "refreshing_git_token",
                 worker_id=worker_id,
                 repo_id=repo_id,
-                reason="workspace pre-scaffolded by scaffolder service",
             )
             await self._refresh_git_token(container_id, repo_name, github_token, worker_id)
-        elif scaffold_config and repo_name and github_token:
-            logger.info(
-                "scaffold_phase_entering",
-                worker_id=worker_id,
-                template=scaffold_config.template_repo,
-                project_name=scaffold_config.project_name,
-                modules=scaffold_config.modules,
-            )
-            scaffold_ok = await self._run_scaffold_phase(
-                container_id, scaffold_config, repo_name, github_token, worker_id
-            )
-            if not scaffold_ok:
-                # Cleanup on failure
-                logger.error("scaffold_phase_failed_cleanup", worker_id=worker_id)
-                await self.delete_worker(worker_id)
-                raise RuntimeError(f"Scaffold phase failed for worker {worker_id}")
-
-            # Verify scaffold produced expected markers
-            verify_cmd = (
-                "bash -c '"
-                "test -f /workspace/.copier-answers.yml "
-                "&& test -d /workspace/.github/workflows "
-                "&& echo SCAFFOLD_OK || echo SCAFFOLD_MISSING'"
-            )
-            exit_code, marker_output = await self.docker.exec_in_container(container_id, verify_cmd, timeout=10)
-            if isinstance(marker_output, bytes):
-                marker_output = marker_output.decode()
-            marker_output = marker_output.strip()
-            if marker_output != "SCAFFOLD_OK":
-                logger.error(
-                    "scaffold_markers_missing_after_scaffold",
-                    worker_id=worker_id,
-                    marker_check=marker_output,
-                    hint="copier ran but did not produce .copier-answers.yml or .github/workflows/",
-                )
-                await self.delete_worker(worker_id)
-                raise RuntimeError(
-                    f"Scaffold markers missing after scaffold phase for worker {worker_id}. "
-                    "copier may have failed silently."
-                )
-
-            logger.info(
-                "scaffold_phase_verified",
-                worker_id=worker_id,
-                markers="copier-answers + github-workflows present",
-            )
-        elif repo_name and github_token:
-            # Normal path: clone existing repo (feature/fix actions)
-            logger.info(
-                "scaffold_phase_skipped",
-                worker_id=worker_id,
-                reason="no scaffold_config — existing repo will be cloned",
-                has_scaffold_config=scaffold_config is not None,
-            )
-            if workspace_existed:
-                await self._refresh_git_token(container_id, repo_name, github_token, worker_id)
-                logger.info("workspace_reused", project_id=project_id, worker_id=worker_id)
-            else:
-                await self._setup_git_repo(container_id, repo_name, github_token, worker_id)
 
         # Inject instructions AFTER git clone (so instruction file doesn't block clone)
         if instructions:

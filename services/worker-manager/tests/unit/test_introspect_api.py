@@ -14,7 +14,6 @@ def _make_app(
     redis=None,
     docker=None,
     worker_manager=None,
-    workspace_base="/tmp/ws",
     scaffolded_base="/data/ws",
 ):
     """Create a test FastAPI app with mocked dependencies."""
@@ -23,7 +22,6 @@ def _make_app(
     app.state.redis = redis or AsyncMock()
     app.state.docker = docker or MagicMock()
     app.state.worker_manager = worker_manager or MagicMock()
-    app.state.workspace_base_path = workspace_base
     app.state.scaffolded_workspace_path = scaffolded_base
     return app
 
@@ -255,40 +253,40 @@ class TestGetWorkerTree:
         assert resp.status_code == HTTPStatus.NOT_FOUND
 
 
-class TestWorkerProjectDelegation:
-    """Workers with project_id resolve workspace via project path."""
+class TestWorkerRepoWorkspace:
+    """Workers with repo_id resolve workspace via scaffolded path."""
 
-    def test_tree_uses_project_workspace(self, redis, tmp_path):
-        """Worker with project_id resolves workspace from WORKSPACE_BASE_PATH."""
-        project_ws = tmp_path / "proj-abc" / "workspace"
-        project_ws.mkdir(parents=True)
-        (project_ws / "app.py").write_text("main()")
+    def test_tree_uses_repo_workspace(self, redis, tmp_path):
+        """Worker with repo_id resolves workspace from SCAFFOLDED_WORKSPACE_PATH."""
+        repo_ws = tmp_path / "repo-abc"
+        repo_ws.mkdir(parents=True)
+        (repo_ws / "app.py").write_text("main()")
 
         redis.hgetall = AsyncMock(
             side_effect=[
                 {"status": "RUNNING"},  # status check
-                {"project_id": "proj-abc", "workspace_path": "/old/path"},  # meta
+                {"repo_id": "repo-abc", "project_id": "proj-1"},  # meta
             ]
         )
-        app = _make_app(redis=redis, workspace_base=str(tmp_path))
+        app = _make_app(redis=redis, scaffolded_base=str(tmp_path))
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/w1/tree")
         assert resp.status_code == HTTPStatus.OK
         paths = [e["path"] for e in resp.json()]
         assert "app.py" in paths
 
-    def test_file_uses_project_workspace(self, redis, tmp_path):
-        project_ws = tmp_path / "proj-abc" / "workspace"
-        project_ws.mkdir(parents=True)
-        (project_ws / "config.py").write_text("DEBUG=True")
+    def test_file_uses_repo_workspace(self, redis, tmp_path):
+        repo_ws = tmp_path / "repo-abc"
+        repo_ws.mkdir(parents=True)
+        (repo_ws / "config.py").write_text("DEBUG=True")
 
         redis.hgetall = AsyncMock(
             side_effect=[
                 {"status": "RUNNING"},
-                {"project_id": "proj-abc", "workspace_path": "/old/path"},
+                {"repo_id": "repo-abc", "project_id": "proj-1"},
             ]
         )
-        app = _make_app(redis=redis, workspace_base=str(tmp_path))
+        app = _make_app(redis=redis, scaffolded_base=str(tmp_path))
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/w1/files/config.py")
         assert resp.status_code == HTTPStatus.OK
@@ -306,7 +304,7 @@ class TestWorkerProjectDelegation:
                 {"workspace_path": str(workspace)},  # no project_id
             ]
         )
-        app = _make_app(redis=redis, workspace_base=str(tmp_path / "nope"))
+        app = _make_app(redis=redis, scaffolded_base=str(tmp_path / "nope"))
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/w1/tree")
         assert resp.status_code == HTTPStatus.OK

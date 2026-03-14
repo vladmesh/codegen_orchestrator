@@ -6,7 +6,7 @@ import { Card } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { WorkspaceBrowser } from '@/components/workspace'
 import { formatDate } from '@/lib/utils'
-import type { Project, Story, Task, User } from '@/types/api'
+import type { Project, Repository, Story, Task, User } from '@/types/api'
 
 type Tab = 'overview' | 'workspace'
 
@@ -37,6 +37,14 @@ export function ProjectDetailPage() {
     queryFn: () => api.get<Task[]>(`/tasks/?project_id=${id}&limit=200`),
     enabled: !!id,
   })
+
+  const { data: repositories } = useQuery({
+    queryKey: ['repositories', id],
+    queryFn: () => api.get<Repository[]>(`/repositories/?project_id=${id}`),
+    enabled: !!id,
+  })
+
+  const primaryRepo = repositories?.[0]
 
   if (projectLoading) return <p className="text-muted-foreground">Loading...</p>
   if (!project) return <p className="text-muted-foreground">Project not found</p>
@@ -125,11 +133,15 @@ export function ProjectDetailPage() {
         <OverviewTab stories={stories ?? []} tasksByStory={tasksByStory} />
       )}
       {activeTab === 'workspace' && (
-        <WorkspaceBrowser
-          treeApiUrl={`/wm-api/workspaces/${id}/tree`}
-          fileApiUrlPrefix={`/wm-api/workspaces/${id}/files/`}
-          queryKeyPrefix={`workspace-${id}`}
-        />
+        primaryRepo ? (
+          <WorkspaceBrowser
+            treeApiUrl={`/wm-api/workspaces/${primaryRepo.id}/tree`}
+            fileApiUrlPrefix={`/wm-api/workspaces/${primaryRepo.id}/files/`}
+            queryKeyPrefix={`workspace-${primaryRepo.id}`}
+          />
+        ) : (
+          <p className="text-muted-foreground">No repository found for this project.</p>
+        )
       )}
     </div>
   )

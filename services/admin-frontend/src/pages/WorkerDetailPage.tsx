@@ -44,18 +44,18 @@ export function WorkerDetailPage() {
     { key: 'files', label: 'Files' },
   ]
 
-  // Resolve workspace API URLs: prefer project workspace, fall back to worker-level
-  const workspaceUrls = worker.project_id
+  // Resolve workspace API URLs: prefer repo_id workspace, fall back to worker-level
+  const workspaceUrls = worker.repo_id
     ? {
-        tree: `/wm-api/workspaces/${worker.project_id}/tree`,
-        files: `/wm-api/workspaces/${worker.project_id}/files/`,
-        key: `workspace-${worker.project_id}`,
-      }
+      tree: `/wm-api/workspaces/${worker.repo_id}/tree`,
+      files: `/wm-api/workspaces/${worker.repo_id}/files/`,
+      key: `workspace-${worker.repo_id}`,
+    }
     : {
-        tree: `/wm-api/workers/${id}/tree`,
-        files: `/wm-api/workers/${id}/files/`,
-        key: `worker-files-${id}`,
-      }
+      tree: `/wm-api/workers/${id}/tree`,
+      files: `/wm-api/workers/${id}/files/`,
+      key: `worker-files-${id}`,
+    }
 
   return (
     <div className="space-y-6">
@@ -142,11 +142,10 @@ export function WorkerDetailPage() {
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
-              className={`border-b-2 px-1 pb-2 text-sm font-medium transition-colors ${
-                activeTab === tab.key
+              className={`border-b-2 px-1 pb-2 text-sm font-medium transition-colors ${activeTab === tab.key
                   ? 'border-primary text-primary'
                   : 'border-transparent text-muted-foreground hover:text-foreground'
-              }`}
+                }`}
             >
               {tab.label}
             </button>
@@ -169,6 +168,9 @@ export function WorkerDetailPage() {
 }
 
 /* ---------- Console Tab ---------- */
+
+import { AnsiUp } from 'ansi_up'
+const ansiUp = new AnsiUp()
 
 function ConsoleTab({ workerId }: { workerId: string }) {
   const [tail, setTail] = useState(200)
@@ -197,14 +199,20 @@ function ConsoleTab({ workerId }: { workerId: string }) {
       </div>
       {isLoading ? (
         <p className="text-muted-foreground">Loading logs...</p>
+      ) : data?.logs ? (
+        <pre
+          className="max-h-[600px] overflow-auto rounded-lg bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300"
+          dangerouslySetInnerHTML={{ __html: ansiUp.ansi_to_html(data.logs) }}
+        />
       ) : (
         <pre className="max-h-[600px] overflow-auto rounded-lg bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300">
-          {data?.logs || 'No logs available'}
+          No logs available
         </pre>
       )}
     </div>
   )
 }
+
 
 /* ---------- Prompts Tab ---------- */
 

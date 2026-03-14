@@ -175,10 +175,8 @@ class TestCreateWorkerWithRepoId:
     @pytest.mark.asyncio
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
-    async def test_no_repo_id_falls_through_to_project_workspace(
-        self, mock_builder_cls, mock_workspace, mock_redis, mock_docker
-    ):
-        """No repo_id with project_id → uses get_or_create_project_workspace."""
+    async def test_repo_id_stored_in_redis_meta(self, mock_builder_cls, mock_workspace, mock_redis, mock_docker):
+        """repo_id should be persisted in worker:meta:{id} Redis hash."""
         from src.manager import WorkerManager
 
         mock_builder = MagicMock()
@@ -186,13 +184,10 @@ class TestCreateWorkerWithRepoId:
         mock_builder.generate_dockerfile.return_value = "FROM base"
         mock_builder_cls.return_value = mock_builder
 
-        mock_workspace.get_or_create_project_workspace.return_value = (
-            Path("/tmp/codegen/workspaces/proj-1/workspace"),
-            False,
-        )
+        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-123"), True)
 
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-        manager._setup_git_repo = AsyncMock(return_value=True)
+        manager._refresh_git_token = AsyncMock(return_value=True)
 
         await manager.create_worker_with_capabilities(
             worker_id="w-1",
@@ -200,7 +195,31 @@ class TestCreateWorkerWithRepoId:
             base_image="worker-base:latest",
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
             project_id="proj-1",
+            repo_id="repo-123",
         )
 
-        mock_workspace.get_or_create_project_workspace.assert_called_once()
-        mock_workspace.get_scaffolded_workspace.assert_not_called()
+        # Verify repo_id stored in Redis
+        mock_redis.hset.assert_any_call("worker:meta:w-1", "repo_id", "repo-123")
+
+    @pytest.mark.asyncio
+    @patch("src.manager.workspace_mod")
+    @patch("src.manager.ImageBuilder")
+    async def test_no_repo_id_raises_error(self, mock_builder_cls, mock_workspace, mock_redis, mock_docker):
+        """No repo_id → RuntimeError (legacy workspace creation removed)."""
+        from src.manager import WorkerManager
+
+        mock_builder = MagicMock()
+        mock_builder.get_image_tag.return_value = "worker:test"
+        mock_builder.generate_dockerfile.return_value = "FROM base"
+        mock_builder_cls.return_value = mock_builder
+
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        with pytest.raises(RuntimeError, match="repo_id is required"):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-1",
+                capabilities=["git"],
+                base_image="worker-base:latest",
+                env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
+                project_id="proj-1",
+            )

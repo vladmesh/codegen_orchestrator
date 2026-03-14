@@ -46,20 +46,19 @@ async def test_network_selection_uses_worker_network():
     """When DOCKER_NETWORK is empty, workers should connect to WORKER_NETWORK, not INTERNAL_NETWORK."""
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
-    wrapper.exec_in_container = AsyncMock()
+    wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
 
     manager = WorkerManager(redis=redis, docker_client=wrapper)
 
     with (
         patch("src.manager.settings") as mock_settings,
         patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
-        patch("src.manager.workspace_mod.create_workspace", return_value=Path("/tmp/ws/w1/workspace")),
-        patch("src.manager.workspace_mod.get_workspace_host_path", return_value="/tmp/ws/w1/workspace"),
+        patch("src.manager.workspace_mod.get_scaffolded_workspace", return_value=(Path("/data/ws/repo-1"), True)),
     ):
         mock_settings.DOCKER_NETWORK = ""
         mock_settings.INTERNAL_NETWORK = "codegen_internal"
         mock_settings.WORKER_NETWORK = "codegen_worker"
-        mock_settings.WORKSPACE_BASE_PATH = "/tmp/ws"
+        mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
         mock_settings.WORKER_REDIS_URL = ""
         mock_settings.WORKER_API_URL = ""
         mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
@@ -72,6 +71,8 @@ async def test_network_selection_uses_worker_network():
             capabilities=["git"],
             base_image="worker-base:latest",
             agent_type="claude",
+            repo_id="repo-1",
+            env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
         )
 
     # run_container should have been called with network="codegen_worker"
@@ -151,10 +152,7 @@ async def test_delete_worker_full_cleanup():
     await redis.set(f"worker:error:{worker_id}", "some error")
     await redis.set(f"worker:last_activity:{worker_id}", "12345")
 
-    with (
-        patch("src.manager.workspace_mod.remove_workspace") as mock_rm_ws,
-        patch("src.manager.ComposeRunner") as mock_runner_cls,
-    ):
+    with patch("src.manager.ComposeRunner") as mock_runner_cls:
         # Mock compose runner to avoid filesystem side effects
         mock_runner = MagicMock()
         mock_runner.run = AsyncMock(return_value=(0, "", ""))
@@ -164,9 +162,6 @@ async def test_delete_worker_full_cleanup():
 
     # Network should be removed
     wrapper.remove_network.assert_awaited_with(f"dev_proj_{worker_id}")
-
-    # Workspace should be removed
-    mock_rm_ws.assert_called_once()
 
     # Redis keys should be deleted
     assert await redis.hgetall(f"worker:meta:{worker_id}") == {}
@@ -232,8 +227,8 @@ async def test_gc_removes_orphaned_network():
 
 
 @pytest.mark.asyncio
-async def test_gc_removes_orphaned_workspace():
-    """GC should remove workspace directories not in Redis."""
+async def test_gc_does_not_remove_workspaces():
+    """Orphan GC should not remove workspaces (scaffolded workspaces are managed by time-based GC)."""
     redis = aioredis.FakeRedis(decode_responses=True)
     wrapper = _make_docker_mock()
 
@@ -242,15 +237,10 @@ async def test_gc_removes_orphaned_workspace():
 
     manager = WorkerManager(redis=redis, docker_client=wrapper)
 
-    with (
-        patch("os.listdir", return_value=["orphan-3"]),
-        patch("src.manager.workspace_mod.remove_workspace") as mock_rm_ws,
-    ):
+    with patch("src.manager.workspace_mod.remove_workspace") as mock_rm_ws:
         await manager.garbage_collect_orphaned_resources()
 
-    from src.config import settings
-
-    mock_rm_ws.assert_called_once_with(settings.WORKSPACE_BASE_PATH, "orphan-3")
+    mock_rm_ws.assert_not_called()
 
 
 @pytest.mark.asyncio

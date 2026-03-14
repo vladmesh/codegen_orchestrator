@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -198,14 +199,12 @@ class TestScaffoldPhase:
         assert call_kwargs["timeout"] == 600
 
 
-class TestCreateWorkerWithScaffoldConfig:
+class TestCreateWorkerGitSetup:
     @pytest.mark.asyncio
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
-    async def test_scaffold_config_triggers_scaffold_phase(
-        self, mock_builder_cls, mock_workspace, mock_redis, mock_docker, scaffold_config
-    ):
-        """create_worker_with_capabilities with scaffold_config calls _run_scaffold_phase."""
+    async def test_pre_scaffolded_refreshes_git_token(self, mock_builder_cls, mock_workspace, mock_redis, mock_docker):
+        """Pre-scaffolded workspace (repo_id) should refresh git token, not scaffold."""
         from src.manager import WorkerManager
 
         mock_builder = MagicMock()
@@ -213,32 +212,27 @@ class TestCreateWorkerWithScaffoldConfig:
         mock_builder.generate_dockerfile.return_value = "FROM base"
         mock_builder_cls.return_value = mock_builder
 
-        mock_workspace.create_workspace.return_value = "/tmp/ws/w-1"
-        mock_workspace.get_workspace_host_path.return_value = "/tmp/ws/w-1"
-
-        # Marker verification exec returns SCAFFOLD_OK after scaffold phase
-        mock_docker.exec_in_container = AsyncMock(return_value=(0, "SCAFFOLD_OK"))
+        mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/ws/repo-1"), True)
+        mock_docker.exec_in_container = AsyncMock(return_value=(0, "ok"))
 
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-        manager._run_scaffold_phase = AsyncMock(return_value=True)
+        manager._refresh_git_token = AsyncMock(return_value=True)
 
         await manager.create_worker_with_capabilities(
             worker_id="w-1",
             capabilities=["git"],
             base_image="worker-base:latest",
             env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
-            scaffold_config=scaffold_config,
+            repo_id="repo-1",
         )
 
-        manager._run_scaffold_phase.assert_awaited_once()
+        manager._refresh_git_token.assert_awaited_once()
 
     @pytest.mark.asyncio
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
-    async def test_scaffold_markers_missing_raises(
-        self, mock_builder_cls, mock_workspace, mock_redis, mock_docker, scaffold_config
-    ):
-        """Scaffold ran OK but markers missing → RuntimeError."""
+    async def test_no_repo_id_raises(self, mock_builder_cls, mock_workspace, mock_redis, mock_docker):
+        """Without repo_id, should raise RuntimeError."""
         from src.manager import WorkerManager
 
         mock_builder = MagicMock()
@@ -246,81 +240,12 @@ class TestCreateWorkerWithScaffoldConfig:
         mock_builder.generate_dockerfile.return_value = "FROM base"
         mock_builder_cls.return_value = mock_builder
 
-        mock_workspace.create_workspace.return_value = "/tmp/ws/w-1"
-        mock_workspace.get_workspace_host_path.return_value = "/tmp/ws/w-1"
-
-        # Scaffold succeeds but marker check fails
-        mock_docker.exec_in_container = AsyncMock(return_value=(0, "SCAFFOLD_MISSING"))
-
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-        manager._run_scaffold_phase = AsyncMock(return_value=True)
 
-        with pytest.raises(RuntimeError, match="Scaffold markers missing"):
+        with pytest.raises(RuntimeError, match="repo_id is required"):
             await manager.create_worker_with_capabilities(
                 worker_id="w-1",
                 capabilities=["git"],
                 base_image="worker-base:latest",
                 env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
-                scaffold_config=scaffold_config,
             )
-
-    @pytest.mark.asyncio
-    @patch("src.manager.workspace_mod")
-    @patch("src.manager.ImageBuilder")
-    async def test_no_scaffold_config_uses_git_clone(self, mock_builder_cls, mock_workspace, mock_redis, mock_docker):
-        """Without scaffold_config, normal git clone path is used."""
-        from src.manager import WorkerManager
-
-        mock_builder = MagicMock()
-        mock_builder.get_image_tag.return_value = "worker:test"
-        mock_builder.generate_dockerfile.return_value = "FROM base"
-        mock_builder_cls.return_value = mock_builder
-
-        mock_workspace.create_workspace.return_value = "/tmp/ws/w-1"
-        mock_workspace.get_workspace_host_path.return_value = "/tmp/ws/w-1"
-
-        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-        manager._run_scaffold_phase = AsyncMock()
-        manager._setup_git_repo = AsyncMock(return_value=True)
-
-        await manager.create_worker_with_capabilities(
-            worker_id="w-1",
-            capabilities=["git"],
-            base_image="worker-base:latest",
-            env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
-        )
-
-        manager._run_scaffold_phase.assert_not_awaited()
-        manager._setup_git_repo.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    @patch("src.manager.workspace_mod")
-    @patch("src.manager.ImageBuilder")
-    async def test_scaffold_failure_cleans_up(
-        self, mock_builder_cls, mock_workspace, mock_redis, mock_docker, scaffold_config
-    ):
-        """Scaffold failure triggers worker cleanup and raises."""
-        from src.manager import WorkerManager
-
-        mock_builder = MagicMock()
-        mock_builder.get_image_tag.return_value = "worker:test"
-        mock_builder.generate_dockerfile.return_value = "FROM base"
-        mock_builder_cls.return_value = mock_builder
-
-        mock_workspace.create_workspace.return_value = "/tmp/ws/w-1"
-        mock_workspace.get_workspace_host_path.return_value = "/tmp/ws/w-1"
-
-        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-        manager._run_scaffold_phase = AsyncMock(return_value=False)
-        manager.delete_worker = AsyncMock()
-
-        with pytest.raises(RuntimeError, match="Scaffold phase failed"):
-            await manager.create_worker_with_capabilities(
-                worker_id="w-1",
-                capabilities=["git"],
-                base_image="worker-base:latest",
-                env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
-                scaffold_config=scaffold_config,
-            )
-
-        manager.delete_worker.assert_awaited_once_with("w-1")

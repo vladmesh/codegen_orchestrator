@@ -63,6 +63,8 @@ graph TD
 - **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps). Engineering-worker и deploy-worker — отдельные контейнеры того же Docker-образа с собственными entrypoint'ами (Redis stream consumers).
 - **Infra Service**: Ansible runner для настройки серверов.
 - **Scheduler**: Architect consumer (story→tasks), task dispatcher (scaffold trigger, dispatch, supervisor), github_sync, server_sync, health_checker.
+- **Admin Frontend**: React SPA (port 3001) — dashboard, projects, tasks, workers, queues, users, LLM tracing. Nginx proxy with basic auth.
+- **Observability**: Loki + Promtail + Grafana (structured logs), Langfuse v3 (LLM tracing with ClickHouse + MinIO).
 
 ### Связанные проекты
 

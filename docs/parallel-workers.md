@@ -59,3 +59,28 @@ Worker-base образ `worker-base-common` унифицирован:
 - **Shared Tooling Layer**: `ruff`, `pytest`, `mypy`, `copier`, и т.д. установлены на уровне образа (не дублируются на каждый воркер).
 - Non-root user `worker` (uid 1000). Код на хосте через bind-mount не становится `root`-owned.
 - Выполнение тестов и линтеров происходит **нативно** через per-service venv-ы, без запуска дополнительных эфемерных контейнеров.
+
+## Worker Lifecycle & Cleanup
+
+### Stream Cleanup
+`delete_worker()` now cleans `worker:{id}:input` and `worker:{id}:output` streams (were orphaned forever before).
+
+### Orphan GC
+Reverse check (Redis → Docker): scans `worker:status` entries and cleans stale ones where the container is gone. Introspect API shows `GONE` status for stale workers.
+
+### Workspace GC
+Scans both `WORKSPACE_BASE_PATH` and `SCAFFOLDED_WORKSPACE_PATH`. Max age: 35h. Also cleans stale `workspace:active_projects` Redis entries. When workspace is deleted, calls `POST /repositories/{repo_id}/notify-workspace-deleted` to clear `workspace_ready` flag so scaffolder re-creates it before next task dispatch.
+
+### Stale Worker Auto-Cleanup
+`_check_project_lock()` verifies `worker:status` — workers in terminal states (DEAD/FAILED/STOPPED) get their Redis keys cleaned up automatically, unblocking new task dispatch without manual intervention.
+
+## Worker-Manager Introspection API
+
+`/api/introspect/` router with 7 endpoints:
+- List workers, worker detail (with container info from Docker)
+- Container logs (tail param, max 5000 lines)
+- Workspace file tree, file content (path traversal protection)
+- Prompts (CLAUDE.md + TASK.md)
+- Kill worker
+
+Admin-frontend nginx proxies `/wm-api/` → worker-manager.

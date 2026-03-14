@@ -82,11 +82,23 @@ All secrets must be configured in the repository's **production** environment.
 | `FACTORY_API_KEY` | Factory.ai API key |
 | `HOST_CLAUDE_DIR` | Path to `.claude` directory on prod server |
 
+### Admin UI
+
+| Secret | Description |
+|--------|-------------|
+| `ADMIN_USER` | Admin panel basic auth username |
+| `ADMIN_PASSWORD` | Admin panel basic auth password |
+
 ### Observability
 
 | Secret | Description |
 |--------|-------------|
 | `LANGCHAIN_API_KEY` | LangSmith API key (optional, for tracing) |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key (empty = disabled) |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key |
+| `CLICKHOUSE_PASSWORD` | ClickHouse password (for Langfuse analytics) |
+| `MINIO_ROOT_USER` | MinIO root user (for Langfuse media storage) |
+| `MINIO_ROOT_PASSWORD` | MinIO root password |
 
 ## Deploying
 

@@ -1,7 +1,7 @@
-"""Workspace introspection API — browse project workspaces by project_id.
+"""Workspace introspection API — browse workspaces by repo_id.
 
-Workspaces belong to projects (not workers). A single workspace is reused
-across multiple worker runs for the same project.
+Workspaces are created by the scaffolder service at SCAFFOLDED_WORKSPACE_PATH/{repo_id}/.
+They are reused across multiple worker runs for the same repository.
 """
 
 from http import HTTPStatus
@@ -19,54 +19,45 @@ router = APIRouter(prefix="/api/introspect", tags=["workspaces"])
 
 
 class WorkspaceFileContentResponse(BaseModel):
-    project_id: str
+    repo_id: str
     path: str
     content: str
     size: int
 
 
-def _resolve_workspace_path(request: Request, project_id: str) -> Path:
-    """Resolve workspace path for a project.
+def _resolve_workspace_path(request: Request, repo_id: str) -> Path:
+    """Resolve workspace path for a repository.
 
-    Checks WORKSPACE_BASE_PATH/{project_id}/workspace/ first,
-    then falls back to SCAFFOLDED_WORKSPACE_PATH/{project_id}/.
+    Looks in SCAFFOLDED_WORKSPACE_PATH/{repo_id}/.
     """
-    workspace_base = request.app.state.workspace_base_path
     scaffolded_base = request.app.state.scaffolded_workspace_path
-
-    # Primary: project workspace
-    primary = Path(workspace_base) / project_id / "workspace"
-    if primary.exists() and primary.is_dir():
-        return primary
-
-    # Fallback: scaffolded workspace (flat structure, no /workspace/ subdir)
-    fallback = Path(scaffolded_base) / project_id
-    if fallback.exists() and fallback.is_dir():
-        return fallback
+    workspace = Path(scaffolded_base) / repo_id
+    if workspace.exists() and workspace.is_dir():
+        return workspace
 
     raise HTTPException(
         status_code=HTTPStatus.NOT_FOUND,
-        detail=f"No workspace found for project {project_id}",
+        detail=f"No workspace found for repo {repo_id}",
     )
 
 
-@router.get("/workspaces/{project_id}/tree", response_model=list[FileTreeEntry])
-async def get_workspace_tree(project_id: str, request: Request):
-    """List files in a project's workspace directory."""
-    workspace = _resolve_workspace_path(request, project_id)
+@router.get("/workspaces/{repo_id}/tree", response_model=list[FileTreeEntry])
+async def get_workspace_tree(repo_id: str, request: Request):
+    """List files in a repository's workspace directory."""
+    workspace = _resolve_workspace_path(request, repo_id)
     return walk_workspace(workspace)
 
 
 @router.get(
-    "/workspaces/{project_id}/files/{file_path:path}",
+    "/workspaces/{repo_id}/files/{file_path:path}",
     response_model=WorkspaceFileContentResponse,
 )
-async def get_workspace_file(project_id: str, file_path: str, request: Request):
-    """Read a file from a project's workspace."""
-    workspace = _resolve_workspace_path(request, project_id)
+async def get_workspace_file(repo_id: str, file_path: str, request: Request):
+    """Read a file from a repository's workspace."""
+    workspace = _resolve_workspace_path(request, repo_id)
     content, size = read_file(workspace, file_path)
     return WorkspaceFileContentResponse(
-        project_id=project_id,
+        repo_id=repo_id,
         path=file_path,
         content=content,
         size=size,
