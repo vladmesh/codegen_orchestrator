@@ -385,7 +385,6 @@ class TestGetWorkerPrompts:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         (workspace / "CLAUDE.md").write_text("# Agent instructions")
-        (workspace / "TASK.md").write_text("# Task details")
 
         redis.hgetall = AsyncMock(
             side_effect=[
@@ -393,6 +392,8 @@ class TestGetWorkerPrompts:
                 {"workspace_path": str(workspace)},
             ]
         )
+        # task_md is read from Redis, not filesystem
+        redis.hget = AsyncMock(return_value="# Task details")
         app = _make_app(redis=redis)
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/w1/prompts")
@@ -400,6 +401,7 @@ class TestGetWorkerPrompts:
         data = resp.json()
         assert "Agent instructions" in data["claude_md"]
         assert "Task details" in data["task_md"]
+        redis.hget.assert_awaited_once_with("worker:meta:w1", "task_md")
 
     def test_missing_files_return_null(self, redis, tmp_path):
         workspace = tmp_path / "workspace"
@@ -411,6 +413,7 @@ class TestGetWorkerPrompts:
                 {"workspace_path": str(workspace)},
             ]
         )
+        redis.hget = AsyncMock(return_value=None)
         app = _make_app(redis=redis)
         with TestClient(app) as c:
             resp = c.get("/api/introspect/workers/w1/prompts")
@@ -418,6 +421,46 @@ class TestGetWorkerPrompts:
         data = resp.json()
         assert data["claude_md"] is None
         assert data["task_md"] is None
+
+
+class TestGetWorkerPromptHistory:
+    def test_returns_entries(self, redis):
+        import json
+        import time
+
+        entries = [
+            json.dumps({"prompt": "Build the app", "ts": time.time() - 60, "source": "create"}),
+            json.dumps({"prompt": "Fix the tests", "ts": time.time(), "source": "turn"}),
+        ]
+        redis.hgetall = AsyncMock(return_value={"status": "RUNNING"})
+        redis.lrange = AsyncMock(return_value=entries)
+        app = _make_app(redis=redis)
+        with TestClient(app) as c:
+            resp = c.get("/api/introspect/workers/w1/prompt-history")
+        assert resp.status_code == HTTPStatus.OK
+        data = resp.json()
+        assert data["worker_id"] == "w1"
+        assert len(data["entries"]) == 2
+        assert data["entries"][0]["prompt"] == "Build the app"
+        assert data["entries"][0]["source"] == "create"
+        assert data["entries"][1]["prompt"] == "Fix the tests"
+        assert data["entries"][1]["source"] == "turn"
+
+    def test_empty_history(self, redis):
+        redis.hgetall = AsyncMock(return_value={"status": "RUNNING"})
+        redis.lrange = AsyncMock(return_value=[])
+        app = _make_app(redis=redis)
+        with TestClient(app) as c:
+            resp = c.get("/api/introspect/workers/w1/prompt-history")
+        assert resp.status_code == HTTPStatus.OK
+        assert resp.json()["entries"] == []
+
+    def test_worker_not_found(self, redis):
+        redis.hgetall = AsyncMock(return_value={})
+        app = _make_app(redis=redis)
+        with TestClient(app) as c:
+            resp = c.get("/api/introspect/workers/w1/prompt-history")
+        assert resp.status_code == HTTPStatus.NOT_FOUND
 
 
 class TestSafeResolve:

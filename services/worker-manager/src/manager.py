@@ -199,6 +199,7 @@ class WorkerManager:
                 f"worker:last_activity:{worker_id}",
                 f"worker:{worker_id}:input",
                 f"worker:{worker_id}:output",
+                f"worker:{worker_id}:prompt_history",
             ]
             await self.redis.delete(*keys_to_delete)
 
@@ -709,6 +710,14 @@ class WorkerManager:
                     error=output,
                     container_logs=container_logs,
                 )
+
+            # Persist task_md in Redis so introspect API can read it
+            # (TASK.md lives at /home/worker/ inside container, not on host volume)
+            await self.redis.hset(f"worker:meta:{worker_id}", "task_md", task_content)
+
+            # Append to prompt history
+            entry = json.dumps({"prompt": task_content, "ts": time.time(), "source": "create"})
+            await self.redis.rpush(f"worker:{worker_id}:prompt_history", entry)
 
         # Return the worker_id (name), not container_id (Docker hash)
         # This allows callers to reference the worker by its logical name
