@@ -1,13 +1,13 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { api } from '@/lib/api'
 import { StatusBadge } from '@/components/ui/StatusBadge'
+import { MultiSelect } from '@/components/ui/MultiSelect'
 import { relativeTime } from '@/lib/utils'
 import type { Task } from '@/types/api'
 
 const STATUSES = [
-  'all',
   'backlog',
   'todo',
   'in_dev',
@@ -20,48 +20,97 @@ const STATUSES = [
   'cancelled',
 ]
 
-const TYPES = ['all', 'feature', 'create', 'fix', 'refactor']
+const TYPES = ['feature', 'create', 'fix', 'refactor']
+
+type SortField = 'status' | 'priority' | 'updated_at'
+type SortDir = 'asc' | 'desc'
+
+function SortIcon({ field, sortField, sortDir }: { field: SortField; sortField: SortField | null; sortDir: SortDir }) {
+  if (sortField !== field) {
+    return (
+      <svg className="ml-1 inline h-3 w-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+      </svg>
+    )
+  }
+  return sortDir === 'asc' ? (
+    <svg className="ml-1 inline h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+    </svg>
+  ) : (
+    <svg className="ml-1 inline h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+    </svg>
+  )
+}
 
 export function TasksPage() {
-  const [statusFilter, setStatusFilter] = useState('all')
-  const [typeFilter, setTypeFilter] = useState('all')
-
-  const queryParams = new URLSearchParams({ limit: '200' })
-  if (statusFilter !== 'all') queryParams.set('status', statusFilter)
-  if (typeFilter !== 'all') queryParams.set('type', typeFilter)
+  const [statusFilter, setStatusFilter] = useState<string[]>([])
+  const [typeFilter, setTypeFilter] = useState<string[]>([])
+  const [sortField, setSortField] = useState<SortField | null>(null)
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
 
   const { data: tasks, isLoading } = useQuery({
     queryKey: ['tasks', statusFilter, typeFilter],
-    queryFn: () => api.get<Task[]>(`/tasks/?${queryParams.toString()}`),
+    queryFn: () => api.get<Task[]>('/tasks/?limit=200'),
   })
+
+  const filteredAndSorted = useMemo(() => {
+    let result = tasks ?? []
+
+    if (statusFilter.length > 0) {
+      result = result.filter((t) => statusFilter.includes(t.status))
+    }
+    if (typeFilter.length > 0) {
+      result = result.filter((t) => typeFilter.includes(t.type))
+    }
+
+    if (sortField) {
+      result = [...result].sort((a, b) => {
+        let cmp = 0
+        if (sortField === 'status') {
+          cmp = a.status.localeCompare(b.status)
+        } else if (sortField === 'priority') {
+          cmp = a.priority - b.priority
+        } else if (sortField === 'updated_at') {
+          cmp = new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime()
+        }
+        return sortDir === 'asc' ? cmp : -cmp
+      })
+    }
+
+    return result
+  }, [tasks, statusFilter, typeFilter, sortField, sortDir])
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortField(field)
+      setSortDir('asc')
+    }
+  }
+
+  const thSortable = 'cursor-pointer select-none hover:text-foreground'
+  const thBase = 'px-4 py-3 text-left font-medium text-muted-foreground'
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-foreground">Tasks</h1>
 
       <div className="flex gap-4">
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
-        >
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s === 'all' ? 'All statuses' : s.replace(/_/g, ' ')}
-            </option>
-          ))}
-        </select>
-        <select
-          value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value)}
-          className="rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
-        >
-          {TYPES.map((t) => (
-            <option key={t} value={t}>
-              {t === 'all' ? 'All types' : t}
-            </option>
-          ))}
-        </select>
+        <MultiSelect
+          options={STATUSES}
+          selected={statusFilter}
+          onChange={setStatusFilter}
+          placeholder="All statuses"
+        />
+        <MultiSelect
+          options={TYPES}
+          selected={typeFilter}
+          onChange={setTypeFilter}
+          placeholder="All types"
+        />
       </div>
 
       {isLoading ? (
@@ -71,15 +120,24 @@ export function TasksPage() {
           <table className="w-full text-sm">
             <thead className="border-b border-border bg-muted/50">
               <tr>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Title</th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Type</th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Priority</th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Updated</th>
+                <th className={thBase}>Title</th>
+                <th className={`${thBase} ${thSortable}`} onClick={() => handleSort('status')}>
+                  Status
+                  <SortIcon field="status" sortField={sortField} sortDir={sortDir} />
+                </th>
+                <th className={thBase}>Type</th>
+                <th className={`${thBase} ${thSortable}`} onClick={() => handleSort('priority')}>
+                  Priority
+                  <SortIcon field="priority" sortField={sortField} sortDir={sortDir} />
+                </th>
+                <th className={`${thBase} ${thSortable}`} onClick={() => handleSort('updated_at')}>
+                  Updated
+                  <SortIcon field="updated_at" sortField={sortField} sortDir={sortDir} />
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {(tasks ?? []).map((task) => (
+              {filteredAndSorted.map((task) => (
                 <tr key={task.id} className="hover:bg-muted/30">
                   <td className="max-w-md truncate px-4 py-3">
                     <Link
