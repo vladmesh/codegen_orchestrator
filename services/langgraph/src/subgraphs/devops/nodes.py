@@ -262,7 +262,7 @@ class ReadinessCheckNode(FunctionalNode):
         return {}
 
 
-async def _create_service_deployment_record(
+async def _create_deployment_record(
     project_id: str,
     service_name: str,
     server_handle: str,
@@ -270,25 +270,43 @@ async def _create_service_deployment_record(
     deployment_info: dict,
     deployed_sha: str | None = None,
 ) -> bool:
-    """Create a service deployment record via API."""
-    payload = {
-        "project_id": project_id,
-        "service_name": service_name,
-        "server_handle": server_handle,
-        "port": port,
-        "status": "running",
-        "deployment_info": deployment_info,
-    }
-    if deployed_sha:
-        payload["deployed_sha"] = deployed_sha
-
+    """Create a deployment record and update/create the Application via API."""
     try:
-        await api_client.create_service_deployment(payload)
-        logger.info("service_deployment_record_created", service_name=service_name)
+        # Get or create Application
+        application_id = None
+        repo = await api_client.get_primary_repository(project_id)
+        if repo:
+            app = await api_client.get_or_create_application(
+                repo_id=repo["id"],
+                server_handle=server_handle,
+                service_name=service_name,
+                port=port,
+            )
+            application_id = app.get("id")
+
+            # Update Application status to running
+            await api_client.update_application(application_id, {"status": "running"})
+
+        # Create Deployment record
+        payload = {
+            "project_id": project_id,
+            "service_name": service_name,
+            "server_handle": server_handle,
+            "port": port,
+            "result": "success",
+            "deployment_info": deployment_info,
+        }
+        if application_id:
+            payload["application_id"] = application_id
+        if deployed_sha:
+            payload["deployed_sha"] = deployed_sha
+
+        await api_client.create_deployment(payload)
+        logger.info("deployment_record_created", service_name=service_name)
         return True
     except Exception as e:
         logger.error(
-            "service_deployment_record_error",
+            "deployment_record_error",
             service_name=service_name,
             error=str(e),
             error_type=type(e).__name__,
@@ -533,7 +551,7 @@ class DeployerNode(FunctionalNode):
                 modules = ",".join(modules)
 
             if target_alloc:
-                await _create_service_deployment_record(
+                await _create_deployment_record(
                     project_id=project_id,
                     service_name=project_name,
                     server_handle=target_alloc.get("server_handle"),
@@ -585,7 +603,7 @@ class DeployerNode(FunctionalNode):
                     modules = ",".join(modules)
 
                 if target_alloc:
-                    await _create_service_deployment_record(
+                    await _create_deployment_record(
                         project_id=project_id,
                         service_name=project_name,
                         server_handle=target_alloc.get("server_handle"),

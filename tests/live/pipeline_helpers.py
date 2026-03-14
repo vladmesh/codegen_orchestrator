@@ -514,6 +514,8 @@ def _cleanup_db(project_id: str) -> None:
         f"DELETE FROM rag_conversation_summaries WHERE project_id = '{project_id}';"
         f"DELETE FROM rag_messages WHERE project_id = '{project_id}';"
         f"DELETE FROM service_deployments WHERE project_id = '{project_id}';"
+        f"DELETE FROM applications WHERE repo_id IN "
+        f"(SELECT id FROM repositories WHERE project_id = '{project_id}');"
         f"DELETE FROM repositories WHERE project_id = '{project_id}';"
         f"DELETE FROM port_allocations WHERE project_id = '{project_id}';"
         f"DELETE FROM projects WHERE id = '{project_id}';"

@@ -58,6 +58,10 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
     mock_api.get_project_allocations = AsyncMock(return_value=_ALLOC_RESPONSE)
     mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
     mock_api.create_service_deployment = AsyncMock(return_value={})
+    mock_api.create_deployment = AsyncMock(return_value={})
+    mock_api.get_primary_repository = AsyncMock(return_value={"id": "repo-test1"})
+    mock_api.get_or_create_application = AsyncMock(return_value={"id": 1})
+    mock_api.update_application = AsyncMock(return_value={})
     mock_api.patch = AsyncMock(return_value={})
     return gh
 
@@ -163,9 +167,27 @@ class TestDeployerNodeHappyPath:
 
         await deployer.run(base_state)
 
-        mock_api.create_service_deployment.assert_called_once()
-        payload = mock_api.create_service_deployment.call_args[0][0]
+        mock_api.create_deployment.assert_called_once()
+        payload = mock_api.create_deployment.call_args[0][0]
         assert payload["deployed_sha"] == "abc123"
+        assert payload["result"] == "success"
+        assert payload["application_id"] == 1
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
+    @patch("src.subgraphs.devops.nodes.api_client")
+    async def test_creates_application_on_deploy(self, mock_api, mock_gh_cls, deployer, base_state):
+        _setup_happy_mocks(mock_api, mock_gh_cls)
+
+        await deployer.run(base_state)
+
+        mock_api.get_or_create_application.assert_called_once_with(
+            repo_id="repo-test1",
+            server_handle="srv-1",
+            service_name="my_project",
+            port=8080,
+        )
+        mock_api.update_application.assert_called_once_with(1, {"status": "running"})
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")

@@ -190,18 +190,22 @@ class IncidentInfo(BaseModel):
     created_at: str | None = Field(None, description="Creation timestamp")
 
 
-class ServiceDeployment(BaseModel):
-    """Service deployment record."""
+class ApplicationInfo(BaseModel):
+    """Application running on a server."""
 
-    id: int = Field(..., description="Deployment ID")
-    project_id: str = Field(..., description="Project ID")
-    service_name: str = Field(..., description="Service name")
+    id: int = Field(..., description="Application ID")
+    repo_id: str = Field(..., description="Repository ID")
     server_handle: str = Field(..., description="Server handle")
+    service_name: str = Field(..., description="Service name")
     port: int = Field(..., description="Allocated port")
-    status: str = Field(..., description="Service status")
-    deployment_info: dict = Field(default_factory=dict, description="Deployment configuration")
+    status: str = Field(..., description="Application status (running/stopped/down/degraded)")
+    last_health_check: str | None = Field(None, description="Last health check timestamp")
     created_at: str | None = Field(None, description="Creation timestamp")
     updated_at: str | None = Field(None, description="Last update timestamp")
+
+
+# Backward compat alias
+ServiceDeployment = ApplicationInfo
 
 
 class ResourceInventoryServer(BaseModel):

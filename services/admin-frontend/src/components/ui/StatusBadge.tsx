@@ -17,9 +17,23 @@ const statusColors: Record<string, string> = {
   scaffolding: 'bg-blue-900 text-blue-200',
   deploying: 'bg-purple-900 text-purple-200',
   // Server statuses
+  discovered: 'bg-zinc-700 text-zinc-200',
+  new: 'bg-blue-900 text-blue-200',
+  pending_setup: 'bg-blue-900 text-blue-200',
   provisioning: 'bg-yellow-900 text-yellow-200',
+  force_rebuild: 'bg-orange-900 text-orange-200',
   ready: 'bg-green-900 text-green-200',
+  in_use: 'bg-green-900 text-green-200',
+  unreachable: 'bg-red-900 text-red-200',
+  maintenance: 'bg-yellow-900 text-yellow-200',
   error: 'bg-red-900 text-red-200',
+  // Application statuses
+  not_deployed: 'bg-zinc-700 text-zinc-200',
+  degraded: 'bg-orange-900 text-orange-200',
+  down: 'bg-red-950 text-red-300',
+  // Deployment statuses
+  pending: 'bg-blue-900 text-blue-200',
+  stopped: 'bg-zinc-700 text-zinc-200',
   // Worker statuses
   running: 'bg-green-900 text-green-200',
   paused: 'bg-yellow-900 text-yellow-200',

@@ -121,7 +121,7 @@ class LanggraphAPIClient:
         return await self._patch_json(f"servers/{server_handle}", json=payload)
 
     async def get_server_services(self, server_handle: str) -> list[dict]:
-        return await self._get_json(f"servers/{server_handle}/services")
+        return await self._get_json(f"servers/{server_handle}/applications")
 
     async def list_server_ports(self, server_handle: str) -> list[dict]:
         return await self._get_json(f"servers/{server_handle}/ports")
@@ -134,6 +134,40 @@ class LanggraphAPIClient:
 
     async def create_service_deployment(self, payload: dict) -> dict:
         return await self._post_json("service-deployments/", json=payload)
+
+    async def create_deployment(self, payload: dict) -> dict:
+        return await self._post_json("service-deployments/", json=payload)
+
+    async def update_deployment(self, deployment_id: int, payload: dict) -> dict:
+        return await self._patch_json(f"service-deployments/{deployment_id}", json=payload)
+
+    # --- Applications ---
+
+    async def list_applications(self, params: dict | None = None) -> list[dict]:
+        return await self._get_json("applications/", params=params or {})
+
+    async def create_application(self, payload: dict) -> dict:
+        return await self._post_json("applications/", json=payload)
+
+    async def update_application(self, application_id: int, payload: dict) -> dict:
+        return await self._patch_json(f"applications/{application_id}", json=payload)
+
+    async def get_or_create_application(
+        self, repo_id: str, server_handle: str, service_name: str, port: int
+    ) -> dict:
+        """Find existing application or create a new one."""
+        apps = await self.list_applications({"repo_id": repo_id, "server_handle": server_handle})
+        if apps:
+            return apps[0]
+        return await self.create_application(
+            {
+                "repo_id": repo_id,
+                "server_handle": server_handle,
+                "service_name": service_name,
+                "port": port,
+                "status": "not_deployed",
+            }
+        )
 
     async def query_rag(self, payload: dict) -> dict:
         return await self._post_json("rag/query", json=payload)

@@ -127,6 +127,10 @@ def clean_database():
         f"SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id WHERE {conditions});",
     ]
     stmts.extend(f"DELETE FROM {t} WHERE project_id IN ({sub});" for t in tables)  # noqa: S608
+    stmts.append(
+        f"DELETE FROM applications WHERE repo_id IN "  # noqa: S608
+        f"(SELECT id FROM repositories WHERE project_id IN ({sub}));"
+    )
     stmts.append(f"DELETE FROM projects WHERE {conditions};")  # noqa: S608
     stmts.append("DELETE FROM users WHERE telegram_id = 999000001;")
     sql = "\n".join(stmts)

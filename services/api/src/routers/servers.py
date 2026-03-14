@@ -4,19 +4,19 @@ from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.server import ServerStatus
 from shared.crypto import SecretsCipher
-from shared.models import PortAllocation, Server, ServiceDeployment, User
-from shared.models.service_deployment import DeploymentStatus
+from shared.models import Application, PortAllocation, Server, User
 
 from ..database import get_async_session
 from ..schemas import (
     AllocateNextPortRequest,
+    ApplicationRead,
     PortAllocationCreate,
     PortAllocationRead,
     ServerCreate,
     ServerRead,
-    ServiceDeploymentRead,
 )
 
 router = APIRouter(prefix="/servers", tags=["servers"])
@@ -369,24 +369,23 @@ async def provision_server(
     }
 
 
-@router.get("/{handle}/services", response_model=list[ServiceDeploymentRead])
-async def get_server_services(
+@router.get("/{handle}/applications", response_model=list[ApplicationRead])
+async def get_server_applications(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(_require_admin_if_user),
-) -> list[ServiceDeployment]:
-    """Get all services deployed on a specific server (admin only)."""
-    # Verify server exists
+) -> list[Application]:
+    """Get all applications on a specific server (admin only)."""
     if not await db.get(Server, handle):
         raise HTTPException(status_code=404, detail="Server not found")
 
     query = (
-        select(ServiceDeployment)
+        select(Application)
         .where(
-            ServiceDeployment.server_handle == handle,
-            ServiceDeployment.status == DeploymentStatus.RUNNING.value,  # Only active deployments
+            Application.server_handle == handle,
+            Application.status != ApplicationStatus.STOPPED.value,
         )
-        .order_by(ServiceDeployment.deployed_at.desc())
+        .order_by(Application.service_name)
     )
 
     result = await db.execute(query)

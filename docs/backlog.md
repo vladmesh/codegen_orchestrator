@@ -30,6 +30,12 @@
 - **Status**: backlog
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
+### Introduce Application entity and refactor Deployment model
+- **Priority**: CRITICAL
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: ## Context  Currently ServiceDeployment serves as both deployment log and runtime state, creating duplicates (e.g. 21 records for 3 actual services on vps-267180). Need clean separation:  ## New Domain Model  ### Application (new entity) - Runtime representation of a deployable unit on a server -...
+
 ### #1006 Decouple deploy worker from story lifecycle
 - **Priority**: HIGH
 - **Plan**: —
@@ -252,16 +258,16 @@
 
 ## Done (last 10)
 
+- Run tests, verify CI green — 2026-03-14
+- Verify fix with production-like testing — 2026-03-14
+- Fix root cause of tarot image failures based on diagnosis — 2026-03-14
+- Diagnose why tarot images fail 93% of the time — 2026-03-14
 - Unify workspace management: repo_id-based addressing, remove legacy workspace creation — 2026-03-14
 - Run tests, verify CI green — 2026-03-13
 - Fix /revert command - verify full integration (attempt #3) — 2026-03-13
 - Add /revert command with proper registration — 2026-03-13
 - Workspace browser — workspace как первичная сущность с project-level browsing — 2026-03-13
 - Admin SPA — LLM Tracing page (Langfuse iframe) — 2026-03-13
-- LangChain → Langfuse tracing integration (env-var drop-in) — 2026-03-13
-- Langfuse v3 infra — docker-compose + ClickHouse + nginx proxy — 2026-03-13
-- #1008 Admin Phase 2 — worker inspector + queues + action buttons — 2026-03-13
-- #1007 Worker-manager introspection API — list, logs, tree, files, prompts, kill — 2026-03-13
 
 ## Ideas
 

@@ -192,13 +192,32 @@ export interface QueuePendingResponse {
 }
 
 export interface Server {
-  id: string
-  name: string
+  handle: string
+  host: string
   public_ip: string
+  ssh_user: string
   status: string
-  cpu_used_pct: number | null
-  ram_used_pct: number | null
-  disk_used_pct: number | null
+  is_managed: boolean
+  capacity_cpu: number
+  capacity_ram_mb: number
+  capacity_disk_mb: number
+  used_ram_mb: number
+  used_disk_mb: number
+  os_template: string | null
+  labels: Record<string, string>
+  notes: string | null
+  provisioning_started_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface Application {
+  id: number
+  repo_id: string
+  server_handle: string
+  service_name: string
+  port: number
+  status: string
   last_health_check: string | null
   created_at: string
   updated_at: string

@@ -2,6 +2,7 @@
 
 from .agent_config import AgentConfigCreate, AgentConfigRead, AgentConfigUpdate
 from .api_key import APIKeyCreate, APIKeyRead
+from .application import ApplicationCreate, ApplicationRead, ApplicationUpdate
 from .brainstorm import BrainstormCreate, BrainstormRead, BrainstormTransition, BrainstormUpdate
 from .incident import IncidentCreate, IncidentRead, IncidentUpdate
 from .port_allocation import AllocateNextPortRequest, PortAllocationCreate, PortAllocationRead
@@ -10,6 +11,9 @@ from .rag import RAGDocsIngest, RAGDocsIngestResult, RAGMessageCreate, RAGMessag
 from .run import RunCreate, RunRead, RunUpdate
 from .server import ServerCreate, ServerRead
 from .service_deployment import (
+    DeploymentCreate,
+    DeploymentRead,
+    DeploymentUpdate,
     ServiceDeploymentCreate,
     ServiceDeploymentRead,
     ServiceDeploymentUpdate,
@@ -28,6 +32,9 @@ __all__ = [
     "AgentConfigCreate",
     "AgentConfigRead",
     "AgentConfigUpdate",
+    "ApplicationCreate",
+    "ApplicationRead",
+    "ApplicationUpdate",
     "BrainstormCreate",
     "BrainstormRead",
     "BrainstormTransition",
@@ -53,6 +60,9 @@ __all__ = [
     "IncidentCreate",
     "IncidentRead",
     "IncidentUpdate",
+    "DeploymentCreate",
+    "DeploymentRead",
+    "DeploymentUpdate",
     "ServiceDeploymentCreate",
     "ServiceDeploymentRead",
     "ServiceDeploymentUpdate",

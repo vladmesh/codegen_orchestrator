@@ -1,4 +1,4 @@
-"""Pydantic schemas for service deployments."""
+"""Pydantic schemas for deployments (formerly service_deployments)."""
 
 from datetime import datetime
 import uuid
@@ -6,10 +6,11 @@ import uuid
 from pydantic import BaseModel
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.deployment import DeploymentResult
 
 
-class ServiceDeploymentBase(BaseModel):
-    """Base schema for service deployment."""
+class DeploymentBase(BaseModel):
+    """Base schema for deployment."""
 
     project_id: uuid.UUID
     service_name: str
@@ -18,25 +19,33 @@ class ServiceDeploymentBase(BaseModel):
     deployment_info: dict = {}
 
 
-class ServiceDeploymentCreate(ServiceDeploymentBase):
-    """Schema for creating a service deployment."""
+class DeploymentCreate(DeploymentBase):
+    """Schema for creating a deployment record."""
 
-    status: str = "running"
+    application_id: int | None = None
+    result: str = DeploymentResult.PENDING.value
     deployed_sha: str | None = None
 
 
-class ServiceDeploymentUpdate(BaseModel):
-    """Schema for updating a service deployment."""
+class DeploymentUpdate(BaseModel):
+    """Schema for updating a deployment record."""
 
-    status: str | None = None
+    result: str | None = None
     deployment_info: dict | None = None
     deployed_sha: str | None = None
 
 
-class ServiceDeploymentRead(ServiceDeploymentBase, TimestampedDTO):
-    """Schema for reading a service deployment."""
+class DeploymentRead(DeploymentBase, TimestampedDTO):
+    """Schema for reading a deployment record."""
 
     id: int
-    status: str
+    application_id: int | None = None
+    result: str
     deployed_sha: str | None = None
     deployed_at: datetime
+
+
+# Backward compat aliases
+ServiceDeploymentCreate = DeploymentCreate
+ServiceDeploymentRead = DeploymentRead
+ServiceDeploymentUpdate = DeploymentUpdate
