@@ -36,12 +36,6 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### Unify workspace management: repo_id-based addressing, remove legacy workspace creation
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: ## Problem  Workspace browser in admin panel is broken for all projects that went through scaffolder. Two issues:  1. **Wrong addressing**: introspection API (`workspaces.py`, `introspect.py`) looks for workspaces at `/data/workspaces/{project_id}/` but scaffolder stores them at `/data/workspaces...
-
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
 - **Plan**: yes (in work item)
@@ -258,6 +252,7 @@
 
 ## Done (last 10)
 
+- Unify workspace management: repo_id-based addressing, remove legacy workspace creation — 2026-03-14
 - Run tests, verify CI green — 2026-03-13
 - Fix /revert command - verify full integration (attempt #3) — 2026-03-13
 - Add /revert command with proper registration — 2026-03-13
@@ -267,7 +262,6 @@
 - Langfuse v3 infra — docker-compose + ClickHouse + nginx proxy — 2026-03-13
 - #1008 Admin Phase 2 — worker inspector + queues + action buttons — 2026-03-13
 - #1007 Worker-manager introspection API — list, logs, tree, files, prompts, kill — 2026-03-13
-- Admin auth + single entry point — proxy Grafana through admin, close extra ports — 2026-03-13
 
 ## Ideas
 

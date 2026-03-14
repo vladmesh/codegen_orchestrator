@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-14
+
+### Changed
+- **Unified workspace management around repo_id** (#task-7147c381): All workspace addressing now uses `repo_id` instead of `project_id`. Scaffolder is sole source of truth for workspaces at `/data/workspaces/{repo_id}/`. Removed legacy `WORKSPACE_BASE_PATH` config and `/tmp/codegen/workspaces` volume from worker-manager. Workers now require `repo_id` (RuntimeError if missing). `repo_id` stored in Redis `worker:meta` hash and exposed on introspect API. Workspace browser endpoints use `repo_id`. Frontend resolves `repo_id` via repositories API. Removed dead in-container scaffold phase code. Fixes workspace browser not showing files for projects like lesswrong-random-bot.
+
 ## 2026-03-13
 
 ### Added
