@@ -5,6 +5,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 
+from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.project import ProjectStatus, ServiceModule, ServiceStatus
 
 
@@ -25,7 +26,7 @@ class ProjectCreate(ProjectBase):
     modules: list[ServiceModule] = [ServiceModule.BACKEND]
 
 
-class ProjectRead(ProjectBase):
+class ProjectRead(ProjectBase, TimestampedDTO):
     """Schema for reading a project."""
 
     model_config = ConfigDict(from_attributes=True)

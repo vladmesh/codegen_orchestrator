@@ -1,12 +1,10 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from shared.contracts.dto.base import TimestampedDTO
 
 
-class AgentConfigDTO(BaseModel):
+class AgentConfigDTO(TimestampedDTO):
     """Agent configuration response."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: int
     name: str

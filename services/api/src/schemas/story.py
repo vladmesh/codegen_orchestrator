@@ -1,11 +1,11 @@
 """Story API schemas."""
 
-from datetime import datetime
 from typing import Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict
 
+from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.story import StoryType
 
 
@@ -23,7 +23,7 @@ class StoryCreate(BaseModel):
     created_by: str = "system"
 
 
-class StoryRead(BaseModel):
+class StoryRead(TimestampedDTO):
     """Schema for reading a story."""
 
     id: str
@@ -38,8 +38,6 @@ class StoryRead(BaseModel):
     blocked_by_story_id: str | None
     created_by: str
     user_report: str | None
-    created_at: datetime
-    updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -2,7 +2,9 @@
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class PortAllocationBase(BaseModel):
@@ -28,8 +30,7 @@ class AllocateNextPortRequest(BaseModel):
     start_port: int = 8000
 
 
-class PortAllocationRead(PortAllocationBase):
+class PortAllocationRead(PortAllocationBase, TimestampedDTO):
     """Schema for reading a port allocation."""
 
     id: int
-    model_config = ConfigDict(from_attributes=True)

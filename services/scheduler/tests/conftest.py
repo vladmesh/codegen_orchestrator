@@ -1,10 +1,16 @@
 """Pytest configuration for scheduler tests."""
 
+import os
 from pathlib import Path
 import sys
 from unittest.mock import patch
 
-import pytest
+# Provide required env vars BEFORE any scheduler imports
+# (api_client is instantiated at module level and calls get_settings())
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("API_BASE_URL", "http://localhost:8000")
+
+import pytest  # noqa: E402
 
 # Add scheduler src to path for imports
 src_path = Path(__file__).parent.parent / "src"

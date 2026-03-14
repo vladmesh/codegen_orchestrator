@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.contracts.dto.base import TimestampedDTO
+
 
 class UserBase(BaseModel):
     """Base user schema."""
@@ -35,11 +37,10 @@ class UserUpdate(BaseModel):
     is_admin: bool | None = None
 
 
-class UserRead(UserBase):
+class UserRead(UserBase, TimestampedDTO):
     """Schema for reading a user."""
 
     id: int
     is_admin: bool
-    created_at: datetime
     last_seen: datetime
     model_config = ConfigDict(from_attributes=True)

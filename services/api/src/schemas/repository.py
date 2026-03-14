@@ -1,10 +1,10 @@
 """Repository API schemas."""
 
-from datetime import datetime
 import uuid
 
 from pydantic import BaseModel, ConfigDict
 
+from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.repository import RepositoryRole, RepositoryVisibility
 
 
@@ -20,7 +20,7 @@ class RepositoryCreate(BaseModel):
     is_managed: bool = True
 
 
-class RepositoryRead(BaseModel):
+class RepositoryRead(TimestampedDTO):
     """Schema for reading a repository."""
 
     id: str
@@ -31,8 +31,6 @@ class RepositoryRead(BaseModel):
     role: str
     visibility: str
     is_managed: bool
-    created_at: datetime
-    updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 

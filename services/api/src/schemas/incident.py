@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.contracts.dto.base import TimestampedDTO
+
 
 class IncidentBase(BaseModel):
     """Base incident schema."""
@@ -29,7 +31,7 @@ class IncidentUpdate(BaseModel):
     recovery_attempts: int | None = None
 
 
-class IncidentRead(IncidentBase):
+class IncidentRead(IncidentBase, TimestampedDTO):
     """Schema for reading an incident."""
 
     id: int

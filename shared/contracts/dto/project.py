@@ -1,7 +1,9 @@
 from enum import StrEnum
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class ProjectStatus(StrEnum):
@@ -62,10 +64,8 @@ class ProjectUpdate(BaseModel):
     project_spec: dict | None = None
 
 
-class ProjectDTO(BaseModel):
+class ProjectDTO(TimestampedDTO):
     """Project response."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     name: str

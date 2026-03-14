@@ -1,12 +1,10 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from shared.contracts.dto.base import TimestampedDTO
 
 
-class ServiceDeploymentDTO(BaseModel):
+class ServiceDeploymentDTO(TimestampedDTO):
     """Service Deployment response."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: int
     project_id: str

@@ -6,6 +6,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 
+from shared.contracts.dto.base import TimestampedDTO
+
 
 class RAGMessageCreate(BaseModel):
     """Schema for creating a raw RAG message."""
@@ -19,7 +21,7 @@ class RAGMessageCreate(BaseModel):
     source: str = "telegram"
 
 
-class RAGMessageRead(BaseModel):
+class RAGMessageRead(TimestampedDTO):
     """Schema for reading a raw RAG message."""
 
     id: int
@@ -34,7 +36,7 @@ class RAGMessageRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class RAGSummaryRead(BaseModel):
+class RAGSummaryRead(TimestampedDTO):
     """Schema for reading a conversation summary."""
 
     id: int
@@ -42,7 +44,6 @@ class RAGSummaryRead(BaseModel):
     project_id: uuid.UUID | None = None
     thread_id: str | None = None
     summary_text: str
-    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 

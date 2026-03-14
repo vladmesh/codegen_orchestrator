@@ -3,7 +3,9 @@
 from datetime import datetime
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class ServiceDeploymentBase(BaseModel):
@@ -31,13 +33,10 @@ class ServiceDeploymentUpdate(BaseModel):
     deployed_sha: str | None = None
 
 
-class ServiceDeploymentRead(ServiceDeploymentBase):
+class ServiceDeploymentRead(ServiceDeploymentBase, TimestampedDTO):
     """Schema for reading a service deployment."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: int
     status: str
     deployed_sha: str | None = None
     deployed_at: datetime
-    updated_at: datetime

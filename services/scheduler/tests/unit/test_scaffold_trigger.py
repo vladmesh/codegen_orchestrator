@@ -1,5 +1,6 @@
 """Tests for scaffold trigger in scheduler."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 import uuid
 
@@ -27,6 +28,7 @@ def _make_project(
         modules=[ServiceModule(m) for m in (modules or ["backend"])],
         owner_id=1,
         config=config or {},
+        created_at=datetime.now(UTC),
     )
 
 

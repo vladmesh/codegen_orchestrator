@@ -1,7 +1,8 @@
-from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class RunStatus(StrEnum):
@@ -25,10 +26,8 @@ class RunCreate(BaseModel):
     spec: str | None = None
 
 
-class RunDTO(BaseModel):
+class RunDTO(TimestampedDTO):
     """Run response."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: str
     project_id: str
@@ -36,5 +35,3 @@ class RunDTO(BaseModel):
     status: RunStatus
     spec: str | None = None
     result: dict | None = None
-    created_at: datetime
-    updated_at: datetime | None = None

@@ -3,7 +3,9 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class ServerBase(BaseModel):
@@ -30,7 +32,7 @@ class ServerCreate(ServerBase):
     provider_id: str | None = None
 
 
-class ServerRead(ServerBase):
+class ServerRead(ServerBase, TimestampedDTO):
     """Schema for reading a server - includes usage metrics."""
 
     # Usage metrics
@@ -38,6 +40,3 @@ class ServerRead(ServerBase):
     used_disk_mb: int = 0
     os_template: str | None = None
     provisioning_started_at: datetime | None = None
-
-    # Exclude ssh_key from public read model
-    model_config = ConfigDict(from_attributes=True)

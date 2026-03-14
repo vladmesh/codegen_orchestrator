@@ -1,5 +1,6 @@
 """Unit tests for API key and SSH key encryption in routers."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 from httpx import ASGITransport, AsyncClient
@@ -41,6 +42,12 @@ def _mock_db_session(*, execute_return=None, get_return=None):
         for attr, default in col_defaults.items():
             if hasattr(obj, attr) and getattr(obj, attr, None) is None:
                 setattr(obj, attr, default)
+        # Timestamps
+        now = datetime.now(UTC)
+        if not getattr(obj, "created_at", None):
+            obj.created_at = now
+        if not getattr(obj, "updated_at", None):
+            obj.updated_at = now
 
     session.refresh = AsyncMock(side_effect=fake_refresh)
     return session

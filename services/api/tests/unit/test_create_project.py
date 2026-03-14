@@ -1,5 +1,6 @@
 """Unit tests for POST /api/projects/ ownership enforcement."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
@@ -27,7 +28,11 @@ def _mock_session(existing_project=None, resolve_user="NOT_SET"):
     session.commit = AsyncMock()
 
     async def _refresh(obj):
-        pass
+        now = datetime.now(UTC)
+        if not getattr(obj, "created_at", None):
+            obj.created_at = now
+        if not getattr(obj, "updated_at", None):
+            obj.updated_at = now
 
     session.refresh = _refresh
 

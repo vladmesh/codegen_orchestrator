@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 import uuid
 
@@ -45,6 +46,7 @@ async def test_sync_single_repo_updates_existing_project(mock_api_client, mock_g
         status=ProjectStatus.ACTIVE,
         owner_id=1,
         modules=[],
+        created_at=datetime.now(UTC),
     )
 
     # Mocks
@@ -83,8 +85,20 @@ async def test_sync_single_repo_notifies_admins_for_unknown_repo(
 @pytest.mark.asyncio
 async def test_detect_missing_projects_marks_missing(mock_api_client, mock_notify_admins):
     # Setup
-    proj_ok = ProjectDTO(id=PROJ1_UUID, name="ok", status=ProjectStatus.ACTIVE, owner_id=1)
-    proj_missing = ProjectDTO(id=PROJ2_UUID, name="gone", status=ProjectStatus.ACTIVE, owner_id=1)
+    proj_ok = ProjectDTO(
+        id=PROJ1_UUID,
+        name="ok",
+        status=ProjectStatus.ACTIVE,
+        owner_id=1,
+        created_at=datetime.now(UTC),
+    )
+    proj_missing = ProjectDTO(
+        id=PROJ2_UUID,
+        name="gone",
+        status=ProjectStatus.ACTIVE,
+        owner_id=1,
+        created_at=datetime.now(UTC),
+    )
 
     mock_api_client.get_projects = AsyncMock(return_value=[proj_ok, proj_missing])
     mock_api_client.update_repository = AsyncMock()

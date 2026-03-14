@@ -1,7 +1,9 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class ServerStatus(StrEnum):
@@ -66,10 +68,8 @@ class ServerUpdate(BaseModel):
     provisioning_started_at: datetime | None = None
 
 
-class ServerDTO(BaseModel):
+class ServerDTO(TimestampedDTO):
     """Server response."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     handle: str
     host: str

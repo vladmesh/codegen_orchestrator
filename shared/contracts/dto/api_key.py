@@ -1,12 +1,9 @@
-from pydantic import BaseModel, ConfigDict
+from shared.contracts.dto.base import TimestampedDTO
 
 
-class APIKeyDTO(BaseModel):
+class APIKeyDTO(TimestampedDTO):
     """API Key response."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: int
     service: str
     key_enc: str
-    created_at: str | None = None

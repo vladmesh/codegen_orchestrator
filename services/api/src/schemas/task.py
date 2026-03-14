@@ -1,11 +1,11 @@
 """Task API schemas (planning layer)."""
 
-from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
+from shared.contracts.dto.base import TimestampedDTO
 from shared.contracts.dto.task import TaskEventType, TaskStatus, TaskType
 
 
@@ -28,7 +28,7 @@ class TaskCreate(BaseModel):
     blocked_by_task_id: str | None = None
 
 
-class TaskRead(BaseModel):
+class TaskRead(TimestampedDTO):
     """Schema for reading a task."""
 
     id: str
@@ -49,12 +49,8 @@ class TaskRead(BaseModel):
     story_id: str | None = None
     blocked_by_task_id: str | None = None
     failure_metadata: dict[str, Any] | None = None
-    created_at: datetime
-    updated_at: datetime
     last_event: str | None = None
     elapsed_minutes: float | None = None
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class TaskUpdate(BaseModel):
@@ -99,7 +95,7 @@ class TaskEventCreate(BaseModel):
     actor: str = "system"
 
 
-class TaskEventRead(BaseModel):
+class TaskEventRead(TimestampedDTO):
     """Schema for reading a task event."""
 
     id: int
@@ -110,6 +106,3 @@ class TaskEventRead(BaseModel):
     iteration: int | None
     details: dict[str, Any]
     actor: str
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
