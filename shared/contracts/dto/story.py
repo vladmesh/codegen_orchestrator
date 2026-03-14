@@ -11,6 +11,7 @@ class StoryType(StrEnum):
 class StoryStatus(StrEnum):
     CREATED = "created"
     IN_PROGRESS = "in_progress"
+    REOPENED = "reopened"
     DEPLOYING = "deploying"
     WAITING_HUMAN_REVIEW = "waiting_human_review"
     COMPLETED = "completed"
@@ -27,6 +28,10 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
         StoryStatus.FAILED,
         StoryStatus.ARCHIVED,
     },
+    StoryStatus.REOPENED: {
+        StoryStatus.IN_PROGRESS,
+        StoryStatus.FAILED,
+    },
     StoryStatus.DEPLOYING: {
         StoryStatus.COMPLETED,
         StoryStatus.IN_PROGRESS,
@@ -36,7 +41,7 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
         StoryStatus.IN_PROGRESS,
         StoryStatus.FAILED,
     },
-    StoryStatus.COMPLETED: {StoryStatus.IN_PROGRESS, StoryStatus.ARCHIVED},
-    StoryStatus.FAILED: {StoryStatus.IN_PROGRESS},
+    StoryStatus.COMPLETED: {StoryStatus.REOPENED, StoryStatus.ARCHIVED},
+    StoryStatus.FAILED: {StoryStatus.REOPENED},
     StoryStatus.ARCHIVED: set(),
 }

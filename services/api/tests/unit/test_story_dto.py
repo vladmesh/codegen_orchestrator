@@ -9,6 +9,7 @@ class TestStoryStatus:
     def test_values(self):
         assert StoryStatus.CREATED == "created"
         assert StoryStatus.IN_PROGRESS == "in_progress"
+        assert StoryStatus.REOPENED == "reopened"
         assert StoryStatus.COMPLETED == "completed"
         assert StoryStatus.ARCHIVED == "archived"
 
@@ -17,9 +18,10 @@ class TestStoryStatus:
 
     def test_membership(self):
         values = list(StoryStatus)
-        assert len(values) == 7  # noqa: PLR2004
+        assert len(values) == 8  # noqa: PLR2004
         assert "created" in values
         assert "in_progress" in values
+        assert "reopened" in values
         assert "deploying" in values
         assert "completed" in values
         assert "archived" in values
@@ -56,7 +58,7 @@ class TestStoryTransitions:
         assert StoryStatus.ARCHIVED in VALID_TRANSITIONS[StoryStatus.COMPLETED]
 
     def test_completed_can_reopen(self):
-        assert StoryStatus.IN_PROGRESS in VALID_TRANSITIONS[StoryStatus.COMPLETED]
+        assert StoryStatus.REOPENED in VALID_TRANSITIONS[StoryStatus.COMPLETED]
 
     def test_archived_no_transitions(self):
         assert VALID_TRANSITIONS[StoryStatus.ARCHIVED] == set()
@@ -68,7 +70,13 @@ class TestStoryTransitions:
         assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.IN_PROGRESS]
 
     def test_failed_can_reopen(self):
-        assert StoryStatus.IN_PROGRESS in VALID_TRANSITIONS[StoryStatus.FAILED]
+        assert StoryStatus.REOPENED in VALID_TRANSITIONS[StoryStatus.FAILED]
+
+    def test_reopened_can_start(self):
+        assert StoryStatus.IN_PROGRESS in VALID_TRANSITIONS[StoryStatus.REOPENED]
+
+    def test_reopened_can_fail(self):
+        assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.REOPENED]
 
     def test_waiting_human_review_status_value(self):
         assert StoryStatus.WAITING_HUMAN_REVIEW == "waiting_human_review"

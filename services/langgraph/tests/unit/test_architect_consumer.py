@@ -128,8 +128,11 @@ class TestProcessArchitectJob:
         assert len(call_args["messages"]) == 1
 
     @pytest.mark.asyncio
-    async def test_reopen_message_includes_user_report(self, mock_redis):
+    async def test_reopen_message_includes_user_report(self, mock_redis, _mock_api_get_project):
         """Reopen messages include user_report in the initial state."""
+        _mock_api_get_project.get_story = AsyncMock(
+            return_value={"id": "story-reopen", "status": StoryStatus.REOPENED}
+        )
         reopen_data = ArchitectMessage(
             story_id="story-reopen",
             project_id="proj-123",
@@ -161,6 +164,8 @@ class TestProcessArchitectJob:
         assert "REOPEN" in user_msg
         assert "Images broken on mobile" in user_msg
         assert "get_tasks_by_story" in user_msg
+        # Verify story was transitioned to in_progress after architect finished
+        _mock_api_get_project.transition_story.assert_called_with("story-reopen", "start")
 
     @pytest.mark.asyncio
     async def test_normal_message_no_reopen_context(self, mock_redis, valid_job_data):

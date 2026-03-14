@@ -261,7 +261,7 @@ async def reopen_story(
     body = body or StoryReopen()
     story = await _get_story(story_id, db)
 
-    _do_transition(story, StoryStatus.IN_PROGRESS)
+    _do_transition(story, StoryStatus.REOPENED)
     if body.user_report is not None:
         story.user_report = body.user_report
 

@@ -509,7 +509,7 @@ async def test_reopen_story_from_completed():
         )
 
     assert resp.status_code == HTTPStatus.OK
-    assert story.status == "in_progress"
+    assert story.status == "reopened"
     assert story.user_report == "Images still broken on mobile"
 
 
@@ -525,7 +525,7 @@ async def test_reopen_story_without_user_report():
         resp = await client.post("/api/stories/story-abc/reopen")
 
     assert resp.status_code == HTTPStatus.OK
-    assert story.status == "in_progress"
+    assert story.status == "reopened"
     assert story.user_report is None
 
 

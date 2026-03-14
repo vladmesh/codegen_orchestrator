@@ -110,6 +110,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         return {"status": "skipped", "reason": f"story already {story_status}"}
 
     # Skip if already in_progress with tasks (duplicate message from supervisor retry)
+    # But never skip reopened stories — they need re-decomposition
     if story_status == StoryStatus.IN_PROGRESS:
         existing_tasks = await api_client.get_tasks_by_story(msg.story_id)
         if existing_tasks:
@@ -190,6 +191,14 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         result = await graph.ainvoke(initial_state, config=config)
 
         await append_ci_check_task(msg.story_id, msg.project_id)
+
+        # Transition reopened stories to in_progress so dispatcher can pick up tasks
+        if story_status == StoryStatus.REOPENED:
+            try:
+                await api_client.transition_story(msg.story_id, "start")
+                log.info("architect_reopened_story_started")
+            except Exception as e:
+                log.warning("architect_reopened_story_start_failed", error=str(e))
 
         log.info(
             "architect_job_success",
