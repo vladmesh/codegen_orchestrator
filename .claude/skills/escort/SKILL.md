@@ -139,23 +139,44 @@ This context helps you anticipate what might go wrong and what to watch for.
 test runs or failed stories can clog the queue for hours — each message triggers a full LLM
 call or a 5-minute scaffold timeout.
 
+Cross-check both the API and raw Redis to catch desync between them.
+
 ```bash
-# Check architect:queue depth and pending messages
+# === Source 1: Debug API (preferred — structured, parsed) ===
+# Queue health overview (all queues at once)
+curl -s http://localhost:8000/debug/queues | python3 -m json.tool
+
+# Architect queue messages (parsed, with timestamps)
+curl -s "http://localhost:8000/debug/queues/architect:queue/messages?count=50" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(f'Total messages: {data[\"total\"]}')
+for m in data['messages']:
+    story_id = m['data'].get('story_id', '?')
+    marker = ' *** OUR MESSAGE' if '$STORY_ID' in str(story_id) else ''
+    print(f\"  {m['id']}  story={story_id}  ts={m['timestamp']}{marker}\")
+"
+
+# Pending messages (being processed right now)
+curl -s "http://localhost:8000/debug/queues/architect:queue/architect-consumers/pending" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for p in data['pending']:
+    idle_sec = p['idle_ms'] / 1000
+    print(f\"  Processing: {p['id']}, idle: {idle_sec:.0f}s, deliveries: {p['delivery_count']}\")
+"
+
+# === Source 2: Raw Redis (cross-check — catches API bugs) ===
 docker compose exec -T api python3 -c "
 import asyncio, redis.asyncio as redis
 async def check():
     r = redis.from_url('redis://redis:6379')
     try:
         info = await r.xinfo_stream('architect:queue')
-        print(f'Queue length: {info[\"length\"]}')
+        print(f'[Redis direct] Queue length: {info[\"length\"]}')
         groups = await r.xinfo_groups('architect:queue')
         for g in groups:
-            print(f'Group: {g[\"name\"].decode()}, pending: {g[\"pending\"]}, consumers: {g[\"consumers\"]}')
-        # Check what's pending (being processed right now)
-        pending = await r.xpending_range('architect:queue', 'architect-consumers', '-', '+', 5)
-        for p in pending:
-            idle_sec = p['time_since_delivered'] / 1000
-            print(f'  Processing: {p[\"message_id\"]}, idle: {idle_sec:.0f}s, deliveries: {p[\"times_delivered\"]}')
+            print(f'  Group: {g[\"name\"].decode()}, pending: {g[\"pending\"]}, consumers: {g[\"consumers\"]}')
     except Exception as e:
         print(f'Error: {e}')
     await r.aclose()
@@ -163,65 +184,30 @@ asyncio.run(check())
 "
 ```
 
-**If queue length > 5**: The queue is likely clogged with stale messages. Find our story's
-position and consider cleaning:
+**Compare the two sources**: If API says 5 messages but Redis says 8, something is filtering
+or caching incorrectly — note this as a finding.
+
+**If queue length > 5**: The queue is likely clogged with stale messages. Clean via API:
 
 ```bash
-# Find our story's position in the queue
-docker compose exec -T api python3 -c "
-import asyncio, json, redis.asyncio as redis
-async def check():
-    r = redis.from_url('redis://redis:6379')
-    all_msgs = await r.xrange('architect:queue', count=200)
-    for i, (msg_id, data) in enumerate(all_msgs):
-        raw = data.get(b'data', b'{}').decode()
-        try:
-            d = json.loads(raw)
-            story_id = d.get('story_id', '?')
-        except:
-            story_id = '?'
-        if '$STORY_ID' in str(story_id):
-            print(f'*** OUR MESSAGE at position {i} of {len(all_msgs)}: {msg_id.decode()}')
-    print(f'Total messages: {len(all_msgs)}')
-    await r.aclose()
-asyncio.run(check())
+# List all messages, identify stale ones
+curl -s "http://localhost:8000/debug/queues/architect:queue/messages?count=200" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for m in data['messages']:
+    story_id = m['data'].get('story_id', '?')
+    print(f\"{m['id']}  story={story_id}\")
+print(f'Total: {data[\"total\"]}')
 "
+
+# Delete a stale message (repeat for each stale message ID)
+curl -X DELETE "http://localhost:8000/debug/queues/architect:queue/messages/<message_id>"
+
+# Ack a stuck pending message
+curl -X POST "http://localhost:8000/debug/queues/architect:queue/architect-consumers/ack/<message_id>"
 ```
 
-**Cleaning stale messages**: If our story is far back in the queue and most ahead are for
-completed/deleted/test stories, delete the stale ones with `XDEL`. Keep the currently
-processing message (from `xpending_range`) and our message.
-
-```bash
-# Delete all stale messages except currently processing and ours
-docker compose exec -T api python3 -c "
-import asyncio, json, redis.asyncio as redis
-async def clean():
-    r = redis.from_url('redis://redis:6379')
-    pending = await r.xpending_range('architect:queue', 'architect-consumers', '-', '+', 5)
-    pending_ids = {p['message_id'] for p in pending}
-    all_msgs = await r.xrange('architect:queue')
-    to_delete = []
-    for msg_id, data in all_msgs:
-        if msg_id in pending_ids:
-            continue  # keep currently processing
-        raw = data.get(b'data', b'{}').decode()
-        try:
-            d = json.loads(raw)
-            if d.get('story_id') == '$STORY_ID':
-                continue  # keep ours
-        except:
-            pass
-        to_delete.append(msg_id)
-    if to_delete:
-        deleted = await r.xdel('architect:queue', *to_delete)
-        print(f'Deleted {deleted} stale messages')
-    remaining = await r.xlen('architect:queue')
-    print(f'Remaining: {remaining}')
-    await r.aclose()
-asyncio.run(clean())
-"
-```
+Keep the currently processing message and our story's message. Delete the rest.
 
 ## Step 2: Monitor Architect Phase
 
@@ -254,9 +240,17 @@ docker compose logs architect --tail=50 --since=5m 2>/dev/null | tail -30
   tasks manually (see Intervention section). Don't forget the CI check task.
 
 - **Scaffold timeout**: If the project is still `draft` (scaffold hasn't run), the architect
-  waits up to 5 minutes. Check scaffolder logs:
+  waits up to 5 minutes. The scaffolder has two modes: `full` (copier + make setup + git push)
+  and `ensure` (just verify workspace exists). Check both scaffolder logs and the queue message
+  to see which mode ran:
   ```bash
   docker compose logs scaffolder --tail=30 --since=5m 2>/dev/null
+  # Also check what scaffold message was sent
+  curl -s "http://localhost:8000/debug/queues/scaffold:queue/messages?count=10" | python3 -c "
+  import json, sys
+  for m in json.load(sys.stdin)['messages']:
+      print(f\"{m['id']}  mode={m['data'].get('mode','?')}  project={m['data'].get('project_name','?')}\")
+  "
   ```
 
 **After architect completes**: Verify the task chain looks correct and the CI check task
@@ -288,22 +282,39 @@ for t in tasks:
   ```
 
 **`in_dev`**: Worker is running.
-- Worker container naming pattern: `worker-dev-<project-name>-<short-hash>`
-- Find the worker container:
+- Worker container naming: `worker-{worker_id}` (where worker_id is typically the task short hash)
+- Cross-check both sources to find the worker and its state:
   ```bash
-  docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}\t{{.Status}}\t{{.CreatedAt}}" | grep -i "$PROJECT_NAME"
-  ```
-- Check worker wrapper logs (look for errors, especially in the agent subprocess):
-  ```bash
+  # === Source 1: Worker-Manager Introspection API ===
+  # List all workers (structured, with status, project, task info)
+  curl -s http://localhost:8000/wm-api/workers/ | python3 -c "
+  import json, sys
+  workers = json.load(sys.stdin)
+  for w in workers:
+      print(f\"{w['container_name']}  status={w['status']}  project={w.get('project_id','?')}  task={w.get('task_id','?')}\")
+  "
+  # Worker logs via API
+  curl -s "http://localhost:8000/wm-api/workers/$WORKER_ID/logs?tail=30"
+  # Worker workspace files via API
+  curl -s "http://localhost:8000/wm-api/workers/$WORKER_ID/tree" | python3 -m json.tool
+  # Read PROGRESS.md via API
+  curl -s "http://localhost:8000/wm-api/workers/$WORKER_ID/files/PROGRESS.md"
+  # Read agent prompts (CLAUDE.md + TASK.md)
+  curl -s "http://localhost:8000/wm-api/workers/$WORKER_ID/prompts" | python3 -m json.tool
+
+  # === Source 2: Docker direct (cross-check — catches proxy/API issues) ===
+  docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}\t{{.Status}}\t{{.CreatedAt}}"
   docker logs <worker_container> --tail=30 2>&1
-  ```
-- Check PROGRESS.md for agent's plan and current step:
-  ```bash
   docker exec <worker_container> cat /workspace/PROGRESS.md 2>/dev/null
-  ```
-- Check git log for commits:
-  ```bash
   docker exec <worker_container> bash -c "cd /workspace && git log --oneline -5" 2>/dev/null
+  ```
+- **Compare**: If introspection API shows worker as "running" but `docker ps` shows it exited,
+  there's a state desync in worker-manager — note as a finding.
+- For workspace files when worker is already gone, use repo_id-based workspace API:
+  ```bash
+  # Workspaces persist after worker cleanup (stored on disk by repo_id)
+  curl -s "http://localhost:8000/wm-api/workspaces/$REPO_ID/tree" | python3 -m json.tool
+  curl -s "http://localhost:8000/wm-api/workspaces/$REPO_ID/files/REPORT.md"
   ```
 
 **`in_ci`**: Code pushed, CI running.
@@ -590,8 +601,18 @@ If you found multiple stories during Discovery (Step 0), check whether they inte
 - **Resource exhaustion**: CPU/memory pressure from parallel workers
 
 ```bash
-# Check all active workers
+# === Source 1: Worker-Manager Introspection API ===
+curl -s http://localhost:8000/wm-api/workers/ | python3 -c "
+import json, sys
+workers = json.load(sys.stdin)
+for w in workers:
+    print(f\"{w['container_name']}  status={w['status']}  project={w.get('project_id','?')}  task={w.get('task_id','?')}\")
+"
+
+# === Source 2: Docker direct (cross-check) ===
 docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}\t{{.Status}}"
+
+# Compare: if API shows fewer workers than docker ps, worker-manager lost track of some.
 
 # Check deploy port allocations
 curl -s http://localhost:8000/api/service-deployments/ | python3 -c "
@@ -740,12 +761,44 @@ curl -s -X POST http://localhost:8000/api/tasks/ -H "Content-Type: application/j
   "story_id": "...", "project_id": "...", "blocked_by_task_id": null, "created_by": "escort"
 }'
 
-# Worker containers (naming: worker-dev-<project-name>-<short-hash>)
+# Worker containers (naming: worker-{worker_id})
+# --- Via Introspection API (preferred) ---
+curl -s http://localhost:8000/wm-api/workers/                              # list all workers
+curl -s http://localhost:8000/wm-api/workers/$WORKER_ID/logs?tail=100      # worker logs
+curl -s http://localhost:8000/wm-api/workers/$WORKER_ID/tree               # workspace file tree
+curl -s http://localhost:8000/wm-api/workers/$WORKER_ID/files/PROGRESS.md  # read workspace file
+curl -s http://localhost:8000/wm-api/workers/$WORKER_ID/files/REPORT.md    # read workspace file
+curl -s http://localhost:8000/wm-api/workers/$WORKER_ID/prompts            # CLAUDE.md + TASK.md
+curl -s http://localhost:8000/wm-api/workspaces/$REPO_ID/tree              # workspace after worker cleanup
+curl -s http://localhost:8000/wm-api/workspaces/$REPO_ID/files/REPORT.md   # files after worker cleanup
+# --- Via Docker direct (cross-check) ---
 docker ps --filter "label=com.codegen.type=worker"
 docker logs <container> --tail=100
 docker exec <container> cat /workspace/PROGRESS.md
 docker exec <container> cat /workspace/REPORT.md
 docker exec <container> bash -c "cd /workspace && git log --oneline -5"
+
+# Queue introspection (cross-check both sources!)
+# --- Via Debug API (preferred) ---
+curl -s http://localhost:8000/debug/queues                                           # all queues health
+curl -s "http://localhost:8000/debug/queues/architect:queue/messages?count=50"        # queue messages
+curl -s "http://localhost:8000/debug/queues/architect:queue/architect-consumers/pending"  # pending
+curl -X DELETE "http://localhost:8000/debug/queues/architect:queue/messages/<msg_id>" # delete stale
+curl -X POST "http://localhost:8000/debug/queues/architect:queue/architect-consumers/ack/<msg_id>"  # ack stuck
+# --- Via raw Redis (cross-check) ---
+docker compose exec -T api python3 -c "
+import asyncio, redis.asyncio as redis
+async def check():
+    r = redis.from_url('redis://redis:6379')
+    for q in ['architect:queue', 'engineering:queue', 'deploy:queue', 'scaffold:queue']:
+        try:
+            length = await r.xlen(q)
+            print(f'{q}: {length} messages')
+        except:
+            print(f'{q}: does not exist')
+    await r.aclose()
+asyncio.run(check())
+"
 
 # Service logs (each service is its own container!)
 docker compose logs architect --tail=50 --since=5m      # story decomposition
@@ -772,20 +825,10 @@ async def main():
 asyncio.run(main())
 "
 
-# Redis queue introspection
-docker compose exec -T api python3 -c "
-import asyncio, redis.asyncio as redis
-async def check():
-    r = redis.from_url('redis://redis:6379')
-    for q in ['architect:queue', 'engineering:queue', 'deploy:queue', 'scaffold:queue']:
-        try:
-            length = await r.xlen(q)
-            print(f'{q}: {length} messages')
-        except:
-            print(f'{q}: does not exist')
-    await r.aclose()
-asyncio.run(check())
-"
+# Langfuse tracing (useful for debugging architect/engineering LLM behavior)
+# Traces are enriched with user_id, project_id, agent metadata.
+# Access via admin UI: Tracing page, or direct Langfuse UI.
+# Filter by project_id or story_id tags to find relevant traces.
 
 # Server SSH
 bash infra/scripts/ssh-to-server.sh $SERVER_IP "<command>"
@@ -800,9 +843,12 @@ curl -s http://localhost:8000/api/service-deployments/ | python3 -m json.tool
 2. **Repo names use hyphens, not underscores**: `todo_api` → `todo-api` in GitHub. Project name = repo name.
 3. **Local `gh` CLI has no access** to `project-factory-organization` — always use `GitHubAppClient` via `docker compose exec -T api`
 4. **Import path**: `from shared.clients.github import GitHubAppClient` (NOT `shared.github_app`)
-5. **Worker containers are named** `worker-dev-<project-name>-<short-hash>`, find them by grepping for project name
+5. **Worker containers are named** `worker-{worker_id}` — use introspection API (`/wm-api/workers/`) or `docker ps` with label filter
 6. **Story must be `in_progress` for deploy to trigger** — if story is stuck in `created` after all tasks done, `POST .../start` it manually
 7. **Story transitions are action-based** — use `POST /start`, `/complete`, `/deploy`, etc. Not `PATCH` with status field.
-8. **Stale queue messages** from test runs can clog architect for hours — always check queue health early
+8. **Stale queue messages** from test runs can clog architect for hours — always check queue health early (use `/debug/queues` API)
 9. **Don't restart services carelessly** — if you restart `engineering-worker`, active tasks may lose their worker connection
 10. **Project model has no `created_at` field** — filter by story `created_at` instead when looking for recent activity
+11. **Scaffold has ensure-workspace gate** — scaffolder may run in `mode: "ensure"` (just verify workspace exists) vs `mode: "full"` (copier + setup + push). Check scaffold logs for which mode ran.
+12. **Cross-check sources** — always compare API data with Docker/Redis direct access. Desync between them is itself a finding worth reporting.
+13. **Langfuse for LLM debugging** — architect and engineering traces are in Langfuse, tagged with project_id. Use admin UI Tracing page or direct Langfuse to inspect what the LLM did.

@@ -94,4 +94,44 @@ async def test_project(api):
     assert resp.status_code == 201, resp.text
     data = resp.json()
     yield data
-    await api.delete(f"/api/projects/{project_id}")
+    _cleanup_db(project_id)
+
+
+def _cleanup_db(project_id: str) -> None:
+    """Delete project and all related records via SQL (proper cascade)."""
+    sql = (
+        f"DELETE FROM task_events WHERE task_id IN "
+        f"(SELECT id FROM tasks WHERE project_id = '{project_id}');"
+        f"DELETE FROM runs WHERE project_id = '{project_id}';"
+        f"DELETE FROM tasks WHERE project_id = '{project_id}';"
+        f"DELETE FROM stories WHERE project_id = '{project_id}';"
+        f"DELETE FROM brainstorms WHERE project_id = '{project_id}';"
+        f"DELETE FROM rag_chunks WHERE project_id = '{project_id}';"
+        f"DELETE FROM rag_documents WHERE project_id = '{project_id}';"
+        f"DELETE FROM rag_conversation_summaries WHERE project_id = '{project_id}';"
+        f"DELETE FROM rag_messages WHERE project_id = '{project_id}';"
+        f"DELETE FROM service_deployments WHERE project_id = '{project_id}';"
+        f"DELETE FROM repositories WHERE project_id = '{project_id}';"
+        f"DELETE FROM port_allocations WHERE project_id = '{project_id}';"
+        f"DELETE FROM projects WHERE id = '{project_id}';"
+    )
+    subprocess.run(
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "db",
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "orchestrator",
+            "-c",
+            sql,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        cwd=ORCHESTRATOR_ROOT,
+    )
