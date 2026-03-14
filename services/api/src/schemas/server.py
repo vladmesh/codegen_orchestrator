@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.server import ServerStatus
 
 
 class ServerBase(BaseModel):
@@ -20,7 +21,7 @@ class ServerBase(BaseModel):
     capacity_disk_mb: int = 10240
     labels: dict[str, Any] = {}
     is_managed: bool = True
-    status: str = "active"
+    status: str = ServerStatus.ACTIVE.value
     provider_id: str | None = None
     notes: str | None = None
 

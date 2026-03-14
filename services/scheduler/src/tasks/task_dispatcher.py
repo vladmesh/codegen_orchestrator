@@ -19,6 +19,7 @@ import uuid
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
@@ -290,7 +291,7 @@ async def complete_stories(
                 "id": deploy_id,
                 "type": "deploy",
                 "project_id": project_id,
-                "status": "queued",
+                "status": RunStatus.QUEUED.value,
             }
         )
         deploy_msg = DeployMessage(

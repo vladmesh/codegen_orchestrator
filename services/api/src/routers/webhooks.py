@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.run import RunStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.models import Project, Repository, Run, User
 from shared.queues import DEPLOY_QUEUE
@@ -126,7 +127,7 @@ async def github_webhook(
     db_run = Run(
         id=run_id,
         type="deploy",
-        status="queued",
+        status=RunStatus.QUEUED.value,
         project_id=project.id,
         user_id=owner.id if owner else None,
         run_metadata={"triggered_by": "webhook", "head_sha": head_sha},

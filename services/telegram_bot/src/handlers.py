@@ -210,7 +210,7 @@ async def _handle_projects(query, parts: list[str]) -> None:
 async def _handle_project(query, parts: list[str]) -> None:
     """Handle single project callbacks."""
     action = parts[1] if len(parts) > 1 else ""
-    project_id = parts[2] if len(parts) > 2 else ""  # noqa: PLR2004
+    project_id = parts[2] if len(parts) > 2 else ""  # noqa: PLR2004 — index into callback_data parts
     telegram_id = query.from_user.id
 
     if not project_id:

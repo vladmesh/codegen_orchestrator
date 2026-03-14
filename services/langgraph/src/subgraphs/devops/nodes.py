@@ -12,6 +12,7 @@ from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ServiceStatus
 from shared.crypto import decrypt_dict
 
@@ -286,7 +287,9 @@ async def _create_deployment_record(
             application_id = app.get("id")
 
             # Update Application status to running
-            await api_client.update_application(application_id, {"status": "running"})
+            await api_client.update_application(
+                application_id, {"status": ApplicationStatus.RUNNING.value}
+            )
 
         # Create Deployment record
         payload = {

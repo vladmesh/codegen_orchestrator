@@ -7,9 +7,9 @@
 - Dead code: 0 issues
 - Code smells: 12 issues
 - Security: 0 issues
-- Contract violations: 14 issues (3 fixed this audit)
+- Contract violations: 14 issues (7 fixed)
 - Missing DTOs & schema gaps: 8 issues
-- Convention violations: 4 issues (2 fixed this audit)
+- Convention violations: 4 issues (3 fixed)
 - Test gaps: 1 issue
 
 ## CI Health
@@ -51,11 +51,11 @@ No dead code found. `make lint` passes clean.
 | ~~`services/worker-manager/src/manager.py:97`~~ | ~~`"STARTING"` hardcoded string~~ | `WorkerStatus.STARTING` added to enum + used | ✅ fixed |
 | ~~`services/langgraph/src/consumers/engineering.py:398`~~ | ~~`"failed"` hardcoded in run status patch~~ | Now uses `RunStatus.FAILED.value` | ✅ fixed |
 | ~~`services/langgraph/src/consumers/engineering.py:438`~~ | ~~`"running"` hardcoded in run status patch~~ | Now uses `RunStatus.RUNNING.value` | ✅ fixed |
-| `services/langgraph/src/subgraphs/devops/nodes.py:279` | `"running"` hardcoded deployment status | `RunStatus.RUNNING.value` or deployment enum | medium |
-| `services/scheduler/src/tasks/task_dispatcher.py:290` | `"queued"` hardcoded run status | `RunStatus.QUEUED.value` | medium |
-| `services/api/src/routers/webhooks.py:129` | `status="queued"` hardcoded | `RunStatus.QUEUED.value` | medium |
-| `services/api/src/schemas/service_deployment.py:22` | `status: str = "running"` default | Use enum | medium |
-| `services/api/src/schemas/server.py:21` | `status: str = "active"` default | `ServerStatus.ACTIVE.value` | medium |
+| ~~`services/langgraph/src/subgraphs/devops/nodes.py:279`~~ | ~~`"running"` hardcoded deployment status~~ | Now uses `ApplicationStatus.RUNNING.value` | ✅ fixed |
+| ~~`services/scheduler/src/tasks/task_dispatcher.py:290`~~ | ~~`"queued"` hardcoded run status~~ | Now uses `RunStatus.QUEUED.value` | ✅ fixed |
+| ~~`services/api/src/routers/webhooks.py:129`~~ | ~~`status="queued"` hardcoded~~ | Now uses `RunStatus.QUEUED.value` | ✅ fixed |
+| ~~`services/api/src/schemas/service_deployment.py:22`~~ | ~~`status: str = "running"` default~~ | Schema uses `result` field with `DeploymentResult.PENDING` enum — no `status` field exists | ✅ n/a |
+| ~~`services/api/src/schemas/server.py:21`~~ | ~~`status: str = "active"` default~~ | Now uses `ServerStatus.ACTIVE.value` | ✅ fixed |
 | `services/langgraph/src/redis_publisher.py:38` | Direct `client.xadd()` bypassing `RedisStreamClient.publish_message()` | Use `publish_message()` or `publish()` | medium |
 | `services/api/src/routers/webhooks.py:158` | Direct `r.xadd()` call | Use `RedisStreamClient.publish_message()` | medium |
 | `services/worker-manager/src/events.py:148` | Direct `self.redis.xadd()` call | Use `RedisStreamClient.publish_message()` | medium |
@@ -80,7 +80,7 @@ No dead code found. `make lint` passes clean.
 |-----------|-----------|------|
 | ~~`services/infra-service/src/clients/api.py:22`~~ | ~~`os.getenv("API_BASE_URL", "http://api:8000")`~~ | Now fails fast with `RuntimeError` | ✅ fixed |
 | `services/scheduler/src/tasks/health_checker.py:9` | `int(os.getenv("HEALTH_CHECK_INTERVAL", "60"))` | Acceptable — config tuning knob with sensible default, not a secret | ignore |
-| `services/telegram_bot/src/handlers.py:212` | `# noqa: PLR2004` on index check | Use `http.HTTPStatus` or named constant |
+| `services/telegram_bot/src/handlers.py:212` | `# noqa: PLR2004` on index check | OK — `len(parts) > 2` is idiomatic index check (same as specs tools) | ignore |
 | ~~`services/telegram_bot/src/handlers.py:375`~~ | ~~`# noqa: PLR2004` on status_code 400 check~~ | Now uses `HTTPStatus.BAD_REQUEST` | ✅ fixed |
 
 Note: `services/infra-service/ansible/inventory/api_inventory.py` uses `print()` — acceptable since it's an Ansible dynamic inventory script (stdout is the interface).
@@ -108,4 +108,4 @@ The following `# noqa` comments were reviewed:
 | ~~`services/api/src/routers/brainstorms.py:48,55`~~ | ~~`B904`~~ | ✅ fixed — `raise ... from e`, noqa removed |
 | `services/api/src/routers/debug.py:65` | `PLR2004` | OK — threshold check |
 | `services/api/src/routers/debug.py:71` | `S110` (try/except pass) | Acceptable in debug endpoint |
-| `services/api/src/main.py:78` | `PLR2004` | Use `http.HTTPStatus` instead |
+| ~~`services/api/src/main.py:78`~~ | ~~`PLR2004`~~ | Now uses `HTTPStatus.INTERNAL_SERVER_ERROR` | ✅ fixed |

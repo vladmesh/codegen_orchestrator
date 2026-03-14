@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from http import HTTPStatus
 import time
 import uuid
 
@@ -75,7 +76,7 @@ async def correlation_middleware(request: Request, call_next):
         duration_ms = (time.time() - start) * 1000
 
         # Log 4xx and 5xx as errors/warnings
-        if response.status_code >= 500:  # noqa: PLR2004
+        if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
             logger.error(
                 "http_request_failed",
                 status_code=response.status_code,
