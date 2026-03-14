@@ -12,11 +12,9 @@ export interface User {
 export interface Project {
   id: string
   name: string
-  description: string | null
   status: string
+  config: Record<string, unknown>
   owner_id: number
-  github_repo: string | null
-  domain: string | null
   created_at: string
   updated_at: string
 }
@@ -24,10 +22,16 @@ export interface Project {
 export interface Story {
   id: string
   project_id: string
+  parent_story_id: string | null
   title: string
   description: string | null
+  acceptance_criteria: string | null
+  type: string
   status: string
   priority: number
+  blocked_by_story_id: string | null
+  created_by: string
+  user_report: string | null
   created_at: string
   updated_at: string
 }
@@ -100,8 +104,13 @@ export interface Repository {
   id: string
   project_id: string
   name: string
-  git_url: string | null
+  git_url: string
+  provider_repo_id: number | null
   role: string
+  visibility: string
+  is_managed: boolean
+  created_at: string
+  updated_at: string
 }
 
 // Worker-manager introspection API (/wm-api/*)

@@ -24,7 +24,6 @@ export function ProjectsPage() {
               <tr>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Name</th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Status</th>
-                <th className="px-4 py-3 text-left font-medium text-muted-foreground">Domain</th>
                 <th className="px-4 py-3 text-left font-medium text-muted-foreground">Updated</th>
               </tr>
             </thead>
@@ -41,9 +40,6 @@ export function ProjectsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={project.status} />
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {project.domain ?? '—'}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {relativeTime(project.updated_at)}
