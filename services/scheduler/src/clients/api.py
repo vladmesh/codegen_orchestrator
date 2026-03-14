@@ -192,6 +192,19 @@ class SchedulerAPIClient:
         resp = await self._request("GET", f"tasks/{task_id}/events")
         return resp.json()
 
+    # --- Applications ---
+
+    async def get_applications_by_project(self, project_id: str) -> list[dict]:
+        """Get applications for a project (via its repositories)."""
+        repos = await self.get_repositories(project_id)
+        if not repos:
+            return []
+        results = []
+        for repo in repos:
+            resp = await self._request("GET", "applications/", params={"repo_id": repo["id"]})
+            results.extend(resp.json())
+        return results
+
     # --- Users ---
 
     async def get_user(self, user_id: int) -> dict | None:

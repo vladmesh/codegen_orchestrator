@@ -1,4 +1,4 @@
-"""Tests for ProjectStatus/ServiceStatus/RepositoryStatus split.
+"""Tests for ProjectStatus/RepositoryStatus split.
 
 Step 1: Verify enum values match the domain model.
 Step 2: Verify model defaults.
@@ -9,7 +9,7 @@ import uuid
 from sqlalchemy import create_engine, insert, select
 from sqlalchemy.orm import Session
 
-from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.repository import RepositoryStatus
 from shared.models.project import Project
 from shared.models.repository import Repository
@@ -48,22 +48,6 @@ class TestProjectStatusEnum:
         assert current_values.isdisjoint(removed)
 
 
-class TestServiceStatusEnum:
-    """ServiceStatus tracks runtime state of the deployed service."""
-
-    def test_has_exactly_5_values(self):
-        assert len(ServiceStatus) == 5
-
-    def test_values(self):
-        assert set(ServiceStatus) == {
-            ServiceStatus.NOT_DEPLOYED,
-            ServiceStatus.RUNNING,
-            ServiceStatus.DEGRADED,
-            ServiceStatus.DOWN,
-            ServiceStatus.STOPPED,
-        }
-
-
 class TestRepositoryStatusEnum:
     """RepositoryStatus tracks whether the repo is accessible."""
 
@@ -77,28 +61,6 @@ class TestRepositoryStatusEnum:
         }
 
 
-class TestProjectDTOServiceStatus:
-    """ProjectDTO/ProjectCreate/ProjectUpdate should include service_status."""
-
-    def test_project_dto_has_service_status(self):
-        from shared.contracts.dto.project import ProjectDTO
-
-        fields = ProjectDTO.model_fields
-        assert "service_status" in fields
-
-    def test_project_create_defaults_service_status(self):
-        from shared.contracts.dto.project import ProjectCreate
-
-        fields = ProjectCreate.model_fields
-        assert "service_status" in fields
-
-    def test_project_update_accepts_service_status(self):
-        from shared.contracts.dto.project import ProjectUpdate
-
-        fields = ProjectUpdate.model_fields
-        assert "service_status" in fields
-
-
 def _setup_db():
     """Create in-memory SQLite DB with tables needed for model tests."""
     engine = create_engine("sqlite:///:memory:")
@@ -109,9 +71,9 @@ def _setup_db():
 
 
 class TestProjectModelDefaults:
-    """Project model should default service_status to not_deployed."""
+    """Project model should default status to draft."""
 
-    def test_service_status_default(self):
+    def test_status_default(self):
         engine = _setup_db()
         project_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
         with Session(engine) as session:
@@ -129,7 +91,7 @@ class TestProjectModelDefaults:
 
         with Session(engine) as session:
             project = session.execute(select(Project).where(Project.id == project_id)).scalar_one()
-            assert project.service_status == ServiceStatus.NOT_DEPLOYED.value
+            assert project.status == ProjectStatus.DRAFT.value
 
 
 class TestRepositoryModelDefaults:

@@ -7,7 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+from shared.contracts.dto.project import ProjectStatus
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.models import Application, PortAllocation, Project, Repository, Run, User
 
@@ -104,7 +104,6 @@ async def create_project(
             id=project_id,
             name=project_in.name,
             status=project_in.status or ProjectStatus.DRAFT.value,
-            service_status=ServiceStatus.NOT_DEPLOYED.value,
             config=project_in.config,
             owner_id=owner_id,
         )
@@ -208,8 +207,6 @@ async def update_project(
         project.name = project_in.name
     if project_in.status is not None:
         project.status = project_in.status
-    if project_in.service_status is not None:
-        project.service_status = project_in.service_status
     if project_in.config is not None:
         project.config = project_in.config
 
@@ -239,8 +236,6 @@ async def patch_project(
         project.name = project_in.name
     if project_in.status is not None:
         project.status = project_in.status
-    if project_in.service_status is not None:
-        project.service_status = project_in.service_status
     if project_in.config is not None:
         project.config = project_in.config
 

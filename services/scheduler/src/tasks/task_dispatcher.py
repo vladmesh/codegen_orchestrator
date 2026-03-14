@@ -18,7 +18,7 @@ import uuid
 
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
@@ -279,10 +279,12 @@ async def complete_stories(
         await api_client.transition_story(story_id, "deploy")
         log.info("story_deploying", task_count=len(tasks))
 
-        # Determine deploy action based on service_status
+        # Determine deploy action: "feature" if project has existing applications
         deploy_action = "create"
-        if project and getattr(project, "service_status", None) != ServiceStatus.NOT_DEPLOYED:
-            deploy_action = "feature"
+        if project:
+            apps = await api_client.get_applications_by_project(str(project.id))
+            if apps:
+                deploy_action = "feature"
 
         # Trigger deploy — create run record first (deploy consumer expects it)
         deploy_id = f"deploy-{uuid.uuid4().hex[:12]}"

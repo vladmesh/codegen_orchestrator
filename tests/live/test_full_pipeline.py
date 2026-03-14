@@ -37,7 +37,8 @@ from pipeline_helpers import (
 import pytest
 import pytest_asyncio
 
-from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.task import TaskStatus
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -75,7 +76,7 @@ async def pipeline():
 
             yield ctx
 
-            if ctx.get("final_service_status") != ServiceStatus.RUNNING:
+            if ctx.get("final_app_status") != ApplicationStatus.RUNNING.value:
                 dump_debug(ctx, "full-deploy")
             await cleanup_all(api, api_no_auth, ctx)
 
@@ -91,20 +92,20 @@ class TestFullPipeline:
         assert pipeline.get("task_status") == TaskStatus.DONE, (
             f"Engineering failed — task status: {pipeline.get('task_status')}"
         )
-        assert pipeline.get("final_service_status") == ServiceStatus.RUNNING, (
-            f"Deploy failed — service_status: {pipeline.get('final_service_status')}"
+        assert pipeline.get("final_app_status") == ApplicationStatus.RUNNING.value, (
+            f"Deploy failed — app_status: {pipeline.get('final_app_status')}"
         )
 
     async def test_port_allocated(self, pipeline):
         """A port should be allocated for the deployed service."""
-        if pipeline.get("final_service_status") != ServiceStatus.RUNNING:
+        if pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value:
             pytest.skip("deploy failed")
         assert "port" in pipeline, "No port allocation found for project"
         assert pipeline["port"] >= 8000, f"Unexpected port: {pipeline['port']}"
 
     async def test_health_endpoint(self, pipeline):
         """GET /health on deployed service returns 200."""
-        if pipeline.get("final_service_status") != ServiceStatus.RUNNING:
+        if pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value:
             pytest.skip("deploy failed")
         assert "deployed_url" in pipeline, "No deployed_url — port allocation missing?"
 

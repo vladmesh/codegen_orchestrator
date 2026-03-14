@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 import asyncssh
 import structlog
 
-from shared.contracts.dto.project import ServiceStatus
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.queues.deploy import DeployMessage
 from shared.contracts.queues.engineering import EngineeringMessage
@@ -203,12 +202,6 @@ async def _handle_smoke_failure(
             },
         },
     )
-    # Service deployed but unhealthy
-    await api_client.patch(
-        f"projects/{project_id}",
-        json={"service_status": ServiceStatus.DEGRADED.value},
-    )
-
     # Roll story back — smoke failed, story not truly complete
     await _transition_story_safe(story_id, "start")
 
@@ -267,11 +260,6 @@ async def _handle_deploy_success(
             },
         },
     )
-    await api_client.patch(
-        f"projects/{project_id}",
-        json={"service_status": ServiceStatus.RUNNING.value},
-    )
-
     # Complete the story now that deploy succeeded
     await _transition_story_safe(story_id, "complete")
 
@@ -320,7 +308,6 @@ async def _handle_deploy_failure(
     callback_stream: str,
     user_id: str,
     redis: RedisStreamClient,
-    rollback_project: bool = True,
 ) -> dict:
     """Common handler for deploy failures — update run, rollback story, notify.
 
@@ -332,12 +319,6 @@ async def _handle_deploy_failure(
         f"runs/{task_id}",
         json={"status": "failed", "error_message": error_msg},
     )
-    if rollback_project:
-        await api_client.patch(
-            f"projects/{project_id}",
-            json={"service_status": ServiceStatus.DOWN.value},
-        )
-
     # Track deploy attempts per story — fail permanently after limit
     if story_id:
         attempt_key = f"deploy:{story_id}:attempts"
@@ -575,7 +556,6 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
-                rollback_project=False,
             )
 
         # Resolve git_url from primary Repository entity
@@ -675,7 +655,6 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
-                rollback_project=False,
             )
 
     except Exception as e:

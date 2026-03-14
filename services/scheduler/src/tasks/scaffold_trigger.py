@@ -4,6 +4,10 @@ Runs as part of the task_dispatcher_loop cycle.
 
 For DRAFT projects: publishes mode=full (copier + make setup + git push).
 For ACTIVE projects with TODO tasks: publishes mode=ensure (clone + setup if missing).
+
+Deduplication: uses Redis set ``scaffold:inflight`` to prevent duplicate
+messages for the same project.  The scaffolder consumer must call
+``clear_scaffold_inflight()`` after processing each job.
 """
 
 from __future__ import annotations
@@ -26,6 +30,28 @@ logger = structlog.get_logger(__name__)
 
 # Default template for new projects
 DEFAULT_TEMPLATE_REPO = "gh:project-factory-organization/service-template"
+
+# Redis key for tracking in-flight scaffold jobs (dedup)
+SCAFFOLD_INFLIGHT_KEY = "scaffold:inflight"
+# Safety TTL so stale entries expire even if consumer crashes (10 min)
+SCAFFOLD_INFLIGHT_TTL = 600
+
+
+async def _mark_inflight(redis_client: RedisStreamClient, project_id: str) -> bool:
+    """Mark project as having an in-flight scaffold job.
+
+    Returns True if the mark was set (project was NOT already inflight).
+    Returns False if the project already has an inflight job (duplicate).
+    """
+    member_key = f"{SCAFFOLD_INFLIGHT_KEY}:{project_id}"
+    was_set = await redis_client.redis.set(member_key, "1", nx=True, ex=SCAFFOLD_INFLIGHT_TTL)
+    return bool(was_set)
+
+
+async def clear_scaffold_inflight(redis_client: RedisStreamClient, project_id: str) -> None:
+    """Remove the inflight marker for a project (called by scaffolder after processing)."""
+    member_key = f"{SCAFFOLD_INFLIGHT_KEY}:{project_id}"
+    await redis_client.redis.delete(member_key)
 
 
 async def trigger_scaffolds(
@@ -76,6 +102,10 @@ async def _trigger_full_scaffold(project, api_client, redis_client, log) -> bool
         log.debug("scaffold_skip_no_repo")
         return False
 
+    if not await _mark_inflight(redis_client, project_id):
+        log.debug("scaffold_skip_already_inflight", mode="full")
+        return False
+
     repo = repos[0]
     msg = _build_scaffold_message(project, repo["id"], mode="full")
     await redis_client.publish_message(SCAFFOLD_QUEUE, msg)
@@ -102,6 +132,10 @@ async def _trigger_ensure_scaffold(project, api_client, redis_client, log) -> bo
 
     repos = await api_client.get_repositories(project_id)
     if not repos:
+        return False
+
+    if not await _mark_inflight(redis_client, project_id):
+        log.debug("scaffold_skip_already_inflight", mode="ensure")
         return False
 
     repo = repos[0]

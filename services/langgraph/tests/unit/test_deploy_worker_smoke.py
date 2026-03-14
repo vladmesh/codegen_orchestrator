@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from shared.contracts.dto.project import ServiceStatus
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import PO_PROACTIVE_QUEUE
 
@@ -118,7 +117,7 @@ async def test_build_subgraph_input_includes_smoke_result():
 async def test_deploy_worker_smoke_fail(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """When smoke fails, task is marked failed but project stays active."""
+    """When smoke fails, task is marked failed."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": "http://1.2.3.4:8080",
@@ -140,10 +139,9 @@ async def test_deploy_worker_smoke_fail(
     assert result["status"] == "failed"
     assert "smoke" in result["error"].lower()
 
-    # service_status should be degraded (smoke failed but deploy succeeded)
+    # No project service_status updates (Application status is the source of truth)
     project_patch_calls = [c for c in mock_api.patch.call_args_list if "projects/" in str(c)]
-    last_project_update = project_patch_calls[-1]
-    assert last_project_update[1]["json"]["service_status"] == ServiceStatus.DEGRADED.value
+    assert len(project_patch_calls) == 0
 
     # Smoke failure is internal — no proactive message (spam filter)
     proactive_calls = [
@@ -153,10 +151,10 @@ async def test_deploy_worker_smoke_fail(
 
 
 @pytest.mark.asyncio
-async def test_deploy_worker_missing_secrets_sets_service_status_down(
+async def test_deploy_worker_missing_secrets_fails(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """When missing_user_secrets, service_status must be set to down."""
+    """When missing_user_secrets, deploy should fail."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": None,
@@ -171,9 +169,3 @@ async def test_deploy_worker_missing_secrets_sets_service_status_down(
 
     assert result["status"] == "failed"
     assert "missing" in result["error"].lower()
-
-    # service_status should be set to down (no more deploying → rollback dance)
-    project_patch_calls = [c for c in mock_api.patch.call_args_list if "projects/proj-1" in str(c)]
-    assert len(project_patch_calls) >= 1
-    last_update = project_patch_calls[-1][1]["json"]
-    assert last_update["service_status"] == ServiceStatus.DOWN.value

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+from shared.contracts.dto.project import ProjectStatus
 from src.consumers.engineering import process_engineering_job
 
 
@@ -26,7 +26,6 @@ def _make_project(**overrides):
         "id": "proj-1",
         "name": "test-project",
         "status": ProjectStatus.ACTIVE.value,
-        "service_status": ServiceStatus.RUNNING.value,
         "config": {},
         "owner_id": 1,
     }
@@ -87,7 +86,4 @@ async def test_engineering_consumer_never_patches_project_status():
             json_body = call[1].get("json", {}) if len(call) > 1 else call.kwargs.get("json", {})
             assert "status" not in json_body, (
                 f"Engineering consumer should not set project.status, but found: {json_body}"
-            )
-            assert "service_status" not in json_body, (
-                f"Engineering consumer should not set service_status, but found: {json_body}"
             )

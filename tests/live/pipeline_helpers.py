@@ -13,7 +13,8 @@ import uuid
 
 import httpx
 
-from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+from shared.contracts.dto.application import ApplicationStatus
+from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
@@ -293,19 +294,32 @@ async def wait_deploy(
 ) -> None:
     """Wait for deploy to complete. Updates ctx with deployment info.
 
-    After ProjectStatus split (#22), deploy sets service_status (not status).
+    Polls Application status (via repositories) instead of project.service_status.
     """
-    deploy_done = {ServiceStatus.RUNNING, ServiceStatus.DOWN, ServiceStatus.DEGRADED}
-    service_status = await poll_field(
-        api,
-        f"/api/projects/{ctx['project_id']}",
-        "service_status",
-        deploy_done,
-        timeout,
-    )
-    ctx["final_service_status"] = service_status
+    terminal = {
+        ApplicationStatus.RUNNING,
+        ApplicationStatus.DOWN,
+        ApplicationStatus.DEGRADED,
+    }
+    app_status = None
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        repos_resp = await api.get("/api/repositories/", params={"project_id": ctx["project_id"]})
+        for repo in repos_resp.json():
+            apps_resp = await api.get("/api/applications/", params={"repo_id": repo["id"]})
+            for app in apps_resp.json():
+                if app["status"] in {s.value for s in terminal}:
+                    app_status = app["status"]
+                    break
+            if app_status:
+                break
+        if app_status:
+            break
+        await asyncio.sleep(5)
 
-    if service_status != ServiceStatus.RUNNING:
+    ctx["final_app_status"] = app_status
+
+    if app_status != ApplicationStatus.RUNNING.value:
         return
 
     # Find port allocation
@@ -562,7 +576,7 @@ def dump_debug(ctx: dict, test_name: str) -> None:
         f"- task_id: `{ctx.get('task_id')}`",
         f"- task_status: `{ctx.get('task_status')}`",
         f"- story_status: `{ctx.get('story_status')}`",
-        f"- final_service_status: `{ctx.get('final_service_status')}`",
+        f"- final_app_status: `{ctx.get('final_app_status')}`",
         f"- deployed_url: `{ctx.get('deployed_url')}`",
         f"- engineering_elapsed: `{ctx.get('engineering_elapsed')}`",
         "",

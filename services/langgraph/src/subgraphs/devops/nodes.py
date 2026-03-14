@@ -13,7 +13,6 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.application import ApplicationStatus
-from shared.contracts.dto.project import ServiceStatus
 from shared.crypto import decrypt_dict
 
 from ...clients.api import api_client
@@ -564,12 +563,6 @@ class DeployerNode(FunctionalNode):
                 deployed_sha=run_info.get("head_sha"),
             )
 
-            # 7. Update project status to active
-            await api_client.patch(
-                f"/projects/{project_id}",
-                json={"service_status": ServiceStatus.RUNNING.value},
-            )
-
             deployed_url = f"http://{server_ip}:{port}"
             return {
                 "deployment_result": {"status": "success", "run_id": run_info["id"]},
@@ -610,11 +603,6 @@ class DeployerNode(FunctionalNode):
                     deployed_sha=run_info.get("head_sha"),
                 )
 
-                await api_client.patch(
-                    f"/projects/{project_id}",
-                    json={"service_status": ServiceStatus.RUNNING.value},
-                )
-
                 deployed_url = f"http://{server_ip}:{port}"
                 return {
                     "deployment_result": {
@@ -629,15 +617,6 @@ class DeployerNode(FunctionalNode):
                     ],
                 }
 
-            # Rerun failed or not possible — mark project as error
-            try:
-                await api_client.patch(
-                    f"/projects/{project_id}",
-                    json={"service_status": ServiceStatus.DOWN.value},
-                )
-            except Exception as status_err:
-                logger.warning("status_update_failed", error=str(status_err))
-
             error_prefix = (
                 "Deploy timeout" if isinstance(e, TimeoutError) else "Deploy workflow failed"
             )
@@ -648,13 +627,6 @@ class DeployerNode(FunctionalNode):
 
         except Exception as e:
             logger.error("deployer_failed", error=str(e), exc_info=True)
-            try:
-                await api_client.patch(
-                    f"/projects/{project_id}",
-                    json={"service_status": ServiceStatus.DOWN.value},
-                )
-            except Exception as status_err:
-                logger.warning("status_update_failed", error=str(status_err))
             return {
                 "deployment_result": {"status": "error", "error": str(e)},
                 "errors": [f"Deployment error: {e}"],

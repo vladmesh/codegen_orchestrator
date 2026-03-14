@@ -199,7 +199,6 @@ def _make_project(**overrides):
         "id": PROJECT_UUID,
         "name": "test-project",
         "status": "active",
-        "service_status": "not_deployed",
         "config": {"workspace_ready": True, "modules": ["backend"]},
         "owner_id": 1,
     }

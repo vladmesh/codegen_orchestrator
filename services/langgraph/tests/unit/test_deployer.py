@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from shared.contracts.dto.project import ServiceStatus
 from src.subgraphs.devops.nodes import DeployerNode
 
 
@@ -201,17 +200,14 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
     @patch("src.subgraphs.devops.nodes.api_client")
-    async def test_updates_service_status_to_running(
-        self, mock_api, mock_gh_cls, deployer, base_state
-    ):
+    async def test_no_project_status_update(self, mock_api, mock_gh_cls, deployer, base_state):
+        """Deploy should not update project status — Application status is updated instead."""
         _setup_happy_mocks(mock_api, mock_gh_cls)
 
         await deployer.run(base_state)
 
-        mock_api.patch.assert_called_once_with(
-            "/projects/proj-123",
-            json={"service_status": ServiceStatus.RUNNING.value},
-        )
+        # api_client.patch should NOT be called for project status updates
+        mock_api.patch.assert_not_called()
 
 
 class TestDeployerNodeFailures:
@@ -232,10 +228,8 @@ class TestDeployerNodeFailures:
 
         assert result["errors"]
         assert "failed" in result["errors"][0].lower()
-        mock_api.patch.assert_called_once_with(
-            "/projects/proj-123",
-            json={"service_status": ServiceStatus.DOWN.value},
-        )
+        # No project service_status update — Application status is the source of truth
+        mock_api.patch.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.nodes.GitHubAppClient")
@@ -254,7 +248,4 @@ class TestDeployerNodeFailures:
 
         assert result["errors"]
         assert "timeout" in result["errors"][0].lower()
-        mock_api.patch.assert_called_once_with(
-            "/projects/proj-123",
-            json={"service_status": ServiceStatus.DOWN.value},
-        )
+        mock_api.patch.assert_not_called()

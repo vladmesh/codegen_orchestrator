@@ -237,6 +237,11 @@ async def run_worker() -> None:
                     error=str(e),
                 )
             finally:
+                # Clear inflight marker so the scheduler can re-trigger if needed
+                project_id = msg.data.get("project_id")
+                if project_id:
+                    inflight_key = f"scaffold:inflight:{project_id}"
+                    await redis.redis.delete(inflight_key)
                 unbind_message_context()
     finally:
         await redis.close()

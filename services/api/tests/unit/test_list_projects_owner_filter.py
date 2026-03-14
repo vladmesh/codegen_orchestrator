@@ -16,7 +16,6 @@ def _make_project(name: str, owner_id: int):
     p.id = uuid.uuid4()
     p.name = name
     p.status = "draft"
-    p.service_status = "not_deployed"
     p.config = {}
     p.owner_id = owner_id
     return p

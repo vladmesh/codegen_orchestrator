@@ -11,15 +11,17 @@ import pytest
 def api_client():
     from unittest.mock import MagicMock
 
-    from shared.contracts.dto.project import ProjectStatus, ServiceStatus
+    from shared.contracts.dto.project import ProjectStatus
 
     client = AsyncMock()
     # Default project mock — active (scaffolded) project with workspace ready
     project_mock = MagicMock()
+    project_mock.id = "proj-1"
     project_mock.status = ProjectStatus.ACTIVE.value
-    project_mock.service_status = ServiceStatus.RUNNING.value
     project_mock.config = {"workspace_ready": True}
     client.get_project.return_value = project_mock
+    # Default: project has existing applications (feature deploy)
+    client.get_applications_by_project.return_value = [{"id": 1, "status": "running"}]
     return client
 
 
