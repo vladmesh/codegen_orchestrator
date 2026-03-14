@@ -7,12 +7,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Bind PortAllocation to Application instead of Project
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: PortAllocation currently links to Project via project_id, but conceptually ports belong to Application — the thing actually running on a server. Project is a higher-level abstraction.  Changes: 1. PortAllocation: replace project_id FK with application_id FK to Application 2. Application: remove s...
-
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —
@@ -258,6 +252,7 @@
 
 ## Done (last 10)
 
+- Bind PortAllocation to Application instead of Project — 2026-03-14
 - Introduce Application entity and refactor Deployment model — 2026-03-14
 - Run tests, verify CI green — 2026-03-14
 - Verify fix with production-like testing — 2026-03-14
@@ -267,7 +262,6 @@
 - Run tests, verify CI green — 2026-03-13
 - Fix /revert command - verify full integration (attempt #3) — 2026-03-13
 - Add /revert command with proper registration — 2026-03-13
-- Workspace browser — workspace как первичная сущность с project-level browsing — 2026-03-13
 
 ## Ideas
 

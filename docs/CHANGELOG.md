@@ -4,6 +4,9 @@
 
 ## 2026-03-14
 
+### Changed
+- **Bind PortAllocation to Application** (#task-199b1bcb): PortAllocation now belongs to Application (via `application_id` FK) instead of Project. Application no longer has a single `port` field — ports come from `port_allocations` relationship (one-to-many). `ApplicationRead` API response includes `ports: list[PortAllocationRead]`. Application is created at allocation time (before deploy). Deploy flow simplified — uses state data instead of re-querying allocations.
+
 ### Added
 - **Application entity + Deployment refactor** (#task-f01a41fe): Introduced `Application` as a first-class runtime entity (repo + server + status), separated from `Deployment` (immutable deploy log). New `ApplicationStatus` enum (not_deployed, running, stopped, down, degraded) and `DeploymentResult` enum (pending, success, failed, canceled). Application CRUD API at `/api/applications/`, server applications endpoint at `/servers/{handle}/applications`. DeployerNode now creates Application records on deploy. Data migration backfills Applications from existing deployments. Admin Servers page shows Applications instead of raw deployment records. 24 new unit tests.
 - **Tasks page multi-select filters + sortable columns**: Status and type filters now support multi-select (checkboxes). Status, Priority, Updated column headers are clickable for asc/desc sorting. New `MultiSelect` UI component.
