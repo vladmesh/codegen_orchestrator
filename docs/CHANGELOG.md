@@ -4,6 +4,9 @@
 
 ## 2026-03-14
 
+### Added
+- **Tasks page multi-select filters + sortable columns**: Status and type filters now support multi-select (checkboxes). Status, Priority, Updated column headers are clickable for asc/desc sorting. New `MultiSelect` UI component.
+
 ### Changed
 - **Unified workspace management around repo_id** (#task-7147c381): All workspace addressing now uses `repo_id` instead of `project_id`. Scaffolder is sole source of truth for workspaces at `/data/workspaces/{repo_id}/`. Removed legacy `WORKSPACE_BASE_PATH` config and `/tmp/codegen/workspaces` volume from worker-manager. Workers now require `repo_id` (RuntimeError if missing). `repo_id` stored in Redis `worker:meta` hash and exposed on introspect API. Workspace browser endpoints use `repo_id`. Frontend resolves `repo_id` via repositories API. Removed dead in-container scaffold phase code. Fixes workspace browser not showing files for projects like lesswrong-random-bot.
 
@@ -17,6 +20,7 @@
 - **Langfuse v3 infra** (#task-a51fb1cf): Self-hosted LLM tracing stack. Docker-compose adds 4 new services: `langfuse-web` (UI on port 3002), `langfuse-worker` (background processor), `clickhouse` (trace analytics), `minio` (S3-compatible event/media storage). Separate `langfuse` PostgreSQL database via init script. Shared Redis (no auth). Nginx proxy at `/langfuse/` through admin-frontend. `make init-langfuse-db` for existing deployments. Env vars for ClickHouse, MinIO, and Langfuse secrets in `.env.example`.
 
 ### Fixed
+- **Admin tab state lost on refresh**: Detail pages (Project, Queue, User, Worker) now persist active tab in URL search params. WorkspaceBrowser tree auto-refreshes every 15s. User messages trace polling set to 7s.
 - **Audit cleanup**: Use enums (`WorkerStatus.STARTING`, `RunStatus.FAILED/RUNNING`), proper exception chaining (B904), `HTTPStatus.BAD_REQUEST` in telegram handlers, fail-fast on missing `API_BASE_URL` in infra-service.
 - **Worker lifecycle cleanup**: `delete_worker()` now cleans `worker:{id}:input/output` streams (were orphaned forever). Orphan GC does reverse check (Redis → Docker) — cleans stale `worker:status` entries where container is gone. Deploy consumer deletes worker container on story complete/fail and calls `clear_story_worker` (was dead code). Workspace GC scans both `WORKSPACE_BASE_PATH` and `SCAFFOLDED_WORKSPACE_PATH`, max_age raised to 35h, cleans stale `workspace:active_projects` entries. Introspect API shows GONE status for stale workers.
 - **Architect story spam**: Architect consumer now transitions story to `IN_PROGRESS` immediately on pickup, preventing supervisor from re-publishing the same story every 30s. Also skips stories already decomposed (IN_PROGRESS + has tasks). Supervisor retry counter moved from in-memory dict to Redis (`story:architect_retries:{id}` with 1h TTL) — survives scheduler restarts.
