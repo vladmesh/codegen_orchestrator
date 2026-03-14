@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { useParams, Link } from 'react-router'
+import { useParams, Link, useSearchParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
@@ -12,7 +11,9 @@ type Tab = 'overview' | 'workspace'
 
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const [activeTab, setActiveTab] = useState<Tab>('overview')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = (searchParams.get('tab') as Tab) || 'overview'
+  const setActiveTab = (tab: Tab) => setSearchParams({ tab }, { replace: true })
 
   const { data: project, isLoading: projectLoading } = useQuery({
     queryKey: ['project', id],

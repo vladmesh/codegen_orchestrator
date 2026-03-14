@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams, Link } from 'react-router'
+import { useParams, Link, useSearchParams } from 'react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
@@ -9,7 +9,9 @@ type Tab = 'messages' | 'pending'
 
 export function QueueDetailPage() {
   const { stream, group } = useParams<{ stream: string; group: string }>()
-  const [activeTab, setActiveTab] = useState<Tab>('messages')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = (searchParams.get('tab') as Tab) || 'messages'
+  const setActiveTab = (tab: Tab) => setSearchParams({ tab }, { replace: true })
   const decodedStream = decodeURIComponent(stream ?? '')
   const decodedGroup = decodeURIComponent(group ?? '')
 

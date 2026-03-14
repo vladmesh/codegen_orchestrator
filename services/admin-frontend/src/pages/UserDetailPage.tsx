@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { useParams, Link } from 'react-router'
+import { useEffect, useRef } from 'react'
+import { useParams, Link, useSearchParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
@@ -146,6 +146,7 @@ function MessagesTab({ userId }: { userId: string }) {
       api.raw<LangfuseTracesResponse>(
         `/langfuse-api/traces?userId=${userId}&limit=1`
       ),
+    refetchInterval: 7_000,
   })
 
   // Messages are in trace output (full conversation history)
@@ -191,7 +192,9 @@ function MessagesTab({ userId }: { userId: string }) {
 
 export function UserDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const [tab, setTab] = useState<Tab>('projects')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = (searchParams.get('tab') as Tab) || 'projects'
+  const setTab = (t: Tab) => setSearchParams({ tab: t }, { replace: true })
 
   const { data: user, isLoading } = useQuery({
     queryKey: ['user', id],

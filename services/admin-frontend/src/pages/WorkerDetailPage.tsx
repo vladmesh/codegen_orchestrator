@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams, Link, useNavigate } from 'react-router'
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
@@ -17,7 +17,9 @@ export function WorkerDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [activeTab, setActiveTab] = useState<Tab>('console')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = (searchParams.get('tab') as Tab) || 'console'
+  const setActiveTab = (tab: Tab) => setSearchParams({ tab }, { replace: true })
   const [confirmKill, setConfirmKill] = useState(false)
 
   const { data: worker, isLoading } = useQuery({
@@ -178,7 +180,7 @@ function ConsoleTab({ workerId }: { workerId: string }) {
   const { data, isLoading } = useQuery({
     queryKey: ['worker-logs', workerId, tail],
     queryFn: () => api.raw<WorkerLogsResponse>(`/wm-api/workers/${workerId}/logs?tail=${tail}`),
-    refetchInterval: 5_000,
+    refetchInterval: 7_000,
   })
 
   return (

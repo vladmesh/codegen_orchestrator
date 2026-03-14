@@ -18,6 +18,7 @@ export function WorkspaceBrowser({ treeApiUrl, fileApiUrlPrefix, queryKeyPrefix 
   const { data: treeData, isLoading: treeLoading, error: treeError } = useQuery({
     queryKey: [queryKeyPrefix, 'tree'],
     queryFn: () => api.raw<FileTreeEntry[]>(treeApiUrl),
+    refetchInterval: 15_000,
   })
 
   const { data: fileContent, isLoading: fileLoading } = useQuery({
