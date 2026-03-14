@@ -27,10 +27,14 @@ def safe_resolve(workspace: Path, relative_path: str) -> Path:
     return resolved
 
 
+SKIP_DIRS = {".venv", "node_modules", ".git", "__pycache__", ".mypy_cache", ".ruff_cache"}
+
+
 def walk_workspace(workspace: Path) -> list[FileTreeEntry]:
     """Walk workspace directory and return flat list of file tree entries."""
     entries = []
     for dirpath, dirnames, filenames in os.walk(workspace):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         rel_dir = Path(dirpath).relative_to(workspace)
         if str(rel_dir) != ".":
             entries.append(FileTreeEntry(path=str(rel_dir), is_dir=True, size=0))
