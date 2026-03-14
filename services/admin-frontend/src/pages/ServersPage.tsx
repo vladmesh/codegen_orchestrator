@@ -44,7 +44,7 @@ function ServerApplications({ handle }: { handle: string }) {
       <thead>
         <tr className="text-muted-foreground">
           <th className="px-4 py-1.5 text-left text-xs font-medium">Application</th>
-          <th className="px-4 py-1.5 text-left text-xs font-medium">Port</th>
+          <th className="px-4 py-1.5 text-left text-xs font-medium">Ports</th>
           <th className="px-4 py-1.5 text-left text-xs font-medium">Status</th>
           <th className="px-4 py-1.5 text-left text-xs font-medium">Last Check</th>
         </tr>
@@ -53,7 +53,24 @@ function ServerApplications({ handle }: { handle: string }) {
         {apps.map((app) => (
           <tr key={app.id}>
             <td className="px-4 py-1.5 font-medium">{app.service_name}</td>
-            <td className="px-4 py-1.5 font-mono text-xs">{app.port}</td>
+            <td className="px-4 py-1.5">
+              {app.ports.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {app.ports.map((p) => (
+                    <span
+                      key={p.id}
+                      className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
+                      title={p.service_name}
+                    >
+                      <span className="text-muted-foreground">{p.service_name}:</span>
+                      <span className="ml-0.5 font-semibold">{p.port}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <span className="text-xs text-muted-foreground">—</span>
+              )}
+            </td>
             <td className="px-4 py-1.5">
               <StatusBadge status={app.status} />
             </td>

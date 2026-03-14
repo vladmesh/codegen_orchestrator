@@ -211,12 +211,20 @@ export interface Server {
   updated_at: string
 }
 
+export interface PortAllocation {
+  id: number
+  server_handle: string
+  port: number
+  service_name: string
+  application_id: number | null
+}
+
 export interface Application {
   id: number
   repo_id: string
   server_handle: string
   service_name: string
-  port: number
+  ports: PortAllocation[]
   status: string
   last_health_check: string | null
   created_at: string

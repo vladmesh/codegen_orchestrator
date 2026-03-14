@@ -37,6 +37,11 @@ make test-all              # All tests
 make test-{service}-unit   # Service-specific: api, langgraph, scheduler, telegram
 make test-{service}-integration
 make test-clean            # Cleanup test containers
+
+# Server access
+./infra/scripts/ssh-to-server.sh <server_ip> [command...]  # SSH via API-stored key
+# Example: ./infra/scripts/ssh-to-server.sh 80.209.235.229 'docker ps'
+# Fetches SSH key from API, writes to tempfile, connects. No local key needed.
 ```
 
 ## Architecture
