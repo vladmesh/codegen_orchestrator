@@ -59,7 +59,7 @@ Scaffolder container
 architect:queue → Architect container (separate from langgraph!)
   → waits for scaffold (polls 10s, max 5min)
   → story: CREATED → IN_PROGRESS
-  → LLM decomposes story into Tasks + appends CI check task
+  → LLM decomposes story into Tasks
   ↓
 Task Dispatcher (scheduler, 30s cycle)
   → finds TODO tasks with no blockers
@@ -510,8 +510,7 @@ docker compose logs architect --tail=50 --since=5m 2>/dev/null | grep -v "HTTP R
 - **Scaffold timeout**: If project is still DRAFT, architect waits up to 5 min. Check if
   scaffold actually completed (see Step 2).
 
-**Verify**: Task chain should have sensible descriptions, correct blocking order,
-and a CI check task at the end.
+**Verify**: Task chain should have sensible descriptions and correct blocking order.
 
 ### Step 4: Monitor Engineering
 
