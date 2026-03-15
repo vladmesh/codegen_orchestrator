@@ -72,7 +72,7 @@ Total duration: ~52 minutes (engineering: 15 min, rest: interventions + deploy i
 ### Problem 3: Deploy fix task sent to engineering for infra issue
 - **Type**: orchestrator
 - **Severity**: major
-- **Backlog**: `new`
+- **Backlog**: `done` — LLM classifier (haiku) triages CODE vs INFRA before dispatching
 - **Description**: Deploy failed because backend container didn't pass healthcheck in time. Deploy-worker created a fix task for engineering, but this is an infra/timing issue, not a code issue. Worker ran 7+ minutes without producing anything useful.
 - **Root cause**: Deploy-worker doesn't distinguish between code failures (import errors, crashes) and infra failures (healthcheck timeout, SSH issues). All failures get dispatched to engineering.
 - **Suggested fix**: Classify deploy failure type: if step is "Deploy via SSH" and containers started but healthcheck failed, retry deploy (not engineering). Only create engineering fix task for build failures or application crashes with clear error logs.

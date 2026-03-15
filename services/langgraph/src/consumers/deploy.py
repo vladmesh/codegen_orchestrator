@@ -6,8 +6,10 @@ Run standalone: python -m src.consumers.deploy
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import os
 
 import asyncssh
+from langchain_openai import ChatOpenAI
 import structlog
 
 from shared.contracts.dto.run import RunStatus, RunType
@@ -32,6 +34,55 @@ MAX_DEPLOY_FIX_ATTEMPTS = 2
 MAX_DEPLOY_RETRIES = 3  # max deploy failures before story is marked failed
 DEPLOY_LOCK_TTL = 3600  # 1 hour — generous TTL for long deploys
 DEPLOY_RETRY_TTL = 86400  # 24h — counter expires after a day
+
+CLASSIFY_PROMPT = """\
+Classify this deployment failure as CODE or INFRA.
+
+CODE = application bug (import error, crash, missing dependency, wrong config value, syntax error, \
+broken migration SQL, unhandled exception at startup)
+INFRA = infrastructure issue (timeout, healthcheck slow start, network unreachable, \
+resource limits, SSH connection error, port already in use, disk full, DNS failure)
+
+Error details:
+{error_details}
+
+Reply with exactly one word: CODE or INFRA"""
+
+
+async def _classify_deploy_failure(error_details: str) -> str:
+    """Use LLM to classify a deploy failure as CODE or INFRA.
+
+    Returns "CODE" or "INFRA". Defaults to "CODE" on any error (safe fallback).
+    """
+    try:
+        api_key = os.environ.get("OPEN_ROUTER_KEY")
+        if not api_key:
+            logger.warning("deploy_classify_no_api_key")
+            return "CODE"
+
+        llm = ChatOpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            model="anthropic/claude-haiku-4-5-20251001",
+            temperature=0.0,
+            max_tokens=10,
+        )
+        response = await llm.ainvoke(CLASSIFY_PROMPT.format(error_details=error_details[:2000]))
+        classification = response.content.strip().upper()
+
+        if classification not in ("CODE", "INFRA"):
+            logger.warning("deploy_classify_unexpected", raw=classification)
+            return "CODE"
+
+        logger.info(
+            "deploy_failure_classified",
+            classification=classification,
+            error_preview=error_details[:200],
+        )
+        return classification
+    except Exception:
+        logger.warning("deploy_classify_error", exc_info=True)
+        return "CODE"
 
 
 async def _transition_story_safe(story_id: str, action: str) -> None:
@@ -202,15 +253,20 @@ async def _handle_smoke_failure(
             },
         },
     )
-    # Roll story back — smoke failed, story not truly complete
-    await _transition_story_safe(story_id, "start")
+    # Classify failure: code bug vs infra issue
+    classification = await _classify_deploy_failure(smoke_details)
 
-    # Re-dispatch to engineering for a code fix
-    await _redispatch_to_engineering(
-        redis=redis,
-        msg=msg,
-        error_details=smoke_details,
-    )
+    if classification == "CODE":
+        await _transition_story_safe(story_id, "start")
+        await _redispatch_to_engineering(
+            redis=redis,
+            msg=msg,
+            error_details=smoke_details,
+        )
+    else:
+        # INFRA — retry deploy via _handle_deploy_failure retry counter;
+        # after MAX_DEPLOY_RETRIES the story is marked failed (HITL)
+        await _track_deploy_retry(redis=redis, story_id=story_id)
 
     await publish_callback_event(
         redis,
@@ -221,7 +277,7 @@ async def _handle_smoke_failure(
         user_id=user_id,
         project_id=project_id,
     )
-    # No proactive message — smoke failure is internal (redispatched to engineering)
+    # No proactive message — smoke failure is internal (retried or redispatched)
 
     return {
         "status": "failed",
@@ -299,6 +355,50 @@ async def _handle_deploy_success(
     }
 
 
+async def _track_deploy_retry(*, redis: RedisStreamClient, story_id: str) -> None:
+    """Increment deploy retry counter and transition story.
+
+    After MAX_DEPLOY_RETRIES failures, marks story as failed (HITL).
+    Otherwise rolls story back to "start" for another deploy attempt.
+    """
+    if not story_id:
+        await _transition_story_safe(story_id, "start")
+        return
+
+    attempt_key = f"deploy:{story_id}:attempts"
+    attempts = await redis.redis.incr(attempt_key)
+    await redis.redis.expire(attempt_key, DEPLOY_RETRY_TTL)
+
+    if attempts >= MAX_DEPLOY_RETRIES:
+        logger.warning(
+            "deploy_max_retries_exceeded",
+            story_id=story_id,
+            attempts=attempts,
+            max_retries=MAX_DEPLOY_RETRIES,
+        )
+        await _transition_story_safe(story_id, "fail")
+        try:
+            worker_id = await get_story_worker(redis.redis, story_id)
+            if worker_id:
+                await delete_worker(worker_id, reason="failed")
+                logger.info(
+                    "story_worker_deleted_on_fail",
+                    story_id=story_id,
+                    worker_id=worker_id,
+                )
+            await clear_story_worker(redis.redis, story_id)
+        except Exception as e:
+            logger.warning("story_worker_cleanup_failed", story_id=story_id, error=str(e))
+    else:
+        logger.info(
+            "deploy_failure_rollback",
+            story_id=story_id,
+            attempt=attempts,
+            max_retries=MAX_DEPLOY_RETRIES,
+        )
+        await _transition_story_safe(story_id, "start")
+
+
 async def _handle_deploy_failure(
     *,
     task_id: str,
@@ -319,43 +419,7 @@ async def _handle_deploy_failure(
         f"runs/{task_id}",
         json={"status": "failed", "error_message": error_msg},
     )
-    # Track deploy attempts per story — fail permanently after limit
-    if story_id:
-        attempt_key = f"deploy:{story_id}:attempts"
-        attempts = await redis.redis.incr(attempt_key)
-        await redis.redis.expire(attempt_key, DEPLOY_RETRY_TTL)
-
-        if attempts >= MAX_DEPLOY_RETRIES:
-            logger.warning(
-                "deploy_max_retries_exceeded",
-                story_id=story_id,
-                attempts=attempts,
-                max_retries=MAX_DEPLOY_RETRIES,
-            )
-            await _transition_story_safe(story_id, "fail")
-            # Clean up story worker on permanent failure
-            try:
-                worker_id = await get_story_worker(redis.redis, story_id)
-                if worker_id:
-                    await delete_worker(worker_id, reason="failed")
-                    logger.info(
-                        "story_worker_deleted_on_fail",
-                        story_id=story_id,
-                        worker_id=worker_id,
-                    )
-                await clear_story_worker(redis.redis, story_id)
-            except Exception as e:
-                logger.warning("story_worker_cleanup_failed", story_id=story_id, error=str(e))
-        else:
-            logger.info(
-                "deploy_failure_rollback",
-                story_id=story_id,
-                attempt=attempts,
-                max_retries=MAX_DEPLOY_RETRIES,
-            )
-            await _transition_story_safe(story_id, "start")
-    else:
-        await _transition_story_safe(story_id, "start")
+    await _track_deploy_retry(redis=redis, story_id=story_id)
 
     await publish_callback_event(
         redis,
@@ -662,12 +726,15 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             error_msg = "; ".join(errors)
             project_name = project.get("name", project_id) if project else project_id
 
-            # Re-dispatch to engineering for a code fix
-            await _redispatch_to_engineering(
-                redis=redis,
-                msg=msg,
-                error_details=error_msg,
-            )
+            # Classify failure: code bug vs infra issue
+            classification = await _classify_deploy_failure(error_msg)
+            if classification == "CODE":
+                await _redispatch_to_engineering(
+                    redis=redis,
+                    msg=msg,
+                    error_details=error_msg,
+                )
+            # INFRA path: _handle_deploy_failure below handles retry counter + story="failed"
 
             return await _handle_deploy_failure(
                 task_id=task_id,

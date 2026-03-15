@@ -6,6 +6,7 @@
 
 ### Added
 - **PR merge polling** (hotfix): Dispatcher now polls GitHub for merged PRs on stories in `pr_review` status every 30s. Eliminates dependency on GitHub webhook for the `pr_review → deploying` transition. New `list_pull_requests()` method on `GitHubAppClient`.
+- **Deploy failure LLM classifier** (hotfix): Deploy worker now classifies failures as CODE vs INFRA using haiku before dispatching to engineering. INFRA failures (timeouts, network, resource limits) retry deploy instead of wasting an engineering worker. After max retries, story is marked failed for HITL. Extracted `_track_deploy_retry()` helper from `_handle_deploy_failure()`.
 
 ## 2026-03-15
 
