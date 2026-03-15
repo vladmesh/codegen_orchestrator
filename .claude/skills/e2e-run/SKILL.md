@@ -2,53 +2,39 @@
 name: e2e-run
 description: Run Line 2 E2E test — submit engineering task, wait for completion, verify, write report. Use when user wants to test the engineering pipeline end-to-end.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
-argument-hint: "<test> [--with-po] [--no-cleanup] [--no-nuke]"
+argument-hint: "<test> [--feature] [--no-cleanup] [--no-nuke]"
 ---
 
 # E2E Engineering Test Runner
 
-Run one or more Line 2 E2E tests end-to-end: create project, trigger engineering,
-monitor progress, verify results (including deploy), collect audit report, write investigation report, cleanup.
+Run one or more E2E tests end-to-end: create project via the full pipeline
+(scaffold → architect → engineering → deploy), monitor progress, verify results,
+collect reports, cleanup.
 
 ## Arguments
 
 - `$0` — test selector (REQUIRED):
-  - Project name: `todo_api`, `echo_bot`, `landing_page`, etc.
-  - Test number: `1`, `2`, `3`, etc.
-  - Comma-separated: `1,3,5` or `todo_api,echo_bot`
-  - `all` — run all 7 tests sequentially
-- `--with-po` — route through PO agent instead of direct API/queue calls. Creates test user,
-  sends project description to `po:input`, waits for PO to create project & trigger engineering.
-- `--no-cleanup` — skip cleanup after test (keep repo, containers, DB records)
-- `--no-nuke` — skip `make nuke` in Step 0 (assume stack is already clean and running)
-- `--feature` — after the initial create+deploy succeeds, trigger a feature-add on the same project
-  and verify the full feature flow (no scaffold, CI, redeploy). Requires initial create to pass first.
+  - Project name: `todo_api`, `weather_bot`
+  - Test number: `1`, `2`
+  - Comma-separated: `1,2` or `todo_api,weather_bot`
+  - `all` — run both tests sequentially
+- `--feature` — after create+deploy succeeds, trigger a feature-add on the same project
+- `--no-cleanup` — skip cleanup (keep repo, containers, DB records)
+- `--no-nuke` — skip `make nuke` in Step 0 (assume stack is already clean)
 
 ## Test Matrix
 
 | # | Name | Modules | Description |
 |---|------|---------|-------------|
 | 1 | `todo_api` | `backend` | REST API for TODO items. `GET/POST/PATCH/DELETE /todos`. Fields: id, title, description, is_completed, created_at. |
-| 2 | `echo_bot` | `tg_bot` | Telegram echo bot. Reverses text. `/start` sends welcome. |
-| 3 | `landing_page` | `frontend` | "TaskFlow" landing page. Hero, 3 features, contact form (logs to console). |
-| 4 | `weather_bot` | `backend,tg_bot` | `/weather <city>` returns mock data. Backend caches in PG 30min. `GET /api/weather/{city}` also available. |
-| 5 | `url_shortener` | `backend,frontend` | `POST /api/shorten` → short code. `GET /{code}` redirects. Frontend: form + stats. |
-| 6 | `bot_landing` | `tg_bot,frontend` | Bot echoes with emoji. Frontend: static page describing bot. No shared backend. |
-| 7 | `expense_tracker` | `backend,tg_bot,frontend` | CRUD expenses + categories. Bot: `/add`, `/summary`. Frontend: dashboard + breakdown. |
+| 2 | `weather_bot` | `backend,tg_bot` | `/weather <city>` returns mock data. Backend caches in PG 30min. `GET /api/weather/{city}` also available. |
 
 ## Feature Add Matrix (for --feature mode)
-
-After the initial create+deploy succeeds, trigger `action="feature"` with these descriptions:
 
 | # | Name | Feature Description |
 |---|------|---------------------|
 | 1 | `todo_api` | Add `GET /todos/stats` endpoint that returns `{"total": N, "completed": N, "pending": N}` counting all todos. |
-| 2 | `echo_bot` | Add `/caps` command that converts the next message to UPPERCASE and sends it back. |
-| 3 | `landing_page` | Add a dark mode toggle button in the header that switches the page between light and dark themes. |
-| 4 | `weather_bot` | Add `/forecast <city>` command that returns mock 3-day forecast (today, tomorrow, day after). Backend endpoint `GET /api/forecast/{city}`. |
-| 5 | `url_shortener` | Add `GET /api/stats` endpoint that returns `{"total_urls": N, "total_redirects": N}` with global stats. |
-| 6 | `bot_landing` | Add `/help` command to the bot that lists all available commands with descriptions. |
-| 7 | `expense_tracker` | Add `GET /api/expenses/summary` endpoint that returns total amount grouped by category. |
+| 2 | `weather_bot` | Add `/forecast <city>` command that returns mock 3-day forecast (today, tomorrow, day after). Backend endpoint `GET /api/forecast/{city}`. |
 
 ## Audit Prompt (appended to every task description)
 
@@ -56,49 +42,82 @@ After the initial create+deploy succeeds, trigger `action="feature"` with these 
 ## Audit Instructions
 
 In addition to completing the task above, you are performing an audit of the
-framework and development environment.
-
-Throughout your work, keep a file called AUDIT_REPORT.md in the repo root.
-
-Use this format for each finding:
-
-### <number>. <title>
-- **Severity**: critical / major / minor
-- **Category**: framework | template | tooling | docs
-- **File**: <path> (if applicable)
-- **Description**: What happened, what you expected, exact error messages
-- **Suggestion**: How to fix or improve
-
-Also include a ## What Worked Well section with positive observations.
+framework and development environment. Throughout your work, keep a file called
+AUDIT_REPORT.md in the repo root. Log everything you encounter: problems, errors,
+unexpected behavior, missing features or tools in the framework, anything that
+didn't work as expected or required workarounds, suggestions for improving the
+template, framework, or workspace setup, ideas for making the development flow
+smoother. Be specific: include exact error messages, file paths, and what you
+expected vs what happened.
 ```
+
+## Architecture Quick Reference
+
+Understanding the pipeline flow helps you know where to look when things stall:
+
+```
+Project (DRAFT) + Repository + Story (CREATED)
+  ↓
+scaffold_trigger (scheduler, 30s cycle)
+  → publishes ScaffoldMessage to scaffold:queue
+  ↓
+Scaffolder container
+  → copier template + make setup + git push
+  → project: DRAFT → ACTIVE, workspace_ready=true
+  ↓
+architect:queue → Architect container (separate from langgraph!)
+  → waits for scaffold (polls 10s, max 5min)
+  → story: CREATED → IN_PROGRESS
+  → LLM decomposes story into Tasks + appends CI check task
+  ↓
+Task Dispatcher (scheduler, 30s cycle)
+  → finds TODO tasks with no blockers
+  → creates Run record, publishes EngineeringMessage to engineering:queue
+  → task: TODO → IN_DEV
+  ↓
+Engineering Worker (langgraph container, separate entrypoint)
+  → spawns worker container via worker-manager
+  → worker runs Claude CLI agent
+  → agent commits, pushes, waits for CI
+  → task: IN_DEV → DONE (or FAILED)
+  ↓
+All tasks DONE → Dispatcher detects
+  → story: IN_PROGRESS → DEPLOYING
+  → publishes DeployMessage to deploy:queue
+  ↓
+Deploy Worker (langgraph container, separate entrypoint)
+  → configures GitHub secrets
+  → triggers deploy.yml workflow
+  → runs smoke test
+  → story: DEPLOYING → COMPLETED
+```
+
+**Key containers** (each is separate in docker-compose):
+- `langgraph` — PO agent
+- `architect` — story decomposition (NOT inside scheduler!)
+- `scheduler` — scaffold trigger, task dispatcher, story completion
+- `engineering-worker` — engineering consumer
+- `deploy-worker` — deploy consumer
+- `worker-manager` — spawns worker containers
+- `scaffolder` — project scaffolding
 
 ## E2E Secrets (for tg_bot tests)
 
-Tests with `tg_bot` module (#2 echo_bot, #4 weather_bot, #6 bot_landing, #7 expense_tracker)
-need a `TELEGRAM_BOT_TOKEN` for deploy. Tests without `tg_bot` work without it.
+Tests with `tg_bot` module need a `TELEGRAM_BOT_TOKEN` for deploy.
+Secrets are read from `.claude/e2e-secrets.env` (gitignored).
 
-Secrets are read from `.claude/e2e-secrets.env` (gitignored). If missing, tell the user:
-
-```
-Create .claude/e2e-secrets.env (see .claude/e2e-secrets.env.example).
-A test bot token from @BotFather is needed for tg_bot tests.
-```
-
-**Injection**: After creating the project (Step 1 or after PO creates it in Step 1-PO),
-if the test includes `tg_bot`, inject secrets into `project.config.secrets`:
+**Injection**: After creating the project, if the test includes `tg_bot`,
+inject secrets into `project.config.secrets`:
 
 ```bash
-# Read token from secrets file
 TG_TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' .claude/e2e-secrets.env 2>/dev/null | cut -d= -f2-)
 
 if [ -z "$TG_TOKEN" ]; then
   echo "ERROR: TELEGRAM_BOT_TOKEN not found in .claude/e2e-secrets.env"
-  echo "tg_bot tests require a bot token. See .claude/e2e-secrets.env.example"
   # STOP this test — cannot deploy without token
 fi
 
-# Inject encrypted secret into project config
-docker compose exec -T -e "TG_TOKEN=$TG_TOKEN" -e "PROJECT_ID=$PROJECT_ID" langgraph python -c "
+docker compose exec -T -e "TG_TOKEN=$TG_TOKEN" -e "PROJECT_ID=$PROJECT_ID" api python -c "
 import os, asyncio
 import httpx
 from shared.crypto import encrypt_dict
@@ -106,7 +125,7 @@ from shared.crypto import encrypt_dict
 async def main():
     pid = os.environ['PROJECT_ID']
     token = os.environ['TG_TOKEN']
-    async with httpx.AsyncClient(base_url='http://api:8000') as api:
+    async with httpx.AsyncClient(base_url='http://localhost:8000') as api:
         r = await api.get(f'/api/projects/{pid}')
         project = r.json()
         config = project['config']
@@ -121,30 +140,24 @@ asyncio.run(main())
 "
 ```
 
-Skip this step entirely for tests without `tg_bot` module.
-
 ## GitHub Access
 
-**IMPORTANT**: The local `gh` CLI is bound to a personal account that does NOT have access
-to `project-factory-organization` repos. Never use `gh api`, `gh run`, `gh repo delete`, etc.
-
-Instead, use `GitHubAppClient` via docker compose exec. The `langgraph` container has the
-GitHub App credentials mounted and all necessary methods:
+**IMPORTANT**: The local `gh` CLI does NOT have access to `project-factory-organization`.
+Always use `GitHubAppClient` via docker compose exec:
 
 ```bash
-# Helper: run GitHubAppClient methods from the host
-docker compose exec -T langgraph python -c "
+docker compose exec -T api python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
 
 async def main():
     gh = GitHubAppClient()
-    # Available methods:
     # gh.list_repo_files(owner, repo, path='', ref='main') -> list[str]
     # gh.get_file_contents(owner, repo, path, ref='main') -> str | None
     # gh.get_latest_workflow_run(owner, repo, workflow_file, branch, created_after=None) -> dict
     # gh.delete_repo(owner, repo) -> None
     # gh.create_repo(org, name, description, private) -> dict
+    # gh.get_org_token(org) -> str
     result = await gh.list_repo_files('project-factory-organization', 'REPO_NAME')
     print(result)
 
@@ -152,113 +165,49 @@ asyncio.run(main())
 "
 ```
 
-Use this pattern everywhere you need to interact with GitHub repos.
-
 ## Server Access
 
-Deployed services run on managed VPS servers. Projects are allocated to servers
-during engineering via the resource allocator. The deploy workflow SSHes into the
-server and runs `docker compose up`.
-
-**SSH connection**: SSH keys are stored per-server in the database (Fernet-encrypted).
-Use the helper script which fetches the key from the API automatically:
+SSH keys are stored in the DB (encrypted). Use the helper script:
 
 ```bash
-# Run a command on a server
 bash infra/scripts/ssh-to-server.sh $SERVER_IP "hostname"
-
-# Interactive shell
-bash infra/scripts/ssh-to-server.sh $SERVER_IP
 ```
 
-The script handles host key rotation (clears stale known_hosts entries) and
-tempfile cleanup automatically. Do NOT use bare `ssh root@$SERVER_IP` — it
-will fail with "Permission denied" because the host has no local SSH key.
-
-**Finding the server IP and port**: The deploy task result contains the `deployed_url`
-(e.g. `http://1.2.3.4:8000`) — this is the most reliable source. For failed deploys
-where `deployed_url` is absent, resolve IP from `service-deployments` or the server's
-`public_ip` field via port allocation handle lookup.
+**Server filesystem layout**: `/opt/services/<PROJECT_NAME>/`
 
 ```bash
-# Option 1 (preferred): from deploy task result — always has IP:port if deploy ran
-DEPLOY_RESULT=$(curl -s "http://localhost:8000/api/runs/$DEPLOY_TASK")
-DEPLOYED_URL=$(echo "$DEPLOY_RESULT" | jq -r '.result.deployed_url // empty')
-if [ -n "$DEPLOYED_URL" ]; then
-  SERVER_IP=$(echo "$DEPLOYED_URL" | sed -E 's|https?://([^:/]+).*|\1|')
-  DEPLOY_PORT=$(echo "$DEPLOYED_URL" | sed -E 's|.*:([0-9]+)$|\1|')
-fi
-
-# Option 2: from service-deployments (only if deploy succeeded)
-SERVER_IP=$(curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | jq -r '.[0].server_ip // empty')
-
-# Option 3: resolve via port allocations → server handle → server public_ip
-SERVER_HANDLE=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
-  | jq -r '.[].handle' \
-  | while read h; do
-      HAS=$(curl -s "http://localhost:8000/api/servers/$h/ports" \
-        | jq -r --arg pid "$PROJECT_ID" '[.[] | select(.project_id == $pid)] | length')
-      [ "$HAS" != "0" ] && echo "$h" && break
-    done | head -1)
-if [ -n "$SERVER_HANDLE" ]; then
-  SERVER_IP=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE" | jq -r '.public_ip // empty')
-  DEPLOY_PORT=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE/ports" \
-    | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .port // empty' | head -1)
-fi
-```
-
-**Server filesystem layout**: Deployed projects live under `/opt/services/`:
-
-```
-/opt/services/<PROJECT_NAME>/
-├── .env                    # decoded from DOTENV_B64 secret
-├── .env.bak                # backup of previous .env (if redeployed)
-└── infra/
-    ├── compose.base.yml    # base compose (services, volumes, healthchecks)
-    └── compose.prod.yml    # prod overlay (image refs, restart policy)
-```
-
-**Docker compose on server**: Always use both compose files and the env file:
-
-```bash
+# Docker compose on server — always use both compose files:
 COMPOSE="docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml"
 $COMPOSE ps -a
 $COMPOSE logs backend --tail=50
-$COMPOSE down -v --remove-orphans
 ```
 
 ## Execution Flow
 
-For each selected test case, execute these steps. If running multiple tests,
-run them **sequentially** (one at a time — worker-manager handles one container at a time).
+Run tests **sequentially** (one at a time).
 
-**IMPORTANT — repo naming convention**: GitHub repos use **hyphens**, not underscores.
-Always define `REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')` early and use `$REPO_SLUG`
-in ALL GitHub API calls (`list_repo_files`, `get_file_contents`, `get_latest_workflow_run`,
-`delete_repo`, raw API URLs). Use `$PROJECT_NAME` only for API calls, DB records, and
-server paths (`/opt/services/$PROJECT_NAME`).
+**Repo naming**: GitHub repos use **hyphens**, not underscores.
+Define `REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')` early.
+Use `$REPO_SLUG` for GitHub API, `$PROJECT_NAME` for API/DB/server paths.
 
 ### Step 0: Health check + pre-flight cleanup
 
-Before the first test, do a full stack reset to ensure clean state.
-
-**Skip this if `--no-nuke` is set** — go straight to the health check below.
+**Skip `make nuke` if `--no-nuke` is set.**
 
 ```bash
 make nuke
 ```
 
-
-Then verify the stack is healthy:
+Then verify the stack:
 
 ```bash
 curl -sf http://localhost:8000/health | jq .
 docker compose ps --format "{{.Name}} {{.Status}}" | grep -v "Up"
 ```
 
-If API is not healthy, STOP and tell the user to fix the stack first.
+If API is not healthy, STOP.
 
-**Worker image staleness check** (run before the first test):
+**Worker image staleness check**:
 
 ```bash
 CURRENT_HASH=$(find shared packages/worker-wrapper packages/orchestrator-cli \
@@ -270,27 +219,21 @@ STORED_HASH=$(docker inspect worker-base-common:latest \
   --format '{{index .Config.Labels "org.codegen.worker_source_hash"}}' 2>/dev/null || echo "none")
 
 if [ "$CURRENT_HASH" != "$STORED_HASH" ]; then
-  echo "Worker images stale ($STORED_HASH -> $CURRENT_HASH) — rebuilding..."
+  echo "Worker images stale — rebuilding..."
   make rebuild-worker-images
 else
-  echo "Worker images up to date (hash: $CURRENT_HASH)"
+  echo "Worker images up to date"
 fi
 ```
 
-If rebuild fails, STOP and tell the user. Stale worker images cause persistent bugs
-(e.g., POSTGRES_HOST=project-db from deleted _patch_db_hostname).
-
-**Pre-flight: clean up stale artifacts** (run for every test):
+**Pre-flight cleanup** (run for every test):
 
 ```bash
 ORG="project-factory-organization"
-# Convert PROJECT_NAME to repo slug (underscores → hyphens)
 REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')
 
-# 1. Check and delete leftover GitHub repo
-# NOTE: Use `tail -1` to extract only the final print() line.
-# structlog errors go to stdout and pollute the captured output otherwise.
-REPO_EXISTS=$(docker compose exec -T langgraph python -c "
+# 1. Delete leftover GitHub repo
+REPO_EXISTS=$(docker compose exec -T api python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
 async def main():
@@ -304,8 +247,8 @@ asyncio.run(main())
 " 2>/dev/null | tail -1)
 
 if [ "$REPO_EXISTS" = "EXISTS" ]; then
-  echo "WARNING: Leftover repo $ORG/$REPO_SLUG found — deleting"
-  docker compose exec -T langgraph python -c "
+  echo "WARNING: Leftover repo — deleting"
+  docker compose exec -T api python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
 async def main():
@@ -317,136 +260,82 @@ asyncio.run(main())
 fi
 
 # 2. Kill leftover worker containers
-docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$REPO_SLUG" | xargs -r docker rm -f
-```
+docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}" | xargs -r docker rm -f
 
-Also check target servers for stale deployments:
-
-```bash
-# Check all managed servers for leftover /opt/services/<PROJECT_NAME>/
+# 3. Clean stale deployments on servers
 for SERVER_IP in $(curl -s "http://localhost:8000/api/servers/?is_managed=true" | jq -r '.[].public_ip'); do
   HAS_DIR=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
     "[ -d /opt/services/$PROJECT_NAME ] && echo EXISTS || echo CLEAN" 2>/dev/null || echo "SSH_FAIL")
-
   if [ "$HAS_DIR" = "EXISTS" ]; then
-    echo "WARNING: Stale deployment /opt/services/$PROJECT_NAME on $SERVER_IP — cleaning"
+    echo "WARNING: Stale deployment on $SERVER_IP — cleaning"
     bash infra/scripts/ssh-to-server.sh $SERVER_IP "
       cd /opt/services/$PROJECT_NAME/infra 2>/dev/null && \
         docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
       rm -rf /opt/services/$PROJECT_NAME
     "
-  elif [ "$HAS_DIR" = "SSH_FAIL" ]; then
-    echo "WARNING: Could not reach $SERVER_IP — skipping server check"
   fi
 done
 ```
 
-If any cleanup happened, log it in the report timeline as "Pre-flight: cleaned stale artifacts".
+### Step 0.5: Queue Health Check
 
-### Step 1: Create project (direct mode — default)
+**Before starting, check queues for stale messages.** Stale messages from previous
+runs can clog the architect for hours — each triggers a full LLM call or 5-min scaffold timeout.
 
-Skip this step if `--with-po` is set. Go to Step 1-PO instead.
-
-```bash
-PROJECT_ID=$(uuidgen)
-PROJECT_NAME="<from matrix>"
-MODULES="<from matrix>"
-
-DESCRIPTION="<task description from matrix>
-
-## Audit Instructions
-
-In addition to completing the task above, you are performing an audit of the framework and development environment. Throughout your work, keep a file called AUDIT_REPORT.md in the repo root. Log everything you encounter: problems, errors, unexpected behavior, missing features or tools in the framework, anything that didn't work as expected or required workarounds, suggestions for improving the template, framework, or workspace setup, ideas for making the development flow smoother. Be specific: include exact error messages, file paths, and what you expected vs what happened."
-
-# Upsert test user (API requires X-Telegram-ID for project creation)
-curl -s -X POST http://localhost:8000/api/users/upsert \
-  -H "Content-Type: application/json" \
-  -d '{
-    "telegram_id": 999000001,
-    "username": "e2e_test_user",
-    "first_name": "E2E",
-    "last_name": "Test",
-    "is_admin": false
-  }' | jq .
-
-curl -s -X POST http://localhost:8000/api/projects/ \
-  -H "Content-Type: application/json" \
-  -H "X-Telegram-ID: 999000001" \
-  -d "$(jq -n \
-    --arg id "$PROJECT_ID" \
-    --arg name "$PROJECT_NAME" \
-    --arg modules "$MODULES" \
-    --arg desc "$DESCRIPTION" \
-    '{
-      id: $id,
-      name: $name,
-      status: "draft",
-      config: {
-        modules: ($modules | split(",")),
-        description: $desc
-      }
-    }')" | jq .
-```
-
-Save `PROJECT_ID` — you'll need it for all subsequent steps.
-
-**If test includes `tg_bot`** — inject secrets now (see "E2E Secrets" section above).
-If secrets file is missing or token is empty, STOP this test.
-
-### Step 2: Trigger engineering (direct mode — default)
-
-Skip this step if `--with-po` is set. Go to Step 2-PO instead.
+Cross-check the Debug API and raw Redis:
 
 ```bash
-TASK_ID="eng-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')"
+# Debug API (preferred)
+curl -s http://localhost:8000/debug/queues | python3 -m json.tool
 
-# Create task in API
-curl -s -X POST http://localhost:8000/api/runs/ \
-  -H "Content-Type: application/json" \
-  -d "$(jq -n \
-    --arg id "$TASK_ID" \
-    --arg pid "$PROJECT_ID" \
-    '{
-      id: $id,
-      type: "engineering",
-      project_id: $pid,
-      run_metadata: {triggered_by: "cli", action: "create"},
-      callback_stream: "agent:events:manual-test"
-    }')" | jq .
+# Architect queue messages
+curl -s "http://localhost:8000/debug/queues/architect:queue/messages?count=50" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(f'Total messages: {data[\"total\"]}')
+for m in data['messages']:
+    story_id = m['data'].get('story_id', '?')
+    print(f\"  {m['id']}  story={story_id}  ts={m['timestamp']}\")
+"
 
-# Publish to engineering queue
-docker compose exec -T langgraph python -c "
-import asyncio
-from shared.contracts.queues.engineering import EngineeringMessage
-from shared.redis.client import RedisStreamClient
-from shared.queues import ENGINEERING_QUEUE
-
-async def main():
-    client = RedisStreamClient()
-    await client.connect()
-    msg = EngineeringMessage(
-        task_id='$TASK_ID',
-        project_id='$PROJECT_ID',
-        user_id='manual-test',
-        action='create',
-        skip_deploy=False,
-        callback_stream='agent:events:manual-test',
-    )
-    mid = await client.publish_message(ENGINEERING_QUEUE, msg)
-    print(f'Published: task={msg.task_id} mid={mid}')
-    await client.close()
-
-asyncio.run(main())
+# Raw Redis cross-check
+docker compose exec -T api python3 -c "
+import asyncio, redis.asyncio as redis
+async def check():
+    r = redis.from_url('redis://redis:6379')
+    for q in ['architect:queue', 'engineering:queue', 'deploy:queue', 'scaffold:queue']:
+        try:
+            length = await r.xlen(q)
+            print(f'{q}: {length} messages')
+        except:
+            print(f'{q}: does not exist')
+    await r.aclose()
+asyncio.run(check())
 "
 ```
 
-Save `TASK_ID`.
+**If queue length > 5**: Clean stale messages via API:
 
-### Step 1-PO: Create test user & send to PO (--with-po mode)
+```bash
+curl -s "http://localhost:8000/debug/queues/architect:queue/messages?count=200" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for m in data['messages']:
+    story_id = m['data'].get('story_id', '?')
+    print(f\"{m['id']}  story={story_id}\")
+print(f'Total: {data[\"total\"]}')
+"
 
-Skip this step unless `--with-po` is set.
+# Delete stale messages (repeat per ID)
+curl -X DELETE "http://localhost:8000/debug/queues/architect:queue/messages/<message_id>"
 
-**1a. Upsert test user** — ensures `owner_id` will link correctly when #27 is fixed:
+# Ack stuck pending messages
+curl -X POST "http://localhost:8000/debug/queues/architect:queue/architect-consumers/ack/<message_id>"
+```
+
+### Step 1: Create via PO agent
+
+**1a. Upsert test user**:
 
 ```bash
 curl -s -X POST http://localhost:8000/api/users/upsert \
@@ -460,25 +349,9 @@ curl -s -X POST http://localhost:8000/api/users/upsert \
   }' | jq .
 ```
 
-**1b. Send project request to PO via `po:input`**.
+**1b. Send to PO via `po:input`**.
 
-Compose a natural-language message that gives PO enough information to create the project
-and trigger engineering without follow-up questions. Include the project name, modules,
-full description, and the audit instructions.
-
-The message should look like:
-
-```
-Создай проект "<PROJECT_NAME>" с модулями: <MODULES>.
-
-Описание: <DESCRIPTION from matrix>
-
-<AUDIT INSTRUCTIONS block>
-
-После создания сразу запусти engineering.
-```
-
-Publish via Redis and wait for response:
+Compose a natural-language message with project name, modules, description, and audit instructions.
 
 ```bash
 REQUEST_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
@@ -488,7 +361,7 @@ docker compose exec -T \
   -e "REQUEST_ID=$REQUEST_ID" \
   -e "E2E_USER_ID=$E2E_USER_ID" \
   -e "MESSAGE_TEXT=$MESSAGE_TEXT" \
-  langgraph python -c "
+  api python -c "
 import os, asyncio
 from shared.contracts.queues.po import POUserMessage, to_flat_fields
 from shared.redis.client import RedisStreamClient
@@ -503,17 +376,17 @@ async def main():
         request_id=os.environ['REQUEST_ID'],
     )
     mid = await client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(msg))
-    print(f'Published to po:input: mid={mid}, request_id={msg.request_id}')
+    print(f'Published to po:input: mid={mid}')
     await client.close()
 
 asyncio.run(main())
 "
 ```
 
-**1c. Wait for PO response** (timeout 120s — PO may need to call multiple tools):
+**1c. Wait for PO response** (timeout 120s):
 
 ```bash
-docker compose exec -T -e "REQUEST_ID=$REQUEST_ID" langgraph python -c "
+docker compose exec -T -e "REQUEST_ID=$REQUEST_ID" api python -c "
 import os, asyncio
 
 async def main():
@@ -521,7 +394,6 @@ async def main():
     r = redis.from_url('redis://redis:6379')
     request_id = os.environ['REQUEST_ID']
     stream = f'po:response:{request_id}'
-    # Poll with XREAD, block 5s at a time, total timeout 120s
     for attempt in range(24):
         result = await r.xread({stream: '0'}, block=5000, count=1)
         if result:
@@ -533,7 +405,6 @@ async def main():
                         print(f'PO ERROR: {error}')
                     else:
                         print(f'PO RESPONSE: {text}')
-                    # Cleanup response stream
                     await r.delete(stream)
                     await r.aclose()
                     return
@@ -544,227 +415,283 @@ asyncio.run(main())
 "
 ```
 
-**1d. Extract PROJECT_ID and TASK_ID**.
-
-After PO responds, retrieve the project and task IDs from the API:
+**1d. Extract IDs**:
 
 ```bash
-# Find project by name
 PROJECT_ID=$(curl -s "http://localhost:8000/api/projects/" \
   | jq -r --arg name "$PROJECT_NAME" '.[] | select(.name == $name) | .id' | head -1)
 
-# Find engineering task for this project
-TASK_ID=$(curl -s "http://localhost:8000/api/runs/?type=engineering&project_id=$PROJECT_ID" \
-  | jq -r '.[0].id // empty')
+STORY_ID=$(curl -s "http://localhost:8000/api/stories/?sort=-created_at" \
+  | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .id' | head -1)
 
-echo "PROJECT_ID=$PROJECT_ID TASK_ID=$TASK_ID"
+echo "PROJECT_ID=$PROJECT_ID STORY_ID=$STORY_ID"
 ```
 
-If either is empty, PO may not have completed both actions. Check the PO response text
-for clues. You can send a follow-up message to `po:input` (same `E2E_USER_ID`, new `REQUEST_ID`)
-asking PO to proceed. If PO is stuck after 2 attempts, fall back to direct mode (Steps 1+2)
-and note "PO failed, fell back to direct" in the report.
+If either is empty, send a follow-up to PO. If PO fails after 2 attempts,
+note "PO failed to create project" in report and stop the test.
 
-**1e. If test includes `tg_bot`** — inject secrets now (see "E2E Secrets" section above).
+**1e. If test includes `tg_bot`** — inject secrets (see "E2E Secrets").
 
-### Step 2-PO: (no-op)
+### Step 2: Monitor Scaffold
 
-Engineering was already triggered by PO in Step 1-PO. Proceed to Step 3.
-
-### Step 3: Verify scaffold started (CRITICAL — do immediately!)
-
-Wait 20 seconds, then check worker-manager logs:
+Scaffold is triggered automatically by `scaffold_trigger` (runs every 30s in scheduler).
+It checks for DRAFT projects with stories and repositories.
 
 ```bash
-sleep 20
-docker compose logs worker-manager --tail=30 --since=60s 2>&1 | grep -E "scaffold|copier|creating_worker"
-```
-
-**GOOD**: `scaffold_phase_start` or `copier` appears in output.
-**BAD**: only `creating_worker` with no scaffold → scaffold was SKIPPED.
-
-If scaffold was skipped: **ABORT this test immediately**. Kill the worker container,
-document "scaffold skipped" in report, and move to the next test or stop.
-
-```bash
-# Abort: kill worker
-docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$PROJECT_NAME" | xargs -r docker rm -f
-```
-
-### Step 4: Monitor
-
-Poll task status. Print status updates every check.
-
-**Worker log checks**: During polling, periodically check worker container logs to understand
-what the agent is doing (especially useful for long waits):
-
-```bash
-# Check worker progress (find container name from Step 3 logs)
-docker logs worker-dev-$PROJECT_NAME_SLUG-* --tail=10 2>&1
-# Also check engineering-worker for subgraph-level events
-docker compose logs engineering-worker --tail=10 --since=120s 2>&1 | grep -v "health"
-```
-
-**CI fix tracking**: The worker may go through multiple CI fix cycles (push → CI fail →
-fix → push). Track each cycle by fetching all CI runs and commits when the task completes or
-when you need to understand progress:
-
-```bash
-ORG="project-factory-organization"
-# IMPORTANT: GitHub repos use hyphens, not underscores. Always use $REPO_SLUG here.
-docker compose exec -T langgraph python -c "
-import asyncio
-from shared.clients.github import GitHubAppClient
-import httpx
-
-async def main():
-    gh = GitHubAppClient()
-    token = await gh.get_org_token('$ORG')
-    async with httpx.AsyncClient() as http:
-        # All commits
-        r = await http.get(
-            'https://api.github.com/repos/$ORG/$REPO_SLUG/commits?per_page=10',
-            headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
-        )
-        print('=== Commits ===')
-        for c in r.json():
-            msg = c['commit']['message'].split(chr(10))[0]
-            print(f'{c[\"sha\"][:8]} {c[\"commit\"][\"author\"][\"date\"]} {msg}')
-        # All CI runs
-        r = await http.get(
-            'https://api.github.com/repos/$ORG/$REPO_SLUG/actions/runs?per_page=10',
-            headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
-        )
-        print('=== CI Runs ===')
-        for run in r.json().get('workflow_runs', []):
-            print(f'Run #{run[\"id\"]}: status={run[\"status\"]}, conclusion={run.get(\"conclusion\")}, created={run[\"created_at\"]}')
-
-asyncio.run(main())
-" 2>/dev/null
-```
-
-This data is essential for the report — include each CI fix attempt in the Timeline.
-
-**Poll engineering task**:
-
-```bash
-# Poll every 30s, timeout after 60 minutes
-for i in $(seq 1 120); do
-  STATUS=$(curl -s http://localhost:8000/api/runs/$TASK_ID | jq -r '.status')
-  echo "[$i/120] Task status: $STATUS"
-  if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
+# Poll project status — scaffold transitions DRAFT → ACTIVE
+for i in $(seq 1 20); do
+  STATUS=$(curl -s "http://localhost:8000/api/projects/$PROJECT_ID" | jq -r '.status')
+  WORKSPACE=$(curl -s "http://localhost:8000/api/projects/$PROJECT_ID" | jq -r '.config.workspace_ready // false')
+  echo "[$i/20] Project: status=$STATUS workspace_ready=$WORKSPACE"
+  if [ "$STATUS" = "active" ] && [ "$WORKSPACE" = "true" ]; then
+    echo "Scaffold complete"
     break
   fi
-  sleep 30
+  sleep 15
 done
 ```
 
-**Then find and poll deploy task**:
+**If stuck after 5 minutes**: Check scaffolder and scheduler logs:
 
 ```bash
-# Find deploy task
-DEPLOY_TASK=$(curl -s "http://localhost:8000/api/runs/?type=deploy&project_id=$PROJECT_ID" | jq -r '.[0].id')
-
-# Poll deploy every 30s, timeout after 30 minutes
-for i in $(seq 1 60); do
-  STATUS=$(curl -s http://localhost:8000/api/runs/$DEPLOY_TASK | jq -r '.status')
-  echo "[$i/60] Deploy status: $STATUS"
-  if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
-    break
-  fi
-  sleep 30
-done
-
-# Extract smoke_result from deploy task (distinguishes deploy fail vs smoke fail)
-DEPLOY_RESULT=$(curl -s http://localhost:8000/api/runs/$DEPLOY_TASK)
-SMOKE_STATUS=$(echo "$DEPLOY_RESULT" | jq -r '.result.smoke_result.status // "none"')
-DEPLOYED_URL=$(echo "$DEPLOY_RESULT" | jq -r '.result.deployed_url // empty')
-echo "Deploy status: $STATUS, Smoke: $SMOKE_STATUS, URL: $DEPLOYED_URL"
-
-# If deploy task failed but deployed_url exists — it's a smoke failure, not deploy failure
-if [ "$STATUS" = "failed" ] && [ -n "$DEPLOYED_URL" ]; then
-  echo "NOTE: Deploy succeeded but smoke test failed"
-  echo "$DEPLOY_RESULT" | jq '.result.smoke_result.checks[]'
-fi
+docker compose logs scaffolder --tail=30 --since=5m 2>/dev/null
+docker compose logs scheduler --tail=30 --since=5m 2>/dev/null | grep -i scaffold
 ```
 
-**Smoke diagnostics** — check deploy-worker logs for subgraph result details (critical for #25 investigation):
+**Light intervention**: If scaffold_trigger hasn't fired, check the scaffold:queue
+and inflight key. If there's a stale `scaffold:inflight:{project_id}` Redis key, clear it:
 
 ```bash
-docker compose logs deploy-worker --since=30m 2>&1 | grep "devops_subgraph_result"
-```
-
-This log line shows: `result_keys` (which state fields were returned), `has_smoke_result`,
-`smoke_result` value, `errors` (if non-empty, smoke_tester was skipped by routing).
-Include the full log line in the report under Timeline or Problems.
-
-### Step 5: Verify
-
-**5a. CI status**:
-
-```bash
-ORG="project-factory-organization"
-# IMPORTANT: GitHub repos use hyphens, not underscores. Always use $REPO_SLUG here.
-docker compose exec -T langgraph python -c "
-import asyncio
-from shared.clients.github import GitHubAppClient
-
+docker compose exec -T api python3 -c "
+import asyncio, redis.asyncio as redis
 async def main():
-    gh = GitHubAppClient()
-    try:
-        run = await gh.get_latest_workflow_run('$ORG', '$REPO_SLUG', 'ci.yml', 'main')
-        print(f\"CI run #{run['id']}: status={run['status']}, conclusion={run.get('conclusion')}\")
-        print(f\"URL: {run['html_url']}\")
-    except Exception as e:
-        print(f'CI check failed: {e}')
-
+    r = redis.from_url('redis://redis:6379')
+    key = 'scaffold:inflight:$PROJECT_ID'
+    val = await r.get(key)
+    if val:
+        await r.delete(key)
+        print(f'Cleared stale inflight key: {key}')
+    else:
+        print('No inflight key found')
+    await r.aclose()
 asyncio.run(main())
 "
 ```
 
-**5b. Service running on server**:
+### Step 3: Monitor Architect
 
-First, extract server IP and port from the deploy task result (see "Server Access" section):
+The architect runs in its **own container** (not scheduler!).
 
 ```bash
-# Extract IP and port from deployed_url (most reliable source)
-DEPLOY_RESULT=$(curl -s "http://localhost:8000/api/runs/$DEPLOY_TASK")
-DEPLOYED_URL=$(echo "$DEPLOY_RESULT" | jq -r '.result.deployed_url // empty')
-if [ -n "$DEPLOYED_URL" ]; then
-  SERVER_IP=$(echo "$DEPLOYED_URL" | sed -E 's|https?://([^:/]+).*|\1|')
-  DEPLOY_PORT=$(echo "$DEPLOYED_URL" | sed -E 's|.*:([0-9]+)$|\1|')
-fi
-
-# Fallback: service-deployments API
-if [ -z "$SERVER_IP" ]; then
-  SERVER_IP=$(curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | jq -r '.[0].server_ip // empty')
-fi
-
-# Fallback: port allocations → server handle → server public_ip
-if [ -z "$SERVER_IP" ]; then
-  SERVER_HANDLE=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
-    | jq -r '.[].handle' \
-    | while read h; do
-        HAS=$(curl -s "http://localhost:8000/api/servers/$h/ports" \
-          | jq -r --arg pid "$PROJECT_ID" '[.[] | select(.project_id == $pid)] | length')
-        [ "$HAS" != "0" ] && echo "$h" && break
-      done | head -1)
-  if [ -n "$SERVER_HANDLE" ]; then
-    SERVER_IP=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE" | jq -r '.public_ip // empty')
-    DEPLOY_PORT=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE/ports" \
-      | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .port // empty' | head -1)
+# Poll for tasks created by architect
+for i in $(seq 1 30); do
+  TASKS=$(curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=created_at")
+  COUNT=$(echo "$TASKS" | jq 'length')
+  echo "[$i/30] Tasks: $COUNT"
+  if [ "$COUNT" -gt "0" ]; then
+    echo "$TASKS" | jq -r '.[] | "\(.id)  \(.status)  \(.title)"'
+    break
   fi
-fi
-echo "Server: $SERVER_IP, Port: $DEPLOY_PORT"
+  sleep 10
+done
 ```
 
-**If deploy succeeded** — verify service is healthy:
+**If no tasks after 5 minutes**: Check architect logs:
 
 ```bash
-# Check deployment records
-curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | jq .
+docker compose logs architect --tail=50 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -20
+```
 
-# SSH to server and verify containers
+**Known architect issues**:
+
+- **`blocked_by_task_id="None"` string bug**: Architect LLM returns Python `"None"` instead
+  of `null`. Causes 500 FK violation. Check API logs:
+  ```bash
+  docker compose logs api --tail=200 --since=5m 2>/dev/null | grep -A5 "500\|ForeignKey"
+  ```
+  If this happens: note in report as a finding. Do NOT create tasks manually — just document it.
+
+- **Scaffold timeout**: If project is still DRAFT, architect waits up to 5 min. Check if
+  scaffold actually completed (see Step 2).
+
+**Verify**: Task chain should have sensible descriptions, correct blocking order,
+and a CI check task at the end.
+
+### Step 4: Monitor Engineering
+
+Track each task through its lifecycle. This is the longest phase.
+
+```bash
+# Poll task statuses every 30-60s
+curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=created_at" | python3 -c "
+import json, sys
+tasks = json.load(sys.stdin)
+for t in tasks:
+    blocked = f' (blocked by {t.get(\"blocked_by_task_id\",\"\")})' if t.get('blocked_by_task_id') else ''
+    print(f\"{t['id']}  {t['status']:25s}  {t['title']}{blocked}\")
+"
+```
+
+### What to check at each status:
+
+**`todo` → `in_dev`**: Task dispatcher picks up unblocked TODO tasks every 30s.
+- If stuck > 2 min and not blocked: check scheduler logs
+  ```bash
+  docker compose logs scheduler --tail=30 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -15
+  ```
+
+**`in_dev`**: Worker is running.
+- Check via Worker-Manager Introspection API:
+  ```bash
+  curl -s http://localhost:8000/wm-api/workers/ | python3 -c "
+  import json, sys
+  for w in json.load(sys.stdin):
+      print(f\"{w['container_name']}  status={w['status']}  task={w.get('task_id','?')}\")
+  "
+  # Worker logs
+  curl -s "http://localhost:8000/wm-api/workers/$WORKER_ID/logs?tail=30"
+  # Worker progress
+  curl -s "http://localhost:8000/wm-api/workers/$WORKER_ID/files/PROGRESS.md"
+  ```
+- Cross-check with Docker:
+  ```bash
+  docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}\t{{.Status}}"
+  ```
+- If API and Docker disagree — note as a finding.
+
+**`in_ci`**: Code pushed, CI running.
+```bash
+docker compose exec -T api python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+async def main():
+    gh = GitHubAppClient()
+    run = await gh.get_latest_workflow_run('project-factory-organization', '$REPO_SLUG', 'ci.yml', 'main')
+    if run:
+        print(f\"CI: {run['status']} / {run.get('conclusion','pending')} — {run['html_url']}\")
+    else:
+        print('No CI run found')
+asyncio.run(main())
+"
+```
+
+**`done`**: Task completed. Collect worker report:
+```bash
+curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
+import json, sys
+for e in json.load(sys.stdin):
+    report = e.get('details', {}).get('report', '')
+    if report: print(report)
+    else: print('(no worker report)')
+"
+```
+
+**`failed`**: Check why. Read failure_metadata and events:
+```bash
+curl -s http://localhost:8000/api/tasks/$TASK_ID | python3 -c "
+import json, sys
+t = json.load(sys.stdin)
+print('Status:', t['status'])
+print('Failure metadata:', json.dumps(t.get('failure_metadata'), indent=2))
+"
+```
+
+**Light intervention on failure**: If the failure looks retriable (timeout, transient error),
+retry the task:
+```bash
+curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=backlog"
+curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=todo"
+```
+Document the retry in the timeline. If it fails again, record and move on.
+
+### Polling loop
+
+Poll every 30-60 seconds. Timeout after 30 minutes per task.
+
+Keep a timeline log:
+```
+HH:MM  task-xxx  todo → in_dev (worker started)
+HH:MM  task-xxx  in_dev → in_ci (commit pushed)
+HH:MM  task-xxx  CI passed → done
+```
+
+### Step 5: Monitor Deploy
+
+When all tasks are done, the dispatcher transitions the story to `deploying` and publishes
+a DeployMessage. This happens automatically — just watch.
+
+**IMPORTANT**: The dispatcher's `complete_stories` only checks stories in `in_progress` status.
+If the story is stuck in `created` after all tasks are done (shouldn't happen in normal flow
+but can with race conditions):
+
+```bash
+# Light intervention: transition story to in_progress
+curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
+  -H "Content-Type: application/json" \
+  -d '{"actor": "e2e-test"}'
+```
+
+### Story API: Action-based endpoints
+
+Stories use action-based endpoints, NOT generic PATCH:
+```
+POST /api/stories/{id}/start     → created → in_progress
+POST /api/stories/{id}/deploy    → in_progress → deploying
+POST /api/stories/{id}/complete  → in_progress/deploying → completed
+POST /api/stories/{id}/fail      → any → failed
+POST /api/stories/{id}/reopen    → completed/failed → in_progress
+```
+
+### Monitoring deploy
+
+```bash
+# Watch story status
+curl -s http://localhost:8000/api/stories/$STORY_ID | python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+print(f\"Story: {s['status']}\")
+"
+
+# Deploy worker logs
+docker compose logs deploy-worker --tail=50 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -20
+```
+
+Poll story status every 30s, timeout after 30 minutes. Wait for `completed` or `failed`.
+
+### Step 6: Verify Deployment
+
+**6a. CI status**:
+
+```bash
+docker compose exec -T api python -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+async def main():
+    gh = GitHubAppClient()
+    run = await gh.get_latest_workflow_run('project-factory-organization', '$REPO_SLUG', 'ci.yml', 'main')
+    if run:
+        print(f\"CI: {run['status']} / {run.get('conclusion')}\")
+        print(f\"URL: {run['html_url']}\")
+asyncio.run(main())
+"
+```
+
+**6b. Find server and verify**:
+
+```bash
+# Find deployed URL from service-deployments
+curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" | python3 -c "
+import json, sys
+deps = json.load(sys.stdin)
+for d in deps:
+    print(f\"URL: http://{d.get('server_ip')}:{d.get('port')}\")
+    print(f\"Server: {d.get('server_ip')}\")
+"
+```
+
+**If deploy succeeded**:
+
+```bash
 bash infra/scripts/ssh-to-server.sh $SERVER_IP "
   cd /opt/services/$PROJECT_NAME/infra
   COMPOSE='docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml'
@@ -778,29 +705,22 @@ bash infra/scripts/ssh-to-server.sh $SERVER_IP "
   done
 "
 
-# Read smoke_result from deploy task (automated post-deploy check)
-echo "=== Smoke Test Result ==="
-curl -s http://localhost:8000/api/runs/$DEPLOY_TASK | jq '.result.smoke_result // "no smoke result"'
-
-# Independent cross-check: curl the health endpoint directly
+# Health check
 curl -sf "http://$SERVER_IP:$DEPLOY_PORT/health" | jq . || echo "Health endpoint not responding"
 ```
 
-**If deploy failed** — SSH to server and collect crash diagnostics:
+**If deploy failed** — collect crash diagnostics:
 
 ```bash
 bash infra/scripts/ssh-to-server.sh $SERVER_IP "
   PROJECT_DIR=/opt/services/$PROJECT_NAME
   if [ ! -d \"\$PROJECT_DIR\" ]; then
-    echo 'No deployment directory found on server'
+    echo 'No deployment directory found'
     exit 0
   fi
 
   echo '=== .env contents ==='
   cat \$PROJECT_DIR/.env 2>/dev/null || echo 'NO .env FILE'
-
-  echo '=== Compose files ==='
-  ls -la \$PROJECT_DIR/infra/
 
   cd \$PROJECT_DIR/infra
   COMPOSE='docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml'
@@ -808,49 +728,53 @@ bash infra/scripts/ssh-to-server.sh $SERVER_IP "
   echo '=== Container status ==='
   \$COMPOSE ps -a 2>/dev/null || echo 'No containers'
 
-  echo '=== Backend logs (last 50 lines) ==='
+  echo '=== Backend logs ==='
   \$COMPOSE logs backend --tail=50 2>/dev/null || echo 'No backend logs'
 
-  echo '=== DB logs (last 20 lines) ==='
+  echo '=== DB logs ==='
   \$COMPOSE logs db --tail=20 2>/dev/null || echo 'No db logs'
-
-  echo '=== Restart counts ==='
-  for cid in \$(\$COMPOSE ps -q 2>/dev/null); do
-    restarts=\$(docker inspect --format '{{.RestartCount}}' \"\$cid\")
-    name=\$(docker inspect --format '{{.Name}}' \"\$cid\")
-    state=\$(docker inspect --format '{{.State.Status}}' \"\$cid\")
-    echo \"\$name: state=\$state restarts=\$restarts\"
-  done
 "
 ```
 
-The crash diagnostics output is essential for the report — include the error message
-and import chain (if applicable) in the Problem description.
+### Step 7: Collect Reports
 
-### Step 6: Collect worker audit report
+**7a. Worker reports from task events**:
 
-Try to fetch `AUDIT_REPORT.md` that the developer worker commits to the repo.
+```bash
+for TASK_ID in $(curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID" | python3 -c "
+import json, sys
+for t in json.load(sys.stdin):
+    print(t['id'])
+"); do
+  echo "=== Task: $TASK_ID ==="
+  curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
+import json, sys
+events = json.load(sys.stdin)
+for e in events:
+    report = e.get('details', {}).get('report', '')
+    if report: print(report)
+    else: print('(no worker report)')
+"
+  echo
+done
+```
+
+**7b. Audit report from GitHub repo**:
 
 ```bash
 ORG="project-factory-organization"
-DATE=$(date +%Y%m%d)
 mkdir -p docs/e2e_results/worker_reports
-
+DATE=$(date +%Y%m%d)
 WORKER_REPORT="docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-worker.md"
 
-# Fetch via GitHubAppClient
-docker compose exec -T langgraph python -c "
+docker compose exec -T api python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
-
 async def main():
     gh = GitHubAppClient()
     content = await gh.get_file_contents('$ORG', '$REPO_SLUG', 'AUDIT_REPORT.md')
-    if content:
-        print(content)
-    else:
-        print('NOT_FOUND')
-
+    if content: print(content)
+    else: print('NOT_FOUND')
 asyncio.run(main())
 " 2>/dev/null > /tmp/audit_report.txt
 
@@ -858,268 +782,121 @@ if grep -q "NOT_FOUND" /tmp/audit_report.txt; then
   echo "No worker audit report found"
 else
   cp /tmp/audit_report.txt "$WORKER_REPORT"
-  echo "Worker audit report saved to $WORKER_REPORT"
+  echo "Saved to $WORKER_REPORT"
 fi
 ```
 
-### Step 7: Write E2E report
+### Step 8: Write E2E Report
 
-Write your own report to `docs/e2e_results/<project_name>-<date>.md`.
+File: `docs/e2e_results/<project_name>-<date>.md`
 
-**File naming**: `docs/e2e_results/<project_name>-<date>.md` (one file per test).
-
-**IMPORTANT: Never overwrite existing reports.** If a file with the target name already exists,
-append a suffix: `-2`, `-3`, etc. (e.g., `todo_api-20260304-2.md`). Each E2E run
-produces a unique report — previous results must be preserved.
-
-Use existing reports in `docs/e2e_results/` as format reference if any exist.
-
-**Worker audit findings → structured Problems.** Read the worker's audit report (saved in Step 6) and include actionable findings as structured entries in `## Problems Found`. The raw worker report is preserved in `docs/e2e_results/worker_reports/` for human reference. The main report is the single source of truth for `/triage`.
+**Never overwrite existing reports** — append suffix: `-2`, `-3`, etc.
 
 Classify each problem by type:
 
-| Type | What it means | Where to look |
-|------|---------------|---------------|
-| **orchestrator** | Bug in this project (codegen_orchestrator) | This repo |
-| **template** | Bug in `service-template` (scaffolding, framework, generated code) | `/home/vlad/projects/service-template` — read source there to confirm root cause |
-| **meta** | Error in this skill's instructions (wrong commands, missing steps, bad assumptions) | Read `.claude/skills/e2e-run/SKILL.md` to find the incorrect instruction. Document what's wrong but do NOT edit the skill file. |
-| **other** | Network failures, transient errors, hardware issues | Document and move on |
-
-Report structure:
+| Type | Meaning |
+|------|---------|
+| **orchestrator** | Bug in codegen_orchestrator |
+| **template** | Bug in `service-template` |
+| **meta** | Error in this skill's instructions |
+| **other** | Network, transient, hardware |
 
 ```markdown
 # E2E Report: <project_name> — <brief summary>
 
 > **Date**: YYYY-MM-DD
 > **Project**: <project_name> (project_id: `...`)
-> **Task**: <task_id>
-> **Mode**: direct | with-po
+> **Story**: <story_id>
 > **Status**: Passed / Failed
 > **Feature phase**: passed / failed / skipped (only if --feature)
-> **Smoke**: pass (backend: 200) / fail (tg_bot: timeout) / none (no smoke result)
-> **Worker audit**: collected (findings included below) | not found
+> **Smoke**: pass / fail / none
+> **Worker audit**: collected | not found
 
 ---
 
 ## Timeline
-(chronological log of what happened — key timestamps and events)
+(chronological log — key timestamps and events)
 
-## PO Interaction (only if --with-po)
-(PO response text, whether it created project + triggered engineering on first try,
-any follow-up messages needed, fallback to direct if PO failed)
+## PO Interaction
 
 ## Problems Found
 
 ### Problem 1: <title>
 - **Type**: orchestrator | template | meta | other
 - **Severity**: critical / major / minor
-- **Backlog**: `#XX` (existing orchestrator task) | `new` (for /triage to create) | `template` (for /triage to route to service-template backlog) | `—` (skip, already fixed or not actionable)
+- **Backlog**: `#XX` | `new` | `template` | `—`
 - **Description**: ...
 - **Root cause**: ...
 - **Suggested fix**: ...
 ```
 
-### Steps F1-F5: Feature Add Phase (only if --feature)
+### Steps F1-F4: Feature Add Phase (only if --feature)
 
-Skip this entire section unless `--feature` is set AND the initial create+deploy passed.
-If the create phase failed, skip feature phase and note "Feature phase skipped (create failed)" in report.
+Skip unless `--feature` is set AND the initial create+deploy passed.
 
-#### Step F1: Trigger feature engineering
+#### Step F1: Create feature story via PO
 
-```bash
-FEATURE_TASK_ID="eng-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:12])')"
-FEATURE_DESCRIPTION="<from Feature Add Matrix>"
+Send a feature request message to PO:
+"Добавь в мой $PROJECT_NAME: $FEATURE_DESCRIPTION"
 
-# Create task in API
-curl -s -X POST http://localhost:8000/api/runs/ \
-  -H "Content-Type: application/json" \
-  -d "$(jq -n \
-    --arg id "$FEATURE_TASK_ID" \
-    --arg pid "$PROJECT_ID" \
-    '{
-      id: $id,
-      type: "engineering",
-      project_id: $pid,
-      run_metadata: {triggered_by: "cli", action: "feature"},
-      callback_stream: "agent:events:manual-test"
-    }')" | jq .
+Use the same `po:input` / `po:response` mechanism from Step 1b/1c.
 
-# Publish to engineering queue with action=feature
-docker compose exec -T \
-  -e "FEATURE_TASK_ID=$FEATURE_TASK_ID" \
-  -e "PROJECT_ID=$PROJECT_ID" \
-  -e "FEATURE_DESCRIPTION=$FEATURE_DESCRIPTION" \
-  langgraph python -c "
-import os, asyncio
-from shared.contracts.queues.engineering import EngineeringMessage
-from shared.redis.client import RedisStreamClient
-from shared.queues import ENGINEERING_QUEUE
-
-async def main():
-    client = RedisStreamClient()
-    await client.connect()
-    msg = EngineeringMessage(
-        task_id=os.environ['FEATURE_TASK_ID'],
-        project_id=os.environ['PROJECT_ID'],
-        user_id='manual-test',
-        action='feature',
-        description=os.environ['FEATURE_DESCRIPTION'],
-        skip_deploy=False,
-        callback_stream='agent:events:manual-test',
-    )
-    mid = await client.publish_message(ENGINEERING_QUEUE, msg)
-    print(f'Published feature: task={msg.task_id} mid={mid}')
-    await client.close()
-
-asyncio.run(main())
-"
-```
-
-If `--with-po` mode: instead of direct queue, send natural-language message to PO:
-"Добавь в мой $PROJECT_NAME: $FEATURE_DESCRIPTION" (same flow as Step 1-PO).
-
-#### Step F2: Verify NO scaffold
-
-Wait 20 seconds, then check worker-manager logs:
+Then extract the new story ID:
 
 ```bash
-sleep 20
-docker compose logs worker-manager --tail=30 --since=60s 2>&1 | grep -E "scaffold|copier|creating_worker|setup_git_repo"
+FEATURE_STORY_ID=$(curl -s "http://localhost:8000/api/stories/?sort=-created_at" \
+  | jq -r --arg pid "$PROJECT_ID" '[.[] | select(.project_id == $pid)] | .[0].id')
+
+echo "FEATURE_STORY_ID=$FEATURE_STORY_ID"
 ```
 
-**GOOD**: `setup_git_repo` or `creating_worker` WITHOUT `scaffold_phase_start` or `copier`.
-**BAD**: `scaffold_phase_start` or `copier` appears → scaffold ran on feature task (BUG).
+#### Step F2: Monitor feature pipeline
 
-Document whether scaffold was correctly skipped in the report.
+Same as Steps 3-5, but for `$FEATURE_STORY_ID`. Scaffold runs in `ensure` mode
+(workspace already exists — no copier, just verify).
 
-#### Step F3: Monitor feature task
+Verify NO full scaffold ran:
+```bash
+docker compose logs scaffolder --tail=20 --since=5m 2>/dev/null | grep -E "mode|copier"
+```
 
-Same as Step 4, but poll `$FEATURE_TASK_ID` instead. Also find and poll the feature deploy task:
+#### Step F3: Verify feature
+
+Same as Step 6, plus verify the specific feature from Feature Add Matrix:
+- `todo_api`: `curl -sf http://$SERVER_IP:$DEPLOY_PORT/todos/stats | jq .`
+- `weather_bot`: `curl -sf http://$SERVER_IP:$DEPLOY_PORT/api/forecast/moscow | jq .`
+
+#### Step F4: Collect feature reports
+
+Same as Step 7 — fetch worker reports and audit report for the feature story.
+
+### Step 8.5: Commit reports
 
 ```bash
-# Poll feature engineering task
-for i in $(seq 1 120); do
-  STATUS=$(curl -s http://localhost:8000/api/runs/$FEATURE_TASK_ID | jq -r '.status')
-  echo "[$i/120] Feature task status: $STATUS"
-  if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
-    break
-  fi
-  sleep 30
-done
-
-# Find and poll feature deploy task
-FEATURE_DEPLOY_TASK=$(curl -s "http://localhost:8000/api/runs/?type=deploy&project_id=$PROJECT_ID" \
-  | jq -r '[.[] | select(.id != "'$DEPLOY_TASK'")] | sort_by(.created_at) | last | .id // empty')
-
-if [ -n "$FEATURE_DEPLOY_TASK" ]; then
-  for i in $(seq 1 60); do
-    STATUS=$(curl -s http://localhost:8000/api/runs/$FEATURE_DEPLOY_TASK | jq -r '.status')
-    echo "[$i/60] Feature deploy status: $STATUS"
-    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
-      break
-    fi
-    sleep 30
-  done
-fi
+git add docs/e2e_results/
+git commit -m "e2e: $PROJECT_NAME — <pass/fail>"
 ```
 
-#### Step F4: Verify feature
+Do NOT push.
 
-Same as Step 5, but additionally verify the feature was added:
-- Check that a new commit exists after the initial deploy commit
-- For `todo_api`: `curl -sf http://$SERVER_IP:$DEPLOY_PORT/todos/stats | jq .`
-- For other tests: verify the specific feature endpoint/behavior from the Feature Add Matrix
-
-#### Step F5: Collect feature audit report
-
-Same as Step 6 — fetch AUDIT_REPORT.md again (it may have been updated by the feature worker).
-
-### Step 7.5: Commit reports (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
-
-```bash
-git add docs/e2e_results/<project_name>-<date>.md
-git add docs/e2e_results/worker_reports/ 2>/dev/null || true
-git commit -m "e2e: <project_name> — <pass/fail>"
-```
-
-### Step 7.6: Doc review & fix divergences
-
-After all tests pass and reports are committed, review the project documentation for divergences
-introduced by recent tasks. Read these files:
-
-- `docs/STATUS.md`
-- `docs/backlog.md`
-- `docs/CHANGELOG.md`
-- `docs/ROADMAP.md`
-- `CLAUDE.md`
-- `ARCHITECTURE.md`
-
-Check for:
-- **Stale references**: mentions of removed code, renamed files, deleted features, old behavior
-- **Contradictions**: docs saying one thing while code now does another (e.g., "owner_id is optional" after it became NOT NULL)
-- **Missing updates**: new features/changes from recent tasks not reflected in architecture or CLAUDE.md
-- **Backlog/STATUS inconsistencies**: done tasks still in queue, wrong plan links, stale checkpoint info
-
-If divergences are found — fix them in place and commit together (DO NOT push):
-
-```bash
-git add -A docs/ CLAUDE.md ARCHITECTURE.md
-git commit -m "docs: fix divergences found during E2E review"
-```
-
-If no divergences — skip the commit, move on.
-
-### Step 8: Cleanup (skip if --no-cleanup)
+### Step 9: Cleanup (skip if --no-cleanup)
 
 ```bash
 # 1. Kill worker containers
-docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$PROJECT_NAME" | xargs -r docker rm -f
+docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}" | xargs -r docker rm -f
 
 # 2. Delete GitHub repo
-docker compose exec -T langgraph python -c "
+docker compose exec -T api python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
-
 async def main():
     gh = GitHubAppClient()
     await gh.delete_repo('project-factory-organization', '$REPO_SLUG')
     print('Repo deleted')
-
 asyncio.run(main())
 "
-```
 
-Clean server deployment:
-
-```bash
-# 3. Get server IP — try deployed_url first, then service-deployments, then port allocations
-DEPLOYMENTS=$(curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID")
-
-# Primary: from deployed_url (already extracted in Step 4/5)
-# SERVER_IP should already be set from verification step. If not, re-extract:
-if [ -z "$SERVER_IP" ]; then
-  DEPLOYED_URL=$(curl -s "http://localhost:8000/api/runs/$DEPLOY_TASK" | jq -r '.result.deployed_url // empty')
-  [ -n "$DEPLOYED_URL" ] && SERVER_IP=$(echo "$DEPLOYED_URL" | sed -E 's|https?://([^:/]+).*|\1|')
-fi
-
-# Fallback: service-deployments
-if [ -z "$SERVER_IP" ]; then
-  SERVER_IP=$(echo "$DEPLOYMENTS" | jq -r '.[0].server_ip // empty')
-fi
-
-# Fallback: port allocations → server handle → server public_ip
-if [ -z "$SERVER_IP" ]; then
-  SERVER_HANDLE=$(curl -s "http://localhost:8000/api/servers/?is_managed=true" \
-    | jq -r '.[].handle' \
-    | while read h; do
-        HAS=$(curl -s "http://localhost:8000/api/servers/$h/ports" \
-          | jq -r --arg pid "$PROJECT_ID" '[.[] | select(.project_id == $pid)] | length')
-        [ "$HAS" != "0" ] && echo "$h" && break
-      done | head -1)
-  [ -n "$SERVER_HANDLE" ] && SERVER_IP=$(curl -s "http://localhost:8000/api/servers/$SERVER_HANDLE" | jq -r '.public_ip // empty')
-fi
-
-# 4. Remove app from server
+# 3. Clean server deployment
 if [ -n "$SERVER_IP" ]; then
   bash infra/scripts/ssh-to-server.sh $SERVER_IP "
     if [ -d /opt/services/$PROJECT_NAME/infra ]; then
@@ -1128,40 +905,62 @@ if [ -n "$SERVER_IP" ]; then
     fi
     rm -rf /opt/services/$PROJECT_NAME
     echo 'Server cleanup done'
-  " || echo "WARNING: SSH cleanup failed for $SERVER_IP — may need manual cleanup"
+  " || echo "WARNING: SSH cleanup failed"
 fi
 
-# 5. Delete deployment records
-echo "$DEPLOYMENTS" | jq -r '.[].id' | while read ID; do
-  curl -s -X DELETE "http://localhost:8000/api/service-deployments/$ID"
-done
-```
+# 4. Delete deployment records
+curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" \
+  | jq -r '.[].id' | while read ID; do
+    curl -s -X DELETE "http://localhost:8000/api/service-deployments/$ID"
+  done
 
-Delete project from DB last (cascades tasks + port allocations):
+# 5. Delete project from DB via SQL (API endpoint doesn't cascade stories)
+docker compose exec -T db psql -U postgres -d orchestrator -c "
+  BEGIN;
+  DELETE FROM task_events WHERE task_id IN (SELECT id FROM tasks WHERE story_id IN (SELECT id FROM stories WHERE project_id = '$PROJECT_ID'));
+  DELETE FROM runs WHERE project_id = '$PROJECT_ID';
+  DELETE FROM tasks WHERE story_id IN (SELECT id FROM stories WHERE project_id = '$PROJECT_ID');
+  DELETE FROM stories WHERE project_id = '$PROJECT_ID';
+  DELETE FROM port_allocations WHERE application_id IN (SELECT id FROM applications WHERE repo_id IN (SELECT id FROM repositories WHERE project_id = '$PROJECT_ID'));
+  DELETE FROM applications WHERE repo_id IN (SELECT id FROM repositories WHERE project_id = '$PROJECT_ID');
+  DELETE FROM repositories WHERE project_id = '$PROJECT_ID';
+  DELETE FROM service_deployments WHERE project_id = '$PROJECT_ID';
+  DELETE FROM projects WHERE id = '$PROJECT_ID';
+  COMMIT;
+"
 
-```bash
-# 6. Delete project from DB
-curl -s -X DELETE http://localhost:8000/api/projects/$PROJECT_ID
-```
-
-**If `--with-po`** — also clean the PO thread checkpoint to avoid polluting future tests:
-
-```bash
-# 7. Delete PO thread checkpoint (optional, prevents state leaking between tests)
-docker compose exec -T langgraph python -c "
+# 6. Trim stale messages from all queues
+docker compose exec -T api python3 -c "
 import asyncio
+import redis.asyncio as redis
 
 async def main():
-    from shared.database import get_engine
-    from sqlalchemy import text
-    engine = get_engine()
-    async with engine.begin() as conn:
-        await conn.execute(text(\"DELETE FROM checkpoints WHERE thread_id = 'po-user-999000001'\"))
-        await conn.execute(text(\"DELETE FROM checkpoint_writes WHERE thread_id = 'po-user-999000001'\"))
-        print('PO thread checkpoint cleaned')
+    r = redis.from_url('redis://redis:6379')
+    for q in ['scaffold:queue', 'architect:queue', 'engineering:queue',
+              'deploy:queue', 'worker:commands', 'po:input', 'po:proactive']:
+        length = await r.xlen(q)
+        if length > 0:
+            await r.xtrim(q, maxlen=0)
+            print(f'{q}: trimmed {length} messages')
+    # Clean stale po:response streams
+    async for key in r.scan_iter('po:response:*'):
+        await r.delete(key)
+        print(f'Deleted {key.decode()}')
+    # Clean scaffold inflight keys
+    async for key in r.scan_iter('scaffold:inflight:*'):
+        await r.delete(key)
+        print(f'Deleted {key.decode()}')
+    await r.aclose()
 
 asyncio.run(main())
-" 2>/dev/null || echo "WARNING: Could not clean PO checkpoint (table may not exist)"
+"
+
+# 7. Clean PO checkpoint for e2e test user
+docker compose exec -T db psql -U postgres -d orchestrator -c "
+  DELETE FROM langgraph.checkpoint_writes WHERE thread_id = 'po-user-999000001';
+  DELETE FROM langgraph.checkpoint_blobs WHERE thread_id = 'po-user-999000001';
+  DELETE FROM langgraph.checkpoints WHERE thread_id = 'po-user-999000001';
+"
 ```
 
 ## Final Summary
@@ -1171,67 +970,67 @@ After all tests complete, print a summary table:
 ```
 ## E2E Test Results
 
-| # | Project | Mode | Create | Feature | Duration | Problems | Audit |
-|---|---------|------|--------|---------|----------|----------|-------|
-| 1 | todo_api | direct | PASS | PASS | 35min | 0 | Yes |
-| 2 | echo_bot | with-po | FAIL | SKIP | 18min | 2 | No |
-...
+| # | Project | Create | Feature | Duration | Problems |
+|---|---------|--------|---------|----------|----------|
+| 1 | todo_api | PASS | PASS | 25min | 0 |
+| 2 | weather_bot | FAIL | SKIP | 18min | 2 |
 
 Total: X passed, Y failed out of Z tests
 ```
 
-## Error Handling
+## Error Handling & Light Interventions
 
-- If a step fails, **document the failure** in the report and continue to the next step.
-- Do NOT stop the entire run on a single failure — collect as much data as possible.
-- If scaffold is skipped, abort that specific test but continue to the next test in batch.
-- If the API is unreachable, STOP everything — the stack is down.
-- Always attempt cleanup even if the test failed (unless --no-cleanup).
+**What you CAN do** (light interventions):
+- Transition stuck story/task statuses (e.g., `POST .../start`)
+- Clean stale queue messages
+- Clear stale Redis keys (inflight markers)
+- Retry failed tasks (transition back to `todo`)
 
-## Abort & Collect (manual interruption)
+**What you should NOT do**:
+- Write or fix code
+- Clone repos and push commits
+- Create tasks manually
+- Restart orchestrator services
 
-If the user asks to stop a running test early ("тормози", "stop", "abort"), follow this procedure:
+If something needs a heavy intervention to proceed, record it as a finding and move on.
 
-1. **Kill the worker container** immediately:
-   ```bash
-   docker ps --filter "name=dev-" --format "{{.Names}}" | grep "$PROJECT_NAME" | xargs -r docker rm -f
-   ```
+**General rules**:
+- If a step fails, document and continue to the next step
+- Do NOT stop the entire run on a single failure — collect as much data as possible
+- If the API is unreachable, STOP — the stack is down
+- Always attempt cleanup even if the test failed (unless --no-cleanup)
 
-2. **Stop the background poller** (if running via `run_in_background`).
+## Abort & Collect
 
-3. **Collect data** — run Steps 5-6 as normal (verify repo state, fetch audit report, fetch
-   commits and CI runs). The repo likely has partial results that are still valuable.
+If the user asks to stop early:
 
-4. **Write the report** (Step 7) with status "Failed (aborted manually)" and document:
-   - How far the worker got (commits pushed, CI attempts)
-   - Why the test was aborted
-   - Any findings from partial results
+1. Kill worker containers
+2. Collect whatever data is available (Steps 6-7)
+3. Write report with "Failed (aborted)"
+4. Cleanup (unless --no-cleanup)
 
-5. **Cleanup** (Step 8) as normal unless the user says `--no-cleanup`.
+## Common Gotchas
 
-### Memory Review (Mandatory)
+1. **Architect is its own container** — `docker compose logs architect`, NOT scheduler
+2. **Repo names use hyphens, not underscores**: `todo_api` → `todo-api`
+3. **Local `gh` CLI has no access** — always use `GitHubAppClient` via docker compose exec
+4. **Import path**: `from shared.clients.github import GitHubAppClient`
+5. **Worker containers**: use introspection API (`/wm-api/workers/`) or `docker ps` with label filter
+6. **Story must be `in_progress` for deploy to trigger** — nudge with `POST .../start` if stuck
+7. **Story transitions are action-based** — `POST /start`, `/complete`, NOT PATCH
+8. **Stale queue messages** can clog architect for hours — check queues early
+9. **Project needs a Repository record** — scaffold_trigger won't fire without it
+10. **Cross-check sources** — compare API data with Docker/Redis. Desync is a finding.
 
-**Before generating your final response, review your memory for feedback:**
-Did you have to fix any unexpected errors, correct wrong commands, or guess missing information during this task? 
-If yes, you **MUST** append an entry to `docs/skill-feedback.md` right now, following the format described in the **Self-Feedback** section below.
+## Self-Feedback (Mandatory)
 
-## Self-Feedback
-
-During your final memory review, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
-
-- A command or path in this skill was **wrong or outdated**
-- A step was **missing context** that you had to figure out yourself
-- A step could be **simplified or reordered** for better flow
-- The skill **gave ambiguous instructions** that led to a wrong first attempt
-
-Entry format:
+Before generating your final response, check: did you encounter wrong commands,
+missing info, or unexpected errors? If yes, append to `docs/skill-feedback.md`:
 
 ```markdown
 ## [e2e-run] — <today's date>
 - **Type**: bug | missing-info | optimization
-- **Quote**: "<exact line or section from this skill>"
-- **Problem**: <what went wrong or was missing>
-- **Suggested fix**: <concrete change to the skill text>
+- **Quote**: "<exact line from this skill>"
+- **Problem**: <what went wrong>
+- **Suggested fix**: <concrete change>
 ```
-
-Only write feedback that is **specific and actionable**. Skip vague impressions.
