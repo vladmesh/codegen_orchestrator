@@ -383,8 +383,18 @@ async def _allocate_resources(project_id: str, project: dict) -> dict | str:
         config = project.get("config", {})
         modules = config.get("modules", ["backend"])
         min_ram_mb = config.get("estimated_ram_mb", 512)
+
+        # Get repo_id from primary repository
+        primary_repo = await api_client.get_primary_repository(project_id)
+        if not primary_repo:
+            return f"No repository found for project {project_id}"
+        repo_id = primary_repo["id"]
+        service_name = project.get("name", project_id)
+
         return await ensure_project_allocations(
             project_id=project_id,
+            repo_id=repo_id,
+            service_name=service_name,
             modules=modules,
             min_ram_mb=min_ram_mb,
         )
@@ -532,7 +542,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             allocated_resources, project, project_id, action
         )
 
-        # Auto-fallback: create → feature when dir already exists
+        # Auto-fallback: create ↔ feature based on actual server state
         if precheck_error and action == "create" and "already exists" in precheck_error:
             logger.warning(
                 "deploy_action_auto_fallback",
@@ -542,6 +552,18 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 reason=precheck_error,
             )
             action = "feature"
+            precheck_error = await _run_deploy_precheck(
+                allocated_resources, project, project_id, action
+            )
+        elif precheck_error and action == "feature" and "never deployed" in precheck_error:
+            logger.warning(
+                "deploy_action_auto_fallback",
+                task_id=task_id,
+                from_action="feature",
+                to_action="create",
+                reason=precheck_error,
+            )
+            action = "create"
             precheck_error = await _run_deploy_precheck(
                 allocated_resources, project, project_id, action
             )
