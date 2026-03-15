@@ -95,10 +95,10 @@ async def _write_task_event(api, planning_task_id: str, event_type: str, details
 
 
 async def _build_story_context(story_id: str, current_task_id: str | None = None) -> str | None:
-    """Build a summary of previous story tasks with their events.
+    """Build a compact list of sibling tasks for story context.
 
-    Returns a formatted string for inclusion in the worker's task message,
-    giving continuity context so the worker doesn't re-gather information.
+    Skips the current task (already in TASK.md). Shows only titles and statuses —
+    no descriptions, events, or reports to avoid duplication and info leakage.
     Returns None if story has no tasks or fetch fails.
     """
     try:
@@ -124,39 +124,22 @@ async def _build_story_context(story_id: str, current_task_id: str | None = None
 
     # Sort by created_at for chronological order
     tasks.sort(key=lambda t: t.get("created_at", ""))
+    pending_statuses = {"backlog", "todo", "blocked"}
     for task in tasks:
         tid = task.get("id", "?")
         title = task.get("title", "Untitled")
         status = task.get("status", "unknown")
-        is_current = tid == current_task_id
-        marker = " ← CURRENT" if is_current else ""
-        lines.append(f"### Task: {title} [{status}]{marker}")
 
-        if task.get("description"):
-            lines.append(f"Description: {task['description'][:300]}")
+        # Skip current task — already described in the main TASK.md section
+        if tid == current_task_id:
+            continue
 
-        # Fetch events for this task
-        try:
-            events = await api_client.get_task_events(tid)
-        except Exception:
-            events = []
-
-        if events:
-            lines.append("Events:")
-            for ev in events:
-                etype = ev.get("event_type", "?")
-                actor = ev.get("actor", "?")
-                details = ev.get("details") or {}
-                detail_str = ""
-                if etype == "status_change":
-                    detail_str = f"{ev.get('from_status')} → {ev.get('to_status')}"
-                elif details:
-                    # Compact summary of details
-                    parts = [f"{k}={v}" for k, v in list(details.items())[:5]]
-                    detail_str = ", ".join(parts)
-                lines.append(f"  - [{etype}] {detail_str} (by {actor})")
-
-        lines.append("")
+        if status == "done":
+            lines.append(f"- ~~{title}~~ — done (see .story/old_tasks/)")
+        elif status in pending_statuses:
+            lines.append(f"- {title} [{status}] — do NOT implement")
+        else:
+            lines.append(f"- {title} [{status}]")
 
     return "\n".join(lines)
 

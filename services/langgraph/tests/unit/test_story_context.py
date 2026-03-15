@@ -1,9 +1,11 @@
 """Unit tests for story context building and inclusion in task messages.
 
 Verifies that:
-1. _build_story_context fetches tasks + events and formats them
-2. Developer node includes story_context in task messages
-3. Consumer passes story_context through EngineeringState
+1. _build_story_context builds compact task list (no descriptions, no events)
+2. Current task is excluded (already in TASK.md)
+3. Future tasks are marked "do NOT implement"
+4. Developer node includes story_context in task messages
+5. Consumer passes story_context through EngineeringState
 """
 
 from __future__ import annotations
@@ -36,7 +38,6 @@ class TestBuildStoryContext:
                 },
             ]
         )
-        mock_api.get_task_events = AsyncMock(return_value=[])
 
         from src.consumers.engineering import _build_story_context
 
@@ -64,7 +65,6 @@ class TestBuildStoryContext:
                 },
             ]
         )
-        mock_api.get_task_events = AsyncMock(return_value=[])
 
         from src.consumers.engineering import _build_story_context
 
@@ -74,8 +74,8 @@ class TestBuildStoryContext:
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering.api_client")
-    async def test_builds_context_with_tasks_and_events(self, mock_api):
-        """Story with completed tasks + events produces formatted context."""
+    async def test_skips_current_task(self, mock_api):
+        """Current task is excluded from story context (already in TASK.md)."""
         mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
@@ -83,52 +83,14 @@ class TestBuildStoryContext:
                     "id": "task-1",
                     "title": "Create User model",
                     "status": "done",
-                    "description": "Implement User model with email/password",
                     "created_at": "2026-03-01T10:00:00",
                 },
                 {
                     "id": "task-2",
                     "title": "Add API endpoint",
                     "status": "in_dev",
-                    "description": "Add GET /users endpoint",
                     "created_at": "2026-03-02T10:00:00",
                 },
-            ]
-        )
-        mock_api.get_task_events = AsyncMock(
-            side_effect=[
-                # Events for task-1
-                [
-                    {
-                        "event_type": "status_change",
-                        "from_status": "backlog",
-                        "to_status": "in_dev",
-                        "actor": "dispatcher",
-                        "details": {},
-                    },
-                    {
-                        "event_type": "note",
-                        "actor": "engineering-worker",
-                        "details": {"action": "step_done", "commit_sha": "abc123"},
-                    },
-                    {
-                        "event_type": "status_change",
-                        "from_status": "in_dev",
-                        "to_status": "done",
-                        "actor": "engineering-worker",
-                        "details": {},
-                    },
-                ],
-                # Events for task-2
-                [
-                    {
-                        "event_type": "status_change",
-                        "from_status": "backlog",
-                        "to_status": "in_dev",
-                        "actor": "dispatcher",
-                        "details": {},
-                    },
-                ],
             ]
         )
 
@@ -138,11 +100,114 @@ class TestBuildStoryContext:
 
         assert result is not None
         assert "Create User model" in result
-        assert "[done]" in result
-        assert "Add API endpoint" in result
-        assert "[in_dev]" in result
-        assert "CURRENT" in result  # task-2 is current
-        assert "abc123" in result  # commit sha from event details
+        assert "done" in result
+        # Current task should NOT appear in context
+        assert "Add API endpoint" not in result
+        assert "CURRENT" not in result
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.engineering.api_client")
+    async def test_done_tasks_show_old_tasks_reference(self, mock_api):
+        """Completed tasks reference .story/old_tasks/ directory."""
+        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_tasks_by_story = AsyncMock(
+            return_value=[
+                {
+                    "id": "task-1",
+                    "title": "Create model",
+                    "status": "done",
+                    "created_at": "2026-03-01T10:00:00",
+                },
+            ]
+        )
+
+        from src.consumers.engineering import _build_story_context
+
+        result = await _build_story_context("story-1")
+        assert "old_tasks" in result
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.engineering.api_client")
+    async def test_future_tasks_marked_do_not_implement(self, mock_api):
+        """Backlog/todo tasks are marked 'do NOT implement'."""
+        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_tasks_by_story = AsyncMock(
+            return_value=[
+                {
+                    "id": "task-1",
+                    "title": "Current task",
+                    "status": "in_dev",
+                    "created_at": "2026-03-01T10:00:00",
+                },
+                {
+                    "id": "task-2",
+                    "title": "Future backlog task",
+                    "status": "backlog",
+                    "description": "Secret implementation details",
+                    "created_at": "2026-03-02T10:00:00",
+                },
+                {
+                    "id": "task-3",
+                    "title": "Future todo task",
+                    "status": "todo",
+                    "created_at": "2026-03-03T10:00:00",
+                },
+            ]
+        )
+
+        from src.consumers.engineering import _build_story_context
+
+        result = await _build_story_context("story-1", current_task_id="task-1")
+
+        assert "do NOT implement" in result
+        assert "Future backlog task" in result
+        assert "Future todo task" in result
+        # Descriptions should NOT be included
+        assert "Secret implementation details" not in result
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.engineering.api_client")
+    async def test_no_descriptions_included(self, mock_api):
+        """Task descriptions are never included in story context."""
+        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_tasks_by_story = AsyncMock(
+            return_value=[
+                {
+                    "id": "task-1",
+                    "title": "Some task",
+                    "status": "done",
+                    "description": "Detailed description that should not appear",
+                    "created_at": "2026-03-01T10:00:00",
+                },
+            ]
+        )
+
+        from src.consumers.engineering import _build_story_context
+
+        result = await _build_story_context("story-1")
+        assert "Detailed description" not in result
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.engineering.api_client")
+    async def test_no_events_fetched(self, mock_api):
+        """Events are not fetched — get_task_events should not be called."""
+        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_tasks_by_story = AsyncMock(
+            return_value=[
+                {
+                    "id": "task-1",
+                    "title": "Some task",
+                    "status": "done",
+                    "created_at": "2026-03-01T10:00:00",
+                },
+            ]
+        )
+        mock_api.get_task_events = AsyncMock()
+
+        from src.consumers.engineering import _build_story_context
+
+        await _build_story_context("story-1")
+        mock_api.get_task_events.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering.api_client")
@@ -168,29 +233,6 @@ class TestBuildStoryContext:
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering.api_client")
-    async def test_handles_event_fetch_failure(self, mock_api):
-        """Event fetch failure for a task doesn't break the whole context."""
-        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
-        mock_api.get_tasks_by_story = AsyncMock(
-            return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Some task",
-                    "status": "done",
-                    "created_at": "2026-03-01T10:00:00",
-                },
-            ]
-        )
-        mock_api.get_task_events = AsyncMock(side_effect=Exception("Event API down"))
-
-        from src.consumers.engineering import _build_story_context
-
-        result = await _build_story_context("story-1")
-        assert result is not None
-        assert "Some task" in result
-
-    @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
     async def test_sorts_tasks_chronologically(self, mock_api):
         """Tasks are sorted by created_at."""
         mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
@@ -210,7 +252,6 @@ class TestBuildStoryContext:
                 },
             ]
         )
-        mock_api.get_task_events = AsyncMock(return_value=[])
 
         from src.consumers.engineering import _build_story_context
 
@@ -218,31 +259,6 @@ class TestBuildStoryContext:
         first_pos = result.index("First task")
         second_pos = result.index("Second task")
         assert first_pos < second_pos
-
-    @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
-    async def test_truncates_long_descriptions(self, mock_api):
-        """Long descriptions are truncated to 300 chars."""
-        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
-        long_desc = "x" * 500
-        mock_api.get_tasks_by_story = AsyncMock(
-            return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Task",
-                    "status": "done",
-                    "description": long_desc,
-                    "created_at": "2026-03-01T10:00:00",
-                },
-            ]
-        )
-        mock_api.get_task_events = AsyncMock(return_value=[])
-
-        from src.consumers.engineering import _build_story_context
-
-        result = await _build_story_context("story-1")
-        # Description should be truncated
-        assert "x" * 301 not in result
 
 
 class TestDeveloperNodeStoryContext:
@@ -253,7 +269,7 @@ class TestDeveloperNodeStoryContext:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        ctx = "### Task: Create User model [done]\nEvents:\n  - [status_change] done"
+        ctx = "- ~~Create User model~~ — done (see .story/old_tasks/)"
         task_md = node._build_feature_task(
             project_name="test-project",
             description="An API",
@@ -265,7 +281,6 @@ class TestDeveloperNodeStoryContext:
         )
         assert "Story Context" in task_md
         assert "Create User model" in task_md
-        assert "do NOT redo completed work" in task_md
 
     def test_feature_task_without_story_context(self):
         """_build_feature_task without story context has no story section."""
@@ -288,7 +303,7 @@ class TestDeveloperNodeStoryContext:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        ctx = "### Task: Scaffold project [done]"
+        ctx = "- ~~Scaffold project~~ — done (see .story/old_tasks/)"
         task_md = node._build_create_task(
             project_name="test-project",
             description="Build something",
@@ -304,7 +319,7 @@ class TestDeveloperNodeStoryContext:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        ctx = "### Task: Previous work [done]"
+        ctx = "- ~~Previous work~~ — done (see .story/old_tasks/)"
 
         # Test with feature action
         task_md = node._build_task_message(
@@ -364,7 +379,7 @@ class TestDeveloperNodeStoryContext:
             },
             "action": "feature",
             "description": "Add endpoint",
-            "story_context": "### Task: Create model [done]\nCommit: abc",
+            "story_context": "- ~~Create model~~ — done (see .story/old_tasks/)",
             "repo_id": None,
             "errors": [],
         }

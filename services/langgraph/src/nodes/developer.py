@@ -445,10 +445,9 @@ Implement the business logic according to the specification above.
         if not story_context:
             return ""
         return f"""
-## Story Context (Previous Work)
+## Story Context
 
-The following tasks were completed (or are in progress) as part of this story.
-Use this context to understand what has already been done — do NOT redo completed work.
+Other tasks in this story (do NOT redo completed work):
 
 {story_context}"""
 
