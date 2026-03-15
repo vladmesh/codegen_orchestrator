@@ -64,10 +64,10 @@ Total duration: ~52 minutes (engineering: 15 min, rest: interventions + deploy i
 ### Problem 2: Webhook not received for new repos
 - **Type**: orchestrator
 - **Severity**: critical
-- **Backlog**: `new`
+- **Backlog**: `done` — dispatcher now polls GitHub for merged PRs every 30s, no webhook needed (26685e6)
 - **Description**: After PR merge, no webhook was received by the API. Story stayed in `pr_review` indefinitely.
 - **Root cause**: New repos created by scaffolder likely don't have the organization-level webhook configured, or the webhook URL isn't set up for this repo.
-- **Suggested fix**: Ensure webhook is configured at org level or scaffolder adds repo webhook during creation.
+- **Suggested fix**: ~~Ensure webhook is configured at org level or scaffolder adds repo webhook during creation.~~ Replaced with polling: dispatcher checks stories in `pr_review`, queries GitHub for merged PRs, triggers deploy if found.
 
 ### Problem 3: Deploy fix task sent to engineering for infra issue
 - **Type**: orchestrator
