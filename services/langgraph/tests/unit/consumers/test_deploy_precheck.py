@@ -37,7 +37,7 @@ def mock_api():
             }
         )
         api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
         )
         api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
         yield api

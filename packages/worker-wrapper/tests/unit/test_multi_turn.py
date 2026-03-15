@@ -197,7 +197,7 @@ class TestGitPullBeforeTurn:
                 await wrapper._git_pull()
 
                 mock_run.assert_called_once_with(
-                    ["/usr/bin/git", "pull", "--rebase=false"],
+                    ["/usr/bin/git", "pull", "--rebase=false", "origin", "main"],
                     cwd="/workspace",
                     capture_output=True,
                     text=True,
