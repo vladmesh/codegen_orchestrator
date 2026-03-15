@@ -181,8 +181,8 @@
 ### Problem 9: PO reminder triggers second false "ready" notification
 - **Type**: orchestrator
 - **Severity**: major
-- **Status**: mitigated (root cause fixed by e6ae75d)
-- **Backlog**: idea (harden PO reminder logic)
+- **Status**: fixed (prompt hardening + root cause e6ae75d)
+- **Backlog**: —
 - **Description**: PO agent has a reminder that fires to check story status. At 20:21:40 the reminder fired, PO checked the story, saw a previous successful deploy existed, and sent "Уже готов и работает!" to user. But at this point the PR wasn't merged yet — the deployed code was still just the scaffold.
 - **Root cause**: PO reminder logic doesn't verify whether the *latest* code (post-PR-merge) is deployed. It sees any past deploy success and reports it.
 - **Evidence**: `reminder_fired` at 20:21:40, `proactive_message_sent` at 20:21:43 (len=108): "Бот random-cat-bot уже готов и работает!"
@@ -214,7 +214,7 @@ No other stories were actively processing during this escort. 17 stories are in 
 ## Recommendations
 
 1. ~~**[MAJOR]** Prevent scaffold commit from triggering deploy~~ — **FIXED** (`e6ae75d`)
-2. **[MAJOR]** Fix PO reminder logic — should not report "ready" unless story is `completed` — **OPEN** (architectural)
+2. ~~**[MAJOR]** Fix PO reminder logic — should not report "ready" unless story is `completed`~~ — **FIXED** (prompt hardening: status-based rules)
 3. ~~**[MAJOR]** Fix scaffolder to enable `allow_auto_merge` on new repos~~ — **FIXED** (`ae47893`)
 4. ~~**[MAJOR]** Fix `enable_auto_merge` to use GraphQL node_id~~ — **FIXED** (node_id validation + REST fallback)
 5. ~~**[MAJOR]** Webhook deploy handler should extract and include story_id from PR branch~~ — **FIXED** (`e6ae75d` + existing PR merge path)
