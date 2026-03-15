@@ -3,6 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+import redis.asyncio as aioredis
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
@@ -11,6 +12,7 @@ from shared.contracts.dto.project import ProjectStatus
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.models import Application, PortAllocation, Project, Repository, Run, User
 
+from ..config import get_settings
 from ..database import get_async_session
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 
@@ -298,6 +300,38 @@ async def merge_secrets(
     return {"keys": sorted(existing_secrets.keys())}
 
 
+_QUEUES_TO_CLEAN = ["architect:queue", "scaffold:queue", "engineering:queue", "deploy:queue"]
+
+
+async def _cleanup_project_queue_messages(project_id: str) -> int:
+    """Remove stale queue messages referencing a deleted project.
+
+    Scans all pipeline queues and deletes messages whose project_id matches.
+    Best-effort — failures are logged but don't block project deletion.
+    """
+    settings = get_settings()
+    r = aioredis.from_url(settings.redis_url, decode_responses=True)
+    deleted = 0
+    try:
+        for queue in _QUEUES_TO_CLEAN:
+            try:
+                entries = await r.xrange(queue)
+            except Exception as exc:
+                logger.debug("queue_scan_failed", queue=queue, error=str(exc))
+                continue
+            for entry_id, fields in entries:
+                if fields.get("project_id") == project_id:
+                    await r.xdel(queue, entry_id)
+                    deleted += 1
+        # Also clear scaffold inflight marker
+        await r.delete(f"scaffold:inflight:{project_id}")
+    finally:
+        await r.aclose()
+    if deleted:
+        logger.info("project_queue_messages_cleaned", project_id=project_id, deleted=deleted)
+    return deleted
+
+
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(
     project_id: uuid.UUID,
@@ -322,5 +356,11 @@ async def delete_project(
 
     await db.delete(project)
     await db.commit()
+
+    # Best-effort cleanup: remove stale queue messages for this project
+    try:
+        await _cleanup_project_queue_messages(str(project_id))
+    except Exception as e:
+        logger.warning("project_queue_cleanup_failed", project_id=project_id, error=str(e))
 
     logger.info("project_deleted", project_id=project_id)

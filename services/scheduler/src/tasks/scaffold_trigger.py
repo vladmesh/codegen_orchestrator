@@ -92,6 +92,10 @@ async def trigger_scaffolds(
 async def _trigger_full_scaffold(project, api_client, redis_client, log) -> bool:
     """Trigger full scaffold for DRAFT projects."""
     project_id = str(project.id)
+    config = project.config or {}
+
+    if config.get("scaffold_error"):
+        return False
 
     stories = await api_client.get_stories_by_project(project_id)
     if not stories:
@@ -118,8 +122,10 @@ async def _trigger_ensure_scaffold(project, api_client, redis_client, log) -> bo
     project_id = str(project.id)
     config = project.config or {}
 
-    # Skip if workspace is already marked ready
+    # Skip if workspace is already marked ready or scaffold previously failed
     if config.get("workspace_ready"):
+        return False
+    if config.get("scaffold_error"):
         return False
 
     # Check for TODO tasks (pending dispatch)

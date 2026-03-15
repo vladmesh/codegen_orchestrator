@@ -72,6 +72,35 @@ async def append_ci_check_task(story_id: str, project_id: str) -> dict | None:
     return ci_task
 
 
+async def _wait_for_scaffold(project_id: str, project: dict, log) -> tuple[dict | None, str | None]:
+    """Wait for scaffold to complete (DRAFT → ACTIVE).
+
+    Returns (project, error). If error is set, caller should abort.
+    """
+    if project.get("status") != ProjectStatus.DRAFT:
+        return project, None
+
+    log.info("architect_waiting_for_scaffold")
+    waited = 0
+    while waited < SCAFFOLD_WAIT_MAX:
+        await asyncio.sleep(SCAFFOLD_WAIT_INTERVAL)
+        waited += SCAFFOLD_WAIT_INTERVAL
+        project = await api_client.get_project(project_id)
+        if not project:
+            log.warning("architect_project_deleted_during_scaffold_wait")
+            return None, "project deleted during scaffold wait"
+        if project.get("status") != ProjectStatus.DRAFT:
+            break
+        log.debug("architect_scaffold_poll", waited=waited)
+
+    if project.get("status") == ProjectStatus.DRAFT:
+        log.error("architect_scaffold_timeout", waited=waited)
+        return project, "scaffold did not complete in time"
+
+    log.info("architect_scaffold_ready", waited=waited)
+    return project, None
+
+
 async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single architect job by running the Architect ReAct agent.
 
@@ -125,22 +154,16 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         except Exception as e:
             log.warning("architect_story_start_failed", error=str(e))
 
-    # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing
+    # Guard: skip if project no longer exists
     project = await api_client.get_project(msg.project_id)
-    if project and project.get("status") == ProjectStatus.DRAFT:
-        log.info("architect_waiting_for_scaffold")
-        waited = 0
-        while waited < SCAFFOLD_WAIT_MAX:
-            await asyncio.sleep(SCAFFOLD_WAIT_INTERVAL)
-            waited += SCAFFOLD_WAIT_INTERVAL
-            project = await api_client.get_project(msg.project_id)
-            if not project or project.get("status") != ProjectStatus.DRAFT:
-                break
-            log.debug("architect_scaffold_poll", waited=waited)
-        if project and project.get("status") == ProjectStatus.DRAFT:
-            log.error("architect_scaffold_timeout", waited=waited)
-            return {"status": "failed", "error": "scaffold did not complete in time"}
-        log.info("architect_scaffold_ready", waited=waited)
+    if not project:
+        log.warning("architect_project_not_found", project_id=msg.project_id)
+        return {"status": "skipped", "error": "project not found"}
+
+    # Wait for scaffold completion (DRAFT → ACTIVE) before decomposing
+    project, scaffold_err = await _wait_for_scaffold(msg.project_id, project, log)
+    if scaffold_err:
+        return {"status": "failed" if project else "skipped", "error": scaffold_err}
 
     settings = get_settings()
 
