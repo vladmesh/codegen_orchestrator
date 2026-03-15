@@ -68,13 +68,18 @@ Task Dispatcher (scheduler, 30s cycle)
   ↓
 Engineering Worker (langgraph container, separate entrypoint)
   → spawns worker container via worker-manager
-  → worker runs Claude CLI agent
-  → agent commits, pushes, waits for CI
+  → worker runs Claude CLI agent on story/{story_id} branch
+  → agent commits, pushes to feature branch
   → task: IN_DEV → DONE (or FAILED)
   ↓
-All tasks DONE → Dispatcher detects
-  → story: IN_PROGRESS → DEPLOYING
+All tasks DONE → Dispatcher creates PR story/{id} → main
+  → enables auto-merge
+  → story: IN_PROGRESS → PR_REVIEW
+  ↓
+CI runs on PR → green → auto-merge → webhook (pull_request merged)
+  → story: PR_REVIEW → DEPLOYING
   → publishes DeployMessage to deploy:queue
+  (Red CI → webhook creates fix task → story back to IN_PROGRESS)
   ↓
 Deploy Worker (langgraph container, separate entrypoint)
   → configures GitHub secrets
@@ -606,10 +611,13 @@ HH:MM  task-xxx  in_dev → in_ci (commit pushed)
 HH:MM  task-xxx  CI passed → done
 ```
 
-### Step 5: Monitor Deploy
+### Step 5: Monitor PR Review & Deploy
 
-When all tasks are done, the dispatcher transitions the story to `deploying` and publishes
-a DeployMessage. This happens automatically — just watch.
+When all tasks are done, the dispatcher creates a PR from `story/{story_id}` → `main`,
+enables auto-merge, and transitions the story to `pr_review`. Deploy is triggered later
+by the webhook when the PR is merged (after CI passes on the PR).
+
+**Flow**: `in_progress` → `pr_review` → (PR merged via webhook) → `deploying` → `completed`
 
 **IMPORTANT**: The dispatcher's `complete_stories` only checks stories in `in_progress` status.
 If the story is stuck in `created` after all tasks are done (shouldn't happen in normal flow
@@ -627,7 +635,7 @@ curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
 Stories use action-based endpoints, NOT generic PATCH:
 ```
 POST /api/stories/{id}/start     → created → in_progress
-POST /api/stories/{id}/deploy    → in_progress → deploying
+POST /api/stories/{id}/deploy    → in_progress/pr_review → deploying
 POST /api/stories/{id}/complete  → in_progress/deploying → completed
 POST /api/stories/{id}/fail      → any → failed
 POST /api/stories/{id}/reopen    → completed/failed → in_progress
@@ -647,7 +655,7 @@ print(f\"Story: {s['status']}\")
 docker compose logs deploy-worker --tail=50 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -20
 ```
 
-Poll story status every 30s, timeout after 30 minutes. Wait for `completed` or `failed`.
+Poll story status every 30s, timeout after 30 minutes. Story goes through: `pr_review` → `deploying` → `completed` (or `failed`). Wait for terminal status (`completed` or `failed`).
 
 ### Step 6: Verify Deployment
 
@@ -1001,7 +1009,7 @@ If the user asks to stop early:
 3. **Local `gh` CLI has no access** — always use `GitHubAppClient` via docker compose exec
 4. **Import path**: `from shared.clients.github import GitHubAppClient`
 5. **Worker containers**: use introspection API (`/wm-api/workers/`) or `docker ps` with label filter
-6. **Story must be `in_progress` for deploy to trigger** — nudge with `POST .../start` if stuck
+6. **Story must be `in_progress` for PR creation** — nudge with `POST .../start` if stuck. After PR, story goes to `pr_review`. Deploy triggers via webhook after PR merge
 7. **Story transitions are action-based** — `POST /start`, `/complete`, NOT PATCH
 8. **Stale queue messages** can clog architect for hours — check queues early
 9. **Project needs a Repository record** — scaffold_trigger won't fire without it

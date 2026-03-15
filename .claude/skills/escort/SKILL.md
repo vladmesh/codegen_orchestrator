@@ -42,13 +42,22 @@ Task Dispatcher (scheduler container, 30s cycle)
   → spawns worker containers via worker-manager
 
 engineering:queue → Engineering Worker (langgraph container, separate entrypoint)
-  → sends task to worker container
+  → sends task to worker container on story/{story_id} branch
   → worker runs Claude CLI agent
-  → agent commits, pushes, waits for CI
+  → agent commits, pushes to feature branch
+  → worker-wrapper archives TASK.md+REPORT.md into .story/old_tasks/
   → worker-wrapper collects REPORT.md as task event
 
-All tasks done → Dispatcher detects → publishes to deploy:queue
-  → story transitions to deploying
+All tasks done → Dispatcher creates PR story/{id} → main
+  → enables auto-merge (merge commit)
+  → story transitions to pr_review
+  → worker container cleaned up
+
+PR CI gate:
+  → CI runs on PR
+  → Green CI → auto-merge → webhook (pull_request merged) → deploy:queue
+  → Red CI → webhook (workflow_run failure on story/*) → creates fix task
+    → story back to in_progress → fix cycle
 
 deploy:queue → Deploy Worker (langgraph container, separate entrypoint)
   → configures GitHub secrets
@@ -402,9 +411,13 @@ HH:MM  task-xxx  CI passed
 HH:MM  task-xxx  done
 ```
 
-## Step 4: Monitor Deploy Phase
+## Step 4: Monitor PR Review & Deploy Phase
 
-When all tasks are done, the dispatcher should transition the story to `deploying`.
+When all tasks are done, the dispatcher creates a PR from `story/{story_id}` → `main`,
+enables auto-merge, and transitions the story to `pr_review`. Deploy is triggered later
+by the webhook when the PR is merged (after CI passes).
+
+**Flow**: `in_progress` → (all tasks done) → `pr_review` → (PR merged via webhook) → `deploying` → `completed`
 
 **IMPORTANT**: The dispatcher's `complete_stories` function only checks stories in
 `in_progress` status. If the story is still `created` (which happens when tasks were
@@ -425,12 +438,41 @@ curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
   -d '{"actor": "escort"}'
 ```
 
+### What to watch during `pr_review`:
+- PR created on GitHub (check repo PR list)
+- CI running on the PR
+- Auto-merge enabled
+- If CI fails: webhook creates a fix task, story goes back to `in_progress`
+- If CI passes: auto-merge → webhook fires → story → `deploying`
+
+```bash
+# Check if PR exists for the story branch
+docker compose exec -T api python3 -c "
+import asyncio
+from shared.clients.github import GitHubAppClient
+async def check():
+    client = GitHubAppClient()
+    # List open PRs
+    import httpx
+    token = await client.get_org_token('project-factory-organization')
+    async with httpx.AsyncClient() as h:
+        resp = await h.get(
+            f'https://api.github.com/repos/project-factory-organization/$PROJECT_NAME/pulls',
+            headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json'},
+            params={'head': f'project-factory-organization:story/$STORY_ID', 'state': 'all'},
+        )
+        for pr in resp.json():
+            print(f\"PR #{pr['number']}: {pr['state']}  merged={pr.get('merged',False)}  auto_merge={pr.get('auto_merge') is not None}\")
+asyncio.run(check())
+"
+```
+
 ### Story API: Action-based endpoints
 
 Stories use action-based endpoints, NOT generic PATCH for status changes:
 ```
 POST /api/stories/{id}/start     → created → in_progress
-POST /api/stories/{id}/deploy    → in_progress → deploying
+POST /api/stories/{id}/deploy    → in_progress/pr_review → deploying
 POST /api/stories/{id}/complete  → in_progress/deploying → completed
 POST /api/stories/{id}/fail      → any → failed
 POST /api/stories/{id}/reopen    → completed/failed → in_progress
@@ -844,7 +886,7 @@ curl -s http://localhost:8000/api/service-deployments/ | python3 -m json.tool
 3. **Local `gh` CLI has no access** to `project-factory-organization` — always use `GitHubAppClient` via `docker compose exec -T api`
 4. **Import path**: `from shared.clients.github import GitHubAppClient` (NOT `shared.github_app`)
 5. **Worker containers are named** `worker-{worker_id}` — use introspection API (`/wm-api/workers/`) or `docker ps` with label filter
-6. **Story must be `in_progress` for deploy to trigger** — if story is stuck in `created` after all tasks done, `POST .../start` it manually
+6. **Story must be `in_progress` for PR creation** — if story is stuck in `created` after all tasks done, `POST .../start` it manually. After PR is created, story goes to `pr_review`. Deploy triggers only after PR is merged (webhook)
 7. **Story transitions are action-based** — use `POST /start`, `/complete`, `/deploy`, etc. Not `PATCH` with status field.
 8. **Stale queue messages** from test runs can clog architect for hours — always check queue health early (use `/debug/queues` API)
 9. **Don't restart services carelessly** — if you restart `engineering-worker`, active tasks may lose their worker connection

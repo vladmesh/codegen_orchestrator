@@ -246,7 +246,9 @@ async def wait_engineering(
     ctx["task_status"] = status
     ctx["engineering_elapsed"] = elapsed
 
-    # Wait for story completion (scheduler complete_stories cycle ~30s)
+    # Wait for story to progress (scheduler complete_stories cycle ~30s)
+    # With PR-based CI gate, story goes to PR_REVIEW (not DEPLOYING) after all tasks done.
+    # PR_REVIEW → DEPLOYING happens later via webhook when PR is merged.
     if "story_id" in ctx and status == TaskStatus.DONE:
         for _ in range(20):  # up to 60s
             await asyncio.sleep(3)
@@ -255,6 +257,7 @@ async def wait_engineering(
                 story_status = resp.json().get("status")
                 ctx["story_status"] = story_status
                 if story_status in {
+                    StoryStatus.PR_REVIEW,
                     StoryStatus.DEPLOYING,
                     StoryStatus.COMPLETED,
                     StoryStatus.FAILED,

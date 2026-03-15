@@ -81,12 +81,14 @@ class TestEngineeringPipeline:
     async def test_story_progressed(self, engineering_ctx):
         """Story transitions past in_progress after all tasks done.
 
-        With the deploy gate (#7a46c6d), stories go to 'deploying' before 'completed'.
-        In the engineering-only test (no deploy wait), 'deploying' is the expected state.
+        With the PR-based CI gate, stories go to 'pr_review' after all tasks done
+        (dispatcher creates PR from story branch → main with auto-merge).
+        'deploying' happens later via webhook when PR is merged.
         """
         if engineering_ctx.get("task_status") != TaskStatus.DONE:
             pytest.skip("task not done")
         assert engineering_ctx.get("story_status") in {
+            StoryStatus.PR_REVIEW,
             StoryStatus.DEPLOYING,
             StoryStatus.COMPLETED,
         }, f"Story not progressed — status: {engineering_ctx.get('story_status')}"
