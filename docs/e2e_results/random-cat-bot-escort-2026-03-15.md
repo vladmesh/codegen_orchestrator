@@ -15,12 +15,14 @@
 | Time (UTC) | Event |
 |---|---|
 | 20:09:08 | Project created by PO |
+| 20:08:55 | PO → Telegram: "Создаю бота для случайных фоток котов!" (normal ack) |
 | 20:09:26 | Story created, scaffold:queue + architect:queue messages published |
 | 20:09:26 | PO transitions story → in_progress |
 | 20:09:39 | Scaffolder: registry secrets set |
 | 20:09:46 | Scaffolder: copier complete, make setup start |
 | 20:09:56 | Scaffolder: scaffold complete (102 file tree), specs extracted |
 | 20:09:57 | Scaffolder: branch protection set, project → active |
+| ~20:10 | Scaffold push to main → CI runs → CI success webhook → deploy:queue (scaffold deploy) |
 | 20:10:07 | Architect: scaffold ready (waited 40s), LLM decomposition starts |
 | 20:10:27 | Architect: 1 task created (task-cc33912a) |
 | 20:10:31 | **Architect CRASHED**: 422 on story/start (story already in_progress) |
@@ -28,6 +30,8 @@
 | 20:10:37 | Engineering worker: worker spawn requested |
 | 20:11:22 | Worker container created: worker-dev-random-cat-bot-c1cf8197 |
 | 20:11:23 | Claude agent starts in worker |
+| 20:13:48 | **Scaffold deploy completes** (deploy-wh-28180a94, smoke: pass) |
+| 20:13:53 | **FALSE NOTIFICATION #1**: PO → Telegram: "Бот готов и запущен!" (only scaffold deployed, no feature code) |
 | ~20:15 | Agent commits: `6700edb feat: implement random cat photo bot` |
 | 20:16:25 | Engineering worker: task done (commit 6700edb) |
 | 20:16:40 | Scheduler: PR #1 created (story/story-3e430423 → main) |
@@ -35,6 +39,8 @@
 | 20:16:41 | Story → pr_review, worker container cleaned up |
 | 20:18 | CI running on PR branch |
 | 20:19 | CI passed (success) |
+| 20:21:40 | PO reminder fires: "check story status for random cat bot" |
+| 20:21:43 | **FALSE NOTIFICATION #2**: PO → Telegram: "Уже готов и работает!" (PO checked status, saw deploy, but PR not yet merged — still scaffold code) |
 | 20:20:10 | **INTERVENTION**: Enabled allow_auto_merge on repo via API |
 | 20:20:14 | **INTERVENTION**: Merged PR #1 directly (auto-merge GraphQL node ID bug) |
 | 20:20:14 | GitHub webhooks received (merge event) |
@@ -45,6 +51,7 @@
 | 20:24:02 | Deploy workflow completed successfully |
 | 20:24:02 | Smoke test: PASS (backend HTTP 200, tg_bot skipped) |
 | 20:24:02 | **deployment_record_error**: 500 on service-deployments (duplicate) |
+| 20:24:06 | PO → Telegram: "Обновление завершено!" (correct — real deploy with feature code) |
 | 20:25:33 | **INTERVENTION**: Story manually transitioned → deploying → completed |
 
 ## Interventions
@@ -161,7 +168,27 @@
 - **Root cause**: OpenTelemetry context propagation issue with async LangGraph execution
 - **Suggested fix**: Investigate OTel context propagation in LangGraph async nodes; likely harmless but noisy
 
-### Problem 8: Smoke test skips tg_bot verification
+### Problem 8: Scaffold push to main triggers premature deploy + false "ready" notification
+- **Type**: orchestrator
+- **Severity**: major
+- **Status**: needs-fix
+- **Backlog**: new
+- **Description**: Scaffolder pushes to main → CI passes → webhook triggers deploy of bare scaffold code (no feature). Deploy-worker deploys successfully (smoke passes because scaffold has valid health endpoint), then sends `po:proactive` message. User receives "Бот готов и запущен!" at 20:13:53 when the feature code hasn't even been written yet (engineering task started at 20:11, finished at 20:16).
+- **Root cause**: CI success webhook doesn't distinguish scaffold commits from feature commits. Any green CI on main triggers deploy:queue.
+- **Evidence**: `deploy-wh-28180a94` completed at 20:13:48 with `deployed_url: http://80.209.235.229:8010`. Proactive message at 20:13:53: "Ваш бот ready-cat-bot готов и запущен!"
+- **Suggested fix**: Either (a) skip deploy webhook for scaffold commits (e.g. check if commit message matches scaffold pattern), or (b) don't trigger deploy webhook until story has at least one completed task, or (c) scaffolder should not push directly to main — push to a setup branch that gets merged later.
+
+### Problem 9: PO reminder triggers second false "ready" notification
+- **Type**: orchestrator
+- **Severity**: major
+- **Status**: needs-fix
+- **Backlog**: new
+- **Description**: PO agent has a reminder that fires to check story status. At 20:21:40 the reminder fired, PO checked the story, saw a previous successful deploy existed, and sent "Уже готов и работает!" to user. But at this point the PR wasn't merged yet — the deployed code was still just the scaffold.
+- **Root cause**: PO reminder logic doesn't verify whether the *latest* code (post-PR-merge) is deployed. It sees any past deploy success and reports it.
+- **Evidence**: `reminder_fired` at 20:21:40, `proactive_message_sent` at 20:21:43 (len=108): "Бот random-cat-bot уже готов и работает!"
+- **Suggested fix**: PO should check that story status is `completed` (not just that a deploy happened) before reporting success. Or: don't send proactive "ready" messages from reminders — only from deploy completion events.
+
+### Problem 10: Smoke test skips tg_bot verification
 - **Type**: orchestrator
 - **Severity**: recommendation
 - **Status**: known-issue
@@ -182,12 +209,15 @@ No other stories were actively processing during this escort. 17 stories are in 
 - **Deploy attempts**: 2 (1 scaffold deploy + 1 PR merge deploy, both successful)
 - **Manual interventions**: 4
 - **Worker reports collected**: 1/1
+- **False user notifications**: 2 out of 3 "ready" messages were premature
 
 ## Recommendations
 
-1. **[MAJOR]** Fix scaffolder to enable `allow_auto_merge` on new repos — blocks every new project's auto-merge flow
-2. **[MAJOR]** Fix `enable_auto_merge` to use GraphQL node_id — even with repo setting fixed, the function is broken
-3. **[MAJOR]** Webhook deploy handler should extract and include story_id from PR branch — without this, story never transitions to completed
-4. **[MAJOR]** Architect should gracefully handle 422 on story/start — prevents crash when PO already started the story
-5. **[MINOR]** Use upsert for service-deployment records — prevents 500 on re-deploy
-6. **[RECOMMENDATION]** Add tg_bot smoke check using getMe API instead of Telethon
+1. **[MAJOR]** Prevent scaffold commit from triggering deploy — user gets false "ready" notification before any feature code exists
+2. **[MAJOR]** Fix PO reminder logic — should not report "ready" unless story is `completed`
+3. **[MAJOR]** Fix scaffolder to enable `allow_auto_merge` on new repos — blocks every new project's auto-merge flow
+4. **[MAJOR]** Fix `enable_auto_merge` to use GraphQL node_id — even with repo setting fixed, the function is broken
+5. **[MAJOR]** Webhook deploy handler should extract and include story_id from PR branch — without this, story never transitions to completed
+6. **[MAJOR]** Architect should gracefully handle 422 on story/start — prevents crash when PO already started the story
+7. **[MINOR]** Use upsert for service-deployment records — prevents 500 on re-deploy
+8. **[RECOMMENDATION]** Add tg_bot smoke check using getMe API instead of Telethon

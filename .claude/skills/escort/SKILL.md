@@ -33,8 +33,7 @@ scaffold:queue → Scaffolder container
 
 architect:queue → Architect container (separate from langgraph!)
   → LLM decomposes story into tasks
-  → appends CI check task
-  → story should transition to in_progress
+  → story should transition to in_progress (but PO may have already done it)
 
 Task Dispatcher (scheduler container, 30s cycle)
   → finds todo tasks with no blockers
@@ -229,7 +228,7 @@ curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=-created_at" |
 
 **What to watch**:
 - Tasks created with sensible descriptions and correct blocking order
-- Task count is reasonable (1-3 tasks typically, plus 1 CI check task added by system)
+- Task count is reasonable (1-3 tasks typically)
 - No tasks with contradictory requirements
 
 **If architect hasn't run after 2 minutes**: Check architect container logs:
@@ -246,7 +245,7 @@ docker compose logs architect --tail=50 --since=5m 2>/dev/null | tail -30
   docker compose logs api --tail=200 --since=5m 2>/dev/null | grep -A5 "500\|ForeignKey"
   ```
   If this happens: some tasks may have been created before the error. Create the missing
-  tasks manually (see Intervention section). Don't forget the CI check task.
+  tasks manually (see Intervention section).
 
 - **Scaffold timeout**: If the project is still `draft` (scaffold hasn't run), the architect
   waits up to 5 minutes. The scaffolder has two modes: `full` (copier + make setup + git push)
@@ -262,9 +261,8 @@ docker compose logs architect --tail=50 --since=5m 2>/dev/null | tail -30
   "
   ```
 
-**After architect completes**: Verify the task chain looks correct and the CI check task
-exists. The architect's `append_ci_check_task` creates a final "Run tests, verify CI green"
-task blocked by the last architect task.
+**After architect completes**: Verify the task chain looks correct — sensible descriptions,
+proper blocking order, no contradictions.
 
 ## Step 3: Monitor Engineering Phase
 
@@ -538,7 +536,7 @@ later.
 ### Common interventions you'll need:
 
 - **Create missing tasks**: If architect failed partway through (e.g. the `blocked_by_task_id="None"`
-  bug), create the remaining tasks manually via API. Don't forget the CI check task at the end:
+  bug), create the remaining tasks manually via API:
   ```bash
   curl -s -X POST http://localhost:8000/api/tasks/ \
     -H "Content-Type: application/json" \
