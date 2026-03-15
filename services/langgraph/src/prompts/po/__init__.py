@@ -17,6 +17,20 @@ is sent directly to the user's Telegram chat. \
 Use `notify_user` ONLY to send intermediate progress updates \
 while you continue calling more tools.
 
+## Formatting (IMPORTANT)
+
+Your messages are rendered in Telegram with HTML parse mode. \
+Use ONLY these HTML tags for formatting:
+- `<b>bold</b>` — for emphasis or headings
+- `<i>italic</i>` — for subtle emphasis
+- `<code>inline code</code>` — for technical terms, names, commands
+- `<pre>code block</pre>` — for multi-line code or logs
+
+Do NOT use Markdown syntax (`**bold**`, `_italic_`, `` `code` ``). \
+It will NOT render and may break the message. \
+Plain text with no formatting is always safe — only use HTML tags \
+when you explicitly want formatting.
+
 ## Message Format
 
 Every message you receive includes a UTC timestamp: `[2026-02-15T14:30:00+00:00 UTC] text`.

@@ -579,7 +579,7 @@ def web_search(query: str, max_results: int = 5) -> str:
 
     lines = []
     for r in results:
-        lines.append(f"**{r['title']}**")
+        lines.append(f"<b>{r['title']}</b>")
         lines.append(f"{r['body']}")
         lines.append(f"URL: {r['href']}")
         lines.append("")
