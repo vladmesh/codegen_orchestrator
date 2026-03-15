@@ -188,7 +188,7 @@ class WorkerWrapper:
     async def _git_pull(self):
         """Pull latest changes before next agent turn."""
         result = subprocess.run(
-            ["/usr/bin/git", "pull", "--rebase=false"],  # noqa: S603
+            ["/usr/bin/git", "pull", "--rebase=false", "origin", "main"],  # noqa: S603
             cwd=WORKSPACE_DIR,
             capture_output=True,
             text=True,

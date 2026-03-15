@@ -79,21 +79,24 @@ async def run_scaffold(
 
     result = ScaffoldResult(success=False)
 
-    # Step 1: Clone repo
+    # Step 1: Init git and fetch from remote (in-place, no temp dirs)
     log.info("scaffold_clone_start", repo=repo_full_name)
     clone_url = f"https://x-access-token:{github_token}@github.com/{repo_full_name}"
     rc, out, err = await _run_cmd(
-        f'git clone "{clone_url}" .tmp-clone && '
-        f"mv .tmp-clone/.git .git && "
-        f"rm -rf .tmp-clone && "
+        f"git init && "
+        f'git remote add origin "{clone_url}" || true && '
+        f"git fetch origin && "
+        # If remote has main, start from it; otherwise create fresh branch
+        f"(git reset --soft origin/main 2>/dev/null || true) && "
+        f"git checkout -B main && "
         f'git config user.email "ai@codegen.local" && '
         f'git config user.name "Codegen Bot" && '
         f"git config core.hooksPath /dev/null",
         cwd=workspace,
     )
-    result.commands_log.append(f"git clone: rc={rc}")
+    result.commands_log.append(f"git init+fetch: rc={rc}")
     if rc != 0:
-        result.error = f"Git clone failed: {err}"
+        result.error = f"Git init/fetch failed: {err}"
         log.error("scaffold_clone_failed", error=err)
         return result
 
@@ -138,7 +141,7 @@ async def run_scaffold(
         "git config core.hooksPath /dev/null && "
         "git add . && "
         f'git commit -m "feat: scaffold {project_name} with modules: {modules}" && '
-        "git push origin main",
+        "git push -u origin main",
         cwd=workspace,
     )
     result.commands_log.append(f"git push: rc={rc}")
