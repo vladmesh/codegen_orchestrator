@@ -612,3 +612,118 @@ class TestDispatchSkipsDeveloperBlocked:
 
         api_client.create_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
+
+
+class TestPollMergedPRs:
+    """Poll GitHub for merged PRs on stories in pr_review."""
+
+    @pytest.mark.asyncio
+    async def test_triggers_deploy_when_pr_merged(self, api_client, redis_client):
+        """Story in pr_review with merged PR → deploy triggered."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import poll_merged_prs
+
+        api_client.get_stories_by_status.return_value = [
+            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+        ]
+        api_client.get_primary_repository.return_value = {
+            "id": "repo-1",
+            "git_url": "https://github.com/my-org/weather-bot",
+        }
+        api_client.get_story.return_value = {"id": "story-1", "user_id": "u-1"}
+        api_client.transition_story.return_value = {}
+        api_client.create_run.return_value = {}
+
+        mock_github = AsyncMock()
+        mock_github.list_pull_requests.return_value = [
+            {
+                "number": 42,
+                "merged_at": "2026-03-16T12:00:00Z",
+                "head": {"sha": "abc123"},
+            }
+        ]
+
+        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+            result = await poll_merged_prs(api_client, redis_client)
+
+        assert result == 1
+        api_client.transition_story.assert_called_once_with("story-1", "deploy")
+        api_client.create_run.assert_called_once()
+        redis_client.publish_message.assert_called_once()
+
+        # Verify deploy message contents
+        call_args = redis_client.publish_message.call_args
+        assert call_args[0][0] == "deploy:queue"
+        deploy_msg = call_args[0][1]
+        assert deploy_msg.project_id == "proj-1"
+        assert deploy_msg.story_id == "story-1"
+        assert deploy_msg.action == "feature"
+
+    @pytest.mark.asyncio
+    async def test_no_action_when_pr_not_merged(self, api_client, redis_client):
+        """Story in pr_review with closed but not merged PR → no action."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import poll_merged_prs
+
+        api_client.get_stories_by_status.return_value = [
+            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+        ]
+        api_client.get_primary_repository.return_value = {
+            "id": "repo-1",
+            "git_url": "https://github.com/my-org/weather-bot",
+        }
+
+        mock_github = AsyncMock()
+        mock_github.list_pull_requests.return_value = [
+            {"number": 42, "merged_at": None, "head": {"sha": "abc123"}}
+        ]
+
+        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+            result = await poll_merged_prs(api_client, redis_client)
+
+        assert result == 0
+        api_client.transition_story.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_action_when_no_stories_in_pr_review(self, api_client, redis_client):
+        """No stories in pr_review → nothing to poll."""
+        from src.tasks.task_dispatcher import poll_merged_prs
+
+        api_client.get_stories_by_status.return_value = []
+
+        result = await poll_merged_prs(api_client, redis_client)
+
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_continues_on_github_error(self, api_client, redis_client):
+        """GitHub API error for one story doesn't block others."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import poll_merged_prs
+
+        api_client.get_stories_by_status.return_value = [
+            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"},
+            {"id": "story-2", "project_id": "proj-2", "user_id": "u-2"},
+        ]
+        api_client.get_primary_repository.side_effect = [
+            {"id": "repo-1", "git_url": "https://github.com/my-org/repo1"},
+            {"id": "repo-2", "git_url": "https://github.com/my-org/repo2"},
+        ]
+        api_client.get_story.return_value = {"id": "story-2", "user_id": "u-2"}
+        api_client.transition_story.return_value = {}
+        api_client.create_run.return_value = {}
+
+        mock_github = AsyncMock()
+        mock_github.list_pull_requests.side_effect = [
+            Exception("GitHub API error"),
+            [{"number": 10, "merged_at": "2026-03-16T12:00:00Z", "head": {"sha": "def456"}}],
+        ]
+
+        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+            result = await poll_merged_prs(api_client, redis_client)
+
+        assert result == 1
+        api_client.transition_story.assert_called_once_with("story-2", "deploy")

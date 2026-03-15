@@ -1239,6 +1239,41 @@ class GitHubAppClient:
         )
         return result
 
+    async def list_pull_requests(
+        self,
+        owner: str,
+        repo: str,
+        head: str | None = None,
+        base: str | None = None,
+        state: str = "closed",
+    ) -> list[dict]:
+        """List pull requests with optional filters.
+
+        Args:
+            head: Filter by head branch (format: "owner:branch" or just "branch").
+            base: Filter by base branch (e.g. "main").
+            state: PR state: open, closed, all.
+        """
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        params: dict[str, str] = {"state": state}
+        if head:
+            # GitHub API expects "owner:branch" format
+            params["head"] = head if ":" in head else f"{owner}:{head}"
+        if base:
+            params["base"] = base
+
+        resp = await self._make_request(
+            "GET",
+            f"https://api.github.com/repos/{owner}/{repo}/pulls",
+            headers=headers,
+            params=params,
+        )
+        return resp.json()
+
     async def close_pull_request(self, owner: str, repo: str, pr_number: int) -> dict:
         """Close a pull request without merging."""
         token = await self.get_token(owner, repo)
