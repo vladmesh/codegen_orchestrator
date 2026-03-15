@@ -627,6 +627,22 @@ class GitHubAppClient:
             require_pr=require_pr,
         )
 
+    async def enable_repo_auto_merge(self, owner: str, repo: str) -> None:
+        """Enable allow_auto_merge repo setting so PRs can use auto-merge."""
+        token = await self.get_org_token(owner)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        resp = await self._make_request(
+            "PATCH",
+            f"https://api.github.com/repos/{owner}/{repo}",
+            headers=headers,
+            json={"allow_auto_merge": True},
+        )
+        resp.raise_for_status()
+        logger.info("repo_auto_merge_enabled", owner=owner, repo=repo)
+
     async def trigger_workflow_dispatch(
         self,
         owner: str,

@@ -586,3 +586,25 @@ async def test_update_branch_protection_404(authed_client):
 
             with pytest.raises(httpx.HTTPStatusError):
                 await authed_client.update_branch_protection(owner, repo, "main")
+
+
+# --- enable_repo_auto_merge tests ---
+
+
+@pytest.mark.asyncio
+async def test_enable_repo_auto_merge_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_org_token", return_value="org-token"):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.patch(f"/repos/{owner}/{repo}").mock(
+                return_value=httpx.Response(200, json={"allow_auto_merge": True})
+            )
+
+            await authed_client.enable_repo_auto_merge(owner, repo)
+
+            assert route.called
+            import json
+
+            body = json.loads(route.calls[0].request.content)
+            assert body["allow_auto_merge"] is True
