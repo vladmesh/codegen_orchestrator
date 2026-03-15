@@ -18,18 +18,16 @@ import uuid
 
 import structlog
 
+from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.project import ProjectStatus
-from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
-from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.po import POSystemEvent, to_flat_fields
 from shared.contracts.queues.worker import DeleteWorkerCommand
 from shared.queues import (
     ARCHITECT_QUEUE,
-    DEPLOY_QUEUE,
     ENGINEERING_QUEUE,
     PO_INPUT_QUEUE,
     WORKER_COMMANDS,
@@ -225,11 +223,35 @@ async def dispatch_todo_tasks(
     return dispatched
 
 
+def _parse_owner_repo(git_url: str) -> tuple[str, str]:
+    """Extract (owner, repo) from a GitHub git_url.
+
+    Handles both HTTPS and token-based URLs:
+    - https://github.com/org/repo
+    - https://x-access-token:TOKEN@github.com/org/repo.git
+    """
+    # Strip .git suffix and trailing slashes
+    url = git_url.rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+    # Take last two path segments
+    parts = url.split("/")
+    return parts[-2], parts[-1]
+
+
 async def complete_stories(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> int:
-    """Find stories where all tasks are done, transition to deploying, trigger deploy.
+    """Find stories where all tasks are done, create PR for CI gate.
+
+    When all tasks in a story are done:
+    1. Create PR from story/{story_id} → main
+    2. Enable auto-merge (merge commit, not squash — preserves individual commits)
+    3. Transition story to PR_REVIEW
+    4. Cleanup worker container, trigger next story
+
+    Deploy is triggered later by the webhook handler when PR is merged to main.
 
     Returns the number of stories transitioned.
     """
@@ -245,18 +267,6 @@ async def complete_stories(
     for story in stories:
         story_id = story["id"]
         project_id = story.get("project_id")
-
-        # Fetch project once — used for user resolution and deploy action
-        project = await api_client.get_project(project_id) if project_id else None
-
-        # Story doesn't have user_id — resolve telegram_id from project.owner_id
-        user_id = story.get("user_id", "")
-        if not user_id and project:
-            owner_id = getattr(project, "owner_id", None)
-            if owner_id:
-                user = await api_client.get_user(int(owner_id))
-                if user:
-                    user_id = str(user.get("telegram_id", ""))
 
         tasks = await api_client.get_tasks_by_story(story_id)
 
@@ -277,46 +287,47 @@ async def complete_stories(
 
         log = logger.bind(story_id=story_id, project_id=project_id)
 
-        # Transition story to deploying (not completed — deploy must succeed first)
-        await api_client.transition_story(story_id, "deploy")
-        log.info("story_deploying", task_count=len(tasks))
+        # Get repository to create PR
+        repo = await api_client.get_primary_repository(project_id) if project_id else None
+        if not repo:
+            log.error("complete_stories_no_repo", project_id=project_id)
+            continue
 
-        # Determine deploy action: "feature" if project has existing applications
-        deploy_action = "create"
-        if project:
-            apps = await api_client.get_applications_by_project(str(project.id))
-            if apps:
-                deploy_action = "feature"
+        git_url = repo.get("git_url", "")
+        owner, repo_name = _parse_owner_repo(git_url)
+        story_title = story.get("title", f"Story {story_id}")
+        branch = f"story/{story_id}"
 
-        # Trigger deploy — create run record first (deploy consumer expects it)
-        deploy_id = f"deploy-{uuid.uuid4().hex[:12]}"
-        await api_client.create_run(
-            {
-                "id": deploy_id,
-                "type": "deploy",
-                "project_id": project_id,
-                "status": RunStatus.QUEUED.value,
-            }
-        )
-        deploy_msg = DeployMessage(
-            task_id=deploy_id,
-            project_id=project_id,
-            user_id=str(user_id),
-            story_id=story_id,
-            triggered_by=DeployTrigger.ENGINEERING,
-            action=deploy_action,
-        )
-        await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
-        log.info("deploy_triggered", deploy_id=deploy_id, action=deploy_action)
+        # Create PR from story branch to main
+        try:
+            github = GitHubAppClient()
+            pr = await github.create_pull_request(
+                owner,
+                repo_name,
+                head=branch,
+                base="main",
+                title=story_title,
+                body="All tasks completed. Auto-merge enabled.",
+            )
+            pr_number = pr["number"]
+            pr_node_id = pr.get("node_id", "")
+            log.info("story_pr_created", pr_number=pr_number, branch=branch)
 
-        # No proactive message — "all tasks done, deploy triggered" is internal.
-        # User will be notified by deploy worker on success or by supervisor on
-        # permanent failure.
+            # Enable auto-merge (merge commit to preserve individual commits)
+            if pr_node_id:
+                await github.enable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
+        except Exception:
+            log.exception("story_pr_creation_failed", branch=branch)
+            continue
+
+        # Transition story to pr_review (webhook handles deploy after merge)
+        await api_client.transition_story(story_id, "pr_review")
+        log.info("story_pr_review", task_count=len(tasks), pr_number=pr_number)
 
         # Cleanup story worker container (no longer needed)
         await _cleanup_story_worker(redis_client, story_id)
 
-        # Trigger next queued story for this project (doesn't need deploy to finish)
+        # Trigger next queued story for this project (doesn't need PR to merge)
         await _trigger_next_story(api_client, redis_client, project_id)
 
         completed += 1

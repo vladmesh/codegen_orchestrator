@@ -67,7 +67,6 @@ class TestCiCheckNoCommitSuccess:
             patch("src.subgraphs.engineering.create_engineering_subgraph") as factory,
             patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
             patch("src.consumers.engineering.get_story_worker", return_value=None),
-            patch("src.consumers.engineering._wait_for_ci_and_fix"),
             patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock),
             patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
         ):
@@ -113,7 +112,6 @@ class TestCiCheckNoCommitSuccess:
             patch("src.subgraphs.engineering.create_engineering_subgraph") as factory,
             patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
             patch("src.consumers.engineering.get_story_worker", return_value=None),
-            patch("src.consumers.engineering._wait_for_ci_and_fix"),
             patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock),
             patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
         ):
@@ -138,42 +136,3 @@ class TestCiCheckNoCommitSuccess:
             )
 
             assert result["status"] == RunStatus.FAILED
-
-    @pytest.mark.asyncio
-    async def test_ci_check_with_commit_still_runs_ci_gate(self, mock_redis):
-        """CI-check task that DID produce a commit → normal CI gate flow."""
-        with (
-            patch("src.consumers.engineering.api_client") as api,
-            patch("src.subgraphs.engineering.create_engineering_subgraph") as factory,
-            patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
-            patch("src.consumers.engineering.get_story_worker", return_value=None),
-            patch("src.consumers.engineering._wait_for_ci_and_fix") as ci_gate,
-            patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock),
-            patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
-        ):
-            _setup_api_mock(api, created_by="system")
-            mock_alloc.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
-
-            graph = AsyncMock()
-            graph.ainvoke = AsyncMock(
-                return_value={
-                    "engineering_status": "done",
-                    "commit_sha": "fix123",
-                    "worker_id": "w-1",
-                    "allow_no_commit": True,
-                }
-            )
-            factory.return_value = graph
-
-            ci_gate.return_value = (True, [], False, None)
-
-            from src.consumers.engineering import process_engineering_job
-
-            result = await process_engineering_job(
-                _make_job(planning_task_id="task-ci"), mock_redis
-            )
-
-            # Should have run CI gate (not skipped)
-            ci_gate.assert_awaited_once()
-            # Normal success path returns "success" (existing convention)
-            assert result["status"] in ("success", RunStatus.COMPLETED)

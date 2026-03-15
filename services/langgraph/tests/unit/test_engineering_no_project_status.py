@@ -68,9 +68,6 @@ async def test_engineering_consumer_never_patches_project_status():
         ),
         patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock),
         patch("src.consumers.engineering.get_story_worker", return_value=None),
-        patch(
-            "src.consumers.engineering._wait_for_ci_and_fix", return_value=(True, [], False, None)
-        ),
         patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
         patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
     ):

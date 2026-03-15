@@ -515,7 +515,6 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 - [ ] [service-template] ci.yml: CI runs only on PR to main, not on every push
 - [ ] Branch protection setup via GitHub API after scaffold
 - [ ] PR-based CI gate: story completion creates PR, auto-merge on green CI
-- [ ] Feature branches for stories: engineering consumer creates story branch, workers push there
 - [ ] #1005 Standardize PYTHONPATH and import patterns across service-template services
 - [ ] debug test
 - [ ] Add TTL/cleanup for stale Redis queue messages

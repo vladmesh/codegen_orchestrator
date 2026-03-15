@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -209,8 +209,17 @@ class TestCompleteStoriesTriggersNext:
         ]
         api_client.transition_story.return_value = {}
         api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_primary_repository.return_value = {
+            "git_url": "https://github.com/org/test-project",
+        }
 
-        completed = await complete_stories(api_client, redis_client)
+        mock_github = AsyncMock()
+        mock_github.create_pull_request.return_value = {
+            "number": 1,
+            "node_id": "PR_node1",
+        }
+        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+            completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1
         # Should publish architect message for next story
@@ -243,8 +252,17 @@ class TestCompleteStoriesTriggersNext:
         ]
         api_client.transition_story.return_value = {}
         api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_primary_repository.return_value = {
+            "git_url": "https://github.com/org/test-project",
+        }
 
-        await complete_stories(api_client, redis_client)
+        mock_github = AsyncMock()
+        mock_github.create_pull_request.return_value = {
+            "number": 1,
+            "node_id": "PR_node1",
+        }
+        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+            await complete_stories(api_client, redis_client)
 
         from shared.queues import ARCHITECT_QUEUE
 
@@ -422,11 +440,20 @@ class TestStoryWorkerCleanup:
         ]
         api_client.transition_story.return_value = {}
         api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_primary_repository.return_value = {
+            "git_url": "https://github.com/org/test-project",
+        }
 
         # Story has a worker registered
         redis_client.redis.hget.return_value = b"dev-story-worker"
 
-        await complete_stories(api_client, redis_client)
+        mock_github = AsyncMock()
+        mock_github.create_pull_request.return_value = {
+            "number": 1,
+            "node_id": "PR_node1",
+        }
+        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+            await complete_stories(api_client, redis_client)
 
         # Should lookup worker
         redis_client.redis.hget.assert_called_with(STORY_WORKERS_KEY, "story-1")
@@ -448,11 +475,20 @@ class TestStoryWorkerCleanup:
         ]
         api_client.transition_story.return_value = {}
         api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_primary_repository.return_value = {
+            "git_url": "https://github.com/org/test-project",
+        }
 
         # No worker registered
         redis_client.redis.hget.return_value = None
 
-        await complete_stories(api_client, redis_client)
+        mock_github = AsyncMock()
+        mock_github.create_pull_request.return_value = {
+            "number": 1,
+            "node_id": "PR_node1",
+        }
+        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+            await complete_stories(api_client, redis_client)
 
         # Should not send delete command or clear registry
         redis_client.publish.assert_not_called()

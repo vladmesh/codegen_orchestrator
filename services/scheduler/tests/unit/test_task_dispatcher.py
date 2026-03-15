@@ -416,33 +416,89 @@ class TestBranchInDispatch:
         assert eng_msg.branch is None
 
 
+class TestParseOwnerRepo:
+    """Parse owner/repo from GitHub git URLs."""
+
+    def test_https_url(self):
+        from src.tasks.task_dispatcher import _parse_owner_repo
+
+        assert _parse_owner_repo("https://github.com/my-org/my-repo") == ("my-org", "my-repo")
+
+    def test_https_url_with_git_suffix(self):
+        from src.tasks.task_dispatcher import _parse_owner_repo
+
+        assert _parse_owner_repo("https://github.com/my-org/my-repo.git") == ("my-org", "my-repo")
+
+    def test_token_url(self):
+        from src.tasks.task_dispatcher import _parse_owner_repo
+
+        url = "https://x-access-token:ghs_abc@github.com/my-org/my-repo.git"
+        assert _parse_owner_repo(url) == ("my-org", "my-repo")
+
+    def test_trailing_slash(self):
+        from src.tasks.task_dispatcher import _parse_owner_repo
+
+        assert _parse_owner_repo("https://github.com/org/repo/") == ("org", "repo")
+
+
 class TestCompleteStories:
     """Complete stories when all tasks are done."""
 
     @pytest.mark.asyncio
-    async def test_completes_story_when_all_tasks_done(self, api_client, redis_client):
-        """Story with all tasks done → deploying + deploy triggered."""
+    async def test_completes_story_creates_pr_when_all_tasks_done(self, api_client, redis_client):
+        """Story with all tasks done → creates PR, enables auto-merge, transitions to pr_review."""
+        from unittest.mock import patch
+
         from src.tasks.task_dispatcher import complete_stories
 
         api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1", "title": "Add weather API"}
         ]
         api_client.get_tasks_by_story.return_value = [
             {"id": "task-1", "status": "done"},
             {"id": "task-2", "status": "done"},
         ]
+        api_client.get_primary_repository.return_value = {
+            "id": "repo-1",
+            "name": "weather-bot",
+            "git_url": "https://github.com/my-org/weather-bot",
+        }
         api_client.transition_story.return_value = {}
 
-        await complete_stories(api_client, redis_client)
+        mock_github = AsyncMock()
+        mock_github.create_pull_request.return_value = {
+            "number": 42,
+            "node_id": "PR_abc",
+            "html_url": "https://github.com/my-org/weather-bot/pull/42",
+        }
+        mock_github.enable_auto_merge.return_value = True
 
-        # Should transition story to deploying (not completed — deploy completes it)
-        api_client.transition_story.assert_called_once_with("story-1", "deploy")
+        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+            await complete_stories(api_client, redis_client)
 
-        # Should publish deploy message
+        # Should transition story to pr_review (not deploying)
+        api_client.transition_story.assert_called_once_with("story-1", "pr_review")
+
+        # Should create PR from story branch to main
+        mock_github.create_pull_request.assert_called_once_with(
+            "my-org",
+            "weather-bot",
+            head="story/story-1",
+            base="main",
+            title="Add weather API",
+            body="All tasks completed. Auto-merge enabled.",
+        )
+
+        # Should enable auto-merge
+        mock_github.enable_auto_merge.assert_called_once_with(
+            "my-org", "weather-bot", pr_node_id="PR_abc"
+        )
+
+        # Should NOT publish deploy message (webhook handles it after merge)
         deploy_calls = [
             c for c in redis_client.publish_message.call_args_list if "deploy" in str(c).lower()
         ]
-        assert len(deploy_calls) == 1
+        assert len(deploy_calls) == 0
 
     @pytest.mark.asyncio
     async def test_no_complete_when_tasks_pending(self, api_client, redis_client):

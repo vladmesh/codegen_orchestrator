@@ -40,11 +40,9 @@ class TestTaskStatusUpdates:
     """When planning_task_id is present, worker updates task status."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
-    async def test_updates_task_on_success(self, mock_delete, mock_ci_gate, mock_redis, mock_api):
+    async def test_updates_task_on_success(self, mock_delete, mock_redis, mock_api):
         """On success with planning_task_id: task → done, event written."""
-        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -82,13 +80,9 @@ class TestTaskStatusUpdates:
         assert event_data["details"]["commit_sha"] == "abc123"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
-    async def test_skips_deploy_when_task_linked(
-        self, mock_delete, mock_ci_gate, mock_redis, mock_api
-    ):
+    async def test_skips_deploy_when_task_linked(self, mock_delete, mock_redis, mock_api):
         """With planning_task_id, deploy is skipped (dispatcher handles it)."""
-        mock_ci_gate.return_value = (True, [], False, None)
 
         from src.consumers.engineering import _handle_engineering_success
 
@@ -115,13 +109,9 @@ class TestTaskStatusUpdates:
         assert len(deploy_calls) == 0
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
-    async def test_backward_compat_no_task_id(
-        self, mock_delete, mock_ci_gate, mock_redis, mock_api
-    ):
+    async def test_backward_compat_no_task_id(self, mock_delete, mock_redis, mock_api):
         """Without planning_task_id, old behavior: deploy triggers as before."""
-        mock_ci_gate.return_value = (True, [], False, None)
         mock_api.post.return_value = AsyncMock(status_code=201)
 
         from src.consumers.engineering import _handle_engineering_success

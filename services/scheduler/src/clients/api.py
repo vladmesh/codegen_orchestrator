@@ -89,6 +89,14 @@ class SchedulerAPIClient:
         resp = await self._request("GET", "repositories/", params=params)
         return resp.json()
 
+    async def get_primary_repository(self, project_id: str) -> dict | None:
+        """Get the primary repository for a project."""
+        repos = await self.get_repositories(project_id=project_id)
+        for repo in repos:
+            if repo.get("role") == "primary":
+                return repo
+        return repos[0] if repos else None
+
     async def update_repository(self, repo_id: str, fields: dict) -> dict:
         resp = await self._request("PATCH", f"repositories/{repo_id}", json=fields)
         return resp.json()

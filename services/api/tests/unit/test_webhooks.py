@@ -259,3 +259,179 @@ async def test_webhook_ci_success_triggers_deploy(mock_env, mock_redis):
     assert deploy_data["user_id"] == "99999"
     assert deploy_data["triggered_by"] == "webhook"
     assert deploy_data["action"] == "feature"
+
+
+# --- PR merge event tests ---
+
+
+def _make_pr_payload(
+    *,
+    action="closed",
+    merged=True,
+    head_ref="story/story-abc123",
+    base_ref="main",
+    repo_id=12345,
+    head_sha="def456",
+) -> bytes:
+    return json.dumps(
+        {
+            "action": action,
+            "pull_request": {
+                "merged": merged,
+                "head": {"ref": head_ref, "sha": head_sha},
+                "base": {"ref": base_ref},
+                "number": 42,
+                "title": "Story: test feature",
+            },
+            "repository": {"id": repo_id},
+        }
+    ).encode()
+
+
+@pytest.mark.asyncio
+async def test_webhook_pr_merged_story_branch_triggers_deploy(mock_env, mock_redis):
+    """Merged PR from story/* branch → deploy triggered."""
+    payload = _make_pr_payload()
+
+    repo = _mock_repository()
+    project = _mock_project()
+    user = _mock_user()
+
+    # Mock story lookup
+    mock_story = MagicMock()
+    mock_story.id = "story-abc123"
+    mock_story.project_id = PROJECT_UUID
+    mock_story.status = "pr_review"
+
+    mock_session = AsyncMock()
+    repo_result = MagicMock()
+    repo_result.scalar_one_or_none.return_value = repo
+    user_result = MagicMock()
+    user_result.scalar_one_or_none.return_value = user
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = mock_story
+    mock_session.execute = AsyncMock(side_effect=[repo_result, story_result, user_result])
+    mock_session.get = AsyncMock(return_value=project)
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+
+    from src.database import get_async_session as real_dep
+
+    async def fake_session():
+        yield mock_session
+
+    app.dependency_overrides[real_dep] = fake_session
+
+    with (
+        patch("src.routers.webhooks.aioredis.from_url", return_value=mock_redis),
+        patch("src.routers.webhooks._transition_story_via_api", new_callable=AsyncMock),
+    ):
+        try:
+            resp = await _post_webhook(payload, event="pull_request")
+        finally:
+            app.dependency_overrides.clear()
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    data = resp.json()
+    assert data["status"] == "accepted"
+    assert "story_id" in data
+    assert data["story_id"] == "story-abc123"
+
+    # Verify deploy message sent
+    mock_redis.xadd.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_webhook_pr_closed_not_merged_ignored(mock_env):
+    """PR closed without merge → ignored."""
+    payload = _make_pr_payload(merged=False)
+    resp = await _post_webhook(payload, event="pull_request")
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert resp.json()["status"] == "ignored"
+    assert "not merged" in resp.json()["reason"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_pr_merged_non_story_branch_ignored(mock_env):
+    """PR from non-story branch → ignored."""
+    payload = _make_pr_payload(head_ref="feature/something")
+    resp = await _post_webhook(payload, event="pull_request")
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert resp.json()["status"] == "ignored"
+    assert "non-story" in resp.json()["reason"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_pr_merged_non_main_base_ignored(mock_env):
+    """PR not targeting main → ignored."""
+    payload = _make_pr_payload(base_ref="develop")
+    resp = await _post_webhook(payload, event="pull_request")
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert resp.json()["status"] == "ignored"
+    assert "base" in resp.json()["reason"]
+
+
+# --- CI failure on story branch tests ---
+
+
+@pytest.mark.asyncio
+async def test_webhook_ci_failure_story_branch_creates_fix_task(mock_env):
+    """CI failure on story/* branch → creates fix task, transitions story."""
+    payload = _make_payload(conclusion="failure", head_branch="story/story-abc123")
+
+    repo = _mock_repository()
+    project = _mock_project()
+
+    mock_story = MagicMock()
+    mock_story.id = "story-abc123"
+    mock_story.project_id = PROJECT_UUID
+    mock_story.status = "pr_review"
+
+    mock_session = AsyncMock()
+    repo_result = MagicMock()
+    repo_result.scalar_one_or_none.return_value = repo
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = mock_story
+    mock_session.execute = AsyncMock(side_effect=[repo_result, story_result])
+    mock_session.get = AsyncMock(return_value=project)
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+
+    mock_api_resp = AsyncMock()
+    mock_api_resp.status_code = 200
+    mock_api_resp.json.return_value = {"id": "task-fix", "status": "backlog"}
+
+    from src.database import get_async_session as real_dep
+
+    async def fake_session():
+        yield mock_session
+
+    app.dependency_overrides[real_dep] = fake_session
+
+    with (
+        patch("src.routers.webhooks.httpx.AsyncClient") as mock_httpx_cls,
+        patch("src.routers.webhooks._transition_story_via_api", new_callable=AsyncMock),
+    ):
+        mock_http = AsyncMock()
+        mock_http.post.return_value = mock_api_resp
+        mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_http.__aexit__ = AsyncMock(return_value=False)
+        mock_httpx_cls.return_value = mock_http
+        try:
+            resp = await _post_webhook(payload)
+        finally:
+            app.dependency_overrides.clear()
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    data = resp.json()
+    assert data["status"] == "ci_fix_created"
+    assert data["story_id"] == "story-abc123"
+
+
+@pytest.mark.asyncio
+async def test_webhook_ci_failure_main_branch_ignored(mock_env):
+    """CI failure on main branch → ignored (same as before)."""
+    payload = _make_payload(conclusion="failure", head_branch="main")
+    resp = await _post_webhook(payload)
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert resp.json()["status"] == "ignored"

@@ -4,6 +4,9 @@
 
 ## 2026-03-15
 
+### Added
+- **Feature branches for stories** (#1011): Workers now operate on story-level feature branches (`story/{story_id}`). Branch name flows through the full pipeline: engineering consumer → developer node → worker spawner → task dispatcher → worker manager → worker wrapper. Worker manager creates/checkouts the branch in containers. Worker wrapper reports branch in result dict and pulls from current branch instead of hardcoded `main`. INSTRUCTIONS.md updated to encourage pushing on feature branches.
+
 ### Changed
 - **TASK.md moved to /workspace/**: TASK.md now lives in the workspace directory (`/workspace/TASK.md`) instead of `/home/worker/TASK.md`. Worker-manager injects it there on create; wrapper updates it each turn. After task completes, wrapper archives TASK.md + REPORT.md into `.story/old_tasks/{task_id}.md` — next worker sees full history. `.story/` is auto-gitignored.
 - **Minimal `-p` prompt for Claude workers**: Wrapper now passes a one-line redirect ("Read TASK.md") as `-p` instead of the full task content. Full task stays in TASK.md file — Claude reads it on demand, keeping context window clean. Removed self-referential TASK.md references from developer.py and INSTRUCTIONS.md.

@@ -6,7 +6,7 @@ Architect decomposition is now in langgraph service (tested separately).
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -130,10 +130,17 @@ class TestDispatcherPipelineFlow:
             {"id": "task-B", "status": "done"},
         ]
         api_client.transition_story.return_value = {}
+        api_client.get_primary_repository.return_value = {
+            "git_url": "https://github.com/org/test-project",
+        }
 
-        completed = await complete_stories(api_client, redis_client)
+        mock_github = AsyncMock()
+        mock_github.create_pull_request.return_value = {
+            "number": 1,
+            "node_id": "PR_node1",
+        }
+        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+            completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1
-        api_client.transition_story.assert_called_with("story-1", "deploy")
-        # Deploy triggered
-        assert redis_client.publish_message.call_count >= 1
+        api_client.transition_story.assert_called_with("story-1", "pr_review")

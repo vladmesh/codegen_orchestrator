@@ -21,15 +21,9 @@
 
 ### PR-based CI gate: story completion creates PR, auto-merge on green CI
 - **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Replace the polling CI gate (_ci_gate.py) with PR-based flow. When all tasks in a story are done, create a PR from story branch to main. CI runs on PR. On green CI — auto-merge. On red CI — create "Fix CI" task on same branch.  Source: docs/brainstorms/worker-context-architecture.md — CI Architec...
-
-### Feature branches for stories: engineering consumer creates story branch, workers push there
-- **Priority**: LOW
 - **Plan**: yes (in work item)
 - **Status**: backlog
-- **Brief**: Currently all worker commits go directly to main. Change to: engineering consumer creates `story/{story_id}` branch from main before first task, workers push to that branch instead of main.  Source: docs/brainstorms/worker-context-architecture.md — CI Architecture section.  Scope: - Engineering c...
+- **Brief**: Replace the polling CI gate (_ci_gate.py) with PR-based flow. When all tasks in a story are done, create a PR from story branch to main. CI runs on PR. On green CI — auto-merge. On red CI — create "Fix CI" task on same branch.  Source: docs/brainstorms/worker-context-architecture.md — CI Architec...
 
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
@@ -282,6 +276,7 @@
 
 ## Done (last 10)
 
+- Feature branches for stories: engineering consumer creates story branch, workers push there — 2026-03-15
 - #1010 STORY.md: generate .story/STORY.md with story goal, task list, references — 2026-03-15
 - #1009 Worker local tests: add make lint + make test-unit to INSTRUCTIONS.md — 2026-03-15
 - Bind PortAllocation to Application instead of Project — 2026-03-14
@@ -291,7 +286,6 @@
 - Fix root cause of tarot image failures based on diagnosis — 2026-03-14
 - Diagnose why tarot images fail 93% of the time — 2026-03-14
 - Unify workspace management: repo_id-based addressing, remove legacy workspace creation — 2026-03-14
-- Run tests, verify CI green — 2026-03-13
 
 ## Ideas
 

@@ -366,14 +366,12 @@ class TestHandleSuccessWorkerLifecycle:
     @pytest.mark.asyncio
     @patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     @patch("src.consumers.engineering.api_client")
     @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
     async def test_stores_worker_when_story_id(
-        self, mock_publish, mock_api, mock_ci_fix, mock_delete, mock_set_worker
+        self, mock_publish, mock_api, mock_delete, mock_set_worker
     ):
         """With story_id: store worker in registry, don't delete."""
-        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}], False, None)
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_primary_repository = AsyncMock(
@@ -406,14 +404,12 @@ class TestHandleSuccessWorkerLifecycle:
     @pytest.mark.asyncio
     @patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering._wait_for_ci_and_fix", new_callable=AsyncMock)
     @patch("src.consumers.engineering.api_client")
     @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
     async def test_deletes_worker_when_no_story_id(
-        self, mock_publish, mock_api, mock_ci_fix, mock_delete, mock_set_worker
+        self, mock_publish, mock_api, mock_delete, mock_set_worker
     ):
-        """Without story_id: delete worker after CI."""
-        mock_ci_fix.return_value = (True, [{"attempt": 0, "status": "passed"}], False, None)
+        """Without story_id: delete worker after completion."""
         mock_api.patch = AsyncMock()
         mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_primary_repository = AsyncMock(

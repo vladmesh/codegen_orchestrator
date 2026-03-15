@@ -288,7 +288,6 @@ class TestEngineringMessagePassthrough:
             patch("src.subgraphs.engineering.create_engineering_subgraph") as factory,
             patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
             patch("src.consumers.engineering.get_story_worker", return_value=None),
-            patch("src.consumers.engineering._wait_for_ci_and_fix") as ci_gate,
             patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock),
             patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
         ):
@@ -317,8 +316,6 @@ class TestEngineringMessagePassthrough:
                 }
             )
             factory.return_value = graph
-
-            ci_gate.return_value = (True, [], False, None)
 
             mock_redis = AsyncMock()
             mock_redis.redis = AsyncMock()
