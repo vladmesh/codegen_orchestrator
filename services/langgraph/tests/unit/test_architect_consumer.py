@@ -25,7 +25,6 @@ def _mock_api_get_project():
         mock_api.get_story = AsyncMock(return_value=_CREATED_STORY)
         # Preserve other methods as AsyncMock so tests can override
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
-        mock_api.create_task = AsyncMock(return_value={"id": "task-ci"})
         mock_api.transition_story = AsyncMock()
         yield mock_api
 
@@ -107,7 +106,6 @@ class TestProcessArchitectJob:
         with (
             patch("src.consumers.architect.get_settings") as mock_settings,
             patch("src.consumers.architect.create_architect_graph", return_value=mock_graph),
-            patch("src.consumers.architect.append_ci_check_task", new_callable=AsyncMock),
         ):
             mock_settings.return_value = MagicMock(
                 architect_llm_api_key="test-key",
@@ -147,7 +145,6 @@ class TestProcessArchitectJob:
         with (
             patch("src.consumers.architect.get_settings") as mock_settings,
             patch("src.consumers.architect.create_architect_graph", return_value=mock_graph),
-            patch("src.consumers.architect.append_ci_check_task", new_callable=AsyncMock),
         ):
             mock_settings.return_value = MagicMock(
                 architect_llm_api_key="test-key",
@@ -176,7 +173,6 @@ class TestProcessArchitectJob:
         with (
             patch("src.consumers.architect.get_settings") as mock_settings,
             patch("src.consumers.architect.create_architect_graph", return_value=mock_graph),
-            patch("src.consumers.architect.append_ci_check_task", new_callable=AsyncMock),
         ):
             mock_settings.return_value = MagicMock(
                 architect_llm_api_key="test-key",
@@ -201,7 +197,6 @@ class TestProcessArchitectJob:
         with (
             patch("src.consumers.architect.get_settings") as mock_settings,
             patch("src.consumers.architect.create_architect_graph", return_value=mock_graph),
-            patch("src.consumers.architect.append_ci_check_task", new_callable=AsyncMock),
         ):
             mock_settings.return_value = MagicMock(
                 architect_llm_api_key="test-key",
@@ -235,7 +230,6 @@ class TestProcessArchitectJob:
         with (
             patch("src.consumers.architect.get_settings") as mock_settings,
             patch("src.consumers.architect.create_architect_graph", return_value=mock_graph),
-            patch("src.consumers.architect.append_ci_check_task", new_callable=AsyncMock),
             patch("src.consumers.architect.asyncio.sleep", new_callable=AsyncMock),
         ):
             mock_settings.return_value = MagicMock(
@@ -268,39 +262,11 @@ class TestProcessArchitectJobIntegration:
         return msg.model_dump(mode="json")
 
     @pytest.mark.asyncio
-    async def test_full_flow_creates_tasks_and_ci(
-        self, mock_redis, valid_job_data, _mock_api_get_project
-    ):
-        """Graph creates architect tasks → consumer appends CI task."""
+    async def test_full_flow_creates_tasks(self, mock_redis, valid_job_data, _mock_api_get_project):
+        """Graph creates architect tasks — no CI task appended."""
         mock_graph = AsyncMock()
         mock_graph.ainvoke.return_value = {"messages": [{"role": "assistant", "content": "done"}]}
 
-        created_tasks = []
-
-        async def mock_create_task(data):
-            task_id = f"task-{len(created_tasks):03d}"
-            task = {"id": task_id, **data}
-            created_tasks.append(task)
-            return task
-
-        mock_api = _mock_api_get_project
-        # Simulate architect having already created 2 tasks via tools
-        mock_api.get_tasks_by_story = AsyncMock(
-            return_value=[
-                {
-                    "id": "task-arch-1",
-                    "blocked_by_task_id": None,
-                    "created_by": "architect",
-                },
-                {
-                    "id": "task-arch-2",
-                    "blocked_by_task_id": "task-arch-1",
-                    "created_by": "architect",
-                },
-            ]
-        )
-        mock_api.create_task = AsyncMock(side_effect=mock_create_task)
-
         with (
             patch("src.consumers.architect.get_settings") as mock_settings,
             patch("src.consumers.architect.create_architect_graph", return_value=mock_graph),
@@ -316,106 +282,3 @@ class TestProcessArchitectJobIntegration:
             result = await process_architect_job(valid_job_data, mock_redis)
 
         assert result["status"] == "success"
-        # CI task was created
-        assert len(created_tasks) == 1
-        ci_task = created_tasks[0]
-        assert ci_task["created_by"] == "system"
-        assert ci_task["blocked_by_task_id"] == "task-arch-2"
-        assert "test" in ci_task["title"].lower() or "ci" in ci_task["title"].lower()
-
-    @pytest.mark.asyncio
-    async def test_full_flow_no_tasks_no_ci(
-        self, mock_redis, valid_job_data, _mock_api_get_project
-    ):
-        """If architect creates no tasks (duplicates), no CI task is appended."""
-        mock_graph = AsyncMock()
-        mock_graph.ainvoke.return_value = {"messages": []}
-
-        mock_api = _mock_api_get_project
-        mock_api.get_tasks_by_story = AsyncMock(return_value=[])
-        mock_api.create_task = AsyncMock()
-
-        with (
-            patch("src.consumers.architect.get_settings") as mock_settings,
-            patch("src.consumers.architect.create_architect_graph", return_value=mock_graph),
-        ):
-            mock_settings.return_value = MagicMock(
-                architect_llm_api_key="key",
-                architect_llm_model="model",
-                architect_llm_base_url="http://test",
-            )
-
-            from src.consumers.architect import process_architect_job
-
-            result = await process_architect_job(valid_job_data, mock_redis)
-
-        assert result["status"] == "success"
-        mock_api.create_task.assert_not_called()
-
-
-class TestAppendCiCheckTask:
-    @pytest.mark.asyncio
-    async def test_appends_ci_task_blocked_by_last(self, _mock_api_get_project):
-        from src.consumers.architect import append_ci_check_task
-
-        mock_api = _mock_api_get_project
-        mock_api.get_tasks_by_story.return_value = [
-            {"id": "task-001", "blocked_by_task_id": None, "created_by": "architect"},
-            {"id": "task-002", "blocked_by_task_id": "task-001", "created_by": "architect"},
-        ]
-        mock_api.create_task.return_value = {"id": "task-ci", "title": "CI check"}
-
-        result = await append_ci_check_task("story-abc", "proj-123")
-
-        assert result is not None
-        assert result["id"] == "task-ci"
-        call_data = mock_api.create_task.call_args[0][0]
-        assert call_data["blocked_by_task_id"] == "task-002"
-        assert call_data["created_by"] == "system"
-        assert call_data["status"] == "todo"
-        assert "test" in call_data["title"].lower() or "ci" in call_data["title"].lower()
-
-    @pytest.mark.asyncio
-    async def test_skips_when_no_architect_tasks(self, _mock_api_get_project):
-        from src.consumers.architect import append_ci_check_task
-
-        mock_api = _mock_api_get_project
-        mock_api.get_tasks_by_story.return_value = []
-        mock_api.create_task.reset_mock()
-
-        result = await append_ci_check_task("story-abc", "proj-123")
-
-        assert result is None
-        mock_api.create_task.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_skips_when_only_system_tasks(self, _mock_api_get_project):
-        from src.consumers.architect import append_ci_check_task
-
-        mock_api = _mock_api_get_project
-        mock_api.get_tasks_by_story.return_value = [
-            {"id": "task-old", "blocked_by_task_id": None, "created_by": "system"},
-        ]
-        mock_api.create_task.reset_mock()
-
-        result = await append_ci_check_task("story-abc", "proj-123")
-
-        assert result is None
-        mock_api.create_task.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_finds_chain_tail(self, _mock_api_get_project):
-        """CI task should be blocked by the tail of the dependency chain."""
-        from src.consumers.architect import append_ci_check_task
-
-        mock_api = _mock_api_get_project
-        mock_api.get_tasks_by_story.return_value = [
-            {"id": "task-a", "blocked_by_task_id": None, "created_by": "architect"},
-            {"id": "task-b", "blocked_by_task_id": "task-a", "created_by": "architect"},
-            {"id": "task-c", "blocked_by_task_id": "task-b", "created_by": "architect"},
-        ]
-
-        await append_ci_check_task("story-abc", "proj-123")
-
-        call_data = mock_api.create_task.call_args[0][0]
-        assert call_data["blocked_by_task_id"] == "task-c"

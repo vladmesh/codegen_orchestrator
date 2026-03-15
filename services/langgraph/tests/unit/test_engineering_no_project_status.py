@@ -55,7 +55,6 @@ async def test_engineering_consumer_never_patches_project_status():
         "worker_id": None,
         "selected_modules": [],
         "test_results": None,
-        "allow_no_commit": False,
     }
     mock_subgraph = AsyncMock()
     mock_subgraph.ainvoke = AsyncMock(return_value=mock_result)

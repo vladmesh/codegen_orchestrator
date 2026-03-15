@@ -553,9 +553,6 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         # Build .story/STORY.md content (file-first context for worker)
         story_md = await _build_story_md(story_id, planning_task_id) if story_id else None
 
-        # CI-check tasks (created_by=system) may succeed without producing a commit
-        allow_no_commit = await _is_ci_check_task(planning_task_id)
-
         # Resolve story branch name
         branch = f"story/{story_id}" if story_id else None
 
@@ -577,7 +574,6 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "test_results": None,
             "needs_human_approval": False,
             "human_approval_reason": None,
-            "allow_no_commit": allow_no_commit,
             "branch": branch,
             "worker_report": None,
             "errors": [],
@@ -688,26 +684,6 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         return await _fail_job(task_id, str(e), planning_task_id)
 
 
-async def _is_ci_check_task(planning_task_id: str | None) -> bool:
-    """Check if the task is a CI-check task (created_by=system).
-
-    CI-check tasks are auto-appended by the architect consumer and may
-    complete successfully without producing a commit (when all tests pass).
-    """
-    if not planning_task_id:
-        return False
-    try:
-        planning_task = await api_client.get(f"tasks/{planning_task_id}")
-        return planning_task.get("created_by") == "system"
-    except Exception:
-        logger.warning(
-            "planning_task_fetch_failed",
-            planning_task_id=planning_task_id,
-            exc_info=True,
-        )
-        return False
-
-
 async def _handle_engineering_success(  # noqa: PLR0913
     result: dict,
     task_id: str,
@@ -727,32 +703,7 @@ async def _handle_engineering_success(  # noqa: PLR0913
     project_id = project["id"]
 
     # --- commit_sha gate: fail fast if no code was committed ---
-    allow_no_commit = result.get("allow_no_commit", False)
     if not result.get("commit_sha"):
-        if allow_no_commit:
-            # CI-check task completed without changes — everything was already green
-            logger.info(
-                "ci_check_no_commit_ok",
-                task_id=task_id,
-                project_id=project_id,
-            )
-            if planning_task_id:
-                await _update_task_status(api_client, planning_task_id, TaskStatus.DONE)
-            await api_client.patch(f"runs/{task_id}", json={"status": RunStatus.COMPLETED.value})
-            await publish_callback_event(
-                redis,
-                callback_stream,
-                RunStatus.COMPLETED.value,
-                task_id,
-                "CI check passed — no changes needed",
-                user_id=user_id,
-                project_id=project_id,
-            )
-            return {
-                "status": RunStatus.COMPLETED.value,
-                "finished_at": datetime.now(UTC).isoformat(),
-            }
-
         logger.error("no_commit_sha", task_id=task_id, project_id=project_id)
         await api_client.patch(
             f"runs/{task_id}",
