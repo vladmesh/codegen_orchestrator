@@ -56,7 +56,7 @@ Total duration: ~52 minutes (engineering: 15 min, rest: interventions + deploy i
 ### Problem 1: PR auto-merge blocked by check name mismatch
 - **Type**: template
 - **Severity**: critical
-- **Backlog**: `new`
+- **Backlog**: `done` — branch protection now requires `lint-and-test` (6d9eac8)
 - **Description**: Branch protection requires check named `ci`, but workflow jobs are named `lint-and-test` and `build-and-push`. Auto-merge never triggers.
 - **Root cause**: ci.yml workflow file defines jobs with different names than what branch protection expects
 - **Suggested fix**: Either rename jobs in ci.yml to match (`ci`), or update branch protection setup to use actual job names (`lint-and-test`)
@@ -80,7 +80,7 @@ Total duration: ~52 minutes (engineering: 15 min, rest: interventions + deploy i
 ### Problem 4: Fix task created in `backlog` status, not picked up by dispatcher
 - **Type**: orchestrator
 - **Severity**: minor
-- **Backlog**: `new`
+- **Backlog**: `done` — fix tasks now created with status=todo (6d9eac8)
 - **Description**: CI fix task `task-e316152b` was created with status `backlog`. Dispatcher only picks up `todo` tasks. Required manual transition.
 - **Root cause**: Webhook handler creates fix tasks in `backlog` status, expecting manual triage.
 - **Suggested fix**: Auto-transition CI fix tasks to `todo` since they're auto-generated and should be processed immediately.
@@ -88,7 +88,7 @@ Total duration: ~52 minutes (engineering: 15 min, rest: interventions + deploy i
 ### Problem 5: Backend container healthcheck timeout on deploy
 - **Type**: template
 - **Severity**: minor
-- **Backlog**: `—`
+- **Backlog**: `done` — added healthcheck with start_period=15s to compose base template (service-template 2bd03ec)
 - **Description**: Backend container started successfully but didn't pass healthcheck within the deploy script timeout. Manual restart worked fine.
 - **Root cause**: Likely slow DB migration or connection setup on first deploy. Healthcheck interval/retries may be too aggressive.
 - **Suggested fix**: Increase healthcheck start_period in compose.prod.yml template.
@@ -104,7 +104,7 @@ Total duration: ~52 minutes (engineering: 15 min, rest: interventions + deploy i
 ### Problem 7: TASK.md contains too much duplicated / leaked info
 - **Type**: orchestrator
 - **Severity**: major
-- **Backlog**: `new`
+- **Backlog**: `done` — story context now compact list, no descriptions/events/duplication (7f3493c)
 - **Description**: TASK.md contains the current task description fully, then repeats it again inside the story context section. The story section also includes full details of future tasks (not yet started), which risks the worker accidentally implementing them. Past worker reports from completed tasks are also included.
 - **Root cause**: worker-wrapper writes both task and story context without deduplication or filtering.
 - **Suggested fix**:
@@ -115,7 +115,7 @@ Total duration: ~52 minutes (engineering: 15 min, rest: interventions + deploy i
 ### Problem 8: AGENTS.md not referenced in worker prompt
 - **Type**: orchestrator
 - **Severity**: major
-- **Backlog**: `new`
+- **Backlog**: `done` — worker prompt now references AGENTS.md (6d9eac8)
 - **Description**: Claude Code does not read AGENTS.md by default. The worker-wrapper passes `-p 'Read TASK.md and complete the task described there.'` but never mentions AGENTS.md. This means the worker misses framework-specific instructions (e.g., how to use `make generate-from-spec`, template patterns, pre-push hooks).
 - **Root cause**: Worker prompt only references TASK.md.
 - **Suggested fix**: Change prompt to: `'Read TASK.md and AGENTS.md, then complete the task described in TASK.md.'`
@@ -123,7 +123,7 @@ Total duration: ~52 minutes (engineering: 15 min, rest: interventions + deploy i
 ### Problem 9: Worker didn't use template framework capabilities → CI failure
 - **Type**: orchestrator
 - **Severity**: major
-- **Backlog**: `new`
+- **Backlog**: `done` — addressed by Problem 8 fix (AGENTS.md in prompt)
 - **Description**: First CI failure was due to `protocols.py` not matching expected generated output. Worker manually edited generated files instead of running `make generate-from-spec`. This is likely because AGENTS.md (which documents the framework workflow) was never read (see Problem 8). A separate fix task + worker run was needed to correct this.
 - **Root cause**: Worker didn't know about the spec-first workflow because AGENTS.md wasn't in its prompt.
 - **Suggested fix**: Reference AGENTS.md in prompt (Problem 8). Additionally, consider adding generated file validation to pre-push hook so the worker catches drift before pushing.

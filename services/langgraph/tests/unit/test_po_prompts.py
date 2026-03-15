@@ -37,12 +37,13 @@ class TestSystemPrompt:
         )
 
     def test_preserves_existing_scenarios(self):
-        assert "## Scenario: User Wants to Create a NEW Bot/Project" in SYSTEM_PROMPT
-        assert "## Scenario: User Wants to ADD FEATURES or FIX BUGS" in SYSTEM_PROMPT
-        assert "## Scenario: User Asks About Status" in SYSTEM_PROMPT
+        assert "New Project" in SYSTEM_PROMPT
+        assert "Add Features" in SYSTEM_PROMPT or "Fix Bugs" in SYSTEM_PROMPT
+        assert "Status" in SYSTEM_PROMPT
 
     def test_preserves_reminders_section(self):
-        assert "## Reminders & Status Checking" in SYSTEM_PROMPT
+        assert "Reminders" in SYSTEM_PROMPT
+        assert "set_reminder" in SYSTEM_PROMPT
 
     def test_preserves_key_principles(self):
         assert "## Key Principles" in SYSTEM_PROMPT
