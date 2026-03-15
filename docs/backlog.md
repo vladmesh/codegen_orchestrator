@@ -7,12 +7,6 @@
 
 ## Queue (ordered by priority, first = next)
 
-### Branch protection setup via GitHub API after scaffold
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: After scaffolder creates a repo and pushes initial commit to main, configure branch protection rules via GitHub API: require PR for merge to main, require CI checks to pass.  Source: docs/brainstorms/worker-context-architecture.md — CI Architecture section.  Scope: - Scaffolder or post-scaffold s...
-
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —
@@ -265,6 +259,7 @@
 ## Done (last 10)
 
 - [service-template] ci.yml: CI runs only on PR to main, not on every push — 2026-03-15
+- Branch protection setup via GitHub API after scaffold — 2026-03-15
 - PR-based CI gate: story completion creates PR, auto-merge on green CI — 2026-03-15
 - Feature branches for stories: engineering consumer creates story branch, workers push there — 2026-03-15
 - #1010 STORY.md: generate .story/STORY.md with story goal, task list, references — 2026-03-15
@@ -273,7 +268,6 @@
 - Introduce Application entity and refactor Deployment model — 2026-03-14
 - Run tests, verify CI green — 2026-03-14
 - Verify fix with production-like testing — 2026-03-14
-- Fix root cause of tarot image failures based on diagnosis — 2026-03-14
 
 ## Ideas
 
