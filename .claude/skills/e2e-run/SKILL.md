@@ -413,9 +413,15 @@ asyncio.run(main())
 
 **1d. Extract IDs**:
 
+PO may create the project with a hyphenated name (`weather-bot`) even if you said `weather_bot`.
+Search by both variants:
+
 ```bash
+REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')
+
 PROJECT_ID=$(curl -s "http://localhost:8000/api/projects/" \
-  | jq -r --arg name "$PROJECT_NAME" '.[] | select(.name == $name) | .id' | head -1)
+  | jq -r --arg name "$PROJECT_NAME" --arg slug "$REPO_SLUG" \
+    '.[] | select(.name == $name or .name == $slug) | .id' | head -1)
 
 STORY_ID=$(curl -s "http://localhost:8000/api/stories/?sort=-created_at" \
   | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .id' | head -1)
@@ -536,23 +542,27 @@ for t in tasks:
   ```
 
 **`in_dev`**: Worker is running.
-- Check via Worker-Manager Introspection API:
-  ```bash
-  curl -s http://localhost:8000/wm-api/workers/ | python3 -c "
-  import json, sys
-  for w in json.load(sys.stdin):
-      print(f\"{w['container_name']}  status={w['status']}  task={w.get('task_id','?')}\")
-  "
-  # Worker logs
-  curl -s "http://localhost:8000/wm-api/workers/$WORKER_ID/logs?tail=30"
-  # Worker progress
-  curl -s "http://localhost:8000/wm-api/workers/$WORKER_ID/files/PROGRESS.md"
-  ```
-- Cross-check with Docker:
+- Check via Docker (primary — most reliable):
   ```bash
   docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}\t{{.Status}}"
   ```
-- If API and Docker disagree — note as a finding.
+- Worker logs (via docker directly):
+  ```bash
+  WORKER_CONTAINER=$(docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}" | head -1)
+  docker logs "$WORKER_CONTAINER" --tail=20 2>&1
+  ```
+- Worker-Manager API may also work, but handle errors (can return 404 or non-list):
+  ```bash
+  curl -s http://localhost:8000/wm-api/workers/ | python3 -c "
+  import json, sys
+  data = json.load(sys.stdin)
+  if isinstance(data, list):
+      for w in data:
+          print(f\"{w['container_name']}  status={w['status']}  task={w.get('task_id','?')}\")
+  else:
+      print(f'WM API error: {data}')
+  " 2>/dev/null || echo "WM API unavailable"
+  ```
 
 **`in_ci`**: Code pushed, CI running.
 ```bash
@@ -601,7 +611,14 @@ Document the retry in the timeline. If it fails again, record and move on.
 
 ### Polling loop
 
-Poll every 30-60 seconds. Timeout after 30 minutes per task.
+**Timeouts by phase** (only workers take a long time — everything else should be fast):
+- **Scaffold**: 5 min max (poll every 15s)
+- **Architect**: 5 min max (poll every 10s)
+- **Engineering worker**: 30 min per task (poll every 30s) — this is the only long phase
+- **PR merge / auto-merge**: 2 min max (poll every 15s). If stuck, check and intervene
+- **Deploy**: 5 min max (poll every 15s). Deploy-worker triggers GH Actions then waits
+
+If a non-worker phase exceeds its timeout, don't keep waiting — investigate immediately.
 
 Keep a timeline log:
 ```
@@ -640,6 +657,58 @@ POST /api/stories/{id}/fail      → any → failed
 POST /api/stories/{id}/reopen    → completed/failed → in_progress
 ```
 
+### Webhook failure & manual deploy trigger
+
+**Known issue**: For newly scaffolded repos, the GitHub webhook may not fire after PR merge.
+If story stays in `pr_review` for >60s after merge, the webhook didn't arrive.
+
+**Workaround — manual deploy trigger**:
+
+```bash
+import uuid
+RUN_ID="deploy-e2e-$(uuid.uuid4().hex[:8])"
+
+# 1. Create Run record (field is "type", NOT "run_type")
+curl -s -X POST "http://localhost:8000/api/runs/" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"id\": \"$RUN_ID\",
+    \"project_id\": \"$PROJECT_ID\",
+    \"story_id\": \"$STORY_ID\",
+    \"type\": \"deploy\",
+    \"status\": \"pending\"
+  }"
+
+# 2. Transition story to deploying
+curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/deploy" \
+  -H "Content-Type: application/json" \
+  -d '{"actor": "e2e-test"}'
+
+# 3. Publish deploy message to queue
+docker compose exec -T -e "PROJECT_ID=$PROJECT_ID" -e "STORY_ID=$STORY_ID" -e "RUN_ID=$RUN_ID" api python -c "
+import os, asyncio
+import redis.asyncio as redis
+from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
+from shared.queues import DEPLOY_QUEUE
+
+async def main():
+    r = redis.from_url('redis://redis:6379')
+    deploy_msg = DeployMessage(
+        task_id=os.environ['RUN_ID'],
+        project_id=os.environ['PROJECT_ID'],
+        user_id='',
+        story_id=os.environ['STORY_ID'],
+        triggered_by=DeployTrigger.WEBHOOK,
+        action='create',
+    )
+    mid = await r.xadd(DEPLOY_QUEUE, {'data': deploy_msg.model_dump_json()})
+    print(f'Published to deploy:queue: mid={mid}')
+    await r.aclose()
+
+asyncio.run(main())
+"
+```
+
 ### Monitoring deploy
 
 ```bash
@@ -654,7 +723,9 @@ print(f\"Story: {s['status']}\")
 docker compose logs deploy-worker --tail=50 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -20
 ```
 
-Poll story status every 30s, timeout after 30 minutes. Story goes through: `pr_review` → `deploying` → `completed` (or `failed`). Wait for terminal status (`completed` or `failed`).
+Poll story status every 15s, timeout after 5 minutes (deploy itself runs on GitHub Actions,
+the deploy-worker just triggers it and waits). If no progress after 5 min, check deploy-worker logs.
+Story goes through: `pr_review` → `deploying` → `completed` (or `failed`).
 
 ### Step 6: Verify Deployment
 
@@ -1007,12 +1078,15 @@ If the user asks to stop early:
 2. **Repo names use hyphens, not underscores**: `todo_api` → `todo-api`
 3. **Local `gh` CLI has no access** — always use `GitHubAppClient` via docker compose exec
 4. **Import path**: `from shared.clients.github import GitHubAppClient`
-5. **Worker containers**: use introspection API (`/wm-api/workers/`) or `docker ps` with label filter
+5. **Worker containers**: use `docker ps --filter "label=com.codegen.type=worker"` (primary). WM API (`/wm-api/workers/`) may return 404 or non-list — always handle errors
 6. **Story must be `in_progress` for PR creation** — nudge with `POST .../start` if stuck. After PR, story goes to `pr_review`. Deploy triggers via webhook after PR merge
 7. **Story transitions are action-based** — `POST /start`, `/complete`, NOT PATCH
 8. **Stale queue messages** can clog architect for hours — check queues early
 9. **Project needs a Repository record** — scaffold_trigger won't fire without it
 10. **Cross-check sources** — compare API data with Docker/Redis. Desync is a finding.
+11. **Webhook may not fire for new repos** — if story stays `pr_review` >60s after merge, use the manual deploy trigger recipe (see "Webhook failure" in Step 5).
+12. **Deploy Run record uses `type` field** (not `run_type`) — `POST /api/runs/` with `{"type": "deploy"}`.
+13. **DeployMessage requires `task_id`** — this is actually the Run ID (format `deploy-e2e-{hex}`), not a task ID.
 
 ## Self-Feedback (Mandatory)
 
