@@ -226,7 +226,7 @@ async def _handle_workflow_run(body: bytes, db: AsyncSession) -> dict:
 
 
 async def _handle_ci_success_on_main(payload: dict, workflow_run: dict, db: AsyncSession) -> dict:
-    """CI passed on main branch → trigger deploy."""
+    """CI passed on main branch — log only, deploy is triggered by PR merge event."""
     repo_id = payload.get("repository", {}).get("id")
     if not repo_id:
         return {"status": "ignored", "reason": "no repository.id"}
@@ -236,12 +236,13 @@ async def _handle_ci_success_on_main(payload: dict, workflow_run: dict, db: Asyn
         logger.debug("webhook_unknown_repo", repo_id=repo_id)
         return {"status": "ignored", "reason": "unknown repository"}
 
-    if project.status != ProjectStatus.ACTIVE:
-        logger.info("webhook_skip_non_active", project_id=project.id, status=project.status)
-        return {"status": "ignored", "reason": f"project status: {project.status}"}
-
     head_sha = workflow_run.get("head_sha", "")
-    return await _publish_deploy(project, db, head_sha=head_sha)
+    logger.info(
+        "webhook_ci_success_on_main",
+        project_id=project.id,
+        head_sha=head_sha[:7] if head_sha else "",
+    )
+    return {"status": "ignored", "reason": "deploy triggered by PR merge, not CI success"}
 
 
 async def _handle_ci_failure_on_story(payload: dict, workflow_run: dict, db: AsyncSession) -> dict:

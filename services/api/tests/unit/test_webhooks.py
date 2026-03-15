@@ -172,18 +172,52 @@ async def test_webhook_ignores_unknown_repo(mock_env):
 
 
 @pytest.mark.asyncio
-async def test_webhook_ignores_non_active_project(mock_env):
-    payload = _make_payload()
+async def test_webhook_pr_merged_non_active_project_ignored(mock_env):
+    """PR merge for non-active project → ignored."""
+    payload = _make_pr_payload()
 
     repo = _mock_repository()
     project = _mock_project(status=ProjectStatus.PAUSED.value)
 
+    mock_story = MagicMock()
+    mock_story.id = "story-abc123"
+
     mock_session = AsyncMock()
-    # First execute: Repository lookup
+    repo_result = MagicMock()
+    repo_result.scalar_one_or_none.return_value = repo
+    story_result = MagicMock()
+    story_result.scalar_one_or_none.return_value = mock_story
+    mock_session.execute = AsyncMock(side_effect=[repo_result, story_result])
+    mock_session.get = AsyncMock(return_value=project)
+
+    from src.database import get_async_session as real_dep
+
+    async def fake_session():
+        yield mock_session
+
+    app.dependency_overrides[real_dep] = fake_session
+    try:
+        resp = await _post_webhook(payload, event="pull_request")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert resp.json()["status"] == "ignored"
+    assert "project status" in resp.json()["reason"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_ci_success_on_main_ignored(mock_env):
+    """CI success on main no longer triggers deploy — PR merge handles it."""
+    payload = _make_payload()
+
+    repo = _mock_repository()
+    project = _mock_project()
+
+    mock_session = AsyncMock()
     repo_result = MagicMock()
     repo_result.scalar_one_or_none.return_value = repo
     mock_session.execute = AsyncMock(return_value=repo_result)
-    # db.get(Project, ...) returns the project
     mock_session.get = AsyncMock(return_value=project)
 
     from src.database import get_async_session as real_dep
@@ -198,67 +232,9 @@ async def test_webhook_ignores_non_active_project(mock_env):
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200  # noqa: PLR2004
-    assert resp.json()["status"] == "ignored"
-    assert "project status" in resp.json()["reason"]
-
-
-@pytest.mark.asyncio
-async def test_webhook_ci_success_triggers_deploy(mock_env, mock_redis):
-    payload = _make_payload()
-
-    repo = _mock_repository()
-    project = _mock_project()
-    user = _mock_user()
-
-    mock_session = AsyncMock()
-    # First execute: Repository lookup; Second execute: User lookup
-    repo_result = MagicMock()
-    repo_result.scalar_one_or_none.return_value = repo
-    user_result = MagicMock()
-    user_result.scalar_one_or_none.return_value = user
-    mock_session.execute = AsyncMock(side_effect=[repo_result, user_result])
-    # db.get(Project, ...) returns the project
-    mock_session.get = AsyncMock(return_value=project)
-    mock_session.add = MagicMock()
-    mock_session.commit = AsyncMock()
-
-    from src.database import get_async_session as real_dep
-
-    async def fake_session():
-        yield mock_session
-
-    app.dependency_overrides[real_dep] = fake_session
-
-    with patch("src.routers.webhooks.aioredis.from_url", return_value=mock_redis):
-        try:
-            resp = await _post_webhook(payload)
-        finally:
-            app.dependency_overrides.clear()
-
-    assert resp.status_code == 200  # noqa: PLR2004
     data = resp.json()
-    assert data["status"] == "accepted"
-    assert data["project_id"] == str(PROJECT_UUID)
-    assert data["run_id"].startswith("deploy-wh-")
-
-    # Verify run was added to DB session
-    mock_session.add.assert_called_once()
-    run_obj = mock_session.add.call_args[0][0]
-    assert run_obj.type == "deploy"
-    assert run_obj.status == "queued"
-    assert run_obj.run_metadata["triggered_by"] == "webhook"
-
-    # Verify Redis xadd was called with {"data": json_string} format
-    mock_redis.xadd.assert_called_once()
-    call_args = mock_redis.xadd.call_args
-    assert call_args[0][0] == "deploy:queue"
-    raw_fields = call_args[0][1]
-    assert "data" in raw_fields
-    deploy_data = json.loads(raw_fields["data"])
-    assert deploy_data["project_id"] == str(PROJECT_UUID)
-    assert deploy_data["user_id"] == "99999"
-    assert deploy_data["triggered_by"] == "webhook"
-    assert deploy_data["action"] == "feature"
+    assert data["status"] == "ignored"
+    assert "PR merge" in data["reason"]
 
 
 # --- PR merge event tests ---
