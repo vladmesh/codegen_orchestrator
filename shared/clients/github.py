@@ -1125,6 +1125,20 @@ class GitHubAppClient:
         )
         return pr
 
+    async def get_pull_request(self, owner: str, repo: str, pr_number: int) -> dict:
+        """Fetch a single pull request by number."""
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        resp = await self._make_request(
+            "GET",
+            f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+            headers=headers,
+        )
+        return resp.json()
+
     async def enable_auto_merge(
         self,
         owner: str,

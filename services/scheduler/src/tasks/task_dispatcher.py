@@ -311,11 +311,37 @@ async def complete_stories(
             )
             pr_number = pr["number"]
             pr_node_id = pr.get("node_id", "")
-            log.info("story_pr_created", pr_number=pr_number, branch=branch)
+            log.info(
+                "story_pr_created",
+                pr_number=pr_number,
+                branch=branch,
+                node_id=pr_node_id[:20] if pr_node_id else "",
+            )
 
             # Enable auto-merge (merge commit to preserve individual commits)
-            if pr_node_id:
-                await github.enable_auto_merge(owner, repo_name, pr_node_id=pr_node_id)
+            # node_id must be a GraphQL ID (e.g. "PR_kwDO..."), not a number
+            if pr_node_id and isinstance(pr_node_id, str) and not pr_node_id.isdigit():
+                auto_merged = await github.enable_auto_merge(
+                    owner, repo_name, pr_node_id=pr_node_id
+                )
+            else:
+                log.warning(
+                    "story_pr_node_id_invalid",
+                    pr_number=pr_number,
+                    node_id_raw=repr(pr_node_id),
+                )
+                # Fetch node_id via REST as fallback
+                pr_details = await github.get_pull_request(owner, repo_name, pr_number)
+                pr_node_id = pr_details.get("node_id", "")
+                if pr_node_id and not pr_node_id.isdigit():
+                    auto_merged = await github.enable_auto_merge(
+                        owner, repo_name, pr_node_id=pr_node_id
+                    )
+                else:
+                    log.error("story_pr_node_id_fetch_failed", pr_number=pr_number)
+                    auto_merged = False
+            if not auto_merged:
+                log.warning("story_auto_merge_failed", pr_number=pr_number)
         except Exception:
             log.exception("story_pr_creation_failed", branch=branch)
             continue

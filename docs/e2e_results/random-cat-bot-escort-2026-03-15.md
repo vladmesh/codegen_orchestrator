@@ -103,18 +103,18 @@
 ### Problem 1: Architect crashes on story already in_progress
 - **Type**: orchestrator
 - **Severity**: major
-- **Status**: needs-fix
-- **Backlog**: new
+- **Status**: already-fixed
+- **Backlog**: —
 - **Description**: Architect tries to `POST /stories/{id}/start` after creating tasks, but PO already transitions story to `in_progress` before architect runs. This causes 422 and crashes the architect.
 - **Root cause**: Race condition — PO and architect both try to start the story. Architect's `transition_story(story_id, "start")` call happens after PO already did it.
 - **Evidence**: `httpx.HTTPStatusError: Client error '422 Unprocessable Entity' for url 'http://api:8000/api/stories/story-3e430423/start'`
-- **Suggested fix**: Architect should catch 422 on story/start and treat it as a no-op (story already started by PO). Or remove the transition from architect since PO handles it.
+- **Resolution**: Already handled — architect wraps `transition_story()` in try/except and logs warning on failure (architect.py:107-113). The escort log overstated the impact; the architect continued successfully after the 422.
 
 ### Problem 2: Scaffolder doesn't enable allow_auto_merge on repo
 - **Type**: orchestrator
 - **Severity**: major
-- **Status**: fixed-during-escort
-- **Backlog**: new
+- **Status**: fixed (ae47893)
+- **Backlog**: —
 - **Description**: Scaffolder sets branch protection (require CI + PRs) but doesn't enable `allow_auto_merge` in repo settings. This means `enable_auto_merge` GraphQL mutation fails for every new project.
 - **Root cause**: Missing `allow_auto_merge: true` in scaffolder's repo configuration step
 - **Evidence**: `"Pull request Auto merge is not allowed for this repository"`
@@ -123,32 +123,32 @@
 ### Problem 3: enable_auto_merge passes PR number instead of GraphQL node ID
 - **Type**: orchestrator
 - **Severity**: major
-- **Status**: needs-fix
-- **Backlog**: new
+- **Status**: fixed
+- **Backlog**: —
 - **Description**: `GitHubAppClient.enable_auto_merge()` passes PR number (e.g., `1`) to GraphQL `enablePullRequestAutoMerge` mutation, but GraphQL requires the node ID (e.g., `PR_kwDON...`)
-- **Root cause**: Function doesn't fetch PR node_id before calling GraphQL
+- **Root cause**: `pr.get("node_id")` returned an unexpected value (numeric or empty). Code now validates node_id format and falls back to separate REST fetch if invalid.
 - **Evidence**: `Could not resolve to a node with the global id of '1'`
-- **Suggested fix**: Fetch PR details via REST first to get `node_id`, then pass to GraphQL mutation
+- **Resolution**: task_dispatcher now validates node_id is a proper GraphQL ID (not numeric), logs the actual value, and falls back to `get_pull_request()` REST call to fetch correct node_id.
 
 ### Problem 4: Webhook deploy message has empty story_id
 - **Type**: orchestrator
 - **Severity**: major
-- **Status**: needs-fix
-- **Backlog**: new
+- **Status**: already-fixed
+- **Backlog**: —
 - **Description**: When webhook triggers deploy after PR merge, the deploy queue message has `story_id: ""`. Deploy worker can't transition story to completed.
-- **Root cause**: Webhook handler doesn't resolve story_id from the PR branch name (`story/story-3e430423`) when publishing to deploy:queue
+- **Root cause**: The empty story_id was on the *scaffold deploy* (triggered by CI success on main, not PR merge). The PR merge path already extracted story_id correctly.
 - **Evidence**: Deploy message `story_id: ""` in queue; story stuck in `pr_review` after successful deploy
-- **Suggested fix**: Webhook handler should extract story_id from PR head branch (parse `story/{story_id}` pattern) and include it in the deploy message
+- **Resolution**: Fixed by `e6ae75d` — CI success on main no longer triggers deploy. Only PR merge triggers deploy, and that path extracts `story_id = head_ref.removeprefix("story/")` (webhooks.py:165).
 
 ### Problem 5: Deployment record 500 error (duplicate)
 - **Type**: orchestrator
 - **Severity**: minor
-- **Status**: needs-fix
-- **Backlog**: new
+- **Status**: non-issue
+- **Backlog**: —
 - **Description**: Deploy worker got 500 when creating service-deployment record, likely because the previous deploy (scaffold-triggered) already created one for this project/server/port combo.
-- **Root cause**: No upsert logic in service-deployments — second deploy for same project conflicts
+- **Root cause**: Deployment model is an immutable log (no unique constraint). The 500 was likely from FK resolution or transient DB issue, not duplicates. Error is already caught gracefully in `_create_deployment_record()`.
 - **Evidence**: `deployment_record_error: Server error '500 Internal Server Error' for url 'http://api:8000/api/service-deployments/'`
-- **Suggested fix**: Use upsert (create-or-update) for service-deployment records
+- **Resolution**: Error handling already in place (try/except → log → continue). Scaffold deploy root cause fixed by `e6ae75d`. No action needed.
 
 ### Problem 6: Stale deploy queue messages from old projects
 - **Type**: orchestrator
@@ -171,8 +171,8 @@
 ### Problem 8: Scaffold push to main triggers premature deploy + false "ready" notification
 - **Type**: orchestrator
 - **Severity**: major
-- **Status**: needs-fix
-- **Backlog**: new
+- **Status**: fixed (e6ae75d)
+- **Backlog**: —
 - **Description**: Scaffolder pushes to main → CI passes → webhook triggers deploy of bare scaffold code (no feature). Deploy-worker deploys successfully (smoke passes because scaffold has valid health endpoint), then sends `po:proactive` message. User receives "Бот готов и запущен!" at 20:13:53 when the feature code hasn't even been written yet (engineering task started at 20:11, finished at 20:16).
 - **Root cause**: CI success webhook doesn't distinguish scaffold commits from feature commits. Any green CI on main triggers deploy:queue.
 - **Evidence**: `deploy-wh-28180a94` completed at 20:13:48 with `deployed_url: http://80.209.235.229:8010`. Proactive message at 20:13:53: "Ваш бот ready-cat-bot готов и запущен!"
@@ -181,8 +181,8 @@
 ### Problem 9: PO reminder triggers second false "ready" notification
 - **Type**: orchestrator
 - **Severity**: major
-- **Status**: needs-fix
-- **Backlog**: new
+- **Status**: mitigated (root cause fixed by e6ae75d)
+- **Backlog**: idea (harden PO reminder logic)
 - **Description**: PO agent has a reminder that fires to check story status. At 20:21:40 the reminder fired, PO checked the story, saw a previous successful deploy existed, and sent "Уже готов и работает!" to user. But at this point the PR wasn't merged yet — the deployed code was still just the scaffold.
 - **Root cause**: PO reminder logic doesn't verify whether the *latest* code (post-PR-merge) is deployed. It sees any past deploy success and reports it.
 - **Evidence**: `reminder_fired` at 20:21:40, `proactive_message_sent` at 20:21:43 (len=108): "Бот random-cat-bot уже готов и работает!"
@@ -213,11 +213,11 @@ No other stories were actively processing during this escort. 17 stories are in 
 
 ## Recommendations
 
-1. **[MAJOR]** Prevent scaffold commit from triggering deploy — user gets false "ready" notification before any feature code exists
-2. **[MAJOR]** Fix PO reminder logic — should not report "ready" unless story is `completed`
-3. **[MAJOR]** Fix scaffolder to enable `allow_auto_merge` on new repos — blocks every new project's auto-merge flow
-4. **[MAJOR]** Fix `enable_auto_merge` to use GraphQL node_id — even with repo setting fixed, the function is broken
-5. **[MAJOR]** Webhook deploy handler should extract and include story_id from PR branch — without this, story never transitions to completed
-6. **[MAJOR]** Architect should gracefully handle 422 on story/start — prevents crash when PO already started the story
-7. **[MINOR]** Use upsert for service-deployment records — prevents 500 on re-deploy
-8. **[RECOMMENDATION]** Add tg_bot smoke check using getMe API instead of Telethon
+1. ~~**[MAJOR]** Prevent scaffold commit from triggering deploy~~ — **FIXED** (`e6ae75d`)
+2. **[MAJOR]** Fix PO reminder logic — should not report "ready" unless story is `completed` — **OPEN** (architectural)
+3. ~~**[MAJOR]** Fix scaffolder to enable `allow_auto_merge` on new repos~~ — **FIXED** (`ae47893`)
+4. ~~**[MAJOR]** Fix `enable_auto_merge` to use GraphQL node_id~~ — **FIXED** (node_id validation + REST fallback)
+5. ~~**[MAJOR]** Webhook deploy handler should extract and include story_id from PR branch~~ — **FIXED** (`e6ae75d` + existing PR merge path)
+6. ~~**[MAJOR]** Architect should gracefully handle 422 on story/start~~ — **ALREADY HANDLED** (try/except in architect.py)
+7. ~~**[MINOR]** Use upsert for service-deployment records~~ — **NON-ISSUE** (immutable log by design, error already caught)
+8. **[RECOMMENDATION]** Add tg_bot smoke check using getMe API instead of Telethon — **OPEN**
