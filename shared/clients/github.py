@@ -578,7 +578,7 @@ class GitHubAppClient:
             owner: Repository owner (org)
             repo: Repository name
             branch: Branch to protect
-            required_checks: Status check contexts to require (default: ["ci"])
+            required_checks: Status check contexts to require (default: ["lint-and-test"])
             require_pr: Require PR for merges
             enforce_admins: Apply rules to admins too
 
@@ -586,7 +586,7 @@ class GitHubAppClient:
             httpx.HTTPStatusError: On API errors (404 if branch doesn't exist)
         """
         if required_checks is None:
-            required_checks = ["ci"]
+            required_checks = ["lint-and-test"]
 
         token = await self.get_org_token(owner)
         headers = {

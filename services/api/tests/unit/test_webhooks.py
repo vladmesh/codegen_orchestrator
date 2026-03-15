@@ -375,7 +375,7 @@ async def test_webhook_ci_failure_story_branch_creates_fix_task(mock_env):
 
     mock_api_resp = AsyncMock()
     mock_api_resp.status_code = 200
-    mock_api_resp.json.return_value = {"id": "task-fix", "status": "backlog"}
+    mock_api_resp.json.return_value = {"id": "task-fix", "status": "todo"}
 
     from src.database import get_async_session as real_dep
 

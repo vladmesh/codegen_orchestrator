@@ -282,6 +282,7 @@ async def _handle_ci_failure_on_story(payload: dict, workflow_run: dict, db: Asy
         "story_id": story_id,
         "project_id": str(project.id),
         "created_by": "system",
+        "status": "todo",
     }
 
     async with httpx.AsyncClient() as client:

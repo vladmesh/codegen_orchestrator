@@ -457,7 +457,7 @@ class WorkerWrapper:
             raise ValueError("Task data missing 'content' or 'prompt'")
 
         if self.config.agent_type == "claude":
-            return "Read TASK.md and complete the task described there."
+            return "Read TASK.md and AGENTS.md, then complete the task described in TASK.md."
         return raw
 
     def _read_worker_report(self) -> str | None:

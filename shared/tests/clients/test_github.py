@@ -547,7 +547,7 @@ async def test_update_branch_protection_success(authed_client):
             body = json.loads(route.calls[0].request.content)
             assert body["required_pull_request_reviews"]["required_approving_review_count"] == 0
             assert body["required_status_checks"]["strict"] is True
-            assert "ci" in body["required_status_checks"]["contexts"]
+            assert "lint-and-test" in body["required_status_checks"]["contexts"]
             assert body["enforce_admins"] is False
             assert body["restrictions"] is None
 
