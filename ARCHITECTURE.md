@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-03-14
+> **Актуально на**: 2026-03-15
 
 ## Обзор
 
@@ -27,7 +27,7 @@ Codegen Orchestrator — мультиагентная система для ав
 ### Planning Layer (Stories → Tasks → Runs)
 
 Трёхуровневая абстракция для продуктового управления:
-- **Story** — высокоуровневое требование от пользователя (через PO). Статусы: `created` → `in_progress` → `deploying` → `completed` (также: `waiting_human_review`, `failed`).
+- **Story** — высокоуровневое требование от пользователя (через PO). Статусы: `created` → `in_progress` → `pr_review` → `deploying` → `completed` (также: `waiting_human_review`, `failed`, `reopened`).
 - **Task** — конкретная техническая задача. Статусы: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (также: `blocked`, `waiting_human_review`, `failed`, `cancelled`). Задачи могут иметь зависимости (`blocked_by_task_id`).
 - **Run** — единица исполнения (engineering или deploy). Привязан к Task через `task_id`.
 
@@ -99,7 +99,7 @@ graph TD
 
     Dispatcher --> |"finds unblocked tasks"| API
     Dispatcher --> |"XADD engineering:queue"| EngQueue[engineering:queue]
-    Dispatcher --> |"story complete → XADD deploy:queue"| DeployQueue
+    Dispatcher --> |"story complete → PR story/* → main + auto-merge"| DeployQueue
 
     EngQueue --> EngConsumer[Engineering Consumer]
     EngConsumer --> EngGraph[Engineering Subgraph]
@@ -148,14 +148,16 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
                        Telegram Bot → User
 
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
-All tasks done → Dispatcher completes story → deploy + PO notification
+All tasks done → Dispatcher creates PR story/* → main (auto-merge) → story pr_review
+PR merged (webhook) → deploy:queue → deploy + PO notification
+CI failure on story branch (webhook) → fix task created → story back to in_progress
 ```
 
 **Key Features:**
 - **PO ReactAgent**: LangGraph agent with native Python tools, PostgreSQL checkpointer
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager. Network isolated (`codegen_worker` network) to prevent access to orchestrator DBs.
 - **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
-- **Engineering Subgraph**: Workspace mount → Developer → CI gate (max 3 fix iterations)
+- **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (auto-merge on green)
 - **DevOps Subgraph**: LLM-based env analysis, env groups for coherent secrets, Ansible deployment via infra-service
 - **Unified Redis Consumers**: All 10 consumers use `RedisStreamClient.consume()` with PEL recovery (`claim_pending=True`) — crashed messages are automatically re-delivered on restart. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns)
 

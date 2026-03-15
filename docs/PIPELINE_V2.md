@@ -45,8 +45,9 @@ Everything is sequential per project. One story at a time, one task at a time.
 3. Run `copier copy service-template workspace --data modules=... --vcs-ref=HEAD`
 4. Run `make setup` (uv venv, framework generate, ruff format)
 5. `git push` — scaffolded code is now in GitHub
-6. Save `tree` output to repository config in DB
-7. Update `project.status = scaffolded`
+6. Set branch protection on `main` (require PR, require `ci` status check). Non-fatal — scaffold succeeds even if protection fails.
+7. Save `tree` output to repository config in DB
+8. Update `project.status = scaffolded`
 
 **Outputs**: GitHub repo with full scaffolded project, workspace on disk, tree in DB
 
@@ -108,20 +109,23 @@ This prevents crashes when a workspace is GC'd between tasks in a story.
 
 **Actor**: Worker-manager (container lifecycle) + Claude Code (implementation)
 
+Workers operate on **story-level feature branches** (`story/{story_id}`). Branch name flows through the full pipeline: task dispatcher → engineering consumer → developer node → worker spawner → worker-manager → worker-wrapper.
+
 **First task in story**:
 1. Worker-manager creates worker container
 2. Mounts workspace volume: `/data/workspaces/{repo_id}/ → /workspace`
-3. Project is already scaffolded — code, venv, git all ready
-4. Writes `TASK.md` into workspace (task description + acceptance criteria)
+3. Worker-manager creates/checks out `story/{story_id}` branch in the workspace
+4. Project is already scaffolded — code, venv, git all ready
+5. Writes `TASK.md` into `/workspace/TASK.md` (task description + acceptance criteria)
 
 **Each task** (including first):
-1. Claude Code is invoked with: `claude --task "Read TASK.md and AGENTS.md, then implement"`
-2. Claude reads AGENTS.md (auto-loaded by Claude Code from project root)
-3. Claude reads TASK.md (current task)
-4. Claude implements, writes tests, runs them
-5. Claude should smoke-test: `make up`, check logs, curl endpoints
-6. Claude commits (but does not push yet — except final task)
-7. Claude returns summary of what was done
+1. Claude Code is invoked with a one-line redirect: `claude -p "Read TASK.md"` (full task stays in file)
+2. Claude reads TASK.md (current task) and AGENTS.md (auto-loaded from project root)
+3. Claude implements, writes tests, runs them
+4. Claude should smoke-test: `make up`, check logs, curl endpoints
+5. Claude commits and pushes to `story/{story_id}` branch
+6. Claude returns summary of what was done
+7. After task, wrapper archives TASK.md + REPORT.md into `.story/old_tasks/{task_id}.md`
 8. Summary → **TaskEvent** in DB
 9. Worker-manager reports task completion
 10. Dispatcher transitions task to `done`
@@ -129,13 +133,14 @@ This prevents crashes when a workspace is GC'd between tasks in a story.
 **Next task in same story**:
 1. Same worker container, same workspace (workspace has state from previous tasks)
 2. New `TASK.md` written with next task + previous task events as context
-3. Claude invoked again — fresh process, sees accumulated codebase
-4. Repeat
+3. Claude invoked again — `--resume` session (fresh on first task or retry)
+4. Previous tasks visible via `.story/old_tasks/` directory
+5. Repeat
 
 **Final task (auto-generated CI check)**:
 1. TASK.md: "Run full test suite. Push to GitHub. Wait for CI. If CI fails, fix and retry."
-2. Claude pushes, monitors CI
-3. If CI green → task done → story ready for deploy
+2. Claude pushes to `story/{story_id}`, monitors CI
+3. If CI green → task done → story ready for PR
 4. If CI red → Claude reads logs, fixes, pushes again
 5. If Claude can't fix → task fails → supervisor creates retry task
 
@@ -165,11 +170,31 @@ If the developer agent encounters an unsolvable problem:
 
 ---
 
+## Phase 4b: PR-Based CI Gate
+
+**Actor**: Task Dispatcher (scheduler) + GitHub webhook handler (API)
+
+**Trigger**: All tasks in story `done`
+
+1. Task Dispatcher creates PR from `story/{story_id}` → `main`
+2. Enables auto-merge (merge commit — preserves individual commits)
+3. Transitions story to `pr_review`
+4. Cleans up worker container (no longer needed)
+5. Triggers next queued story for this project (doesn't wait for PR merge)
+
+**CI runs on the PR:**
+- **Green CI** → auto-merge → `pull_request` webhook (merged) → deploy
+- **Red CI** → `workflow_run` webhook (failure on story branch) → creates fix task → story back to `in_progress` → dispatcher picks up fix task
+
+This replaced the previous polling-based CI gate (`_ci_gate.py`, deleted).
+
+---
+
 ## Phase 5: Deploy
 
 **Actor**: Deploy worker (consumes `deploy:queue`)
 
-**Trigger**: All tasks in story `done` → dispatcher transitions story to `deploying` → publishes deploy
+**Trigger**: PR merged to main (webhook) OR PO manual trigger
 
 1. Resolve server for the project (or provision new one)
 2. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)
@@ -225,17 +250,24 @@ If the developer agent encounters an unsolvable problem:
 draft → active → paused → archived
 ```
 Project status is now lifecycle-only. Process states (scaffolding, developing) are derived from child entities.
-Runtime state is tracked separately via `service_status`: `not_deployed → running → degraded / down / stopped`.
+Runtime state is tracked by `Application.status` (`not_deployed → running → degraded / down / stopped`).
 
 ### Story
 ```
-created → in_progress → deploying → completed
+created → in_progress → pr_review → deploying → completed
                       → waiting_human_review → in_progress (admin resolves)
                                              → failed
                       → failed (after max retries)
+         pr_review → in_progress (CI failed on story branch → fix task created)
+                   → deploying (PR merged → webhook triggers deploy)
+                   → failed
          deploying → in_progress (on deploy failure, for retry)
-         failed → in_progress (admin reopens)
+                  → completed
+                  → failed
+         completed → reopened → in_progress
+         failed → reopened
 ```
+`pr_review` — all tasks done, PR created from story branch to main. Waiting for CI + auto-merge.
 `deploying` is a deploy gate — story waits for successful deploy before completion.
 `waiting_human_review` — developer reported a blocker; pipeline is paused until admin resolves.
 

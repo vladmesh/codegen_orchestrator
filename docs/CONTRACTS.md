@@ -230,12 +230,13 @@ sequenceDiagram
     participant DW as deploy-worker
     participant TG as telegram-bot
 
-    GH->>API: POST /webhooks/github (workflow_run: ci.yml success on main)
+    GH->>API: POST /webhooks/github (pull_request: merged story/* → main)
     API->>API: Verify HMAC-SHA256 signature
-    API->>DB: Lookup project by repository.id
+    API->>DB: Lookup project by repository.id, verify story exists
+    API->>API: Transition story → deploying
     API->>DB: Lookup owner → telegram_id
-    API->>DB: Create Task (type=deploy, triggered_by=webhook)
-    API->>Redis: XADD deploy:queue {task_id, project_id, user_id=telegram_id, callback_stream=""}
+    API->>DB: Create Run (type=deploy, triggered_by=webhook)
+    API->>Redis: XADD deploy:queue {task_id, project_id, user_id=telegram_id, story_id}
     API-->>GH: 200 {status: accepted}
     Redis-->>DW: Consumer reads deploy:queue
     DW->>DW: DevOps Subgraph (EnvAnalyzer → SecretResolver → Deployer)
@@ -316,23 +317,13 @@ class ProjectStatus(StrEnum):
 
     Lifecycle only — observable state, not process.
     Activity is derived from child entities (Story/Run).
-    Runtime state is tracked by ServiceStatus.
+    Runtime state is tracked by Application.status.
     """
 
     DRAFT = "draft"
     ACTIVE = "active"
     PAUSED = "paused"
     ARCHIVED = "archived"
-
-
-class ServiceStatus(StrEnum):
-    """Runtime state of a project's deployed service."""
-
-    NOT_DEPLOYED = "not_deployed"
-    RUNNING = "running"
-    DEGRADED = "degraded"
-    DOWN = "down"
-    STOPPED = "stopped"
 
 
 class ServiceModule(StrEnum):
@@ -353,7 +344,6 @@ class ProjectCreate(BaseModel):
     description: str | None = None
     modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
     status: ProjectStatus | None = None
-    service_status: ServiceStatus | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -361,7 +351,6 @@ class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     status: ProjectStatus | None = None
-    service_status: ServiceStatus | None = None
     modules: list[ServiceModule] | None = None
     project_spec: dict | None = None
 
@@ -374,7 +363,6 @@ class ProjectDTO(BaseModel):
     name: str
     description: str | None = None
     status: ProjectStatus
-    service_status: ServiceStatus = ServiceStatus.NOT_DEPLOYED
     modules: list[ServiceModule] = []
     config: dict = {}
     owner_id: int
@@ -860,6 +848,7 @@ class EngineeringMessage(BaseMessage):
     planning_task_id: str | None = None  # planning-layer Task ID for status updates
     story_id: str | None = None  # story ID for worker reuse across tasks
     deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count
+    branch: str | None = None  # story branch name (e.g. "story/{story_id}")
 
 
 class EngineeringResult(BaseResult):

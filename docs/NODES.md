@@ -42,11 +42,11 @@
 **Реализация**:
 1. Scaffolder service (отдельный микросервис) выполняет scaffold phase: copier + make setup + git push, сохраняет tree + specs_summary в DB, ставит `project.status = active`
 2. Architect Consumer (langgraph) ждёт завершения scaffold (poll project.status != draft, до 5 мин), затем декомпозирует story в tasks (видит tree, specs summary: модели, домены, события)
-3. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
+3. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue` с `branch=story/{story_id}`
 4. Engineering worker создает GitHub-репозиторий и устанавливает registry secrets
 5. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai)
-6. Worker-manager инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` с project-specific задачей
-7. Агент клонирует scaffolded repo и пишет бизнес-логику
+6. Worker-manager creates/checks out `story/{story_id}` branch, инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` (в `/workspace/TASK.md`)
+7. Агент работает на feature branch и пушит туда
 
 **Валидация**: Проверяет наличие commit SHA в результате.
 
@@ -89,6 +89,7 @@
 **Когда вызывается**:
 - После Engineering Subgraph
 - При `trigger_deploy` от PO
+- При GitHub webhook (`pull_request: merged story/* → main`) → API → deploy:queue
 - При GitHub webhook (`workflow_run: ci.yml success on main`) → API → deploy:queue
 
 **Структура пакета** (`src/subgraphs/devops/`):
