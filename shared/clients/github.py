@@ -563,6 +563,70 @@ class GitHubAppClient:
                 )
         return count
 
+    async def update_branch_protection(
+        self,
+        owner: str,
+        repo: str,
+        branch: str = "main",
+        required_checks: list[str] | None = None,
+        require_pr: bool = True,
+        enforce_admins: bool = False,
+    ) -> None:
+        """Set branch protection rules via GitHub API.
+
+        Args:
+            owner: Repository owner (org)
+            repo: Repository name
+            branch: Branch to protect
+            required_checks: Status check contexts to require (default: ["ci"])
+            require_pr: Require PR for merges
+            enforce_admins: Apply rules to admins too
+
+        Raises:
+            httpx.HTTPStatusError: On API errors (404 if branch doesn't exist)
+        """
+        if required_checks is None:
+            required_checks = ["ci"]
+
+        token = await self.get_org_token(owner)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+        payload: dict = {
+            "required_status_checks": {
+                "strict": True,
+                "contexts": required_checks,
+            },
+            "enforce_admins": enforce_admins,
+            "restrictions": None,
+        }
+
+        if require_pr:
+            payload["required_pull_request_reviews"] = {
+                "required_approving_review_count": 0,
+            }
+        else:
+            payload["required_pull_request_reviews"] = None
+
+        resp = await self._make_request(
+            "PUT",
+            f"https://api.github.com/repos/{owner}/{repo}/branches/{branch}/protection",
+            headers=headers,
+            json=payload,
+        )
+        resp.raise_for_status()
+
+        logger.info(
+            "branch_protection_updated",
+            owner=owner,
+            repo=repo,
+            branch=branch,
+            checks=required_checks,
+            require_pr=require_pr,
+        )
+
     async def trigger_workflow_dispatch(
         self,
         owner: str,

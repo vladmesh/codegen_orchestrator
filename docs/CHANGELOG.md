@@ -6,6 +6,7 @@
 
 ### Added
 - **Feature branches for stories** (#1011): Workers now operate on story-level feature branches (`story/{story_id}`). Branch name flows through the full pipeline: engineering consumer → developer node → worker spawner → task dispatcher → worker manager → worker wrapper. Worker manager creates/checkouts the branch in containers. Worker wrapper reports branch in result dict and pulls from current branch instead of hardcoded `main`. INSTRUCTIONS.md updated to encourage pushing on feature branches.
+- **PR-based CI gate** (#1014): Replaced polling-based CI gate (`_ci_gate.py`, 531 lines deleted) with a PR-based flow. When all story tasks complete, task dispatcher creates a PR from `story/{id}` → `main` and enables auto-merge. CI runs on the PR; green CI → auto-merge → webhook → deploy. Red CI on story branch → webhook creates fix task and transitions story back to `in_progress`. New `PR_REVIEW` story status. Added 4 GitHub client methods (`create_pull_request`, `enable_auto_merge`, `merge_pull_request`, `close_pull_request`). Webhook handler extended to handle `pull_request` (merged) and `workflow_run` (CI failure on story branches) events.
 
 ### Changed
 - **TASK.md moved to /workspace/**: TASK.md now lives in the workspace directory (`/workspace/TASK.md`) instead of `/home/worker/TASK.md`. Worker-manager injects it there on create; wrapper updates it each turn. After task completes, wrapper archives TASK.md + REPORT.md into `.story/old_tasks/{task_id}.md` — next worker sees full history. `.story/` is auto-gitignored.

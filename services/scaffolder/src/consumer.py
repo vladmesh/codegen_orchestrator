@@ -137,6 +137,20 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
 
     if result.success:
         await _update_project_on_success(msg, result, api, settings, log)
+
+        # Set branch protection (non-fatal — scaffold succeeds regardless)
+        try:
+            await github.update_branch_protection(
+                org,
+                msg.project_name,
+                "main",
+                required_checks=["ci"],
+                require_pr=True,
+            )
+            log.info("branch_protection_set")
+        except Exception:
+            log.warning("branch_protection_failed", exc_info=True)
+
         await api.update_project_status(msg.project_id, ProjectStatus.ACTIVE)
         log.info("scaffold_job_success")
         return {"status": "success"}

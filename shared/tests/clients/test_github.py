@@ -524,3 +524,65 @@ async def test_close_pull_request_success(authed_client):
 
             assert result["state"] == "closed"
             assert route.called
+
+
+# --- update_branch_protection tests ---
+
+
+@pytest.mark.asyncio
+async def test_update_branch_protection_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_org_token", return_value="org-token"):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.put(f"/repos/{owner}/{repo}/branches/main/protection").mock(
+                return_value=httpx.Response(200, json={"url": "https://api.github.com/..."})
+            )
+
+            await authed_client.update_branch_protection(owner, repo, "main")
+
+            assert route.called
+            import json
+
+            body = json.loads(route.calls[0].request.content)
+            assert body["required_pull_request_reviews"]["required_approving_review_count"] == 0
+            assert body["required_status_checks"]["strict"] is True
+            assert "ci" in body["required_status_checks"]["contexts"]
+            assert body["enforce_admins"] is False
+            assert body["restrictions"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_branch_protection_custom_checks(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_org_token", return_value="org-token"):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.put(f"/repos/{owner}/{repo}/branches/main/protection").mock(
+                return_value=httpx.Response(200, json={})
+            )
+
+            await authed_client.update_branch_protection(
+                owner, repo, "main", required_checks=["ci", "lint"], enforce_admins=True
+            )
+
+            import json
+
+            body = json.loads(route.calls[0].request.content)
+            assert body["required_status_checks"]["contexts"] == ["ci", "lint"]
+            assert body["enforce_admins"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_branch_protection_404(authed_client):
+    """404 when branch doesn't exist."""
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_org_token", return_value="org-token"):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.put(f"/repos/{owner}/{repo}/branches/main/protection").mock(
+                return_value=httpx.Response(404)
+            )
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await authed_client.update_branch_protection(owner, repo, "main")

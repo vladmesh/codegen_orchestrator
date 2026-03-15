@@ -7,23 +7,11 @@
 
 ## Queue (ordered by priority, first = next)
 
-### [service-template] ci.yml: CI runs only on PR to main, not on every push
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: IN SERVICE-TEMPLATE REPO (/home/vlad/projects/service-template), NOT orchestrator.  Update ci.yml.jinja so generated projects only run CI on pull_request to main (and workflow_dispatch), not on every push. This saves GitHub Actions minutes — workers push to feature branches multiple times per sto...
-
 ### Branch protection setup via GitHub API after scaffold
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: After scaffolder creates a repo and pushes initial commit to main, configure branch protection rules via GitHub API: require PR for merge to main, require CI checks to pass.  Source: docs/brainstorms/worker-context-architecture.md — CI Architecture section.  Scope: - Scaffolder or post-scaffold s...
-
-### PR-based CI gate: story completion creates PR, auto-merge on green CI
 - **Priority**: LOW
 - **Plan**: yes (in work item)
 - **Status**: backlog
-- **Brief**: Replace the polling CI gate (_ci_gate.py) with PR-based flow. When all tasks in a story are done, create a PR from story branch to main. CI runs on PR. On green CI — auto-merge. On red CI — create "Fix CI" task on same branch.  Source: docs/brainstorms/worker-context-architecture.md — CI Architec...
+- **Brief**: After scaffolder creates a repo and pushes initial commit to main, configure branch protection rules via GitHub API: require PR for merge to main, require CI checks to pass.  Source: docs/brainstorms/worker-context-architecture.md — CI Architecture section.  Scope: - Scaffolder or post-scaffold s...
 
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
@@ -276,6 +264,8 @@
 
 ## Done (last 10)
 
+- [service-template] ci.yml: CI runs only on PR to main, not on every push — 2026-03-15
+- PR-based CI gate: story completion creates PR, auto-merge on green CI — 2026-03-15
 - Feature branches for stories: engineering consumer creates story branch, workers push there — 2026-03-15
 - #1010 STORY.md: generate .story/STORY.md with story goal, task list, references — 2026-03-15
 - #1009 Worker local tests: add make lint + make test-unit to INSTRUCTIONS.md — 2026-03-15
@@ -284,8 +274,6 @@
 - Run tests, verify CI green — 2026-03-14
 - Verify fix with production-like testing — 2026-03-14
 - Fix root cause of tarot image failures based on diagnosis — 2026-03-14
-- Diagnose why tarot images fail 93% of the time — 2026-03-14
-- Unify workspace management: repo_id-based addressing, remove legacy workspace creation — 2026-03-14
 
 ## Ideas
 

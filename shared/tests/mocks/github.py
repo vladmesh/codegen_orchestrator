@@ -160,6 +160,18 @@ class MockGitHubClient:
                 count += 1
         return count
 
+    async def update_branch_protection(
+        self,
+        owner: str,
+        repo: str,
+        branch: str = "main",
+        required_checks: list[str] | None = None,
+        require_pr: bool = True,
+        enforce_admins: bool = False,
+    ) -> None:
+        self._check_failure()
+        logger.info("mock_branch_protection_updated", owner=owner, repo=repo, branch=branch)
+
     async def provision_project_repo(
         self,
         name: str,

@@ -166,6 +166,73 @@ class TestProcessScaffoldJob:
         result = await process_scaffold_job({"bad": "data"}, mock_redis)
         assert result["status"] == "skipped"
 
+    @pytest.mark.asyncio
+    async def test_branch_protection_called_on_success(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """Branch protection should be set after successful scaffold."""
+        scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_scaffold", return_value=scaffold_result),
+            patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            mock_settings.return_value = MagicMock()
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "success"
+        mock_github.update_branch_protection.assert_called_once_with(
+            "project-factory-organization",
+            "my-project",
+            "main",
+            required_checks=["ci"],
+            require_pr=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_branch_protection_failure_does_not_block_scaffold(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """Scaffold succeeds even if branch protection fails."""
+        scaffold_result = ScaffoldResult(success=True, tree=".\n-- src")
+        mock_github.update_branch_protection.side_effect = RuntimeError("API error")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_scaffold", return_value=scaffold_result),
+            patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            mock_settings.return_value = MagicMock()
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "success"
+        mock_api.update_project_status.assert_called_once_with("proj-123", ProjectStatus.ACTIVE)
+
+    @pytest.mark.asyncio
+    async def test_branch_protection_not_called_on_failure(
+        self, valid_job_data, mock_redis, mock_api, mock_github
+    ):
+        """Branch protection should NOT be called when scaffold fails."""
+        scaffold_result = ScaffoldResult(success=False, error="copier crashed")
+
+        with (
+            patch("src.consumer.get_api_client", return_value=mock_api),
+            patch("src.consumer.get_github_client", return_value=mock_github),
+            patch("src.consumer.run_scaffold", return_value=scaffold_result),
+            patch("src.consumer.get_settings") as mock_settings,
+            patch.dict(os.environ, _GITHUB_ENV),
+        ):
+            mock_settings.return_value = MagicMock()
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result["status"] == "failed"
+        mock_github.update_branch_protection.assert_not_called()
+
 
 class TestProcessScaffoldJobEnsureMode:
     """Tests for mode=ensure path in consumer."""
