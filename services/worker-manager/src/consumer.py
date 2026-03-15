@@ -119,6 +119,7 @@ class WorkerCommandConsumer:
                 project_id=cmd.config.project_id,
                 repo_id=cmd.config.repo_id,
                 scaffold_config=cmd.config.scaffold_config,
+                branch=cmd.config.branch,
             )
             return CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
         except Exception as e:

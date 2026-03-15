@@ -149,12 +149,12 @@ async def request_spawn(
     github_token: str,
     task_content: str,
     task_title: str = "AI generated changes",
-    model: str = "claude-sonnet-4-5-20250929",
-    agents_content: str | None = None,
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
     project_id: str | None = None,
     repo_id: str | None = None,
     agent_type: AgentType = AgentType.CLAUDE,
+    story_md: str | None = None,
+    branch: str | None = None,
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 
@@ -187,7 +187,7 @@ async def request_spawn(
 
         instructions = load_developer_instructions()
         if not instructions:
-            instructions = "Read TASK.md for your implementation task."
+            instructions = "Read /workspace/TASK.md for your implementation task."
 
         create_cmd = CreateWorkerCommand(
             request_id=request_id,
@@ -205,6 +205,7 @@ async def request_spawn(
                 },
                 project_id=project_id,
                 repo_id=repo_id,
+                branch=branch,
             ),
             context={"source": "langgraph", "repo": repo, "project_id": project_id or ""},
         )
@@ -244,6 +245,8 @@ async def request_spawn(
             "prompt": task_content,
             "user_id": 0,  # System task
         }
+        if story_md:
+            task_message["story_md"] = story_md
         await redis_client.xadd(input_stream, {"data": json.dumps(task_message)})
         logger.info("task_sent_to_worker", request_id=request_id, worker_id=worker_id)
 
@@ -324,11 +327,20 @@ async def send_task_to_worker(
     worker_id: str,
     task_content: str,
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
+    *,
+    clear_session: bool = False,
+    story_md: str | None = None,
+    branch: str | None = None,
 ) -> SpawnResult:
     """Send a new task to an existing worker and wait for output.
 
     Unlike request_spawn(), this does NOT create a new container.
     It sends a prompt to the worker's input stream and waits for output.
+
+    Args:
+        clear_session: If True, worker clears its session before executing,
+            forcing a fresh Claude CLI session (no --resume). Use for retries
+            to avoid inheriting errors from a failed previous attempt.
     """
     request_id = str(uuid.uuid4())
     settings = get_settings()
@@ -353,6 +365,12 @@ async def send_task_to_worker(
             "request_id": request_id,
             "prompt": task_content,
         }
+        if clear_session:
+            task_message["clear_session"] = True
+        if story_md:
+            task_message["story_md"] = story_md
+        if branch:
+            task_message["branch"] = branch
         await redis_client.xadd(input_stream, {"data": json.dumps(task_message)})
         logger.info(
             "task_sent_to_existing_worker",

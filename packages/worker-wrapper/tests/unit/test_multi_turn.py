@@ -188,11 +188,14 @@ class TestGitPullBeforeTurn:
 
     @pytest.mark.asyncio
     async def test_git_pull_runs_git_command(self, config, mock_redis_client):
-        """_git_pull() should run 'git pull --rebase=false'."""
+        """_git_pull() should run 'git pull --rebase=false' for current branch."""
         with patch("worker_wrapper.wrapper.WORKSPACE_DIR", "/workspace"):
             wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
 
-            with patch("subprocess.run") as mock_run:
+            with (
+                patch("subprocess.run") as mock_run,
+                patch.object(wrapper, "_get_git_branch", return_value="main"),
+            ):
                 mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
                 await wrapper._git_pull()
 
@@ -210,7 +213,10 @@ class TestGitPullBeforeTurn:
         with patch("worker_wrapper.wrapper.WORKSPACE_DIR", "/workspace"):
             wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
 
-            with patch("subprocess.run") as mock_run:
+            with (
+                patch("subprocess.run") as mock_run,
+                patch.object(wrapper, "_get_git_branch", return_value="main"),
+            ):
                 mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="merge conflict")
                 # Should not raise
                 await wrapper._git_pull()
@@ -312,3 +318,92 @@ class TestTaskMdUpdate:
 
         # content-based messages (PO) don't update TASK.md
         wrapper._write_task_md.assert_not_called()
+
+
+# ---------- 1.4: Task archiving to .story/old_tasks/ ----------
+
+
+class TestTaskArchiving:
+    def test_archive_creates_old_tasks_dir(self, config, mock_redis_client, tmp_path):
+        """_archive_task creates .story/old_tasks/ and writes merged file."""
+        wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+
+        task_md = tmp_path / "TASK.md"
+        task_md.write_text("# Task: Build API\n\nImplement GET /users")
+        gitignore = tmp_path / ".gitignore"
+
+        with (
+            patch("worker_wrapper.wrapper.TASK_MD_PATH", str(task_md)),
+            patch("worker_wrapper.wrapper.OLD_TASKS_DIR", str(tmp_path / ".story" / "old_tasks")),
+            patch("worker_wrapper.wrapper.WORKSPACE_DIR", str(tmp_path)),
+        ):
+            wrapper._archive_task(
+                {"task_id": "task-abc123", "request_id": "req-1"},
+                report="# Developer Report\n\n## Summary\nAll done.",
+            )
+
+        archive = tmp_path / ".story" / "old_tasks" / "task-abc123.md"
+        assert archive.exists()
+        content = archive.read_text()
+        assert "# Task: Build API" in content
+        assert "# Developer Report" in content
+        assert "---" in content  # separator between task and report
+
+        # .gitignore should have .story/ entry
+        assert ".story/" in gitignore.read_text()
+
+    def test_archive_without_report(self, config, mock_redis_client, tmp_path):
+        """Archive works without a report — just saves task description."""
+        wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+
+        task_md = tmp_path / "TASK.md"
+        task_md.write_text("# Task: Fix bug")
+
+        with (
+            patch("worker_wrapper.wrapper.TASK_MD_PATH", str(task_md)),
+            patch("worker_wrapper.wrapper.OLD_TASKS_DIR", str(tmp_path / ".story" / "old_tasks")),
+            patch("worker_wrapper.wrapper.WORKSPACE_DIR", str(tmp_path)),
+        ):
+            wrapper._archive_task({"request_id": "req-456"}, report=None)
+
+        archive = tmp_path / ".story" / "old_tasks" / "req-456.md"
+        assert archive.exists()
+        content = archive.read_text()
+        assert "# Task: Fix bug" in content
+        assert "---" not in content  # no separator without report
+
+    def test_archive_uses_request_id_fallback(self, config, mock_redis_client, tmp_path):
+        """Falls back to request_id when task_id is not in data."""
+        wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+
+        task_md = tmp_path / "TASK.md"
+        task_md.write_text("# Task")
+
+        with (
+            patch("worker_wrapper.wrapper.TASK_MD_PATH", str(task_md)),
+            patch("worker_wrapper.wrapper.OLD_TASKS_DIR", str(tmp_path / ".story" / "old_tasks")),
+            patch("worker_wrapper.wrapper.WORKSPACE_DIR", str(tmp_path)),
+        ):
+            wrapper._archive_task({"request_id": "fallback-id"}, report=None)
+
+        assert (tmp_path / ".story" / "old_tasks" / "fallback-id.md").exists()
+
+    def test_archive_noop_when_no_task_md(self, config, mock_redis_client, tmp_path):
+        """No crash when TASK.md doesn't exist."""
+        wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+
+        with patch("worker_wrapper.wrapper.TASK_MD_PATH", str(tmp_path / "nonexistent.md")):
+            wrapper._archive_task({"task_id": "t-1"}, report="some report")
+            # Should not raise
+
+    def test_gitignore_not_duplicated(self, config, mock_redis_client, tmp_path):
+        """_ensure_gitignore_entry doesn't add duplicate entries."""
+        wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+
+        gitignore = tmp_path / ".gitignore"
+        gitignore.write_text("node_modules/\n.story/\n")
+
+        wrapper._ensure_gitignore_entry(str(gitignore), ".story/")
+
+        lines = gitignore.read_text().splitlines()
+        assert lines.count(".story/") == 1

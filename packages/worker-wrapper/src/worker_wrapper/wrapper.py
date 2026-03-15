@@ -13,7 +13,9 @@ from .config import WorkerWrapperConfig
 logger = structlog.get_logger(__name__)
 
 WORKSPACE_DIR = "/workspace"
-TASK_MD_PATH = "/home/worker/TASK.md"
+TASK_MD_PATH = "/workspace/TASK.md"
+STORY_DIR = "/workspace/.story"
+OLD_TASKS_DIR = "/workspace/.story/old_tasks"
 
 
 class WorkerWrapper:
@@ -99,6 +101,21 @@ class WorkerWrapper:
         if prompt:
             self._write_task_md(prompt)
             await self._persist_task_md(prompt)
+
+        # Write .story/STORY.md if provided (story-level context for worker)
+        story_md = data.get("story_md")
+        if story_md:
+            self._write_story_md(story_md)
+
+        # Clear session if requested (hybrid resume: fresh start on retry)
+        if data.get("clear_session"):
+            from .session import SessionManager
+
+            session_manager = SessionManager(
+                redis=self.redis.redis, worker_id=self.config.consumer_name
+            )
+            await session_manager.clear_session()
+            logger.info("session_cleared_for_fresh_start")
 
         # 3. Pre-flight: verify workspace has project files (not just README)
         workspace_ok, workspace_detail = self._check_workspace_ready()
@@ -186,16 +203,20 @@ class WorkerWrapper:
         return True, detail
 
     async def _git_pull(self):
-        """Pull latest changes before next agent turn."""
+        """Pull latest changes before next agent turn.
+
+        Pulls from the current branch (story branch or main).
+        """
+        branch = self._get_git_branch() or "main"
         result = subprocess.run(
-            ["/usr/bin/git", "pull", "--rebase=false", "origin", "main"],  # noqa: S603
+            ["/usr/bin/git", "pull", "--rebase=false", "origin", branch],  # noqa: S603
             cwd=WORKSPACE_DIR,
             capture_output=True,
             text=True,
             timeout=60,
         )
         if result.returncode != 0:
-            logger.warning("git_pull_failed", stderr=result.stderr)
+            logger.warning("git_pull_failed", stderr=result.stderr, branch=branch)
 
     def _write_task_md(self, prompt: str):
         """Write prompt to TASK.md so agent sees the updated task."""
@@ -205,6 +226,17 @@ class WorkerWrapper:
             logger.info("task_md_updated", path=TASK_MD_PATH)
         except OSError as e:
             logger.warning("task_md_write_failed", error=str(e))
+
+    def _write_story_md(self, content: str):
+        """Write .story/STORY.md so the worker has story-level context."""
+        story_md_path = os.path.join(STORY_DIR, "STORY.md")
+        try:
+            os.makedirs(STORY_DIR, exist_ok=True)
+            with open(story_md_path, "w") as f:
+                f.write(content)
+            logger.info("story_md_updated", path=story_md_path)
+        except OSError as e:
+            logger.warning("story_md_write_failed", error=str(e))
 
     async def _persist_task_md(self, prompt: str):
         """Persist task_md to Redis so introspect API can read it."""
@@ -235,6 +267,27 @@ class WorkerWrapper:
             return result.stdout.strip()
         except Exception as e:
             logger.warning("git_head_failed", error=str(e))
+            return None
+
+    def _get_git_branch(self) -> str | None:
+        """Get current branch name in workspace. Returns None if detached HEAD or error."""
+        try:
+            result = subprocess.run(
+                ["/usr/bin/git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S603
+                cwd=WORKSPACE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+            branch = result.stdout.strip()
+            # "HEAD" means detached HEAD state
+            if branch == "HEAD":
+                return None
+            return branch
+        except Exception as e:
+            logger.warning("git_branch_failed", error=str(e))
             return None
 
     def _extract_git_commit_sha(self, initial_head: str | None) -> str | None:
@@ -301,11 +354,7 @@ class WorkerWrapper:
             raise ValueError(f"Unknown agent type: {self.config.agent_type}")
 
         # 3. Build Command
-        # PO workers use 'content', Developer workers use 'prompt' (DeveloperWorkerInput)
-        prompt = data.get("content") or data.get("prompt", "")
-        if not prompt:
-            raise ValueError("Task data missing 'content' or 'prompt'")
-
+        prompt = self._resolve_prompt(data)
         cmd = runner.build_command(prompt=prompt)
         logger.info("executing_agent_command", cmd=cmd)
 
@@ -372,18 +421,44 @@ class WorkerWrapper:
             logger.error("result_parsing_failed", error=str(e), stdout=stdout)
             raise
 
-        # 7. Enrich with git SHA — git is the authoritative source
+        # 7. Enrich with git metadata and collect artifacts
+        self._enrich_result_with_git(result, initial_head)
+        self._collect_and_archive(result, data)
+
+        return result
+
+    def _enrich_result_with_git(self, result: dict, initial_head: str | None) -> None:
+        """Add git SHA and branch to result dict."""
         git_sha = self._extract_git_commit_sha(initial_head)
         if git_sha:
             logger.info("git_commit_sha_detected", sha=git_sha, source="git")
             result["commit_sha"] = git_sha
 
-        # 8. Collect worker report (REPORT.md) if the agent wrote one
+        git_branch = self._get_git_branch()
+        if git_branch:
+            result["branch"] = git_branch
+
+    def _collect_and_archive(self, result: dict, data: dict) -> None:
+        """Collect worker report and archive task."""
         report = self._read_worker_report()
         if report:
             result["worker_report"] = report
+        self._archive_task(data, report)
 
-        return result
+    def _resolve_prompt(self, data: dict[str, Any]) -> str:
+        """Resolve the effective prompt for the agent.
+
+        PO workers use 'content', Developer workers use 'prompt'.
+        For Claude: minimal redirect to TASK.md (full task already written there).
+        For other agents: full prompt passed directly.
+        """
+        raw = data.get("content") or data.get("prompt", "")
+        if not raw:
+            raise ValueError("Task data missing 'content' or 'prompt'")
+
+        if self.config.agent_type == "claude":
+            return "Read TASK.md and complete the task described there."
+        return raw
 
     def _read_worker_report(self) -> str | None:
         """Read and delete REPORT.md from workspace.
@@ -404,6 +479,73 @@ class WorkerWrapper:
         except OSError as e:
             logger.warning("worker_report_read_failed", error=str(e))
             return None
+
+    def _archive_task(self, data: dict[str, Any], report: str | None) -> None:
+        """Archive completed task: merge TASK.md + REPORT.md → .story/old_tasks/.
+
+        Creates .story/old_tasks/{task_id_or_request_id}.md with the full context:
+        task description + developer report. Next worker can browse old_tasks/
+        for history. Both TASK.md and REPORT.md are cleaned up after archiving.
+        """
+        if not os.path.isfile(TASK_MD_PATH):
+            return
+
+        try:
+            with open(TASK_MD_PATH) as f:
+                task_content = f.read()
+        except OSError:
+            return
+
+        if not task_content.strip():
+            return
+
+        # Use task_id if available, fall back to request_id
+        archive_id = data.get("task_id") or data.get("request_id") or "unknown"
+
+        # Build archive content
+        parts = [task_content]
+        if report:
+            parts.append("\n---\n")
+            parts.append(report)
+
+        archive_content = "\n".join(parts)
+
+        try:
+            os.makedirs(OLD_TASKS_DIR, exist_ok=True)
+
+            # Ensure .story is gitignored
+            gitignore_path = os.path.join(WORKSPACE_DIR, ".gitignore")
+            self._ensure_gitignore_entry(gitignore_path, ".story/")
+
+            archive_path = os.path.join(OLD_TASKS_DIR, f"{archive_id}.md")
+            with open(archive_path, "w") as f:
+                f.write(archive_content)
+
+            logger.info(
+                "task_archived",
+                archive_path=archive_path,
+                task_id=archive_id,
+                size=len(archive_content),
+            )
+        except OSError as e:
+            logger.warning("task_archive_failed", error=str(e))
+
+    @staticmethod
+    def _ensure_gitignore_entry(gitignore_path: str, entry: str) -> None:
+        """Add entry to .gitignore if not already present."""
+        try:
+            existing = ""
+            if os.path.isfile(gitignore_path):
+                with open(gitignore_path) as f:
+                    existing = f.read()
+
+            if entry not in existing.splitlines():
+                with open(gitignore_path, "a") as f:
+                    if existing and not existing.endswith("\n"):
+                        f.write("\n")
+                    f.write(f"{entry}\n")
+        except OSError:
+            pass  # Best-effort
 
     def _extract_session_id_from_output(self, stdout: str) -> str | None:
         """

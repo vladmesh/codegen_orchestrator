@@ -12,9 +12,16 @@ You are already in the project directory — start working immediately.
 
 You'll find:
 - `services/` - service directories for each module
-- `/home/worker/TASK.md` - your specific implementation task
 - `AGENTS.md` - code structure patterns and conventions (if present)
 - `Makefile` - build commands (if present)
+
+## Story Context
+
+If `.story/` exists, it contains context managed by the orchestrator:
+- `.story/STORY.md` — story goal, task list with statuses, and project references
+- `.story/old_tasks/` — completed tasks with their developer reports
+
+Browse these files if you need to understand the bigger picture or what was done before — don't redo completed work.
 
 ## Before You Start
 
@@ -46,16 +53,44 @@ This file persists across attempts — if you're interrupted, the next developer
 
 ## Workflow
 
-1. **Read `/home/worker/TASK.md`** first — it contains your specific implementation task
-2. **Read `AGENTS.md`** if present — for framework patterns and conventions
-3. Create or update `/workspace/PROGRESS.md` with your plan
-4. Understand existing code before making changes
-5. Implement changes, checking off items in PROGRESS.md as you go
-6. Commit your changes (do NOT push unless your task explicitly tells you to)
+1. **Read `TASK.md`** first — it contains your specific implementation task
+2. **Read `.story/STORY.md`** if present — for story goal, task list, and project references
+3. **Read `AGENTS.md`** if present — for framework patterns and conventions
+4. Create or update `/workspace/PROGRESS.md` with your plan
+5. Understand existing code before making changes
+6. Implement changes, checking off items in PROGRESS.md as you go
+7. **Run local tests** before committing (see below)
+8. Commit and push your changes (you are on a feature branch — pushing is safe and expected)
 
-## Commit
+## Local Tests (Before Commit)
 
-After implementation, commit your changes. Do NOT push to GitHub unless the task explicitly asks you to.
+**Always run local tests before committing.** This catches issues immediately instead of
+waiting for CI. Fix any failures before proceeding.
+
+```bash
+# 1. Lint check (fast, catches import errors and style issues)
+make lint
+
+# 2. Unit tests (no infrastructure needed)
+make tests unit
+```
+
+If lint fails — run `make format` and review the changes. If tests fail — fix the code.
+Do NOT commit with failing tests or lint errors.
+
+If your changes touch database code or integrations, also run:
+```bash
+# Start infrastructure first
+orchestrator dev-env start-infra db redis
+
+# Run integration tests
+make tests integration
+```
+
+## Commit & Push
+
+After tests pass, commit and push your changes. You are working on a story feature branch —
+pushing is safe and expected. The orchestrator manages branch creation and merging.
 Git hooks run ruff format on commit and ruff check on push.
 Make descriptive commit messages.
 

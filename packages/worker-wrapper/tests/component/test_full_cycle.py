@@ -73,11 +73,14 @@ class TestWorkerWrapperComponent:
                 session_value = session_value.decode()
             assert session_value == "test-session-123"
 
-            # Verify command structure (Claude)
+            # Verify command structure (Claude) — minimal -p, full task in TASK.md
             args = mock_exec.call_args[0]
             assert "claude" in args
             assert "-p" in args
-            assert "Do something" in args
+            # Claude gets minimal prompt pointing to TASK.md, not the full task content
+            p_idx = args.index("-p")
+            assert "TASK.md" in args[p_idx + 1]
+            assert "Do something" not in args
 
     @pytest.mark.asyncio
     async def test_handles_execution_failure(self, wrapper_config, fake_redis):

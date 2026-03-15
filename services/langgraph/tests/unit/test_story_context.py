@@ -373,3 +373,122 @@ class TestDeveloperNodeStoryContext:
         call_kwargs = mock_spawn.call_args[1]
         assert "Create model" in call_kwargs["task_content"]
         assert "Story Context" in call_kwargs["task_content"]
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_story_md_passed_to_spawn(self, mock_github_cls, mock_api, mock_spawn):
+        """story_md from state flows to request_spawn as keyword argument."""
+        from src.clients.worker_spawner import SpawnResult
+
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+        )
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        story_md_content = "# Story: Build weather bot\n\n## Tasks\n1. Create API"
+        state = {
+            "project_spec": {
+                "id": "proj-1",
+                "name": "test-project",
+                "status": "active",
+                "config": {"modules": ["backend"], "description": "API"},
+            },
+            "action": "feature",
+            "description": "Add endpoint",
+            "story_context": None,
+            "story_md": story_md_content,
+            "repo_id": None,
+            "errors": [],
+        }
+        await node.run(state)
+
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["story_md"] == story_md_content
+
+
+class TestBuildStoryMd:
+    """Tests for _build_story_md in engineering consumer."""
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.engineering.api_client")
+    async def test_builds_story_md_with_tasks(self, mock_api):
+        """Generates STORY.md with goal and task list."""
+        mock_api.get_story = AsyncMock(
+            return_value={
+                "id": "story-1",
+                "title": "Build weather bot",
+                "description": "Full weather API + Telegram bot",
+                "user_report": None,
+            }
+        )
+        mock_api.get_tasks_by_story = AsyncMock(
+            return_value=[
+                {
+                    "id": "task-1",
+                    "title": "Create API endpoint",
+                    "status": "done",
+                    "created_at": "2026-03-01T10:00:00",
+                },
+                {
+                    "id": "task-2",
+                    "title": "Create Telegram bot",
+                    "status": "in_dev",
+                    "created_at": "2026-03-02T10:00:00",
+                },
+            ]
+        )
+
+        from src.consumers.engineering import _build_story_md
+
+        result = await _build_story_md("story-1", current_task_id="task-2")
+        assert result is not None
+        assert "# Story: Build weather bot" in result
+        assert "Full weather API" in result
+        assert "~~Create API endpoint~~ — done" in result
+        assert "**Create Telegram bot** — current" in result
+        assert "README.md" in result
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.engineering.api_client")
+    async def test_returns_none_on_api_failure(self, mock_api):
+        """API failure returns None."""
+        mock_api.get_story = AsyncMock(side_effect=Exception("API down"))
+
+        from src.consumers.engineering import _build_story_md
+
+        result = await _build_story_md("story-fail")
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("src.consumers.engineering.api_client")
+    async def test_includes_user_report(self, mock_api):
+        """Story with user_report includes it in STORY.md."""
+        mock_api.get_story = AsyncMock(
+            return_value={
+                "id": "story-1",
+                "title": "Fix bugs",
+                "description": None,
+                "user_report": "Images broken on mobile",
+            }
+        )
+        mock_api.get_tasks_by_story = AsyncMock(return_value=[])
+
+        from src.consumers.engineering import _build_story_md
+
+        result = await _build_story_md("story-1")
+        assert result is not None
+        assert "User Report" in result
+        assert "Images broken on mobile" in result

@@ -207,3 +207,89 @@ class TestExecuteAgentGitIntegration:
             await wrapper.execute_agent({"content": "test"})
 
         assert call_order.index("get_git_head") < call_order.index("subprocess")
+
+
+class TestGetGitBranch:
+    def test_returns_branch_name(self, wrapper):
+        """_get_git_branch returns current branch name."""
+        mock_result = MagicMock()
+        mock_result.stdout = "story/story-123\n"
+        mock_result.returncode = 0
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = wrapper._get_git_branch()
+
+        assert result == "story/story-123"
+
+    def test_returns_none_for_detached_head(self, wrapper):
+        """_get_git_branch returns None when HEAD is detached."""
+        mock_result = MagicMock()
+        mock_result.stdout = "HEAD\n"
+        mock_result.returncode = 0
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = wrapper._get_git_branch()
+
+        assert result is None
+
+    def test_returns_none_on_failure(self, wrapper):
+        """_get_git_branch returns None when git command fails."""
+        mock_result = MagicMock()
+        mock_result.returncode = 128
+        mock_result.stderr = "fatal: not a git repository"
+
+        with patch("subprocess.run", return_value=mock_result):
+            result = wrapper._get_git_branch()
+
+        assert result is None
+
+    def test_returns_none_on_exception(self, wrapper):
+        """_get_git_branch returns None on any exception."""
+        with patch("subprocess.run", side_effect=FileNotFoundError("git not found")):
+            result = wrapper._get_git_branch()
+
+        assert result is None
+
+
+class TestBranchInResult:
+    """Tests that execute_agent includes branch in result dict."""
+
+    @pytest.mark.asyncio
+    async def test_branch_added_to_result(self, wrapper):
+        """Branch name is included in result when on a story branch."""
+        mock_process = MockProcess(
+            stdout=b'<result>{"status": "success"}</result>',
+            stderr=b"",
+            returncode=0,
+        )
+
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch.object(wrapper, "_get_git_head", return_value=FAKE_SHA),
+            patch.object(wrapper, "_extract_git_commit_sha", return_value=None),
+            patch.object(wrapper, "_get_git_branch", return_value="story/story-123"),
+        ):
+            mock_exec.return_value = mock_process
+            result = await wrapper.execute_agent({"content": "test"})
+
+        assert result["branch"] == "story/story-123"
+
+    @pytest.mark.asyncio
+    async def test_branch_not_in_result_when_none(self, wrapper):
+        """Branch key is absent from result when _get_git_branch returns None."""
+        mock_process = MockProcess(
+            stdout=b'<result>{"status": "success"}</result>',
+            stderr=b"",
+            returncode=0,
+        )
+
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch.object(wrapper, "_get_git_head", return_value=FAKE_SHA),
+            patch.object(wrapper, "_extract_git_commit_sha", return_value=None),
+            patch.object(wrapper, "_get_git_branch", return_value=None),
+        ):
+            mock_exec.return_value = mock_process
+            result = await wrapper.execute_agent({"content": "test"})
+
+        assert "branch" not in result

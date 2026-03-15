@@ -675,3 +675,96 @@ class TestCreateTaskDetailedSpecFallback:
             feature_description="Detailed from PO conversation",
         )
         assert "Detailed from PO conversation" in task_md
+
+
+class TestBranchPassing:
+    """Tests that branch is correctly passed from state to request_spawn/send_task_to_worker."""
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_branch_passed_to_request_spawn(self, mock_github_cls, mock_api, mock_spawn):
+        """branch from state is forwarded to request_spawn."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+        )
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="feature", status="active")
+        state["description"] = "Add feature"
+        state["branch"] = "story/story-abc"
+        await node.run(state)
+
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["branch"] == "story/story-abc"
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_no_branch_passes_none(self, mock_github_cls, mock_api, mock_spawn):
+        """Without branch in state, None is passed to request_spawn."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+        )
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="create", status="active")
+        await node.run(state)
+
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["branch"] is None
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.send_task_to_worker", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_branch_passed_to_send_task_to_worker(self, mock_github_cls, mock_api, mock_send):
+        """When reusing a worker, branch is passed to send_task_to_worker."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(
+            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+        )
+        mock_send.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="feature", status="active")
+        state["description"] = "Add feature"
+        state["worker_id"] = "existing-worker-1"
+        state["branch"] = "story/story-xyz"
+        await node.run(state)
+
+        call_kwargs = mock_send.call_args[1]
+        assert call_kwargs["branch"] == "story/story-xyz"

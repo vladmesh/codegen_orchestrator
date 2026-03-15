@@ -22,27 +22,11 @@ verify that Claude Code (or Factory.ai) builds a working project end-to-end.
 | 6 | `bot_landing` | `tg_bot,frontend` | Telegram bot with a landing page. Bot: handles `/start`, `/help`, echoes messages with emoji decoration. Frontend: static page describing the bot features with a "Try it" link to `t.me/botname`. No shared backend. |
 | 7 | `expense_tracker` | `backend,tg_bot,frontend` | Personal expense tracker. Backend: CRUD API for expenses and categories, `GET /api/summary` for monthly totals. Bot: `/add <amount> <category> <note>` logs expense, `/summary` shows monthly total. Frontend: dashboard with expense table and category breakdown. |
 
-### Audit Prompt
+### Worker Audit
 
-Appended to every task description (goes into TASK.md via `config.description`):
-
-```
-## Audit Instructions
-
-In addition to completing the task above, you are performing an audit of the
-framework and development environment.
-
-Throughout your work, keep a file called `AUDIT_REPORT.md` in the repo root.
-Log everything you encounter:
-- Problems, errors, or unexpected behavior
-- Missing features or tools in the framework
-- Anything that didn't work as expected or required workarounds
-- Suggestions for improving the template, framework, or workspace setup
-- Ideas for making the development flow smoother
-
-Be specific: include exact error messages, file paths, and what you expected
-vs what happened. This report is as valuable as the code itself.
-```
+Workers already write `/workspace/REPORT.md` (per INSTRUCTIONS.md) with Issues Encountered
+and Suggestions sections. This serves as the audit report — no separate AUDIT_REPORT.md needed.
+Worker reports are collected via task events API after each task completes.
 
 ---
 
@@ -337,50 +321,26 @@ ssh root@$SERVER_IP "cd /opt/apps/$PROJECT_NAME && docker compose logs --tail=50
 ssh root@$SERVER_IP "cd /opt/apps/$PROJECT_NAME && docker compose ps"
 ```
 
-### Step 6: Collect Audit Report
+### Step 6: Collect Worker Reports
 
-The developer worker commits `AUDIT_REPORT.md` to the repo. Fetch it from GitHub:
-
-```bash
-REPO="project-factory-organization/$PROJECT_NAME"
-
-# Download audit report
-gh api repos/$REPO/contents/AUDIT_REPORT.md | jq -r '.content' | base64 -d
-
-# Or save to a file
-gh api repos/$REPO/contents/AUDIT_REPORT.md | jq -r '.content' | base64 -d \
-  > "audit_${PROJECT_NAME}.md"
-```
-
-If the report wasn't pushed (worker failed mid-task), grab it from the workspace on disk:
+Worker reports are stored as task events in the API. Collect them before cleanup:
 
 ```bash
-cat /tmp/codegen/workspaces/project-${PROJECT_ID}/workspace/AUDIT_REPORT.md
+# Fetch worker reports from task events
+for TASK_ID in $(curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID" | \
+  python3 -c "import json,sys; [print(t['id']) for t in json.load(sys.stdin)]"); do
+  echo "=== Task: $TASK_ID ==="
+  curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | \
+    python3 -c "import json,sys; [print(e.get('details',{}).get('report','')) for e in json.load(sys.stdin)]"
+done
 ```
-
-> Note: Workspace GC runs every 24h. Collect the report before cleanup.
 
 ### Step 7: Write E2E Report
 
 After a test completes (pass or fail), write a report to `docs/e2e_results/`.
 This step is mandatory — we learn as much from failures as from successes.
 
-#### 7a. Save worker audit report (if available)
-
-If the developer worker produced `AUDIT_REPORT.md` (Step 6), save it alongside
-the main report under a unique name:
-
-```bash
-# Save audit report from worker
-gh api repos/$REPO/contents/AUDIT_REPORT.md | jq -r '.content' | base64 -d \
-  > docs/e2e_results/audit-${PROJECT_NAME}-$(date +%Y%m%d).md
-
-# Or from workspace if not pushed
-cp /tmp/codegen/workspaces/project-${PROJECT_ID}/workspace/AUDIT_REPORT.md \
-  docs/e2e_results/audit-${PROJECT_NAME}-$(date +%Y%m%d).md 2>/dev/null || true
-```
-
-#### 7b. Write the investigation report
+#### 7a. Write the investigation report
 
 Create `docs/e2e_results/<project_name>-<date>.md` documenting every problem
 encountered during the test. Use existing reports in `docs/e2e_results/` as a
@@ -424,15 +384,13 @@ Report structure:
 ### Problem 2: ...
 ```
 
-If the worker audit report was collected (Step 7a), reference it by filename in
-the investigation report header. The audit report captures the developer agent's
-perspective — problems it hit while writing code inside the generated project.
+Worker reports (collected in Step 6) contain the developer agent's perspective —
+problems it hit while writing code. Reference key findings in the Problems section.
 
-#### 7c. Commit both files
+#### 7b. Commit report
 
 ```bash
 git add docs/e2e_results/${PROJECT_NAME}-$(date +%Y%m%d).md
-git add docs/e2e_results/audit-${PROJECT_NAME}-$(date +%Y%m%d).md 2>/dev/null
 git commit -m "docs: e2e report for ${PROJECT_NAME}"
 ```
 

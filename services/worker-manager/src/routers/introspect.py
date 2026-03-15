@@ -243,9 +243,8 @@ async def get_worker_file(worker_id: str, file_path: str, request: Request):
 async def get_worker_prompts(worker_id: str, request: Request):
     """Read CLAUDE.md from workspace and TASK.md from Redis.
 
-    CLAUDE.md lives in /workspace/ (host volume, readable from host).
-    TASK.md lives in /home/worker/ (container-only, not on host volume),
-    so we read it from Redis where manager/wrapper persist it.
+    Both live in /workspace/ inside the container.
+    TASK.md is also persisted to Redis by manager/wrapper for API access.
     """
     redis = request.app.state.redis
     await _check_worker_exists(redis, worker_id)

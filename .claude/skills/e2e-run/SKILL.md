@@ -36,20 +36,11 @@ collect reports, cleanup.
 | 1 | `todo_api` | Add `GET /todos/stats` endpoint that returns `{"total": N, "completed": N, "pending": N}` counting all todos. |
 | 2 | `weather_bot` | Add `/forecast <city>` command that returns mock 3-day forecast (today, tomorrow, day after). Backend endpoint `GET /api/forecast/{city}`. |
 
-## Audit Prompt (appended to every task description)
+## Worker Audit
 
-```
-## Audit Instructions
-
-In addition to completing the task above, you are performing an audit of the
-framework and development environment. Throughout your work, keep a file called
-AUDIT_REPORT.md in the repo root. Log everything you encounter: problems, errors,
-unexpected behavior, missing features or tools in the framework, anything that
-didn't work as expected or required workarounds, suggestions for improving the
-template, framework, or workspace setup, ideas for making the development flow
-smoother. Be specific: include exact error messages, file paths, and what you
-expected vs what happened.
-```
+Workers already write `/workspace/REPORT.md` (per INSTRUCTIONS.md) with Issues Encountered
+and Suggestions sections. This IS the audit report — no separate AUDIT_REPORT.md needed.
+Worker reports are collected via task events API (step 7a).
 
 ## Architecture Quick Reference
 
@@ -738,51 +729,44 @@ bash infra/scripts/ssh-to-server.sh $SERVER_IP "
 
 ### Step 7: Collect Reports
 
-**7a. Worker reports from task events**:
+**IMPORTANT**: This step MUST complete and save files BEFORE Step 9 cleanup.
+Cleanup deletes task_events from DB — if reports aren't saved to disk first, they're lost.
 
 ```bash
+mkdir -p docs/e2e_results/worker_reports
+DATE=$(date +%Y%m%d)
+WORKER_REPORT="docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-worker.md"
+
+# Collect all worker reports from task events and save to file
+echo "# Worker Reports: ${PROJECT_NAME}" > "$WORKER_REPORT"
+echo "" >> "$WORKER_REPORT"
+
+FOUND_REPORTS=0
 for TASK_ID in $(curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID" | python3 -c "
 import json, sys
 for t in json.load(sys.stdin):
     print(t['id'])
 "); do
-  echo "=== Task: $TASK_ID ==="
-  curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
+  REPORT=$(curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
 import json, sys
 events = json.load(sys.stdin)
 for e in events:
     report = e.get('details', {}).get('report', '')
     if report: print(report)
-    else: print('(no worker report)')
-"
-  echo
+")
+  if [ -n "$REPORT" ]; then
+    echo "=== Task: $TASK_ID ===" >> "$WORKER_REPORT"
+    echo "$REPORT" >> "$WORKER_REPORT"
+    echo "" >> "$WORKER_REPORT"
+    FOUND_REPORTS=$((FOUND_REPORTS + 1))
+  fi
 done
-```
 
-**7b. Audit report from GitHub repo**:
-
-```bash
-ORG="project-factory-organization"
-mkdir -p docs/e2e_results/worker_reports
-DATE=$(date +%Y%m%d)
-WORKER_REPORT="docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-worker.md"
-
-docker compose exec -T api python -c "
-import asyncio
-from shared.clients.github import GitHubAppClient
-async def main():
-    gh = GitHubAppClient()
-    content = await gh.get_file_contents('$ORG', '$REPO_SLUG', 'AUDIT_REPORT.md')
-    if content: print(content)
-    else: print('NOT_FOUND')
-asyncio.run(main())
-" 2>/dev/null > /tmp/audit_report.txt
-
-if grep -q "NOT_FOUND" /tmp/audit_report.txt; then
-  echo "No worker audit report found"
+if [ "$FOUND_REPORTS" -eq 0 ]; then
+  echo "(no worker reports found)" >> "$WORKER_REPORT"
+  echo "WARNING: No worker reports collected"
 else
-  cp /tmp/audit_report.txt "$WORKER_REPORT"
-  echo "Saved to $WORKER_REPORT"
+  echo "Saved $FOUND_REPORTS worker report(s) to $WORKER_REPORT"
 fi
 ```
 
@@ -810,7 +794,7 @@ Classify each problem by type:
 > **Status**: Passed / Failed
 > **Feature phase**: passed / failed / skipped (only if --feature)
 > **Smoke**: pass / fail / none
-> **Worker audit**: collected | not found
+> **Worker reports**: collected (N) | none
 
 ---
 
@@ -868,7 +852,8 @@ Same as Step 6, plus verify the specific feature from Feature Add Matrix:
 
 #### Step F4: Collect feature reports
 
-Same as Step 7 — fetch worker reports and audit report for the feature story.
+Same as Step 7 — fetch worker reports from task events for the feature story.
+Save to `docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-feature-worker.md`.
 
 ### Step 8.5: Commit reports
 

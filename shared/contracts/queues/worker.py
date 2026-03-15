@@ -56,6 +56,7 @@ class WorkerConfig(BaseModel):
     project_id: str | None = None  # Project ID for workspace persistence
     repo_id: str | None = None  # Repository ID — mount pre-scaffolded workspace
     scaffold_config: ScaffoldConfig | None = None  # Scaffold phase config (copier + make setup)
+    branch: str | None = None  # Story branch to checkout (e.g. "story/{story_id}")
 
 
 class CreateWorkerCommand(QueueMeta):

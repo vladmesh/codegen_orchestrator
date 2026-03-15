@@ -154,3 +154,44 @@ class TestExtractGitCommitShaReal:
 
         assert result == expected_head
         assert result != initial_sha
+
+
+class TestGetGitBranchReal:
+    def test_returns_default_branch(self, wrapper, tmp_path, monkeypatch):
+        """_get_git_branch returns the default branch name in a real repo."""
+        monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(tmp_path))
+        _init_repo(str(tmp_path))
+
+        result = wrapper._get_git_branch()
+
+        # Default branch name depends on git config, but it's a real branch name
+        assert result is not None
+        assert result in ("main", "master")
+
+    def test_returns_feature_branch(self, wrapper, tmp_path, monkeypatch):
+        """_get_git_branch returns the feature branch after checkout."""
+        monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(tmp_path))
+        _init_repo(str(tmp_path))
+        _git(str(tmp_path), "checkout", "-b", "story/story-123")
+
+        result = wrapper._get_git_branch()
+
+        assert result == "story/story-123"
+
+    def test_returns_none_for_detached_head(self, wrapper, tmp_path, monkeypatch):
+        """_get_git_branch returns None when HEAD is detached."""
+        monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(tmp_path))
+        sha = _init_repo(str(tmp_path))
+        _git(str(tmp_path), "checkout", sha)
+
+        result = wrapper._get_git_branch()
+
+        assert result is None
+
+    def test_returns_none_for_non_repo(self, wrapper, tmp_path, monkeypatch):
+        """_get_git_branch returns None for a non-git directory."""
+        monkeypatch.setattr("worker_wrapper.wrapper.WORKSPACE_DIR", str(tmp_path))
+
+        result = wrapper._get_git_branch()
+
+        assert result is None

@@ -532,6 +532,7 @@ class WorkerManager:
         project_id: str | None = None,
         repo_id: str | None = None,
         scaffold_config: "ScaffoldConfig | None" = None,
+        branch: str | None = None,
     ) -> str:
         """
         Create worker with specified capabilities and agent config.
@@ -671,6 +672,10 @@ class WorkerManager:
             )
             await self._refresh_git_token(container_id, repo_name, github_token, worker_id)
 
+        # Checkout story branch (create if new, switch if exists)
+        if branch:
+            await self._checkout_branch(container_id, branch, worker_id)
+
         # Inject instructions AFTER git clone (so instruction file doesn't block clone)
         if instructions:
             target_path = agent.get_instruction_path()
@@ -693,9 +698,9 @@ class WorkerManager:
                     container_logs=container_logs,
                 )
 
-        # Inject task content as TASK.md (for task-driven workers like developer)
+        # Inject task content as TASK.md in workspace (for task-driven workers like developer)
         if task_content:
-            task_path = "/home/worker/TASK.md"
+            task_path = "/workspace/TASK.md"
             logger.info("injecting_task_content", worker_id=worker_id, path=task_path)
 
             encoded_task = base64.b64encode(task_content.encode()).decode()
@@ -712,7 +717,6 @@ class WorkerManager:
                 )
 
             # Persist task_md in Redis so introspect API can read it
-            # (TASK.md lives at /home/worker/ inside container, not on host volume)
             await self.redis.hset(f"worker:meta:{worker_id}", "task_md", task_content)
 
             # Append to prompt history
@@ -722,6 +726,36 @@ class WorkerManager:
         # Return the worker_id (name), not container_id (Docker hash)
         # This allows callers to reference the worker by its logical name
         return worker_id
+
+    async def _checkout_branch(self, container_id: str, branch: str, worker_id: str) -> bool:
+        """Checkout a story branch in the workspace.
+
+        Creates the branch from current HEAD if it doesn't exist,
+        or switches to it if it already exists (e.g. subsequent tasks in same story).
+        Also sets up tracking so `git push` works without specifying remote/branch.
+        """
+        logger.info("checkout_branch_start", worker_id=worker_id, branch=branch)
+        # Try to create new branch; if it exists, just switch to it.
+        # Then set upstream so `git push` works without args.
+        script = (
+            f"cd /workspace && "
+            f"git fetch origin {branch} 2>/dev/null || true && "
+            f"git checkout -b {branch} 2>/dev/null || git checkout {branch} && "
+            f"git push -u origin {branch} 2>/dev/null || true"
+        )
+        encoded = base64.b64encode(script.encode()).decode()
+        cmd = f"bash -c 'echo {encoded} | base64 -d | bash'"
+        exit_code, output = await self.docker.exec_in_container(container_id, cmd, timeout=30)
+        if exit_code != 0:
+            logger.error(
+                "checkout_branch_failed",
+                worker_id=worker_id,
+                branch=branch,
+                error=output,
+            )
+            return False
+        logger.info("checkout_branch_complete", worker_id=worker_id, branch=branch)
+        return True
 
     async def _refresh_git_token(self, container_id: str, repo: str, token: str, worker_id: str) -> bool:
         """Update git remote URL with fresh token in existing workspace."""

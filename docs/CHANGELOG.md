@@ -2,6 +2,19 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-15
+
+### Changed
+- **TASK.md moved to /workspace/**: TASK.md now lives in the workspace directory (`/workspace/TASK.md`) instead of `/home/worker/TASK.md`. Worker-manager injects it there on create; wrapper updates it each turn. After task completes, wrapper archives TASK.md + REPORT.md into `.story/old_tasks/{task_id}.md` — next worker sees full history. `.story/` is auto-gitignored.
+- **Minimal `-p` prompt for Claude workers**: Wrapper now passes a one-line redirect ("Read TASK.md") as `-p` instead of the full task content. Full task stays in TASK.md file — Claude reads it on demand, keeping context window clean. Removed self-referential TASK.md references from developer.py and INSTRUCTIONS.md.
+- **Merge AUDIT_REPORT.md into REPORT.md**: Removed separate AUDIT_REPORT.md concept from e2e-run skill. Workers already write REPORT.md with Issues+Suggestions sections (per INSTRUCTIONS.md) — that IS the audit report. Worker reports collected via task events API.
+- **Filter scaffolder tree output**: `_capture_tree()` now excludes `.venv`, `node_modules`, `.git`, `__pycache__`, `.mypy_cache`, `.ruff_cache` from the tree passed to the architect. Same exclusion set as the admin panel workspace browser. Saves tokens in architect context.
+- **E2E skill: save reports before cleanup**: Step 7 now explicitly saves worker reports to local files before Step 9 DB cleanup. Previously reports could be lost when task_events were deleted.
+
+### Added
+- **Task archiving (`.story/old_tasks/`)**: After each task, wrapper merges TASK.md + REPORT.md into `.story/old_tasks/{task_id}.md`. Next worker can browse previous tasks for context without force-fed story_context in the prompt.
+- **Hybrid --resume session management**: `SessionManager.clear_session()` method + `clear_session` flag in task messages. `send_task_to_worker()` accepts `clear_session=True` to force fresh Claude CLI session on retries (avoids inheriting errors from failed previous attempt). First task in story: fresh (new worker). Subsequent: `--resume` via stored session.
+
 ## 2026-03-14
 
 ### Changed

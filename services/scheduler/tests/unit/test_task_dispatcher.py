@@ -358,6 +358,64 @@ class TestDispatchTodoTasks:
         redis_client.publish_message.assert_called_once()
 
 
+class TestBranchInDispatch:
+    """Tests that branch is included in EngineeringMessage."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_includes_branch_for_story_task(self, api_client, redis_client):
+        """Task with story_id gets branch=story/{story_id} in EngineeringMessage."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-1",
+                "title": "Add user model",
+                "description": "Create User SQLAlchemy model",
+                "type": "feature",
+                "project_id": "proj-1",
+                "story_id": "story-abc",
+                "blocked_by_task_id": None,
+                "status": "todo",
+            }
+        ]
+        api_client.get_task_events.return_value = []
+        api_client.create_run.return_value = {"id": "run-1"}
+        api_client.transition_task.return_value = {}
+        api_client.get_story.return_value = {"user_id": "u-1"}
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        redis_client.publish_message.assert_called_once()
+        eng_msg = redis_client.publish_message.call_args[0][1]
+        assert eng_msg.branch == "story/story-abc"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_no_branch_for_standalone_task(self, api_client, redis_client):
+        """Task without story_id gets branch=None."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            {
+                "id": "task-1",
+                "title": "Fix bug",
+                "description": "Fix it",
+                "type": "fix",
+                "project_id": "proj-1",
+                "story_id": None,
+                "blocked_by_task_id": None,
+                "status": "todo",
+            }
+        ]
+        api_client.create_run.return_value = {"id": "run-1"}
+        api_client.transition_task.return_value = {}
+
+        await dispatch_todo_tasks(api_client, redis_client)
+
+        redis_client.publish_message.assert_called_once()
+        eng_msg = redis_client.publish_message.call_args[0][1]
+        assert eng_msg.branch is None
+
+
 class TestCompleteStories:
     """Complete stories when all tasks are done."""
 

@@ -162,6 +162,65 @@ async def _build_story_context(story_id: str, current_task_id: str | None = None
     return "\n".join(lines)
 
 
+async def _build_story_md(story_id: str, current_task_id: str | None = None) -> str | None:
+    """Build .story/STORY.md content for the worker's file-first context.
+
+    Returns a markdown string with story goal, task list, and references.
+    Unlike _build_story_context (which embeds everything in the prompt),
+    this creates a file the worker reads only when needed.
+    """
+    try:
+        story = await api_client.get_story(story_id)
+    except Exception:
+        logger.warning("story_md_fetch_failed", story_id=story_id, exc_info=True)
+        return None
+
+    try:
+        tasks = await api_client.get_tasks_by_story(story_id)
+    except Exception:
+        tasks = []
+
+    title = story.get("title", "Untitled story")
+    description = story.get("description") or ""
+
+    lines = [f"# Story: {title}", ""]
+    if description:
+        lines.append("## Goal")
+        lines.append(description)
+        lines.append("")
+
+    user_report = story.get("user_report")
+    if user_report:
+        lines.append("## User Report")
+        lines.append(user_report)
+        lines.append("")
+
+    if tasks:
+        tasks.sort(key=lambda t: t.get("created_at", ""))
+        lines.append("## Tasks")
+        for i, task in enumerate(tasks, 1):
+            tid = task.get("id", "?")
+            task_title = task.get("title", "Untitled")
+            status = task.get("status", "unknown")
+            is_current = tid == current_task_id
+            if is_current:
+                lines.append(f"{i}. **{task_title}** — current (see TASK.md)")
+            elif status == "done":
+                lines.append(f"{i}. ~~{task_title}~~ — done (see old_tasks/)")
+            else:
+                lines.append(f"{i}. {task_title} [{status}]")
+        lines.append("")
+
+    lines.append("## References")
+    lines.append("- `README.md` — project description")
+    lines.append("- `.env` / `.env.example` — environment variables")
+    lines.append("- `AGENTS.md` — code patterns and conventions")
+    lines.append("- `.story/old_tasks/` — completed tasks with developer reports")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 async def _resolve_allocations(task_id: str, project_id: str, project: dict) -> dict | None:
     """Resolve or create resource allocations. Returns dict or None on failure."""
     logger.info("allocating_resources", task_id=task_id, project_id=project_id)
@@ -492,8 +551,14 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         # Build story context (previous tasks + events) for worker continuity
         story_context = await _build_story_context(story_id, planning_task_id) if story_id else None
 
+        # Build .story/STORY.md content (file-first context for worker)
+        story_md = await _build_story_md(story_id, planning_task_id) if story_id else None
+
         # CI-check tasks (created_by=system) may succeed without producing a commit
         allow_no_commit = await _is_ci_check_task(planning_task_id)
+
+        # Resolve story branch name
+        branch = f"story/{story_id}" if story_id else None
 
         # Prepare EngineeringState
         subgraph_input = {
@@ -504,6 +569,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "action": action,
             "description": description,
             "story_context": story_context,
+            "story_md": story_md,
             "repo_id": repo_id,
             "commit_sha": None,
             "worker_id": existing_worker_id,
@@ -513,6 +579,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "needs_human_approval": False,
             "human_approval_reason": None,
             "allow_no_commit": allow_no_commit,
+            "branch": branch,
             "worker_report": None,
             "errors": [],
         }

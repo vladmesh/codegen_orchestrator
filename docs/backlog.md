@@ -3,9 +3,33 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-14
+> **Updated**: 2026-03-15
 
 ## Queue (ordered by priority, first = next)
+
+### [service-template] ci.yml: CI runs only on PR to main, not on every push
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: IN SERVICE-TEMPLATE REPO (/home/vlad/projects/service-template), NOT orchestrator.  Update ci.yml.jinja so generated projects only run CI on pull_request to main (and workflow_dispatch), not on every push. This saves GitHub Actions minutes — workers push to feature branches multiple times per sto...
+
+### Branch protection setup via GitHub API after scaffold
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: After scaffolder creates a repo and pushes initial commit to main, configure branch protection rules via GitHub API: require PR for merge to main, require CI checks to pass.  Source: docs/brainstorms/worker-context-architecture.md — CI Architecture section.  Scope: - Scaffolder or post-scaffold s...
+
+### PR-based CI gate: story completion creates PR, auto-merge on green CI
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Replace the polling CI gate (_ci_gate.py) with PR-based flow. When all tasks in a story are done, create a PR from story branch to main. CI runs on PR. On green CI — auto-merge. On red CI — create "Fix CI" task on same branch.  Source: docs/brainstorms/worker-context-architecture.md — CI Architec...
+
+### Feature branches for stories: engineering consumer creates story branch, workers push there
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Currently all worker commits go directly to main. Change to: engineering consumer creates `story/{story_id}` branch from main before first task, workers push to that branch instead of main.  Source: docs/brainstorms/worker-context-architecture.md — CI Architecture section.  Scope: - Engineering c...
 
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
@@ -249,9 +273,17 @@
 - **Status**: backlog
 - **Brief**: Create integration test compose (scheduler + langgraph + Redis) that verifies the cross-service story worker flow: dispatcher sends story_id in EngineeringMessage -> consumer reads it, spawns worker, stores in registry -> dispatcher cleanup on story complete removes worker.
 
+### Allocate ports only for modules that need host exposure
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Currently ensure_project_allocations allocates a port for every module in the list (e.g. backend + tg_bot). But tg_bot does not listen on a host port — it connects outbound to Telegram API. Allocating a port for it wastes the resource and clutters the admin UI.  Fix: modules should declare whethe...
+
 
 ## Done (last 10)
 
+- #1010 STORY.md: generate .story/STORY.md with story goal, task list, references — 2026-03-15
+- #1009 Worker local tests: add make lint + make test-unit to INSTRUCTIONS.md — 2026-03-15
 - Bind PortAllocation to Application instead of Project — 2026-03-14
 - Introduce Application entity and refactor Deployment model — 2026-03-14
 - Run tests, verify CI green — 2026-03-14
@@ -260,8 +292,6 @@
 - Diagnose why tarot images fail 93% of the time — 2026-03-14
 - Unify workspace management: repo_id-based addressing, remove legacy workspace creation — 2026-03-14
 - Run tests, verify CI green — 2026-03-13
-- Fix /revert command - verify full integration (attempt #3) — 2026-03-13
-- Add /revert command with proper registration — 2026-03-13
 
 ## Ideas
 

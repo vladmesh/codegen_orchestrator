@@ -63,3 +63,33 @@ class TestSessionManager:
         # TTL should be refreshed
         ttl = await fake_redis.ttl("worker:session:worker-1")
         assert ttl > expired_ttl
+
+    @pytest.mark.asyncio
+    async def test_clear_session_deletes_key(self, fake_redis):
+        """clear_session should delete the session key from Redis."""
+        manager = SessionManager(fake_redis, worker_id="worker-1")
+        await manager.get_or_create_session()
+
+        # Verify session exists
+        assert await fake_redis.get("worker:session:worker-1") is not None
+
+        # Clear it
+        await manager.clear_session()
+
+        # Should be gone
+        assert await fake_redis.get("worker:session:worker-1") is None
+
+    @pytest.mark.asyncio
+    async def test_get_session_after_clear_returns_none_for_claude(self, fake_redis):
+        """After clear, get_or_create with create_new=False returns None (Claude behavior)."""
+        manager = SessionManager(fake_redis, worker_id="worker-1")
+
+        # Simulate: session was captured from previous run
+        await manager.update_session("previous-session-123")
+
+        # Clear for retry
+        await manager.clear_session()
+
+        # Claude mode: create_new=False → should return None
+        session_id = await manager.get_or_create_session(create_new=False)
+        assert session_id is None

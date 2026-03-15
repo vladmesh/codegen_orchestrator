@@ -46,8 +46,14 @@ class EngineeringState(TypedDict):
     # Story context (previous tasks + events for worker continuity)
     story_context: str | None
 
+    # .story/STORY.md content (file-first context: goal, task list, references)
+    story_md: str | None
+
     # Repository info (for workspace mounting)
     repo_id: str | None
+
+    # Story branch name (e.g. "story/{story_id}")
+    branch: str | None
 
     # Engineering result
     engineering_status: str  # "idle" | "working" | "done" | "blocked"

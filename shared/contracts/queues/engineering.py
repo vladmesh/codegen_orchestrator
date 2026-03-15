@@ -24,6 +24,7 @@ class EngineeringMessage(BaseMessage):
     planning_task_id: str | None = None  # planning-layer Task ID for status updates
     story_id: str | None = None  # story ID for worker reuse across tasks
     deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count
+    branch: str | None = None  # story branch name (e.g. "story/{story_id}")
 
 
 class EngineeringResult(BaseResult):

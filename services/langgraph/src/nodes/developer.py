@@ -32,7 +32,7 @@ class DeveloperNode(FunctionalNode):
     For new projects (action=create, status=scaffolded):
         1. Scaffolder has already prepared workspace at /data/workspaces/{repo_id}
         2. Spawn worker with repo_id (worker-manager mounts pre-scaffolded workspace)
-        3. Worker implements business logic according to /home/worker/TASK.md
+        3. Worker implements business logic according to TASK.md
 
     For existing projects (action=feature/fix):
         1. Spawn Claude Code worker to clone existing repo
@@ -152,6 +152,12 @@ class DeveloperNode(FunctionalNode):
             # Build task title based on action
             task_title = self._get_task_title(action, project_name)
 
+            # .story/STORY.md content (file-first context for worker)
+            story_md = state.get("story_md")
+
+            # Story branch (e.g. "story/{story_id}") — workers push here
+            branch = state.get("branch")
+
             # Reuse existing worker if worker_id is in state (story-level reuse)
             existing_worker_id = state.get("worker_id")
             if existing_worker_id:
@@ -164,6 +170,8 @@ class DeveloperNode(FunctionalNode):
                     worker_id=existing_worker_id,
                     task_content=task_message,
                     timeout_seconds=Timeouts.WORKER_SPAWN,
+                    story_md=story_md,
+                    branch=branch,
                 )
                 # Fall back to fresh spawn if worker is dead
                 if not worker_result.success and worker_result.error_message == "execution_timeout":
@@ -181,6 +189,8 @@ class DeveloperNode(FunctionalNode):
                         project_id=project_id,
                         repo_id=repo_id,
                         agent_type=agent_type,
+                        story_md=story_md,
+                        branch=branch,
                     )
             else:
                 # Spawn fresh worker
@@ -193,6 +203,8 @@ class DeveloperNode(FunctionalNode):
                     project_id=project_id,
                     repo_id=repo_id,
                     agent_type=agent_type,
+                    story_md=story_md,
+                    branch=branch,
                 )
 
             if worker_result.success:
@@ -435,14 +447,12 @@ class DeveloperNode(FunctionalNode):
 The project was scaffolded with `copier` from `service-template`.
 You'll find:
 - `services/{modules_str.split(",")[0]}/` - main service directory{spec_lines}
-- `/home/worker/TASK.md` - detailed requirements
 - `AGENTS.md` - code structure patterns
 - `Makefile` - build commands
 {generate_hint}
 ## Implementation
 
-Implement the business logic according to the specification:
-- Read /home/worker/TASK.md for detailed requirements
+Implement the business logic according to the specification above.
 - Follow patterns in AGENTS.md for code structure
 - Implement all required functionality
 - Use existing generated code as foundation

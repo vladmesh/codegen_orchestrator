@@ -202,6 +202,7 @@ async def dispatch_todo_tasks(
         await api_client.create_run(run_data)
 
         # Publish EngineeringMessage
+        branch = f"story/{story_id}" if story_id else None
         eng_msg = EngineeringMessage(
             task_id=run_id,
             project_id=project_id,
@@ -211,6 +212,7 @@ async def dispatch_todo_tasks(
             skip_deploy=True,  # Deploy handled at story level
             planning_task_id=task_id,
             story_id=story_id,
+            branch=branch,
         )
         await redis_client.publish_message(ENGINEERING_QUEUE, eng_msg)
 

@@ -384,3 +384,106 @@ async def test_check_project_lock_keeps_starting_worker():
     result = await manager._check_project_lock(project_id)
 
     assert result == worker_id
+
+
+# --- Branch Checkout Tests ---
+
+
+@pytest.mark.asyncio
+async def test_checkout_branch_called_when_branch_provided():
+    """create_worker_with_capabilities with branch should call _checkout_branch."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
+
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    with (
+        patch("src.manager.settings") as mock_settings,
+        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
+        patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/data/ws/repo-1"), True),
+        ),
+    ):
+        mock_settings.DOCKER_NETWORK = ""
+        mock_settings.WORKER_NETWORK = "codegen_worker"
+        mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
+        mock_settings.WORKER_REDIS_URL = ""
+        mock_settings.WORKER_API_URL = ""
+        mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
+        mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
+        mock_settings.WORKER_IMAGE_PREFIX = "worker"
+        mock_settings.WORKER_DOCKER_LABELS = "{}"
+
+        await manager.create_worker_with_capabilities(
+            worker_id="w-branch-test",
+            capabilities=["git"],
+            base_image="worker-base:latest",
+            agent_type="claude",
+            repo_id="repo-1",
+            env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
+            branch="story/story-abc",
+        )
+
+    # Verify _checkout_branch was called — the actual git command is base64-encoded,
+    # so we decode one of the exec calls to check the branch name is present
+    import base64 as b64
+
+    exec_calls = wrapper.exec_in_container.call_args_list
+    decoded_cmds = []
+    for c in exec_calls:
+        cmd_str = c.args[1] if len(c.args) > 1 else ""
+        # Extract base64 payload from "bash -c 'echo <b64> | base64 -d | bash'"
+        if "base64 -d" in cmd_str:
+            parts = cmd_str.split("echo ", 1)
+            if len(parts) > 1:
+                b64_part = parts[1].split(" |")[0].strip()
+                try:
+                    decoded_cmds.append(b64.b64decode(b64_part).decode())
+                except Exception:
+                    pass
+    branch_cmds = [d for d in decoded_cmds if "story/story-abc" in d]
+    assert len(branch_cmds) > 0, f"No branch checkout found. Decoded cmds: {decoded_cmds}"
+
+
+@pytest.mark.asyncio
+async def test_no_checkout_branch_when_branch_is_none():
+    """create_worker_with_capabilities without branch should NOT call _checkout_branch."""
+    redis = aioredis.FakeRedis(decode_responses=True)
+    wrapper = _make_docker_mock()
+    wrapper.exec_in_container = AsyncMock(return_value=(0, "ok"))
+
+    manager = WorkerManager(redis=redis, docker_client=wrapper)
+
+    with (
+        patch("src.manager.settings") as mock_settings,
+        patch.object(manager, "ensure_or_build_image", new_callable=AsyncMock, return_value="worker:latest"),
+        patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/data/ws/repo-1"), True),
+        ),
+    ):
+        mock_settings.DOCKER_NETWORK = ""
+        mock_settings.WORKER_NETWORK = "codegen_worker"
+        mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
+        mock_settings.WORKER_REDIS_URL = ""
+        mock_settings.WORKER_API_URL = ""
+        mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
+        mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
+        mock_settings.WORKER_IMAGE_PREFIX = "worker"
+        mock_settings.WORKER_DOCKER_LABELS = "{}"
+
+        await manager.create_worker_with_capabilities(
+            worker_id="w-no-branch",
+            capabilities=["git"],
+            base_image="worker-base:latest",
+            agent_type="claude",
+            repo_id="repo-1",
+            env_vars={"GITHUB_TOKEN": "tok", "REPO_NAME": "org/repo"},
+        )
+
+    # No exec call should contain "story/" or "checkout -b"
+    exec_calls = wrapper.exec_in_container.call_args_list
+    branch_calls = [c for c in exec_calls if "checkout -b" in str(c)]
+    assert len(branch_calls) == 0, f"Unexpected branch checkout call found: {branch_calls}"
