@@ -27,6 +27,30 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 - **Problem**: The skill's Quick Reference section has `from shared.github_app import GitHubAppClient` which is wrong — the correct import is `from shared.clients.github import GitHubAppClient`.
 - **Suggested fix**: Fix the import in the Quick Reference section.
 
+## [e2e-run] — 2026-03-16
+- **Type**: bug
+- **Quote**: `"Step 1b ... MESSAGE_TEXT=$MESSAGE_TEXT"`
+- **Problem**: PO may create project with hyphenated name (`weather-bot`) even when user says `weather_bot`. The skill uses `PROJECT_NAME` with underscores throughout but PO uses hyphens. Step 1d lookup by name fails. Should define both `PROJECT_NAME` and `REPO_SLUG` early and search by either.
+- **Suggested fix**: After PO creates the project, search API by both underscore and hyphen variants. Or always use the API-returned name.
+
+## [e2e-run] — 2026-03-16
+- **Type**: bug
+- **Quote**: `"curl -s http://localhost:8000/wm-api/workers/"` (Step 4 polling loop)
+- **Problem**: The WM introspection API returns `{"detail":"Not Found"}` at `/wm-api/workers/`. The endpoint may have changed or requires trailing slash handling. The polling loop crashes with `TypeError: string indices must be integers`.
+- **Suggested fix**: Verify correct WM API endpoint and add error handling for non-JSON / non-list responses in the polling script.
+
+## [e2e-run] — 2026-03-16
+- **Type**: missing-info
+- **Quote**: Step 5 "Deploy is triggered later by the webhook when the PR is merged"
+- **Problem**: For newly scaffolded repos, the GitHub webhook may not be configured. The webhook never arrived after PR merge. The skill doesn't mention this as a known failure mode or provide a workaround (manually publish deploy message + create Run record).
+- **Suggested fix**: Add a note: "If webhook doesn't arrive within 60s of merge, check if repo has org-level webhook. Workaround: create Run record via API, publish DeployMessage to deploy:queue manually."
+
+## [e2e-run] — 2026-03-16
+- **Type**: missing-info
+- **Quote**: Step 5 deploy message publishing
+- **Problem**: The skill doesn't document how to manually publish a deploy message. DeployMessage requires `task_id` which is actually a `run_id` (format `deploy-wh-{hex}`). Must create Run record first via `POST /api/runs/` with field `type` (not `run_type`).
+- **Suggested fix**: Add a "Manual deploy trigger" recipe to the skill with exact API calls and correct field names.
+
 ## [plan] — 2026-03-08
 - **Type**: bug
 - **Quote**: "Run `make test-unit` at minimum" (from CLAUDE.md) vs plan step 5 "Run `make test-langgraph-unit`"
