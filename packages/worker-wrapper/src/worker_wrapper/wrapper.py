@@ -136,7 +136,8 @@ class WorkerWrapper:
             return
         logger.info("workspace_preflight_passed", detail=workspace_detail)
 
-        # 3b. Inject Makefile overrides for orchestrator environment
+        # 3b. Fix venv shebangs and inject Makefile overrides
+        self._fix_venv_shebangs()
         self._inject_makefile_overrides()
 
         # 4. Execute
@@ -203,6 +204,104 @@ class WorkerWrapper:
             return False, f"missing .copier-answers.yml (scaffold not run). {detail}"
 
         return True, detail
+
+    @staticmethod
+    def _read_shebang(path: str) -> str | None:
+        """Read shebang line from a file, or None if not a text script."""
+        try:
+            with open(path, "rb") as f:
+                if f.read(2) != b"#!":
+                    return None
+            with open(path) as f:
+                return f.readline().rstrip("\n")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def _detect_scaffold_prefix(self) -> str | None:
+        """Find the scaffold-time path prefix by inspecting venv shebangs.
+
+        Returns the prefix string (e.g. "/data/workspaces/repo-xxx/")
+        that should be replaced with WORKSPACE_DIR + "/", or None if
+        shebangs already point to the correct path.
+        """
+        import glob
+
+        shebang_len = len("#!")
+        for venv_bin in glob.glob(os.path.join(WORKSPACE_DIR, "**/.venv/bin"), recursive=True):
+            for entry in os.scandir(venv_bin):
+                if not entry.is_file():
+                    continue
+                first_line = self._read_shebang(entry.path)
+                if not first_line:
+                    continue
+
+                shebang_path = first_line[shebang_len:]
+                if shebang_path.startswith(WORKSPACE_DIR + "/"):
+                    continue  # already correct
+
+                # Find where the workspace-relative path starts in the shebang
+                rel_venv_bin = os.path.relpath(venv_bin, WORKSPACE_DIR)
+                idx = first_line.find(rel_venv_bin)
+                if idx > shebang_len:
+                    return first_line[shebang_len:idx]
+        return None
+
+    def _fix_venv_shebangs(self):
+        """Fix venv shebang paths that don't match the container mount point.
+
+        Scaffolder creates venvs at /data/workspaces/<repo_id>/, but workers
+        mount the same directory at /workspace. Detects the original scaffold
+        prefix and rewrites all venv script shebangs. Runs once per workspace.
+        """
+        sentinel = os.path.join(WORKSPACE_DIR, ".shebangs_fixed")
+        if os.path.exists(sentinel):
+            return
+
+        import glob
+        import re
+
+        scaffold_prefix = self._detect_scaffold_prefix()
+        if not scaffold_prefix:
+            self._touch(sentinel)
+            return
+
+        logger.info("fixing_venv_shebangs", scaffold_prefix=scaffold_prefix)
+
+        fixed_count = 0
+        escaped_prefix = re.escape(scaffold_prefix)
+        for venv_bin in glob.glob(os.path.join(WORKSPACE_DIR, "**/.venv/bin"), recursive=True):
+            for entry in os.scandir(venv_bin):
+                if not entry.is_file():
+                    continue
+                if not self._read_shebang(entry.path):
+                    continue
+                try:
+                    with open(entry.path) as f:
+                        content = f.read()
+                except (OSError, UnicodeDecodeError):
+                    continue
+
+                new_content = re.sub(
+                    f"#!{escaped_prefix}",
+                    f"#!{WORKSPACE_DIR}/",
+                    content,
+                    count=1,
+                )
+                if new_content != content:
+                    with open(entry.path, "w") as f:
+                        f.write(new_content)
+                    fixed_count += 1
+
+        logger.info("venv_shebangs_fixed", count=fixed_count)
+        self._touch(sentinel)
+
+    @staticmethod
+    def _touch(path: str):
+        """Create an empty file (sentinel marker)."""
+        try:
+            open(path, "w").close()
+        except OSError:
+            pass
 
     def _inject_makefile_overrides(self):
         """Inject Makefile overrides so `make dev-start` uses orchestrator CLI.
