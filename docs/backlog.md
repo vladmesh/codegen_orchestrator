@@ -30,17 +30,17 @@
 - **Status**: backlog
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
+### QA consumer skeleton — SSH to server, run Claude Code, parse result
+- **Priority**: CRITICAL
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Create QA consumer that reads from qa:queue, SSHes to prod server, runs Claude Code with QA prompt, and parses the JSON result.  Context: brainstorm docs/brainstorms/add-testing-status-to-storystatus-api-transition-e.md Prior work: TESTING status + QAMessage contract already merged (commit 163ed4...
+
 ### #1006 Decouple deploy worker from story lifecycle
 - **Priority**: HIGH
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
-
-### Add TESTING status to StoryStatus + API transition endpoint + QA queue contract
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: ## Context Brainstorm: bs-eece61a8 (docs/brainstorms/post-release-qa-mvp.md)  ## What 1. Add `TESTING` to `StoryStatus` enum in `shared/contracts/dto/story.py` 2. Add valid transitions: `DEPLOYING → TESTING`, `TESTING → {COMPLETED, IN_PROGRESS, FAILED}` 3. Add `POST /api/stories/{id}/test` endpoi...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -264,6 +264,7 @@
 
 ## Done (last 10)
 
+- Add TESTING status to StoryStatus + API transition endpoint + QA queue contract — 2026-03-16
 - Implement random cat photo bot with admin access control — 2026-03-15
 - [service-template] ci.yml: CI runs only on PR to main, not on every push — 2026-03-15
 - Branch protection setup via GitHub API after scaffold — 2026-03-15
@@ -273,7 +274,6 @@
 - #1009 Worker local tests: add make lint + make test-unit to INSTRUCTIONS.md — 2026-03-15
 - Bind PortAllocation to Application instead of Project — 2026-03-14
 - Introduce Application entity and refactor Deployment model — 2026-03-14
-- Run tests, verify CI green — 2026-03-14
 
 ## Ideas
 

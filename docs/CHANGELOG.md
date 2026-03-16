@@ -11,6 +11,7 @@
 - **Prompts tab in admin panel** (hotfix): Removed the "Prompts" tab from worker detail page, `/prompts` and `/prompt-history` API endpoints, Redis persistence of `task_md` and `prompt_history`, and related tests/types. The `-p` argument is now a hardcoded constant — no value in tracking it.
 
 ### Added
+- **TESTING story status + QA queue contract** (task-4dbe7a76): Foundation for post-release QA. New `StoryStatus.TESTING` enum value with transitions `DEPLOYING → TESTING → {COMPLETED, IN_PROGRESS, FAILED}`. New `POST /api/stories/{id}/test` endpoint. `QAMessage` contract in `shared/contracts/queues/qa.py`. `QA_QUEUE` + `QA_GROUP` constants and topology binding. 15 new tests.
 - **PR merge polling** (hotfix): Dispatcher now polls GitHub for merged PRs on stories in `pr_review` status every 30s. Eliminates dependency on GitHub webhook for the `pr_review → deploying` transition. New `list_pull_requests()` method on `GitHubAppClient`.
 - **Deploy failure LLM classifier** (hotfix): Deploy worker now classifies failures as CODE vs INFRA using haiku before dispatching to engineering. INFRA failures (timeouts, network, resource limits) retry deploy instead of wasting an engineering worker. After max retries, story is marked failed for HITL. Extracted `_track_deploy_retry()` helper from `_handle_deploy_failure()`.
 

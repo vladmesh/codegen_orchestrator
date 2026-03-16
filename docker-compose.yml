@@ -113,6 +113,32 @@ services:
     deploy:
       replicas: 1
 
+  qa-worker:
+    build:
+      context: .
+      dockerfile: services/langgraph/Dockerfile
+    command: python -m src.consumers.qa
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: qa-worker
+    volumes:
+      - ./services/langgraph/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
+    depends_on:
+      - api
+      - redis
+    networks:
+      - internal
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
   engineering-worker:
     build:
       context: .
