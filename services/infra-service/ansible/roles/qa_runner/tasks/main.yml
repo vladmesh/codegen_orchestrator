@@ -80,7 +80,6 @@
     dest: /root/.claude/.credentials.json
     owner: root
     mode: '0600'
-  when: claude_credentials_file is defined
   no_log: true
 
 # --- Telethon session (optional) ---

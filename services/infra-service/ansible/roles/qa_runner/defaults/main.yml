@@ -1,2 +1,3 @@
 ---
 qa_runner_dir: /opt/qa-runner
+claude_credentials_file: ~/.claude/.credentials.json
