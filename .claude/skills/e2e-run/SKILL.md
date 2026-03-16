@@ -169,7 +169,7 @@ SSH keys are stored in the DB (encrypted). Use the helper script:
 bash infra/scripts/ssh-to-server.sh $SERVER_IP "hostname"
 ```
 
-**Server filesystem layout**: `/opt/services/<PROJECT_NAME>/`
+**Server filesystem layout**: `/opt/services/<REPO_SLUG>/` (hyphenated name, e.g. `weather-bot`)
 
 ```bash
 # Docker compose on server — always use both compose files:
@@ -184,7 +184,8 @@ Run tests **sequentially** (one at a time).
 
 **Repo naming**: GitHub repos use **hyphens**, not underscores.
 Define `REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')` early.
-Use `$REPO_SLUG` for GitHub API, `$PROJECT_NAME` for API/DB/server paths.
+Use `$REPO_SLUG` for GitHub API **and server paths** (`/opt/services/$REPO_SLUG`).
+Use `$PROJECT_NAME` only for API/DB queries and local file names.
 
 ### Step 0: Health check + pre-flight cleanup
 
@@ -258,18 +259,20 @@ fi
 # 2. Kill leftover worker containers
 docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}" | xargs -r docker rm -f
 
-# 3. Clean stale deployments on servers
+# 3. Clean stale deployments on servers (check BOTH underscore and hyphen variants)
 for SERVER_IP in $(curl -s "http://localhost:8000/api/servers/?is_managed=true" | jq -r '.[].public_ip'); do
-  HAS_DIR=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
-    "[ -d /opt/services/$PROJECT_NAME ] && echo EXISTS || echo CLEAN" 2>/dev/null || echo "SSH_FAIL")
-  if [ "$HAS_DIR" = "EXISTS" ]; then
-    echo "WARNING: Stale deployment on $SERVER_IP — cleaning"
-    bash infra/scripts/ssh-to-server.sh $SERVER_IP "
-      cd /opt/services/$PROJECT_NAME/infra 2>/dev/null && \
-        docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
-      rm -rf /opt/services/$PROJECT_NAME
-    "
-  fi
+  for DIR_NAME in "$PROJECT_NAME" "$REPO_SLUG"; do
+    HAS_DIR=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
+      "[ -d /opt/services/$DIR_NAME ] && echo EXISTS || echo CLEAN" 2>/dev/null || echo "SSH_FAIL")
+    if [ "$HAS_DIR" = "EXISTS" ]; then
+      echo "WARNING: Stale deployment $DIR_NAME on $SERVER_IP — cleaning"
+      bash infra/scripts/ssh-to-server.sh $SERVER_IP "
+        cd /opt/services/$DIR_NAME/infra 2>/dev/null && \
+          docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
+        rm -rf /opt/services/$DIR_NAME
+      "
+    fi
+  done
 done
 ```
 
@@ -426,7 +429,10 @@ PROJECT_ID=$(curl -s "http://localhost:8000/api/projects/" \
 STORY_ID=$(curl -s "http://localhost:8000/api/stories/?sort=-created_at" \
   | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .id' | head -1)
 
-echo "PROJECT_ID=$PROJECT_ID STORY_ID=$STORY_ID"
+REPO_ID=$(curl -s "http://localhost:8000/api/projects/$PROJECT_ID" \
+  | jq -r '.repositories[0].id // empty')
+
+echo "PROJECT_ID=$PROJECT_ID STORY_ID=$STORY_ID REPO_ID=$REPO_ID"
 ```
 
 If either is empty, send a follow-up to PO. If PO fails after 2 attempts,
@@ -517,6 +523,25 @@ docker compose logs architect --tail=50 --since=5m 2>/dev/null | grep -v "HTTP R
   scaffold actually completed (see Step 2).
 
 **Verify**: Task chain should have sensible descriptions and correct blocking order.
+
+**Post-architect check**: After tasks appear, verify the first unblocked task transitions
+to `in_dev` within 2 minutes. If it stays `todo`:
+
+```bash
+# Check dispatcher is running and picking up tasks
+docker compose logs scheduler --since=2m 2>/dev/null | grep -i dispatch | tail -10
+
+# Check engineering:queue — was a message published?
+curl -s "http://localhost:8000/debug/queues/engineering:queue/messages?count=10" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(f'Engineering queue: {data[\"total\"]} messages')
+for m in data['messages']:
+    print(f\"  {m['id']}  task={m['data'].get('task_id','?')}\")
+"
+```
+
+If no dispatch after 2 min, the dispatcher may be stuck or the task isn't in `todo` status.
 
 ### Step 4: Monitor Engineering
 
@@ -762,7 +787,7 @@ for d in deps:
 
 ```bash
 bash infra/scripts/ssh-to-server.sh $SERVER_IP "
-  cd /opt/services/$PROJECT_NAME/infra
+  cd /opt/services/$REPO_SLUG/infra
   COMPOSE='docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml'
   echo '=== Container status ==='
   \$COMPOSE ps -a
@@ -782,7 +807,7 @@ curl -sf "http://$SERVER_IP:$DEPLOY_PORT/health" | jq . || echo "Health endpoint
 
 ```bash
 bash infra/scripts/ssh-to-server.sh $SERVER_IP "
-  PROJECT_DIR=/opt/services/$PROJECT_NAME
+  PROJECT_DIR=/opt/services/$REPO_SLUG
   if [ ! -d \"\$PROJECT_DIR\" ]; then
     echo 'No deployment directory found'
     exit 0
@@ -959,16 +984,18 @@ async def main():
 asyncio.run(main())
 "
 
-# 3. Clean server deployment
+# 3. Clean server deployment (check both underscore and hyphen variants)
 if [ -n "$SERVER_IP" ]; then
-  bash infra/scripts/ssh-to-server.sh $SERVER_IP "
-    if [ -d /opt/services/$PROJECT_NAME/infra ]; then
-      cd /opt/services/$PROJECT_NAME/infra
-      docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
-    fi
-    rm -rf /opt/services/$PROJECT_NAME
-    echo 'Server cleanup done'
-  " || echo "WARNING: SSH cleanup failed"
+  for DIR_NAME in "$PROJECT_NAME" "$REPO_SLUG"; do
+    bash infra/scripts/ssh-to-server.sh $SERVER_IP "
+      if [ -d /opt/services/$DIR_NAME/infra ]; then
+        cd /opt/services/$DIR_NAME/infra
+        docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
+      fi
+      rm -rf /opt/services/$DIR_NAME
+    " 2>/dev/null || true
+  done
+  echo "Server cleanup done"
 fi
 
 # 4. Delete deployment records
@@ -1024,6 +1051,19 @@ docker compose exec -T db psql -U postgres -d orchestrator -c "
   DELETE FROM langgraph.checkpoint_blobs WHERE thread_id = 'po-user-999000001';
   DELETE FROM langgraph.checkpoints WHERE thread_id = 'po-user-999000001';
 "
+
+# 8. Delete e2e test user from DB
+docker compose exec -T db psql -U postgres -d orchestrator -c "
+  DELETE FROM users WHERE telegram_id = 999000001;
+"
+
+# 9. Delete local workspaces for this project's repos
+# $REPO_ID was captured in step 1d (before DB cleanup in step 5).
+docker run --rm -v /data/workspaces:/workspaces alpine sh -c "rm -rf /workspaces/$REPO_ID"
+
+# 10. Clean up worker sidecar containers and dev networks
+docker ps -a --filter "name=worker_" --format "{{.Names}}" | xargs -r docker rm -f 2>/dev/null || true
+docker network ls --filter "name=dev_proj" --format "{{.Name}}" | xargs -r docker network rm 2>/dev/null || true
 ```
 
 ## Final Summary

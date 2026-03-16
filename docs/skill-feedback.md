@@ -80,3 +80,22 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 - **Quote**: Step 8 — "Switch to main and pull: `git checkout main && git pull`"
 - **Problem**: Local main diverges from remote due to accumulated doc-only commits (plans, changelogs, backlog) that are never pushed. After a squash-merged PR, `git pull` fails with divergent branches. Had to `git reset --hard origin/main` which is destructive.
 - **Suggested fix**: Change step 8 to: `git checkout main && git fetch origin && git reset --hard origin/main`. This is safe because all doc-only commits are regenerated from API anyway. Or: push doc-only commits before creating the PR branch to prevent divergence.
+
+## [e2e-run] — 2026-03-16 (run 2)
+- **Type**: bug
+- **Quote**: "Step 0: Pre-flight cleanup — Clean stale deployments on servers"
+- **Problem**: Pre-flight cleanup checks for `/opt/services/$PROJECT_NAME` (underscored) but PO creates the project with hyphens (`weather-bot`). Cleanup missed the stale deployment because it looked for `weather_bot`. This caused port conflicts and container name collisions during deploy verification.
+- **Suggested fix**: Always check both `$PROJECT_NAME` and `$REPO_SLUG` variants on the server during pre-flight cleanup.
+
+## [e2e-run] — 2026-03-16 (run 2)
+- **Type**: bug
+- **Quote**: "Branch protection requires check 'ci'" (Problem 1 from previous run, marked 'done')
+- **Problem**: Branch protection check name mismatch (`ci` vs `lint-and-test`) recurred in this run. The previous fix only updated the existing repo's protection — it didn't fix the scaffolder/deploy-worker code that sets up branch protection for NEW repos.
+- **Suggested fix**: Fix the branch protection setup code (likely in scaffolder or deploy-worker) to use `lint-and-test` as the required context name, not `ci`.
+
+
+## [e2e-run] — 2026-03-16
+- **Type**: bug
+- **Quote**: "DELETE FROM applications WHERE repo_id IN (SELECT id FROM repositories WHERE project_id = '$PROJECT_ID'));"
+- **Problem**: Extra closing parenthesis in the cleanup SQL (Step 9, item 5) causes psql syntax error. Line 8 of the DELETE cascade has `...PROJECT_ID'));` instead of `...PROJECT_ID');`
+- **Suggested fix**: Remove the extra `)` on the `DELETE FROM applications` line in Step 9 cleanup SQL.
