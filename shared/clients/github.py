@@ -567,8 +567,8 @@ class GitHubAppClient:
         self,
         owner: str,
         repo: str,
-        branch: str = "main",
-        required_checks: list[str] | None = None,
+        branch: str,
+        required_checks: list[str],
         require_pr: bool = True,
         enforce_admins: bool = False,
     ) -> None:
@@ -578,16 +578,13 @@ class GitHubAppClient:
             owner: Repository owner (org)
             repo: Repository name
             branch: Branch to protect
-            required_checks: Status check contexts to require (default: ["lint-and-test"])
+            required_checks: Status check contexts to require (e.g. ["lint-and-test"])
             require_pr: Require PR for merges
             enforce_admins: Apply rules to admins too
 
         Raises:
             httpx.HTTPStatusError: On API errors (404 if branch doesn't exist)
         """
-        if required_checks is None:
-            required_checks = ["lint-and-test"]
-
         token = await self.get_org_token(owner)
         headers = {
             "Authorization": f"token {token}",

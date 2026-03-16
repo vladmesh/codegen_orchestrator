@@ -164,8 +164,8 @@ class MockGitHubClient:
         self,
         owner: str,
         repo: str,
-        branch: str = "main",
-        required_checks: list[str] | None = None,
+        branch: str,
+        required_checks: list[str],
         require_pr: bool = True,
         enforce_admins: bool = False,
     ) -> None:

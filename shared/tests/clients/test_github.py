@@ -539,7 +539,9 @@ async def test_update_branch_protection_success(authed_client):
                 return_value=httpx.Response(200, json={"url": "https://api.github.com/..."})
             )
 
-            await authed_client.update_branch_protection(owner, repo, "main")
+            await authed_client.update_branch_protection(
+                owner, repo, "main", required_checks=["lint-and-test"]
+            )
 
             assert route.called
             import json
@@ -547,7 +549,7 @@ async def test_update_branch_protection_success(authed_client):
             body = json.loads(route.calls[0].request.content)
             assert body["required_pull_request_reviews"]["required_approving_review_count"] == 0
             assert body["required_status_checks"]["strict"] is True
-            assert "lint-and-test" in body["required_status_checks"]["contexts"]
+            assert body["required_status_checks"]["contexts"] == ["lint-and-test"]
             assert body["enforce_admins"] is False
             assert body["restrictions"] is None
 
@@ -585,7 +587,9 @@ async def test_update_branch_protection_404(authed_client):
             )
 
             with pytest.raises(httpx.HTTPStatusError):
-                await authed_client.update_branch_protection(owner, repo, "main")
+                await authed_client.update_branch_protection(
+                    owner, repo, "main", required_checks=["lint-and-test"]
+                )
 
 
 # --- enable_repo_auto_merge tests ---
