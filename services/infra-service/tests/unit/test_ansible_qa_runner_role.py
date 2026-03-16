@@ -39,10 +39,6 @@ class TestQaRunnerTasksYaml:
             f"No task creates QA runner directory. Task names: {names}"
         )
 
-    def test_installs_nodejs(self):
-        task_names = " ".join(t["name"].lower() for t in self.tasks)
-        assert "node" in task_names, f"No Node.js installation task found. Tasks: {task_names}"
-
     def test_installs_claude_code_cli(self):
         task_names = " ".join(t["name"].lower() for t in self.tasks)
         assert "claude" in task_names, (
@@ -55,10 +51,10 @@ class TestQaRunnerTasksYaml:
             f"No Python packages installation task found. Tasks: {task_names}"
         )
 
-    def test_copies_claude_session(self):
+    def test_copies_claude_credentials(self):
         task_names = " ".join(t["name"].lower() for t in self.tasks)
-        assert "claude" in task_names and "session" in task_names, (
-            f"No Claude session copy task found. Tasks: {task_names}"
+        assert "claude" in task_names and "credentials" in task_names, (
+            f"No Claude credentials copy task found. Tasks: {task_names}"
         )
 
     def test_all_tasks_are_idempotent(self):
@@ -122,8 +118,9 @@ class TestQaRunnerDefaults:
         assert "qa_runner_dir" in self.defaults
         assert self.defaults["qa_runner_dir"] == "/opt/qa-runner"
 
-    def test_nodejs_version_defined(self):
-        assert "nodejs_major_version" in self.defaults
+    def test_no_nodejs_dependency(self):
+        """Claude Code installs standalone, no Node.js needed."""
+        assert "nodejs_major_version" not in self.defaults
 
 
 class TestSiteYmlIncludesQaRunner:

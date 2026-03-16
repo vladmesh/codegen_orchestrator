@@ -9,34 +9,53 @@
     owner: root
     mode: '0755'
 
-# --- Node.js (via NodeSource for up-to-date version) ---
+# --- Swap (Claude Code installer needs ~2GB to unpack) ---
 
-- name: Add NodeSource GPG key
-  apt_key:
-    url: "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key"
+- name: Create swap file (2GB)
+  shell: |
+    fallocate -l 2G /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+  args:
+    creates: /swapfile
+
+- name: Enable swap
+  shell: swapon /swapfile
+  changed_when: false
+  failed_when: false
+
+- name: Persist swap in fstab
+  lineinfile:
+    path: /etc/fstab
+    line: "/swapfile none swap sw 0 0"
     state: present
 
-- name: Add NodeSource apt repository
-  apt_repository:
-    repo: "deb https://deb.nodesource.com/node_{{ nodejs_major_version }}.x nodistro main"
-    state: present
-    filename: nodesource
+# --- Claude Code CLI (standalone binary, no Node.js needed) ---
 
-- name: Install Node.js
+- name: Install Claude Code CLI via install script
+  shell: curl -fsSL https://claude.ai/install.sh | bash
+  args:
+    creates: /root/.local/bin/claude
+  environment:
+    HOME: /root
+
+- name: Add Claude Code to PATH in bashrc
+  lineinfile:
+    path: /root/.bashrc
+    line: 'export PATH="$HOME/.local/bin:$PATH"'
+    state: present
+
+# --- Python QA dependencies (in venv, PEP 668) ---
+
+- name: Install python3-venv
   apt:
-    name: nodejs
-    state: present
-    update_cache: yes
-
-# --- Claude Code CLI ---
-
-- name: Install Claude Code CLI globally
-  npm:
-    name: "@anthropic-ai/claude-code"
-    global: true
+    name: python3-venv
     state: present
 
-# --- Python QA dependencies ---
+- name: Create QA runner Python venv
+  shell: python3 -m venv {{ qa_runner_dir }}/venv
+  args:
+    creates: "{{ qa_runner_dir }}/venv/bin/python"
 
 - name: Install Python pip packages for QA (telethon, httpx)
   pip:
@@ -44,6 +63,7 @@
       - telethon
       - httpx
     state: present
+    virtualenv: "{{ qa_runner_dir }}/venv"
 
 # --- Claude Code session (copied from host) ---
 
@@ -54,13 +74,13 @@
     owner: root
     mode: '0700'
 
-- name: Copy Claude Code session directory
+- name: Copy Claude Code credentials
   copy:
-    src: "{{ claude_session_dir }}/"
-    dest: /root/.claude/
+    src: "{{ claude_credentials_file }}"
+    dest: /root/.claude/.credentials.json
     owner: root
     mode: '0600'
-  when: claude_session_dir is defined
+  when: claude_credentials_file is defined
   no_log: true
 
 # --- Telethon session (optional) ---
