@@ -30,8 +30,7 @@ async def cleanup_worker(redis_client, worker_id: str | None):
 class TestTaskInjection:
     async def test_task_injection_location(self, redis_client, docker_client):
         """
-        Verify that TASK.md is injected into /home/worker/TASK.md
-        and NOT /workspace/TASK.md
+        Verify that TASK.md is injected into /workspace/TASK.md.
         """
         req_id = f"test-req-{uuid4().hex[:6]}"
         task_content = "This is a test task content."
@@ -62,14 +61,10 @@ class TestTaskInjection:
         try:
             container = docker_client.containers.get(f"worker-{worker_id}")
 
-            # Check /home/worker/TASK.md exists and has content
-            exit_code, output = container.exec_run("cat /home/worker/TASK.md")
-            assert exit_code == 0, "TASK.md not found in /home/worker/"
+            # Check /workspace/TASK.md exists and has content
+            exit_code, output = container.exec_run("cat /workspace/TASK.md")
+            assert exit_code == 0, "TASK.md not found in /workspace/"
             assert task_content.encode() == output, f"Unexpected content: {output}"
-
-            # Check /workspace/TASK.md does NOT exist
-            exit_code, output = container.exec_run("ls /workspace/TASK.md")
-            assert exit_code != 0, "TASK.md SHOULD NOT be in /workspace/"
 
         finally:
             await cleanup_worker(redis_client, result.worker_id)
@@ -115,8 +110,8 @@ class TestTaskInjection:
         try:
             container = docker_client.containers.get(f"worker-{worker_id}")
 
-            exit_code, output = container.exec_run("cat /home/worker/TASK.md")
-            assert exit_code == 0, "TASK.md not found in /home/worker/"
+            exit_code, output = container.exec_run("cat /workspace/TASK.md")
+            assert exit_code == 0, "TASK.md not found in /workspace/"
             task_text = output.decode()
 
             assert "Provided Environment Variables" in task_text

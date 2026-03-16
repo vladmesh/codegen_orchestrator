@@ -3,10 +3,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-# Attempts to import things that don't exist yet
-# This will fail immediately on import or usage
 try:
-    from worker_wrapper.wrapper import WorkerWrapper, WorkerWrapperConfig
+    from worker_wrapper.config import WorkerWrapperConfig
+    from worker_wrapper.wrapper import WorkerWrapper
 except ImportError:
     WorkerWrapper = None
     WorkerWrapperConfig = None
@@ -36,6 +35,7 @@ async def test_worker_wrapper_lifecycle(redis_client):
         consumer_group=consumer_group,
         consumer_name=consumer_name,
         redis_url="redis://fake",
+        agent_type="claude",
     )
 
     # 2. Publish input message

@@ -20,7 +20,7 @@ _LANGGRAPH_DIR = os.path.normpath(_LANGGRAPH_DIR)
 if _LANGGRAPH_DIR not in sys.path:
     sys.path.insert(0, _LANGGRAPH_DIR)
 
-from shared.redis_client import RedisStreamClient  # noqa: E402
+from shared.redis.client import RedisStreamClient  # noqa: E402
 from src.agents.po.tools import init_po_clients  # noqa: E402
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
