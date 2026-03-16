@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-03-15
+> **Актуально на**: 2026-03-16
 
 ## Обзор
 
@@ -27,7 +27,7 @@ Codegen Orchestrator — мультиагентная система для ав
 ### Planning Layer (Stories → Tasks → Runs)
 
 Трёхуровневая абстракция для продуктового управления:
-- **Story** — высокоуровневое требование от пользователя (через PO). Статусы: `created` → `in_progress` → `pr_review` → `deploying` → `completed` (также: `waiting_human_review`, `failed`, `reopened`).
+- **Story** — высокоуровневое требование от пользователя (через PO). Статусы: `created` → `in_progress` → `pr_review` → `deploying` → `testing` → `completed` (также: `waiting_human_review`, `failed`, `reopened`).
 - **Task** — конкретная техническая задача. Статусы: `backlog` → `todo` → `in_dev` → `in_ci` → `testing` → `done` (также: `blocked`, `waiting_human_review`, `failed`, `cancelled`). Задачи могут иметь зависимости (`blocked_by_task_id`).
 - **Run** — единица исполнения (engineering или deploy). Привязан к Task через `task_id`.
 
@@ -39,7 +39,7 @@ Codegen Orchestrator — мультиагентная система для ав
 4. PO публикует `ArchitectMessage` в `architect:queue`
 5. Architect Consumer вызывает LLM — видит tree скафолдированного проекта → создаёт tasks только на diff (бизнес-логику)
 6. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue`
-7. После завершения всех tasks — story автоматически завершается, триггерится deploy
+7. После завершения всех tasks — PR story/* → main, auto-merge → deploy → QA → story completed
 
 Скиллы (`/plan`, `/implement`, `/triage`, `/checkpoint`) взаимодействуют с API для работы с бэклогом, сбора статистики и сохранения истории итераций (`TaskEvent`).
 Файл `docs/backlog.md` является автогенерируемым (read-only) представлением базы данных (`make backlog`).
@@ -58,7 +58,7 @@ Codegen Orchestrator — мультиагентная система для ав
 | `telegram_bot` | Telegram интерфейс (PO via Redis Streams) |
 | `scaffolder` | Подготовка репозиториев новых проектов (copier + make setup + git push). Потребляет `scaffold:queue`, сохраняет tree в DB. Лёгкий образ без Docker SDK и LLM |
 | `worker-manager` | Docker контейнеры с CLI агентами и проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment). Монтирует pre-scaffolded workspace volumes. Воркеры работают в изолированной сети `codegen_worker`. |
-| `langgraph` | Engineering/DevOps subgraphs. `engineering-worker` and `deploy-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
+| `langgraph` | Engineering/DevOps subgraphs. `engineering-worker`, `deploy-worker`, and `qa-worker` are separate containers of the same image (Redis stream consumers, not independent services) |
 | `scheduler` | Background workers: architect consumer (story→tasks LLM decomposition), task dispatcher (scaffold trigger, dispatch unblocked tasks, complete stories), github_sync, server_sync, health_checker |
 | `infra-service` | Ansible runner, SSH операции (бывший infrastructure-worker) |
 | `admin-frontend` | React 19 + Vite SPA (port 3001). Dashboard, projects, tasks, workers, queues, users, LLM tracing pages. Nginx proxies `/api/*` → api:8000, `/wm-api/*` → worker-manager. Basic auth via htpasswd. Grafana embedded at `/grafana/`, Langfuse linked externally |
@@ -106,10 +106,14 @@ graph TD
 
     DeployQueue --> DepConsumer[Deploy Consumer]
     DepConsumer --> DepGraph[DevOps Subgraph]
+    DepGraph --> |"XADD qa:queue"| QAQueue[qa:queue]
+    QAQueue --> QAConsumer[QA Consumer]
+    QAConsumer --> |"SSH to prod server<br/>Claude Code QA test"| QAResult{QA Pass?}
 
     %% Feedback Loops
     EngGraph --> |"task done → API"| API
-    DepGraph --> |"system events → po:input"| POInput
+    QAResult --> |"pass → story completed"| API
+    QAResult --> |"fail → fix task"| EngQueue
     Dispatcher -.-> |"story completed → po:proactive"| Bot
 ```
 
@@ -149,7 +153,10 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
 
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
 All tasks done → Dispatcher creates PR story/* → main (auto-merge) → story pr_review
-PR merged (webhook) → deploy:queue → deploy + PO notification
+PR merged (webhook/polling) → deploy:queue → deploy
+Deploy success → qa:queue → QA consumer SSHes to prod → Claude Code tests → story testing
+QA pass → story completed → PO notification
+QA fail → fix task created → story back to in_progress → re-engineer → re-deploy → re-QA
 CI failure on story branch (webhook) → fix task created → story back to in_progress
 ```
 
@@ -158,7 +165,8 @@ CI failure on story branch (webhook) → fix task created → story back to in_p
 - **Developer Workers**: CLI agents (Claude Code, Factory.ai) in Docker containers via worker-manager. Network isolated (`codegen_worker` network) to prevent access to orchestrator DBs.
 - **Scaffolder**: Standalone service (no LLM, no Docker SDK). Runs copier + make setup + git push before architect sees the project. Tree saved to DB for architect context.
 - **Engineering Subgraph**: Workspace mount → Developer on feature branch (`story/{id}`) → PR-based CI gate (auto-merge on green)
-- **DevOps Subgraph**: LLM-based env analysis, env groups for coherent secrets, Ansible deployment via infra-service
+- **DevOps Subgraph**: LLM-based env analysis, env groups for coherent secrets, Ansible deployment via infra-service. Deploy failure LLM classifier (CODE vs INFRA) — INFRA failures retry deploy, CODE failures dispatch to engineering.
+- **QA Consumer**: SSHes to prod server, runs Claude Code CLI with story-based QA prompt. Tests endpoints, checks responses against story description. Pass → story completed. Fail → creates fix task, loops back to engineering.
 - **Unified Redis Consumers**: All 10 consumers use `RedisStreamClient.consume()` with PEL recovery (`claim_pending=True`) — crashed messages are automatically re-delivered on restart. See [CONTRACTS.md](docs/CONTRACTS.md#consumer-patterns)
 
 ## Внешние зависимости

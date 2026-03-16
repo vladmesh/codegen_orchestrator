@@ -183,8 +183,10 @@ If the developer agent encounters an unsolvable problem:
 5. Triggers next queued story for this project (doesn't wait for PR merge)
 
 **CI runs on the PR:**
-- **Green CI** → auto-merge → `pull_request` webhook (merged) → deploy
-- **Red CI** → `workflow_run` webhook (failure on story branch) → creates fix task → story back to `in_progress` → dispatcher picks up fix task
+- **Green CI** → auto-merge → `pull_request` webhook (merged) OR dispatcher poll detects merged PR → deploy
+- **Red CI** → `workflow_run` webhook (failure on story branch) → creates fix task → story back to `in_progress`
+
+**PR merge detection**: Dispatcher polls GitHub for merged PRs on stories in `pr_review` status (every 30s). This eliminates dependency on the webhook — works even if webhook doesn't fire for newly scaffolded repos. → dispatcher picks up fix task
 
 This replaced the previous polling-based CI gate (`_ci_gate.py`, deleted).
 
@@ -201,8 +203,11 @@ This replaced the previous polling-based CI gate (`_ci_gate.py`, deleted).
 3. Trigger GitHub Actions deploy workflow
 4. Wait for deploy to complete
 5. Smoke test: HTTP `/health` for backends, Telethon `/start` for tg_bot
-6. On smoke failure: capture container logs via SSH, re-dispatch fix task to `engineering:queue` (max 2 retries via `deploy_fix_attempt`)
-7. On success: story → `completed`, user notified via PO
+6. On smoke failure: LLM classifier (haiku) categorizes failure as CODE vs INFRA
+   - CODE failure → dispatch fix task to `engineering:queue` (max 2 retries via `deploy_fix_attempt`)
+   - INFRA failure → retry deploy directly (no engineering waste)
+   - After max retries → story `failed` for HITL
+7. On success: story → `testing`, publish `QAMessage` to `qa:queue`. Worker container NOT deleted (QA may need it for fix tasks).
 
 **Deploy retry limit**: Max 3 consecutive deploy failures per story (tracked in Redis). After limit, story transitions to `failed`.
 
@@ -214,20 +219,31 @@ This replaced the previous polling-based CI gate (`_ci_gate.py`, deleted).
 
 ## Phase 6: Post-Deploy QA
 
-**Actor**: QA agent (runs on the target server, has Playwright/Telethon MCP)
+**Actor**: QA consumer (`qa-worker` container, consumes `qa:queue`)
 
-**Trigger**: Successful deploy
+**Trigger**: Successful deploy (deploy-worker publishes `QAMessage`)
 
-1. Receives full story description + acceptance criteria
-2. Tests the deployed service end-to-end
-3. Tries boundary cases, error scenarios
-4. If everything passes → story `completed` → PO notified
-5. If something fails:
-   - Creates new task(s) describing the failure
-   - Pipeline loops back to Phase 4 (dispatcher picks up fix task)
-   - Same worker, same workspace — fix and re-deploy
-   - QA runs again after next deploy
-6. Loop continues until QA passes
+**How it works**:
+1. QA consumer receives `QAMessage` with `story_id`, `project_id`, `deployed_url`, optional `bot_username`
+2. SSHes to the target prod server as root (via SSH key from DB)
+3. `cd /opt/services/{project_name}` — enters the deployed project directory
+4. Runs `claude -p "<QA prompt>" --output-format json --max-turns 50 --model claude-sonnet-4-6`
+5. QA prompt is built from story description + deployed URL. Claude tests every feature described in the story: curls endpoints, checks responses, tests edge cases. For Telegram bots, uses Telethon (pre-installed in `/opt/qa-runner/venv`)
+6. Claude returns JSON: `{"pass": bool, "checks": [...], "summary": "..."}`
+7. If QA passes → story `completed` → user notified via PO
+8. If QA fails:
+   - Creates fix task describing what failed (from QA checks)
+   - Story → `in_progress` (loops back to Phase 4)
+   - Max 2 QA→Engineering loops (tracked via `qa_attempt` counter)
+   - After max loops → story `failed`
+9. Inflight deduplication: Redis key `qa:inflight:{story_id}` with 25-min TTL prevents duplicate runs
+
+**Server prerequisites** (provisioned by `qa_runner` Ansible role):
+- Claude Code CLI (standalone binary via `curl install.sh | bash`)
+- `.credentials.json` OAuth session (copied from orchestrator host)
+- 2GB swap (Claude Code binary extraction needs ~2GB)
+- Python venv at `/opt/qa-runner/venv` with `telethon` + `httpx`
+- Optional: `telethon.session` file for Telegram bot testing
 
 **Outputs**: Story `completed` OR new fix tasks
 
@@ -254,21 +270,25 @@ Runtime state is tracked by `Application.status` (`not_deployed → running → 
 
 ### Story
 ```
-created → in_progress → pr_review → deploying → completed
+created → in_progress → pr_review → deploying → testing → completed
                       → waiting_human_review → in_progress (admin resolves)
                                              → failed
                       → failed (after max retries)
          pr_review → in_progress (CI failed on story branch → fix task created)
-                   → deploying (PR merged → webhook triggers deploy)
+                   → deploying (PR merged → webhook/polling triggers deploy)
                    → failed
-         deploying → in_progress (on deploy failure, for retry)
-                  → completed
+         deploying → testing (deploy success → QA handoff)
+                  → in_progress (deploy failure → fix task)
                   → failed
+         testing → completed (QA passed)
+                → in_progress (QA failed → fix task created, max 2 QA loops)
+                → failed (after max QA loops)
          completed → reopened → in_progress
          failed → reopened
 ```
 `pr_review` — all tasks done, PR created from story branch to main. Waiting for CI + auto-merge.
-`deploying` is a deploy gate — story waits for successful deploy before completion.
+`deploying` is a deploy gate — story waits for successful deploy before QA.
+`testing` — deployed service being tested by QA consumer (Claude Code on prod server).
 `waiting_human_review` — developer reported a blocker; pipeline is paused until admin resolves.
 
 ### Task
@@ -312,6 +332,8 @@ todo → in_dev → in_ci → testing → done
 - Full scaffolded codebase (via workspace volume)
 
 ### What QA sees
-- Full story description + acceptance criteria
+- Full story description (used to build QA prompt)
 - Deployed service URL
-- MCP tools (Playwright, Telethon, curl)
+- Claude Code CLI on the server (runs as root, cd to `/opt/services/{project}`)
+- Pre-installed tools: `curl`, Telethon (in `/opt/qa-runner/venv`), httpx
+- Bot username (if Telegram bot project — enables Telethon testing)

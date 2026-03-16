@@ -85,7 +85,14 @@ Deploy Worker (langgraph container, separate entrypoint)
   → configures GitHub secrets
   → triggers deploy.yml workflow
   → runs smoke test
-  → story: DEPLOYING → COMPLETED
+  → story: DEPLOYING → TESTING
+  → publishes QAMessage to qa:queue
+  ↓
+QA Consumer (langgraph container, separate entrypoint)
+  → SSHes to prod server as root
+  → runs Claude Code CLI with QA prompt (tests deployed project as real user)
+  → Claude Code tests endpoints, checks responses, validates against story
+  → story: TESTING → COMPLETED (pass) or back to IN_PROGRESS (fail → fix task)
 ```
 
 **Key containers** (each is separate in docker-compose):
@@ -94,6 +101,7 @@ Deploy Worker (langgraph container, separate entrypoint)
 - `scheduler` — scaffold trigger, task dispatcher, story completion
 - `engineering-worker` — engineering consumer
 - `deploy-worker` — deploy consumer
+- `qa-worker` — QA consumer (post-deploy testing via Claude Code on prod server)
 - `worker-manager` — spawns worker containers
 - `scaffolder` — project scaffolding
 
@@ -302,7 +310,7 @@ docker compose exec -T api python3 -c "
 import asyncio, redis.asyncio as redis
 async def check():
     r = redis.from_url('redis://redis:6379')
-    for q in ['architect:queue', 'engineering:queue', 'deploy:queue', 'scaffold:queue']:
+    for q in ['architect:queue', 'engineering:queue', 'deploy:queue', 'scaffold:queue', 'qa:queue']:
         try:
             length = await r.xlen(q)
             print(f'{q}: {length} messages')
@@ -750,7 +758,48 @@ docker compose logs deploy-worker --tail=50 --since=5m 2>/dev/null | grep -v "HT
 
 Poll story status every 15s, timeout after 5 minutes (deploy itself runs on GitHub Actions,
 the deploy-worker just triggers it and waits). If no progress after 5 min, check deploy-worker logs.
-Story goes through: `pr_review` → `deploying` → `completed` (or `failed`).
+Story goes through: `pr_review` → `deploying` → `testing` → `completed` (or `failed`).
+
+### Step 5.5: Monitor QA Phase
+
+After deploy succeeds, the deploy-worker publishes a `QAMessage` to `qa:queue` and
+transitions the story to `testing`. The QA consumer (`qa-worker` container) SSHes to the
+prod server and runs Claude Code CLI to test the deployed project as a real user would.
+
+```bash
+# Check story entered testing
+curl -s http://localhost:8000/api/stories/$STORY_ID | python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+print(f\"Story: {s['status']}\")
+"
+
+# QA worker logs
+docker compose logs qa-worker --tail=50 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -20
+
+# Check qa:queue
+curl -s "http://localhost:8000/debug/queues/qa:queue/messages?count=10" | python3 -m json.tool
+```
+
+**What to watch**:
+- QA consumer picks up the message from `qa:queue`
+- SSH to prod server succeeds
+- Claude Code runs the QA prompt (tests endpoints, checks responses)
+- QA result is parsed (JSON with `pass`, `checks`, `summary`)
+- Story transitions to `completed` (if QA passed) or back to `in_progress` (if failed, creates fix task)
+
+**Timeouts**: QA has a 20-minute timeout per run. Poll story status every 30s.
+
+**If QA fails**: Check qa-worker logs for the reason. Common issues:
+- SSH connection failed (server unreachable, credentials expired)
+- Claude Code not installed on server (run `qa_runner` Ansible role)
+- Claude Code session expired (re-copy `.credentials.json`)
+- QA prompt produced unparseable output (non-JSON response)
+
+**If QA is stuck**: Check if the qa:queue message was consumed:
+```bash
+curl -s "http://localhost:8000/debug/queues/qa:queue/qa-consumers/pending" | python3 -m json.tool
+```
 
 ### Step 6: Verify Deployment
 
@@ -1127,6 +1176,8 @@ If the user asks to stop early:
 11. **Webhook may not fire for new repos** — if story stays `pr_review` >60s after merge, use the manual deploy trigger recipe (see "Webhook failure" in Step 5).
 12. **Deploy Run record uses `type` field** (not `run_type`) — `POST /api/runs/` with `{"type": "deploy"}`.
 13. **DeployMessage requires `task_id`** — this is actually the Run ID (format `deploy-e2e-{hex}`), not a task ID.
+14. **QA phase after deploy** — story goes `deploying` → `testing` → `completed`. The `qa-worker` container SSHes to prod server and runs Claude Code CLI. If QA fails, story goes back to `in_progress` with a fix task.
+15. **QA node prerequisites** — prod server must have Claude Code CLI installed + `.credentials.json` session + 2GB swap. Provisioned via `qa_runner` Ansible role.
 
 ## Self-Feedback (Mandatory)
 

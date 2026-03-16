@@ -39,6 +39,7 @@
 |-------|-------|-----|-----------|----------|---------|
 | `engineering:queue` | `capability-workers` | EngineeringMessage | Task Dispatcher (scheduler) | langgraph | Start development task |
 | `deploy:queue` | `capability-workers` | DeployMessage | Task Dispatcher (scheduler) / PO | langgraph | Start deploy task |
+| `qa:queue` | `qa-consumers` | QAMessage | Deploy Consumer | langgraph (qa-worker) | Post-deploy QA testing via Claude Code on prod server |
 
 ---
 

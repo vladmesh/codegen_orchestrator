@@ -63,7 +63,14 @@ deploy:queue → Deploy Worker (langgraph container, separate entrypoint)
   → triggers deploy.yml workflow
   → waits for workflow completion
   → runs smoke test
-  → story transitions to completed
+  → story transitions to testing
+  → publishes QAMessage to qa:queue
+
+qa:queue → QA Consumer (langgraph container, separate entrypoint)
+  → SSHes to prod server as root
+  → runs Claude Code CLI with QA prompt
+  → tests deployed project as a real user (curl endpoints, Telethon for bots)
+  → story: testing → completed (pass) or back to in_progress (fail → fix task)
 ```
 
 **Key containers** (each is separate in docker-compose):
@@ -72,6 +79,7 @@ deploy:queue → Deploy Worker (langgraph container, separate entrypoint)
 - `scheduler` — task dispatcher, server sync, health checks
 - `engineering-worker` — engineering consumer
 - `deploy-worker` — deploy consumer
+- `qa-worker` — QA consumer (post-deploy testing via Claude Code on prod server)
 - `worker-manager` — spawns worker containers
 - `scaffolder` — project scaffolding
 
@@ -415,7 +423,7 @@ When all tasks are done, the dispatcher creates a PR from `story/{story_id}` →
 enables auto-merge, and transitions the story to `pr_review`. Deploy is triggered later
 by the webhook when the PR is merged (after CI passes).
 
-**Flow**: `in_progress` → (all tasks done) → `pr_review` → (PR merged via webhook) → `deploying` → `completed`
+**Flow**: `in_progress` → (all tasks done) → `pr_review` → (PR merged via webhook) → `deploying` → `testing` → `completed`
 
 **IMPORTANT**: The dispatcher's `complete_stories` function only checks stories in
 `in_progress` status. If the story is still `created` (which happens when tasks were
@@ -515,6 +523,45 @@ bash infra/scripts/ssh-to-server.sh $SERVER_IP "cd /opt/services/$PROJECT_NAME/i
 - `.env` misconfigured (missing secrets)
 - Docker image not pushed to registry (CI didn't run or failed)
 - Workflow dispatch not triggering (check GitHub Actions tab)
+
+### Monitoring QA phase
+
+After deploy succeeds, the deploy-worker publishes a `QAMessage` to `qa:queue` and
+transitions the story to `testing`. The `qa-worker` container SSHes to the prod server
+and runs Claude Code CLI to test the deployed project as a real user.
+
+```bash
+# QA worker logs
+docker compose logs qa-worker --tail=50 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -20
+
+# Check qa:queue for messages
+curl -s "http://localhost:8000/debug/queues/qa:queue/messages?count=10" | python3 -m json.tool
+
+# Check pending (being processed)
+curl -s "http://localhost:8000/debug/queues/qa:queue/qa-consumers/pending" | python3 -m json.tool
+```
+
+**What to watch**:
+- QA consumer picks up the message
+- SSH connection to prod server succeeds
+- Claude Code runs QA prompt (tests endpoints, checks responses against story)
+- QA result parsed (JSON with `pass`, `checks`, `summary`)
+- Story: `testing` → `completed` (pass) or back to `in_progress` (fail, creates fix task)
+
+**QA timeout**: 20 minutes. Poll story status every 30s.
+
+**Common QA failures**:
+- SSH connection failed (server unreachable, credentials expired)
+- Claude Code not installed on server (run `qa_runner` Ansible role)
+- Claude Code session expired (re-copy `.credentials.json` from orchestrator host)
+- QA prompt produced unparseable output (non-JSON response from Claude)
+- Server swap not configured (Claude Code needs ~2GB to run, OOM without swap)
+
+**If QA is stuck**: Check if the message was consumed and if there's a pending entry.
+If the qa-worker crashed, restart it:
+```bash
+docker compose restart qa-worker
+```
 
 ## Step 5: Intervention
 
@@ -830,7 +877,7 @@ docker compose exec -T api python3 -c "
 import asyncio, redis.asyncio as redis
 async def check():
     r = redis.from_url('redis://redis:6379')
-    for q in ['architect:queue', 'engineering:queue', 'deploy:queue', 'scaffold:queue']:
+    for q in ['architect:queue', 'engineering:queue', 'deploy:queue', 'scaffold:queue', 'qa:queue']:
         try:
             length = await r.xlen(q)
             print(f'{q}: {length} messages')
@@ -845,6 +892,7 @@ docker compose logs architect --tail=50 --since=5m      # story decomposition
 docker compose logs scheduler --tail=50 --since=5m      # task dispatcher
 docker compose logs engineering-worker --tail=50 --since=5m  # engineering consumer
 docker compose logs deploy-worker --tail=50 --since=5m  # deploy consumer
+docker compose logs qa-worker --tail=50 --since=5m      # QA consumer (post-deploy testing)
 docker compose logs worker-manager --tail=50 --since=5m # container lifecycle
 docker compose logs scaffolder --tail=50 --since=5m     # project scaffolding
 docker compose logs langgraph --tail=50 --since=5m      # PO agent
@@ -892,3 +940,6 @@ curl -s http://localhost:8000/api/service-deployments/ | python3 -m json.tool
 11. **Scaffold has ensure-workspace gate** — scaffolder may run in `mode: "ensure"` (just verify workspace exists) vs `mode: "full"` (copier + setup + push). Check scaffold logs for which mode ran.
 12. **Cross-check sources** — always compare API data with Docker/Redis direct access. Desync between them is itself a finding worth reporting.
 13. **Langfuse for LLM debugging** — architect and engineering traces are in Langfuse, tagged with project_id. Use admin UI Tracing page or direct Langfuse to inspect what the LLM did.
+14. **QA phase after deploy** — story goes `deploying` → `testing` → `completed`. The `qa-worker` SSHes to prod server and runs Claude Code CLI. If QA fails, story goes back to `in_progress` with a fix task.
+15. **QA node prerequisites** — prod servers need: Claude Code CLI (standalone binary), `.credentials.json` OAuth session, 2GB swap, python3-venv with telethon+httpx. All provisioned via `qa_runner` Ansible role.
+16. **QA timeout is 20 minutes** — if story stays in `testing` longer, check `qa-worker` logs for SSH failures or Claude Code errors.
