@@ -4,6 +4,9 @@
 
 ## 2026-03-16
 
+### Fixed
+- **service_deployments `updated_at` missing server default** (hotfix): Original migration `73b707900b42` created the `service_deployments` table with `created_at DEFAULT now()` but `updated_at` without a default, causing `NotNullViolationError` on every INSERT. Deploy-worker's `_create_deployment_record` silently failed (caught exception). Migration `42e0acc86b20` adds the missing `server_default=now()`.
+
 ### Removed
 - **Prompts tab in admin panel** (hotfix): Removed the "Prompts" tab from worker detail page, `/prompts` and `/prompt-history` API endpoints, Redis persistence of `task_md` and `prompt_history`, and related tests/types. The `-p` argument is now a hardcoded constant — no value in tracking it.
 
