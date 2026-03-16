@@ -8,11 +8,9 @@ import { WorkspaceBrowser } from '@/components/workspace'
 import type {
   WorkerDetail,
   WorkerLogsResponse,
-  PromptsResponse,
-  PromptHistoryResponse,
 } from '@/types/api'
 
-type Tab = 'console' | 'prompts' | 'files'
+type Tab = 'console' | 'files'
 
 export function WorkerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -43,7 +41,6 @@ export function WorkerDetailPage() {
 
   const tabs: { key: Tab; label: string }[] = [
     { key: 'console', label: 'Console' },
-    { key: 'prompts', label: 'Prompts' },
     { key: 'files', label: 'Files' },
   ]
 
@@ -158,7 +155,6 @@ export function WorkerDetailPage() {
 
       {/* Tab content */}
       {activeTab === 'console' && <ConsoleTab workerId={id!} />}
-      {activeTab === 'prompts' && <PromptsTab workerId={id!} />}
       {activeTab === 'files' && (
         <WorkspaceBrowser
           treeApiUrl={workspaceUrls.tree}
@@ -212,72 +208,6 @@ function ConsoleTab({ workerId }: { workerId: string }) {
           No logs available
         </pre>
       )}
-    </div>
-  )
-}
-
-
-/* ---------- Prompts Tab ---------- */
-
-function PromptsTab({ workerId }: { workerId: string }) {
-  const { data, isLoading } = useQuery({
-    queryKey: ['worker-prompts', workerId],
-    queryFn: () => api.raw<PromptsResponse>(`/wm-api/workers/${workerId}/prompts`),
-  })
-
-  const { data: history } = useQuery({
-    queryKey: ['worker-prompt-history', workerId],
-    queryFn: () => api.raw<PromptHistoryResponse>(`/wm-api/workers/${workerId}/prompt-history`),
-  })
-
-  if (isLoading) return <p className="text-muted-foreground">Loading prompts...</p>
-
-  return (
-    <div className="space-y-4">
-      <Card>
-        <h3 className="mb-2 text-sm font-medium text-muted-foreground">CLAUDE.md</h3>
-        {data?.claude_md ? (
-          <pre className="max-h-[400px] overflow-auto whitespace-pre-wrap font-mono text-xs text-foreground">
-            {data.claude_md}
-          </pre>
-        ) : (
-          <p className="text-sm text-muted-foreground">Not found in workspace</p>
-        )}
-      </Card>
-      <Card>
-        <h3 className="mb-2 text-sm font-medium text-muted-foreground">TASK.md (current)</h3>
-        {data?.task_md ? (
-          <pre className="max-h-[400px] overflow-auto whitespace-pre-wrap font-mono text-xs text-foreground">
-            {data.task_md}
-          </pre>
-        ) : (
-          <p className="text-sm text-muted-foreground">No task assigned</p>
-        )}
-      </Card>
-      <Card>
-        <h3 className="mb-2 text-sm font-medium text-muted-foreground">
-          Prompt History ({history?.entries?.length ?? 0} entries)
-        </h3>
-        {history?.entries?.length ? (
-          <div className="space-y-3">
-            {history.entries.map((entry, i) => (
-              <div key={i} className="rounded-md border border-border p-3">
-                <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono">
-                    #{i + 1} {entry.source}
-                  </span>
-                  <span>{new Date(entry.ts * 1000).toLocaleString()}</span>
-                </div>
-                <pre className="max-h-[300px] overflow-auto whitespace-pre-wrap font-mono text-xs text-foreground">
-                  {entry.prompt}
-                </pre>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">No prompt history available</p>
-        )}
-      </Card>
     </div>
   )
 }

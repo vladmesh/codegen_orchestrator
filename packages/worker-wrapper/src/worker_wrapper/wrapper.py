@@ -100,7 +100,6 @@ class WorkerWrapper:
         prompt = data.get("prompt")
         if prompt:
             self._write_task_md(prompt)
-            await self._persist_task_md(prompt)
 
         # Write .story/STORY.md if provided (story-level context for worker)
         story_md = data.get("story_md")
@@ -237,19 +236,6 @@ class WorkerWrapper:
             logger.info("story_md_updated", path=story_md_path)
         except OSError as e:
             logger.warning("story_md_write_failed", error=str(e))
-
-    async def _persist_task_md(self, prompt: str):
-        """Persist task_md to Redis so introspect API can read it."""
-        import time
-
-        worker_id = self.config.consumer_name
-        try:
-            await self.redis.redis.hset(f"worker:meta:{worker_id}", "task_md", prompt)
-            # Append to prompt history
-            entry = json.dumps({"prompt": prompt, "ts": time.time(), "source": "turn"})
-            await self.redis.redis.rpush(f"worker:{worker_id}:prompt_history", entry)
-        except Exception as e:
-            logger.warning("task_md_persist_failed", error=str(e))
 
     def _get_git_head(self) -> str | None:
         """Get current HEAD SHA in workspace. Returns None if not a git repo or on error."""

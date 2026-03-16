@@ -1,10 +1,9 @@
 """Read-only introspection API for admin panel.
 
-Exposes worker status, logs, workspace files, and prompts.
+Exposes worker status, logs, and workspace files.
 All data comes from Redis metadata + Docker + host filesystem.
 """
 
-import json
 from http import HTTPStatus
 from pathlib import Path
 
@@ -55,23 +54,6 @@ class FileContentResponse(BaseModel):
     path: str
     content: str
     size: int
-
-
-class PromptsResponse(BaseModel):
-    worker_id: str
-    claude_md: str | None = None
-    task_md: str | None = None
-
-
-class PromptHistoryEntry(BaseModel):
-    prompt: str
-    ts: float
-    source: str  # "create" or "turn"
-
-
-class PromptHistoryResponse(BaseModel):
-    worker_id: str
-    entries: list[PromptHistoryEntry]
 
 
 # --- Helpers ---
@@ -237,48 +219,6 @@ async def get_worker_file(worker_id: str, file_path: str, request: Request):
         content=content,
         size=size,
     )
-
-
-@router.get("/workers/{worker_id}/prompts", response_model=PromptsResponse)
-async def get_worker_prompts(worker_id: str, request: Request):
-    """Read CLAUDE.md from workspace and TASK.md from Redis.
-
-    Both live in /workspace/ inside the container.
-    TASK.md is also persisted to Redis by manager/wrapper for API access.
-    """
-    redis = request.app.state.redis
-    await _check_worker_exists(redis, worker_id)
-    workspace = await _get_workspace_path(redis, worker_id, request)
-
-    claude_md = None
-    claude_path = workspace / "CLAUDE.md"
-    if claude_path.exists():
-        try:
-            claude_md = claude_path.read_text(encoding="utf-8")
-        except Exception:
-            pass
-
-    # TASK.md is persisted to Redis by manager (on create) and wrapper (on each turn)
-    task_md = await redis.hget(f"worker:meta:{worker_id}", "task_md")
-
-    return PromptsResponse(worker_id=worker_id, claude_md=claude_md, task_md=task_md)
-
-
-@router.get("/workers/{worker_id}/prompt-history", response_model=PromptHistoryResponse)
-async def get_worker_prompt_history(worker_id: str, request: Request):
-    """Return the full prompt history for a worker (all turns)."""
-    redis = request.app.state.redis
-    await _check_worker_exists(redis, worker_id)
-
-    raw_entries = await redis.lrange(f"worker:{worker_id}:prompt_history", 0, -1)
-    entries = []
-    for raw in raw_entries:
-        try:
-            entries.append(PromptHistoryEntry(**json.loads(raw)))
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-    return PromptHistoryResponse(worker_id=worker_id, entries=entries)
 
 
 @router.delete("/workers/{worker_id}", status_code=HTTPStatus.NO_CONTENT)

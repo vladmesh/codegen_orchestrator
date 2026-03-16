@@ -156,23 +156,6 @@ export interface WorkspaceFileContentResponse {
   size: number
 }
 
-export interface PromptsResponse {
-  worker_id: string
-  claude_md: string | null
-  task_md: string | null
-}
-
-export interface PromptHistoryEntry {
-  prompt: string
-  ts: number
-  source: string
-}
-
-export interface PromptHistoryResponse {
-  worker_id: string
-  entries: PromptHistoryEntry[]
-}
-
 // Queue message browser
 export interface StreamMessage {
   id: string

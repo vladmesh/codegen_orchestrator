@@ -131,7 +131,7 @@ Total duration: ~52 minutes (engineering: 15 min, rest: interventions + deploy i
 ### Problem 10: Worker admin panel shows TASK.md copy instead of raw prompt
 - **Type**: orchestrator
 - **Severity**: minor
-- **Backlog**: `new`
+- **Backlog**: `done` — Prompts tab removed entirely; `-p` is now a hardcoded constant, no value in displaying it
 - **Description**: The admin panel's prompt history for each worker should show the exact `-p` argument passed to Claude. Currently it shows a copy of TASK.md contents or similar, making it harder to debug what the worker actually received.
 - **Root cause**: Prompt history storage captures the wrong data.
-- **Suggested fix**: Store and display the exact CLI arguments passed to the claude subprocess.
+- **Resolution**: Removed Prompts tab from admin panel, prompt/prompt-history API endpoints, and all Redis persistence of task_md/prompt_history. The `-p` argument is now always `"Read TASK.md and AGENTS.md, then complete the task described in TASK.md."` — no need to track it.
