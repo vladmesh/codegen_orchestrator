@@ -55,10 +55,10 @@ class TestQaRunnerTasksYaml:
             f"No Python packages installation task found. Tasks: {task_names}"
         )
 
-    def test_sets_anthropic_api_key(self):
+    def test_copies_claude_session(self):
         task_names = " ".join(t["name"].lower() for t in self.tasks)
-        assert "anthropic" in task_names or "api key" in task_names or "env" in task_names, (
-            f"No ANTHROPIC_API_KEY task found. Tasks: {task_names}"
+        assert "claude" in task_names and "session" in task_names, (
+            f"No Claude session copy task found. Tasks: {task_names}"
         )
 
     def test_all_tasks_are_idempotent(self):

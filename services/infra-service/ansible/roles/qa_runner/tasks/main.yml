@@ -45,15 +45,22 @@
       - httpx
     state: present
 
-# --- ANTHROPIC_API_KEY env file ---
+# --- Claude Code session (copied from host) ---
 
-- name: Write ANTHROPIC_API_KEY env file
+- name: Create Claude config directory for root
+  file:
+    path: /root/.claude
+    state: directory
+    owner: root
+    mode: '0700'
+
+- name: Copy Claude Code session directory
   copy:
-    content: "ANTHROPIC_API_KEY={{ anthropic_api_key }}"
-    dest: "{{ qa_runner_dir }}/.env"
+    src: "{{ claude_session_dir }}/"
+    dest: /root/.claude/
     owner: root
     mode: '0600'
-  when: anthropic_api_key is defined and anthropic_api_key != ""
+  when: claude_session_dir is defined
   no_log: true
 
 # --- Telethon session (optional) ---
