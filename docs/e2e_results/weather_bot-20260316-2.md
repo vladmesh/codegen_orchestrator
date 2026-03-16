@@ -19,8 +19,9 @@
 08:51  PO: project created (weather-bot), pipeline started
 08:51  Telegram bot token injected into project secrets
 08:52  Scaffold: complete (project=active, workspace_ready=true)
-08:53  Architect: 2 tasks created (backend API + telegram bot)
-10:54  task-f75f7ccd: todo → in_dev (backend weather API, worker started)
+08:53  Architect: 2 tasks created (backend API + telegram bot, first already in_dev)
+       (monitoring gap — polling started at 10:54, tasks were already in progress)
+10:54  task-f75f7ccd: in_dev (backend weather API, worker running)
 11:01  task-f75f7ccd: in_dev → done (~7 min)
 11:01  task-37fc6976: todo → in_dev (telegram bot /weather command)
 11:04  task-37fc6976: in_dev → done (~3 min)
@@ -54,18 +55,18 @@ Total duration: ~27 minutes (engineering: 10 min, deploy+verification: ~10 min)
 ### Problem 1: PR auto-merge blocked by check name mismatch (recurring)
 - **Type**: template
 - **Severity**: critical
-- **Backlog**: was marked done in previous report but recurring
+- **Backlog**: **fixed** (283ae01, 7454ab1)
 - **Description**: Branch protection requires check named `ci`, but ci.yml job is named `lint-and-test`. Auto-merge never triggers.
-- **Root cause**: Branch protection setup script uses `ci` as context name, but ci.yml workflow job is named `lint-and-test`
-- **Suggested fix**: The previous fix (commit 6d9eac8) didn't persist — new repos still get the old protection. Fix must be in the scaffolder or deploy-worker branch protection setup code.
+- **Root cause**: Hotfix 6d9eac8 changed the default in `shared/clients/github.py`, but scaffolder passed `required_checks=["ci"]` explicitly — overriding the default. Also removed default entirely (fail-fast: `required_checks` is now a required argument).
+- **Fix**: scaffolder `"ci"` → `"lint-and-test"` + removed default from `update_branch_protection` signature.
 
 ### Problem 2: Deploy left orphan containers with different compose project name
 - **Type**: orchestrator
 - **Severity**: major
-- **Backlog**: `new`
+- **Backlog**: **fixed** (service-template 5236128)
 - **Description**: Deploy workflow started containers with project name `weather-bot` (e.g. `weather-bot-backend-1`). But when running `docker compose` from `/opt/services/weather-bot/infra/`, the default project name is `infra`, creating `infra-backend-1`. This caused port 8012 conflict and networking issues.
-- **Root cause**: deploy.yml runs `docker compose` without explicit `-p` project name, so it picks up directory name. The deploy script likely runs from a different working directory than expected.
-- **Suggested fix**: deploy.yml should always set `-p $PROJECT_NAME` or the compose file should have a `name:` field.
+- **Root cause**: No `name:` field in compose file — project name depended on directory or `-p` flag.
+- **Fix**: Added `name: {{ project_slug }}` to `compose.base.yml.jinja` (single source of truth), removed redundant `-p` from `deploy.yml.jinja`.
 
 ### Problem 3: Weather endpoint not loaded — router import fails silently
 - **Type**: template
@@ -76,15 +77,7 @@ Total duration: ~27 minutes (engineering: 10 min, deploy+verification: ~10 min)
 - **Root cause (deeper)**: The framework generates routers with absolute paths based on the project structure, but the Dockerfile sets WORKDIR to `/app/services/backend` where the import should be relative.
 - **Suggested fix**: Fix import path generation in the framework to use the correct relative imports for the container context. Or ensure PYTHONPATH in the Dockerfile matches what the framework generates.
 
-### Problem 4: Long gap between scaffold completion and task dispatch (~2 hours)
-- **Type**: orchestrator
-- **Severity**: major
-- **Backlog**: `new`
-- **Description**: Scaffold completed at 08:52 but worker didn't start until 10:54 — a ~2 hour gap. Architect should have created tasks within minutes.
-- **Root cause**: Unknown. Possibly architect queue was slow to consume, or there was a processing delay. The architect container logs were not captured during this gap.
-- **Suggested fix**: Investigate architect/scheduler latency. Add monitoring alerts for tasks not appearing within 5 min of scaffold completion.
-
-### Problem 5: TG bot conflict error on deploy
+### Problem 4: TG bot conflict error on deploy
 - **Type**: other
 - **Severity**: minor
 - **Backlog**: `—`
