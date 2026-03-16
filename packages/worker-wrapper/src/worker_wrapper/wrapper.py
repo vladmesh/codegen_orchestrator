@@ -136,6 +136,9 @@ class WorkerWrapper:
             return
         logger.info("workspace_preflight_passed", detail=workspace_detail)
 
+        # 3b. Inject Makefile overrides for orchestrator environment
+        self._inject_makefile_overrides()
+
         # 4. Execute
         try:
             result = await self.execute_agent(data)
@@ -200,6 +203,42 @@ class WorkerWrapper:
             return False, f"missing .copier-answers.yml (scaffold not run). {detail}"
 
         return True, detail
+
+    def _inject_makefile_overrides(self):
+        """Inject Makefile overrides so `make dev-start` uses orchestrator CLI.
+
+        Workers don't have Docker socket access — they must use `orch` CLI
+        which proxies compose commands through the worker-manager HTTP API.
+        The template's Makefile defines `dev-start` using `docker compose`
+        directly. This override replaces it with `orch start-infra` so that
+        `make dev-start`, `make migrate`, `make makemigrations` all work
+        transparently inside worker containers.
+
+        The override file is .gitignored by convention (dotfile in workspace root).
+        """
+        makefile = os.path.join(WORKSPACE_DIR, "Makefile")
+        if not os.path.isfile(makefile):
+            return
+
+        override_marker = "# --- orchestrator overrides ---"
+        try:
+            content = open(makefile).read()
+            if override_marker in content:
+                return  # already injected
+
+            override = (
+                f"\n{override_marker}\n"
+                "dev-start:\n"
+                "\torchestrator dev-env start-infra $(svc)\n"
+                "\n"
+                "dev-stop:\n"
+                "\torchestrator dev-env stop-infra\n"
+            )
+            with open(makefile, "a") as f:
+                f.write(override)
+            logger.info("makefile_overrides_injected")
+        except OSError as e:
+            logger.warning("makefile_override_failed", error=str(e))
 
     async def _git_pull(self):
         """Pull latest changes before next agent turn.

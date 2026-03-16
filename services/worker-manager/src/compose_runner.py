@@ -51,8 +51,13 @@ def _generate_ports_override(compose_files: list[Path]) -> str | None:
     if not services_with_ports:
         return None
 
-    override = {"services": {svc: {"ports": []} for svc in sorted(services_with_ports)}}
-    return yaml.dump(override, default_flow_style=False)
+    # Use !reset tag so Docker Compose v2 clears ports instead of merging.
+    # yaml.dump doesn't support custom tags, so we build the YAML manually.
+    lines = ["services:"]
+    for svc in sorted(services_with_ports):
+        lines.append(f"  {svc}:")
+        lines.append("    ports: !reset []")
+    return "\n".join(lines) + "\n"
 
 
 def _generate_network_override(worker_id: str) -> str:

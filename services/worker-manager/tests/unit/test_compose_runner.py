@@ -226,11 +226,10 @@ class TestComposeRunner:
 
         # Verify ports override clears db ports (from compose.dev.yml fixture)
         assert override_path.exists()
-        import yaml
-
-        content = yaml.safe_load(override_path.read_text())
-        assert "services" in content
-        assert content["services"]["db"]["ports"] == []
+        text = override_path.read_text()
+        assert "services:" in text
+        assert "db:" in text
+        assert "ports: !reset []" in text
 
     @pytest.mark.asyncio
     async def test_ports_override_not_generated_for_ps(self, workspace):
@@ -294,11 +293,10 @@ class TestComposeRunner:
         with patch("subprocess.run", return_value=mock_result):
             await runner.run("worker-123", ["up", "-d"])
 
-        import yaml
-
         override_path = workspace / "worker-123" / "workspace" / ".codegen-ports.yml"
-        content = yaml.safe_load(override_path.read_text())
-        assert content["services"]["db"]["ports"] == []
-        assert content["services"]["redis"]["ports"] == []
+        text = override_path.read_text()
+        assert "db:" in text
+        assert "redis:" in text
+        assert "ports: !reset []" in text
         # backend has no ports, should not be in override
-        assert "backend" not in content["services"]
+        assert "backend:" not in text
