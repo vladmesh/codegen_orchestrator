@@ -122,7 +122,15 @@
       tags: [system]
 
     # ========================================
-    # 6. Verification
+    # 6. QA Runner (Claude Code + QA deps)
+    # ========================================
+    - name: Include QA runner role
+      ansible.builtin.include_role:
+        name: qa_runner
+      tags: [qa]
+
+    # ========================================
+    # 7. Verification
     # ========================================
     - name: Verify Docker is running
       command: docker --version

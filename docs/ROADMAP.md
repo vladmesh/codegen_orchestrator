@@ -541,6 +541,7 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 - [ ] debug test
 - [ ] Add TTL/cleanup for stale Redis queue messages
 - [ ] API authorization: scope worker access, protect destructive endpoints
+- [ ] Ansible role: qa_runner provisioning on prod servers
 - [ ] #1006 Decouple deploy worker from story lifecycle
 - [ ] #1003 Integration test: scheduler-langgraph story worker lifecycle
 - [ ] Allocate ports only for modules that need host exposure

@@ -15,7 +15,8 @@ import structlog
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.queues.deploy import DeployMessage
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE
+from shared.contracts.queues.qa import QAMessage
+from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
@@ -25,7 +26,7 @@ from ..schemas.api_types import ProjectInfo
 from ..subgraphs.devops import create_devops_subgraph
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker
-from ._events import publish_callback_event, publish_story_event
+from ._events import publish_callback_event
 
 logger = structlog.get_logger(__name__)
 
@@ -316,36 +317,29 @@ async def _handle_deploy_success(
             },
         },
     )
-    # Complete the story now that deploy succeeded
-    await _transition_story_safe(story_id, "complete")
-
-    # Clean up story worker — container is no longer needed
+    # Hand off to QA if story exists, otherwise complete directly
     if story_id:
-        try:
-            worker_id = await get_story_worker(redis.redis, story_id)
-            if worker_id:
-                await delete_worker(worker_id, reason="completed")
-                logger.info("story_worker_deleted", story_id=story_id, worker_id=worker_id)
-            await clear_story_worker(redis.redis, story_id)
-        except Exception as e:
-            logger.warning("story_worker_cleanup_failed", story_id=story_id, error=str(e))
-
-    await publish_callback_event(
-        redis,
-        callback_stream,
-        "completed",
-        task_id,
-        f"Deploy completed: {result['deployed_url']}",
-        user_id=user_id,
-        project_id=project_id,
-    )
-    if not callback_stream:
-        project_name = project.get("name", project_id) if project else project_id
-        await publish_story_event(
+        await _transition_story_safe(story_id, "test")
+        await redis.publish_message(
+            QA_QUEUE,
+            QAMessage(
+                story_id=story_id,
+                project_id=project_id,
+                user_id=user_id,
+                deployed_url=result["deployed_url"],
+            ),
+        )
+        logger.info("qa_handoff", story_id=story_id, deployed_url=result["deployed_url"])
+        # Worker container NOT deleted — QA may need it for fix tasks
+    else:
+        await publish_callback_event(
             redis,
+            callback_stream,
+            "completed",
+            task_id,
+            f"Deploy completed: {result['deployed_url']}",
             user_id=user_id,
-            event="story_completed",
-            text=f"Story completed. Project '{project_name}' is live at {result['deployed_url']}",
+            project_id=project_id,
         )
 
     return {

@@ -78,9 +78,10 @@ def _job(*, callback_stream=None, user_id="12345", triggered_by=DeployTrigger.WE
 
 
 @pytest.mark.asyncio
-async def test_deploy_worker_sends_proactive_on_success(
+async def test_deploy_worker_no_story_no_qa_handoff(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
+    """Deploy without story_id succeeds but does not hand off to QA."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={"deployed_url": "http://1.2.3.4:8080", "deployment_result": {}}
     )
@@ -91,13 +92,12 @@ async def test_deploy_worker_sends_proactive_on_success(
 
     assert result["status"] == "success"
 
-    # Should have sent story_completed event to po:input (not po:proactive)
+    # No QA handoff (no story)
+    mock_redis.publish_message.assert_not_called()
+
+    # No story event (no story to complete)
     story_calls = [c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_INPUT_QUEUE]
-    assert len(story_calls) == 1
-    msg = story_calls[0][0][1]
-    assert msg["event"] == "story_completed"
-    assert "my-project" in msg["text"]
-    assert msg["user_id"] == "12345"
+    assert len(story_calls) == 0
 
     # No direct proactive messages
     proactive_calls = [

@@ -10,7 +10,11 @@
 ### Removed
 - **Prompts tab in admin panel** (hotfix): Removed the "Prompts" tab from worker detail page, `/prompts` and `/prompt-history` API endpoints, Redis persistence of `task_md` and `prompt_history`, and related tests/types. The `-p` argument is now a hardcoded constant — no value in tracking it.
 
+### Changed
+- **Deploy → QA handoff** (hotfix): Deploy consumer now transitions story to `TESTING` and publishes `QAMessage` to `qa:queue` instead of completing story directly. Worker container not deleted (QA may need it for fixes). Standalone webhook deploys (no story_id) bypass QA.
+
 ### Added
+- **QA consumer skeleton** (task-22130356): Post-deploy QA consumer that reads from `qa:queue`, SSHes to prod server, runs Claude Code with story-based QA prompt, and parses the JSON result. Pass → story completed + user notified. Fail → fix task created + story rolled back to `in_progress`. Inflight dedup (25 min TTL), max 2 QA→Engineering loops. `qa-worker` service in docker-compose. 24 unit tests.
 - **TESTING story status + QA queue contract** (task-4dbe7a76): Foundation for post-release QA. New `StoryStatus.TESTING` enum value with transitions `DEPLOYING → TESTING → {COMPLETED, IN_PROGRESS, FAILED}`. New `POST /api/stories/{id}/test` endpoint. `QAMessage` contract in `shared/contracts/queues/qa.py`. `QA_QUEUE` + `QA_GROUP` constants and topology binding. 15 new tests.
 - **PR merge polling** (hotfix): Dispatcher now polls GitHub for merged PRs on stories in `pr_review` status every 30s. Eliminates dependency on GitHub webhook for the `pr_review → deploying` transition. New `list_pull_requests()` method on `GitHubAppClient`.
 - **Deploy failure LLM classifier** (hotfix): Deploy worker now classifies failures as CODE vs INFRA using haiku before dispatching to engineering. INFRA failures (timeouts, network, resource limits) retry deploy instead of wasting an engineering worker. After max retries, story is marked failed for HITL. Extracted `_track_deploy_retry()` helper from `_handle_deploy_failure()`.

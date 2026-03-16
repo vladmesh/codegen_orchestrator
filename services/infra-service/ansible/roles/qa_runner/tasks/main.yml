@@ -1,0 +1,67 @@
+---
+# QA Runner provisioning — installs Claude Code CLI and QA dependencies
+# on prod servers for post-deploy testing.
+
+- name: Create QA runner directory
+  file:
+    path: "{{ qa_runner_dir }}"
+    state: directory
+    owner: root
+    mode: '0755'
+
+# --- Node.js (via NodeSource for up-to-date version) ---
+
+- name: Add NodeSource GPG key
+  apt_key:
+    url: "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key"
+    state: present
+
+- name: Add NodeSource apt repository
+  apt_repository:
+    repo: "deb https://deb.nodesource.com/node_{{ nodejs_major_version }}.x nodistro main"
+    state: present
+    filename: nodesource
+
+- name: Install Node.js
+  apt:
+    name: nodejs
+    state: present
+    update_cache: yes
+
+# --- Claude Code CLI ---
+
+- name: Install Claude Code CLI globally
+  npm:
+    name: "@anthropic-ai/claude-code"
+    global: true
+    state: present
+
+# --- Python QA dependencies ---
+
+- name: Install Python pip packages for QA (telethon, httpx)
+  pip:
+    name:
+      - telethon
+      - httpx
+    state: present
+
+# --- ANTHROPIC_API_KEY env file ---
+
+- name: Write ANTHROPIC_API_KEY env file
+  copy:
+    content: "ANTHROPIC_API_KEY={{ anthropic_api_key }}"
+    dest: "{{ qa_runner_dir }}/.env"
+    owner: root
+    mode: '0600'
+  when: anthropic_api_key is defined and anthropic_api_key != ""
+  no_log: true
+
+# --- Telethon session (optional) ---
+
+- name: Copy Telethon session file
+  copy:
+    src: telethon.session
+    dest: "{{ qa_runner_dir }}/telethon.session"
+    owner: root
+    mode: '0600'
+  when: telethon_session_file is defined

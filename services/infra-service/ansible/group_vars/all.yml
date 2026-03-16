@@ -61,3 +61,8 @@ github_token: !vault |
   61393333623133386238623637666635626332306532643937633631356563636231666639356535
   6437366133323730366230633164613665303735633839386666
 ghcr_username: "vladmesh"
+
+# Anthropic API key for QA runner (Claude Code on prod servers)
+# Encrypt with: ansible-vault encrypt_string 'sk-ant-xxx' --name 'anthropic_api_key'
+# anthropic_api_key: !vault |
+#   (set via ansible-vault encrypt_string)
