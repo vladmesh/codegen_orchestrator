@@ -1,132 +1,116 @@
 # Worker Reports: weather_bot
 
-=== Task: task-d85bde84 ===
+=== Task: task-ecc16bfc ===
 # Developer Report
 
 ## Summary
-- **Task**: Backend: Weather API endpoint with PostgreSQL caching
+- **Task**: Add GET /api/weather/{city} endpoint
 - **Result**: completed
-- **Commit**: ce88efd
+- **Commit**: e691098
 
 ## Environment
 
 ### Database
-- **Connection**: success
-- **`getent hosts db`**: resolved correctly via orchestrator infrastructure
-- **Error**: none
-- **Migrations**: ran successfully (existing + new weather_cache migration)
-- **Workaround**: none needed
+- **Connection**: not needed (mock data, no DB access)
+- **Migrations**: not needed
+- **Workaround**: N/A
 
 ### Network
 - No issues
 
 ### Infrastructure Commands
-- **`orchestrator dev-env start-infra`**: success
-- **`orchestrator dev-env compose -- ps`**: not needed, db started and healthy
-
-> No issues encountered with infrastructure.
+- No issues — unit tests only, no infra required
 
 ## What Worked
-- Spec-first workflow: adding model to models.yaml and domain spec, then running generate-from-spec
-- Framework code generation produced correct protocols and schemas
-- All existing patterns (controller, repository, router) were clear and easy to follow
-- Pre-push hooks ran all checks including lint, spec validation, controller sync, and tests
+- Spec-first workflow worked smoothly: added model to models.yaml, created weather.yaml spec, ran `make generate-from-spec` to auto-generate protocols and schema
+- Controller scaffold was auto-generated, just needed implementation
+- All existing tests continued to pass after changes
+- All linters passed (ruff, xenon, spec validation, controller sync, deptry)
 
 ## Issues Encountered
 
-### 1. Pre-push hook ruff not on PATH
+### 1. Pre-push hook couldn't find ruff
 - **Category**: tooling
 - **Severity**: minor
 - **Error**: `[pre-push] ERROR: Neither Docker nor ruff available, cannot verify code quality`
-- **Diagnostic output**: ruff installed at `.venv/bin/ruff` but not on system PATH
-- **Workaround**: Ran `PATH="/workspace/.venv/bin:$PATH" git push`
+- **Diagnostic output**: ruff was installed in `.venv/bin/ruff` but not in system PATH
+- **Workaround**: Exported `.venv/bin` to PATH before push: `export PATH="/workspace/.venv/bin:$PATH" && git push`
 
 ## Suggestions
-- The pre-push hook could look for ruff in `.venv/bin/ruff` as a fallback when it's not on PATH
+- The pre-push hook could look for ruff in `.venv/bin/ruff` as a fallback when `command -v ruff` fails
 
-=== Task: task-bcf8cf9f ===
+=== Task: task-88834890 ===
 # Developer Report
 
 ## Summary
-- **Task**: Integration testing and documentation
+- **Task**: Add /weather command to Telegram bot
 - **Result**: completed
-- **Commit**: 714acb2
+- **Commit**: 79d5886
+
+## Environment
+
+### Database
+- **Connection**: not needed
+- **Migrations**: not needed
+
+### Network
+- No issues
+
+### Infrastructure Commands
+- No issues — unit tests only, no infra required
+
+## What Worked
+- Existing BackendClient (ServiceClient) pattern made adding the weather API call straightforward
+- Test patterns from existing test_command_handler.py were easy to follow
+- All linters and spec validation passed on first attempt
+
+## Issues Encountered
+
+### 1. Pre-push hook ruff not in PATH
+- **Category**: tooling
+- **Severity**: minor
+- **Error**: `[pre-push] ERROR: Neither Docker nor ruff available`
+- **Workaround**: Exported `.venv/bin` to PATH before push
+
+## Suggestions
+- Pre-push hook could check `.venv/bin/ruff` as fallback
+
+=== Task: task-af822bc9 ===
+# Developer Report
+
+## Summary
+- **Task**: Create weather data model and caching logic
+- **Result**: completed
+- **Commit**: 944b8f3
 
 ## Environment
 
 ### Database
 - **Connection**: success
 - **`getent hosts db`**: 172.20.0.3 db
-- **Error**: none
-- **Migrations**: ran successfully (from previous task, verified still working)
-- **Workaround**: none
+- **Migrations**: ran successfully (41b69e567473_create_weather_cache)
 
 ### Network
 - No issues
 
 ### Infrastructure Commands
-- **`orchestrator dev-env start-infra`**: success (db was already running from prior task)
-- **`orchestrator dev-env compose -- ps`**: not needed, services healthy
-
-> No issues encountered with infrastructure.
+- **`orchestrator dev-env start-infra`**: success
+- DB started and healthy on first attempt
 
 ## What Worked
-- Existing test infrastructure (conftest.py with SQLite) worked well for weather tests
-- Unit tests using httpx AsyncClient + ASGI transport pattern is clean
-- Integration test structure in tests/integration/ with Docker compose ready
-- All 31 tests pass (16 backend + 15 tg_bot)
-- Pre-push hooks caught lint issues early
+- Alembic autogenerate correctly detected the new WeatherCache table and index
+- SQLite test setup (conftest.py) automatically picked up the new model via Base.metadata
+- All existing tests continued passing after the caching refactor
+- Spec-first workflow: no spec changes needed for this task (model is internal, not API-facing)
 
 ## Issues Encountered
 
-### 1. Pre-push hook ruff PATH issue
+### 1. Pre-push hook ruff not in PATH
 - **Category**: tooling
 - **Severity**: minor
-- **Error**: `[pre-push] ERROR: Neither Docker nor ruff available`
-- **Diagnostic output**: ruff is at `.venv/bin/ruff` but not on system PATH
-- **Workaround**: `PATH="/workspace/.venv/bin:$PATH" git push`
+- **Error**: ruff not found by `command -v ruff` in hook context
+- **Workaround**: `export PATH="/workspace/.venv/bin:$PATH" && git push`
 
 ## Suggestions
-- The pre-push hook should check `.venv/bin/ruff` as a fallback path
-
-=== Task: task-217b550f ===
-# Developer Report
-
-## Summary
-- **Task**: Telegram Bot: /start and /weather commands
-- **Result**: completed
-- **Commit**: 5d3d084
-
-## Environment
-
-### Database
-- **Connection**: not needed for this task (tg_bot doesn't connect to DB directly)
-- **Migrations**: not needed
-- **Workaround**: none
-
-### Network
-- No issues
-
-### Infrastructure Commands
-- **`orchestrator dev-env start-infra`**: not needed (unit tests only)
-- **`orchestrator dev-env compose -- ps`**: not needed
-
-> No issues encountered with infrastructure.
-
-## What Worked
-- Existing BackendClient/ServiceClient pattern made adding get_weather straightforward
-- Test patterns from existing test_command_handler.py were easy to follow
-- Framework conventions well-documented in tg_bot/AGENTS.md
-- Pre-push hooks caught formatting issues and ran all tests automatically
-
-## Issues Encountered
-
-### 1. Pre-push hook ruff PATH issue
-- **Category**: tooling
-- **Severity**: minor
-- **Error**: `[pre-push] ERROR: Neither Docker nor ruff available`
-- **Workaround**: `PATH="/workspace/.venv/bin:$PATH" git push`
-
-## Suggestions
-- The pre-push hook should check `.venv/bin/ruff` as a fallback
+- Pre-push hook could check `.venv/bin/ruff` as fallback
 
