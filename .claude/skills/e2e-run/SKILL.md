@@ -177,7 +177,7 @@ SSH keys are stored in the DB (encrypted). Use the helper script:
 bash infra/scripts/ssh-to-server.sh $SERVER_IP "hostname"
 ```
 
-**Server filesystem layout**: `/opt/services/<REPO_SLUG>/` (hyphenated name, e.g. `weather-bot`)
+**Server filesystem layout**: `/opt/services/<REPO_NAME>/` (may use hyphens OR underscores — check actual repo name from API)
 
 ```bash
 # Docker compose on server — always use both compose files:
@@ -190,10 +190,15 @@ $COMPOSE logs backend --tail=50
 
 Run tests **sequentially** (one at a time).
 
-**Repo naming**: GitHub repos use **hyphens**, not underscores.
-Define `REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')` early.
-Use `$REPO_SLUG` for GitHub API **and server paths** (`/opt/services/$REPO_SLUG`).
-Use `$PROJECT_NAME` only for API/DB queries and local file names.
+**Repo naming**: PO may create the GitHub repo with **either** underscores (`weather_bot`) or
+hyphens (`weather-bot`) — you cannot predict which. Always define both variants early:
+```bash
+REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')   # hyphenated
+REPO_UNDER=$(echo "$PROJECT_NAME" | tr '-' '_')   # underscored
+```
+Use **both** `$REPO_SLUG` and `$REPO_UNDER` when searching GitHub repos, server dirs, and
+docker containers. After Step 1d (Extract IDs), read the actual repo name from the API
+and set `REPO_NAME` to the real value — use that for all subsequent GitHub operations.
 
 ### Step 0: Health check + pre-flight cleanup
 
@@ -236,40 +241,45 @@ fi
 ```bash
 ORG="project-factory-organization"
 REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')
+REPO_UNDER=$(echo "$PROJECT_NAME" | tr '-' '_')
 
-# 1. Delete leftover GitHub repo
-REPO_EXISTS=$(docker compose exec -T api python -c "
+# 1. Delete leftover GitHub repos (check BOTH underscore and hyphen variants)
+for REPO_VARIANT in "$REPO_SLUG" "$REPO_UNDER"; do
+  REPO_EXISTS=$(docker compose exec -T api python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
 async def main():
     gh = GitHubAppClient()
     try:
-        await gh.list_repo_files('$ORG', '$REPO_SLUG')
+        await gh.list_repo_files('$ORG', '$REPO_VARIANT')
         print('EXISTS')
     except Exception:
         print('CLEAN')
 asyncio.run(main())
 " 2>/dev/null | tail -1)
 
-if [ "$REPO_EXISTS" = "EXISTS" ]; then
-  echo "WARNING: Leftover repo — deleting"
-  docker compose exec -T api python -c "
+  if [ "$REPO_EXISTS" = "EXISTS" ]; then
+    echo "WARNING: Leftover repo $REPO_VARIANT — deleting"
+    docker compose exec -T api python -c "
 import asyncio
 from shared.clients.github import GitHubAppClient
 async def main():
     gh = GitHubAppClient()
-    await gh.delete_repo('$ORG', '$REPO_SLUG')
+    await gh.delete_repo('$ORG', '$REPO_VARIANT')
     print('Deleted')
 asyncio.run(main())
 "
-fi
+  fi
+done
 
-# 2. Kill leftover worker containers
+# 2. Kill leftover worker containers (by label AND by name pattern)
 docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}" | xargs -r docker rm -f
+docker ps -a --format "{{.Names}}" | grep -iE "${REPO_SLUG}|${REPO_UNDER}" | xargs -r docker rm -f
 
 # 3. Clean stale deployments on servers (check BOTH underscore and hyphen variants)
+#    After compose down, also force-remove containers by name and verify ports are freed.
 for SERVER_IP in $(curl -s "http://localhost:8000/api/servers/?is_managed=true" | jq -r '.[].public_ip'); do
-  for DIR_NAME in "$PROJECT_NAME" "$REPO_SLUG"; do
+  for DIR_NAME in "$REPO_UNDER" "$REPO_SLUG"; do
     HAS_DIR=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
       "[ -d /opt/services/$DIR_NAME ] && echo EXISTS || echo CLEAN" 2>/dev/null || echo "SSH_FAIL")
     if [ "$HAS_DIR" = "EXISTS" ]; then
@@ -277,10 +287,21 @@ for SERVER_IP in $(curl -s "http://localhost:8000/api/servers/?is_managed=true" 
       bash infra/scripts/ssh-to-server.sh $SERVER_IP "
         cd /opt/services/$DIR_NAME/infra 2>/dev/null && \
           docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml down -v --remove-orphans 2>/dev/null || true
+        # Force-remove containers by name pattern (catches orphans after compose down)
+        docker ps -a --format '{{.Names}}' | grep -i '$DIR_NAME' | xargs -r docker rm -f 2>/dev/null || true
         rm -rf /opt/services/$DIR_NAME
       "
     fi
   done
+  # Verify no ports are still occupied by stale containers
+  STALE_PORTS=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
+    "docker ps --format '{{.Names}} {{.Ports}}' | grep -iE '${REPO_SLUG}|${REPO_UNDER}'" 2>/dev/null || true)
+  if [ -n "$STALE_PORTS" ]; then
+    echo "WARNING: Stale containers still running on $SERVER_IP after cleanup: $STALE_PORTS"
+    echo "  Force-removing..."
+    bash infra/scripts/ssh-to-server.sh $SERVER_IP \
+      "docker ps --format '{{.Names}}' | grep -iE '${REPO_SLUG}|${REPO_UNDER}' | xargs -r docker rm -f" 2>/dev/null || true
+  fi
 done
 ```
 
@@ -1164,7 +1185,7 @@ If the user asks to stop early:
 ## Common Gotchas
 
 1. **Architect is its own container** — `docker compose logs architect`, NOT scheduler
-2. **Repo names use hyphens, not underscores**: `todo_api` → `todo-api`
+2. **Repo names may use hyphens OR underscores**: PO decides. Always check both variants (`$REPO_SLUG` and `$REPO_UNDER`) during cleanup and lookups
 3. **Local `gh` CLI has no access** — always use `GitHubAppClient` via docker compose exec
 4. **Import path**: `from shared.clients.github import GitHubAppClient`
 5. **Worker containers**: use `docker ps --filter "label=com.codegen.type=worker"` (primary). WM API (`/wm-api/workers/`) may return 404 or non-list — always handle errors

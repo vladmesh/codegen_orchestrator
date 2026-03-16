@@ -99,3 +99,15 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 - **Quote**: "DELETE FROM applications WHERE repo_id IN (SELECT id FROM repositories WHERE project_id = '$PROJECT_ID'));"
 - **Problem**: Extra closing parenthesis in the cleanup SQL (Step 9, item 5) causes psql syntax error. Line 8 of the DELETE cascade has `...PROJECT_ID'));` instead of `...PROJECT_ID');`
 - **Suggested fix**: Remove the extra `)` on the `DELETE FROM applications` line in Step 9 cleanup SQL.
+
+## [e2e-run] — 2026-03-16 (run 4)
+- **Type**: bug
+- **Quote**: Step 0 pre-flight cleanup checks both `$PROJECT_NAME` and `$REPO_SLUG` dirs on server
+- **Problem**: Pre-flight cleanup correctly checks both naming variants on the server, but the old `weather-bot` deployment had running containers occupying port 8012. The `docker compose down` in cleanup relies on compose files existing in the directory. If the directory structure is intact but compose down fails silently, port stays occupied. The cleanup didn't verify port was actually freed.
+- **Suggested fix**: After server cleanup, add a port verification step: `ss -tlnp | grep $PORT` and fail/warn if still occupied.
+
+## [e2e-run] — 2026-03-16 (run 4)
+- **Type**: missing-info
+- **Quote**: Step 5.5 "Monitor QA Phase"
+- **Problem**: When manually retriggering deploy (webhook failure workaround), QA phase was skipped — story went directly `deploying → completed`. The skill doesn't document that manual deploy retrigger may bypass QA, and doesn't provide a workaround to manually trigger QA.
+- **Suggested fix**: Add note in "Webhook failure & manual deploy trigger" section: "Manual deploy retrigger may skip QA. If story goes to `completed` without `testing` phase, manually publish QAMessage to qa:queue to trigger QA."
