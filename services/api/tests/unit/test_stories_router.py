@@ -544,3 +544,32 @@ async def test_reopen_story_invalid_from_in_progress():
         )
 
     assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_test_story_from_deploying():
+    """Deploying story can transition to testing."""
+    story = _make_story(id="story-abc", status="deploying")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/test")
+
+    assert resp.status_code == HTTPStatus.OK
+    assert story.status == "testing"
+
+
+@pytest.mark.asyncio
+async def test_test_story_invalid_from_created():
+    """Created story cannot transition directly to testing."""
+    story = _make_story(id="story-abc", status="created")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/test")
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY

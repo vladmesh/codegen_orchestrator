@@ -3,7 +3,7 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-15
+> **Updated**: 2026-03-16
 
 ## Queue (ordered by priority, first = next)
 
@@ -35,6 +35,12 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
+
+### Add TESTING status to StoryStatus + API transition endpoint + QA queue contract
+- **Priority**: HIGH
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: ## Context Brainstorm: bs-eece61a8 (docs/brainstorms/post-release-qa-mvp.md)  ## What 1. Add `TESTING` to `StoryStatus` enum in `shared/contracts/dto/story.py` 2. Add valid transitions: `DEPLOYING → TESTING`, `TESTING → {COMPLETED, IN_PROGRESS, FAILED}` 3. Add `POST /api/stories/{id}/test` endpoi...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -258,6 +264,7 @@
 
 ## Done (last 10)
 
+- Implement random cat photo bot with admin access control — 2026-03-15
 - [service-template] ci.yml: CI runs only on PR to main, not on every push — 2026-03-15
 - Branch protection setup via GitHub API after scaffold — 2026-03-15
 - PR-based CI gate: story completion creates PR, auto-merge on green CI — 2026-03-15
@@ -267,7 +274,6 @@
 - Bind PortAllocation to Application instead of Project — 2026-03-14
 - Introduce Application entity and refactor Deployment model — 2026-03-14
 - Run tests, verify CI green — 2026-03-14
-- Verify fix with production-like testing — 2026-03-14
 
 ## Ideas
 

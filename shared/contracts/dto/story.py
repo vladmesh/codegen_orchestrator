@@ -14,6 +14,7 @@ class StoryStatus(StrEnum):
     REOPENED = "reopened"
     PR_REVIEW = "pr_review"
     DEPLOYING = "deploying"
+    TESTING = "testing"
     WAITING_HUMAN_REVIEW = "waiting_human_review"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -40,6 +41,12 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
         StoryStatus.FAILED,
     },
     StoryStatus.DEPLOYING: {
+        StoryStatus.TESTING,
+        StoryStatus.COMPLETED,
+        StoryStatus.IN_PROGRESS,
+        StoryStatus.FAILED,
+    },
+    StoryStatus.TESTING: {
         StoryStatus.COMPLETED,
         StoryStatus.IN_PROGRESS,
         StoryStatus.FAILED,

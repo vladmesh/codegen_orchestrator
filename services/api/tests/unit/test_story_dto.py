@@ -16,13 +16,17 @@ class TestStoryStatus:
     def test_failed_value(self):
         assert StoryStatus.FAILED == "failed"
 
+    def test_testing_value(self):
+        assert StoryStatus.TESTING == "testing"
+
     def test_membership(self):
         values = list(StoryStatus)
-        assert len(values) == 9  # noqa: PLR2004
+        assert len(values) == 10  # noqa: PLR2004
         assert "created" in values
         assert "in_progress" in values
         assert "reopened" in values
         assert "deploying" in values
+        assert "testing" in values
         assert "completed" in values
         assert "archived" in values
         assert "failed" in values
@@ -104,6 +108,18 @@ class TestStoryTransitions:
 
     def test_pr_review_can_return_to_in_progress(self):
         assert StoryStatus.IN_PROGRESS in VALID_TRANSITIONS[StoryStatus.PR_REVIEW]
+
+    def test_deploying_can_go_to_testing(self):
+        assert StoryStatus.TESTING in VALID_TRANSITIONS[StoryStatus.DEPLOYING]
+
+    def test_testing_can_complete(self):
+        assert StoryStatus.COMPLETED in VALID_TRANSITIONS[StoryStatus.TESTING]
+
+    def test_testing_can_return_to_in_progress(self):
+        assert StoryStatus.IN_PROGRESS in VALID_TRANSITIONS[StoryStatus.TESTING]
+
+    def test_testing_can_fail(self):
+        assert StoryStatus.FAILED in VALID_TRANSITIONS[StoryStatus.TESTING]
 
     @pytest.mark.parametrize("status", list(StoryStatus))
     def test_all_statuses_have_transitions(self, status):

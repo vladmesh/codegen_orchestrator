@@ -74,6 +74,12 @@ def mock_redis():
                 "pending": 0,
                 "last-delivered-id": "10-0",
             },
+            {
+                "name": "qa-consumers",
+                "consumers": 1,
+                "pending": 0,
+                "last-delivered-id": "11-0",
+            },
         ]
 
     r.xinfo_groups = AsyncMock(side_effect=fake_xinfo_groups)

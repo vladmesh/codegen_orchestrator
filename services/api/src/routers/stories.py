@@ -269,6 +269,23 @@ async def deploy_story(
     return StoryRead.model_validate(story, from_attributes=True)
 
 
+@router.post("/{story_id}/test", response_model=StoryRead)
+async def test_story(
+    story_id: str,
+    body: StoryTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    body = body or StoryTransition()
+    story = await _get_story(story_id, db)
+
+    _do_transition(story, StoryStatus.TESTING)
+    await db.commit()
+    await db.refresh(story)
+
+    logger.info("story_testing", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
 @router.post("/{story_id}/reopen", response_model=StoryRead)
 async def reopen_story(
     story_id: str,

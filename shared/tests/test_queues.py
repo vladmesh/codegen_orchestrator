@@ -44,7 +44,7 @@ class TestQueueBinding:
 
 class TestQueueTopology:
     def test_has_expected_binding_count(self):
-        expected_count = 10  # noqa: PLR2004
+        expected_count = 11  # noqa: PLR2004
         assert len(QUEUE_TOPOLOGY) == expected_count
 
     def test_all_streams_present(self):
