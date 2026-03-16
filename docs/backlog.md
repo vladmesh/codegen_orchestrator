@@ -36,6 +36,12 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
+### Fix deploy failure classification and worker rejection pipeline
+- **Priority**: HIGH
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: ## Context  E2E test (weather_bot, 2026-03-16) revealed that a deploy failure caused by **port conflict** ("port is already allocated") was incorrectly sent to an engineering worker as a code fix task. The worker spent ~10 minutes trying to "fix code" when the issue was purely infrastructural.  F...
+
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
 - **Plan**: yes (in work item)

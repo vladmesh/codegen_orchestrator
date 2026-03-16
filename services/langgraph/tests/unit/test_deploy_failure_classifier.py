@@ -1,4 +1,4 @@
-"""Unit tests for deploy failure LLM classifier (CODE vs INFRA)."""
+"""Unit tests for deploy failure LLM classifier (CODE_FIX / RETRY / GIVE_UP)."""
 
 from __future__ import annotations
 
@@ -76,10 +76,10 @@ def _job(*, callback_stream=None, user_id="12345", story_id="story-1"):
 
 
 @pytest.mark.asyncio
-async def test_classify_returns_code_for_import_error():
-    """LLM classifies import errors as CODE."""
+async def test_classify_returns_code_fix_for_import_error():
+    """LLM classifies import errors as CODE_FIX."""
     mock_response = MagicMock()
-    mock_response.content = "CODE"
+    mock_response.content = "CODE_FIX"
 
     with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
         mock_llm = AsyncMock()
@@ -90,14 +90,14 @@ async def test_classify_returns_code_for_import_error():
             from src.consumers.deploy import _classify_deploy_failure
 
             result = await _classify_deploy_failure("ModuleNotFoundError: No module named 'foo'")
-            assert result == "CODE"
+            assert result == "CODE_FIX"
 
 
 @pytest.mark.asyncio
-async def test_classify_returns_infra_for_timeout():
-    """LLM classifies timeouts as INFRA."""
+async def test_classify_returns_retry_for_timeout():
+    """LLM classifies timeouts as RETRY."""
     mock_response = MagicMock()
-    mock_response.content = "INFRA"
+    mock_response.content = "RETRY"
 
     with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
         mock_llm = AsyncMock()
@@ -108,12 +108,12 @@ async def test_classify_returns_infra_for_timeout():
             from src.consumers.deploy import _classify_deploy_failure
 
             result = await _classify_deploy_failure("Healthcheck timeout after 30s")
-            assert result == "INFRA"
+            assert result == "RETRY"
 
 
 @pytest.mark.asyncio
-async def test_classify_defaults_to_code_on_unexpected_response():
-    """Unexpected LLM output falls back to CODE."""
+async def test_classify_defaults_to_retry_on_unexpected_response():
+    """Unexpected LLM output falls back to RETRY."""
     mock_response = MagicMock()
     mock_response.content = "I'm not sure, maybe both?"
 
@@ -126,12 +126,12 @@ async def test_classify_defaults_to_code_on_unexpected_response():
             from src.consumers.deploy import _classify_deploy_failure
 
             result = await _classify_deploy_failure("some error")
-            assert result == "CODE"
+            assert result == "RETRY"
 
 
 @pytest.mark.asyncio
-async def test_classify_defaults_to_code_on_exception():
-    """LLM exception falls back to CODE."""
+async def test_classify_defaults_to_retry_on_exception():
+    """LLM exception falls back to RETRY."""
     with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(side_effect=RuntimeError("LLM down"))
@@ -141,27 +141,27 @@ async def test_classify_defaults_to_code_on_exception():
             from src.consumers.deploy import _classify_deploy_failure
 
             result = await _classify_deploy_failure("some error")
-            assert result == "CODE"
+            assert result == "RETRY"
 
 
 @pytest.mark.asyncio
-async def test_classify_defaults_to_code_without_api_key():
-    """Missing OPEN_ROUTER_KEY falls back to CODE."""
+async def test_classify_defaults_to_retry_without_api_key():
+    """Missing OPEN_ROUTER_KEY falls back to RETRY."""
     with patch.dict("os.environ", {}, clear=True):
         from src.consumers.deploy import _classify_deploy_failure
 
         result = await _classify_deploy_failure("some error")
-        assert result == "CODE"
+        assert result == "RETRY"
 
 
 # -- Integration: smoke failure with classification --
 
 
 @pytest.mark.asyncio
-async def test_smoke_failure_code_dispatches_to_engineering(
+async def test_smoke_failure_code_fix_dispatches_to_engineering(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Smoke failure classified as CODE → dispatches fix task to engineering."""
+    """Smoke failure classified as CODE_FIX → dispatches fix task to engineering."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": "http://1.2.3.4:8080",
@@ -179,7 +179,10 @@ async def test_smoke_failure_code_dispatches_to_engineering(
         }
     )
 
-    with patch("src.consumers.deploy._classify_deploy_failure", AsyncMock(return_value="CODE")):
+    with patch(
+        "src.consumers.deploy._classify_deploy_failure",
+        AsyncMock(return_value="CODE_FIX"),
+    ):
         from src.consumers.deploy import process_deploy_job
 
         result = await process_deploy_job(_job(), mock_redis)
@@ -193,10 +196,10 @@ async def test_smoke_failure_code_dispatches_to_engineering(
 
 
 @pytest.mark.asyncio
-async def test_smoke_failure_infra_retries_deploy(
+async def test_smoke_failure_retry_retries_deploy(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Smoke failure classified as INFRA → no engineering task, story retried."""
+    """Smoke failure classified as RETRY → no engineering task, story retried."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": "http://1.2.3.4:8080",
@@ -214,7 +217,10 @@ async def test_smoke_failure_infra_retries_deploy(
         }
     )
 
-    with patch("src.consumers.deploy._classify_deploy_failure", AsyncMock(return_value="INFRA")):
+    with patch(
+        "src.consumers.deploy._classify_deploy_failure",
+        AsyncMock(return_value="RETRY"),
+    ):
         from src.consumers.deploy import process_deploy_job
 
         result = await process_deploy_job(_job(), mock_redis)
@@ -230,10 +236,10 @@ async def test_smoke_failure_infra_retries_deploy(
 
 
 @pytest.mark.asyncio
-async def test_devops_error_infra_skips_engineering(
+async def test_devops_error_retry_skips_engineering(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Devops subgraph errors classified as INFRA → no engineering task."""
+    """Devops subgraph errors classified as RETRY → no engineering task."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": None,
@@ -241,7 +247,10 @@ async def test_devops_error_infra_skips_engineering(
         }
     )
 
-    with patch("src.consumers.deploy._classify_deploy_failure", AsyncMock(return_value="INFRA")):
+    with patch(
+        "src.consumers.deploy._classify_deploy_failure",
+        AsyncMock(return_value="RETRY"),
+    ):
         from src.consumers.deploy import process_deploy_job
 
         result = await process_deploy_job(_job(), mock_redis)
@@ -254,10 +263,10 @@ async def test_devops_error_infra_skips_engineering(
 
 
 @pytest.mark.asyncio
-async def test_devops_error_code_dispatches_to_engineering(
+async def test_devops_error_code_fix_dispatches_to_engineering(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Devops subgraph errors classified as CODE → dispatches to engineering."""
+    """Devops subgraph errors classified as CODE_FIX → dispatches to engineering."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": None,
@@ -265,7 +274,10 @@ async def test_devops_error_code_dispatches_to_engineering(
         }
     )
 
-    with patch("src.consumers.deploy._classify_deploy_failure", AsyncMock(return_value="CODE")):
+    with patch(
+        "src.consumers.deploy._classify_deploy_failure",
+        AsyncMock(return_value="CODE_FIX"),
+    ):
         from src.consumers.deploy import process_deploy_job
 
         result = await process_deploy_job(_job(), mock_redis)

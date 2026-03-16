@@ -16,6 +16,7 @@ from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.queues.deploy import DeployMessage
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.qa import QAMessage
+from shared.notifications import notify_admins
 from shared.queues import DEPLOY_QUEUE, ENGINEERING_QUEUE, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -37,43 +38,51 @@ DEPLOY_LOCK_TTL = 3600  # 1 hour — generous TTL for long deploys
 DEPLOY_RETRY_TTL = 86400  # 24h — counter expires after a day
 
 CLASSIFY_PROMPT = """\
-Classify this deployment failure as CODE or INFRA.
+Classify this deployment failure into one of three categories.
 
-CODE = application bug (import error, crash, missing dependency, wrong config value, syntax error, \
-broken migration SQL, unhandled exception at startup)
-INFRA = infrastructure issue (timeout, healthcheck slow start, network unreachable, \
-resource limits, SSH connection error, port already in use, disk full, DNS failure)
+CODE_FIX = application bug that a developer can fix by changing code \
+(import error, crash, missing dependency, wrong config value, syntax error, \
+broken migration SQL, unhandled exception at startup, test failure)
+RETRY = transient infrastructure issue that may self-resolve on retry \
+(SSH timeout, healthcheck slow start, network unreachable temporarily, \
+Docker pull timeout, DNS resolution timeout, brief resource contention)
+GIVE_UP = persistent infrastructure or configuration issue that will NOT self-heal and \
+cannot be fixed by changing code (port already in use/allocated, disk full, \
+server out of memory, misconfigured secrets, SSL certificate error, \
+permanent DNS failure, firewall blocking, container runtime broken)
 
 Error details:
 {error_details}
 
-Reply with exactly one word: CODE or INFRA"""
+Reply with exactly one word: CODE_FIX, RETRY, or GIVE_UP"""
 
 
 async def _classify_deploy_failure(error_details: str) -> str:
-    """Use LLM to classify a deploy failure as CODE or INFRA.
+    """Use LLM to classify a deploy failure.
 
-    Returns "CODE" or "INFRA". Defaults to "CODE" on any error (safe fallback).
+    Returns "CODE_FIX", "RETRY", or "GIVE_UP". Defaults to "RETRY" on any error
+    (safer than CODE_FIX — retrying wastes less time than dispatching a useless worker).
     """
     try:
         api_key = os.environ.get("OPEN_ROUTER_KEY")
         if not api_key:
             logger.warning("deploy_classify_no_api_key")
-            return "CODE"
+            return "RETRY"
 
         llm = ChatOpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
-            model="anthropic/claude-haiku-4-5-20251001",
+            model="anthropic/claude-haiku-4-5",
             temperature=0.0,
             max_tokens=10,
         )
         response = await llm.ainvoke(CLASSIFY_PROMPT.format(error_details=error_details[:2000]))
         classification = response.content.strip().upper()
 
-        if classification not in ("CODE", "INFRA"):
+        valid_classifications = ("CODE_FIX", "RETRY", "GIVE_UP")
+        if classification not in valid_classifications:
             logger.warning("deploy_classify_unexpected", raw=classification)
-            return "CODE"
+            return "RETRY"
 
         logger.info(
             "deploy_failure_classified",
@@ -83,7 +92,7 @@ async def _classify_deploy_failure(error_details: str) -> str:
         return classification
     except Exception:
         logger.warning("deploy_classify_error", exc_info=True)
-        return "CODE"
+        return "RETRY"
 
 
 async def _transition_story_safe(story_id: str, action: str) -> None:
@@ -216,6 +225,82 @@ async def _redispatch_to_engineering(
     return True
 
 
+async def _handle_give_up(
+    *,
+    story_id: str,
+    task_id: str,
+    project_id: str,
+    error_details: str,
+    redis: RedisStreamClient,
+) -> None:
+    """Handle GIVE_UP classification — terminal failure, admin notified.
+
+    The deploy failure is a persistent config/infra issue that won't self-heal
+    and can't be fixed by changing code. Stop the pipeline and escalate.
+    """
+    logger.warning(
+        "deploy_give_up",
+        task_id=task_id,
+        project_id=project_id,
+        story_id=story_id,
+        error_preview=error_details[:200],
+    )
+
+    # Story → failed (terminal)
+    await _transition_story_safe(story_id, "fail")
+
+    # Clean up worker if one exists
+    if story_id:
+        try:
+            worker_id = await get_story_worker(redis.redis, story_id)
+            if worker_id:
+                await delete_worker(worker_id, reason="failed")
+                await clear_story_worker(redis.redis, story_id)
+        except Exception:
+            logger.warning("give_up_worker_cleanup_failed", story_id=story_id, exc_info=True)
+
+    # Notify admin (HITL required)
+    try:
+        await notify_admins(
+            f"Deploy GIVE_UP for task {task_id} (project {project_id}):\n{error_details[:500]}",
+            level="error",
+        )
+    except Exception:
+        logger.warning("give_up_admin_notify_failed", task_id=task_id, exc_info=True)
+
+
+async def _route_deploy_failure(
+    *,
+    classification: str,
+    redis: RedisStreamClient,
+    msg: DeployMessage,
+    error_details: str,
+    story_id: str,
+) -> None:
+    """Route a deploy failure based on three-way classification.
+
+    CODE_FIX → redispatch to engineering worker
+    RETRY → do nothing (caller handles retry counter via _handle_deploy_failure)
+    GIVE_UP → terminal failure, escalate to admin
+    """
+    if classification == "CODE_FIX":
+        await _transition_story_safe(story_id, "start")
+        await _redispatch_to_engineering(
+            redis=redis,
+            msg=msg,
+            error_details=error_details,
+        )
+    elif classification == "GIVE_UP":
+        await _handle_give_up(
+            story_id=story_id,
+            task_id=msg.task_id,
+            project_id=msg.project_id,
+            error_details=error_details,
+            redis=redis,
+        )
+    # RETRY: caller handles via _handle_deploy_failure / _track_deploy_retry
+
+
 async def _handle_smoke_failure(
     *,
     result: dict,
@@ -254,19 +339,17 @@ async def _handle_smoke_failure(
             },
         },
     )
-    # Classify failure: code bug vs infra issue
+    # Classify and route failure
     classification = await _classify_deploy_failure(smoke_details)
-
-    if classification == "CODE":
-        await _transition_story_safe(story_id, "start")
-        await _redispatch_to_engineering(
-            redis=redis,
-            msg=msg,
-            error_details=smoke_details,
-        )
-    else:
-        # INFRA — retry deploy via _handle_deploy_failure retry counter;
-        # after MAX_DEPLOY_RETRIES the story is marked failed (HITL)
+    await _route_deploy_failure(
+        classification=classification,
+        redis=redis,
+        msg=msg,
+        error_details=smoke_details,
+        story_id=story_id,
+    )
+    # For RETRY, also track via retry counter
+    if classification == "RETRY":
         await _track_deploy_retry(redis=redis, story_id=story_id)
 
     await publish_callback_event(
@@ -720,15 +803,23 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             error_msg = "; ".join(errors)
             project_name = project.get("name", project_id) if project else project_id
 
-            # Classify failure: code bug vs infra issue
+            # Classify and route failure
             classification = await _classify_deploy_failure(error_msg)
-            if classification == "CODE":
-                await _redispatch_to_engineering(
-                    redis=redis,
-                    msg=msg,
-                    error_details=error_msg,
-                )
-            # INFRA path: _handle_deploy_failure below handles retry counter + story="failed"
+            await _route_deploy_failure(
+                classification=classification,
+                redis=redis,
+                msg=msg,
+                error_details=error_msg,
+                story_id=story_id,
+            )
+            # GIVE_UP already handled (story failed, admin notified) — skip retry
+            if classification == "GIVE_UP":
+                return {
+                    "status": "failed",
+                    "error": error_msg,
+                    "classification": "GIVE_UP",
+                    "finished_at": datetime.now(UTC).isoformat(),
+                }
 
             return await _handle_deploy_failure(
                 task_id=task_id,

@@ -85,7 +85,7 @@ class TestSmokeFailureRedispatch:
     async def test_smoke_failure_publishes_engineering_fix(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """Smoke failure should publish a fix task to engineering:queue."""
+        """Smoke failure classified as CODE_FIX should publish fix task to engineering:queue."""
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": "http://1.2.3.4:8080",
@@ -100,9 +100,13 @@ class TestSmokeFailureRedispatch:
             }
         )
 
-        from src.consumers.deploy import process_deploy_job
+        with patch(
+            "src.consumers.deploy._classify_deploy_failure",
+            AsyncMock(return_value="CODE_FIX"),
+        ):
+            from src.consumers.deploy import process_deploy_job
 
-        result = await process_deploy_job(_job(), mock_redis)
+            result = await process_deploy_job(_job(), mock_redis)
 
         assert result["status"] == "failed"
 
@@ -140,9 +144,13 @@ class TestSmokeFailureRedispatch:
             }
         )
 
-        from src.consumers.deploy import process_deploy_job
+        with patch(
+            "src.consumers.deploy._classify_deploy_failure",
+            AsyncMock(return_value="CODE_FIX"),
+        ):
+            from src.consumers.deploy import process_deploy_job
 
-        await process_deploy_job(_job(), mock_redis)
+            await process_deploy_job(_job(), mock_redis)
 
         eng_calls = [
             c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
@@ -158,7 +166,7 @@ class TestDeployWorkflowFailureRedispatch:
     async def test_deploy_failure_publishes_engineering_fix(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """Deploy workflow failure should publish a fix task to engineering:queue."""
+        """Deploy workflow failure classified as CODE_FIX should publish fix task."""
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": None,
@@ -168,9 +176,13 @@ class TestDeployWorkflowFailureRedispatch:
             }
         )
 
-        from src.consumers.deploy import process_deploy_job
+        with patch(
+            "src.consumers.deploy._classify_deploy_failure",
+            AsyncMock(return_value="CODE_FIX"),
+        ):
+            from src.consumers.deploy import process_deploy_job
 
-        result = await process_deploy_job(_job(), mock_redis)
+            result = await process_deploy_job(_job(), mock_redis)
 
         assert result["status"] == "failed"
 
@@ -230,11 +242,15 @@ class TestDeployFixRetryLimit:
             }
         )
 
-        from src.consumers.deploy import MAX_DEPLOY_FIX_ATTEMPTS, process_deploy_job
+        with patch(
+            "src.consumers.deploy._classify_deploy_failure",
+            AsyncMock(return_value="CODE_FIX"),
+        ):
+            from src.consumers.deploy import MAX_DEPLOY_FIX_ATTEMPTS, process_deploy_job
 
-        # Set attempt to max — should NOT re-dispatch
-        job = _job(deploy_fix_attempt=MAX_DEPLOY_FIX_ATTEMPTS)
-        result = await process_deploy_job(job, mock_redis)
+            # Set attempt to max — should NOT re-dispatch
+            job = _job(deploy_fix_attempt=MAX_DEPLOY_FIX_ATTEMPTS)
+            result = await process_deploy_job(job, mock_redis)
 
         assert result["status"] == "failed"
 
@@ -264,10 +280,14 @@ class TestDeployFixRetryLimit:
             }
         )
 
-        from src.consumers.deploy import process_deploy_job
+        with patch(
+            "src.consumers.deploy._classify_deploy_failure",
+            AsyncMock(return_value="CODE_FIX"),
+        ):
+            from src.consumers.deploy import process_deploy_job
 
-        job = _job(deploy_fix_attempt=1)
-        await process_deploy_job(job, mock_redis)
+            job = _job(deploy_fix_attempt=1)
+            await process_deploy_job(job, mock_redis)
 
         eng_calls = [
             c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE

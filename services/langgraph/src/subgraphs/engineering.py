@@ -56,10 +56,11 @@ class EngineeringState(TypedDict):
     branch: str | None
 
     # Engineering result
-    engineering_status: str  # "idle" | "working" | "done" | "blocked"
+    engineering_status: str  # "idle" | "working" | "done" | "blocked" | "worker_rejected"
     commit_sha: str | None
     worker_id: str | None
     worker_report: str | None
+    reject_reason: str | None
 
     # Loop tracking
     iteration_count: int
@@ -76,12 +77,12 @@ class EngineeringState(TypedDict):
 def route_after_developer(state: EngineeringState) -> str:
     """Route after developer node.
 
-    If developer returned 'blocked' (error/exception), go to blocked.
+    If developer returned 'blocked' or 'worker_rejected', go to blocked.
     Otherwise proceed to done.
     """
     status = state.get("engineering_status", "idle")
 
-    if status == "blocked":
+    if status in ("blocked", "worker_rejected"):
         return "blocked"
 
     # Also check for errors list

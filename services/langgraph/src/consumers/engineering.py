@@ -559,6 +559,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "human_approval_reason": None,
             "branch": branch,
             "worker_report": None,
+            "reject_reason": None,
             "errors": [],
         }
 
@@ -630,6 +631,17 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 block_reason=block_reason,
                 user_id=user_id,
                 redis=redis,
+            )
+        elif result.get("engineering_status") == "worker_rejected":
+            # Worker rejected the task (not a code issue — infra, config, etc.)
+            reject_reason = result.get("reject_reason", "Unknown rejection reason")
+            return await _handle_worker_reject(
+                task_id=task_id,
+                project_id=project_id,
+                planning_task_id=planning_task_id,
+                story_id=story_id,
+                reject_reason=reject_reason,
+                ci_attempts=[],
             )
         else:
             # Generic failure or unknown status

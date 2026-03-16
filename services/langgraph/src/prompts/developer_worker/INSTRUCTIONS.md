@@ -23,6 +23,33 @@ If `.story/` exists, it contains context managed by the orchestrator:
 
 Browse these files if you need to understand the bigger picture or what was done before — don't redo completed work.
 
+## Step 0: Sanity Check (BEFORE any coding)
+
+Before reading TASK.md in detail or writing any code, determine if this task is
+actually solvable by writing code. Read the task title and error description.
+
+**REJECT immediately** if the problem is:
+- **Port conflict** ("port is already allocated") — infrastructure config issue
+- **SSH failure** (timeout, connection refused, host unreachable) — server issue
+- **Disk full / out of memory** — resource issue
+- **DNS failure** — network configuration issue
+- **Missing secrets or credentials** not available in .env — orchestrator issue
+- **Firewall / TLS / certificate errors** — infrastructure issue
+- **Container runtime broken** (Docker daemon not responding) — host issue
+- **The task is fundamentally impossible** given the codebase
+
+To reject:
+```bash
+orch reject --reason "Clear explanation of why this is not a code issue"
+```
+
+**Only proceed** if the error is genuinely fixable by modifying application code
+(import errors, syntax errors, wrong config values, missing dependencies, broken
+migrations, unhandled exceptions, test failures).
+
+When in doubt: reject. A rejected task gets escalated to an admin who can fix the
+root cause. A code "fix" for an infrastructure issue wastes time and changes nothing.
+
 ## Before You Start
 
 Check if `/workspace/PROGRESS.md` exists:

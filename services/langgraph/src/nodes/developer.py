@@ -245,6 +245,24 @@ class DeveloperNode(FunctionalNode):
                     "worker_id": worker_result.worker_id,
                     "worker_report": worker_result.worker_report,
                 }
+            elif worker_result.reject_reason:
+                # Worker explicitly rejected the task (not a code issue)
+                logger.warning(
+                    "developer_node_worker_rejected",
+                    project_name=project_name,
+                    reject_reason=worker_result.reject_reason[:200],
+                )
+                return {
+                    "messages": [
+                        AIMessage(content=f"Worker rejected task: {worker_result.reject_reason}")
+                    ],
+                    "engineering_status": "worker_rejected",
+                    "reject_reason": worker_result.reject_reason,
+                    "worker_id": worker_result.worker_id,
+                    "worker_report": worker_result.worker_report,
+                    "errors": state.get("errors", [])
+                    + [f"Worker rejected: {worker_result.reject_reason}"],
+                }
             elif worker_result.block_reason:
                 # Developer explicitly reported a blocker via orch report-blocker
                 logger.warning(
