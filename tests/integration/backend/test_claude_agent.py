@@ -15,7 +15,7 @@ TEST_TIMEOUT = 60  # seconds
 
 
 @pytest.mark.integration
-async def test_claude_cli_installed(redis_client, docker_client):
+async def test_claude_cli_installed(redis_client, docker_client, scaffolded_workspace):
     """Claude worker must have claude CLI installed."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-claude-{request_id[:8]}"
@@ -29,6 +29,7 @@ async def test_claude_cli_installed(redis_client, docker_client):
         allowed_commands=["*"],
         capabilities=[WorkerCapability.GIT, WorkerCapability.CURL],
         auth_mode="host_session",  # Default
+        repo_id=scaffolded_workspace,
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)
@@ -57,7 +58,7 @@ async def test_claude_cli_installed(redis_client, docker_client):
 
 
 @pytest.mark.integration
-async def test_claude_session_mounted(redis_client, docker_client):
+async def test_claude_session_mounted(redis_client, docker_client, scaffolded_workspace):
     """Check if host session directory is mounted."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-claude-mount-{request_id[:8]}"
@@ -79,6 +80,7 @@ async def test_claude_session_mounted(redis_client, docker_client):
         capabilities=[],
         auth_mode="host_session",
         host_claude_dir="/tmp/test-claude-session",  # noqa: S108
+        repo_id=scaffolded_workspace,
         # Actually in DIND, volumes need to exist on the DIND host or Docker creates them as dir.
     )
 
@@ -98,7 +100,7 @@ async def test_claude_session_mounted(redis_client, docker_client):
 
 
 @pytest.mark.integration
-async def test_claude_instructions_injected(redis_client, docker_client):
+async def test_claude_instructions_injected(redis_client, docker_client, scaffolded_workspace):
     """Check if CLAUDE.md is injected."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-claude-instr-{request_id[:8]}"
@@ -111,6 +113,7 @@ async def test_claude_instructions_injected(redis_client, docker_client):
         instructions=instructions,
         allowed_commands=["*"],
         capabilities=[],
+        repo_id=scaffolded_workspace,
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)
@@ -134,7 +137,7 @@ async def test_claude_instructions_injected(redis_client, docker_client):
 
 
 @pytest.mark.integration
-async def test_orchestrator_cli_installed(redis_client, docker_client):
+async def test_orchestrator_cli_installed(redis_client, docker_client, scaffolded_workspace):
     """Orchestrator CLI must be installed."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-orch-cli-{request_id[:8]}"
@@ -146,6 +149,7 @@ async def test_orchestrator_cli_installed(redis_client, docker_client):
         instructions="Test",
         allowed_commands=["*"],
         capabilities=[],
+        repo_id=scaffolded_workspace,
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)

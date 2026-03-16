@@ -28,7 +28,7 @@ async def cleanup_worker(redis_client, worker_id: str | None):
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestTaskInjection:
-    async def test_task_injection_location(self, redis_client, docker_client):
+    async def test_task_injection_location(self, redis_client, docker_client, scaffolded_workspace):
         """
         Verify that TASK.md is injected into /workspace/TASK.md.
         """
@@ -45,6 +45,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -69,7 +70,7 @@ class TestTaskInjection:
         finally:
             await cleanup_worker(redis_client, result.worker_id)
 
-    async def test_env_hints_in_task_md(self, redis_client, docker_client):
+    async def test_env_hints_in_task_md(self, redis_client, docker_client, scaffolded_workspace):
         """Verify that env_hints content appears in TASK.md inside the worker."""
         # Build task content inline — the formatting logic is tested in langgraph unit tests.
         # Here we only verify that the worker receives and mounts the content correctly.
@@ -95,6 +96,7 @@ class TestTaskInjection:
                 task_content=task_content,
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})

@@ -23,7 +23,9 @@ from .conftest import (
 @pytest.mark.asyncio
 class TestWorkerExecution:
     @pytest.mark.asyncio
-    async def test_create_claude_worker_with_git_capability(self, redis_client, docker_client):
+    async def test_create_claude_worker_with_git_capability(
+        self, redis_client, docker_client, scaffolded_workspace
+    ):
         """
         Scenario D.1: Create Claude worker with GIT capability.
         """
@@ -37,6 +39,7 @@ class TestWorkerExecution:
                 instructions="You are a test assistant.",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.GIT],
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -63,7 +66,9 @@ class TestWorkerExecution:
         assert b"test assistant" in output
 
     @pytest.mark.asyncio
-    async def test_create_factory_worker_with_curl_capability(self, redis_client, docker_client):
+    async def test_create_factory_worker_with_curl_capability(
+        self, redis_client, docker_client, scaffolded_workspace
+    ):
         """
         Scenario D.2: Create Factory worker with CURL capability.
         """
@@ -77,6 +82,7 @@ class TestWorkerExecution:
                 instructions="You are a Factory assistant.",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
@@ -103,11 +109,13 @@ class TestWorkerExecution:
 
     @pytest.mark.asyncio
     async def test_different_agent_types_produce_different_images(
-        self, redis_client, docker_client
+        self, redis_client, docker_client, scaffolded_workspace
     ):
         """
         Scenario B: Image caching respects agent_type.
         """
+        from .conftest import _create_scaffolded_workspace
+
         # Create Claude worker
         req_id_1 = f"cache-1-{uuid4().hex[:6]}"
         cmd1 = CreateWorkerCommand(
@@ -119,6 +127,7 @@ class TestWorkerExecution:
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd1.model_dump_json()})
@@ -129,7 +138,8 @@ class TestWorkerExecution:
         worker1_id = result1.worker_id
         assert worker1_id == "cache-claude", f"Unexpected worker1_id: {worker1_id}"
 
-        # Create Factory worker with same capabilities
+        # Create Factory worker with same capabilities (needs its own workspace)
+        factory_repo_id = _create_scaffolded_workspace()
         req_id_2 = f"cache-2-{uuid4().hex[:6]}"
         cmd2 = CreateWorkerCommand(
             request_id=req_id_2,
@@ -140,6 +150,7 @@ class TestWorkerExecution:
                 instructions="test",
                 allowed_commands=[],
                 capabilities=[WorkerCapability.GIT],
+                repo_id=factory_repo_id,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd2.model_dump_json()})
@@ -170,7 +181,9 @@ class TestWorkerExecution:
         )
 
     @pytest.mark.asyncio
-    async def test_worker_executes_task_with_mocked_claude(self, redis_client, docker_client):
+    async def test_worker_executes_task_with_mocked_claude(
+        self, redis_client, docker_client, scaffolded_workspace
+    ):
         """
         Scenario: Worker receives task via Redis input stream and writes result to output.
         Actually verifies connectivity. Since we don't mock LLM yet, we expect execution attempt.
@@ -187,6 +200,7 @@ class TestWorkerExecution:
                 instructions="Echo test agent",
                 allowed_commands=["project.get"],
                 capabilities=[WorkerCapability.CURL],
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": command.model_dump_json()})
