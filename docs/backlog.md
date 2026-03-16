@@ -36,11 +36,59 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### Fix deploy failure classification and worker rejection pipeline
+### #1011 Provisioning: install node_exporter + cadvisor + UFW rules
 - **Priority**: HIGH
 - **Plan**: yes (in work item)
 - **Status**: backlog
-- **Brief**: ## Context  E2E test (weather_bot, 2026-03-16) revealed that a deploy failure caused by **port conflict** ("port is already allocated") was incorrectly sent to an engineering worker as a code fix task. The worker spent ~10 minutes trying to "fix code" when the issue was purely infrastructural.  F...
+- **Brief**: Add node_exporter (systemd, :9100) + cadvisor (Docker, :8080) to Ansible provisioning playbook. UFW rules: allow orchestrator IP only. Verify: curl from orchestrator to /metrics returns data. Source: brainstorm bs-69482380, Phase 1.
+
+### #1012 Prometheus text format parser for node_exporter + cadvisor metrics
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Parser for standard Prometheus /metrics text format. Extract: CPU usage, RAM, disk, load avg, uptime, network errors from node_exporter. Per-container CPU, RAM, network, status from cadvisor. Return structured dict. Source: brainstorm bs-69482380, Phase 1.
+
+### #1013 Extend Server model with health metrics + metrics history table
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: New Server fields: cpu_usage_pct, load_avg_1m/5m/15m, network_rx_errors, network_tx_errors, container_count_running, container_count_total, uptime_seconds. Populate last_health_check. New table server_metrics_history (server_handle, timestamp, metrics JSON) with 7-day retention. Migration. Source...
+
+### #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts)
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Fill in health_checker.py skeleton. Loop: for each managed+active server → HTTP GET :9100/metrics + :8080/metrics → parse → update DB + append history. Auto-create incidents: SERVER_UNREACHABLE (HTTP fail), RESOURCE_EXHAUSTED (RAM/disk >90%). Notify admin via Telegram. Interval: 60s. Daily cleanu...
+
+### #1015 Admin UI: extended server health dashboard with per-container view + charts
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Extend ServersPage: CPU usage bar (green/yellow/red), load average, network errors counter, per-container list (name, CPU%, RAM, status from cadvisor), last health check with freshness indicator, incident history section, CPU/RAM/disk charts from history table (last hour/day). Source: brainstorm ...
+
+### #1016 Admin UI: application health status and response times
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Extend applications view in admin: health status (healthy/degraded/down), response time, SSL cert status, uptime % for last 24h from history. Source: brainstorm bs-69482380, Phase 2.
+
+### #1019 HTTP health prober for deployed applications + SSL expiry check
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: For each deployed Application, GET domain/health. Update Application.status and last_health_check. Incident SERVICE_DOWN after 3+ consecutive fails with Telegram alert. Response time tracking. SSL cert expiry check, incident SSL_EXPIRING 7 days before expiry. Source: brainstorm bs-69482380 Phase 2.
+
+### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: In health_checker: compare cadvisor container list with applications from API. Orphan (on server, not in DB) → warning in admin UI on server card. Ghost (RUNNING in DB, no container) → update status to DOWN + warning in admin UI. Source: brainstorm bs-69482380, Phase 3.
+
+### #1018 Daily SSH job: filesystem drift check + docker prune
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Single SSH connection per server, once daily. Check /opt/projects/ vs API — orphan dirs → warning in structlog (NOT admin UI). Docker system prune -af --filter until=72h + docker volume prune -f. Source: brainstorm bs-69482380, Phase 3.
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -264,6 +312,7 @@
 
 ## Done (last 10)
 
+- Fix deploy failure classification and worker rejection pipeline — 2026-03-16
 - Ansible role: qa_runner provisioning on prod servers — 2026-03-16
 - QA consumer skeleton — SSH to server, run Claude Code, parse result — 2026-03-16
 - Add TESTING status to StoryStatus + API transition endpoint + QA queue contract — 2026-03-16
@@ -273,7 +322,6 @@
 - PR-based CI gate: story completion creates PR, auto-merge on green CI — 2026-03-15
 - Feature branches for stories: engineering consumer creates story branch, workers push there — 2026-03-15
 - #1010 STORY.md: generate .story/STORY.md with story goal, task list, references — 2026-03-15
-- #1009 Worker local tests: add make lint + make test-unit to INSTRUCTIONS.md — 2026-03-15
 
 ## Ideas
 
@@ -316,3 +364,4 @@ Read by `make backlog` to include in generated backlog.md.
 - CI: cache copier template clone для template integration tests — marginal gain ~10-15с, сложный cache invalidation (источник: brainstorm ci-integration-test-speed)
 - Отдельный UI/UX для подтверждения собранного ТЗ пользователем перед инженерным этапом (источник: brainstorm po-smart-node)
 - Functional health check: текущий healthcheck проверяет только что процесс жив (HTTP 200 на /health). Не ловит ситуации когда таблицы не созданы, миграции не прошли, seed-данные отсутствуют — бэкенд "healthy", но 500 на каждый бизнес-запрос. Можно добавить в service-template readiness probe с `SELECT 1` или проверкой ключевых таблиц (источник: fortune-telling-bot — backend healthy, но relation "fortunes" does not exist)
+- Prometheus migration path when server count > 10 — exporters (node_exporter + cadvisor) already installed, just add Prometheus central + switch from custom HTTP polling to Prometheus scraping (источник: brainstorm server-health-monitoring)

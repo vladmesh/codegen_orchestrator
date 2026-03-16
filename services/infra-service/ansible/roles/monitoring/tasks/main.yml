@@ -6,12 +6,26 @@
     mode: '0755'
   when: monitoring_enabled
 
-- name: Create node_exporter docker-compose file
+- name: Allow node_exporter from orchestrator via UFW
+  ufw:
+    rule: allow
+    from_ip: "{{ orchestrator_ip }}"
+    port: "{{ node_exporter_port | string }}"
+    proto: tcp
+  when: monitoring_enabled and orchestrator_ip is defined
+
+- name: Allow cadvisor from orchestrator via UFW
+  ufw:
+    rule: allow
+    from_ip: "{{ orchestrator_ip }}"
+    port: "{{ cadvisor_port | string }}"
+    proto: tcp
+  when: monitoring_enabled and orchestrator_ip is defined
+
+- name: Create node_exporter and cadvisor docker-compose file
   copy:
     dest: /opt/monitoring/docker-compose.yml
     content: |
-      version: "3.8"
-
       services:
         node-exporter:
           image: prom/node-exporter:latest
@@ -29,6 +43,20 @@
             - '--path.sysfs=/host/sys'
             - '--path.rootfs=/rootfs'
             - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+
+        cadvisor:
+          image: gcr.io/cadvisor/cadvisor:latest
+          container_name: cadvisor
+          restart: unless-stopped
+          privileged: true
+          ports:
+            - "{{ cadvisor_port }}:8080"
+          volumes:
+            - /:/rootfs:ro
+            - /var/run:/var/run:ro
+            - /sys:/sys:ro
+            - /var/lib/docker/:/var/lib/docker:ro
+            - /dev/disk/:/dev/disk:ro
     mode: '0644'
   when: monitoring_enabled
   notify: restart monitoring

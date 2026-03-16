@@ -92,6 +92,7 @@ async def reinstall_and_provision(
     ssh_manager: SSHManager,
     ansible_runner: AnsibleRunner,
     ssh_public_key: str | None = None,
+    orchestrator_ip: str | None = None,
 ) -> tuple[bool, str]:
     """Reinstall OS and provision server.
 
@@ -107,6 +108,7 @@ async def reinstall_and_provision(
         ssh_manager: SSH Manager instance
         ansible_runner: Ansible Runner instance
         ssh_public_key: Optional SSH public key
+        orchestrator_ip: Optional orchestrator public IP for UFW rules
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -160,6 +162,7 @@ async def reinstall_and_provision(
             playbook_name="provision_access.yml",
             root_password=password,
             ssh_public_key=ssh_public_key,
+            orchestrator_ip=orchestrator_ip,
             timeout=Timeouts.ACCESS_PHASE,
         )
 
@@ -183,6 +186,7 @@ async def reinstall_and_provision(
             server_handle=server_handle,
             playbook_name="provision_software.yml",
             root_password=None,  # Use keys now
+            orchestrator_ip=orchestrator_ip,
             timeout=Timeouts.PROVISIONING,
         )
 
@@ -288,6 +292,7 @@ class ProvisionerNode(FunctionalNode):
         super().__init__(node_id="provisioner")
         self.ssh_manager = ssh_manager or SSHManager()
         self.ansible_runner = ansible_runner or AnsibleRunner()
+        self.orchestrator_ip = os.getenv("ORCHESTRATOR_PUBLIC_IP")
 
     async def _get_and_validate_server_info(
         self,
@@ -451,6 +456,7 @@ class ProvisionerNode(FunctionalNode):
             ssh_manager=self.ssh_manager,
             ansible_runner=self.ansible_runner,
             ssh_public_key=ssh_public_key,
+            orchestrator_ip=self.orchestrator_ip,
         )
 
         if success:
@@ -497,6 +503,7 @@ class ProvisionerNode(FunctionalNode):
             playbook_name="provision_access.yml",
             root_password=None,
             ssh_public_key=self.ssh_manager.get_public_key(),
+            orchestrator_ip=self.orchestrator_ip,
             timeout=Timeouts.ACCESS_PHASE,
         )
 
@@ -520,6 +527,7 @@ class ProvisionerNode(FunctionalNode):
             server_handle=server_handle,
             playbook_name="provision_software.yml",
             root_password=None,
+            orchestrator_ip=self.orchestrator_ip,
             timeout=Timeouts.PROVISIONING,
         )
 

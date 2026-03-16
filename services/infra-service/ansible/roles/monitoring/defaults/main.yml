@@ -1,0 +1,4 @@
+---
+monitoring_enabled: true
+node_exporter_port: 9100
+cadvisor_port: 8080

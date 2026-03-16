@@ -24,6 +24,7 @@
 - [x] #1004 CI gate: one push per story instead of per task
 - [x] #1009 Worker local tests: add make lint + make test-unit to INSTRUCTIONS.md
 - [x] #1010 STORY.md: generate .story/STORY.md with story goal, task list, references
+- [x] Fix deploy failure classification and worker rejection pipeline
 - [x] #52 Scaffold script не экранирует task_description
 - [x] #21 Deploy Pre-Check
 - [x] Observability stack: JSON logging + Loki + Grafana + correlation propagation
@@ -386,6 +387,20 @@ _Создать Telegram бота, который отправляет случ�
 - ADMIN_TELEGRAM_ID — Telegram ID администратора (только он имеет доступ)_
 
 ## smoke test for TESTING status — COMPLETE
+
+## Server & Application Health Monitoring
+
+Implement infrastructure monitoring: node_exporter + cadvisor on prod servers, health_checker worker with HTTP polling, application health probes, drift detection, auto-incidents with Telegram alerts. Source: brainstorm server-health-monitoring.md (bs-69482380).
+
+- [ ] #1011 Provisioning: install node_exporter + cadvisor + UFW rules
+- [ ] #1012 Prometheus text format parser for node_exporter + cadvisor metrics
+- [ ] #1013 Extend Server model with health metrics + metrics history table
+- [ ] #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts)
+- [ ] #1015 Admin UI: extended server health dashboard with per-container view + charts
+- [ ] #1016 Admin UI: application health status and response times
+- [ ] #1019 HTTP health prober for deployed applications + SSL expiry check
+- [ ] #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
+- [ ] #1018 Daily SSH job: filesystem drift check + docker prune
 
 ## Product decomposition + Architect node
 

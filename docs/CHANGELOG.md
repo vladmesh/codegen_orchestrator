@@ -5,6 +5,7 @@
 ## 2026-03-16
 
 ### Fixed
+- **Deploy failure classification and worker rejection pipeline** (task-3a06bf14): Fixed broken classifier model ID (`claude-haiku-4-5-20251001` → `claude-haiku-4-5`). Replaced binary CODE/INFRA classification with three-way CODE_FIX/RETRY/GIVE_UP. Changed fallback from CODE to RETRY (safer — retrying wastes less than spawning a useless worker). Added GIVE_UP handler (story→failed, admin notified, worker deleted). Wired up worker rejection pipeline: DeveloperNode now checks `reject_reason` → sets `worker_rejected` status → engineering consumer routes to `_handle_worker_reject()` (was dead code). Added reject-first sanity check as Step 0 in worker INSTRUCTIONS.md.
 - **service_deployments `updated_at` missing server default** (hotfix): Original migration `73b707900b42` created the `service_deployments` table with `created_at DEFAULT now()` but `updated_at` without a default, causing `NotNullViolationError` on every INSERT. Deploy-worker's `_create_deployment_record` silently failed (caught exception). Migration `42e0acc86b20` adds the missing `server_default=now()`.
 
 ### Removed

@@ -28,6 +28,7 @@ class AnsibleRunner:
         playbook_name: str,
         root_password: str | None = None,
         ssh_public_key: str | None = None,
+        orchestrator_ip: str | None = None,
         timeout: int = 600,
     ) -> tuple[bool, str]:
         """Run an Ansible playbook.
@@ -38,6 +39,7 @@ class AnsibleRunner:
             playbook_name: Name of playbook file (e.g., 'provision_access.yml')
             root_password: Optional root password (if None, uses SSH key auth)
             ssh_public_key: Optional SSH public key to inject
+            orchestrator_ip: Optional orchestrator public IP for UFW rules
             timeout: Execution timeout in seconds
 
         Returns:
@@ -72,6 +74,9 @@ class AnsibleRunner:
 
         if ssh_public_key:
             extra_vars += f" ssh_public_key='{ssh_public_key}'"
+
+        if orchestrator_ip:
+            extra_vars += f" orchestrator_ip={orchestrator_ip}"
 
         # Construct ansible-playbook command
         cmd = [

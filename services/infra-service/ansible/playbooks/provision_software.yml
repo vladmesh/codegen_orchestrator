@@ -90,7 +90,15 @@
       tags: [docker]
 
     # ========================================
-    # 4. Firewall (UFW) Application Rules
+    # 4. Monitoring (node_exporter + cadvisor)
+    # ========================================
+    - name: Include monitoring role
+      ansible.builtin.include_role:
+        name: monitoring
+      tags: [monitoring]
+
+    # ========================================
+    # 5. Firewall (UFW) Application Rules
     # ========================================
     # Note: UFW and SSH are already enabled in Stage 1
     
