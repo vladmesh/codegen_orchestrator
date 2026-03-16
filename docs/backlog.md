@@ -30,12 +30,6 @@
 - **Status**: backlog
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
-### Ansible role: qa_runner provisioning on prod servers
-- **Priority**: CRITICAL
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Install Claude Code CLI, Telethon, and QA dependencies on prod servers via Ansible role.  Context: brainstorm docs/brainstorms/add-testing-status-to-storystatus-api-transition-e.md (section "Provisioning (Ansible)") Prior work: QA consumer (task-22130356) and deploy→QA wiring are merged. Consumer...
-
 ### #1006 Decouple deploy worker from story lifecycle
 - **Priority**: HIGH
 - **Plan**: —
@@ -264,6 +258,7 @@
 
 ## Done (last 10)
 
+- Ansible role: qa_runner provisioning on prod servers — 2026-03-16
 - QA consumer skeleton — SSH to server, run Claude Code, parse result — 2026-03-16
 - Add TESTING status to StoryStatus + API transition endpoint + QA queue contract — 2026-03-16
 - Implement random cat photo bot with admin access control — 2026-03-15
@@ -273,7 +268,6 @@
 - Feature branches for stories: engineering consumer creates story branch, workers push there — 2026-03-15
 - #1010 STORY.md: generate .story/STORY.md with story goal, task list, references — 2026-03-15
 - #1009 Worker local tests: add make lint + make test-unit to INSTRUCTIONS.md — 2026-03-15
-- Bind PortAllocation to Application instead of Project — 2026-03-14
 
 ## Ideas
 
