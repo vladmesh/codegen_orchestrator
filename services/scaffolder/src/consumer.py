@@ -144,7 +144,7 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
                 org,
                 msg.project_name,
                 "main",
-                required_checks=["ci"],
+                required_checks=["lint-and-test"],
                 require_pr=True,
             )
             log.info("branch_protection_set")

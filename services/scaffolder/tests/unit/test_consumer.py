@@ -188,7 +188,7 @@ class TestProcessScaffoldJob:
             "project-factory-organization",
             "my-project",
             "main",
-            required_checks=["ci"],
+            required_checks=["lint-and-test"],
             require_pr=True,
         )
 
