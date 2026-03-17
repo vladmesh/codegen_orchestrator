@@ -213,3 +213,89 @@ class TestDeleteOldMetricsHistory:
             params={"retention_hours": 168},
         )
         assert result["deleted"] == 42
+
+
+class TestGetApplications:
+    @pytest.mark.asyncio
+    async def test_get_applications_no_filters(self, api_client):
+        """get_applications with no filters sends GET to /api/applications/."""
+        resp_data = [{"id": 1, "service_name": "web"}]
+        mock = _mock_http(resp_data)
+        api_client._client = mock
+
+        result = await api_client.get_applications()
+
+        mock.request.assert_called_once_with(
+            "GET",
+            "/api/applications/",
+            params={},
+        )
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_applications_with_filters(self, api_client):
+        """get_applications passes server_handle and status as query params."""
+        mock = _mock_http([])
+        api_client._client = mock
+
+        await api_client.get_applications(server_handle="vps-1", status="running")
+
+        mock.request.assert_called_once_with(
+            "GET",
+            "/api/applications/",
+            params={"server_handle": "vps-1", "status": "running"},
+        )
+
+
+class TestUpdateApplication:
+    @pytest.mark.asyncio
+    async def test_update_application_sends_patch(self, api_client):
+        """update_application sends PATCH to /api/applications/{id}."""
+        resp_data = {"id": 1, "status": "running", "response_time_ms": 45}
+        mock = _mock_http(resp_data)
+        api_client._client = mock
+
+        result = await api_client.update_application(1, {"response_time_ms": 45})
+
+        mock.request.assert_called_once_with(
+            "PATCH",
+            "/api/applications/1",
+            json={"response_time_ms": 45},
+        )
+        assert result["response_time_ms"] == 45
+
+
+class TestCreateAppHealthHistory:
+    @pytest.mark.asyncio
+    async def test_create_app_health_history(self, api_client):
+        """create_app_health_history sends POST to /api/applications/{id}/health-history."""
+        resp_data = {"id": 1, "application_id": 5, "metrics": {"healthy": True}}
+        mock = _mock_http(resp_data)
+        api_client._client = mock
+
+        result = await api_client.create_app_health_history(5, {"healthy": True})
+
+        mock.request.assert_called_once_with(
+            "POST",
+            "/api/applications/5/health-history",
+            json={"metrics": {"healthy": True}},
+        )
+        assert result["application_id"] == 5
+
+
+class TestDeleteOldAppHealthHistory:
+    @pytest.mark.asyncio
+    async def test_delete_old_app_health_history(self, api_client):
+        """delete_old_app_health_history sends DELETE with retention_hours."""
+        resp_data = {"deleted": 15}
+        mock = _mock_http(resp_data)
+        api_client._client = mock
+
+        result = await api_client.delete_old_app_health_history(168)
+
+        mock.request.assert_called_once_with(
+            "DELETE",
+            "/api/applications/health-history",
+            params={"retention_hours": 168},
+        )
+        assert result["deleted"] == 15

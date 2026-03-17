@@ -25,6 +25,7 @@ class IncidentType(StrEnum):
     PROVISIONING_FAILED = "provisioning_failed"  # Ошибка настройки
     SERVICE_DOWN = "service_down"  # Сервис упал
     RESOURCE_EXHAUSTED = "resource_exhausted"  # Закончились ресурсы
+    SSL_EXPIRING = "ssl_expiring"  # SSL-сертификат скоро истечёт
 
 
 class Incident(Base):

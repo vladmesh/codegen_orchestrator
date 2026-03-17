@@ -17,6 +17,7 @@ from shared.models.incident import IncidentType
 from shared.notifications import notify_admins
 from src.clients.api import api_client
 from src.metrics import parse_cadvisor, parse_node_exporter
+from src.tasks.app_health_prober import app_health_probe_cycle
 
 logger = structlog.get_logger()
 
@@ -244,6 +245,15 @@ async def _cleanup_old_history() -> int:
     deleted = result.get("deleted", 0)
     if deleted > 0:
         logger.info("metrics_history_cleanup", deleted=deleted, retention_hours=RETENTION_HOURS)
+
+    # Also clean up application health history
+    app_result = await api_client.delete_old_app_health_history(RETENTION_HOURS)
+    app_deleted = app_result.get("deleted", 0)
+    if app_deleted > 0:
+        logger.info(
+            "app_health_history_cleanup", deleted=app_deleted, retention_hours=RETENTION_HOURS
+        )
+
     return deleted
 
 
@@ -263,6 +273,17 @@ async def health_check_worker():
             for server in checkable:
                 await _check_server(server)
                 checked += 1
+
+            # Application health probing (after server checks)
+            try:
+                await app_health_probe_cycle()
+            except Exception as e:
+                logger.error(
+                    "app_health_probe_error",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    exc_info=True,
+                )
 
             # Daily cleanup
             now = time.monotonic()

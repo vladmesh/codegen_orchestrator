@@ -310,6 +310,7 @@ class TestCleanupHistory:
     async def test_cleanup_calls_api(self, mock_api_client):
         """_cleanup_old_history calls delete_old_metrics_history."""
         mock_api_client.delete_old_metrics_history = AsyncMock(return_value={"deleted": 10})
+        mock_api_client.delete_old_app_health_history = AsyncMock(return_value={"deleted": 0})
 
         with patch("src.tasks.health_checker.api_client", mock_api_client):
             from src.tasks.health_checker import _cleanup_old_history
@@ -318,3 +319,43 @@ class TestCleanupHistory:
 
         mock_api_client.delete_old_metrics_history.assert_called_once_with(168)
         assert deleted == 10
+
+
+class TestAppHealthIntegration:
+    """Tests for app health prober integration into health_check_worker."""
+
+    @pytest.mark.asyncio
+    async def test_health_check_worker_calls_app_probe_cycle(self, mock_api_client):
+        """health_check_worker calls app_health_probe_cycle after server checks."""
+        mock_api_client.get_servers.return_value = []
+
+        class _BreakLoop(Exception):
+            pass
+
+        with (
+            patch("src.tasks.health_checker.api_client", mock_api_client),
+            patch(
+                "src.tasks.health_checker.app_health_probe_cycle", new_callable=AsyncMock
+            ) as mock_app_probe,
+            patch("src.tasks.health_checker.asyncio.sleep", side_effect=_BreakLoop),
+        ):
+            from src.tasks.health_checker import health_check_worker
+
+            with pytest.raises(_BreakLoop):
+                await health_check_worker()
+
+        mock_app_probe.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_includes_app_health_history(self, mock_api_client):
+        """Daily cleanup also deletes old app health history."""
+        mock_api_client.delete_old_metrics_history = AsyncMock(return_value={"deleted": 5})
+        mock_api_client.delete_old_app_health_history = AsyncMock(return_value={"deleted": 3})
+
+        with patch("src.tasks.health_checker.api_client", mock_api_client):
+            from src.tasks.health_checker import _cleanup_old_history
+
+            await _cleanup_old_history()
+
+        mock_api_client.delete_old_metrics_history.assert_called_once()
+        mock_api_client.delete_old_app_health_history.assert_called_once_with(168)

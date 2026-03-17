@@ -266,6 +266,43 @@ class SchedulerAPIClient:
 
     # --- Applications ---
 
+    async def get_applications(
+        self,
+        server_handle: str | None = None,
+        status: str | None = None,
+    ) -> list[dict]:
+        """Get applications with optional filtering."""
+        params: dict = {}
+        if server_handle:
+            params["server_handle"] = server_handle
+        if status:
+            params["status"] = status
+        resp = await self._request("GET", "applications/", params=params)
+        return resp.json()
+
+    async def update_application(self, app_id: int, fields: dict) -> dict:
+        """Update application fields (status, health metrics, etc.)."""
+        resp = await self._request("PATCH", f"applications/{app_id}", json=fields)
+        return resp.json()
+
+    async def create_app_health_history(self, app_id: int, metrics: dict) -> dict:
+        """Append a health history snapshot for an application."""
+        resp = await self._request(
+            "POST",
+            f"applications/{app_id}/health-history",
+            json={"metrics": metrics},
+        )
+        return resp.json()
+
+    async def delete_old_app_health_history(self, retention_hours: int = 168) -> dict:
+        """Delete application health history older than retention period."""
+        resp = await self._request(
+            "DELETE",
+            "applications/health-history",
+            params={"retention_hours": retention_hours},
+        )
+        return resp.json()
+
     async def get_applications_by_project(self, project_id: str) -> list[dict]:
         """Get applications for a project (via its repositories)."""
         repos = await self.get_repositories(project_id)
