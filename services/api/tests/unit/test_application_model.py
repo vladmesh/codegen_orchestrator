@@ -73,6 +73,29 @@ class TestApplicationModel:
         assert constraint_cols == {"repo_id", "server_handle"}
 
 
+class TestApplicationHealthFields:
+    def test_response_time_ms_column_exists(self):
+        cols = {c.name for c in Application.__table__.columns}
+        assert "response_time_ms" in cols
+
+    def test_response_time_ms_nullable(self):
+        assert Application.__table__.c.response_time_ms.nullable
+
+    def test_ssl_expires_at_column_exists(self):
+        cols = {c.name for c in Application.__table__.columns}
+        assert "ssl_expires_at" in cols
+
+    def test_ssl_expires_at_nullable(self):
+        assert Application.__table__.c.ssl_expires_at.nullable
+
+    def test_uptime_pct_24h_column_exists(self):
+        cols = {c.name for c in Application.__table__.columns}
+        assert "uptime_pct_24h" in cols
+
+    def test_uptime_pct_24h_nullable(self):
+        assert Application.__table__.c.uptime_pct_24h.nullable
+
+
 class TestApplicationStatusEnum:
     def test_values(self):
         assert ApplicationStatus.NOT_DEPLOYED == "not_deployed"

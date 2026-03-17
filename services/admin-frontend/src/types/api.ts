@@ -271,8 +271,27 @@ export interface Application {
   ports: PortAllocation[]
   status: string
   last_health_check: string | null
+  response_time_ms: number | null
+  ssl_expires_at: string | null
+  uptime_pct_24h: number | null
   created_at: string
   updated_at: string
+}
+
+export interface ApplicationHealthMetrics {
+  response_time_ms?: number
+  status_code?: number
+  ssl_days_remaining?: number
+  healthy?: boolean
+}
+
+export interface ApplicationHealthEntry {
+  id: number
+  application_id: number
+  recorded_at: string
+  metrics: ApplicationHealthMetrics
+  created_at: string
+  updated_at: string | null
 }
 
 // Langfuse traces (proxied via /langfuse-api/)

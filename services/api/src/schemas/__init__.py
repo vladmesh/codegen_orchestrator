@@ -2,7 +2,13 @@
 
 from .agent_config import AgentConfigCreate, AgentConfigRead, AgentConfigUpdate
 from .api_key import APIKeyCreate, APIKeyRead
-from .application import ApplicationCreate, ApplicationRead, ApplicationUpdate
+from .application import (
+    ApplicationCreate,
+    ApplicationHealthHistoryCreate,
+    ApplicationHealthHistoryRead,
+    ApplicationRead,
+    ApplicationUpdate,
+)
 from .brainstorm import BrainstormCreate, BrainstormRead, BrainstormTransition, BrainstormUpdate
 from .incident import IncidentCreate, IncidentRead, IncidentUpdate
 from .port_allocation import AllocateNextPortRequest, PortAllocationCreate, PortAllocationRead
@@ -33,6 +39,8 @@ __all__ = [
     "AgentConfigRead",
     "AgentConfigUpdate",
     "ApplicationCreate",
+    "ApplicationHealthHistoryCreate",
+    "ApplicationHealthHistoryRead",
     "ApplicationRead",
     "ApplicationUpdate",
     "BrainstormCreate",

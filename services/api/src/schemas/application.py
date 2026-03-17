@@ -28,6 +28,9 @@ class ApplicationRead(TimestampedDTO):
     service_name: str
     status: str
     last_health_check: datetime | None = None
+    response_time_ms: int | None = None
+    ssl_expires_at: datetime | None = None
+    uptime_pct_24h: float | None = None
     ports: list[PortAllocationRead] = Field(default=[], validation_alias="port_allocations")
 
 
@@ -36,3 +39,21 @@ class ApplicationUpdate(BaseModel):
 
     status: str | None = None
     last_health_check: datetime | None = None
+    response_time_ms: int | None = None
+    ssl_expires_at: datetime | None = None
+    uptime_pct_24h: float | None = None
+
+
+class ApplicationHealthHistoryCreate(BaseModel):
+    """Schema for creating an application health history snapshot."""
+
+    metrics: dict
+
+
+class ApplicationHealthHistoryRead(TimestampedDTO):
+    """Schema for reading an application health history entry."""
+
+    id: int
+    application_id: int
+    recorded_at: datetime
+    metrics: dict

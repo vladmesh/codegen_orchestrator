@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from shared.contracts.dto.application import ApplicationStatus
@@ -43,6 +43,13 @@ class Application(Base):
     last_health_check: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+
+    # Health metrics — updated by health prober
+    response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    ssl_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    uptime_pct_24h: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
     # Ports allocated to this application (one per microservice/module)
     port_allocations = relationship("PortAllocation", backref="application", lazy="selectin")

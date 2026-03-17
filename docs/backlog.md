@@ -36,15 +36,9 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### #1015 Admin UI: extended server health dashboard with per-container view + charts
-- **Priority**: MEDIUM
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Extend ServersPage: CPU usage bar (green/yellow/red), load average, network errors counter, per-container list (name, CPU%, RAM, status from cadvisor), last health check with freshness indicator, incident history section, CPU/RAM/disk charts from history table (last hour/day). Source: brainstorm ...
-
 ### #1016 Admin UI: application health status and response times
 - **Priority**: MEDIUM
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Extend applications view in admin: health status (healthy/degraded/down), response time, SSL cert status, uptime % for last 24h from history. Source: brainstorm bs-69482380, Phase 2.
 
@@ -288,6 +282,7 @@
 
 ## Done (last 10)
 
+- #1015 Admin UI: extended server health dashboard with per-container view + charts — 2026-03-17
 - #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts) — 2026-03-17
 - #1013 Extend Server model with health metrics + metrics history table — 2026-03-17
 - #1012 Prometheus text format parser for node_exporter + cadvisor metrics — 2026-03-17
@@ -297,7 +292,6 @@
 - QA consumer skeleton — SSH to server, run Claude Code, parse result — 2026-03-16
 - Add TESTING status to StoryStatus + API transition endpoint + QA queue contract — 2026-03-16
 - Implement random cat photo bot with admin access control — 2026-03-15
-- [service-template] ci.yml: CI runs only on PR to main, not on every push — 2026-03-15
 
 ## Ideas
 

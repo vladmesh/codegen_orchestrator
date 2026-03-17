@@ -3,6 +3,7 @@
 from .agent_config import AgentConfig
 from .api_key import APIKey
 from .application import Application
+from .application_health_history import ApplicationHealthHistory
 from .base import Base
 from .brainstorm import Brainstorm
 from .deployment import (
@@ -26,6 +27,7 @@ from .user import User
 __all__ = [
     "AgentConfig",
     "Application",
+    "ApplicationHealthHistory",
     "Base",
     "Brainstorm",
     "Project",

@@ -23,6 +23,7 @@ import { relativeTime, formatBytes, formatUptime, freshnessColor } from '@/lib/u
 import type {
   Server,
   Application,
+  ApplicationHealthEntry,
   MetricsHistoryEntry,
   Incident,
 } from '@/types/api'
@@ -75,11 +76,184 @@ function MetricCard({
 // Tab: Overview
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Application health helpers
+// ---------------------------------------------------------------------------
+
+function sslStatusColor(expiresAt: string | null): string {
+  if (!expiresAt) return 'text-muted-foreground'
+  const daysLeft = (new Date(expiresAt).getTime() - Date.now()) / 86_400_000
+  if (daysLeft <= 7) return 'text-red-400'
+  if (daysLeft <= 30) return 'text-yellow-400'
+  return 'text-green-400'
+}
+
+function sslStatusText(expiresAt: string | null): string {
+  if (!expiresAt) return '—'
+  const daysLeft = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 86_400_000)
+  if (daysLeft < 0) return 'Expired'
+  return `${daysLeft}d left`
+}
+
+function uptimeColor(pct: number | null): string {
+  if (pct == null) return 'text-muted-foreground'
+  if (pct >= 99) return 'text-green-400'
+  if (pct >= 95) return 'text-yellow-400'
+  return 'text-red-400'
+}
+
+function healthDotColor(status: string): string {
+  switch (status) {
+    case 'running':
+      return 'bg-green-500'
+    case 'degraded':
+      return 'bg-yellow-500'
+    case 'down':
+      return 'bg-red-500'
+    case 'stopped':
+      return 'bg-zinc-500'
+    default:
+      return 'bg-zinc-700'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Application detail panel (expanded row)
+// ---------------------------------------------------------------------------
+
+const RESPONSE_TIME_COLOR = '#f59e0b'
+
+function ApplicationDetail({ app: application }: { app: Application }) {
+  const [hours, setHours] = useState(1)
+
+  const { data: history, isLoading } = useQuery({
+    queryKey: ['app-health-history', application.id, hours],
+    queryFn: () =>
+      api.get<ApplicationHealthEntry[]>(
+        `/applications/${application.id}/health-history?hours=${hours}`,
+      ),
+    refetchInterval: 60_000,
+  })
+
+  const chartData = (history ?? [])
+    .slice()
+    .reverse()
+    .map((entry) => ({
+      time: entry.recorded_at,
+      responseTime: entry.metrics.response_time_ms ?? null,
+    }))
+
+  return (
+    <div className="space-y-4 py-2">
+      {/* Overview cards */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <MetricCard
+          label="Response Time"
+          value={application.response_time_ms != null ? `${application.response_time_ms}ms` : '—'}
+        />
+        <MetricCard
+          label="Uptime (24h)"
+          value={application.uptime_pct_24h != null ? `${application.uptime_pct_24h.toFixed(1)}%` : '—'}
+        />
+        <MetricCard
+          label="SSL Certificate"
+          value={sslStatusText(application.ssl_expires_at)}
+        />
+        <MetricCard
+          label="Last Check"
+          value={application.last_health_check ? relativeTime(application.last_health_check) : '—'}
+        />
+      </div>
+
+      {/* Response time chart */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h5 className="text-xs font-semibold uppercase text-muted-foreground">
+            Response Time
+          </h5>
+          <div className="flex gap-2">
+            {[1, 24].map((h) => (
+              <button
+                key={h}
+                onClick={() => setHours(h)}
+                className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
+                  hours === h
+                    ? 'bg-foreground text-background'
+                    : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                }`}
+              >
+                {h}h
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {isLoading ? (
+          <p className="py-4 text-sm text-muted-foreground">Loading...</p>
+        ) : chartData.length === 0 ? (
+          <p className="py-4 text-sm text-muted-foreground">
+            No health history available — health prober has not reported yet.
+          </p>
+        ) : (
+          <div className="rounded-lg border border-border bg-card p-4">
+            <div className="h-48">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+                  <XAxis
+                    dataKey="time"
+                    tickFormatter={(v: string) => formatChartTime(v, hours)}
+                    tick={{ fill: '#71717a', fontSize: 10 }}
+                    stroke="#27272a"
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    tick={{ fill: '#71717a', fontSize: 10 }}
+                    stroke="#27272a"
+                    tickFormatter={(v: number) => `${v}ms`}
+                    width={50}
+                  />
+                  <Tooltip
+                    contentStyle={TOOLTIP_STYLE}
+                    labelFormatter={(v) => formatChartTime(String(v), hours)}
+                    formatter={(value) => [`${Number(value)}ms`, 'Response Time']}
+                  />
+                  <defs>
+                    <linearGradient id="fill-responseTime" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={RESPONSE_TIME_COLOR} stopOpacity={0.3} />
+                      <stop offset="95%" stopColor={RESPONSE_TIME_COLOR} stopOpacity={0.05} />
+                    </linearGradient>
+                  </defs>
+                  <Area
+                    type="monotone"
+                    dataKey="responseTime"
+                    stroke={RESPONSE_TIME_COLOR}
+                    fill="url(#fill-responseTime)"
+                    strokeWidth={1.5}
+                    dot={false}
+                    connectNulls
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Applications table (with health columns + expandable rows)
+// ---------------------------------------------------------------------------
+
 function ServerApplications({ handle }: { handle: string }) {
   const { data: apps, isLoading } = useQuery({
     queryKey: ['server-applications', handle],
     queryFn: () => api.get<Application[]>(`/servers/${handle}/applications`),
   })
+
+  const [expandedId, setExpandedId] = useState<number | null>(null)
 
   if (isLoading)
     return <p className="py-2 text-sm text-muted-foreground">Loading...</p>
@@ -93,38 +267,81 @@ function ServerApplications({ handle }: { handle: string }) {
           <th className="px-4 py-1.5 text-left text-xs font-medium">Application</th>
           <th className="px-4 py-1.5 text-left text-xs font-medium">Ports</th>
           <th className="px-4 py-1.5 text-left text-xs font-medium">Status</th>
+          <th className="px-4 py-1.5 text-left text-xs font-medium">Response</th>
+          <th className="px-4 py-1.5 text-left text-xs font-medium">Uptime 24h</th>
+          <th className="px-4 py-1.5 text-left text-xs font-medium">SSL</th>
           <th className="px-4 py-1.5 text-left text-xs font-medium">Last Check</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-border/50">
-        {apps.map((app) => (
-          <tr key={app.id}>
-            <td className="px-4 py-1.5 font-medium">{app.service_name}</td>
-            <td className="px-4 py-1.5">
-              {app.ports.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {app.ports.map((p) => (
-                    <span
-                      key={p.id}
-                      className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
-                      title={p.service_name}
-                    >
-                      <span className="text-muted-foreground">{p.service_name}:</span>
-                      <span className="ml-0.5 font-semibold">{p.port}</span>
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <span className="text-xs text-muted-foreground">—</span>
-              )}
-            </td>
-            <td className="px-4 py-1.5">
-              <StatusBadge status={app.status} />
-            </td>
-            <td className="px-4 py-1.5 text-muted-foreground">
-              {app.last_health_check ? relativeTime(app.last_health_check) : '—'}
-            </td>
-          </tr>
+        {apps.map((a) => (
+          <>
+            <tr
+              key={a.id}
+              className="cursor-pointer hover:bg-muted/30"
+              onClick={() => setExpandedId(expandedId === a.id ? null : a.id)}
+            >
+              <td className="px-4 py-1.5">
+                <span className="mr-1.5 inline-block w-3 text-muted-foreground">
+                  {expandedId === a.id ? (
+                    <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3" />
+                  )}
+                </span>
+                <span className="font-medium">{a.service_name}</span>
+              </td>
+              <td className="px-4 py-1.5">
+                {a.ports.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {a.ports.map((p) => (
+                      <span
+                        key={p.id}
+                        className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 font-mono text-xs"
+                        title={p.service_name}
+                      >
+                        <span className="text-muted-foreground">{p.service_name}:</span>
+                        <span className="ml-0.5 font-semibold">{p.port}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-xs text-muted-foreground">—</span>
+                )}
+              </td>
+              <td className="px-4 py-1.5">
+                <span className="flex items-center gap-1.5">
+                  <span className={`inline-block h-2 w-2 rounded-full ${healthDotColor(a.status)}`} />
+                  <StatusBadge status={a.status} />
+                </span>
+              </td>
+              <td className="px-4 py-1.5 font-mono text-xs">
+                {a.response_time_ms != null ? `${a.response_time_ms}ms` : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </td>
+              <td className="px-4 py-1.5">
+                <span className={`text-xs font-medium ${uptimeColor(a.uptime_pct_24h)}`}>
+                  {a.uptime_pct_24h != null ? `${a.uptime_pct_24h.toFixed(1)}%` : '—'}
+                </span>
+              </td>
+              <td className="px-4 py-1.5">
+                <span className={`text-xs ${sslStatusColor(a.ssl_expires_at)}`}>
+                  {sslStatusText(a.ssl_expires_at)}
+                </span>
+              </td>
+              <td className="px-4 py-1.5 text-xs text-muted-foreground">
+                {a.last_health_check ? relativeTime(a.last_health_check) : '—'}
+              </td>
+            </tr>
+            {expandedId === a.id && (
+              <tr key={`${a.id}-detail`}>
+                <td colSpan={7} className="bg-muted/10 px-6 py-3">
+                  <ApplicationDetail app={a} />
+                </td>
+              </tr>
+            )}
+          </>
         ))}
       </tbody>
     </table>
