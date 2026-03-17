@@ -36,12 +36,6 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### #1016 Admin UI: application health status and response times
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Extend applications view in admin: health status (healthy/degraded/down), response time, SSL cert status, uptime % for last 24h from history. Source: brainstorm bs-69482380, Phase 2.
-
 ### #1019 HTTP health prober for deployed applications + SSL expiry check
 - **Priority**: MEDIUM
 - **Plan**: —
@@ -282,6 +276,7 @@
 
 ## Done (last 10)
 
+- #1016 Admin UI: application health status and response times — 2026-03-17
 - #1015 Admin UI: extended server health dashboard with per-container view + charts — 2026-03-17
 - #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts) — 2026-03-17
 - #1013 Extend Server model with health metrics + metrics history table — 2026-03-17
@@ -291,7 +286,6 @@
 - Ansible role: qa_runner provisioning on prod servers — 2026-03-16
 - QA consumer skeleton — SSH to server, run Claude Code, parse result — 2026-03-16
 - Add TESTING status to StoryStatus + API transition endpoint + QA queue contract — 2026-03-16
-- Implement random cat photo bot with admin access control — 2026-03-15
 
 ## Ideas
 
