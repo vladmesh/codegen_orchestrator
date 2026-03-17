@@ -38,7 +38,7 @@
 
 ### #1019 HTTP health prober for deployed applications + SSL expiry check
 - **Priority**: MEDIUM
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: For each deployed Application, GET domain/health. Update Application.status and last_health_check. Incident SERVICE_DOWN after 3+ consecutive fails with Telegram alert. Response time tracking. SSL cert expiry check, incident SSL_EXPIRING 7 days before expiry. Source: brainstorm bs-69482380 Phase 2.
 
