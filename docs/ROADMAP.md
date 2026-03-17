@@ -397,8 +397,8 @@ Implement infrastructure monitoring: node_exporter + cadvisor on prod servers, h
 - [x] #1013 Extend Server model with health metrics + metrics history table
 - [x] #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts)
 - [x] #1015 Admin UI: extended server health dashboard with per-container view + charts
-- [ ] #1016 Admin UI: application health status and response times
-- [ ] #1019 HTTP health prober for deployed applications + SSL expiry check
+- [x] #1016 Admin UI: application health status and response times
+- [x] #1019 HTTP health prober for deployed applications + SSL expiry check
 - [ ] #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - [ ] #1018 Daily SSH job: filesystem drift check + docker prune
 

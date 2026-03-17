@@ -36,12 +36,6 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### #1019 HTTP health prober for deployed applications + SSL expiry check
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: For each deployed Application, GET domain/health. Update Application.status and last_health_check. Incident SERVICE_DOWN after 3+ consecutive fails with Telegram alert. Response time tracking. SSL cert expiry check, incident SSL_EXPIRING 7 days before expiry. Source: brainstorm bs-69482380 Phase 2.
-
 ### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - **Priority**: LOW
 - **Plan**: —
@@ -276,6 +270,7 @@
 
 ## Done (last 10)
 
+- #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
 - #1016 Admin UI: application health status and response times — 2026-03-17
 - #1015 Admin UI: extended server health dashboard with per-container view + charts — 2026-03-17
 - #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts) — 2026-03-17
@@ -285,7 +280,6 @@
 - Fix deploy failure classification and worker rejection pipeline — 2026-03-16
 - Ansible role: qa_runner provisioning on prod servers — 2026-03-16
 - QA consumer skeleton — SSH to server, run Claude Code, parse result — 2026-03-16
-- Add TESTING status to StoryStatus + API transition endpoint + QA queue contract — 2026-03-16
 
 ## Ideas
 
