@@ -2,9 +2,111 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
+
+from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+
+# ---------------------------------------------------------------------------
+# Helper factories — build valid DTO instances with sensible defaults
+# ---------------------------------------------------------------------------
+
+_NOW = datetime.now(UTC)
+
+
+def _task(**overrides) -> TaskDTO:
+    defaults = {
+        "id": "task-1",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "type": "feature",
+        "title": "Default task",
+        "description": None,
+        "plan": None,
+        "status": "todo",
+        "priority": 0,
+        "acceptance_criteria": None,
+        "current_iteration": 0,
+        "max_iterations": 3,
+        "need_e2e": False,
+        "created_by": "system",
+        "source_brainstorm_id": None,
+        "repository_id": None,
+        "story_id": None,
+        "blocked_by_task_id": None,
+        "failure_metadata": None,
+        "last_event": None,
+        "elapsed_minutes": None,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+    return TaskDTO.model_validate(defaults)
+
+
+def _task_event(**overrides) -> TaskEventDTO:
+    defaults = {
+        "id": 1,
+        "task_id": "task-1",
+        "event_type": "iteration_end",
+        "from_status": None,
+        "to_status": None,
+        "iteration": None,
+        "details": {},
+        "actor": "system",
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+    return TaskEventDTO.model_validate(defaults)
+
+
+def _story(**overrides) -> StoryDTO:
+    defaults = {
+        "id": "story-1",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "parent_story_id": None,
+        "title": "Default story",
+        "description": None,
+        "acceptance_criteria": None,
+        "type": "product",
+        "status": "in_progress",
+        "priority": 0,
+        "blocked_by_story_id": None,
+        "created_by": "system",
+        "user_report": None,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+    return StoryDTO.model_validate(defaults)
+
+
+def _repo(**overrides) -> RepositoryDTO:
+    defaults = {
+        "id": "repo-1",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "name": "weather-bot",
+        "git_url": "https://github.com/my-org/weather-bot",
+        "provider_repo_id": None,
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+    return RepositoryDTO.model_validate(defaults)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+PROJ_ID = "00000000-0000-0000-0000-000000000001"
 
 
 @pytest.fixture
@@ -46,21 +148,21 @@ class TestDispatchTodoTasks:
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "title": "Add user model",
-                "description": "Create User SQLAlchemy model",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-1",
+                title="Add user model",
+                description="Create User SQLAlchemy model",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
         api_client.get_task_events.return_value = []
         api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
         await dispatch_todo_tasks(api_client, redis_client)
 
@@ -68,7 +170,7 @@ class TestDispatchTodoTasks:
         api_client.create_run.assert_called_once()
         run_data = api_client.create_run.call_args[0][0]
         assert run_data["type"] == "engineering"
-        assert run_data["project_id"] == "proj-1"
+        assert run_data["project_id"] == PROJ_ID
 
         # Should publish to engineering queue
         redis_client.publish_message.assert_called_once()
@@ -82,18 +184,18 @@ class TestDispatchTodoTasks:
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-2",
-                "title": "Add API endpoint",
-                "description": "REST endpoint",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": "task-1",
-                "status": "todo",
-            }
+            _task(
+                id="task-2",
+                title="Add API endpoint",
+                description="REST endpoint",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id="task-1",
+                status="todo",
+            )
         ]
-        api_client.get_task.return_value = {"id": "task-1", "status": "in_dev"}
+        api_client.get_task.return_value = _task(id="task-1", status="in_dev")
 
         await dispatch_todo_tasks(api_client, redis_client)
 
@@ -109,16 +211,16 @@ class TestDispatchTodoTasks:
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "title": "Add user model",
-                "description": "Create User SQLAlchemy model",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-1",
+                title="Add user model",
+                description="Create User SQLAlchemy model",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
         from shared.contracts.dto.project import ProjectStatus
 
@@ -140,16 +242,16 @@ class TestDispatchTodoTasks:
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "title": "Add feature",
-                "description": "A feature",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-1",
+                title="Add feature",
+                description="A feature",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
 
         project_mock = MagicMock()
@@ -168,27 +270,27 @@ class TestDispatchTodoTasks:
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-2",
-                "title": "Add API endpoint",
-                "description": "REST endpoint",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": "task-1",
-                "status": "todo",
-            }
+            _task(
+                id="task-2",
+                title="Add API endpoint",
+                description="REST endpoint",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id="task-1",
+                status="todo",
+            )
         ]
-        api_client.get_task.return_value = {"id": "task-1", "status": "done"}
+        api_client.get_task.return_value = _task(id="task-1", status="done")
         api_client.get_task_events.return_value = [
-            {
-                "event_type": "iteration_end",
-                "details": {"commit_sha": "abc", "summary": "Done"},
-            }
+            _task_event(
+                event_type="iteration_end",
+                details={"commit_sha": "abc", "summary": "Done"},
+            )
         ]
         api_client.create_run.return_value = {"id": "run-2"}
         api_client.transition_task.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
         await dispatch_todo_tasks(api_client, redis_client)
 
@@ -201,36 +303,36 @@ class TestDispatchTodoTasks:
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-2",
-                "title": "Add API endpoint",
-                "description": "REST endpoint",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": "task-1",
-                "status": "todo",
-            }
+            _task(
+                id="task-2",
+                title="Add API endpoint",
+                description="REST endpoint",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id="task-1",
+                status="todo",
+            )
         ]
-        api_client.get_task.return_value = {"id": "task-1", "status": "done"}
+        api_client.get_task.return_value = _task(id="task-1", status="done")
         # Sibling tasks for story-1: task-1 (done) and task-2 (todo)
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "done"},
-            {"id": "task-2", "status": "todo"},
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+            _task(id="task-2", status="todo", story_id="story-1", project_id=PROJ_ID),
         ]
         # Events for task-1 (the done sibling)
         api_client.get_task_events.return_value = [
-            {
-                "event_type": "iteration_end",
-                "details": {
+            _task_event(
+                event_type="iteration_end",
+                details={
                     "commit_sha": "abc123",
                     "summary": "Created User model with email field",
                 },
-            }
+            )
         ]
         api_client.create_run.return_value = {"id": "run-2"}
         api_client.transition_task.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
         await dispatch_todo_tasks(api_client, redis_client)
 
@@ -245,21 +347,21 @@ class TestDispatchTodoTasks:
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "title": "Add user model",
-                "description": "Create model",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-1",
+                title="Add user model",
+                description="Create model",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
         api_client.get_task_events.return_value = []
         api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
         await dispatch_todo_tasks(api_client, redis_client)
 
@@ -268,20 +370,20 @@ class TestDispatchTodoTasks:
 
     @pytest.mark.asyncio
     async def test_story_id_none_for_standalone_task(self, api_client, redis_client):
-        """Task without story_id → story_id=None in message."""
+        """Task without story_id -> story_id=None in message."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "title": "Standalone task",
-                "description": "No story",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": None,
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-1",
+                title="Standalone task",
+                description="No story",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id=None,
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
         api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
@@ -293,29 +395,31 @@ class TestDispatchTodoTasks:
 
     @pytest.mark.asyncio
     async def test_skips_task_when_sibling_rejected(self, api_client, redis_client):
-        """Todo task in story with a worker-rejected sibling → not dispatched."""
+        """Todo task in story with a worker-rejected sibling -> not dispatched."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-2",
-                "title": "Add endpoint",
-                "description": "REST API",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-2",
+                title="Add endpoint",
+                description="REST API",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
         # Sibling task-1 failed with worker_rejected metadata
         api_client.get_tasks_by_story.return_value = [
-            {
-                "id": "task-1",
-                "status": "failed",
-                "failure_metadata": {"failure_reason": "worker_rejected"},
-            },
-            {"id": "task-2", "status": "todo"},
+            _task(
+                id="task-1",
+                status="failed",
+                failure_metadata={"failure_reason": "worker_rejected"},
+                story_id="story-1",
+                project_id=PROJ_ID,
+            ),
+            _task(id="task-2", status="todo", story_id="story-1", project_id=PROJ_ID),
         ]
 
         await dispatch_todo_tasks(api_client, redis_client)
@@ -326,30 +430,30 @@ class TestDispatchTodoTasks:
 
     @pytest.mark.asyncio
     async def test_dispatches_when_sibling_failed_normally(self, api_client, redis_client):
-        """Todo task with a normally-failed sibling (no reject) → still dispatched."""
+        """Todo task with a normally-failed sibling (no reject) -> still dispatched."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-2",
-                "title": "Add endpoint",
-                "description": "REST API",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-2",
+                title="Add endpoint",
+                description="REST API",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
         # Sibling task-1 failed normally (no reject metadata)
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "failed"},
-            {"id": "task-2", "status": "todo"},
+            _task(id="task-1", status="failed", story_id="story-1", project_id=PROJ_ID),
+            _task(id="task-2", status="todo", story_id="story-1", project_id=PROJ_ID),
         ]
         api_client.get_task_events.return_value = []
         api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
 
         await dispatch_todo_tasks(api_client, redis_client)
 
@@ -367,21 +471,21 @@ class TestBranchInDispatch:
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "title": "Add user model",
-                "description": "Create User SQLAlchemy model",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-abc",
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-1",
+                title="Add user model",
+                description="Create User SQLAlchemy model",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-abc",
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
         api_client.get_task_events.return_value = []
         api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_story.return_value = _story(id="story-abc", project_id=PROJ_ID)
 
         await dispatch_todo_tasks(api_client, redis_client)
 
@@ -395,16 +499,16 @@ class TestBranchInDispatch:
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "title": "Fix bug",
-                "description": "Fix it",
-                "type": "fix",
-                "project_id": "proj-1",
-                "story_id": None,
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-1",
+                title="Fix bug",
+                description="Fix it",
+                type="fix",
+                project_id=PROJ_ID,
+                story_id=None,
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
         api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
@@ -446,23 +550,24 @@ class TestCompleteStories:
 
     @pytest.mark.asyncio
     async def test_completes_story_creates_pr_when_all_tasks_done(self, api_client, redis_client):
-        """Story with all tasks done → creates PR, enables auto-merge, transitions to pr_review."""
+        """Story with all tasks done -> creates PR, enables auto-merge, transitions to pr_review."""
         from unittest.mock import patch
 
         from src.tasks.task_dispatcher import complete_stories
 
         api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1", "title": "Add weather API"}
+            _story(id="story-1", project_id=PROJ_ID, title="Add weather API")
         ]
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "done"},
-            {"id": "task-2", "status": "done"},
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+            _task(id="task-2", status="done", story_id="story-1", project_id=PROJ_ID),
         ]
-        api_client.get_primary_repository.return_value = {
-            "id": "repo-1",
-            "name": "weather-bot",
-            "git_url": "https://github.com/my-org/weather-bot",
-        }
+        api_client.get_primary_repository.return_value = _repo(
+            id="repo-1",
+            name="weather-bot",
+            git_url="https://github.com/my-org/weather-bot",
+            project_id=PROJ_ID,
+        )
         api_client.transition_story.return_value = {}
 
         mock_github = AsyncMock()
@@ -502,15 +607,13 @@ class TestCompleteStories:
 
     @pytest.mark.asyncio
     async def test_no_complete_when_tasks_pending(self, api_client, redis_client):
-        """Story with pending tasks → no action."""
+        """Story with pending tasks -> no action."""
         from src.tasks.task_dispatcher import complete_stories
 
-        api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
-        ]
+        api_client.get_stories_by_status.return_value = [_story(id="story-1", project_id=PROJ_ID)]
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "done"},
-            {"id": "task-2", "status": "in_dev"},
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+            _task(id="task-2", status="in_dev", story_id="story-1", project_id=PROJ_ID),
         ]
 
         await complete_stories(api_client, redis_client)
@@ -519,12 +622,10 @@ class TestCompleteStories:
 
     @pytest.mark.asyncio
     async def test_no_complete_when_no_tasks(self, api_client, redis_client):
-        """Story with zero tasks → no action (architect may not have run yet)."""
+        """Story with zero tasks -> no action (architect may not have run yet)."""
         from src.tasks.task_dispatcher import complete_stories
 
-        api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
-        ]
+        api_client.get_stories_by_status.return_value = [_story(id="story-1", project_id=PROJ_ID)]
         api_client.get_tasks_by_story.return_value = []
 
         await complete_stories(api_client, redis_client)
@@ -537,17 +638,19 @@ class TestSuperviseFailedTasks:
 
     @pytest.mark.asyncio
     async def test_skips_worker_rejected_task(self, api_client, redis_client):
-        """Failed task with worker_rejected metadata → not retried."""
+        """Failed task with worker_rejected metadata -> not retried."""
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "story_id": "story-1",
-                "current_iteration": 0,
-                "max_iterations": 3,
-                "failure_metadata": {"failure_reason": "worker_rejected"},
-            }
+            _task(
+                id="task-1",
+                story_id="story-1",
+                current_iteration=0,
+                max_iterations=3,
+                failure_metadata={"failure_reason": "worker_rejected"},
+                status="failed",
+                project_id=PROJ_ID,
+            )
         ]
 
         result = await supervise_failed_tasks(api_client, redis_client)
@@ -559,17 +662,19 @@ class TestSuperviseFailedTasks:
 
     @pytest.mark.asyncio
     async def test_skips_developer_blocked_task(self, api_client, redis_client):
-        """Failed task with developer_blocked metadata → not retried."""
+        """Failed task with developer_blocked metadata -> not retried."""
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "story_id": "story-1",
-                "current_iteration": 0,
-                "max_iterations": 3,
-                "failure_metadata": {"failure_reason": "developer_blocked"},
-            }
+            _task(
+                id="task-1",
+                story_id="story-1",
+                current_iteration=0,
+                max_iterations=3,
+                failure_metadata={"failure_reason": "developer_blocked"},
+                status="failed",
+                project_id=PROJ_ID,
+            )
         ]
 
         result = await supervise_failed_tasks(api_client, redis_client)
@@ -584,28 +689,30 @@ class TestDispatchSkipsDeveloperBlocked:
 
     @pytest.mark.asyncio
     async def test_skips_task_when_sibling_developer_blocked(self, api_client, redis_client):
-        """Todo task in story with a developer_blocked sibling → not dispatched."""
+        """Todo task in story with a developer_blocked sibling -> not dispatched."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-2",
-                "title": "Add endpoint",
-                "description": "REST API",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": None,
-                "status": "todo",
-            }
+            _task(
+                id="task-2",
+                title="Add endpoint",
+                description="REST API",
+                type="feature",
+                project_id=PROJ_ID,
+                story_id="story-1",
+                blocked_by_task_id=None,
+                status="todo",
+            )
         ]
         api_client.get_tasks_by_story.return_value = [
-            {
-                "id": "task-1",
-                "status": "waiting_human_review",
-                "failure_metadata": {"failure_reason": "developer_blocked"},
-            },
-            {"id": "task-2", "status": "todo"},
+            _task(
+                id="task-1",
+                status="waiting_human_review",
+                failure_metadata={"failure_reason": "developer_blocked"},
+                story_id="story-1",
+                project_id=PROJ_ID,
+            ),
+            _task(id="task-2", status="todo", story_id="story-1", project_id=PROJ_ID),
         ]
 
         await dispatch_todo_tasks(api_client, redis_client)
@@ -619,19 +726,20 @@ class TestPollMergedPRs:
 
     @pytest.mark.asyncio
     async def test_triggers_deploy_when_pr_merged(self, api_client, redis_client):
-        """Story in pr_review with merged PR → deploy triggered."""
+        """Story in pr_review with merged PR -> deploy triggered."""
         from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+            _story(id="story-1", project_id=PROJ_ID, status="pr_review")
         ]
-        api_client.get_primary_repository.return_value = {
-            "id": "repo-1",
-            "git_url": "https://github.com/my-org/weather-bot",
-        }
-        api_client.get_story.return_value = {"id": "story-1", "user_id": "u-1"}
+        api_client.get_primary_repository.return_value = _repo(
+            id="repo-1",
+            git_url="https://github.com/my-org/weather-bot",
+            project_id=PROJ_ID,
+        )
+        api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
         api_client.transition_story.return_value = {}
         api_client.create_run.return_value = {}
 
@@ -656,24 +764,25 @@ class TestPollMergedPRs:
         call_args = redis_client.publish_message.call_args
         assert call_args[0][0] == "deploy:queue"
         deploy_msg = call_args[0][1]
-        assert deploy_msg.project_id == "proj-1"
+        assert deploy_msg.project_id == PROJ_ID
         assert deploy_msg.story_id == "story-1"
         assert deploy_msg.action == "feature"
 
     @pytest.mark.asyncio
     async def test_no_action_when_pr_not_merged(self, api_client, redis_client):
-        """Story in pr_review with closed but not merged PR → no action."""
+        """Story in pr_review with closed but not merged PR -> no action."""
         from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+            _story(id="story-1", project_id=PROJ_ID, status="pr_review")
         ]
-        api_client.get_primary_repository.return_value = {
-            "id": "repo-1",
-            "git_url": "https://github.com/my-org/weather-bot",
-        }
+        api_client.get_primary_repository.return_value = _repo(
+            id="repo-1",
+            git_url="https://github.com/my-org/weather-bot",
+            project_id=PROJ_ID,
+        )
 
         mock_github = AsyncMock()
         mock_github.list_pull_requests.return_value = [
@@ -688,7 +797,7 @@ class TestPollMergedPRs:
 
     @pytest.mark.asyncio
     async def test_no_action_when_no_stories_in_pr_review(self, api_client, redis_client):
-        """No stories in pr_review → nothing to poll."""
+        """No stories in pr_review -> nothing to poll."""
         from src.tasks.task_dispatcher import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = []
@@ -705,14 +814,29 @@ class TestPollMergedPRs:
         from src.tasks.task_dispatcher import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"},
-            {"id": "story-2", "project_id": "proj-2", "user_id": "u-2"},
+            _story(id="story-1", project_id=PROJ_ID, status="pr_review"),
+            _story(
+                id="story-2",
+                project_id="00000000-0000-0000-0000-000000000002",
+                status="pr_review",
+            ),
         ]
         api_client.get_primary_repository.side_effect = [
-            {"id": "repo-1", "git_url": "https://github.com/my-org/repo1"},
-            {"id": "repo-2", "git_url": "https://github.com/my-org/repo2"},
+            _repo(
+                id="repo-1",
+                git_url="https://github.com/my-org/repo1",
+                project_id=PROJ_ID,
+            ),
+            _repo(
+                id="repo-2",
+                git_url="https://github.com/my-org/repo2",
+                project_id="00000000-0000-0000-0000-000000000002",
+            ),
         ]
-        api_client.get_story.return_value = {"id": "story-2", "user_id": "u-2"}
+        api_client.get_story.return_value = _story(
+            id="story-2",
+            project_id="00000000-0000-0000-0000-000000000002",
+        )
         api_client.transition_story.return_value = {}
         api_client.create_run.return_value = {}
 

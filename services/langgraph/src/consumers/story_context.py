@@ -30,7 +30,7 @@ async def build_story_context(story_id: str, current_task_id: str | None = None)
     lines: list[str] = []
     try:
         story = await api_client.get_story(story_id)
-        user_report = story.get("user_report")
+        user_report = story.user_report
         if user_report:
             lines.append("## User Report")
             lines.append(user_report)
@@ -38,12 +38,12 @@ async def build_story_context(story_id: str, current_task_id: str | None = None)
     except Exception:
         logger.debug("story_fetch_for_user_report_failed", story_id=story_id)
 
-    tasks.sort(key=lambda t: t.get("created_at", ""))
+    tasks.sort(key=lambda t: t.created_at or "")
     pending_statuses = {TaskStatus.BACKLOG, TaskStatus.TODO, TaskStatus.BLOCKED}
     for task in tasks:
-        tid = task.get("id", "?")
-        title = task.get("title", "Untitled")
-        status = task.get("status", "unknown")
+        tid = task.id
+        title = task.title
+        status = task.status
 
         if tid == current_task_id:
             continue
@@ -76,8 +76,8 @@ async def build_story_md(story_id: str, current_task_id: str | None = None) -> s
     except Exception:
         tasks = []
 
-    title = story.get("title", "Untitled story")
-    description = story.get("description") or ""
+    title = story.title
+    description = story.description or ""
 
     lines = [f"# Story: {title}", ""]
     if description:
@@ -85,19 +85,19 @@ async def build_story_md(story_id: str, current_task_id: str | None = None) -> s
         lines.append(description)
         lines.append("")
 
-    user_report = story.get("user_report")
+    user_report = story.user_report
     if user_report:
         lines.append("## User Report")
         lines.append(user_report)
         lines.append("")
 
     if tasks:
-        tasks.sort(key=lambda t: t.get("created_at", ""))
+        tasks.sort(key=lambda t: t.created_at or "")
         lines.append("## Tasks")
         for i, task in enumerate(tasks, 1):
-            tid = task.get("id", "?")
-            task_title = task.get("title", "Untitled")
-            status = task.get("status", "unknown")
+            tid = task.id
+            task_title = task.title
+            status = task.status
             is_current = tid == current_task_id
             if is_current:
                 lines.append(f"{i}. **{task_title}** — current (see TASK.md)")

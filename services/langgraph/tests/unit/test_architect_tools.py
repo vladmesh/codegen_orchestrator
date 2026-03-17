@@ -5,20 +5,21 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_story, make_task
 
 
 @pytest.fixture
 def mock_api():
     with patch("src.agents.architect.tools.api_client") as api:
         api.get_story = AsyncMock(
-            return_value={"id": "story-abc", "title": "Add auth", "status": "created"}
+            return_value=make_story(id="story-abc", title="Add auth", status="created")
         )
         api.get_project = AsyncMock(
-            return_value={"id": "proj-1", "name": "my-api", "config": {"detailed_spec": "REST"}}
+            return_value=make_project(name="my-api", config={"detailed_spec": "REST"})
         )
         api.get_tasks_by_story = AsyncMock(return_value=[])
-        api.create_task = AsyncMock(return_value={"id": "task-new", "title": "New task"})
-        api.transition_story = AsyncMock(return_value={"status": "in_progress"})
+        api.create_task = AsyncMock(return_value=make_task(id="task-new", title="New task"))
+        api.transition_story = AsyncMock(return_value=make_story(status="in_progress"))
         yield api
 
 
@@ -47,12 +48,11 @@ class TestGetProjectSpecTool:
     async def test_surfaces_tree_from_config(self, mock_api):
         from src.agents.architect.tools import get_project_spec
 
-        mock_api.get_project.return_value = {
-            "id": "proj-1",
-            "name": "my-api",
-            "config": {"tree": ".\n├── src/\n│   └── main.py", "secrets": {"DB": "xxx"}},
-            "project_spec": {"modules": ["backend"]},
-        }
+        mock_api.get_project.return_value = make_project(
+            name="my-api",
+            config={"tree": ".\n├── src/\n│   └── main.py", "secrets": {"DB": "xxx"}},
+            project_spec={"modules": ["backend"]},
+        )
 
         result = await get_project_spec.ainvoke({"project_id": "proj-1"})
 
@@ -64,12 +64,11 @@ class TestGetProjectSpecTool:
     async def test_handles_missing_tree(self, mock_api):
         from src.agents.architect.tools import get_project_spec
 
-        mock_api.get_project.return_value = {
-            "id": "proj-1",
-            "name": "my-api",
-            "config": {},
-            "project_spec": None,
-        }
+        mock_api.get_project.return_value = make_project(
+            name="my-api",
+            config={},
+            project_spec=None,
+        )
 
         result = await get_project_spec.ainvoke({"project_id": "proj-1"})
 
@@ -80,16 +79,15 @@ class TestGetProjectSpecTool:
     async def test_strips_noisy_config_fields(self, mock_api):
         from src.agents.architect.tools import get_project_spec
 
-        mock_api.get_project.return_value = {
-            "id": "proj-1",
-            "name": "my-api",
-            "config": {
+        mock_api.get_project.return_value = make_project(
+            name="my-api",
+            config={
                 "tree": ".",
                 "secrets": {"key": "val"},
                 "env_hints": ["hint"],
                 "detailed_spec": "important spec",
             },
-        }
+        )
 
         result = await get_project_spec.ainvoke({"project_id": "proj-1"})
 
@@ -158,8 +156,8 @@ class TestCreateTaskTool:
 
         mock_api.create_task = AsyncMock(
             side_effect=[
-                {"id": "task-001", "title": "First"},
-                {"id": "task-002", "title": "Second"},
+                make_task(id="task-001", title="First"),
+                make_task(id="task-002", title="Second"),
             ]
         )
 

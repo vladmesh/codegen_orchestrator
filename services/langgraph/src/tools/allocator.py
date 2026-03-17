@@ -10,8 +10,10 @@ Used by:
 
 import structlog
 
+from shared.contracts.dto.server import ServerDTO
+
 from ..clients.api import api_client
-from ..schemas.api_types import AllocationInfo, ServerInfo, get_server_ip
+from ..schemas.api_types import AllocationInfo
 
 logger = structlog.get_logger(__name__)
 
@@ -60,8 +62,8 @@ async def ensure_project_allocations(
     if not server:
         raise AllocationError("No suitable server found with enough resources")
 
-    server_handle = server["handle"]
-    server_ip = get_server_ip(server)
+    server_handle = server.handle
+    server_ip = server.public_ip
 
     # Get or create Application
     app = await api_client.get_or_create_application(
@@ -87,8 +89,8 @@ async def ensure_project_allocations(
 
             alloc_ip = alloc.get("server_ip")
             if not alloc_ip:
-                srv: ServerInfo = await api_client.get_server(alloc_server)
-                alloc_ip = get_server_ip(srv)
+                srv: ServerDTO = await api_client.get_server(alloc_server)
+                alloc_ip = srv.public_ip
 
             result[key] = {
                 "port": port,
@@ -138,7 +140,7 @@ async def ensure_project_allocations(
     return allocated
 
 
-async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> dict | None:
+async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO | None:
     """Find a managed server with enough resources.
 
     Note: We don't check used_ram_mb because that reflects actual system RAM usage
@@ -148,20 +150,17 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> dict | Non
     servers = await api_client.list_servers(is_managed=True)
 
     # Filter to only active/ready/in_use servers
-    servers = [s for s in servers if s.get("status") in ("active", "ready", "in_use")]
+    servers = [s for s in servers if s.status in ("active", "ready", "in_use")]
 
     # Filter by total capacity (not used - that's system RAM, not allocations)
     suitable = []
     for srv in servers:
-        capacity_ram = srv.get("capacity_ram_mb", 0)
-        capacity_disk = srv.get("capacity_disk_mb", 0)
-
         # Just check total capacity is sufficient for the project
-        if capacity_ram >= min_ram_mb and capacity_disk >= min_disk_mb:
+        if srv.capacity_ram_mb >= min_ram_mb and srv.capacity_disk_mb >= min_disk_mb:
             suitable.append(srv)
 
     if not suitable:
         return None
 
     # Return the one with most capacity
-    return max(suitable, key=lambda s: s.get("capacity_ram_mb", 0))
+    return max(suitable, key=lambda s: s.capacity_ram_mb)

@@ -33,7 +33,8 @@ def reset_task_chain() -> None:
 @tool
 async def get_story(story_id: str) -> dict:
     """Get a story by ID. Returns title, description, status, and project_id."""
-    return await api_client.get_story(story_id)
+    story = await api_client.get_story(story_id)
+    return story.model_dump(mode="json")
 
 
 @tool
@@ -54,19 +55,21 @@ async def get_project_spec(project_id: str, detail: str = "") -> dict:
         detail: Optional detail level. Empty for summary, or one of:
             "models", "events", "domains".
     """
-    result = await api_client.get_project(project_id)
-    if result is None:
+    project = await api_client.get_project(project_id)
+    if project is None:
         return {"error": f"Project {project_id} not found"}
 
-    config = result.get("config") or {}
+    result = project.model_dump(mode="json")
+    config = project.config or {}
     specs_summary = config.get("specs_summary", {})
 
     # Always include tree and basic info
     result["tree"] = config.get("tree")
 
-    # Strip noisy fields
+    # Strip noisy fields from the config in the result dict
+    result_config = result.get("config") or {}
     for key in ("secrets", "env_hints", "specs_summary"):
-        config.pop(key, None)
+        result_config.pop(key, None)
 
     if not detail:
         # Compact summary: just names and counts
@@ -96,7 +99,8 @@ async def get_project_spec(project_id: str, detail: str = "") -> dict:
 @tool
 async def get_tasks_by_story(story_id: str) -> list[dict]:
     """Get all existing tasks for a story. Use to check what work already exists."""
-    return await api_client.get_tasks_by_story(story_id)
+    tasks = await api_client.get_tasks_by_story(story_id)
+    return [t.model_dump(mode="json") for t in tasks]
 
 
 @tool
@@ -138,7 +142,7 @@ async def create_task(
     result = await api_client.create_task(task_data)
 
     # Track for auto-chaining
-    task_id = result.get("id")
+    task_id = result.id
     if task_id:
         _last_task_id[story_id] = task_id
 
@@ -148,7 +152,7 @@ async def create_task(
         title=title,
         blocked_by=blocked_by,
     )
-    return result
+    return result.model_dump(mode="json")
 
 
 @tool
@@ -159,7 +163,8 @@ async def transition_story(story_id: str, action: str) -> dict:
         story_id: The story ID.
         action: One of: start, complete, archive.
     """
-    return await api_client.transition_story(story_id, action)
+    story = await api_client.transition_story(story_id, action)
+    return story.model_dump(mode="json")
 
 
 def get_architect_tools() -> list:

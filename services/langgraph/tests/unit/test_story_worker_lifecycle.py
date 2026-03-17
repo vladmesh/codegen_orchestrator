@@ -6,11 +6,16 @@ worker_id across consecutive tasks in the same story. All external deps mocked.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
 import pytest
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.repository import RepositoryDTO
+
+_PROJECT_ID = uuid.uuid4()
 
 
 def _project(**overrides):
@@ -22,6 +27,36 @@ def _project(**overrides):
     }
     base.update(overrides)
     return base
+
+
+def _project_dto(**overrides) -> ProjectDTO:
+    base = {
+        "id": _PROJECT_ID,
+        "name": "test-project",
+        "status": ProjectStatus.ACTIVE,
+        "config": {"modules": ["backend"]},
+        "owner_id": 1,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return ProjectDTO(**base)
+
+
+def _repo(**overrides) -> RepositoryDTO:
+    base = {
+        "id": "repo-1",
+        "project_id": _PROJECT_ID,
+        "name": "test-project",
+        "git_url": "https://github.com/org/test-project",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return RepositoryDTO(**base)
 
 
 class TestTwoTaskStoryLifecycle:
@@ -49,11 +84,9 @@ class TestTwoTaskStoryLifecycle:
         Second task: worker found → worker_id passed to subgraph.
         Worker never deleted between tasks."""
         mock_api.patch = AsyncMock()
-        mock_api.get_project = AsyncMock(return_value=_project())
+        mock_api.get_project = AsyncMock(return_value=_project_dto())
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_api.post = AsyncMock()
         mock_resource.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
         mock_handle_success.return_value = {"status": "success"}

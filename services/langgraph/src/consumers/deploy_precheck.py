@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncssh
 import structlog
 
+from shared.contracts.dto.project import ProjectDTO
+
 from ..clients.api import api_client
 
 logger = structlog.get_logger(__name__)
@@ -71,7 +73,7 @@ async def _pre_check_server(
 
 
 async def _run_deploy_precheck(
-    allocated_resources: dict, project: dict, project_id: str, action: str
+    allocated_resources: dict, project: ProjectDTO, project_id: str, action: str
 ) -> str | None:
     """Run SSH pre-check against the target server. Returns error or None."""
     first_resource = next(iter(allocated_resources.values()), {})
@@ -82,7 +84,7 @@ async def _run_deploy_precheck(
     if not server_ip or not server_handle:
         return None
 
-    project_name = (project.get("name") or project_id).replace(" ", "_").lower()
+    project_name = (project.name or project_id).replace(" ", "_").lower()
     ssh_key = await api_client.get_server_ssh_key(server_handle)
     if not ssh_key:
         return None

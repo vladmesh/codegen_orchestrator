@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.server import ServerDTO
+from shared.contracts.dto.story import StoryDTO
 from src.consumers.qa import (
     MAX_QA_LOOPS,
     _resolve_server_info,
@@ -13,15 +16,43 @@ from src.consumers.qa import (
 )
 
 
+def _server(**overrides) -> ServerDTO:
+    base = {
+        "handle": "vps-1",
+        "host": "vps-1.example.com",
+        "public_ip": "1.2.3.4",
+        "status": "active",
+        "is_managed": True,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return ServerDTO(**base)
+
+
+def _qa_story(**overrides) -> StoryDTO:
+    import uuid
+
+    base = {
+        "id": "story-1",
+        "project_id": uuid.uuid4(),
+        "title": "Build weather API",
+        "description": "Build a weather API that returns current weather for any city",
+        "type": "product",
+        "status": "testing",
+        "priority": 0,
+        "created_by": "system",
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return StoryDTO(**base)
+
+
 @pytest.fixture
 def mock_api_client():
     with patch("src.consumers.qa.api_client") as mock:
-        mock.get_story = AsyncMock(
-            return_value={
-                "id": "story-1",
-                "description": "Build a weather API that returns current weather for any city",
-            }
-        )
+        mock.get_story = AsyncMock(return_value=_qa_story())
         mock.get_project = AsyncMock(
             return_value={
                 "id": "proj-1",
@@ -32,7 +63,7 @@ def mock_api_client():
         mock.list_applications = AsyncMock(
             return_value=[{"id": 1, "server_handle": "vps-1", "service_name": "weather_bot"}]
         )
-        mock.get_server = AsyncMock(return_value={"handle": "vps-1", "public_ip": "1.2.3.4"})
+        mock.get_server = AsyncMock(return_value=_server())
         mock.get_server_ssh_key = AsyncMock(
             return_value="-----BEGIN RSA KEY-----\nfake\n-----END RSA KEY-----"
         )

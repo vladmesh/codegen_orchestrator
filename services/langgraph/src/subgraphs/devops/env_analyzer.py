@@ -11,11 +11,11 @@ import structlog
 import yaml
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.project import ProjectDTO
 
 from ...clients.api import api_client
 from ...config.agent_config_cache import agent_config_cache
 from ...llm.factory import LLMFactory
-from ...schemas.api_types import ProjectInfo
 from .state import DevOpsState
 
 logger = structlog.get_logger()
@@ -377,7 +377,7 @@ async def env_analyzer_run(state: DevOpsState) -> dict:
         }
 
     # Get project info
-    project: ProjectInfo | None = await api_client.get_project(project_id)
+    project: ProjectDTO | None = await api_client.get_project(project_id)
     if not project:
         return {
             "errors": [f"Project {project_id} not found"],
@@ -438,7 +438,7 @@ async def env_analyzer_run(state: DevOpsState) -> dict:
 
     # Build project context for LLM
     project_context = f"""
-Project Name: {project.get("name", "unknown")}
+Project Name: {project.name}
 Repository: {repo_url}
 Allocated Resources: {state.get("allocated_resources", {})}
 """

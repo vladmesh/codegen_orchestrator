@@ -1,6 +1,8 @@
 """Unit tests for LanggraphAPIClient telegram_id header support."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
 import httpx
 import pytest
@@ -24,17 +26,27 @@ def api_client(mock_httpx_client):
         return c
 
 
+_NOW = datetime.now(UTC).isoformat()
+_UUID = str(uuid.uuid4())
+
+
 class TestGetProjectWithTelegramId:
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, api_client, mock_httpx_client):
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = 200
-        resp.json.return_value = {"id": "proj-1", "name": "test"}
+        resp.json.return_value = {
+            "id": _UUID,
+            "name": "test",
+            "status": "active",
+            "owner_id": 1,
+            "created_at": _NOW,
+        }
         mock_httpx_client.request.return_value = resp
 
         result = await api_client.get_project("proj-1", telegram_id=12345)
 
-        assert result == {"id": "proj-1", "name": "test"}
+        assert result.name == "test"
         call_kwargs = mock_httpx_client.request.call_args
         assert call_kwargs[1].get("headers", {}).get("X-Telegram-ID") == "12345"
 
@@ -42,7 +54,13 @@ class TestGetProjectWithTelegramId:
     async def test_no_header_when_no_telegram_id(self, api_client, mock_httpx_client):
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = 200
-        resp.json.return_value = {"id": "proj-1"}
+        resp.json.return_value = {
+            "id": _UUID,
+            "name": "test",
+            "status": "active",
+            "owner_id": 1,
+            "created_at": _NOW,
+        }
         mock_httpx_client.request.return_value = resp
 
         await api_client.get_project("proj-1")
@@ -85,11 +103,14 @@ class TestListProjectsWithTelegramId:
     async def test_passes_telegram_id_header(self, api_client, mock_httpx_client):
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = 200
-        resp.json.return_value = [{"id": "proj-1"}]
+        resp.json.return_value = [
+            {"id": _UUID, "name": "test", "status": "active", "owner_id": 1, "created_at": _NOW}
+        ]
         mock_httpx_client.request.return_value = resp
 
         result = await api_client.list_projects(telegram_id=99999)
 
-        assert result == [{"id": "proj-1"}]
+        assert len(result) == 1
+        assert result[0].name == "test"
         call_kwargs = mock_httpx_client.request.call_args
         assert call_kwargs[1].get("headers", {}).get("X-Telegram-ID") == "99999"

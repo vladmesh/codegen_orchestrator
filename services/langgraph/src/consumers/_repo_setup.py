@@ -10,6 +10,8 @@ import re
 
 import structlog
 
+from shared.contracts.dto.project import ProjectDTO
+
 from ..clients.api import api_client
 
 logger = structlog.get_logger(__name__)
@@ -17,7 +19,7 @@ logger = structlog.get_logger(__name__)
 EXPECTED_REGISTRY_SECRETS_COUNT = 3
 
 
-async def _create_repo_and_set_secrets(project: dict) -> None:
+async def _create_repo_and_set_secrets(project: ProjectDTO) -> None:
     """Create GitHub repo and set registry secrets for a draft project.
 
     Replaces the old scaffolder queue approach: repo creation and secret
@@ -26,8 +28,8 @@ async def _create_repo_and_set_secrets(project: dict) -> None:
     """
     from shared.clients.github import GitHubAppClient
 
-    project_id = project["id"]
-    project_name = project.get("name", project_id)
+    project_id = str(project.id)
+    project_name = project.name
 
     org_name = os.getenv("GITHUB_ORG")
     if not org_name:

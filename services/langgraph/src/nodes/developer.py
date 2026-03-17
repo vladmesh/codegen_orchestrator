@@ -115,7 +115,7 @@ class DeveloperNode(FunctionalNode):
         if project_id:
             fresh = await api_client.get_project(project_id)
             if fresh:
-                project_spec = fresh
+                project_spec = fresh.model_dump()
 
         try:
             return await self._spawn_and_collect(
@@ -189,8 +189,8 @@ class DeveloperNode(FunctionalNode):
         """Resolve repo, spawn (or reuse) worker, return state update."""
         # Get repository URL from Repository entity
         primary_repo = await api_client.get_primary_repository(project_id) if project_id else None
-        git_url = primary_repo.get("git_url") if primary_repo else None
-        repo_id = primary_repo.get("id") if primary_repo else None
+        git_url = primary_repo.git_url if primary_repo else None
+        repo_id = primary_repo.id if primary_repo else None
         repo_details = self._determine_repository(git_url, project_name)
         repo_full_name = repo_details["full_name"]
         owner = repo_details["owner"]

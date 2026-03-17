@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.incident import IncidentDTO
+
 
 def _make_app(
     app_id: int = 1,
@@ -18,19 +21,38 @@ def _make_app(
     server_handle: str = "vps-123",
     status: str = "running",
     ports: list[dict] | None = None,
-) -> dict:
-    """Create a mock application dict as returned by the API."""
-    return {
-        "id": app_id,
-        "service_name": service_name,
-        "server_handle": server_handle,
-        "status": status,
-        "response_time_ms": None,
-        "ssl_expires_at": None,
-        "uptime_pct_24h": None,
-        "last_health_check": None,
-        "ports": ports if ports is not None else [{"port": 8080, "service_name": "web-app"}],
-    }
+) -> ApplicationDTO:
+    """Create a mock ApplicationDTO as returned by the API."""
+    return ApplicationDTO(
+        id=app_id,
+        repo_id="repo-1",
+        service_name=service_name,
+        server_handle=server_handle,
+        status=status,
+        response_time_ms=None,
+        ssl_expires_at=None,
+        uptime_pct_24h=None,
+        last_health_check=None,
+        ports=ports if ports is not None else [{"port": 8080, "service_name": "web-app"}],
+        created_at=datetime.now(UTC),
+    )
+
+
+def _make_incident(
+    incident_id: int = 1,
+    server_handle: str = "vps-123",
+    incident_type: str = "service_down",
+    status: str = "detected",
+) -> IncidentDTO:
+    """Create a mock IncidentDTO as returned by the API."""
+    return IncidentDTO(
+        id=incident_id,
+        server_handle=server_handle,
+        incident_type=incident_type,
+        status=status,
+        detected_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+    )
 
 
 @pytest.fixture
@@ -41,7 +63,7 @@ def mock_api_client():
     client.get_servers = AsyncMock(return_value=[])
     client.update_application = AsyncMock(return_value={})
     client.create_app_health_history = AsyncMock(return_value={})
-    client.create_incident = AsyncMock(return_value={"id": 1})
+    client.create_incident = AsyncMock(return_value=_make_incident())
     client.get_active_incidents = AsyncMock(return_value=[])
     client.resolve_incident = AsyncMock()
     client.delete_old_app_health_history = AsyncMock(return_value={"deleted": 0})
@@ -182,7 +204,7 @@ class TestCheckApplication:
         """Recovery after failures → reset fail count, auto-resolve incidents."""
         app = _make_app()
         health_result = {"healthy": True, "status_code": 200, "response_time_ms": 45}
-        mock_api_client.get_active_incidents.return_value = [{"id": 42}]
+        mock_api_client.get_active_incidents.return_value = [_make_incident(incident_id=42)]
 
         with (
             patch(

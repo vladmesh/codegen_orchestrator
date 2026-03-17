@@ -3,14 +3,15 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_server
 
-SERVER = {
-    "handle": "srv-1",
-    "status": "ready",
-    "public_ip": "1.2.3.4",
-    "capacity_ram_mb": 4096,
-    "capacity_disk_mb": 50000,
-}
+SERVER = make_server(
+    handle="srv-1",
+    status="ready",
+    public_ip="1.2.3.4",
+    capacity_ram_mb=4096,
+    capacity_disk_mb=50000,
+)
 
 APP = {"id": 42, "repo_id": "repo-1", "server_handle": "srv-1", "service_name": "my-bot"}
 

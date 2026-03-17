@@ -11,7 +11,7 @@ import uuid
 from pydantic import ValidationError
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_GROUP, ARCHITECT_QUEUE
@@ -30,12 +30,14 @@ SCAFFOLD_WAIT_INTERVAL = 10  # seconds between checks
 SCAFFOLD_WAIT_MAX = 300  # max wait time (5 min)
 
 
-async def _wait_for_scaffold(project_id: str, project: dict, log) -> tuple[dict | None, str | None]:
+async def _wait_for_scaffold(
+    project_id: str, project: ProjectDTO, log
+) -> tuple[ProjectDTO | None, str | None]:
     """Wait for scaffold to complete (DRAFT → ACTIVE).
 
     Returns (project, error). If error is set, caller should abort.
     """
-    if project.get("status") != ProjectStatus.DRAFT:
+    if project.status != ProjectStatus.DRAFT:
         return project, None
 
     log.info("architect_waiting_for_scaffold")
@@ -47,11 +49,11 @@ async def _wait_for_scaffold(project_id: str, project: dict, log) -> tuple[dict 
         if not project:
             log.warning("architect_project_deleted_during_scaffold_wait")
             return None, "project deleted during scaffold wait"
-        if project.get("status") != ProjectStatus.DRAFT:
+        if project.status != ProjectStatus.DRAFT:
             break
         log.debug("architect_scaffold_poll", waited=waited)
 
-    if project.get("status") == ProjectStatus.DRAFT:
+    if project.status == ProjectStatus.DRAFT:
         log.error("architect_scaffold_timeout", waited=waited)
         return project, "scaffold did not complete in time"
 
@@ -85,7 +87,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         log.warning("architect_story_not_found", story_id=msg.story_id)
         return {"status": "skipped", "error": "story not found"}
 
-    story_status = story.get("status")
+    story_status = story.status
     skip_statuses = {
         StoryStatus.COMPLETED,
         StoryStatus.ARCHIVED,

@@ -15,8 +15,8 @@ async def list_managed_servers() -> list[ServerInfo]:
     Returns servers with their capacity (RAM/Disk) and current usage.
     Only returns servers that are managed (not ghost/personal).
     """
-    resp = await api_client.list_servers(is_managed=True)
-    return [ServerInfo(**s) for s in resp]
+    servers = await api_client.list_servers(is_managed=True)
+    return [ServerInfo(**s.model_dump()) for s in servers]
 
 
 @tool
@@ -40,18 +40,18 @@ async def find_suitable_server(
     servers = await api_client.list_servers(is_managed=True)
 
     # Filter to only ready/in_use servers (active for deployment)
-    servers = [s for s in servers if s.get("status") in ("ready", "in_use")]
+    servers = [s for s in servers if s.status in ("ready", "in_use")]
 
     # Filter by available resources
     suitable = []
     for srv in servers:
-        available_ram = srv.get("capacity_ram_mb", 0) - srv.get("used_ram_mb", 0)
-        available_disk = srv.get("capacity_disk_mb", 0) - srv.get("used_disk_mb", 0)
+        available_ram = srv.capacity_ram_mb - srv.used_ram_mb
+        available_disk = srv.capacity_disk_mb - srv.used_disk_mb
 
         if available_ram >= min_ram_mb and available_disk >= min_disk_mb:
             suitable.append(
                 {
-                    **srv,
+                    **srv.model_dump(),
                     "available_ram_mb": available_ram,
                     "available_disk_mb": available_disk,
                 }
@@ -73,8 +73,8 @@ async def get_server_info(
 
     Returns capacity, usage, IP, OS, and other details for the server.
     """
-    resp = await api_client.get_server(handle)
-    return ServerInfo(**resp)
+    server = await api_client.get_server(handle)
+    return ServerInfo(**server.model_dump())
 
 
 @tool

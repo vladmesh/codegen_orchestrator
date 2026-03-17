@@ -184,7 +184,7 @@ async def _resolve_unreachable_incidents(server) -> None:
     """Auto-resolve SERVER_UNREACHABLE incidents when server is back."""
     active = await api_client.get_active_incidents(server.handle, IncidentType.SERVER_UNREACHABLE)
     for incident in active:
-        await api_client.resolve_incident(incident["id"])
+        await api_client.resolve_incident(incident.id)
         await notify_admins(
             f"Server *{server.handle}* ({server.public_ip}) is back online — "
             "incident auto-resolved.",

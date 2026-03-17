@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_repository
 
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import PO_PROACTIVE_QUEUE
@@ -34,13 +35,13 @@ def mock_api():
         api.patch = AsyncMock()
         api.get = AsyncMock(return_value=[])
         api.get_project = AsyncMock(
-            return_value={
-                "name": "my-project",
-                "config": {"modules": ["backend"]},
-            }
+            return_value=make_project(
+                name="my-project",
+                config={"modules": ["backend"]},
+            )
         )
         api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/my-project"}
+            return_value=make_repository(git_url="https://github.com/org/my-project")
         )
         yield api
 
@@ -109,7 +110,7 @@ async def test_build_subgraph_input_includes_smoke_result():
 
     result = _build_subgraph_input(
         project_id="proj-1",
-        project={"name": "test"},
+        project=make_project(name="test"),
         git_url="https://github.com/org/repo",
         allocated_resources={"srv:8000": {"server_ip": "1.2.3.4", "port": 8000}},
         job_data={},

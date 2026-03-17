@@ -51,7 +51,7 @@ class ResourceAllocatorNode(FunctionalNode):
             return {
                 "errors": state.get("errors", []) + ["No repository found for project"],
             }
-        repo_id = repo["id"]
+        repo_id = repo.id
 
         logger.info(
             "resource_allocation_start",

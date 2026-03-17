@@ -16,6 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.incident import IncidentDTO
+
 
 def _make_app(
     app_id: int = 1,
@@ -23,18 +26,21 @@ def _make_app(
     server_handle: str = "vps-123",
     status: str = "running",
     ports: list[dict] | None = None,
-) -> dict:
-    return {
-        "id": app_id,
-        "service_name": service_name,
-        "server_handle": server_handle,
-        "status": status,
-        "response_time_ms": None,
-        "ssl_expires_at": None,
-        "uptime_pct_24h": None,
-        "last_health_check": None,
-        "ports": ports if ports is not None else [{"port": 8080, "service_name": service_name}],
-    }
+) -> ApplicationDTO:
+    return ApplicationDTO(
+        id=app_id,
+        repo_id="repo-1",
+        service_name=service_name,
+        server_handle=server_handle,
+        status=status,
+        response_time_ms=None,
+        ssl_expires_at=None,
+        uptime_pct_24h=None,
+        last_health_check=None,
+        ports=ports if ports is not None else [{"port": 8080, "service_name": service_name}],
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
 
 
 @pytest.fixture
@@ -140,7 +146,17 @@ class TestFullProbeFlow:
 
             # Now recover
             mock_http.return_value = ok_result
-            mock_api.get_active_incidents.return_value = [{"id": 42}]
+            mock_api.get_active_incidents.return_value = [
+                IncidentDTO(
+                    id=42,
+                    server_handle="vps-123",
+                    incident_type="service_down",
+                    status="detected",
+                    detected_at=datetime.now(UTC),
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+            ]
             await prober.app_health_probe_cycle(mock_api)
 
         # Incident should be resolved

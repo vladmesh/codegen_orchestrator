@@ -9,6 +9,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_repository
 
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import ENGINEERING_QUEUE
@@ -35,14 +36,13 @@ def _configure_api_mock(api):
     api.post = AsyncMock()
     api.transition_story = AsyncMock()
     api.get_project = AsyncMock(
-        return_value={
-            "id": "proj-1",
-            "name": "my-project",
-            "config": {"modules": ["backend", "tg_bot"]},
-        }
+        return_value=make_project(
+            name="my-project",
+            config={"modules": ["backend", "tg_bot"]},
+        )
     )
     api.get_primary_repository = AsyncMock(
-        return_value={"id": "repo-1", "git_url": "https://github.com/org/my-project"}
+        return_value=make_repository(git_url="https://github.com/org/my-project")
     )
     api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
 
@@ -336,14 +336,13 @@ class TestEngineringMessagePassthrough:
             api.post = AsyncMock()
             api.get = AsyncMock(return_value=[])
             api.get_project = AsyncMock(
-                return_value={
-                    "id": "proj-1",
-                    "name": "test",
-                    "config": {"modules": ["backend"]},
-                }
+                return_value=make_project(
+                    name="test",
+                    config={"modules": ["backend"]},
+                )
             )
             api.get_primary_repository = AsyncMock(
-                return_value={"id": "repo-1", "git_url": "https://github.com/org/test"}
+                return_value=make_repository(git_url="https://github.com/org/test")
             )
             api.get_tasks_by_story = AsyncMock(return_value=[])
             rh_api.patch = AsyncMock()

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 import structlog
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -58,11 +58,16 @@ def _parse_telegram_id(user_id: str) -> dict:
 logger = structlog.get_logger(__name__)
 
 
-async def _resolve_allocations(task_id: str, project_id: str, project: dict) -> dict | None:
+async def _resolve_allocations(task_id: str, project_id: str, project: ProjectDTO) -> dict | None:
     """Resolve or create resource allocations. Returns dict or None on failure."""
     logger.info("allocating_resources", task_id=task_id, project_id=project_id)
     result = await resource_allocator_node.run(
-        {"project_id": project_id, "project_spec": project, "allocated_resources": {}, "errors": []}
+        {
+            "project_id": project_id,
+            "project_spec": project.model_dump(),
+            "allocated_resources": {},
+            "errors": [],
+        }
     )
     if result.get("errors"):
         error_msg = "; ".join(result["errors"])
@@ -120,9 +125,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             return await _fail_job(task_id, f"Project {project_id} not found", planning_task_id)
 
         if not description:
-            description = (project.get("config") or {}).get("description", "")
+            description = (project.config or {}).get("description", "")
 
-        project_status = project.get("status")
+        project_status = project.status
         if project_status == ProjectStatus.DRAFT and action == "create":
             await _create_repo_and_set_secrets(project)
         elif project_status == ProjectStatus.DRAFT and action != "create":
@@ -150,7 +155,8 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                     task_id=task_id,
                 )
 
-        repo_id = (await api_client.get_primary_repository(project_id) or {}).get("id")
+        primary_repo = await api_client.get_primary_repository(project_id)
+        repo_id = primary_repo.id if primary_repo else None
 
         story_context = await _build_story_context(story_id, planning_task_id) if story_id else None
         story_md = await _build_story_md(story_id, planning_task_id) if story_id else None
@@ -160,7 +166,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
         subgraph_input = {
             "messages": [],
             "current_project": project_id,
-            "project_spec": project,
+            "project_spec": project.model_dump(),
             "allocated_resources": allocated_resources,
             "action": action,
             "description": description,

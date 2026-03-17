@@ -6,12 +6,50 @@ and correctly passes repo_id to request_spawn for workspace mounting.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
+import uuid
 
 import pytest
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.repository import RepositoryDTO
 from src.clients.worker_spawner import SpawnResult
+
+_NOW = datetime(2025, 1, 1, tzinfo=UTC)
+_PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+
+def _project(**overrides) -> ProjectDTO:
+    """Factory for ProjectDTO with sensible defaults."""
+    defaults = {
+        "id": _PROJECT_UUID,
+        "name": "test-project",
+        "status": ProjectStatus.ACTIVE,
+        "config": {"modules": ["backend"], "description": "A test project"},
+        "owner_id": 1,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+    return ProjectDTO(**defaults)
+
+
+def _repo(**overrides) -> RepositoryDTO:
+    """Factory for RepositoryDTO with sensible defaults."""
+    defaults = {
+        "id": "repo-1",
+        "project_id": _PROJECT_UUID,
+        "name": "test-project",
+        "git_url": "https://github.com/org/test-project",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+    return RepositoryDTO(**defaults)
 
 
 def _make_state(*, action="create", status=ProjectStatus.ACTIVE.value, modules=None, repo_id=None):
@@ -42,9 +80,7 @@ class TestDeveloperNodeCommitValidation:
         """Worker success=True but commit_sha=None must return blocked, not done."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -71,9 +107,7 @@ class TestDeveloperNodeCommitValidation:
         """Worker success=True with commit_sha must return done."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -98,9 +132,7 @@ class TestDeveloperNodeCommitValidation:
         """Worker success=False must return blocked (existing behavior, sanity check)."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=False,
@@ -128,9 +160,7 @@ class TestRepoIdPassing:
         """repo_id from primary_repo is forwarded to request_spawn."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-abc123", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo(id="repo-abc123"))
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -154,12 +184,10 @@ class TestRepoIdPassing:
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
     async def test_repo_id_fallback_from_state(self, mock_github_cls, mock_api, mock_spawn):
-        """repo_id falls back to state when primary_repo has no id."""
+        """repo_id falls back to state when primary_repo.id is empty."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo(id=""))
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -201,9 +229,7 @@ class TestRepoIdPassing:
         """action=create + status=scaffolded → proceeds normally."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -229,9 +255,7 @@ class TestRepoIdPassing:
         """action=feature still passes repo_id from primary_repo."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-feat", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo(id="repo-feat"))
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -264,16 +288,11 @@ class TestFeatureFlowIntegration:
         """action=feature on active project → done."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "test-project",
-                "status": "active",
-                "config": {"modules": ["backend"], "description": "A todo API"},
-            }
+            return_value=_project(
+                config={"modules": ["backend"], "description": "A todo API"},
+            )
         )
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -305,9 +324,7 @@ class TestFeatureFlowIntegration:
         """action=fix → task title says 'Fix Issue', template says 'existing project'."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -336,9 +353,7 @@ class TestFeatureFlowIntegration:
         """action=feature on scaffolded (not yet deployed) project works."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -362,16 +377,10 @@ class TestFeatureFlowIntegration:
     @patch("src.nodes.developer.GitHubAppClient")
     async def test_feature_refreshes_project_spec(self, mock_github_cls, mock_api, mock_spawn):
         """action=feature refreshes project from API (picks up latest repo URL etc)."""
-        fresh_project = {
-            "id": "proj-1",
-            "name": "test-project",
-            "status": "active",
-            "config": {"modules": ["backend"], "description": "A test project"},
-        }
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
-        mock_api.get_project = AsyncMock(return_value=fresh_project)
+        mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/updated-repo-name"}
+            return_value=_repo(git_url="https://github.com/org/updated-repo-name")
         )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
@@ -408,9 +417,7 @@ class TestWorkerRejectReason:
         """SpawnResult with reject_reason must return engineering_status=worker_rejected."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=False,
@@ -435,9 +442,7 @@ class TestWorkerRejectReason:
         """Reject from reused worker also returns worker_rejected."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_send.return_value = SpawnResult(
             request_id="req-1",
             success=False,
@@ -491,9 +496,7 @@ class TestTaskMessageDescription:
         """config.description must appear in the task_content passed to request_spawn."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -686,9 +689,7 @@ class TestBranchPassing:
         """branch from state is forwarded to request_spawn."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -716,9 +717,7 @@ class TestBranchPassing:
         """Without branch in state, None is passed to request_spawn."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -744,9 +743,7 @@ class TestBranchPassing:
         """When reusing a worker, branch is passed to send_task_to_worker."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_send.return_value = SpawnResult(
             request_id="req-1",
             success=True,

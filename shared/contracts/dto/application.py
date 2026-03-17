@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -33,6 +34,7 @@ class ApplicationDTO(TimestampedDTO):
     response_time_ms: int | None = None
     ssl_expires_at: datetime | None = None
     uptime_pct_24h: float | None = None
+    ports: list[dict[str, Any]] = []
 
 
 # --- Request DTOs ---

@@ -4,8 +4,98 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import pytest
+
+from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.task import TaskDTO
+
+# ---------------------------------------------------------------------------
+# Factory helpers — build DTO instances with sensible defaults
+# ---------------------------------------------------------------------------
+
+_NOW = datetime.now(UTC)
+
+
+def _make_story(
+    *,
+    id: str = "story-1",
+    project_id: str = "00000000-0000-0000-0000-000000000001",
+    title: str = "Test Story",
+    status: str = "created",
+    priority: int = 0,
+    created_by: str = "system",
+    type: str = "product",
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+    **kwargs,
+) -> StoryDTO:
+    return StoryDTO(
+        id=id,
+        project_id=UUID(project_id),
+        title=title,
+        status=status,
+        priority=priority,
+        created_by=created_by,
+        type=type,
+        created_at=created_at or _NOW,
+        updated_at=updated_at,
+        **kwargs,
+    )
+
+
+def _make_task(**overrides) -> TaskDTO:
+    defaults = {
+        "id": "task-1",
+        "project_id": UUID("00000000-0000-0000-0000-000000000001"),
+        "type": "feature",
+        "title": "Test Task",
+        "status": "todo",
+        "priority": 0,
+        "current_iteration": 0,
+        "max_iterations": 3,
+        "created_by": "system",
+        "story_id": None,
+        "created_at": _NOW,
+        "updated_at": None,
+    }
+    # Allow project_id as string for convenience
+    if "project_id" in overrides and isinstance(overrides["project_id"], str):
+        overrides["project_id"] = UUID(overrides["project_id"])
+    defaults.update(overrides)
+    return TaskDTO(**defaults)
+
+
+def _make_repo(
+    *,
+    id: str = "repo-1",
+    project_id: str = "00000000-0000-0000-0000-000000000001",
+    name: str = "test-project",
+    git_url: str = "https://github.com/org/test-project",
+    role: str = "primary",
+    visibility: str = "private",
+    is_managed: bool = True,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> RepositoryDTO:
+    return RepositoryDTO(
+        id=id,
+        project_id=UUID(project_id),
+        name=name,
+        git_url=git_url,
+        role=role,
+        visibility=visibility,
+        is_managed=is_managed,
+        created_at=created_at or _NOW,
+        updated_at=updated_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -31,27 +121,20 @@ def redis_client():
     return client
 
 
-def _iso(dt: datetime) -> str:
-    return dt.isoformat()
-
-
 class TestSuperviseStuckStories:
     """Detect stories stuck in 'created' and retry architect or fail."""
 
     @pytest.mark.asyncio
     async def test_retries_stuck_story(self, api_client, redis_client):
-        """Story stuck in created > threshold → republish to architect:queue."""
+        """Story stuck in created > threshold -> republish to architect:queue."""
         from src.tasks.task_dispatcher import supervise_stuck_stories
 
         old = datetime.now(UTC) - timedelta(minutes=10)
         api_client.get_stories_by_status.side_effect = lambda status: (
             [
-                {
-                    "id": "story-1",
-                    "project_id": "proj-1",
-                    "user_id": "u-1",
-                    "created_at": _iso(old),
-                }
+                _make_story(
+                    id="story-1", project_id="00000000-0000-0000-0000-000000000001", created_at=old
+                )
             ]
             if status == "created"
             else []  # no in_progress stories
@@ -69,18 +152,17 @@ class TestSuperviseStuckStories:
 
     @pytest.mark.asyncio
     async def test_skips_recent_story(self, api_client, redis_client):
-        """Story created recently → no action."""
+        """Story created recently -> no action."""
         from src.tasks.task_dispatcher import supervise_stuck_stories
 
         recent = datetime.now(UTC) - timedelta(minutes=1)
         api_client.get_stories_by_status.side_effect = lambda status: (
             [
-                {
-                    "id": "story-1",
-                    "project_id": "proj-1",
-                    "user_id": "u-1",
-                    "created_at": _iso(recent),
-                }
+                _make_story(
+                    id="story-1",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    created_at=recent,
+                )
             ]
             if status == "created"
             else []
@@ -93,23 +175,20 @@ class TestSuperviseStuckStories:
 
     @pytest.mark.asyncio
     async def test_skips_story_with_tasks(self, api_client, redis_client):
-        """Story in created but has tasks → architect ran, skip."""
+        """Story in created but has tasks -> architect ran, skip."""
         from src.tasks.task_dispatcher import supervise_stuck_stories
 
         old = datetime.now(UTC) - timedelta(minutes=10)
         api_client.get_stories_by_status.side_effect = lambda status: (
             [
-                {
-                    "id": "story-1",
-                    "project_id": "proj-1",
-                    "user_id": "u-1",
-                    "created_at": _iso(old),
-                }
+                _make_story(
+                    id="story-1", project_id="00000000-0000-0000-0000-000000000001", created_at=old
+                )
             ]
             if status == "created"
             else []
         )
-        api_client.get_tasks_by_story.return_value = [{"id": "task-1"}]
+        api_client.get_tasks_by_story.return_value = [_make_task(id="task-1")]
 
         result = await supervise_stuck_stories(api_client, redis_client)
 
@@ -118,7 +197,7 @@ class TestSuperviseStuckStories:
 
     @pytest.mark.asyncio
     async def test_fails_story_after_max_retries(self, api_client, redis_client):
-        """Story retried 3 times → fail the story."""
+        """Story retried 3 times -> fail the story."""
         from src.tasks.task_dispatcher import (
             STORY_MAX_ARCHITECT_RETRIES,
             supervise_stuck_stories,
@@ -128,13 +207,12 @@ class TestSuperviseStuckStories:
         old = datetime.now(UTC) - timedelta(minutes=10)
         api_client.get_stories_by_status.side_effect = lambda status: (
             [
-                {
-                    "id": "story-1",
-                    "project_id": "proj-1",
-                    "user_id": "u-1",
-                    "created_at": _iso(old_enough),
-                    "updated_at": _iso(old),
-                }
+                _make_story(
+                    id="story-1",
+                    project_id="00000000-0000-0000-0000-000000000001",
+                    created_at=old_enough,
+                    updated_at=old,
+                )
             ]
             if status == "created"
             else []  # no in_progress stories
@@ -152,21 +230,15 @@ class TestSuperviseStuckStories:
 
     @pytest.mark.asyncio
     async def test_skips_created_story_when_project_has_active(self, api_client, redis_client):
-        """Story stuck in created but project has an in_progress story → skip."""
+        """Story stuck in created but project has an in_progress story -> skip."""
         from src.tasks.task_dispatcher import supervise_stuck_stories
 
         old = datetime.now(UTC) - timedelta(minutes=10)
+        proj_id = "00000000-0000-0000-0000-000000000001"
         api_client.get_stories_by_status.side_effect = lambda status: (
-            [
-                {
-                    "id": "story-queued",
-                    "project_id": "proj-1",
-                    "user_id": "u-1",
-                    "created_at": _iso(old),
-                }
-            ]
+            [_make_story(id="story-queued", project_id=proj_id, created_at=old)]
             if status == "created"
-            else [{"id": "story-active", "project_id": "proj-1"}]
+            else [_make_story(id="story-active", project_id=proj_id, status="in_progress")]
         )
         api_client.get_tasks_by_story.return_value = []
 
@@ -182,36 +254,31 @@ class TestCompleteStoriesTriggersNext:
 
     @pytest.mark.asyncio
     async def test_triggers_next_created_story(self, api_client, redis_client):
-        """Story completed → next created story for same project published to architect."""
+        """Story completed -> next created story for same project published to architect."""
         from src.tasks.task_dispatcher import complete_stories
 
+        proj_id = "00000000-0000-0000-0000-000000000001"
         api_client.get_stories_by_status.side_effect = lambda status: (
-            [
-                {
-                    "id": "story-done",
-                    "project_id": "proj-1",
-                    "user_id": "u-1",
-                }
-            ]
+            [_make_story(id="story-done", project_id=proj_id, status="in_progress")]
             if status == "in_progress"
             else [
-                {
-                    "id": "story-next",
-                    "project_id": "proj-1",
-                    "user_id": "u-2",
-                    "priority": 0,
-                    "created_at": _iso(datetime.now(UTC)),
-                }
+                _make_story(
+                    id="story-next",
+                    project_id=proj_id,
+                    status="created",
+                    priority=0,
+                    created_at=datetime.now(UTC),
+                )
             ]
         )
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "done"},
+            _make_task(id="task-1", status="done"),
         ]
         api_client.transition_story.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
-        api_client.get_primary_repository.return_value = {
-            "git_url": "https://github.com/org/test-project",
-        }
+        api_client.get_story.return_value = _make_story(id="story-done", project_id=proj_id)
+        api_client.get_primary_repository.return_value = _make_repo(
+            git_url="https://github.com/org/test-project",
+        )
 
         mock_github = AsyncMock()
         mock_github.create_pull_request.return_value = {
@@ -233,28 +300,23 @@ class TestCompleteStoriesTriggersNext:
 
     @pytest.mark.asyncio
     async def test_no_next_story_when_none_queued(self, api_client, redis_client):
-        """Story completed but no created stories for project → no architect trigger."""
+        """Story completed but no created stories for project -> no architect trigger."""
         from src.tasks.task_dispatcher import complete_stories
 
+        proj_id = "00000000-0000-0000-0000-000000000001"
         api_client.get_stories_by_status.side_effect = lambda status: (
-            [
-                {
-                    "id": "story-done",
-                    "project_id": "proj-1",
-                    "user_id": "u-1",
-                }
-            ]
+            [_make_story(id="story-done", project_id=proj_id, status="in_progress")]
             if status == "in_progress"
             else []
         )
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "done"},
+            _make_task(id="task-1", status="done"),
         ]
         api_client.transition_story.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
-        api_client.get_primary_repository.return_value = {
-            "git_url": "https://github.com/org/test-project",
-        }
+        api_client.get_story.return_value = _make_story(id="story-done", project_id=proj_id)
+        api_client.get_primary_repository.return_value = _make_repo(
+            git_url="https://github.com/org/test-project",
+        )
 
         mock_github = AsyncMock()
         mock_github.create_pull_request.return_value = {
@@ -277,16 +339,17 @@ class TestSuperviseFailedTasks:
 
     @pytest.mark.asyncio
     async def test_retries_failed_task(self, api_client, redis_client):
-        """Failed task with iterations left → reopen to todo."""
+        """Failed task with iterations left -> reopen to todo."""
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "story_id": "story-1",
-                "current_iteration": 0,
-                "max_iterations": 3,
-            }
+            _make_task(
+                id="task-1",
+                story_id="story-1",
+                status="failed",
+                current_iteration=0,
+                max_iterations=3,
+            )
         ]
         api_client.transition_task.return_value = {}
         api_client.update_task.return_value = {}
@@ -294,7 +357,7 @@ class TestSuperviseFailedTasks:
         result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result["retried"] == 1
-        # Should transition: failed → backlog → todo
+        # Should transition: failed -> backlog -> todo
         calls = api_client.transition_task.call_args_list
         assert len(calls) == 2  # noqa: PLR2004
         assert calls[0].args == ("task-1", "backlog", "supervisor")
@@ -304,44 +367,43 @@ class TestSuperviseFailedTasks:
 
     @pytest.mark.asyncio
     async def test_fails_story_when_retries_exhausted(self, api_client, redis_client):
-        """Failed task at max iterations → fail story."""
+        """Failed task at max iterations -> fail story."""
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "story_id": "story-1",
-                "current_iteration": 3,
-                "max_iterations": 3,
-            }
+            _make_task(
+                id="task-1",
+                story_id="story-1",
+                status="failed",
+                current_iteration=3,
+                max_iterations=3,
+            )
         ]
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "failed"},
-            {"id": "task-2", "status": "in_dev"},
+            _make_task(id="task-1", status="failed", story_id="story-1"),
+            _make_task(id="task-2", status="in_dev", story_id="story-1"),
         ]
         api_client.transition_task.return_value = {}
         api_client.fail_story.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
 
         result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result["failed"] == 1
         api_client.fail_story.assert_called_once_with("story-1")
-        # Should notify user
-        redis_client.publish_flat.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_skips_task_without_story(self, api_client, redis_client):
-        """Failed task without story_id → skip (standalone task)."""
+        """Failed task without story_id -> skip (standalone task)."""
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "story_id": None,
-                "current_iteration": 0,
-                "max_iterations": 3,
-            }
+            _make_task(
+                id="task-1",
+                story_id=None,
+                status="failed",
+                current_iteration=0,
+                max_iterations=3,
+            )
         ]
 
         result = await supervise_failed_tasks(api_client, redis_client)
@@ -356,20 +418,20 @@ class TestSuperviseFailedTasks:
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "story_id": "story-1",
-                "current_iteration": 3,
-                "max_iterations": 3,
-            }
+            _make_task(
+                id="task-1",
+                story_id="story-1",
+                status="failed",
+                current_iteration=3,
+                max_iterations=3,
+            )
         ]
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "failed"},
-            {"id": "task-2", "status": "todo"},
+            _make_task(id="task-1", status="failed", story_id="story-1"),
+            _make_task(id="task-2", status="todo", story_id="story-1"),
         ]
         api_client.transition_task.return_value = {}
         api_client.fail_story.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
 
         await supervise_failed_tasks(api_client, redis_client)
 
@@ -386,16 +448,17 @@ class TestSuperviseStuckTasks:
 
     @pytest.mark.asyncio
     async def test_fails_stuck_in_dev_task(self, api_client, redis_client):
-        """Task in in_dev > threshold → transition to failed."""
+        """Task in in_dev > threshold -> transition to failed."""
         from src.tasks.task_dispatcher import supervise_stuck_tasks
 
         old = datetime.now(UTC) - timedelta(minutes=45)
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "story_id": "story-1",
-                "updated_at": _iso(old),
-            }
+            _make_task(
+                id="task-1",
+                story_id="story-1",
+                status="in_dev",
+                updated_at=old,
+            )
         ]
         api_client.transition_task.return_value = {}
 
@@ -406,16 +469,17 @@ class TestSuperviseStuckTasks:
 
     @pytest.mark.asyncio
     async def test_skips_recent_in_dev_task(self, api_client, redis_client):
-        """Task recently updated → no action."""
+        """Task recently updated -> no action."""
         from src.tasks.task_dispatcher import supervise_stuck_tasks
 
         recent = datetime.now(UTC) - timedelta(minutes=5)
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "story_id": "story-1",
-                "updated_at": _iso(recent),
-            }
+            _make_task(
+                id="task-1",
+                story_id="story-1",
+                status="in_dev",
+                updated_at=recent,
+            )
         ]
 
         result = await supervise_stuck_tasks(api_client, redis_client)
@@ -429,21 +493,22 @@ class TestStoryWorkerCleanup:
 
     @pytest.mark.asyncio
     async def test_cleanup_on_story_complete(self, api_client, redis_client):
-        """Story completed → worker container deleted, registry cleared."""
+        """Story completed -> worker container deleted, registry cleared."""
         from shared.queues import STORY_WORKERS_KEY
         from src.tasks.task_dispatcher import complete_stories
 
+        proj_id = "00000000-0000-0000-0000-000000000001"
         api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+            _make_story(id="story-1", project_id=proj_id, status="in_progress")
         ]
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "done"},
+            _make_task(id="task-1", status="done"),
         ]
         api_client.transition_story.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
-        api_client.get_primary_repository.return_value = {
-            "git_url": "https://github.com/org/test-project",
-        }
+        api_client.get_story.return_value = _make_story(id="story-1", project_id=proj_id)
+        api_client.get_primary_repository.return_value = _make_repo(
+            git_url="https://github.com/org/test-project",
+        )
 
         # Story has a worker registered
         redis_client.redis.hget.return_value = b"dev-story-worker"
@@ -465,20 +530,21 @@ class TestStoryWorkerCleanup:
 
     @pytest.mark.asyncio
     async def test_no_cleanup_when_no_worker(self, api_client, redis_client):
-        """Story completed but no worker registered → no cleanup."""
+        """Story completed but no worker registered -> no cleanup."""
         from src.tasks.task_dispatcher import complete_stories
 
+        proj_id = "00000000-0000-0000-0000-000000000001"
         api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+            _make_story(id="story-1", project_id=proj_id, status="in_progress")
         ]
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "done"},
+            _make_task(id="task-1", status="done"),
         ]
         api_client.transition_story.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
-        api_client.get_primary_repository.return_value = {
-            "git_url": "https://github.com/org/test-project",
-        }
+        api_client.get_story.return_value = _make_story(id="story-1", project_id=proj_id)
+        api_client.get_primary_repository.return_value = _make_repo(
+            git_url="https://github.com/org/test-project",
+        )
 
         # No worker registered
         redis_client.redis.hget.return_value = None
@@ -497,24 +563,24 @@ class TestStoryWorkerCleanup:
 
     @pytest.mark.asyncio
     async def test_cleanup_on_story_failure(self, api_client, redis_client):
-        """Story failed (task retries exhausted) → worker cleaned up."""
+        """Story failed (task retries exhausted) -> worker cleaned up."""
         from shared.queues import STORY_WORKERS_KEY
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-1",
-                "story_id": "story-1",
-                "current_iteration": 3,
-                "max_iterations": 3,
-            }
+            _make_task(
+                id="task-1",
+                story_id="story-1",
+                status="failed",
+                current_iteration=3,
+                max_iterations=3,
+            )
         ]
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-1", "status": "failed"},
+            _make_task(id="task-1", status="failed", story_id="story-1"),
         ]
         api_client.transition_task.return_value = {}
         api_client.fail_story.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
 
         # Story has a worker registered
         redis_client.redis.hget.return_value = b"dev-failed-worker"

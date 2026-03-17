@@ -29,7 +29,7 @@ _consecutive_failures: dict[int, int] = {}
 
 
 async def check_application(
-    app: dict,
+    app,
     server_ip: str,
     consecutive_failures: int,
     api_client: object,
@@ -38,14 +38,14 @@ async def check_application(
 
     Returns updated consecutive failure count.
     """
-    app_id = app["id"]
-    ports = app.get("ports", [])
+    app_id = app.id
+    ports = app.ports
     if not ports:
         return consecutive_failures
 
     # Use the first port for health check
     port = ports[0]["port"]
-    log = logger.bind(app_id=app_id, service=app["service_name"], server_ip=server_ip, port=port)
+    log = logger.bind(app_id=app_id, service=app.service_name, server_ip=server_ip, port=port)
 
     # HTTP health check
     url = f"http://{server_ip}:{port}/health"
@@ -72,12 +72,12 @@ async def check_application(
         # Auto-resolve SERVICE_DOWN incidents on recovery
         if consecutive_failures > 0:
             active = await api_client.get_active_incidents(
-                app["server_handle"], IncidentType.SERVICE_DOWN
+                app.server_handle, IncidentType.SERVICE_DOWN
             )
             for incident in active:
-                await api_client.resolve_incident(incident["id"])
+                await api_client.resolve_incident(incident.id)
                 await notify_admins(
-                    f"Application *{app['service_name']}* on {server_ip} is back — "
+                    f"Application *{app.service_name}* on {server_ip} is back — "
                     "SERVICE_DOWN incident resolved.",
                     level="success",
                 )
@@ -97,22 +97,22 @@ async def check_application(
         # Create SERVICE_DOWN incident after threshold
         if consecutive_failures >= CONSECUTIVE_FAILURE_THRESHOLD:
             active = await api_client.get_active_incidents(
-                app["server_handle"], IncidentType.SERVICE_DOWN
+                app.server_handle, IncidentType.SERVICE_DOWN
             )
             if not active:
                 await api_client.create_incident(
-                    server_handle=app["server_handle"],
+                    server_handle=app.server_handle,
                     incident_type=IncidentType.SERVICE_DOWN,
                     details={
                         "application_id": app_id,
-                        "service_name": app["service_name"],
+                        "service_name": app.service_name,
                         "consecutive_failures": consecutive_failures,
                         "last_error": health.get("error", "unknown"),
                     },
-                    affected_services=[app["service_name"]],
+                    affected_services=[app.service_name],
                 )
                 await notify_admins(
-                    f"Application *{app['service_name']}* on {server_ip} is DOWN — "
+                    f"Application *{app.service_name}* on {server_ip} is DOWN — "
                     f"{consecutive_failures} consecutive failures.",
                     level="critical",
                 )
@@ -128,22 +128,22 @@ async def check_application(
         days_until_expiry = (ssl_expiry - now).days
         if days_until_expiry < SSL_EXPIRY_WARNING_DAYS:
             active = await api_client.get_active_incidents(
-                app["server_handle"], IncidentType.SSL_EXPIRING
+                app.server_handle, IncidentType.SSL_EXPIRING
             )
             if not active:
                 await api_client.create_incident(
-                    server_handle=app["server_handle"],
+                    server_handle=app.server_handle,
                     incident_type=IncidentType.SSL_EXPIRING,
                     details={
                         "application_id": app_id,
-                        "service_name": app["service_name"],
+                        "service_name": app.service_name,
                         "ssl_expires_at": ssl_expiry.isoformat(),
                         "days_until_expiry": days_until_expiry,
                     },
-                    affected_services=[app["service_name"]],
+                    affected_services=[app.service_name],
                 )
                 await notify_admins(
-                    f"SSL cert for *{app['service_name']}* on {server_ip} "
+                    f"SSL cert for *{app.service_name}* on {server_ip} "
                     f"expires in {days_until_expiry} days.",
                     level="warning",
                 )
@@ -171,7 +171,7 @@ async def app_health_probe_cycle(client: object | None = None) -> None:
 
     # Get all applications (exclude not_deployed)
     apps = await client.get_applications()
-    deployed_apps = [a for a in apps if a.get("status") != ApplicationStatus.NOT_DEPLOYED.value]
+    deployed_apps = [a for a in apps if a.status != ApplicationStatus.NOT_DEPLOYED.value]
 
     if not deployed_apps:
         return
@@ -181,17 +181,17 @@ async def app_health_probe_cycle(client: object | None = None) -> None:
     server_ips = {s.handle: s.public_ip for s in servers}
 
     for app in deployed_apps:
-        app_id = app["id"]
-        server_handle = app["server_handle"]
+        app_id = app.id
+        server_handle = app.server_handle
         server_ip = server_ips.get(server_handle)
 
         if not server_ip:
             logger.warning("app_prober_no_server_ip", app_id=app_id, server_handle=server_handle)
             continue
 
-        ports = app.get("ports", [])
+        ports = app.ports
         if not ports:
-            logger.debug("app_prober_no_ports", app_id=app_id, service=app["service_name"])
+            logger.debug("app_prober_no_ports", app_id=app_id, service=app.service_name)
             continue
 
         prev_failures = _consecutive_failures.get(app_id, 0)
@@ -207,13 +207,13 @@ async def app_health_probe_cycle(client: object | None = None) -> None:
             logger.error(
                 "app_health_check_error",
                 app_id=app_id,
-                service=app["service_name"],
+                service=app.service_name,
                 exc_info=True,
             )
 
     # Compute uptime_pct_24h for each probed app
     for app in deployed_apps:
-        app_id = app["id"]
+        app_id = app.id
         try:
             await _update_uptime(app_id, client)
         except Exception:

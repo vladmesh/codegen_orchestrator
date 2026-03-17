@@ -225,7 +225,7 @@ async def _sync_single_repo(
         )
         return
 
-    project_id = db_repo.get("project_id")
+    project_id = db_repo.project_id
     project = await api_client.get_project(str(project_id)) if project_id else None
     if not project:
         logger.warning("repo_orphaned", repo_name=repo_name, project_id=project_id)
@@ -239,7 +239,7 @@ async def _sync_single_repo(
     if project_id_str in missing_counters:
         del missing_counters[project_id_str]
         # Recovery: set repository status back to active
-        repo_id_str = db_repo.get("id")
+        repo_id_str = db_repo.id
         if repo_id_str:
             await api_client.update_repository(
                 repo_id_str, {"status": RepositoryStatus.ACTIVE.value}
@@ -264,13 +264,13 @@ async def _detect_missing_projects(
     for proj in active_projects:
         project_id_str = str(proj.id)
         repos = await api_client.get_repositories(project_id=project_id_str)
-        managed_repos = [r for r in repos if r.get("provider_repo_id") is not None]
+        managed_repos = [r for r in repos if r.provider_repo_id is not None]
 
         if not managed_repos:
             continue  # No repos with provider_repo_id to check
 
         # Check if any managed repo is missing from GitHub
-        all_present = all(r.get("provider_repo_id") in gh_repos_map for r in managed_repos)
+        all_present = all(r.provider_repo_id in gh_repos_map for r in managed_repos)
 
         if not all_present:
             count = missing_counters.get(project_id_str, 0) + 1
@@ -288,7 +288,7 @@ async def _detect_missing_projects(
                 # Mark repositories as missing (not the project)
                 repos = await api_client.get_repositories(project_id=project_id_str)
                 for repo in repos:
-                    repo_id = repo.get("id")
+                    repo_id = repo.id
                     if repo_id:
                         await api_client.update_repository(
                             repo_id, {"status": RepositoryStatus.MISSING.value}

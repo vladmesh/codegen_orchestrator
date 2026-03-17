@@ -78,7 +78,7 @@ class ProvisionerNode(FunctionalNode):
                 "errors": state.get("errors", []) + ["Server info fetch failed"],
             }
 
-        server_ip = server_info.get("public_ip") or server_info.get("host")
+        server_ip = server_info.public_ip or server_info.host
         if not server_ip:
             await update_server_status(server_handle, "error")
             return None, {
@@ -150,7 +150,7 @@ class ProvisionerNode(FunctionalNode):
         time4vps_client = Time4VPSClient(time4vps_username, time4vps_password)
 
         # Get Time4VPS server ID
-        server_id = server_info.get("labels", {}).get("time4vps_id")
+        server_id = (server_info.labels or {}).get("time4vps_id")
         if server_id:
             server_id = int(server_id)
         else:
@@ -335,10 +335,10 @@ class ProvisionerNode(FunctionalNode):
         if error:
             return error
 
-        server_ip = server_info.get("public_ip") or server_info.get("host")
-        server_status = server_info.get("status", "")
-        os_template = server_info.get("os_template", Provisioning.DEFAULT_OS_TEMPLATE)
-        provisioning_attempts = server_info.get("provisioning_attempts", 0)
+        server_ip = server_info.public_ip or server_info.host
+        server_status = server_info.status or ""
+        os_template = server_info.os_template or Provisioning.DEFAULT_OS_TEMPLATE
+        provisioning_attempts = server_info.provisioning_attempts
 
         # Step 2: Check max attempts
         error = await self._check_max_attempts(server_handle, provisioning_attempts, state)

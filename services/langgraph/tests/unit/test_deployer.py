@@ -5,6 +5,7 @@ import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_repository
 
 from src.subgraphs.devops.deployer import DeployerNode
 
@@ -57,7 +58,7 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
     mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
     mock_api.create_service_deployment = AsyncMock(return_value={})
     mock_api.create_deployment = AsyncMock(return_value={})
-    mock_api.get_primary_repository = AsyncMock(return_value={"id": "repo-test1"})
+    mock_api.get_primary_repository = AsyncMock(return_value=make_repository(id="repo-test1"))
     mock_api.get_or_create_application = AsyncMock(return_value={"id": 1})
     mock_api.update_application = AsyncMock(return_value={})
     mock_api.patch = AsyncMock(return_value={})

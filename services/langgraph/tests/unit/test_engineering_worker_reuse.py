@@ -1,11 +1,16 @@
 """Tests for engineering worker reuse."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
+import uuid
 
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.repository import RepositoryDTO
 from src.clients.worker_spawner import SpawnResult
+
+_PROJECT_ID = uuid.uuid4()
 
 
 def _project(**overrides):
@@ -19,6 +24,22 @@ def _project(**overrides):
     return base
 
 
+def _repo(**overrides) -> RepositoryDTO:
+    base = {
+        "id": "repo-1",
+        "project_id": _PROJECT_ID,
+        "name": "test-project",
+        "git_url": "https://github.com/org/test-project",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return RepositoryDTO(**base)
+
+
 class TestDeveloperNodeWorkerId:
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
@@ -28,9 +49,7 @@ class TestDeveloperNodeWorkerId:
         """DeveloperNode should include worker_id from SpawnResult on success."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,

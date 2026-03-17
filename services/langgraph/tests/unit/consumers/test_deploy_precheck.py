@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_repository
 
 
 @pytest.fixture
@@ -35,14 +36,13 @@ def mock_api():
         api.post = AsyncMock()
         api.get = AsyncMock(return_value=[])  # _check_duplicate_deploy
         api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "test-project",
-                "config": {"modules": ["backend"]},
-            }
+            return_value=make_project(
+                name="test-project",
+                config={"modules": ["backend"]},
+            )
         )
         api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
+            return_value=make_repository(git_url="https://github.com/org/test-project")
         )
         api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
         yield api

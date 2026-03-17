@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_repository
 
 
 @pytest.fixture
@@ -29,9 +30,9 @@ def mock_api():
     with patch("src.consumers.engineering_result_handler.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
-        api.get_project = AsyncMock(return_value={"id": "proj-1", "name": "test", "config": {}})
+        api.get_project = AsyncMock(return_value=make_project(name="test", config={}))
         api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test"}
+            return_value=make_repository(git_url="https://github.com/org/test")
         )
         yield api
 
@@ -55,7 +56,7 @@ class TestTaskStatusUpdates:
         await _handle_engineering_success(
             result=result,
             task_id="eng-1",
-            project={"id": "proj-1", "name": "test", "config": {}},
+            project=make_project(name="test", config={}),
             callback_stream=None,
             redis=mock_redis,
             skip_deploy=False,
@@ -95,7 +96,7 @@ class TestTaskStatusUpdates:
         await _handle_engineering_success(
             result=result,
             task_id="eng-1",
-            project={"id": "proj-1", "name": "test", "config": {}},
+            project=make_project(name="test", config={}),
             callback_stream=None,
             redis=mock_redis,
             skip_deploy=False,
@@ -125,7 +126,7 @@ class TestTaskStatusUpdates:
         await _handle_engineering_success(
             result=result,
             task_id="eng-1",
-            project={"id": "proj-1", "name": "test", "config": {}},
+            project=make_project(name="test", config={}),
             callback_stream=None,
             redis=mock_redis,
             skip_deploy=False,

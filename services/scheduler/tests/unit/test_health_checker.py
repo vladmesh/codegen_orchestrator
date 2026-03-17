@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from shared.contracts.dto.incident import IncidentDTO
+
 
 def _http_response(status_code: int = 200, text: str = "") -> httpx.Response:
     """Create an httpx.Response with a fake request attached."""
@@ -22,6 +24,24 @@ def _http_response(status_code: int = 200, text: str = "") -> httpx.Response:
 # ── Fixtures ──
 
 
+def _make_incident(incident_id: int = 1) -> IncidentDTO:
+    return IncidentDTO.model_validate(
+        {
+            "id": incident_id,
+            "server_handle": "vps-123",
+            "incident_type": "server_unreachable",
+            "status": "detected",
+            "detected_at": "2026-03-17T00:00:00Z",
+            "resolved_at": None,
+            "details": {},
+            "affected_services": [],
+            "recovery_attempts": 0,
+            "created_at": "2026-03-17T00:00:00Z",
+            "updated_at": "2026-03-17T00:00:00Z",
+        }
+    )
+
+
 @pytest.fixture
 def mock_api_client():
     """Mock the SchedulerAPIClient singleton."""
@@ -29,7 +49,7 @@ def mock_api_client():
     client.get_servers = AsyncMock(return_value=[])
     client.update_server = AsyncMock()
     client.create_metrics_history = AsyncMock()
-    client.create_incident = AsyncMock(return_value={"id": 1})
+    client.create_incident = AsyncMock(return_value=_make_incident(1))
     client.get_active_incidents = AsyncMock(return_value=[])
     client.resolve_incident = AsyncMock()
     return client
@@ -158,7 +178,7 @@ class TestCheckServer:
     async def test_duplicate_incident_not_created(self, mock_api_client):
         """If active incident exists for same type, don't create another."""
         server = _make_server()
-        mock_api_client.get_active_incidents.return_value = [{"id": 1}]
+        mock_api_client.get_active_incidents.return_value = [_make_incident(1)]
 
         mock_http = AsyncMock()
         mock_http.get = AsyncMock(side_effect=httpx.ConnectTimeout("timeout"))
@@ -181,7 +201,7 @@ class TestCheckServer:
     async def test_recovery_resolves_incident(self, mock_api_client):
         """Successful check when SERVER_UNREACHABLE incident exists → auto-resolve."""
         server = _make_server()
-        mock_api_client.get_active_incidents.return_value = [{"id": 5}]
+        mock_api_client.get_active_incidents.return_value = [_make_incident(5)]
 
         node_resp = _http_response(200, NODE_EXPORTER_TEXT)
         cadvisor_resp = _http_response(200, CADVISOR_TEXT)

@@ -6,9 +6,67 @@ Architect decomposition is now in langgraph service (tested separately).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import pytest
+
+from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+
+_NOW = datetime.now(UTC)
+_PROJ_ID = "00000000-0000-0000-0000-000000000001"
+
+
+def _task(*, id: str, status: str = "todo", **overrides) -> TaskDTO:
+    defaults = {
+        "id": id,
+        "project_id": UUID(_PROJ_ID),
+        "type": "feature",
+        "title": id,
+        "description": "",
+        "status": status,
+        "priority": 0,
+        "current_iteration": 0,
+        "max_iterations": 3,
+        "created_by": "system",
+        "story_id": "story-1",
+        "blocked_by_task_id": None,
+        "created_at": _NOW,
+    }
+    defaults.update(overrides)
+    return TaskDTO(**defaults)
+
+
+def _story(*, id: str, status: str = "in_progress", **overrides) -> StoryDTO:
+    defaults = {
+        "project_id": UUID(_PROJ_ID),
+        "title": id,
+        "type": "product",
+        "status": status,
+        "priority": 0,
+        "created_by": "system",
+        "created_at": _NOW,
+    }
+    defaults.update(overrides)
+    return StoryDTO(id=id, **defaults)
+
+
+def _repo(**overrides) -> RepositoryDTO:
+    defaults = {
+        "id": "repo-1",
+        "project_id": UUID(_PROJ_ID),
+        "name": "test-project",
+        "git_url": "https://github.com/org/test-project",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": _NOW,
+    }
+    defaults.update(overrides)
+    return RepositoryDTO(**defaults)
 
 
 class TestDispatcherPipelineFlow:
@@ -38,36 +96,28 @@ class TestDispatcherPipelineFlow:
         # --- Phase 1: Dispatcher picks up first unblocked task ---
 
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-A",
-                "title": "Add User model",
-                "description": "SQLAlchemy model",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": None,
-                "status": "todo",
-            },
-            {
-                "id": "task-B",
-                "title": "Add login endpoint",
-                "description": "POST /auth/login",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": "task-A",
-                "status": "todo",
-            },
+            _task(
+                id="task-A",
+                title="Add User model",
+                description="SQLAlchemy model",
+                blocked_by_task_id=None,
+            ),
+            _task(
+                id="task-B",
+                title="Add login endpoint",
+                description="POST /auth/login",
+                blocked_by_task_id="task-A",
+            ),
         ]
-        api_client.get_task.return_value = {"id": "task-A", "status": "todo"}
+        api_client.get_task.return_value = _task(id="task-A")
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-A", "status": "todo"},
-            {"id": "task-B", "status": "todo"},
+            _task(id="task-A"),
+            _task(id="task-B"),
         ]
         api_client.get_task_events.return_value = []
         api_client.create_run.return_value = {"id": "run-1"}
         api_client.transition_task.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_story.return_value = _story(id="story-1")
 
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
@@ -84,31 +134,31 @@ class TestDispatcherPipelineFlow:
         api_client.reset_mock()
         redis_client.reset_mock()
         api_client.get_tasks_by_status.return_value = [
-            {
-                "id": "task-B",
-                "title": "Add login endpoint",
-                "description": "POST /auth/login",
-                "type": "feature",
-                "project_id": "proj-1",
-                "story_id": "story-1",
-                "blocked_by_task_id": "task-A",
-                "status": "todo",
-            },
+            _task(
+                id="task-B",
+                title="Add login endpoint",
+                description="POST /auth/login",
+                blocked_by_task_id="task-A",
+            ),
         ]
-        api_client.get_task.return_value = {"id": "task-A", "status": "done"}
+        api_client.get_task.return_value = _task(id="task-A", status="done")
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-A", "status": "done"},
-            {"id": "task-B", "status": "todo"},
+            _task(id="task-A", status="done"),
+            _task(id="task-B"),
         ]
         api_client.get_task_events.return_value = [
-            {
-                "event_type": "iteration_end",
-                "details": {"commit_sha": "abc", "summary": "User model created"},
-            }
+            TaskEventDTO(
+                id=1,
+                task_id="task-A",
+                event_type="iteration_end",
+                details={"commit_sha": "abc", "summary": "User model created"},
+                actor="worker",
+                created_at=_NOW,
+            ),
         ]
         api_client.create_run.return_value = {"id": "run-2"}
         api_client.transition_task.return_value = {}
-        api_client.get_story.return_value = {"user_id": "u-1"}
+        api_client.get_story.return_value = _story(id="story-1")
 
         dispatched = await dispatch_todo_tasks(api_client, redis_client)
 
@@ -123,16 +173,14 @@ class TestDispatcherPipelineFlow:
         api_client.reset_mock()
         redis_client.reset_mock()
         api_client.get_stories_by_status.return_value = [
-            {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
+            _story(id="story-1"),
         ]
         api_client.get_tasks_by_story.return_value = [
-            {"id": "task-A", "status": "done"},
-            {"id": "task-B", "status": "done"},
+            _task(id="task-A", status="done"),
+            _task(id="task-B", status="done"),
         ]
         api_client.transition_story.return_value = {}
-        api_client.get_primary_repository.return_value = {
-            "git_url": "https://github.com/org/test-project",
-        }
+        api_client.get_primary_repository.return_value = _repo()
 
         mock_github = AsyncMock()
         mock_github.create_pull_request.return_value = {

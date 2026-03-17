@@ -9,6 +9,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_repository
 
 
 class TestBlockedFlowEndToEnd:
@@ -37,11 +38,9 @@ class TestBlockedFlowEndToEnd:
             block_reason="Missing API credentials for Stripe",
         )
 
-        mock_api.get_project = AsyncMock(
-            return_value={"id": "proj-1", "status": "active", "config": {}}
-        )
+        mock_api.get_project = AsyncMock(return_value=make_project(status="active", config={}))
         mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-repo"}
+            return_value=make_repository(git_url="https://github.com/org/test-repo")
         )
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghp_test")
 

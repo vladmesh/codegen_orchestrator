@@ -1,11 +1,16 @@
 """Test that engineering consumer never updates project.status or service_status."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
+import uuid
 
 import pytest
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.repository import RepositoryDTO
 from src.consumers.engineering import process_engineering_job
+
+_PROJECT_ID = uuid.uuid4()
 
 
 def _make_job_data(**overrides):
@@ -21,16 +26,34 @@ def _make_job_data(**overrides):
     return base
 
 
-def _make_project(**overrides):
+def _make_project(**overrides) -> ProjectDTO:
     base = {
-        "id": "proj-1",
+        "id": _PROJECT_ID,
         "name": "test-project",
-        "status": ProjectStatus.ACTIVE.value,
+        "status": ProjectStatus.ACTIVE,
         "config": {},
         "owner_id": 1,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
     }
     base.update(overrides)
-    return base
+    return ProjectDTO(**base)
+
+
+def _repo(**overrides) -> RepositoryDTO:
+    base = {
+        "id": "repo-1",
+        "project_id": _PROJECT_ID,
+        "name": "test-project",
+        "git_url": "https://github.com/org/test-project",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return RepositoryDTO(**base)
 
 
 @pytest.mark.asyncio
@@ -38,7 +61,7 @@ async def test_engineering_consumer_never_patches_project_status():
     """Engineering consumer should never call api_client.patch with 'status' on projects."""
     api = AsyncMock()
     api.get_project = AsyncMock(return_value=_make_project())
-    api.get_primary_repository = AsyncMock(return_value={"id": "repo-1"})
+    api.get_primary_repository = AsyncMock(return_value=_repo())
     api.get_tasks_by_story = AsyncMock(return_value=[])
     api.get = AsyncMock(return_value={"created_by": "claude"})
     api.patch = AsyncMock()

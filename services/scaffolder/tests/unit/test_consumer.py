@@ -5,9 +5,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from src.consumer import process_scaffold_job
 from src.scaffold import ScaffoldResult
+
+
+def _make_project(**overrides) -> ProjectDTO:
+    """Build a ProjectDTO for tests."""
+    base = {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "my-project",
+        "status": "draft",
+        "config": {},
+        "created_by": "system",
+        "created_at": "2026-03-17T00:00:00Z",
+        "updated_at": "2026-03-17T00:00:00Z",
+    }
+    base.update(overrides)
+    return ProjectDTO.model_validate(base)
+
 
 # Shared env dict for tests needing GITHUB_ORG
 _GITHUB_ENV = {"GITHUB_ORG": "project-factory-organization"}
@@ -34,12 +50,7 @@ def mock_redis():
 @pytest.fixture
 def mock_api():
     api = AsyncMock()
-    api.get_project.return_value = {"id": "proj-123", "config": {}}
-    api.get_repository.return_value = {
-        "id": "repo-456",
-        "git_url": "https://github.com/org/my-project",
-        "name": "my-project",
-    }
+    api.get_project.return_value = _make_project()
     api.update_project_status.return_value = None
     api.update_project_config.return_value = None
     return api

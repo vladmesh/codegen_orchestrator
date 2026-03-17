@@ -74,13 +74,13 @@ logger = structlog.get_logger(__name__)
 DISPATCH_INTERVAL_SECONDS = 30
 
 
-def _build_cumulative_context(sibling_events: list[dict]) -> str:
+def _build_cumulative_context(sibling_events: list) -> str:
     """Build a context summary from completed sibling task events."""
     lines = []
     for event in sibling_events:
-        if event.get("event_type") != "iteration_end":
+        if event.event_type != "iteration_end":
             continue
-        details = event.get("details", {})
+        details = event.details or {}
         summary = details.get("summary", "")
         commit = details.get("commit_sha", "")
         if summary:
@@ -105,17 +105,17 @@ async def dispatch_todo_tasks(
     dispatched = 0
 
     for task in tasks:
-        task_id = task["id"]
-        blocker_id = task.get("blocked_by_task_id")
+        task_id = task.id
+        blocker_id = task.blocked_by_task_id
 
         # Check if blocker is resolved
         if blocker_id:
             blocker = await api_client.get_task(blocker_id)
-            if blocker.get("status") != TaskStatus.DONE:
+            if blocker.status != TaskStatus.DONE:
                 continue  # Still blocked
 
-        story_id = task.get("story_id")
-        project_id = task.get("project_id")
+        story_id = task.story_id
+        project_id = str(task.project_id)
         log = logger.bind(task_id=task_id, story_id=story_id)
 
         # Skip internal project tasks — implemented manually via /implement
@@ -140,13 +140,13 @@ async def dispatch_todo_tasks(
             siblings = await api_client.get_tasks_by_story(story_id)
 
             # Guard: max 1 in_dev task per story
-            if any(s.get("status") == TaskStatus.IN_DEV for s in siblings):
+            if any(s.status == TaskStatus.IN_DEV for s in siblings):
                 log.info("task_skipped_story_busy")
                 continue
 
             # Guard: don't dispatch if any sibling has a non-retryable failure
             if any(
-                (s.get("failure_metadata") or {}).get("failure_reason") in NON_RETRYABLE_REASONS
+                (s.failure_metadata or {}).get("failure_reason") in NON_RETRYABLE_REASONS
                 for s in siblings
             ):
                 log.info("task_skipped_story_has_rejected_sibling")
@@ -157,19 +157,16 @@ async def dispatch_todo_tasks(
         if siblings:
             all_events = []
             for sibling in siblings:
-                if sibling["id"] != task_id and sibling.get("status") == TaskStatus.DONE:
-                    events = await api_client.get_task_events(sibling["id"])
+                if sibling.id != task_id and sibling.status == TaskStatus.DONE:
+                    events = await api_client.get_task_events(sibling.id)
                     all_events.extend(events)
             context = _build_cumulative_context(all_events)
 
-        # Resolve user_id from story
+        # Resolve user_id from story (StoryDTO has no user_id field)
         user_id = ""
-        if story_id:
-            story = await api_client.get_story(story_id)
-            user_id = story.get("user_id", "")
 
         # Enrich description with context
-        description = task.get("description", "")
+        description = task.description or ""
         if context:
             description = context + description
 
@@ -193,7 +190,7 @@ async def dispatch_todo_tasks(
             task_id=run_id,
             project_id=project_id,
             user_id=str(user_id),
-            action=task.get("type", "feature"),
+            action=task.type,
             description=description,
             skip_deploy=True,  # Deploy handled at story level
             planning_task_id=task_id,

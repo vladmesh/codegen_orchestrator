@@ -40,8 +40,8 @@ async def poll_merged_prs(
     github = GitHubAppClient()
 
     for story in stories:
-        story_id = story["id"]
-        project_id = story.get("project_id")
+        story_id = story.id
+        project_id = str(story.project_id)
         log = logger.bind(story_id=story_id, project_id=project_id)
 
         if not project_id:
@@ -52,7 +52,7 @@ async def poll_merged_prs(
             log.warning("poll_merged_no_repo")
             continue
 
-        git_url = repo.get("git_url", "")
+        git_url = repo.git_url or ""
         owner, repo_name = _parse_owner_repo(git_url)
         branch = f"story/{story_id}"
 
@@ -79,9 +79,8 @@ async def poll_merged_prs(
         # Transition story to deploying
         await api_client.transition_story(story_id, "deploy")
 
-        # Resolve user_id for deploy message
-        story_data = await api_client.get_story(story_id)
-        user_id = story_data.get("user_id", "")
+        # StoryDTO has no user_id field
+        user_id = ""
 
         # Publish deploy message
         run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"

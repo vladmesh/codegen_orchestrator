@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import structlog
 
+from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.queues.deploy import DeployMessage
 from shared.contracts.queues.qa import QAMessage
 from shared.queues import QA_QUEUE
@@ -99,7 +100,7 @@ async def _handle_deploy_success(
     smoke_result: dict | None,
     task_id: str,
     project_id: str,
-    project: dict,
+    project: ProjectDTO,
     callback_stream: str,
     user_id: str,
     story_id: str,

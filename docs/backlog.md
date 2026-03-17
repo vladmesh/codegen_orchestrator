@@ -13,12 +13,6 @@
 - **Status**: backlog
 - **Brief**: Audit found noqa comments that should be fixed instead of suppressed: PLR0913 in engineering.py:682 (too many args — extract params dataclass), PLR0911 in devops/nodes.py:144 (too many returns — extract lookup table), PLR2004 in debug.py:65 (use named constant), S110 in debug.py:71 (bare except —...
 
-### Replace raw dict API clients with shared Pydantic DTOs
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: All API clients (langgraph 30+ methods, scheduler 40+ methods, infra-service, telegram_bot, scaffolder) accept payload: dict and return -> dict with raw resp.json(). Should create shared Pydantic DTOs for each entity (deployment, application, incident, server, etc.) in shared/contracts/dto/ and v...
-
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —

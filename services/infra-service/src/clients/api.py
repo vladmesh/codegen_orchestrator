@@ -10,6 +10,7 @@ import os
 import httpx
 import structlog
 
+from shared.contracts.dto.server import ServerDTO
 from shared.log_config.correlation import get_correlation_id
 
 logger = structlog.get_logger(__name__)
@@ -59,10 +60,10 @@ class InfrastructureAPIClient:
             await self._client.aclose()
             self._client = None
 
-    async def get_server(self, server_handle: str) -> dict:
+    async def get_server(self, server_handle: str) -> ServerDTO:
         """Get server info by handle."""
         resp = await self._request("GET", f"servers/{server_handle}")
-        return resp.json()
+        return ServerDTO.model_validate(resp.json())
 
     async def update_server(self, server_handle: str, payload: dict) -> dict:
         """Update server fields."""

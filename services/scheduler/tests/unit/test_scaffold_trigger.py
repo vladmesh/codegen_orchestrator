@@ -7,12 +7,22 @@ import uuid
 import pytest
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus, ServiceModule
+from shared.contracts.dto.repository import RepositoryDTO
 from src.tasks.scaffold_trigger import trigger_scaffolds
 
 # Stable UUIDs for tests
 PROJ_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
-_REPO = {"id": "repo-1", "git_url": "https://github.com/org/test-project", "name": "test-project"}
+_REPO = RepositoryDTO(
+    id="repo-1",
+    project_id=PROJ_UUID,
+    name="test-project",
+    git_url="https://github.com/org/test-project",
+    role="primary",
+    visibility="private",
+    is_managed=True,
+    created_at=datetime.now(UTC),
+)
 
 
 def _make_project(

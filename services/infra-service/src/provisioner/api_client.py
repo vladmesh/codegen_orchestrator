@@ -1,5 +1,6 @@
 """API client for provisioner - communicates with the API service."""
 
+from shared.contracts.dto.server import ServerDTO
 from shared.log_config import get_logger
 
 from ..clients.api import api_client
@@ -7,7 +8,7 @@ from ..clients.api import api_client
 logger = get_logger(__name__)
 
 
-async def get_server_info(server_handle: str) -> dict | None:
+async def get_server_info(server_handle: str) -> ServerDTO | None:
     """Fetch server info from API.
 
     Args:
@@ -67,7 +68,7 @@ async def update_server_labels(server_handle: str, labels: dict) -> bool:
     """
     try:
         current = await api_client.get_server(server_handle)
-        current_labels = current.get("labels", {}) or {}
+        current_labels = dict(current.labels or {})
         current_labels.update(labels)
         final_labels = current_labels
 
@@ -142,7 +143,7 @@ async def increment_provisioning_attempts(server_handle: str) -> bool:
     """
     try:
         current = await api_client.get_server(server_handle)
-        attempts = current.get("provisioning_attempts", 0)
+        attempts = current.provisioning_attempts
         await api_client.update_server(
             server_handle,
             {"provisioning_attempts": attempts + 1},

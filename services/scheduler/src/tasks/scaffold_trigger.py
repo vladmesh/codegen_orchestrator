@@ -111,9 +111,9 @@ async def _trigger_full_scaffold(project, api_client, redis_client, log) -> bool
         return False
 
     repo = repos[0]
-    msg = _build_scaffold_message(project, repo["id"], mode="full")
+    msg = _build_scaffold_message(project, repo.id, mode="full")
     await redis_client.publish_message(SCAFFOLD_QUEUE, msg)
-    log.info("scaffold_triggered", repository_id=repo["id"], mode="full")
+    log.info("scaffold_triggered", repository_id=repo.id, mode="full")
     return True
 
 
@@ -145,9 +145,9 @@ async def _trigger_ensure_scaffold(project, api_client, redis_client, log) -> bo
         return False
 
     repo = repos[0]
-    msg = _build_scaffold_message(project, repo["id"], mode="ensure")
+    msg = _build_scaffold_message(project, repo.id, mode="ensure")
     await redis_client.publish_message(SCAFFOLD_QUEUE, msg)
-    log.info("scaffold_triggered", repository_id=repo["id"], mode="ensure")
+    log.info("scaffold_triggered", repository_id=repo.id, mode="ensure")
     return True
 
 

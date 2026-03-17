@@ -76,22 +76,22 @@ async def _trigger_next_story(
     created_stories = await api_client.get_stories_by_status(StoryStatus.CREATED)
     # Filter to same project, sort by priority (lower = higher priority)
     project_stories = sorted(
-        [s for s in created_stories if s.get("project_id") == project_id],
-        key=lambda s: s.get("priority", 0),
+        [s for s in created_stories if str(s.project_id) == project_id],
+        key=lambda s: s.priority,
     )
     if not project_stories:
         return
 
     next_story = project_stories[0]
     arch_msg = ArchitectMessage(
-        story_id=next_story["id"],
+        story_id=next_story.id,
         project_id=project_id,
-        user_id=next_story.get("user_id", ""),
+        user_id="",
     )
     await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
     logger.info(
         "next_story_triggered",
-        story_id=next_story["id"],
+        story_id=next_story.id,
         project_id=project_id,
     )
 
@@ -122,8 +122,8 @@ async def complete_stories(
         )
 
     for story in stories:
-        story_id = story["id"]
-        project_id = story.get("project_id")
+        story_id = story.id
+        project_id = str(story.project_id)
 
         tasks = await api_client.get_tasks_by_story(story_id)
 
@@ -132,7 +132,7 @@ async def complete_stories(
             logger.debug("complete_stories_skip_no_tasks", story_id=story_id)
             continue
 
-        task_statuses = [t.get("status") for t in tasks]
+        task_statuses = [t.status for t in tasks]
         # Check if all tasks are done
         if not all(s == TaskStatus.DONE for s in task_statuses):
             logger.debug(
@@ -150,9 +150,9 @@ async def complete_stories(
             log.error("complete_stories_no_repo", project_id=project_id)
             continue
 
-        git_url = repo.get("git_url", "")
+        git_url = repo.git_url or ""
         owner, repo_name = _parse_owner_repo(git_url)
-        story_title = story.get("title", f"Story {story_id}")
+        story_title = story.title
         branch = f"story/{story_id}"
 
         # Create PR from story branch to main

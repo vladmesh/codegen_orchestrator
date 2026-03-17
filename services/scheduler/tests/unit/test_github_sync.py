@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
-from shared.contracts.dto.repository import RepositoryStatus
+from shared.contracts.dto.repository import RepositoryDTO, RepositoryStatus
 from src.tasks import github_sync
 
 PROJ1_UUID = uuid.uuid4()
@@ -34,11 +34,17 @@ async def test_sync_single_repo_updates_existing_project(mock_api_client, mock_g
     # Add a file to check content fetching if needed
     await mock_github.create_or_update_file("org", "test-repo", "README.md", "Content", "init")
 
-    db_repo = {
-        "id": "repo-1",
-        "project_id": str(PROJ1_UUID),
-        "provider_repo_id": repo.id,
-    }
+    db_repo = RepositoryDTO(
+        id="repo-1",
+        project_id=PROJ1_UUID,
+        name="test-repo",
+        git_url="https://github.com/org/test-repo",
+        provider_repo_id=repo.id,
+        role="primary",
+        visibility="private",
+        is_managed=True,
+        created_at=datetime.now(UTC),
+    )
 
     existing_project = ProjectDTO(
         id=PROJ1_UUID,
@@ -104,11 +110,40 @@ async def test_detect_missing_projects_marks_missing(mock_api_client, mock_notif
     mock_api_client.update_repository = AsyncMock()
     # proj_ok has a repo with provider_repo_id=1 (present in gh_repos_map)
     # proj_missing has a repo with provider_repo_id=2 (missing from gh_repos_map)
+    _rd = {
+        "name": "r",
+        "git_url": "https://github.com/org/r",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": datetime.now(UTC),
+    }
     mock_api_client.get_repositories = AsyncMock(
         side_effect=[
-            [{"provider_repo_id": 1}],  # repos for proj_ok (initial check)
-            [{"provider_repo_id": 2}],  # repos for proj_missing (initial check)
-            [{"id": "repo-2", "provider_repo_id": 2}],  # repos for proj_missing (marking)
+            [
+                RepositoryDTO(
+                    id="repo-1",
+                    project_id=PROJ1_UUID,
+                    provider_repo_id=1,
+                    **_rd,
+                )
+            ],
+            [
+                RepositoryDTO(
+                    id="repo-2",
+                    project_id=PROJ2_UUID,
+                    provider_repo_id=2,
+                    **_rd,
+                )
+            ],
+            [
+                RepositoryDTO(
+                    id="repo-2",
+                    project_id=PROJ2_UUID,
+                    provider_repo_id=2,
+                    **_rd,
+                )
+            ],
         ]
     )
 

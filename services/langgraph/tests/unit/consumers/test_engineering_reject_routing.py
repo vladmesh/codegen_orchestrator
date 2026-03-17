@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_repository, make_story
 
 _PATCH = "src.consumers.engineering"
 
@@ -31,16 +32,15 @@ def mock_api():
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "test",
-                "status": "active",
-                "config": {"modules": ["backend"], "description": "test"},
-            }
+            return_value=make_project(
+                name="test",
+                status="active",
+                config={"modules": ["backend"], "description": "test"},
+            )
         )
-        api.get_primary_repository = AsyncMock(return_value={"id": "repo-1"})
+        api.get_primary_repository = AsyncMock(return_value=make_repository())
         api.get_tasks_by_story = AsyncMock(return_value=[])
-        api.get_story = AsyncMock(return_value={"title": "test story"})
+        api.get_story = AsyncMock(return_value=make_story(title="test story"))
         yield api
 
 

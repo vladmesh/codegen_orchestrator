@@ -5,16 +5,17 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_story
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.queues.architect import ArchitectMessage
 
 # Default project response (ACTIVE = scaffold done, no waiting)
-_ACTIVE_PROJECT = {"id": "proj-123", "status": ProjectStatus.ACTIVE, "config": {}}
+_ACTIVE_PROJECT = make_project(status=ProjectStatus.ACTIVE, config={})
 
 # Default story response (CREATED = ready for architect decomposition)
-_CREATED_STORY = {"id": "story-abc", "status": "created"}
+_CREATED_STORY = make_story(id="story-abc", status="created")
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +62,7 @@ class TestProcessArchitectJob:
     ):
         """Architect skips stories that are already completed/archived/failed/deploying."""
         _mock_api_get_project.get_story = AsyncMock(
-            return_value={"id": "story-abc", "status": status}
+            return_value=make_story(id="story-abc", status=status)
         )
         from src.consumers.architect import process_architect_job
 
@@ -129,7 +130,7 @@ class TestProcessArchitectJob:
     async def test_reopen_message_includes_user_report(self, mock_redis, _mock_api_get_project):
         """Reopen messages include user_report in the initial state."""
         _mock_api_get_project.get_story = AsyncMock(
-            return_value={"id": "story-reopen", "status": StoryStatus.REOPENED}
+            return_value=make_story(id="story-reopen", status=StoryStatus.REOPENED)
         )
         reopen_data = ArchitectMessage(
             story_id="story-reopen",
@@ -219,8 +220,8 @@ class TestProcessArchitectJob:
         # First call: DRAFT, second call: ACTIVE
         mock_api.get_project = AsyncMock(
             side_effect=[
-                {"id": "proj-123", "status": ProjectStatus.DRAFT, "config": {}},
-                {"id": "proj-123", "status": ProjectStatus.ACTIVE, "config": {}},
+                make_project(status=ProjectStatus.DRAFT, config={}),
+                make_project(status=ProjectStatus.ACTIVE, config={}),
             ]
         )
 

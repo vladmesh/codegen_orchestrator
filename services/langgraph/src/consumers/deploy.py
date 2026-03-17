@@ -9,13 +9,13 @@ from datetime import UTC, datetime
 
 import structlog
 
+from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.queues.deploy import DeployMessage
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
-from ..schemas.api_types import ProjectInfo
 from ..subgraphs.devops import create_devops_subgraph
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker
@@ -68,12 +68,12 @@ logger = structlog.get_logger(__name__)
 DEPLOY_LOCK_TTL = 3600  # 1 hour — generous TTL for long deploys
 
 
-async def _allocate_resources(project_id: str, project: dict) -> dict | str:
+async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | str:
     """Get or create allocations. Returns dict of resources or error string."""
     from ..tools.allocator import AllocationError, ensure_project_allocations
 
     try:
-        config = project.get("config", {})
+        config = project.config or {}
         modules = config.get("modules", ["backend"])
         min_ram_mb = config.get("estimated_ram_mb", 512)
 
@@ -81,8 +81,8 @@ async def _allocate_resources(project_id: str, project: dict) -> dict | str:
         primary_repo = await api_client.get_primary_repository(project_id)
         if not primary_repo:
             return f"No repository found for project {project_id}"
-        repo_id = primary_repo["id"]
-        service_name = project.get("name", project_id)
+        repo_id = primary_repo.id
+        service_name = project.name
 
         return await ensure_project_allocations(
             project_id=project_id,
@@ -96,12 +96,12 @@ async def _allocate_resources(project_id: str, project: dict) -> dict | str:
 
 
 def _build_subgraph_input(
-    project_id: str, project: dict, git_url: str, allocated_resources: dict, job_data: dict
+    project_id: str, project: ProjectDTO, git_url: str, allocated_resources: dict, job_data: dict
 ) -> dict:
     """Build DevOps subgraph input from deploy job data."""
     return {
         "project_id": project_id,
-        "project_spec": project,
+        "project_spec": project.model_dump(),
         "repo_info": {
             "full_name": git_url.replace("https://github.com/", "")
             .rstrip("/")
@@ -177,7 +177,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
         # Fetch project details (with user isolation)
         tg_kwargs = {"telegram_id": int(user_id)} if user_id and user_id.isdigit() else {}
-        project: ProjectInfo | None = await api_client.get_project(project_id, **tg_kwargs)
+        project: ProjectDTO | None = await api_client.get_project(project_id, **tg_kwargs)
         if not project:
             error_msg = f"Project {project_id} not found"
             await api_client.patch(
@@ -242,7 +242,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
         # Resolve git_url from primary Repository entity
         primary_repo = await api_client.get_primary_repository(project_id)
-        _git_url = primary_repo.get("git_url", "") if primary_repo else ""
+        _git_url = primary_repo.git_url if primary_repo else ""
 
         # Run DevOps subgraph
         devops_subgraph = create_devops_subgraph()
@@ -278,7 +278,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             smoke_failed = smoke_result and smoke_result.get("status") == "fail"
 
             if smoke_failed:
-                project_name = project.get("name", project_id) if project else project_id
+                project_name = project.name if project else project_id
                 return await _handle_smoke_failure(
                     result=result,
                     smoke_result=smoke_result,

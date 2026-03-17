@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+import uuid
 
 import pytest
 
-from shared.contracts.dto.project import ProjectStatus
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.repository import RepositoryDTO
 from src.clients.worker_spawner import SpawnResult
+
+_PROJECT_ID = uuid.uuid4()
 
 
 def _project(**overrides):
@@ -21,6 +25,36 @@ def _project(**overrides):
     }
     base.update(overrides)
     return base
+
+
+def _project_dto(**overrides) -> ProjectDTO:
+    base = {
+        "id": _PROJECT_ID,
+        "name": "test-project",
+        "status": ProjectStatus.ACTIVE,
+        "config": {"modules": ["backend"]},
+        "owner_id": 1,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return ProjectDTO(**base)
+
+
+def _repo(**overrides) -> RepositoryDTO:
+    base = {
+        "id": "repo-1",
+        "project_id": _PROJECT_ID,
+        "name": "test-project",
+        "git_url": "https://github.com/org/test-project",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return RepositoryDTO(**base)
 
 
 class TestDeveloperNodeWorkerReuse:
@@ -37,9 +71,7 @@ class TestDeveloperNodeWorkerReuse:
         """When worker_id is in state, should use send_task_to_worker."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_send_task.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -78,9 +110,7 @@ class TestDeveloperNodeWorkerReuse:
         """When send_task_to_worker fails with timeout, fall back to request_spawn."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         # send_task_to_worker times out
         mock_send_task.return_value = SpawnResult(
             request_id="req-1",
@@ -126,9 +156,7 @@ class TestDeveloperNodeWorkerReuse:
         """When no worker_id in state, should use request_spawn as before."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -176,11 +204,9 @@ class TestEngineeringConsumerStoryWorker:
     ):
         """First task in story: spawn → lookup worker, pass to subgraph."""
         mock_api.patch = AsyncMock()
-        mock_api.get_project = AsyncMock(return_value=_project())
+        mock_api.get_project = AsyncMock(return_value=_project_dto())
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_api.post = AsyncMock()
         mock_resource.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 
@@ -242,11 +268,9 @@ class TestEngineeringConsumerStoryWorker:
     ):
         """Second task in story: lookup existing worker_id, pass to subgraph."""
         mock_api.patch = AsyncMock()
-        mock_api.get_project = AsyncMock(return_value=_project())
+        mock_api.get_project = AsyncMock(return_value=_project_dto())
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_api.post = AsyncMock()
         mock_resource.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 
@@ -304,11 +328,9 @@ class TestEngineeringConsumerStoryWorker:
     ):
         """Task without story_id: no worker lookup."""
         mock_api.patch = AsyncMock()
-        mock_api.get_project = AsyncMock(return_value=_project())
+        mock_api.get_project = AsyncMock(return_value=_project_dto())
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_api.post = AsyncMock()
         mock_resource.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 
@@ -363,10 +385,8 @@ class TestHandleSuccessWorkerLifecycle:
     ):
         """With story_id: store worker in registry, don't delete."""
         mock_api.patch = AsyncMock()
-        mock_api.get_project = AsyncMock(return_value=_project())
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_project = AsyncMock(return_value=_project_dto())
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_api.post = AsyncMock()
 
         from src.consumers.engineering import _handle_engineering_success
@@ -378,7 +398,7 @@ class TestHandleSuccessWorkerLifecycle:
         await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc", "worker_id": "dev-abc"},
             task_id="eng-1",
-            project=_project(),
+            project=_project_dto(),
             callback_stream="cb:1",
             redis=redis_mock,
             skip_deploy=True,
@@ -403,10 +423,8 @@ class TestHandleSuccessWorkerLifecycle:
     ):
         """Without story_id: delete worker after completion."""
         mock_api.patch = AsyncMock()
-        mock_api.get_project = AsyncMock(return_value=_project())
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_project = AsyncMock(return_value=_project_dto())
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_api.post = AsyncMock()
 
         from src.consumers.engineering import _handle_engineering_success
@@ -418,7 +436,7 @@ class TestHandleSuccessWorkerLifecycle:
         await _handle_engineering_success(
             result={"engineering_status": "done", "commit_sha": "abc", "worker_id": "dev-abc"},
             task_id="eng-1",
-            project=_project(),
+            project=_project_dto(),
             callback_stream="cb:1",
             redis=redis_mock,
             skip_deploy=True,

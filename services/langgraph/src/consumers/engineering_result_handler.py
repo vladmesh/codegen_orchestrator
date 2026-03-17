@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import structlog
 
+from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
@@ -275,7 +276,7 @@ async def handle_worker_blocked(
 async def handle_engineering_success(  # noqa: PLR0913
     result: dict,
     task_id: str,
-    project: dict,
+    project: ProjectDTO,
     callback_stream: str | None,
     redis: RedisStreamClient,
     skip_deploy: bool,
@@ -288,7 +289,7 @@ async def handle_engineering_success(  # noqa: PLR0913
     deploy_fix_attempt: int = 0,
 ) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
-    project_id = project["id"]
+    project_id = str(project.id)
 
     if not result.get("commit_sha"):
         logger.error("no_commit_sha", task_id=task_id, project_id=project_id)

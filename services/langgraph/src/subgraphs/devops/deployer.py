@@ -36,7 +36,7 @@ async def _create_deployment_record(
         repo = await api_client.get_primary_repository(project_id)
         if repo:
             app = await api_client.get_or_create_application(
-                repo_id=repo["id"],
+                repo_id=repo.id,
                 server_handle=server_handle,
                 service_name=service_name,
             )

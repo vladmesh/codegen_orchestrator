@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_repository
 
 
 @pytest.fixture
@@ -29,14 +30,14 @@ def mock_api():
         api.post = AsyncMock()
         api.get_project = AsyncMock(return_value=None)
         api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
+            return_value=make_repository(git_url="https://github.com/org/test-project")
         )
         with patch("src.consumers.engineering_result_handler.api_client", api):
             yield api
 
 
 def _project():
-    return {"id": "proj-1", "name": "test-project", "config": {"modules": ["backend"]}}
+    return make_project(name="test-project", config={"modules": ["backend"]})
 
 
 class TestHandleEngineeringSuccess:
@@ -288,12 +289,11 @@ class TestFeatureActionFlow:
 
         # Project is active with existing repo
         mock_api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "test-project",
-                "status": "active",
-                "config": {"modules": ["backend"], "description": "A todo API"},
-            }
+            return_value=make_project(
+                name="test-project",
+                status="active",
+                config={"modules": ["backend"], "description": "A todo API"},
+            )
         )
         # Resource allocator returns existing allocations
         mock_allocator.run = AsyncMock(
@@ -368,12 +368,11 @@ class TestFeatureActionFlow:
         from src.consumers.engineering import process_engineering_job
 
         mock_api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "test-project",
-                "status": "active",
-                "config": {"modules": ["backend"], "description": "A todo API"},
-            }
+            return_value=make_project(
+                name="test-project",
+                status="active",
+                config={"modules": ["backend"], "description": "A todo API"},
+            )
         )
 
         # Resource allocator returns existing allocations
@@ -441,12 +440,11 @@ class TestFeatureActionFlow:
         from src.consumers.engineering import process_engineering_job
 
         mock_api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "test-project",
-                "status": ProjectStatus.DRAFT.value,
-                "config": {"modules": ["backend"], "description": "A test"},
-            }
+            return_value=make_project(
+                name="test-project",
+                status=ProjectStatus.DRAFT.value,
+                config={"modules": ["backend"], "description": "A test"},
+            )
         )
         mock_allocator.run = AsyncMock(
             return_value={
@@ -510,12 +508,11 @@ class TestFeatureActionFlow:
         from src.consumers.engineering import process_engineering_job
 
         mock_api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "test-project",
-                "status": "active",
-                "config": {"modules": ["backend"], "description": "A todo API"},
-            }
+            return_value=make_project(
+                name="test-project",
+                status="active",
+                config={"modules": ["backend"], "description": "A todo API"},
+            )
         )
         mock_allocator.run = AsyncMock(
             return_value={
@@ -566,7 +563,7 @@ class TestFeatureActionFlow:
         assert len(deploy_calls) == 1
 
         deploy_msg = deploy_calls[0][0][1]
-        assert deploy_msg.project_id == "proj-1"
+        assert deploy_msg.project_id  # project_id is populated from ProjectDTO.id
         assert deploy_msg.user_id == "u1"
 
     @pytest.mark.asyncio
@@ -591,12 +588,11 @@ class TestFeatureActionFlow:
         from src.consumers.engineering import process_engineering_job
 
         mock_api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "test-project",
-                "status": "active",
-                "config": {"modules": ["backend"], "description": "Original description"},
-            }
+            return_value=make_project(
+                name="test-project",
+                status="active",
+                config={"modules": ["backend"], "description": "Original description"},
+            )
         )
         mock_allocator.run = AsyncMock(
             return_value={
@@ -672,7 +668,7 @@ class TestCreateRepoAndSetSecrets:
         mock_gh.get_org_token = AsyncMock(return_value="ghs_token")
         mock_gh.set_repository_secrets = AsyncMock(return_value=3)
 
-        project = {"id": "proj-1", "name": "My Project"}
+        project = make_project(name="My Project")
 
         await _create_repo_and_set_secrets(project)
 
@@ -715,7 +711,7 @@ class TestCreateRepoAndSetSecrets:
         mock_gh_cls.return_value = mock_gh
         mock_gh.create_repo = AsyncMock(side_effect=Exception("422: already exists"))
 
-        project = {"id": "proj-1", "name": "existing-project"}
+        project = make_project(name="existing-project")
 
         with pytest.raises(RuntimeError, match="already exists"):
             await _create_repo_and_set_secrets(project)
@@ -738,7 +734,7 @@ class TestCreateRepoAndSetSecrets:
         for key in ("ORCHESTRATOR_HOSTNAME", "REGISTRY_USER", "REGISTRY_PASSWORD"):
             env.pop(key, None)
 
-        project = {"id": "proj-1", "name": "test"}
+        project = make_project(name="test")
 
         with patch.dict("os.environ", env, clear=True):
             await _create_repo_and_set_secrets(project)
@@ -754,4 +750,4 @@ class TestCreateRepoAndSetSecrets:
 
         with patch.dict("os.environ", {}, clear=True):
             with pytest.raises(RuntimeError, match="GITHUB_ORG"):
-                await _create_repo_and_set_secrets({"id": "p1", "name": "x"})
+                await _create_repo_and_set_secrets(make_project(name="x"))

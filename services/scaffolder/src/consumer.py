@@ -166,7 +166,7 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
     # Mark project so scaffold_trigger stops retrying every cycle
     try:
         project_data = await api.get_project(msg.project_id)
-        config = project_data.get("config", {}) or {}
+        config = project_data.config or {}
         config["scaffold_error"] = result.error or "unknown error"
         await api.update_project_config(msg.project_id, config)
     except Exception:
@@ -217,7 +217,7 @@ async def _process_ensure_mode(
     # Mark project so scaffold_trigger stops retrying every cycle
     try:
         project_data = await api.get_project(msg.project_id)
-        config = project_data.get("config", {}) or {}
+        config = project_data.config or {}
         config["scaffold_error"] = result.error or "unknown error"
         await api.update_project_config(msg.project_id, config)
     except Exception:
@@ -230,7 +230,7 @@ async def _update_project_on_success(msg, result, api, settings, log) -> None:
     """Update project config with tree and specs after successful scaffold/ensure."""
     workspace = Path(settings.workspace_base_path) / msg.repository_id
     project_data = await api.get_project(msg.project_id)
-    config = project_data.get("config", {}) or {}
+    config = project_data.config or {}
     config["tree"] = result.tree
     config["workspace_ready"] = True
     config.pop("scaffold_error", None)

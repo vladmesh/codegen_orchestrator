@@ -48,7 +48,7 @@ async def _resolve_server_info(
         return None, None, project_name
 
     server = await api_client.get_server(server_handle)
-    server_ip = server.get("public_ip")
+    server_ip = server.public_ip
     ssh_key = await api_client.get_server_ssh_key(server_handle)
 
     return server_ip, ssh_key, project_name
@@ -97,7 +97,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
         # Fetch story description for QA prompt
         story = await api_client.get_story(story_id)
-        story_description = story.get("description", "")
+        story_description = story.description or ""
 
         # Run QA on server
         qa_result = await run_qa_on_server(

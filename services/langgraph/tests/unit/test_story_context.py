@@ -10,9 +10,65 @@ Verifies that:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
+import uuid
 
 import pytest
+
+from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.task import TaskDTO
+
+
+def _story(**overrides) -> StoryDTO:
+    base = {
+        "id": "story-1",
+        "project_id": uuid.uuid4(),
+        "title": "Test story",
+        "type": "product",
+        "status": "in_progress",
+        "priority": 0,
+        "created_by": "system",
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return StoryDTO(**base)
+
+
+def _task(**overrides) -> TaskDTO:
+    base = {
+        "id": "task-1",
+        "project_id": uuid.uuid4(),
+        "type": "feature",
+        "title": "Test task",
+        "status": "done",
+        "priority": 0,
+        "current_iteration": 1,
+        "max_iterations": 3,
+        "created_by": "system",
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return TaskDTO(**base)
+
+
+def _repo(**overrides) -> RepositoryDTO:
+    base = {
+        "id": "repo-1",
+        "project_id": uuid.uuid4(),
+        "name": "test-project",
+        "git_url": "https://github.com/org/test-project",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return RepositoryDTO(**base)
 
 
 class TestBuildStoryContext:
@@ -23,19 +79,13 @@ class TestBuildStoryContext:
     async def test_includes_user_report_when_present(self, mock_api):
         """Story with user_report prepends it to the context."""
         mock_api.get_story = AsyncMock(
-            return_value={
-                "id": "story-1",
-                "user_report": "Images broken on mobile",
-            }
+            return_value=_story(id="story-1", user_report="Images broken on mobile")
         )
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Fix images",
-                    "status": "done",
-                    "created_at": "2026-03-01T10:00:00",
-                },
+                _task(
+                    id="task-1", title="Fix images", status="done", created_at="2026-03-01T10:00:00"
+                ),
             ]
         )
 
@@ -54,15 +104,12 @@ class TestBuildStoryContext:
     @patch("src.consumers.story_context.api_client")
     async def test_omits_user_report_when_none(self, mock_api):
         """Story without user_report does not include User Report section."""
-        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_story = AsyncMock(return_value=_story(id="story-1", user_report=None))
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Some task",
-                    "status": "done",
-                    "created_at": "2026-03-01T10:00:00",
-                },
+                _task(
+                    id="task-1", title="Some task", status="done", created_at="2026-03-01T10:00:00"
+                ),
             ]
         )
 
@@ -76,21 +123,21 @@ class TestBuildStoryContext:
     @patch("src.consumers.story_context.api_client")
     async def test_skips_current_task(self, mock_api):
         """Current task is excluded from story context (already in TASK.md)."""
-        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_story = AsyncMock(return_value=_story(id="story-1", user_report=None))
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Create User model",
-                    "status": "done",
-                    "created_at": "2026-03-01T10:00:00",
-                },
-                {
-                    "id": "task-2",
-                    "title": "Add API endpoint",
-                    "status": "in_dev",
-                    "created_at": "2026-03-02T10:00:00",
-                },
+                _task(
+                    id="task-1",
+                    title="Create User model",
+                    status="done",
+                    created_at="2026-03-01T10:00:00",
+                ),
+                _task(
+                    id="task-2",
+                    title="Add API endpoint",
+                    status="in_dev",
+                    created_at="2026-03-02T10:00:00",
+                ),
             ]
         )
 
@@ -109,15 +156,15 @@ class TestBuildStoryContext:
     @patch("src.consumers.story_context.api_client")
     async def test_done_tasks_show_old_tasks_reference(self, mock_api):
         """Completed tasks reference .story/old_tasks/ directory."""
-        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_story = AsyncMock(return_value=_story(id="story-1", user_report=None))
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Create model",
-                    "status": "done",
-                    "created_at": "2026-03-01T10:00:00",
-                },
+                _task(
+                    id="task-1",
+                    title="Create model",
+                    status="done",
+                    created_at="2026-03-01T10:00:00",
+                ),
             ]
         )
 
@@ -130,28 +177,28 @@ class TestBuildStoryContext:
     @patch("src.consumers.story_context.api_client")
     async def test_future_tasks_marked_do_not_implement(self, mock_api):
         """Backlog/todo tasks are marked 'do NOT implement'."""
-        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_story = AsyncMock(return_value=_story(id="story-1", user_report=None))
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Current task",
-                    "status": "in_dev",
-                    "created_at": "2026-03-01T10:00:00",
-                },
-                {
-                    "id": "task-2",
-                    "title": "Future backlog task",
-                    "status": "backlog",
-                    "description": "Secret implementation details",
-                    "created_at": "2026-03-02T10:00:00",
-                },
-                {
-                    "id": "task-3",
-                    "title": "Future todo task",
-                    "status": "todo",
-                    "created_at": "2026-03-03T10:00:00",
-                },
+                _task(
+                    id="task-1",
+                    title="Current task",
+                    status="in_dev",
+                    created_at="2026-03-01T10:00:00",
+                ),
+                _task(
+                    id="task-2",
+                    title="Future backlog task",
+                    status="backlog",
+                    description="Secret implementation details",
+                    created_at="2026-03-02T10:00:00",
+                ),
+                _task(
+                    id="task-3",
+                    title="Future todo task",
+                    status="todo",
+                    created_at="2026-03-03T10:00:00",
+                ),
             ]
         )
 
@@ -169,16 +216,16 @@ class TestBuildStoryContext:
     @patch("src.consumers.story_context.api_client")
     async def test_no_descriptions_included(self, mock_api):
         """Task descriptions are never included in story context."""
-        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_story = AsyncMock(return_value=_story(id="story-1", user_report=None))
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Some task",
-                    "status": "done",
-                    "description": "Detailed description that should not appear",
-                    "created_at": "2026-03-01T10:00:00",
-                },
+                _task(
+                    id="task-1",
+                    title="Some task",
+                    status="done",
+                    description="Detailed description that should not appear",
+                    created_at="2026-03-01T10:00:00",
+                ),
             ]
         )
 
@@ -191,15 +238,12 @@ class TestBuildStoryContext:
     @patch("src.consumers.story_context.api_client")
     async def test_no_events_fetched(self, mock_api):
         """Events are not fetched — get_task_events should not be called."""
-        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_story = AsyncMock(return_value=_story(id="story-1", user_report=None))
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Some task",
-                    "status": "done",
-                    "created_at": "2026-03-01T10:00:00",
-                },
+                _task(
+                    id="task-1", title="Some task", status="done", created_at="2026-03-01T10:00:00"
+                ),
             ]
         )
         mock_api.get_task_events = AsyncMock()
@@ -235,21 +279,18 @@ class TestBuildStoryContext:
     @patch("src.consumers.story_context.api_client")
     async def test_sorts_tasks_chronologically(self, mock_api):
         """Tasks are sorted by created_at."""
-        mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
+        mock_api.get_story = AsyncMock(return_value=_story(id="story-1", user_report=None))
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
-                {
-                    "id": "task-b",
-                    "title": "Second task",
-                    "status": "in_dev",
-                    "created_at": "2026-03-02T10:00:00",
-                },
-                {
-                    "id": "task-a",
-                    "title": "First task",
-                    "status": "done",
-                    "created_at": "2026-03-01T10:00:00",
-                },
+                _task(
+                    id="task-b",
+                    title="Second task",
+                    status="in_dev",
+                    created_at="2026-03-02T10:00:00",
+                ),
+                _task(
+                    id="task-a", title="First task", status="done", created_at="2026-03-01T10:00:00"
+                ),
             ]
         )
 
@@ -356,9 +397,7 @@ class TestDeveloperNodeStoryContext:
 
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -399,9 +438,7 @@ class TestDeveloperNodeStoryContext:
 
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -442,27 +479,27 @@ class TestBuildStoryMd:
     async def test_builds_story_md_with_tasks(self, mock_api):
         """Generates STORY.md with goal and task list."""
         mock_api.get_story = AsyncMock(
-            return_value={
-                "id": "story-1",
-                "title": "Build weather bot",
-                "description": "Full weather API + Telegram bot",
-                "user_report": None,
-            }
+            return_value=_story(
+                id="story-1",
+                title="Build weather bot",
+                description="Full weather API + Telegram bot",
+                user_report=None,
+            )
         )
         mock_api.get_tasks_by_story = AsyncMock(
             return_value=[
-                {
-                    "id": "task-1",
-                    "title": "Create API endpoint",
-                    "status": "done",
-                    "created_at": "2026-03-01T10:00:00",
-                },
-                {
-                    "id": "task-2",
-                    "title": "Create Telegram bot",
-                    "status": "in_dev",
-                    "created_at": "2026-03-02T10:00:00",
-                },
+                _task(
+                    id="task-1",
+                    title="Create API endpoint",
+                    status="done",
+                    created_at="2026-03-01T10:00:00",
+                ),
+                _task(
+                    id="task-2",
+                    title="Create Telegram bot",
+                    status="in_dev",
+                    created_at="2026-03-02T10:00:00",
+                ),
             ]
         )
 
@@ -492,12 +529,12 @@ class TestBuildStoryMd:
     async def test_includes_user_report(self, mock_api):
         """Story with user_report includes it in STORY.md."""
         mock_api.get_story = AsyncMock(
-            return_value={
-                "id": "story-1",
-                "title": "Fix bugs",
-                "description": None,
-                "user_report": "Images broken on mobile",
-            }
+            return_value=_story(
+                id="story-1",
+                title="Fix bugs",
+                description=None,
+                user_report="Images broken on mobile",
+            )
         )
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
 

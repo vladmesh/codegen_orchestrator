@@ -552,6 +552,7 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 ## Unlinked Tasks
 
+- [ ] Fix noqa suppressions that mask real complexity
 - [ ] #1005 Standardize PYTHONPATH and import patterns across service-template services
 - [ ] debug test
 - [ ] Add TTL/cleanup for stale Redis queue messages

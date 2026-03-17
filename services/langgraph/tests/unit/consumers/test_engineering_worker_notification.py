@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_repository
 
 
 @pytest.fixture
@@ -36,13 +37,13 @@ def mock_api():
         api.post = AsyncMock()
         api.get_project = AsyncMock(return_value=None)
         api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test"}
+            return_value=make_repository(git_url="https://github.com/org/test")
         )
         yield api
 
 
 def _project():
-    return {"id": "proj-1", "name": "test-project", "config": {"modules": ["backend"]}}
+    return make_project(name="test-project", config={"modules": ["backend"]})
 
 
 def _get_callback_events(mock_redis, stream="po:response:abc"):
