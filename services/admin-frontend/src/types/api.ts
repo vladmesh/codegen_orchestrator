@@ -201,6 +201,58 @@ export interface Server {
   provisioning_started_at: string | null
   created_at: string
   updated_at: string
+  // Health metrics (from node_exporter + cadvisor)
+  cpu_usage_pct: number | null
+  load_avg_1m: number | null
+  load_avg_5m: number | null
+  load_avg_15m: number | null
+  network_rx_errors: number | null
+  network_tx_errors: number | null
+  container_count_running: number | null
+  container_count_total: number | null
+  uptime_seconds: number | null
+  last_health_check: string | null
+}
+
+export interface ContainerMetrics {
+  name: string
+  cpu_usage_seconds: number
+  memory_usage_bytes: number
+  memory_limit_bytes: number
+}
+
+export interface MetricsSnapshot {
+  cpu_usage_pct?: number
+  ram_used_bytes?: number
+  ram_total_bytes?: number
+  disk_used_bytes?: number
+  disk_total_bytes?: number
+  load_avg_1m?: number
+  load_avg_5m?: number
+  load_avg_15m?: number
+  uptime_seconds?: number
+  network_rx_errors?: number
+  network_tx_errors?: number
+  containers?: ContainerMetrics[]
+}
+
+export interface MetricsHistoryEntry {
+  id: number
+  server_handle: string
+  recorded_at: string
+  metrics: MetricsSnapshot
+}
+
+export interface Incident {
+  id: number
+  server_handle: string
+  incident_type: string
+  status: string
+  detected_at: string
+  resolved_at: string | null
+  details: Record<string, unknown>
+  affected_services: string[]
+  recovery_attempts: number
 }
 
 export interface PortAllocation {

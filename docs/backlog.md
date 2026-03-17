@@ -36,12 +36,6 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts)
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Fill in health_checker.py skeleton. Loop: for each managed+active server → HTTP GET :9100/metrics + :8080/metrics → parse → update DB + append history. Auto-create incidents: SERVER_UNREACHABLE (HTTP fail), RESOURCE_EXHAUSTED (RAM/disk >90%). Notify admin via Telegram. Interval: 60s. Daily cleanu...
-
 ### #1015 Admin UI: extended server health dashboard with per-container view + charts
 - **Priority**: MEDIUM
 - **Plan**: —
@@ -294,6 +288,7 @@
 
 ## Done (last 10)
 
+- #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts) — 2026-03-17
 - #1013 Extend Server model with health metrics + metrics history table — 2026-03-17
 - #1012 Prometheus text format parser for node_exporter + cadvisor metrics — 2026-03-17
 - #1011 Provisioning: install node_exporter + cadvisor + UFW rules — 2026-03-16
@@ -303,7 +298,6 @@
 - Add TESTING status to StoryStatus + API transition endpoint + QA queue contract — 2026-03-16
 - Implement random cat photo bot with admin access control — 2026-03-15
 - [service-template] ci.yml: CI runs only on PR to main, not on every push — 2026-03-15
-- Branch protection setup via GitHub API after scaffold — 2026-03-15
 
 ## Ideas
 

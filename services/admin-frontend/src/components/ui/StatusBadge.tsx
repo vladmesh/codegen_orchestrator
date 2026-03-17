@@ -39,6 +39,10 @@ const statusColors: Record<string, string> = {
   paused: 'bg-yellow-900 text-yellow-200',
   gone: 'bg-red-900 text-red-200',
   unknown: 'bg-zinc-700 text-zinc-200',
+  // Incident statuses
+  detected: 'bg-red-900 text-red-200',
+  recovering: 'bg-yellow-900 text-yellow-200',
+  resolved: 'bg-green-900 text-green-200',
 }
 
 export function StatusBadge({ status }: { status: string }) {
