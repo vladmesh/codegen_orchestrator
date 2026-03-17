@@ -111,3 +111,15 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 - **Quote**: Step 5.5 "Monitor QA Phase"
 - **Problem**: When manually retriggering deploy (webhook failure workaround), QA phase was skipped — story went directly `deploying → completed`. The skill doesn't document that manual deploy retrigger may bypass QA, and doesn't provide a workaround to manually trigger QA.
 - **Suggested fix**: Add note in "Webhook failure & manual deploy trigger" section: "Manual deploy retrigger may skip QA. If story goes to `completed` without `testing` phase, manually publish QAMessage to qa:queue to trigger QA."
+
+## [e2e-run] — 2026-03-17
+- **Type**: missing-info
+- **Quote**: "Story API: Action-based endpoints" — `POST /api/stories/{id}/reopen → completed/failed → in_progress`
+- **Problem**: `reopen` does NOT transition to `in_progress` — it transitions to `reopened`. You then need a separate `POST /start` to get to `in_progress`. The skill documents `reopen` as going directly to `in_progress`, which caused a wasted step.
+- **Suggested fix**: Update the Story API reference: `reopen → reopened`, then `start → in_progress`. Or document the two-step: fail → reopen → start.
+
+## [e2e-run] — 2026-03-17 (2)
+- **Type**: missing-info
+- **Quote**: Step 5 "Monitor PR Review & Deploy" — no mention of CI failure without webhook
+- **Problem**: The skill documents webhook failure for *merged* PRs (manual deploy trigger), but has no recipe for CI *failure* on an open PR when webhook doesn't fire. The scheduler only polls for merged PRs. Had to manually create fix tasks and reopen stories.
+- **Suggested fix**: Add a "CI failure without webhook" subsection: check CI status via `get_latest_workflow_run`, if failed → create fix task, fail/reopen/start story. This is a common case for new repos.
