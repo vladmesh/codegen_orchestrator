@@ -29,7 +29,12 @@ def mock_redis():
 
 @pytest.fixture
 def mock_api():
-    with patch("src.consumers.deploy.api_client") as api:
+    with (
+        patch("src.consumers.deploy.api_client") as api,
+        patch("src.consumers.deploy_result_handler.api_client", api),
+        patch("src.consumers.deploy_failure_handler.api_client", api),
+        patch("src.consumers.deploy_precheck.api_client", api),
+    ):
         api.patch = AsyncMock()
         api.get = AsyncMock(return_value=[])
         api.get_project = AsyncMock(
@@ -140,7 +145,7 @@ async def test_deploy_success_does_not_delete_worker(
         }
     )
 
-    with patch("src.consumers.deploy.delete_worker") as mock_delete:
+    with patch("src.consumers.deploy_failure_handler.delete_worker") as mock_delete:
         from src.consumers.deploy import process_deploy_job
 
         await process_deploy_job(_job(), mock_redis)

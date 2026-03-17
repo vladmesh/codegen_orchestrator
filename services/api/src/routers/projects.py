@@ -11,6 +11,7 @@ import structlog
 from shared.contracts.dto.project import ProjectStatus
 from shared.crypto import decrypt_dict, encrypt_dict
 from shared.models import Application, PortAllocation, Project, Repository, Run, User
+from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
 
 from ..config import get_settings
 from ..database import get_async_session
@@ -300,7 +301,7 @@ async def merge_secrets(
     return {"keys": sorted(existing_secrets.keys())}
 
 
-_QUEUES_TO_CLEAN = ["architect:queue", "scaffold:queue", "engineering:queue", "deploy:queue"]
+_QUEUES_TO_CLEAN = [ARCHITECT_QUEUE, SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE]
 
 
 async def _cleanup_project_queue_messages(project_id: str) -> int:

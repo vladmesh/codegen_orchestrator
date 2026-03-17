@@ -26,7 +26,7 @@ def mock_redis():
 
 @pytest.fixture
 def mock_api():
-    with patch("src.consumers.engineering.api_client") as api:
+    with patch("src.consumers.engineering_result_handler.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get = AsyncMock(return_value={"created_by": "user"})
@@ -37,8 +37,8 @@ class TestBlockedHandling:
     """Tests for _handle_worker_blocked."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.publish_story_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_blocked_returns_blocked_status(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
@@ -61,8 +61,8 @@ class TestBlockedHandling:
         assert "56/78" in result["block_reason"]
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.publish_story_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_blocked_transitions_task_to_whr(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
@@ -88,8 +88,8 @@ class TestBlockedHandling:
         assert call_params.get("to_status") == "waiting_human_review"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.publish_story_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_blocked_transitions_story_to_whr(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
@@ -115,8 +115,8 @@ class TestBlockedHandling:
         assert call_json.get("status") == "waiting_human_review"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.publish_story_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_blocked_notifies_admin(self, mock_po_event, mock_notify, mock_redis, mock_api):
         """Developer blocker → admin notified with warning level."""
         from src.consumers.engineering import _handle_worker_blocked
@@ -139,8 +139,8 @@ class TestBlockedHandling:
         assert call_args[1]["level"] == "warning"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.publish_story_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_blocked_notifies_user_via_po(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
@@ -165,8 +165,8 @@ class TestBlockedHandling:
         assert call_kwargs["user_id"] == "u1"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.publish_story_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_blocked_sets_failure_metadata(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
@@ -197,8 +197,8 @@ class TestBlockedHandling:
         assert "Contradictory" in metadata["block_reason"]
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.publish_story_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_blocked_without_story_skips_story_transition(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):

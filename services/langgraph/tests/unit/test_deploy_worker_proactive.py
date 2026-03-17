@@ -32,7 +32,12 @@ def mock_redis():
 @pytest.fixture
 def mock_api():
     """Patch api_client methods used by the worker."""
-    with patch("src.consumers.deploy.api_client") as api:
+    with (
+        patch("src.consumers.deploy.api_client") as api,
+        patch("src.consumers.deploy_result_handler.api_client", api),
+        patch("src.consumers.deploy_failure_handler.api_client", api),
+        patch("src.consumers.deploy_precheck.api_client", api),
+    ):
         api.patch = AsyncMock()
         api.get = AsyncMock(return_value=[])  # no existing running deploys (dedup)
         api.get_project = AsyncMock(

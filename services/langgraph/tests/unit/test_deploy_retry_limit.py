@@ -29,7 +29,7 @@ def mock_redis():
 
 @pytest.fixture
 def mock_api():
-    with patch("src.consumers.deploy.api_client") as api:
+    with patch("src.consumers.deploy_failure_handler.api_client") as api:
         api.patch = AsyncMock()
         api.get = AsyncMock(return_value=[])
         api.transition_story = AsyncMock()
@@ -62,7 +62,7 @@ async def test_deploy_failure_rolls_back_when_under_limit(mock_redis, mock_api):
     """First failure should roll back story to in_progress (via 'start' action)."""
     mock_redis.redis.incr = AsyncMock(return_value=1)
 
-    from src.consumers.deploy import _handle_deploy_failure
+    from src.consumers.deploy_failure_handler import _handle_deploy_failure
 
     await _handle_deploy_failure(
         task_id="deploy-001",
@@ -81,11 +81,11 @@ async def test_deploy_failure_rolls_back_when_under_limit(mock_redis, mock_api):
 @pytest.mark.asyncio
 async def test_deploy_failure_fails_story_when_limit_exceeded(mock_redis, mock_api):
     """After MAX_DEPLOY_RETRIES failures, story should transition to failed."""
-    from src.consumers.deploy import MAX_DEPLOY_RETRIES
+    from src.consumers.deploy_failure_handler import MAX_DEPLOY_RETRIES
 
     mock_redis.redis.incr = AsyncMock(return_value=MAX_DEPLOY_RETRIES)
 
-    from src.consumers.deploy import _handle_deploy_failure
+    from src.consumers.deploy_failure_handler import _handle_deploy_failure
 
     await _handle_deploy_failure(
         task_id="deploy-003",
@@ -106,7 +106,7 @@ async def test_deploy_failure_increments_redis_counter(mock_redis, mock_api):
     """Each failure should increment the Redis counter."""
     mock_redis.redis.incr = AsyncMock(return_value=1)
 
-    from src.consumers.deploy import _handle_deploy_failure
+    from src.consumers.deploy_failure_handler import _handle_deploy_failure
 
     await _handle_deploy_failure(
         task_id="deploy-004",
@@ -125,7 +125,7 @@ async def test_deploy_failure_increments_redis_counter(mock_redis, mock_api):
 @pytest.mark.asyncio
 async def test_deploy_failure_skips_counter_without_story_id(mock_redis, mock_api):
     """Without story_id, should not use counter and always roll back."""
-    from src.consumers.deploy import _handle_deploy_failure
+    from src.consumers.deploy_failure_handler import _handle_deploy_failure
 
     await _handle_deploy_failure(
         task_id="deploy-005",

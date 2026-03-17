@@ -24,22 +24,36 @@ def mock_redis():
     return r
 
 
+def _configure_api_mock(api):
+    """Configure common API mock methods."""
+    api.patch = AsyncMock()
+    api.post = AsyncMock()
+    api.get = AsyncMock(return_value=[])
+    api.get_project = AsyncMock(
+        return_value={
+            "name": "my-project",
+            "config": {"modules": ["backend"]},
+        }
+    )
+    api.get_primary_repository = AsyncMock(
+        return_value={"id": "repo-1", "git_url": "https://github.com/org/my-project"}
+    )
+    api.transition_story = AsyncMock()
+    api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
+
+
 @pytest.fixture
 def mock_api():
-    with patch("src.consumers.deploy.api_client") as api:
-        api.patch = AsyncMock()
-        api.post = AsyncMock()
-        api.get = AsyncMock(return_value=[])
-        api.get_project = AsyncMock(
-            return_value={
-                "name": "my-project",
-                "config": {"modules": ["backend"]},
-            }
-        )
-        api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/my-project"}
-        )
-        api.transition_story = AsyncMock()
+    with (
+        patch("src.consumers.deploy.api_client") as api,
+        patch("src.consumers.deploy_failure_handler.api_client") as fh_api,
+        patch("src.consumers.deploy_result_handler.api_client") as rh_api,
+        patch("src.consumers.deploy_precheck.api_client") as pc_api,
+    ):
+        _configure_api_mock(api)
+        _configure_api_mock(fh_api)
+        _configure_api_mock(rh_api)
+        _configure_api_mock(pc_api)
         yield api
 
 
@@ -81,13 +95,13 @@ async def test_classify_returns_code_fix_for_import_error():
     mock_response = MagicMock()
     mock_response.content = "CODE_FIX"
 
-    with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+    with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         mock_llm_cls.return_value = mock_llm
 
         with patch.dict("os.environ", {"OPEN_ROUTER_KEY": "test-key"}):
-            from src.consumers.deploy import _classify_deploy_failure
+            from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
             result = await _classify_deploy_failure("ModuleNotFoundError: No module named 'foo'")
             assert result == "CODE_FIX"
@@ -99,13 +113,13 @@ async def test_classify_returns_retry_for_timeout():
     mock_response = MagicMock()
     mock_response.content = "RETRY"
 
-    with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+    with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         mock_llm_cls.return_value = mock_llm
 
         with patch.dict("os.environ", {"OPEN_ROUTER_KEY": "test-key"}):
-            from src.consumers.deploy import _classify_deploy_failure
+            from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
             result = await _classify_deploy_failure("Healthcheck timeout after 30s")
             assert result == "RETRY"
@@ -117,13 +131,13 @@ async def test_classify_defaults_to_retry_on_unexpected_response():
     mock_response = MagicMock()
     mock_response.content = "I'm not sure, maybe both?"
 
-    with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+    with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
         mock_llm_cls.return_value = mock_llm
 
         with patch.dict("os.environ", {"OPEN_ROUTER_KEY": "test-key"}):
-            from src.consumers.deploy import _classify_deploy_failure
+            from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
             result = await _classify_deploy_failure("some error")
             assert result == "RETRY"
@@ -132,13 +146,13 @@ async def test_classify_defaults_to_retry_on_unexpected_response():
 @pytest.mark.asyncio
 async def test_classify_defaults_to_retry_on_exception():
     """LLM exception falls back to RETRY."""
-    with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+    with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
         mock_llm = AsyncMock()
         mock_llm.ainvoke = AsyncMock(side_effect=RuntimeError("LLM down"))
         mock_llm_cls.return_value = mock_llm
 
         with patch.dict("os.environ", {"OPEN_ROUTER_KEY": "test-key"}):
-            from src.consumers.deploy import _classify_deploy_failure
+            from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
             result = await _classify_deploy_failure("some error")
             assert result == "RETRY"
@@ -148,7 +162,7 @@ async def test_classify_defaults_to_retry_on_exception():
 async def test_classify_defaults_to_retry_without_api_key():
     """Missing OPEN_ROUTER_KEY falls back to RETRY."""
     with patch.dict("os.environ", {}, clear=True):
-        from src.consumers.deploy import _classify_deploy_failure
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         result = await _classify_deploy_failure("some error")
         assert result == "RETRY"
@@ -180,7 +194,7 @@ async def test_smoke_failure_code_fix_dispatches_to_engineering(
     )
 
     with patch(
-        "src.consumers.deploy._classify_deploy_failure",
+        "src.consumers.deploy_result_handler._classify_deploy_failure",
         AsyncMock(return_value="CODE_FIX"),
     ):
         from src.consumers.deploy import process_deploy_job
@@ -218,7 +232,7 @@ async def test_smoke_failure_retry_retries_deploy(
     )
 
     with patch(
-        "src.consumers.deploy._classify_deploy_failure",
+        "src.consumers.deploy_result_handler._classify_deploy_failure",
         AsyncMock(return_value="RETRY"),
     ):
         from src.consumers.deploy import process_deploy_job

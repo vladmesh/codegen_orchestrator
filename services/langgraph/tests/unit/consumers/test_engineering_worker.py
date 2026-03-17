@@ -23,7 +23,7 @@ def mock_redis():
 
 @pytest.fixture
 def mock_api():
-    """Patch api_client methods used by the engineering worker."""
+    """Patch api_client in both engineering and engineering_result_handler modules."""
     with patch("src.consumers.engineering.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
@@ -31,7 +31,8 @@ def mock_api():
         api.get_primary_repository = AsyncMock(
             return_value={"git_url": "https://github.com/org/test-project"}
         )
-        yield api
+        with patch("src.consumers.engineering_result_handler.api_client", api):
+            yield api
 
 
 def _project():
@@ -268,8 +269,14 @@ class TestFeatureActionFlow:
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
     @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
     async def test_feature_skips_repo_creation(
         self,
+        mock_rh_publish,
+        mock_rh_delete,
         mock_publish,
         mock_allocator,
         mock_create_subgraph,
@@ -343,8 +350,14 @@ class TestFeatureActionFlow:
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
     @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
     async def test_feature_reuses_existing_allocations(
         self,
+        mock_rh_publish,
+        mock_rh_delete,
         mock_publish,
         mock_allocator,
         mock_create_subgraph,
@@ -409,8 +422,14 @@ class TestFeatureActionFlow:
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
     @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
     async def test_feature_on_draft_project_warns_but_continues(
         self,
+        mock_rh_publish,
+        mock_rh_delete,
         mock_publish,
         mock_allocator,
         mock_create_subgraph,
@@ -473,8 +492,14 @@ class TestFeatureActionFlow:
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
     @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
     async def test_feature_triggers_auto_deploy(
         self,
+        mock_rh_publish,
+        mock_rh_delete,
         mock_publish,
         mock_allocator,
         mock_create_subgraph,
@@ -548,8 +573,14 @@ class TestFeatureActionFlow:
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
     @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
     async def test_feature_description_fallback_to_config(
         self,
+        mock_rh_publish,
+        mock_rh_delete,
         mock_publish,
         mock_allocator,
         mock_create_subgraph,

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.subgraphs.devops.nodes import DeployerNode
+from src.subgraphs.devops.deployer import DeployerNode
 
 
 @pytest.fixture
@@ -73,8 +73,8 @@ class TestDeployerNodeErrors:
         assert "No project_id" in result["errors"][0]
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_deploy_fails_when_ssh_key_missing(
         self, mock_api, mock_gh_cls, deployer, base_state
     ):
@@ -88,8 +88,8 @@ class TestDeployerNodeErrors:
 
     @pytest.mark.asyncio
     @patch.dict(os.environ, {}, clear=True)
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_deploy_fails_when_registry_env_missing(
         self, mock_api, mock_gh_cls, deployer, base_state
     ):
@@ -112,8 +112,8 @@ class TestDeployerNodeErrors:
 )
 class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_writes_deploy_secrets(self, mock_api, mock_gh_cls, deployer, base_state):
         """set_repository_secrets should be called with DOTENV, DEPLOY_HOST, registry creds, etc."""
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
@@ -133,8 +133,8 @@ class TestDeployerNodeHappyPath:
         assert secrets_arg["REGISTRY_PASSWORD"] == "testpass"  # noqa: S105
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_triggers_workflow_dispatch(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
 
@@ -143,8 +143,8 @@ class TestDeployerNodeHappyPath:
         gh.trigger_workflow_dispatch.assert_called_once_with("my-org", "my-repo", "deploy.yml")
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_waits_for_completion(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
 
@@ -156,8 +156,8 @@ class TestDeployerNodeHappyPath:
         assert isinstance(call_kwargs["created_after"], datetime)
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_creates_deployment_record_with_sha(
         self, mock_api, mock_gh_cls, deployer, base_state
     ):
@@ -172,8 +172,8 @@ class TestDeployerNodeHappyPath:
         assert payload["application_id"] == 1
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_creates_application_on_deploy(self, mock_api, mock_gh_cls, deployer, base_state):
         _setup_happy_mocks(mock_api, mock_gh_cls)
 
@@ -187,8 +187,8 @@ class TestDeployerNodeHappyPath:
         mock_api.update_application.assert_called_once_with(1, {"status": "running"})
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_deployed_url_uses_external_ip(self, mock_api, mock_gh_cls, deployer, base_state):
         """deployed_url should use the external server IP, not docker service name."""
         _setup_happy_mocks(mock_api, mock_gh_cls)
@@ -198,8 +198,8 @@ class TestDeployerNodeHappyPath:
         assert result["deployed_url"] == "http://10.0.0.1:8080"
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_no_project_status_update(self, mock_api, mock_gh_cls, deployer, base_state):
         """Deploy should not update project status — Application status is updated instead."""
         _setup_happy_mocks(mock_api, mock_gh_cls)
@@ -212,8 +212,8 @@ class TestDeployerNodeHappyPath:
 
 class TestDeployerNodeFailures:
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_handles_workflow_failure(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
@@ -232,8 +232,8 @@ class TestDeployerNodeFailures:
         mock_api.patch.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.GitHubAppClient")
-    @patch("src.subgraphs.devops.nodes.api_client")
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_handles_timeout(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = AsyncMock()
         mock_gh_cls.return_value = gh

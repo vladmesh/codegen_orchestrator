@@ -27,24 +27,37 @@ def mock_redis():
     return r
 
 
+def _configure_api_mock(api):
+    """Configure common API mock methods."""
+    api.patch = AsyncMock()
+    api.get = AsyncMock(return_value=[])
+    api.post = AsyncMock()
+    api.transition_story = AsyncMock()
+    api.get_project = AsyncMock(
+        return_value={
+            "id": "proj-1",
+            "name": "my-project",
+            "config": {"modules": ["backend"]},
+        }
+    )
+    api.get_primary_repository = AsyncMock(
+        return_value={"id": "repo-1", "git_url": "https://github.com/org/my-project"}
+    )
+    api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
+
+
 @pytest.fixture
 def mock_api():
-    with patch("src.consumers.deploy.api_client") as api:
-        api.patch = AsyncMock()
-        api.get = AsyncMock(return_value=[])
-        api.post = AsyncMock()
-        api.transition_story = AsyncMock()
-        api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "my-project",
-                "config": {"modules": ["backend"]},
-            }
-        )
-        api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/my-project"}
-        )
-        api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
+    with (
+        patch("src.consumers.deploy.api_client") as api,
+        patch("src.consumers.deploy_failure_handler.api_client") as fh_api,
+        patch("src.consumers.deploy_result_handler.api_client") as rh_api,
+        patch("src.consumers.deploy_precheck.api_client") as pc_api,
+    ):
+        _configure_api_mock(api)
+        _configure_api_mock(fh_api)
+        _configure_api_mock(rh_api)
+        _configure_api_mock(pc_api)
         yield api
 
 
@@ -103,7 +116,7 @@ class TestDeployActionFallback:
             }
         )
 
-        with patch("src.consumers.deploy._pre_check_server") as mock_precheck:
+        with patch("src.consumers.deploy_precheck._pre_check_server") as mock_precheck:
             # Simulate: first call with action=create returns "dir exists" error,
             # second call with action=feature returns None (OK)
             mock_precheck.side_effect = [
@@ -127,7 +140,7 @@ class TestDeployActionFallback:
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
         """Precheck failure on create+dir_exists must NOT propagate as deploy failure."""
-        with patch("src.consumers.deploy._pre_check_server") as mock_precheck:
+        with patch("src.consumers.deploy_precheck._pre_check_server") as mock_precheck:
             # First call (create) returns "already exists", second call (feature) passes
             mock_precheck.side_effect = [
                 (
@@ -157,7 +170,7 @@ class TestDeployActionFallback:
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
         """action=feature + dir missing should still fail (no fallback for this case)."""
-        with patch("src.consumers.deploy._pre_check_server") as mock_precheck:
+        with patch("src.consumers.deploy_precheck._pre_check_server") as mock_precheck:
             mock_precheck.return_value = (
                 "Service dir /opt/services/my-project/ not found on 1.2.3.4. "
                 "Project was never deployed. Use action='create' for first deploy."
@@ -184,7 +197,7 @@ class TestDeployActionFallback:
         )
 
         with (
-            patch("src.consumers.deploy._pre_check_server") as mock_precheck,
+            patch("src.consumers.deploy_precheck._pre_check_server") as mock_precheck,
             patch("src.consumers.deploy.logger") as mock_logger,
         ):
             mock_precheck.side_effect = [

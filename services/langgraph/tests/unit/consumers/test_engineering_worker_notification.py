@@ -31,7 +31,7 @@ def mock_redis():
 @pytest.fixture
 def mock_api():
     """Patch api_client methods used by the engineering worker."""
-    with patch("src.consumers.engineering.api_client") as api:
+    with patch("src.consumers.engineering_result_handler.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get_project = AsyncMock(return_value=None)

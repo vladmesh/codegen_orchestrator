@@ -19,6 +19,7 @@ import structlog
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.models import Project, Repository, Run, Story, User
 from shared.queues import DEPLOY_QUEUE
@@ -106,9 +107,16 @@ async def _publish_deploy(
     return {"status": "accepted", "run_id": run_id, "project_id": project.id, "story_id": story_id}
 
 
+def _get_api_url() -> str:
+    api_url = os.getenv("API_URL")
+    if not api_url:
+        raise RuntimeError("API_URL is not set")
+    return api_url
+
+
 async def _transition_story_via_api(story_id: str, action: str) -> None:
     """Transition story status via internal API call."""
-    api_url = os.getenv("API_URL", "http://localhost:8000")
+    api_url = _get_api_url()
     async with httpx.AsyncClient() as client:
         await client.post(f"{api_url}/api/stories/{story_id}/{action}", timeout=10)
 
@@ -270,7 +278,7 @@ async def _handle_ci_failure_on_story(payload: dict, workflow_run: dict, db: Asy
     run_id = workflow_run.get("id", "")
 
     # Create fix task via internal API
-    api_url = os.getenv("API_URL", "http://localhost:8000")
+    api_url = _get_api_url()
     task_data = {
         "title": f"Fix CI failure (run {run_id})",
         "description": (
@@ -282,7 +290,7 @@ async def _handle_ci_failure_on_story(payload: dict, workflow_run: dict, db: Asy
         "story_id": story_id,
         "project_id": str(project.id),
         "created_by": "system",
-        "status": "todo",
+        "status": TaskStatus.TODO.value,
     }
 
     async with httpx.AsyncClient() as client:

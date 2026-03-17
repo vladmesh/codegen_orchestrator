@@ -28,23 +28,37 @@ def mock_redis():
     return r
 
 
+def _configure_api_mock(api):
+    """Configure common API mock methods."""
+    api.patch = AsyncMock()
+    api.get = AsyncMock(return_value=[])
+    api.post = AsyncMock()
+    api.transition_story = AsyncMock()
+    api.get_project = AsyncMock(
+        return_value={
+            "id": "proj-1",
+            "name": "my-project",
+            "config": {"modules": ["backend", "tg_bot"]},
+        }
+    )
+    api.get_primary_repository = AsyncMock(
+        return_value={"id": "repo-1", "git_url": "https://github.com/org/my-project"}
+    )
+    api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
+
+
 @pytest.fixture
 def mock_api():
-    with patch("src.consumers.deploy.api_client") as api:
-        api.patch = AsyncMock()
-        api.get = AsyncMock(return_value=[])
-        api.post = AsyncMock()
-        api.transition_story = AsyncMock()
-        api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "my-project",
-                "config": {"modules": ["backend", "tg_bot"]},
-            }
-        )
-        api.get_primary_repository = AsyncMock(
-            return_value={"id": "repo-1", "git_url": "https://github.com/org/my-project"}
-        )
+    with (
+        patch("src.consumers.deploy.api_client") as api,
+        patch("src.consumers.deploy_failure_handler.api_client") as fh_api,
+        patch("src.consumers.deploy_result_handler.api_client") as rh_api,
+        patch("src.consumers.deploy_precheck.api_client") as pc_api,
+    ):
+        _configure_api_mock(api)
+        _configure_api_mock(fh_api)
+        _configure_api_mock(rh_api)
+        _configure_api_mock(pc_api)
         yield api
 
 
@@ -101,7 +115,7 @@ class TestSmokeFailureRedispatch:
         )
 
         with patch(
-            "src.consumers.deploy._classify_deploy_failure",
+            "src.consumers.deploy_result_handler._classify_deploy_failure",
             AsyncMock(return_value="CODE_FIX"),
         ):
             from src.consumers.deploy import process_deploy_job
@@ -145,7 +159,7 @@ class TestSmokeFailureRedispatch:
         )
 
         with patch(
-            "src.consumers.deploy._classify_deploy_failure",
+            "src.consumers.deploy_result_handler._classify_deploy_failure",
             AsyncMock(return_value="CODE_FIX"),
         ):
             from src.consumers.deploy import process_deploy_job
@@ -243,7 +257,7 @@ class TestDeployFixRetryLimit:
         )
 
         with patch(
-            "src.consumers.deploy._classify_deploy_failure",
+            "src.consumers.deploy_result_handler._classify_deploy_failure",
             AsyncMock(return_value="CODE_FIX"),
         ):
             from src.consumers.deploy import MAX_DEPLOY_FIX_ATTEMPTS, process_deploy_job
@@ -281,7 +295,7 @@ class TestDeployFixRetryLimit:
         )
 
         with patch(
-            "src.consumers.deploy._classify_deploy_failure",
+            "src.consumers.deploy_result_handler._classify_deploy_failure",
             AsyncMock(return_value="CODE_FIX"),
         ):
             from src.consumers.deploy import process_deploy_job
@@ -305,11 +319,18 @@ class TestEngineringMessagePassthrough:
         """When engineering triggers deploy, deploy_fix_attempt should carry over."""
         with (
             patch("src.consumers.engineering.api_client") as api,
+            patch("src.consumers.engineering_result_handler.api_client") as rh_api,
             patch("src.subgraphs.engineering.create_engineering_subgraph") as factory,
             patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
             patch("src.consumers.engineering.get_story_worker", return_value=None),
-            patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock),
-            patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
+            patch(
+                "src.consumers.engineering_result_handler.set_story_worker", new_callable=AsyncMock
+            ),
+            patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock),
+            patch(
+                "src.consumers.engineering_result_handler.publish_callback_event",
+                new_callable=AsyncMock,
+            ),
         ):
             api.patch = AsyncMock()
             api.post = AsyncMock()
@@ -325,6 +346,8 @@ class TestEngineringMessagePassthrough:
                 return_value={"id": "repo-1", "git_url": "https://github.com/org/test"}
             )
             api.get_tasks_by_story = AsyncMock(return_value=[])
+            rh_api.patch = AsyncMock()
+            rh_api.post = AsyncMock()
             mock_alloc.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
 
             graph = AsyncMock()

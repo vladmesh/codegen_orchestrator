@@ -56,7 +56,6 @@ class TestWorkerRejectedRouting:
 
     @pytest.mark.asyncio
     @patch(f"{_PATCH}.publish_callback_event", new_callable=AsyncMock)
-    @patch(f"{_PATCH}.publish_story_event", new_callable=AsyncMock)
     @patch(f"{_PATCH}._handle_worker_reject", new_callable=AsyncMock)
     @patch(f"{_PATCH}._resolve_allocations", new_callable=AsyncMock)
     @patch(f"{_PATCH}.get_story_worker", new_callable=AsyncMock)
@@ -67,7 +66,6 @@ class TestWorkerRejectedRouting:
         mock_get_worker,
         mock_allocations,
         mock_handle_reject,
-        mock_story_event,
         mock_publish,
         mock_api,
         mock_redis,

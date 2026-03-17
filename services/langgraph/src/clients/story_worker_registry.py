@@ -14,9 +14,9 @@ import structlog
 if TYPE_CHECKING:
     import redis.asyncio as redis
 
-logger = structlog.get_logger(__name__)
+from shared.queues import STORY_WORKERS_KEY
 
-STORY_WORKERS_KEY = "story:workers"
+logger = structlog.get_logger(__name__)
 
 
 async def get_story_worker(redis_client: redis.Redis, story_id: str) -> str | None:

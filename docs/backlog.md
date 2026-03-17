@@ -7,6 +7,24 @@
 
 ## Queue (ordered by priority, first = next)
 
+### Fix noqa suppressions that mask real complexity
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Audit found noqa comments that should be fixed instead of suppressed: PLR0913 in engineering.py:682 (too many args — extract params dataclass), PLR0911 in devops/nodes.py:144 (too many returns — extract lookup table), PLR2004 in debug.py:65 (use named constant), S110 in debug.py:71 (bare except —...
+
+### Replace raw dict API clients with shared Pydantic DTOs
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: All API clients (langgraph 30+ methods, scheduler 40+ methods, infra-service, telegram_bot, scaffolder) accept payload: dict and return -> dict with raw resp.json(). Should create shared Pydantic DTOs for each entity (deployment, application, incident, server, etc.) in shared/contracts/dto/ and v...
+
+### Refactor large files (>400 LOC) — extract helpers
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Audit found 10 files exceeding 400 LOC limit. Top offenders: manager.py (920), engineering.py consumer (881), deploy.py consumer (866), task_dispatcher.py (740), rag.py (689), node.py (642), devops/nodes.py (639), tasks.py router (625), po/tools.py (605), developer.py (513). Extract helper functi...
+
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —

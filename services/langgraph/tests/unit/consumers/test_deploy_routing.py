@@ -6,7 +6,7 @@ import pytest
 
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 
-_PATCH = "src.consumers.deploy"
+_PATCH = "src.consumers.deploy_failure_handler"
 
 
 def _make_deploy_msg(**overrides) -> dict:
@@ -31,7 +31,7 @@ class TestDeployFailureRouting:
     @pytest.mark.asyncio
     async def test_code_fix_dispatches_to_engineering(self):
         """CODE_FIX classification should call _redispatch_to_engineering."""
-        from src.consumers.deploy import _route_deploy_failure
+        from src.consumers.deploy_failure_handler import _route_deploy_failure
 
         redis = AsyncMock()
         msg = DeployMessage.model_validate(_make_deploy_msg())
@@ -50,7 +50,7 @@ class TestDeployFailureRouting:
     @pytest.mark.asyncio
     async def test_retry_does_not_dispatch_to_engineering(self):
         """RETRY classification should NOT dispatch to engineering."""
-        from src.consumers.deploy import _route_deploy_failure
+        from src.consumers.deploy_failure_handler import _route_deploy_failure
 
         redis = AsyncMock()
         msg = DeployMessage.model_validate(_make_deploy_msg())
@@ -68,7 +68,7 @@ class TestDeployFailureRouting:
     @pytest.mark.asyncio
     async def test_give_up_calls_handle_give_up(self):
         """GIVE_UP classification should call _handle_give_up."""
-        from src.consumers.deploy import _route_deploy_failure
+        from src.consumers.deploy_failure_handler import _route_deploy_failure
 
         redis = AsyncMock()
         msg = DeployMessage.model_validate(_make_deploy_msg())
@@ -94,7 +94,7 @@ class TestHandleGiveUp:
     @pytest.mark.asyncio
     async def test_story_transitioned_to_failed(self):
         """GIVE_UP should transition story to failed."""
-        from src.consumers.deploy import _handle_give_up
+        from src.consumers.deploy_failure_handler import _handle_give_up
 
         redis = MagicMock()
         redis.redis = AsyncMock()
@@ -120,7 +120,7 @@ class TestHandleGiveUp:
     @pytest.mark.asyncio
     async def test_admin_notified(self):
         """GIVE_UP should notify admins."""
-        from src.consumers.deploy import _handle_give_up
+        from src.consumers.deploy_failure_handler import _handle_give_up
 
         redis = MagicMock()
         redis.redis = AsyncMock()
@@ -147,7 +147,7 @@ class TestHandleGiveUp:
     @pytest.mark.asyncio
     async def test_worker_deleted_if_exists(self):
         """GIVE_UP should delete worker if one exists for the story."""
-        from src.consumers.deploy import _handle_give_up
+        from src.consumers.deploy_failure_handler import _handle_give_up
 
         redis = MagicMock()
         redis.redis = AsyncMock()

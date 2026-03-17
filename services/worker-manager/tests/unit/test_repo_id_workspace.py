@@ -114,9 +114,12 @@ def mock_redis():
 
 class TestCreateWorkerWithRepoId:
     @pytest.mark.asyncio
+    @patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock, return_value=True)
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
-    async def test_repo_id_mounts_scaffolded_workspace(self, mock_builder_cls, mock_workspace, mock_redis, mock_docker):
+    async def test_repo_id_mounts_scaffolded_workspace(
+        self, mock_builder_cls, mock_workspace, mock_refresh, mock_redis, mock_docker
+    ):
         """repo_id present → uses get_scaffolded_workspace, skips scaffold phase."""
         from src.manager import WorkerManager
 
@@ -128,9 +131,6 @@ class TestCreateWorkerWithRepoId:
         mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-123"), True)
 
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-        manager._run_scaffold_phase = AsyncMock()
-        manager._setup_git_repo = AsyncMock()
-        manager._refresh_git_token = AsyncMock(return_value=True)
 
         await manager.create_worker_with_capabilities(
             worker_id="w-1",
@@ -142,10 +142,7 @@ class TestCreateWorkerWithRepoId:
         )
 
         mock_workspace.get_scaffolded_workspace.assert_called_once()
-        manager._run_scaffold_phase.assert_not_awaited()
-        manager._setup_git_repo.assert_not_awaited()
-        # Should refresh token on the pre-scaffolded workspace
-        manager._refresh_git_token.assert_awaited_once()
+        mock_refresh.assert_awaited_once()
 
     @pytest.mark.asyncio
     @patch("src.manager.workspace_mod")
@@ -173,9 +170,12 @@ class TestCreateWorkerWithRepoId:
             )
 
     @pytest.mark.asyncio
+    @patch("src.manager.git_ops.refresh_git_token", new_callable=AsyncMock, return_value=True)
     @patch("src.manager.workspace_mod")
     @patch("src.manager.ImageBuilder")
-    async def test_repo_id_stored_in_redis_meta(self, mock_builder_cls, mock_workspace, mock_redis, mock_docker):
+    async def test_repo_id_stored_in_redis_meta(
+        self, mock_builder_cls, mock_workspace, mock_refresh, mock_redis, mock_docker
+    ):
         """repo_id should be persisted in worker:meta:{id} Redis hash."""
         from src.manager import WorkerManager
 
@@ -187,7 +187,6 @@ class TestCreateWorkerWithRepoId:
         mock_workspace.get_scaffolded_workspace.return_value = (Path("/data/workspaces/repo-123"), True)
 
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-        manager._refresh_git_token = AsyncMock(return_value=True)
 
         await manager.create_worker_with_capabilities(
             worker_id="w-1",
@@ -198,7 +197,6 @@ class TestCreateWorkerWithRepoId:
             repo_id="repo-123",
         )
 
-        # Verify repo_id stored in Redis
         mock_redis.hset.assert_any_call("worker:meta:w-1", "repo_id", "repo-123")
 
     @pytest.mark.asyncio

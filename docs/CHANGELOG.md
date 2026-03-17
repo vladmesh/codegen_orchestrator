@@ -4,6 +4,10 @@
 
 ## 2026-03-17
 
+### Fixed
+- **Contract violations from audit** (hotfix): Replaced hardcoded `"todo"` with `TaskStatus.TODO.value` in webhooks, removed `os.getenv("API_URL", default)` (fail fast), replaced hardcoded queue name strings with `shared/queues.py` constants in projects router, replaced hardcoded status strings with `TaskStatus` enum in engineering consumer, centralized `STORY_WORKERS_KEY` in `shared/queues.py` (was duplicated in langgraph + scheduler).
+- **cadvisor parser: cgroup v2 Docker containers filtered out** (hotfix): `_is_real_container` rejected all containers with `id` starting with `/system.slice`, but on cgroup v2 (systemd) Docker containers have `id=/system.slice/docker-<hash>.scope`. Fix: allow `/system.slice` entries that contain `/docker-` in the path. This was causing the Containers tab in the admin UI to show no data despite 22 containers running.
+
 ### Added
 - **HTTP health prober for deployed applications + SSL expiry check** (task-d378415c): New `app_health_prober.py` — probes each deployed application's `/health` endpoint via HTTP, tracks response times, consecutive failure detection (SERVICE_DOWN incident after 3 fails), SSL cert expiry monitoring (SSL_EXPIRING incident within 7 days), auto-resolves incidents on recovery, computes 24h uptime%. New `ssl_checker.py` — socket-based SSL cert expiry extraction. Added `SSL_EXPIRING` to `IncidentType` enum. Extended `SchedulerAPIClient` with application CRUD methods. Integrated into existing `health_check_worker` loop (runs after server checks). App health history cleanup in daily job. 30 new unit tests + integration tests.
 - **Admin UI: application health status and response times** (task-fb032b50): Extended Application model with `response_time_ms`, `ssl_expires_at`, `uptime_pct_24h` fields. New `application_health_history` table (time-series, 7-day retention) with GET/POST/DELETE API endpoints. Enhanced admin applications table with health status dot, response time, uptime %, SSL expiry columns. Expandable application rows with overview cards and response time area chart (1h/24h toggle via Recharts). 19 unit + 4 integration tests.

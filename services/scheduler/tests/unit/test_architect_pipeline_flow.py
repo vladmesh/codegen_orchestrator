@@ -139,7 +139,7 @@ class TestDispatcherPipelineFlow:
             "number": 1,
             "node_id": "PR_node1",
         }
-        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1

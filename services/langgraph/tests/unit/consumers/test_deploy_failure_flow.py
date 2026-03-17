@@ -12,7 +12,7 @@ import pytest
 
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 
-_PATCH = "src.consumers.deploy"
+_PATCH = "src.consumers.deploy_failure_handler"
 
 
 def _make_deploy_msg(**overrides) -> dict:
@@ -49,7 +49,7 @@ class TestDeployFailureFlow:
     @pytest.mark.asyncio
     async def test_port_conflict_gives_up_no_engineering(self):
         """Port conflict → GIVE_UP → _handle_give_up, NO _redispatch."""
-        from src.consumers.deploy import (
+        from src.consumers.deploy_failure_handler import (
             _classify_deploy_failure,
             _route_deploy_failure,
         )
@@ -88,7 +88,7 @@ class TestDeployFailureFlow:
     @pytest.mark.asyncio
     async def test_import_error_dispatches_to_engineering(self):
         """Import error → CODE_FIX → _redispatch_to_engineering."""
-        from src.consumers.deploy import (
+        from src.consumers.deploy_failure_handler import (
             _classify_deploy_failure,
             _route_deploy_failure,
         )
@@ -130,7 +130,7 @@ class TestDeployFailureFlow:
     @pytest.mark.asyncio
     async def test_ssh_timeout_retries_no_engineering(self):
         """SSH timeout → RETRY → no engineering dispatch, no give_up."""
-        from src.consumers.deploy import (
+        from src.consumers.deploy_failure_handler import (
             _classify_deploy_failure,
             _route_deploy_failure,
         )
@@ -165,7 +165,7 @@ class TestDeployFailureFlow:
     @pytest.mark.asyncio
     async def test_llm_failure_defaults_to_retry(self):
         """LLM crash → fallback RETRY → no engineering dispatch."""
-        from src.consumers.deploy import _classify_deploy_failure
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         with patch(f"{_PATCH}.ChatOpenAI") as mock_cls:
             mock_llm = AsyncMock()

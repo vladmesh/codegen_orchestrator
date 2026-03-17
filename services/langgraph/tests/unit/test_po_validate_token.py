@@ -44,8 +44,8 @@ class TestValidateTelegramToken:
         http_mock = _mock_httpx(resp)
 
         with (
-            patch("src.agents.po.tools._get_api", return_value=mock_api),
-            patch("src.agents.po.tools.httpx.AsyncClient", return_value=http_mock),
+            patch("src.agents.po.tools_projects._get_api", return_value=mock_api),
+            patch("src.agents.po.tools_projects.httpx.AsyncClient", return_value=http_mock),
         ):
             from src.agents.po.tools import validate_telegram_token
 
@@ -77,8 +77,8 @@ class TestValidateTelegramToken:
         http_mock = _mock_httpx(resp)
 
         with (
-            patch("src.agents.po.tools._get_api", return_value=mock_api),
-            patch("src.agents.po.tools.httpx.AsyncClient", return_value=http_mock),
+            patch("src.agents.po.tools_projects._get_api", return_value=mock_api),
+            patch("src.agents.po.tools_projects.httpx.AsyncClient", return_value=http_mock),
         ):
             from src.agents.po.tools import validate_telegram_token
 
@@ -99,8 +99,8 @@ class TestValidateTelegramToken:
         instance.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("src.agents.po.tools._get_api", return_value=mock_api),
-            patch("src.agents.po.tools.httpx.AsyncClient", return_value=instance),
+            patch("src.agents.po.tools_projects._get_api", return_value=mock_api),
+            patch("src.agents.po.tools_projects.httpx.AsyncClient", return_value=instance),
         ):
             from src.agents.po.tools import validate_telegram_token
 
@@ -123,8 +123,8 @@ class TestValidateTelegramToken:
         http_mock = _mock_httpx(resp)
 
         with (
-            patch("src.agents.po.tools._get_api", return_value=mock_api),
-            patch("src.agents.po.tools.httpx.AsyncClient", return_value=http_mock),
+            patch("src.agents.po.tools_projects._get_api", return_value=mock_api),
+            patch("src.agents.po.tools_projects.httpx.AsyncClient", return_value=http_mock),
         ):
             from src.agents.po.tools import validate_telegram_token
 
@@ -147,8 +147,8 @@ class TestValidateTelegramToken:
         http_mock = _mock_httpx(resp)
 
         with (
-            patch("src.agents.po.tools._get_api", return_value=mock_api),
-            patch("src.agents.po.tools.httpx.AsyncClient", return_value=http_mock),
+            patch("src.agents.po.tools_projects._get_api", return_value=mock_api),
+            patch("src.agents.po.tools_projects.httpx.AsyncClient", return_value=http_mock),
         ):
             from src.agents.po.tools import validate_telegram_token
 

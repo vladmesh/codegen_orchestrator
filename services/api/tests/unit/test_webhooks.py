@@ -71,7 +71,11 @@ def _mock_user(*, user_id=1, telegram_id=99999):
 def mock_env():
     with patch.dict(
         "os.environ",
-        {"GITHUB_WEBHOOK_SECRET": SECRET, "REDIS_URL": "redis://localhost:6379"},
+        {
+            "GITHUB_WEBHOOK_SECRET": SECRET,
+            "REDIS_URL": "redis://localhost:6379",
+            "API_URL": "http://localhost:8000",
+        },
     ):
         yield
 

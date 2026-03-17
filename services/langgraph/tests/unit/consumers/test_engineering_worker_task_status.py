@@ -26,7 +26,7 @@ def mock_redis():
 @pytest.fixture
 def mock_api():
     """Patch api_client methods used by the engineering worker."""
-    with patch("src.consumers.engineering.api_client") as api:
+    with patch("src.consumers.engineering_result_handler.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get_project = AsyncMock(return_value={"id": "proj-1", "name": "test", "config": {}})
@@ -40,7 +40,7 @@ class TestTaskStatusUpdates:
     """When planning_task_id is present, worker updates task status."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
     async def test_updates_task_on_success(self, mock_delete, mock_redis, mock_api):
         """On success with planning_task_id: task → done, event written."""
 
@@ -80,7 +80,7 @@ class TestTaskStatusUpdates:
         assert event_data["details"]["commit_sha"] == "abc123"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
     async def test_skips_deploy_when_task_linked(self, mock_delete, mock_redis, mock_api):
         """With planning_task_id, deploy is skipped (dispatcher handles it)."""
 
@@ -109,7 +109,7 @@ class TestTaskStatusUpdates:
         assert len(deploy_calls) == 0
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
     async def test_backward_compat_no_task_id(self, mock_delete, mock_redis, mock_api):
         """Without planning_task_id, old behavior: deploy triggers as before."""
         mock_api.post.return_value = AsyncMock(status_code=201)

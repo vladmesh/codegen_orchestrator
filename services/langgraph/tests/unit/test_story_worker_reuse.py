@@ -159,9 +159,7 @@ class TestEngineeringConsumerStoryWorker:
     """process_engineering_job stores/reuses story worker."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering.get_story_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering._handle_engineering_success", new_callable=AsyncMock)
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
@@ -174,9 +172,7 @@ class TestEngineeringConsumerStoryWorker:
         mock_resource,
         mock_create_graph,
         mock_handle_success,
-        mock_delete,
         mock_get_worker,
-        mock_set_worker,
     ):
         """First task in story: spawn → lookup worker, pass to subgraph."""
         mock_api.patch = AsyncMock()
@@ -229,9 +225,7 @@ class TestEngineeringConsumerStoryWorker:
         assert call_kwargs["story_id"] == "story-1"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering.get_story_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering._handle_engineering_success", new_callable=AsyncMock)
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
@@ -244,9 +238,7 @@ class TestEngineeringConsumerStoryWorker:
         mock_resource,
         mock_create_graph,
         mock_handle_success,
-        mock_delete,
         mock_get_worker,
-        mock_set_worker,
     ):
         """Second task in story: lookup existing worker_id, pass to subgraph."""
         mock_api.patch = AsyncMock()
@@ -295,9 +287,7 @@ class TestEngineeringConsumerStoryWorker:
         assert invoke_args["worker_id"] == "dev-existing-abc"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering.get_story_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering._handle_engineering_success", new_callable=AsyncMock)
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
@@ -310,9 +300,7 @@ class TestEngineeringConsumerStoryWorker:
         mock_resource,
         mock_create_graph,
         mock_handle_success,
-        mock_delete,
         mock_get_worker,
-        mock_set_worker,
     ):
         """Task without story_id: no worker lookup."""
         mock_api.patch = AsyncMock()
@@ -364,10 +352,12 @@ class TestHandleSuccessWorkerLifecycle:
     """_handle_engineering_success stores or deletes worker based on story_id."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.api_client")
-    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.set_story_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.api_client")
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
     async def test_stores_worker_when_story_id(
         self, mock_publish, mock_api, mock_delete, mock_set_worker
     ):
@@ -402,10 +392,12 @@ class TestHandleSuccessWorkerLifecycle:
         mock_delete.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.api_client")
-    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.set_story_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.api_client")
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
     async def test_deletes_worker_when_no_story_id(
         self, mock_publish, mock_api, mock_delete, mock_set_worker
     ):

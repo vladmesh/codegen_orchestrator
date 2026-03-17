@@ -24,8 +24,13 @@ def mock_redis():
 
 @pytest.fixture
 def mock_api():
-    """Patch api_client methods used by the deploy worker."""
-    with patch("src.consumers.deploy.api_client") as api:
+    """Patch api_client methods used by the deploy worker and precheck module."""
+    with (
+        patch("src.consumers.deploy.api_client") as api,
+        patch("src.consumers.deploy_precheck.api_client", api),
+        patch("src.consumers.deploy_failure_handler.api_client", api),
+        patch("src.consumers.deploy_result_handler.api_client", api),
+    ):
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get = AsyncMock(return_value=[])  # _check_duplicate_deploy
@@ -64,7 +69,7 @@ def _patch_asyncssh(exit_status: int):
     mock_ssh = MagicMock()
     mock_ssh.connect = fake_connect
     mock_ssh.import_private_key = MagicMock(return_value="key-obj")
-    return patch("src.consumers.deploy.asyncssh", mock_ssh)
+    return patch("src.consumers.deploy_precheck.asyncssh", mock_ssh)
 
 
 class TestPreCheckServer:
@@ -73,7 +78,7 @@ class TestPreCheckServer:
     @pytest.mark.asyncio
     async def test_create_dir_absent_ok(self):
         """create action + dir absent → no error (safe to deploy)."""
-        from src.consumers.deploy import _pre_check_server
+        from src.consumers.deploy_precheck import _pre_check_server
 
         with _patch_asyncssh(exit_status=1):  # dir does not exist
             error = await _pre_check_server(
@@ -88,7 +93,7 @@ class TestPreCheckServer:
     @pytest.mark.asyncio
     async def test_create_dir_exists_error(self):
         """create action + dir exists → error (needs cleanup)."""
-        from src.consumers.deploy import _pre_check_server
+        from src.consumers.deploy_precheck import _pre_check_server
 
         with _patch_asyncssh(exit_status=0):  # dir exists
             error = await _pre_check_server(
@@ -104,7 +109,7 @@ class TestPreCheckServer:
     @pytest.mark.asyncio
     async def test_feature_dir_exists_ok(self):
         """feature action + dir exists → no error (ready to update)."""
-        from src.consumers.deploy import _pre_check_server
+        from src.consumers.deploy_precheck import _pre_check_server
 
         with _patch_asyncssh(exit_status=0):  # dir exists
             error = await _pre_check_server(
@@ -119,7 +124,7 @@ class TestPreCheckServer:
     @pytest.mark.asyncio
     async def test_feature_dir_absent_error(self):
         """feature action + dir absent → error (never deployed)."""
-        from src.consumers.deploy import _pre_check_server
+        from src.consumers.deploy_precheck import _pre_check_server
 
         with _patch_asyncssh(exit_status=1):  # dir does not exist
             error = await _pre_check_server(
@@ -135,7 +140,7 @@ class TestPreCheckServer:
     @pytest.mark.asyncio
     async def test_fix_same_as_feature(self):
         """fix action behaves like feature (dir must exist)."""
-        from src.consumers.deploy import _pre_check_server
+        from src.consumers.deploy_precheck import _pre_check_server
 
         with _patch_asyncssh(exit_status=0):  # dir exists
             error = await _pre_check_server(
@@ -150,12 +155,12 @@ class TestPreCheckServer:
     @pytest.mark.asyncio
     async def test_ssh_connection_failure_returns_error(self):
         """SSH connection failure returns descriptive error, doesn't raise."""
-        from src.consumers.deploy import _pre_check_server
+        from src.consumers.deploy_precheck import _pre_check_server
 
         mock_ssh = MagicMock()
         mock_ssh.import_private_key = MagicMock(side_effect=ValueError("bad key"))
 
-        with patch("src.consumers.deploy.asyncssh", mock_ssh):
+        with patch("src.consumers.deploy_precheck.asyncssh", mock_ssh):
             error = await _pre_check_server(
                 server_ip="1.2.3.4",
                 ssh_key="fake-key",
@@ -173,7 +178,7 @@ class TestDeployPreCheckIntegration:
     @pytest.mark.asyncio
     @patch("src.consumers.deploy.create_devops_subgraph")
     @patch("src.tools.allocator.ensure_project_allocations", new_callable=AsyncMock)
-    @patch("src.consumers.deploy._pre_check_server", new_callable=AsyncMock)
+    @patch("src.consumers.deploy_precheck._pre_check_server", new_callable=AsyncMock)
     async def test_precheck_failure_aborts_deploy(
         self, mock_precheck, mock_alloc, mock_devops, mock_redis, mock_api
     ):
@@ -206,7 +211,7 @@ class TestDeployPreCheckIntegration:
     @pytest.mark.asyncio
     @patch("src.consumers.deploy.create_devops_subgraph")
     @patch("src.tools.allocator.ensure_project_allocations", new_callable=AsyncMock)
-    @patch("src.consumers.deploy._pre_check_server", new_callable=AsyncMock)
+    @patch("src.consumers.deploy_precheck._pre_check_server", new_callable=AsyncMock)
     async def test_precheck_ok_proceeds_to_deploy(
         self, mock_precheck, mock_alloc, mock_devops, mock_redis, mock_api
     ):

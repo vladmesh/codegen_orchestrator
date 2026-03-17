@@ -28,9 +28,8 @@ class TestTwoTaskStoryLifecycle:
     """Consumer handles two sequential tasks in one story correctly."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.set_story_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering.get_story_worker", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock)
     @patch("src.consumers.engineering._handle_engineering_success", new_callable=AsyncMock)
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
     @patch("src.consumers.engineering.resource_allocator_node")
@@ -45,7 +44,6 @@ class TestTwoTaskStoryLifecycle:
         mock_handle_success,
         mock_delete,
         mock_get_worker,
-        mock_set_worker,
     ):
         """First task: no worker in registry → None passed to subgraph.
         Second task: worker found → worker_id passed to subgraph.

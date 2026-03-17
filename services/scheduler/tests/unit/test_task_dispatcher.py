@@ -473,7 +473,7 @@ class TestCompleteStories:
         }
         mock_github.enable_auto_merge.return_value = True
 
-        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
         # Should transition story to pr_review (not deploying)
@@ -644,7 +644,7 @@ class TestPollMergedPRs:
             }
         ]
 
-        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 1
@@ -680,7 +680,7 @@ class TestPollMergedPRs:
             {"number": 42, "merged_at": None, "head": {"sha": "abc123"}}
         ]
 
-        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 0
@@ -722,7 +722,7 @@ class TestPollMergedPRs:
             [{"number": 10, "merged_at": "2026-03-16T12:00:00Z", "head": {"sha": "def456"}}],
         ]
 
-        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
             result = await poll_merged_prs(api_client, redis_client)
 
         assert result == 1

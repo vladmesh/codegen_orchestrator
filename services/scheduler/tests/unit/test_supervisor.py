@@ -218,7 +218,7 @@ class TestCompleteStoriesTriggersNext:
             "number": 1,
             "node_id": "PR_node1",
         }
-        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             completed = await complete_stories(api_client, redis_client)
 
         assert completed == 1
@@ -261,7 +261,7 @@ class TestCompleteStoriesTriggersNext:
             "number": 1,
             "node_id": "PR_node1",
         }
-        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
         from shared.queues import ARCHITECT_QUEUE
@@ -430,7 +430,8 @@ class TestStoryWorkerCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_on_story_complete(self, api_client, redis_client):
         """Story completed → worker container deleted, registry cleared."""
-        from src.tasks.task_dispatcher import STORY_WORKERS_KEY, complete_stories
+        from shared.queues import STORY_WORKERS_KEY
+        from src.tasks.task_dispatcher import complete_stories
 
         api_client.get_stories_by_status.return_value = [
             {"id": "story-1", "project_id": "proj-1", "user_id": "u-1"}
@@ -452,7 +453,7 @@ class TestStoryWorkerCleanup:
             "number": 1,
             "node_id": "PR_node1",
         }
-        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
         # Should lookup worker
@@ -487,7 +488,7 @@ class TestStoryWorkerCleanup:
             "number": 1,
             "node_id": "PR_node1",
         }
-        with patch("src.tasks.task_dispatcher.GitHubAppClient", return_value=mock_github):
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
         # Should not send delete command or clear registry
@@ -497,7 +498,8 @@ class TestStoryWorkerCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_on_story_failure(self, api_client, redis_client):
         """Story failed (task retries exhausted) → worker cleaned up."""
-        from src.tasks.task_dispatcher import STORY_WORKERS_KEY, supervise_failed_tasks
+        from shared.queues import STORY_WORKERS_KEY
+        from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             {

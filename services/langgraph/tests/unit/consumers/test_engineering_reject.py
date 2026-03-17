@@ -16,7 +16,7 @@ import pytest
 
 @pytest.fixture
 def mock_api():
-    with patch("src.consumers.engineering.api_client") as api:
+    with patch("src.consumers.engineering_result_handler.api_client") as api:
         api.patch = AsyncMock()
         api.post = AsyncMock()
         api.get = AsyncMock(return_value={"created_by": "system"})
@@ -27,8 +27,10 @@ class TestRejectHandling:
     """Tests for _handle_worker_reject."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     async def test_rejected_calls_notify_admins(self, mock_notify, mock_publish, mock_api):
         """Worker reject → notify_admins called."""
         from src.consumers.engineering import _handle_worker_reject
@@ -50,8 +52,10 @@ class TestRejectHandling:
         assert call_args[1]["level"] == "error"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.publish_callback_event", new_callable=AsyncMock
+    )
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     async def test_rejected_fails_story_with_metadata(self, mock_notify, mock_publish, mock_api):
         """Worker reject → story fails with reject metadata."""
         from src.consumers.engineering import _handle_worker_reject

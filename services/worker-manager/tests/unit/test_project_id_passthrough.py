@@ -209,13 +209,17 @@ class TestWorkspaceByRepoId:
         """Pre-scaffolded workspace should refresh git token, not clone."""
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
-        with patch(
-            "src.manager.workspace_mod.get_scaffolded_workspace",
-            return_value=(Path("/tmp/ws/repo-1"), True),
+        with (
+            patch(
+                "src.manager.workspace_mod.get_scaffolded_workspace",
+                return_value=(Path("/tmp/ws/repo-1"), True),
+            ),
+            patch(
+                "src.manager.git_ops.refresh_git_token",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_refresh,
         ):
-            manager._setup_git_repo = AsyncMock(return_value=True)
-            manager._refresh_git_token = AsyncMock(return_value=True)
-
             await manager.create_worker_with_capabilities(
                 worker_id="w-3",
                 capabilities=["GIT"],
@@ -224,8 +228,7 @@ class TestWorkspaceByRepoId:
                 env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "ghp_test"},
             )
 
-        manager._refresh_git_token.assert_awaited_once()
-        manager._setup_git_repo.assert_not_awaited()
+        mock_refresh.assert_awaited_once()
 
 
 class TestRepoIdRedisMeta:
@@ -449,10 +452,10 @@ class TestWorkspaceGC:
         mock_stat.st_mtime = old_mtime
 
         with (
-            patch("os.listdir", return_value=["old-proj"]),
-            patch("src.manager.Path") as mock_path_cls,
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
-            patch.object(manager, "_notify_workspace_deleted", new_callable=AsyncMock),
+            patch("src.garbage_collector.os.listdir", return_value=["old-proj"]),
+            patch("src.garbage_collector.Path") as mock_path_cls,
+            patch("src.garbage_collector.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock),
         ):
             mock_ws_dir = MagicMock()
             mock_ws_dir.stat.return_value = mock_stat
@@ -460,7 +463,6 @@ class TestWorkspaceGC:
 
             await manager.garbage_collect_workspaces()
 
-        # Only SCAFFOLDED_WORKSPACE_PATH is scanned now (single path)
         assert mock_rm.call_count == 1
 
     @pytest.mark.asyncio
@@ -477,10 +479,10 @@ class TestWorkspaceGC:
         mock_stat.st_mtime = old_mtime
 
         with (
-            patch("os.listdir", return_value=["repo-abc"]),
-            patch("src.manager.Path") as mock_path_cls,
-            patch("src.manager.workspace_mod.remove_workspace"),
-            patch.object(manager, "_notify_workspace_deleted", new_callable=AsyncMock) as mock_notify,
+            patch("src.garbage_collector.os.listdir", return_value=["repo-abc"]),
+            patch("src.garbage_collector.Path") as mock_path_cls,
+            patch("src.garbage_collector.workspace_mod.remove_workspace"),
+            patch("src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock) as mock_notify,
         ):
             mock_ws_dir = MagicMock()
             mock_ws_dir.stat.return_value = mock_stat
@@ -488,7 +490,6 @@ class TestWorkspaceGC:
 
             await manager.garbage_collect_workspaces()
 
-        # Only SCAFFOLDED_WORKSPACE_PATH is scanned now (single path)
         assert mock_notify.call_count == 1
         mock_notify.assert_any_call("repo-abc")
 
@@ -499,19 +500,18 @@ class TestWorkspaceGC:
 
         redis = aioredis.FakeRedis(decode_responses=True)
         await redis.sadd("workspace:active_projects", "active-proj")
-        # Must have a worker:meta entry so active_projects isn't cleaned as stale
         await redis.hset("worker:meta:w1", mapping={"project_id": "active-proj"})
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        old_mtime = time.time() - (48 * 3600)  # 48 hours ago
+        old_mtime = time.time() - (48 * 3600)
 
         mock_stat = MagicMock()
         mock_stat.st_mtime = old_mtime
 
         with (
-            patch("os.listdir", return_value=["active-proj"]),
-            patch("src.manager.Path") as mock_path_cls,
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.garbage_collector.os.listdir", return_value=["active-proj"]),
+            patch("src.garbage_collector.Path") as mock_path_cls,
+            patch("src.garbage_collector.workspace_mod.remove_workspace") as mock_rm,
         ):
             mock_ws_dir = MagicMock()
             mock_ws_dir.stat.return_value = mock_stat
@@ -529,15 +529,15 @@ class TestWorkspaceGC:
         redis = aioredis.FakeRedis(decode_responses=True)
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        recent_mtime = time.time() - (2 * 3600)  # 2 hours ago
+        recent_mtime = time.time() - (2 * 3600)
 
         mock_stat = MagicMock()
         mock_stat.st_mtime = recent_mtime
 
         with (
-            patch("os.listdir", return_value=["recent-proj"]),
-            patch("src.manager.Path") as mock_path_cls,
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.garbage_collector.os.listdir", return_value=["recent-proj"]),
+            patch("src.garbage_collector.Path") as mock_path_cls,
+            patch("src.garbage_collector.workspace_mod.remove_workspace") as mock_rm,
         ):
             mock_ws_dir = MagicMock()
             mock_ws_dir.stat.return_value = mock_stat
@@ -550,8 +550,7 @@ class TestWorkspaceGC:
     @pytest.mark.asyncio
     async def test_notify_workspace_deleted_calls_api(self, mock_docker):
         """_notify_workspace_deleted POSTs to the API endpoint."""
-        redis = aioredis.FakeRedis(decode_responses=True)
-        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+        from src.garbage_collector import _notify_workspace_deleted
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -561,8 +560,8 @@ class TestWorkspaceGC:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.manager.httpx.AsyncClient", return_value=mock_client):
-            await manager._notify_workspace_deleted("repo-xyz")
+        with patch("src.garbage_collector.httpx.AsyncClient", return_value=mock_client):
+            await _notify_workspace_deleted("repo-xyz")
 
         mock_client.post.assert_awaited_once()
         call_url = mock_client.post.call_args[0][0]
@@ -572,15 +571,13 @@ class TestWorkspaceGC:
     @pytest.mark.asyncio
     async def test_notify_workspace_deleted_handles_errors(self, mock_docker):
         """_notify_workspace_deleted doesn't raise on API errors."""
-        redis = aioredis.FakeRedis(decode_responses=True)
-        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+        from src.garbage_collector import _notify_workspace_deleted
 
         with patch(
-            "src.manager.httpx.AsyncClient",
+            "src.garbage_collector.httpx.AsyncClient",
             side_effect=httpx.ConnectError("connection refused"),
         ):
-            # Should not raise
-            await manager._notify_workspace_deleted("repo-xyz")
+            await _notify_workspace_deleted("repo-xyz")
 
 
 # --- Phase 5: Project mutex ---

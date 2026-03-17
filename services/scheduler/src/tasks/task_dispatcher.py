@@ -12,80 +12,66 @@ Runs as a periodic scheduler job (every 30s).
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
 import structlog
 
-from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.project import ProjectStatus
-from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
-from shared.contracts.queues.architect import ArchitectMessage
-from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
-from shared.contracts.queues.po import POSystemEvent, to_flat_fields
-from shared.contracts.queues.worker import DeleteWorkerCommand
-from shared.queues import (
-    ARCHITECT_QUEUE,
-    DEPLOY_QUEUE,
-    ENGINEERING_QUEUE,
-    PO_INPUT_QUEUE,
-    WORKER_COMMANDS,
-)
+from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
+from .pr_poller import poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
+from .story_completion import (
+    _cleanup_story_worker,
+    _parse_owner_repo,
+    _trigger_next_story,
+    complete_stories,
+)
+from .supervisor import (
+    NON_RETRYABLE_REASONS,
+    STORY_MAX_ARCHITECT_RETRIES,
+    STORY_RETRY_KEY_PREFIX,
+    STORY_RETRY_TTL,
+    STORY_STUCK_THRESHOLD_MINUTES,
+    TASK_STUCK_THRESHOLD_MINUTES,
+    _parse_datetime,
+    supervise_failed_tasks,
+    supervise_stuck_stories,
+    supervise_stuck_tasks,
+)
 
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
+# Re-export for backward compatibility with tests
+__all__ = [
+    "NON_RETRYABLE_REASONS",
+    "STORY_MAX_ARCHITECT_RETRIES",
+    "STORY_RETRY_KEY_PREFIX",
+    "STORY_RETRY_TTL",
+    "STORY_STUCK_THRESHOLD_MINUTES",
+    "TASK_STUCK_THRESHOLD_MINUTES",
+    "_build_cumulative_context",
+    "_cleanup_story_worker",
+    "_parse_datetime",
+    "_parse_owner_repo",
+    "_trigger_next_story",
+    "complete_stories",
+    "dispatch_todo_tasks",
+    "poll_merged_prs",
+    "supervise_failed_tasks",
+    "supervise_stuck_stories",
+    "supervise_stuck_tasks",
+    "task_dispatcher_loop",
+]
+
 logger = structlog.get_logger(__name__)
 
 DISPATCH_INTERVAL_SECONDS = 30
-
-# Supervisor thresholds
-STORY_STUCK_THRESHOLD_MINUTES = 5
-TASK_STUCK_THRESHOLD_MINUTES = 30
-STORY_MAX_ARCHITECT_RETRIES = 3
-
-# Story worker registry key (shared with langgraph service)
-STORY_WORKERS_KEY = "story:workers"
-
-# Failure reasons that should not be retried by the supervisor
-NON_RETRYABLE_REASONS = {"worker_rejected", "ci_infra_failure", "developer_blocked"}
-
-
-async def _cleanup_story_worker(
-    redis_client: RedisStreamClient,
-    story_id: str,
-) -> None:
-    """Clean up the worker container associated with a story.
-
-    Reads worker_id from Redis registry, sends DeleteWorkerCommand,
-    then clears the registry entry.
-    """
-    redis = redis_client.redis
-    worker_id = await redis.hget(STORY_WORKERS_KEY, story_id)
-    if not worker_id:
-        return
-
-    if isinstance(worker_id, bytes):
-        worker_id = worker_id.decode()
-
-    # Send delete command to worker-manager
-    delete_cmd = DeleteWorkerCommand(
-        request_id=f"cleanup-story-{story_id}",
-        worker_id=worker_id,
-        reason="completed",
-    )
-    await redis_client.publish(WORKER_COMMANDS, delete_cmd.model_dump(mode="json"))
-
-    # Clear registry entry
-    await redis.hdel(STORY_WORKERS_KEY, story_id)
-
-    logger.info("story_worker_cleaned_up", story_id=story_id, worker_id=worker_id)
 
 
 def _build_cumulative_context(sibling_events: list[dict]) -> str:
@@ -223,467 +209,6 @@ async def dispatch_todo_tasks(
         dispatched += 1
 
     return dispatched
-
-
-def _parse_owner_repo(git_url: str) -> tuple[str, str]:
-    """Extract (owner, repo) from a GitHub git_url.
-
-    Handles both HTTPS and token-based URLs:
-    - https://github.com/org/repo
-    - https://x-access-token:TOKEN@github.com/org/repo.git
-    """
-    # Strip .git suffix and trailing slashes
-    url = git_url.rstrip("/")
-    if url.endswith(".git"):
-        url = url[:-4]
-    # Take last two path segments
-    parts = url.split("/")
-    return parts[-2], parts[-1]
-
-
-async def complete_stories(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-) -> int:
-    """Find stories where all tasks are done, create PR for CI gate.
-
-    When all tasks in a story are done:
-    1. Create PR from story/{story_id} → main
-    2. Enable auto-merge (merge commit, not squash — preserves individual commits)
-    3. Transition story to PR_REVIEW
-    4. Cleanup worker container, trigger next story
-
-    Deploy is triggered later by the webhook handler when PR is merged to main.
-
-    Returns the number of stories transitioned.
-    """
-    stories = await api_client.get_stories_by_status(StoryStatus.IN_PROGRESS)
-    completed = 0
-
-    if stories:
-        logger.info(
-            "complete_stories_check",
-            in_progress_stories=len(stories),
-        )
-
-    for story in stories:
-        story_id = story["id"]
-        project_id = story.get("project_id")
-
-        tasks = await api_client.get_tasks_by_story(story_id)
-
-        # Skip if no tasks (architect may not have run yet)
-        if not tasks:
-            logger.debug("complete_stories_skip_no_tasks", story_id=story_id)
-            continue
-
-        task_statuses = [t.get("status") for t in tasks]
-        # Check if all tasks are done
-        if not all(s == TaskStatus.DONE for s in task_statuses):
-            logger.debug(
-                "complete_stories_skip_not_all_done",
-                story_id=story_id,
-                task_statuses=task_statuses,
-            )
-            continue
-
-        log = logger.bind(story_id=story_id, project_id=project_id)
-
-        # Get repository to create PR
-        repo = await api_client.get_primary_repository(project_id) if project_id else None
-        if not repo:
-            log.error("complete_stories_no_repo", project_id=project_id)
-            continue
-
-        git_url = repo.get("git_url", "")
-        owner, repo_name = _parse_owner_repo(git_url)
-        story_title = story.get("title", f"Story {story_id}")
-        branch = f"story/{story_id}"
-
-        # Create PR from story branch to main
-        try:
-            github = GitHubAppClient()
-            pr = await github.create_pull_request(
-                owner,
-                repo_name,
-                head=branch,
-                base="main",
-                title=story_title,
-                body="All tasks completed. Auto-merge enabled.",
-            )
-            pr_number = pr["number"]
-            pr_node_id = pr.get("node_id", "")
-            log.info(
-                "story_pr_created",
-                pr_number=pr_number,
-                branch=branch,
-                node_id=pr_node_id[:20] if pr_node_id else "",
-            )
-
-            # Enable auto-merge (merge commit to preserve individual commits)
-            # node_id must be a GraphQL ID (e.g. "PR_kwDO..."), not a number
-            if pr_node_id and isinstance(pr_node_id, str) and not pr_node_id.isdigit():
-                auto_merged = await github.enable_auto_merge(
-                    owner, repo_name, pr_node_id=pr_node_id
-                )
-            else:
-                log.warning(
-                    "story_pr_node_id_invalid",
-                    pr_number=pr_number,
-                    node_id_raw=repr(pr_node_id),
-                )
-                # Fetch node_id via REST as fallback
-                pr_details = await github.get_pull_request(owner, repo_name, pr_number)
-                pr_node_id = pr_details.get("node_id", "")
-                if pr_node_id and not pr_node_id.isdigit():
-                    auto_merged = await github.enable_auto_merge(
-                        owner, repo_name, pr_node_id=pr_node_id
-                    )
-                else:
-                    log.error("story_pr_node_id_fetch_failed", pr_number=pr_number)
-                    auto_merged = False
-            if not auto_merged:
-                log.warning("story_auto_merge_failed", pr_number=pr_number)
-        except Exception:
-            log.exception("story_pr_creation_failed", branch=branch)
-            continue
-
-        # Transition story to pr_review (webhook handles deploy after merge)
-        await api_client.transition_story(story_id, "pr_review")
-        log.info("story_pr_review", task_count=len(tasks), pr_number=pr_number)
-
-        # Cleanup story worker container (no longer needed)
-        await _cleanup_story_worker(redis_client, story_id)
-
-        # Trigger next queued story for this project (doesn't need PR to merge)
-        await _trigger_next_story(api_client, redis_client, project_id)
-
-        completed += 1
-
-    return completed
-
-
-async def _trigger_next_story(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    project_id: str,
-) -> None:
-    """Find the next created story for a project and publish to architect:queue."""
-    created_stories = await api_client.get_stories_by_status(StoryStatus.CREATED)
-    # Filter to same project, sort by priority (lower = higher priority)
-    project_stories = sorted(
-        [s for s in created_stories if s.get("project_id") == project_id],
-        key=lambda s: s.get("priority", 0),
-    )
-    if not project_stories:
-        return
-
-    next_story = project_stories[0]
-    arch_msg = ArchitectMessage(
-        story_id=next_story["id"],
-        project_id=project_id,
-        user_id=next_story.get("user_id", ""),
-    )
-    await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
-    logger.info(
-        "next_story_triggered",
-        story_id=next_story["id"],
-        project_id=project_id,
-    )
-
-
-def _parse_datetime(iso_str: str) -> datetime:
-    """Parse ISO datetime string, handling both Z and +00:00 suffixes."""
-    if iso_str.endswith("Z"):
-        iso_str = iso_str[:-1] + "+00:00"
-    return datetime.fromisoformat(iso_str)
-
-
-STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
-STORY_RETRY_TTL = 3600  # 1 hour — retries expire after this
-
-
-async def supervise_stuck_stories(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-    *,
-    _retry_counts: dict[str, int] | None = None,
-) -> dict[str, int]:
-    """Detect stories stuck in 'created' with no tasks and retry architect.
-
-    Retry counts are persisted in Redis so they survive scheduler restarts.
-
-    Returns dict with 'retried' and 'failed' counts.
-    """
-    stories = await api_client.get_stories_by_status(StoryStatus.CREATED)
-    retried = 0
-    failed = 0
-
-    # Build set of projects that already have an active story
-    active_stories = await api_client.get_stories_by_status(StoryStatus.IN_PROGRESS)
-    active_projects = {s.get("project_id") for s in active_stories}
-
-    now = datetime.now(UTC)
-    redis = redis_client._redis
-
-    for story in stories:
-        story_id = story["id"]
-        project_id = story.get("project_id")
-        created_at = _parse_datetime(story["created_at"])
-        age_minutes = (now - created_at).total_seconds() / 60
-
-        if age_minutes < STORY_STUCK_THRESHOLD_MINUTES:
-            continue
-
-        # Skip if project already has an active story (sequential processing)
-        if project_id in active_projects:
-            continue
-
-        # Only retry if architect hasn't created any tasks yet
-        tasks = await api_client.get_tasks_by_story(story_id)
-        if tasks:
-            continue
-
-        log = logger.bind(story_id=story_id, age_minutes=round(age_minutes, 1))
-
-        retry_key = f"{STORY_RETRY_KEY_PREFIX}{story_id}"
-        raw = await redis.get(retry_key)
-        current_retries = int(raw) if raw else 0
-
-        if current_retries >= STORY_MAX_ARCHITECT_RETRIES:
-            log.error(
-                "story_terminal_failure",
-                reason="architect_retries_exhausted",
-                retries=current_retries,
-            )
-            await api_client.fail_story(story_id)
-            await redis.delete(retry_key)
-            failed += 1
-            continue
-
-        # Retry: republish to architect:queue
-        arch_msg = ArchitectMessage(
-            story_id=story_id,
-            project_id=story.get("project_id", ""),
-            user_id=story.get("user_id", ""),
-        )
-        await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
-        await redis.set(retry_key, current_retries + 1, ex=STORY_RETRY_TTL)
-
-        log.warning(
-            "story_stuck_retry",
-            retry_attempt=current_retries + 1,
-            max_retries=STORY_MAX_ARCHITECT_RETRIES,
-        )
-        retried += 1
-
-    return {"retried": retried, "failed": failed}
-
-
-async def supervise_failed_tasks(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-) -> dict[str, int]:
-    """Detect failed tasks and retry or escalate to story failure.
-
-    Returns dict with 'retried' and 'failed' counts.
-    """
-    tasks = await api_client.get_tasks_by_status(TaskStatus.FAILED)
-    retried = 0
-    failed = 0
-
-    for task in tasks:
-        task_id = task["id"]
-        story_id = task.get("story_id")
-
-        # Skip standalone tasks (not part of a story)
-        if not story_id:
-            continue
-
-        # Skip non-retryable failures — needs admin intervention, not retry
-        failure_reason = (task.get("failure_metadata") or {}).get("failure_reason")
-        if failure_reason in NON_RETRYABLE_REASONS:
-            continue
-
-        current_iter = task.get("current_iteration", 0)
-        max_iter = task.get("max_iterations", 3)
-        log = logger.bind(task_id=task_id, story_id=story_id, iteration=current_iter)
-
-        if current_iter < max_iter:
-            # Retry: failed → backlog → todo, bump iteration
-            await api_client.transition_task(task_id, TaskStatus.BACKLOG, "supervisor")
-            await api_client.transition_task(task_id, TaskStatus.TODO, "supervisor")
-            await api_client.update_task(task_id, {"current_iteration": current_iter + 1})
-            log.warning(
-                "task_retry",
-                new_iteration=current_iter + 1,
-                max_iterations=max_iter,
-            )
-            retried += 1
-        else:
-            # Terminal failure — cancel siblings, fail story, notify user
-            log.error(
-                "task_terminal_failure",
-                reason="retries_exhausted",
-            )
-            siblings = await api_client.get_tasks_by_story(story_id)
-            for sibling in siblings:
-                sib_status = sibling.get("status", "")
-                if sibling["id"] != task_id and sib_status not in (
-                    TaskStatus.DONE,
-                    TaskStatus.FAILED,
-                    TaskStatus.CANCELLED,
-                ):
-                    await api_client.transition_task(
-                        sibling["id"],
-                        TaskStatus.CANCELLED,
-                        "supervisor",
-                    )
-
-            try:
-                await api_client.fail_story(story_id)
-            except Exception:
-                log.warning("fail_story_transition_failed", story_id=story_id, exc_info=True)
-
-            # Cleanup story worker container
-            await _cleanup_story_worker(redis_client, story_id)
-
-            # Notify user — permanent failure, no auto-recovery possible
-            story = await api_client.get_story(story_id) if story_id else {}
-            user_id = story.get("user_id", "")
-            if user_id:
-                event = POSystemEvent(
-                    event="story_failed",
-                    text="Story permanently failed after several retry attempts.",
-                    user_id=str(user_id),
-                )
-                await redis_client.publish_flat(PO_INPUT_QUEUE, to_flat_fields(event))
-
-            failed += 1
-
-    return {"retried": retried, "failed": failed}
-
-
-async def supervise_stuck_tasks(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-) -> dict[str, int]:
-    """Detect tasks stuck in in_dev and fail them.
-
-    Failed tasks will be picked up by supervise_failed_tasks for retry.
-    Returns dict with 'timed_out' count.
-    """
-    tasks = await api_client.get_tasks_by_status(TaskStatus.IN_DEV)
-    timed_out = 0
-    now = datetime.now(UTC)
-
-    for task in tasks:
-        task_id = task["id"]
-        updated_at = _parse_datetime(task["updated_at"])
-        age_minutes = (now - updated_at).total_seconds() / 60
-
-        if age_minutes < TASK_STUCK_THRESHOLD_MINUTES:
-            continue
-
-        log = logger.bind(task_id=task_id, age_minutes=round(age_minutes, 1))
-        log.warning("task_stuck_timeout", threshold_minutes=TASK_STUCK_THRESHOLD_MINUTES)
-
-        await api_client.transition_task(task_id, TaskStatus.FAILED, "supervisor")
-        timed_out += 1
-
-    return {"timed_out": timed_out}
-
-
-async def poll_merged_prs(
-    api_client: SchedulerAPIClient,
-    redis_client: RedisStreamClient,
-) -> int:
-    """Poll GitHub for merged PRs on stories in pr_review status.
-
-    Replaces the webhook dependency: if a story branch PR was merged to main,
-    transition story to deploying and publish deploy message.
-
-    Returns the number of stories transitioned to deploying.
-    """
-    stories = await api_client.get_stories_by_status(StoryStatus.PR_REVIEW)
-    if not stories:
-        return 0
-
-    deployed = 0
-    github = GitHubAppClient()
-
-    for story in stories:
-        story_id = story["id"]
-        project_id = story.get("project_id")
-        log = logger.bind(story_id=story_id, project_id=project_id)
-
-        if not project_id:
-            continue
-
-        repo = await api_client.get_primary_repository(project_id)
-        if not repo:
-            log.warning("poll_merged_no_repo")
-            continue
-
-        git_url = repo.get("git_url", "")
-        owner, repo_name = _parse_owner_repo(git_url)
-        branch = f"story/{story_id}"
-
-        try:
-            prs = await github.list_pull_requests(
-                owner, repo_name, head=branch, base="main", state="closed"
-            )
-        except Exception:
-            log.exception("poll_merged_github_error")
-            continue
-
-        # Find a merged PR for this story branch
-        merged_pr = next((pr for pr in prs if pr.get("merged_at")), None)
-        if not merged_pr:
-            continue
-
-        head_sha = merged_pr.get("head", {}).get("sha", "")
-        log.info(
-            "poll_merged_pr_found",
-            pr_number=merged_pr["number"],
-            merged_at=merged_pr["merged_at"],
-        )
-
-        # Transition story to deploying
-        await api_client.transition_story(story_id, "deploy")
-
-        # Resolve user_id for deploy message
-        story_data = await api_client.get_story(story_id)
-        user_id = story_data.get("user_id", "")
-
-        # Publish deploy message
-        run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
-        run_data = {
-            "id": run_id,
-            "type": "deploy",
-            "project_id": str(project_id),
-            "run_metadata": {
-                "triggered_by": "pr_poll",
-                "head_sha": head_sha,
-                "story_id": story_id,
-            },
-        }
-        await api_client.create_run(run_data)
-
-        deploy_msg = DeployMessage(
-            task_id=run_id,
-            project_id=str(project_id),
-            user_id=str(user_id),
-            story_id=story_id,
-            triggered_by=DeployTrigger.WEBHOOK,
-            action="feature",
-        )
-        await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
-
-        log.info("poll_merged_deploy_triggered", run_id=run_id)
-        deployed += 1
-
-    return deployed
 
 
 async def task_dispatcher_loop() -> None:

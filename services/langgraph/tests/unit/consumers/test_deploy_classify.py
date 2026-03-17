@@ -16,12 +16,12 @@ class TestClassifyDeployFailure:
     @pytest.mark.asyncio
     async def test_port_conflict_classified_as_give_up(self):
         """Port conflict is a config issue — should be GIVE_UP."""
-        from src.consumers.deploy import _classify_deploy_failure
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         mock_response = AsyncMock()
         mock_response.content = "GIVE_UP"
 
-        with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+        with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
             mock_llm = AsyncMock()
             mock_llm.ainvoke.return_value = mock_response
             mock_llm_cls.return_value = mock_llm
@@ -32,12 +32,12 @@ class TestClassifyDeployFailure:
     @pytest.mark.asyncio
     async def test_import_error_classified_as_code_fix(self):
         """Import error is a code bug — should be CODE_FIX."""
-        from src.consumers.deploy import _classify_deploy_failure
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         mock_response = AsyncMock()
         mock_response.content = "CODE_FIX"
 
-        with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+        with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
             mock_llm = AsyncMock()
             mock_llm.ainvoke.return_value = mock_response
             mock_llm_cls.return_value = mock_llm
@@ -48,12 +48,12 @@ class TestClassifyDeployFailure:
     @pytest.mark.asyncio
     async def test_ssh_timeout_classified_as_retry(self):
         """SSH timeout is transient — should be RETRY."""
-        from src.consumers.deploy import _classify_deploy_failure
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         mock_response = AsyncMock()
         mock_response.content = "RETRY"
 
-        with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+        with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
             mock_llm = AsyncMock()
             mock_llm.ainvoke.return_value = mock_response
             mock_llm_cls.return_value = mock_llm
@@ -64,9 +64,9 @@ class TestClassifyDeployFailure:
     @pytest.mark.asyncio
     async def test_fallback_on_llm_failure_is_retry(self):
         """When LLM call fails, fallback should be RETRY (not CODE_FIX)."""
-        from src.consumers.deploy import _classify_deploy_failure
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
-        with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+        with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
             mock_llm = AsyncMock()
             mock_llm.ainvoke.side_effect = RuntimeError("API error")
             mock_llm_cls.return_value = mock_llm
@@ -77,7 +77,7 @@ class TestClassifyDeployFailure:
     @pytest.mark.asyncio
     async def test_fallback_on_missing_api_key_is_retry(self, monkeypatch):
         """When OPEN_ROUTER_KEY is not set, fallback should be RETRY."""
-        from src.consumers.deploy import _classify_deploy_failure
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         monkeypatch.delenv("OPEN_ROUTER_KEY", raising=False)
         result = await _classify_deploy_failure("some error")
@@ -86,12 +86,12 @@ class TestClassifyDeployFailure:
     @pytest.mark.asyncio
     async def test_unexpected_llm_response_is_retry(self):
         """When LLM returns unexpected value, fallback should be RETRY."""
-        from src.consumers.deploy import _classify_deploy_failure
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         mock_response = AsyncMock()
         mock_response.content = "BANANA"
 
-        with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+        with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
             mock_llm = AsyncMock()
             mock_llm.ainvoke.return_value = mock_response
             mock_llm_cls.return_value = mock_llm
@@ -111,9 +111,9 @@ class TestClassifyDeployFailure:
     @pytest.mark.asyncio
     async def test_model_id_is_valid(self):
         """Model ID should be valid OpenRouter format (no date suffix)."""
-        from src.consumers.deploy import _classify_deploy_failure
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
-        with patch("src.consumers.deploy.ChatOpenAI") as mock_llm_cls:
+        with patch("src.consumers.deploy_failure_handler.ChatOpenAI") as mock_llm_cls:
             mock_response = AsyncMock()
             mock_response.content = "RETRY"
             mock_llm = AsyncMock()

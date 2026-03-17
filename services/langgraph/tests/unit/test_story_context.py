@@ -19,7 +19,7 @@ class TestBuildStoryContext:
     """Tests for _build_story_context in engineering consumer."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_includes_user_report_when_present(self, mock_api):
         """Story with user_report prepends it to the context."""
         mock_api.get_story = AsyncMock(
@@ -51,7 +51,7 @@ class TestBuildStoryContext:
         assert report_pos < task_pos
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_omits_user_report_when_none(self, mock_api):
         """Story without user_report does not include User Report section."""
         mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
@@ -73,7 +73,7 @@ class TestBuildStoryContext:
         assert "User Report" not in result
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_skips_current_task(self, mock_api):
         """Current task is excluded from story context (already in TASK.md)."""
         mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
@@ -106,7 +106,7 @@ class TestBuildStoryContext:
         assert "CURRENT" not in result
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_done_tasks_show_old_tasks_reference(self, mock_api):
         """Completed tasks reference .story/old_tasks/ directory."""
         mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
@@ -127,7 +127,7 @@ class TestBuildStoryContext:
         assert "old_tasks" in result
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_future_tasks_marked_do_not_implement(self, mock_api):
         """Backlog/todo tasks are marked 'do NOT implement'."""
         mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
@@ -166,7 +166,7 @@ class TestBuildStoryContext:
         assert "Secret implementation details" not in result
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_no_descriptions_included(self, mock_api):
         """Task descriptions are never included in story context."""
         mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
@@ -188,7 +188,7 @@ class TestBuildStoryContext:
         assert "Detailed description" not in result
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_no_events_fetched(self, mock_api):
         """Events are not fetched — get_task_events should not be called."""
         mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
@@ -210,7 +210,7 @@ class TestBuildStoryContext:
         mock_api.get_task_events.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_returns_none_for_empty_story(self, mock_api):
         """Story with no tasks returns None."""
         mock_api.get_tasks_by_story = AsyncMock(return_value=[])
@@ -221,7 +221,7 @@ class TestBuildStoryContext:
         assert result is None
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_handles_api_failure_gracefully(self, mock_api):
         """API failure returns None instead of raising."""
         mock_api.get_tasks_by_story = AsyncMock(side_effect=Exception("API down"))
@@ -232,7 +232,7 @@ class TestBuildStoryContext:
         assert result is None
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_sorts_tasks_chronologically(self, mock_api):
         """Tasks are sorted by created_at."""
         mock_api.get_story = AsyncMock(return_value={"id": "story-1", "user_report": None})
@@ -438,7 +438,7 @@ class TestBuildStoryMd:
     """Tests for _build_story_md in engineering consumer."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_builds_story_md_with_tasks(self, mock_api):
         """Generates STORY.md with goal and task list."""
         mock_api.get_story = AsyncMock(
@@ -477,7 +477,7 @@ class TestBuildStoryMd:
         assert "README.md" in result
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_returns_none_on_api_failure(self, mock_api):
         """API failure returns None."""
         mock_api.get_story = AsyncMock(side_effect=Exception("API down"))
@@ -488,7 +488,7 @@ class TestBuildStoryMd:
         assert result is None
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.story_context.api_client")
     async def test_includes_user_report(self, mock_api):
         """Story with user_report includes it in STORY.md."""
         mock_api.get_story = AsyncMock(

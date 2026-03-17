@@ -18,7 +18,7 @@ class TestSetProjectSecretAtomicMerge:
         mock_api = AsyncMock()
         mock_api.post = AsyncMock(return_value=mock_response)
 
-        with patch("src.agents.po.tools._get_api", return_value=mock_api):
+        with patch("src.agents.po.tools_projects._get_api", return_value=mock_api):
             from src.agents.po.tools import set_project_secret
 
             result = await set_project_secret.ainvoke(

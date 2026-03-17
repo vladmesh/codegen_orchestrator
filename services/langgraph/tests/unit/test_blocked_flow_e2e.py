@@ -64,9 +64,9 @@ class TestBlockedFlowEndToEnd:
         assert result["worker_id"] == "w-1"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering.notify_admins", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.publish_story_event", new_callable=AsyncMock)
-    @patch("src.consumers.engineering.api_client")
+    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
+    @patch("src.consumers.engineering_result_handler.api_client")
     async def test_handle_worker_blocked_full_chain(self, mock_api, mock_po_event, mock_notify):
         """_handle_worker_blocked transitions task+story to WHR, notifies admin and user."""
         from src.consumers.engineering import _handle_worker_blocked

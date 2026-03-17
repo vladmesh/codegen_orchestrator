@@ -61,13 +61,18 @@ async def test_engineering_consumer_never_patches_project_status():
 
     with (
         patch("src.consumers.engineering.api_client", api),
+        patch("src.consumers.engineering_result_handler.api_client", api),
         patch(
             "src.subgraphs.engineering.create_engineering_subgraph",
             return_value=mock_subgraph,
         ),
         patch("src.consumers.engineering.publish_callback_event", new_callable=AsyncMock),
+        patch(
+            "src.consumers.engineering_result_handler.publish_callback_event",
+            new_callable=AsyncMock,
+        ),
         patch("src.consumers.engineering.get_story_worker", return_value=None),
-        patch("src.consumers.engineering.delete_worker", new_callable=AsyncMock),
+        patch("src.consumers.engineering_result_handler.delete_worker", new_callable=AsyncMock),
         patch("src.consumers.engineering.resource_allocator_node") as mock_alloc,
     ):
         mock_alloc.run = AsyncMock(return_value={"allocated_resources": {}, "errors": []})
