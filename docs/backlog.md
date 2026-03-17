@@ -3,7 +3,7 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-16
+> **Updated**: 2026-03-17
 
 ## Queue (ordered by priority, first = next)
 
@@ -36,15 +36,9 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### #1011 Provisioning: install node_exporter + cadvisor + UFW rules
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Add node_exporter (systemd, :9100) + cadvisor (Docker, :8080) to Ansible provisioning playbook. UFW rules: allow orchestrator IP only. Verify: curl from orchestrator to /metrics returns data. Source: brainstorm bs-69482380, Phase 1.
-
 ### #1012 Prometheus text format parser for node_exporter + cadvisor metrics
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Parser for standard Prometheus /metrics text format. Extract: CPU usage, RAM, disk, load avg, uptime, network errors from node_exporter. Per-container CPU, RAM, network, status from cadvisor. Return structured dict. Source: brainstorm bs-69482380, Phase 1.
 
@@ -312,6 +306,7 @@
 
 ## Done (last 10)
 
+- #1011 Provisioning: install node_exporter + cadvisor + UFW rules — 2026-03-16
 - Fix deploy failure classification and worker rejection pipeline — 2026-03-16
 - Ansible role: qa_runner provisioning on prod servers — 2026-03-16
 - QA consumer skeleton — SSH to server, run Claude Code, parse result — 2026-03-16
@@ -321,7 +316,6 @@
 - Branch protection setup via GitHub API after scaffold — 2026-03-15
 - PR-based CI gate: story completion creates PR, auto-merge on green CI — 2026-03-15
 - Feature branches for stories: engineering consumer creates story branch, workers push there — 2026-03-15
-- #1010 STORY.md: generate .story/STORY.md with story goal, task list, references — 2026-03-15
 
 ## Ideas
 

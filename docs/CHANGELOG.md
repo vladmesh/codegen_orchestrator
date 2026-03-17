@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-17
+
+### Added
+- **Provisioning: node_exporter + cadvisor + UFW rules** (task-a0a40102): Extended monitoring Ansible role with cadvisor container alongside existing node_exporter. UFW rules restrict ports 9100/8080 to orchestrator IP only (`ORCHESTRATOR_PUBLIC_IP` env var). Monitoring role now included in `provision_software.yml` after Docker setup. `AnsibleRunner` passes `orchestrator_ip` as Ansible extra var. Server vps-267180 configured and verified — both `/metrics` endpoints return data. 19 unit tests.
+
 ## 2026-03-16
 
 ### Fixed
