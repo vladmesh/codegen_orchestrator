@@ -63,6 +63,21 @@ class TestExtractContainerMetrics:
         assert len(result) == 1
         assert result[0].name == "myapp"
 
+    def test_cgroup_v2_docker_containers_included(self):
+        """cgroup v2 containers with /system.slice/docker-*.scope IDs are real containers."""
+        cgroupv2_labels = {
+            "id": "/system.slice/docker-98ae5a1c48007463fbc20b6c1507ff499c69ab41.scope",
+            "name": "fortune-teller-bot-db-1",
+        }
+        metrics = [
+            _m("container_cpu_usage_seconds_total", 431.5, cgroupv2_labels),
+            _m("container_memory_usage_bytes", 31219712.0, cgroupv2_labels),
+        ]
+        result = extract_container_metrics(metrics)
+        assert len(result) == 1
+        assert result[0].name == "fortune-teller-bot-db-1"
+        assert result[0].cpu_usage_seconds == 431.5
+
     def test_missing_optional_fields(self):
         """Container with only CPU metric — other fields default to None."""
         metrics = [

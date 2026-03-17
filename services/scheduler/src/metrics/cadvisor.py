@@ -29,12 +29,19 @@ class ContainerMetrics:
 
 
 def _is_real_container(metric: PrometheusMetric) -> bool:
-    """Filter out POD-level, root, and system slice entries."""
+    """Filter out POD-level, root, and non-Docker system slice entries.
+
+    cgroup v1: containers have id=/docker/<hash>
+    cgroup v2 (systemd): containers have id=/system.slice/docker-<hash>.scope
+    """
     name = metric.labels.get("name", "")
     cid = metric.labels.get("id", "")
     if not name:
         return False
-    if cid == "/" or cid.startswith("/system.slice"):
+    if cid == "/":
+        return False
+    # Allow Docker containers in system.slice, filter other system entries
+    if cid.startswith("/system.slice") and "/docker-" not in cid:
         return False
     return True
 
