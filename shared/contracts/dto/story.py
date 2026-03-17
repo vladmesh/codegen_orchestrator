@@ -1,6 +1,11 @@
 """Story DTOs and enums — single source of truth for story statuses and transitions."""
 
 from enum import StrEnum
+import uuid
+
+from pydantic import BaseModel
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class StoryType(StrEnum):
@@ -59,3 +64,52 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
     StoryStatus.FAILED: {StoryStatus.REOPENED},
     StoryStatus.ARCHIVED: set(),
 }
+
+
+# --- Response DTOs ---
+
+
+class StoryDTO(TimestampedDTO):
+    """Story response from API."""
+
+    id: str
+    project_id: uuid.UUID
+    parent_story_id: str | None = None
+    title: str
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    type: str
+    status: str
+    priority: int
+    blocked_by_story_id: str | None = None
+    created_by: str
+    user_report: str | None = None
+
+
+# --- Request DTOs ---
+
+
+class StoryCreate(BaseModel):
+    """Create story request."""
+
+    project_id: uuid.UUID
+    title: str
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    parent_story_id: str | None = None
+    type: StoryType = StoryType.PRODUCT
+    priority: int = 0
+    blocked_by_story_id: str | None = None
+    created_by: str = "system"
+
+
+class StoryUpdate(BaseModel):
+    """Update story request."""
+
+    title: str | None = None
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    parent_story_id: str | None = None
+    type: StoryType | None = None
+    priority: int | None = None
+    blocked_by_story_id: str | None = None

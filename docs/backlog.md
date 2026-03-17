@@ -15,15 +15,9 @@
 
 ### Replace raw dict API clients with shared Pydantic DTOs
 - **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: All API clients (langgraph 30+ methods, scheduler 40+ methods, infra-service, telegram_bot, scaffolder) accept payload: dict and return -> dict with raw resp.json(). Should create shared Pydantic DTOs for each entity (deployment, application, incident, server, etc.) in shared/contracts/dto/ and v...
-
-### Refactor large files (>400 LOC) — extract helpers
-- **Priority**: LOW
 - **Plan**: yes (in work item)
 - **Status**: backlog
-- **Brief**: Audit found 10 files exceeding 400 LOC limit. Top offenders: manager.py (920), engineering.py consumer (881), deploy.py consumer (866), task_dispatcher.py (740), rag.py (689), node.py (642), devops/nodes.py (639), tasks.py router (625), po/tools.py (605), developer.py (513). Extract helper functi...
+- **Brief**: All API clients (langgraph 30+ methods, scheduler 40+ methods, infra-service, telegram_bot, scaffolder) accept payload: dict and return -> dict with raw resp.json(). Should create shared Pydantic DTOs for each entity (deployment, application, incident, server, etc.) in shared/contracts/dto/ and v...
 
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
@@ -288,6 +282,7 @@
 
 ## Done (last 10)
 
+- Refactor large files (>400 LOC) — extract helpers — 2026-03-17
 - #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
 - #1016 Admin UI: application health status and response times — 2026-03-17
 - #1015 Admin UI: extended server health dashboard with per-container view + charts — 2026-03-17
@@ -297,7 +292,6 @@
 - #1011 Provisioning: install node_exporter + cadvisor + UFW rules — 2026-03-16
 - Fix deploy failure classification and worker rejection pipeline — 2026-03-16
 - Ansible role: qa_runner provisioning on prod servers — 2026-03-16
-- QA consumer skeleton — SSH to server, run Claude Code, parse result — 2026-03-16
 
 ## Ideas
 

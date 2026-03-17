@@ -4,6 +4,9 @@
 
 ## 2026-03-17
 
+### Changed
+- **Refactor large files (>400 LOC) — extract helpers** (task-d103f639): Extracted helpers from 10 files exceeding 400 LOC. `manager.py` 920→543 (garbage_collector, git_ops, scaffold_phase), `engineering.py` 881→299 (engineering_result_handler, story_context), `deploy.py` 867→383 (deploy_failure_handler, deploy_result_handler, deploy_precheck), `task_dispatcher.py` 738→265 (story_completion, supervisor, pr_poller), `rag.py` 689→269 (rag_ingest, rag_search), `node.py` 642→391 (operations, handlers), `devops/nodes.py` 639→61 (secret_resolver, deployer), `tasks.py` 625→384 (_task_helpers, _task_actions), `po/tools.py` 605→191 (tools_shared, tools_projects, tools_stories), `developer.py` 513→397 (developer_tasks). All original modules re-export via `__all__` for backward compatibility.
+
 ### Fixed
 - **Contract violations from audit** (hotfix): Replaced hardcoded `"todo"` with `TaskStatus.TODO.value` in webhooks, removed `os.getenv("API_URL", default)` (fail fast), replaced hardcoded queue name strings with `shared/queues.py` constants in projects router, replaced hardcoded status strings with `TaskStatus` enum in engineering consumer, centralized `STORY_WORKERS_KEY` in `shared/queues.py` (was duplicated in langgraph + scheduler).
 - **cadvisor parser: cgroup v2 Docker containers filtered out** (hotfix): `_is_real_container` rejected all containers with `id` starting with `/system.slice`, but on cgroup v2 (systemd) Docker containers have `id=/system.slice/docker-<hash>.scope`. Fix: allow `/system.slice` entries that contain `/docker-` in the path. This was causing the Containers tab in the admin UI to show no data despite 22 containers running.
