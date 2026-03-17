@@ -439,6 +439,26 @@ async def get_metrics_history(
     return result.scalars().all()
 
 
+@router.delete("/metrics-history")
+async def delete_old_metrics_history(
+    retention_hours: int = 168,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
+) -> dict:
+    """Delete metrics history older than retention_hours (default 7 days)."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import delete as sa_delete
+
+    from shared.models import ServerMetricsHistory
+
+    cutoff = datetime.now(UTC) - timedelta(hours=retention_hours)
+    stmt = sa_delete(ServerMetricsHistory).where(ServerMetricsHistory.recorded_at < cutoff)
+    result = await db.execute(stmt)
+    await db.commit()
+    return {"deleted": result.rowcount}
+
+
 @router.post(
     "/{handle}/metrics-history",
     response_model=MetricsHistoryRead,

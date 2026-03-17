@@ -36,15 +36,9 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### #1013 Extend Server model with health metrics + metrics history table
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: New Server fields: cpu_usage_pct, load_avg_1m/5m/15m, network_rx_errors, network_tx_errors, container_count_running, container_count_total, uptime_seconds. Populate last_health_check. New table server_metrics_history (server_handle, timestamp, metrics JSON) with 7-day retention. Migration. Source...
-
 ### #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts)
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Fill in health_checker.py skeleton. Loop: for each managed+active server → HTTP GET :9100/metrics + :8080/metrics → parse → update DB + append history. Auto-create incidents: SERVER_UNREACHABLE (HTTP fail), RESOURCE_EXHAUSTED (RAM/disk >90%). Notify admin via Telegram. Interval: 60s. Daily cleanu...
 
@@ -300,6 +294,7 @@
 
 ## Done (last 10)
 
+- #1013 Extend Server model with health metrics + metrics history table — 2026-03-17
 - #1012 Prometheus text format parser for node_exporter + cadvisor metrics — 2026-03-17
 - #1011 Provisioning: install node_exporter + cadvisor + UFW rules — 2026-03-16
 - Fix deploy failure classification and worker rejection pipeline — 2026-03-16
@@ -309,7 +304,6 @@
 - Implement random cat photo bot with admin access control — 2026-03-15
 - [service-template] ci.yml: CI runs only on PR to main, not on every push — 2026-03-15
 - Branch protection setup via GitHub API after scaffold — 2026-03-15
-- PR-based CI gate: story completion creates PR, auto-merge on green CI — 2026-03-15
 
 ## Ideas
 

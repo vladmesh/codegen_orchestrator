@@ -200,6 +200,70 @@ class SchedulerAPIClient:
         resp = await self._request("GET", f"tasks/{task_id}/events")
         return resp.json()
 
+    # --- Incidents ---
+
+    async def create_incident(
+        self,
+        server_handle: str,
+        incident_type: str,
+        details: dict,
+        affected_services: list[str] | None = None,
+    ) -> dict:
+        resp = await self._request(
+            "POST",
+            "incidents/",
+            json={
+                "server_handle": server_handle,
+                "incident_type": incident_type,
+                "details": details,
+                "affected_services": affected_services or [],
+            },
+        )
+        return resp.json()
+
+    async def get_active_incidents(self, server_handle: str, incident_type: str) -> list[dict]:
+        resp = await self._request(
+            "GET",
+            "incidents/",
+            params={
+                "server_handle": server_handle,
+                "incident_type": incident_type,
+                "status": "detected",
+            },
+        )
+        return resp.json()
+
+    async def resolve_incident(self, incident_id: int) -> dict:
+        from datetime import UTC, datetime
+
+        resp = await self._request(
+            "PATCH",
+            f"incidents/{incident_id}",
+            json={
+                "status": "resolved",
+                "resolved_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        return resp.json()
+
+    # --- Metrics History ---
+
+    async def create_metrics_history(self, server_handle: str, metrics: dict) -> dict:
+        resp = await self._request(
+            "POST",
+            f"servers/{server_handle}/metrics-history",
+            json={"metrics": metrics},
+        )
+        return resp.json()
+
+    async def delete_old_metrics_history(self, retention_hours: int = 168) -> dict:
+        resp = await self._request(
+            "DELETE",
+            "servers/metrics-history",
+            params={"retention_hours": retention_hours},
+        )
+        return resp.json()
+
     # --- Applications ---
 
     async def get_applications_by_project(self, project_id: str) -> list[dict]:

@@ -394,7 +394,7 @@ Implement infrastructure monitoring: node_exporter + cadvisor on prod servers, h
 
 - [x] #1011 Provisioning: install node_exporter + cadvisor + UFW rules
 - [x] #1012 Prometheus text format parser for node_exporter + cadvisor metrics
-- [ ] #1013 Extend Server model with health metrics + metrics history table
+- [x] #1013 Extend Server model with health metrics + metrics history table
 - [ ] #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts)
 - [ ] #1015 Admin UI: extended server health dashboard with per-container view + charts
 - [ ] #1016 Admin UI: application health status and response times
