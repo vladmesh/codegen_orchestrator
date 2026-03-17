@@ -1,4 +1,4 @@
-"""Poll GitHub for merged PRs on stories in pr_review status."""
+"""Poll GitHub for merged PRs and CI failures on stories in pr_review status."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import structlog
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.story import StoryStatus
+from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -110,3 +111,93 @@ async def poll_merged_prs(
         deployed += 1
 
     return deployed
+
+
+async def poll_ci_failures(
+    api_client: SchedulerAPIClient,
+) -> int:
+    """Check CI status on open PRs for stories in pr_review.
+
+    If CI failed on the story branch, create a fix task and transition
+    the story back to in_progress so the dispatcher picks it up.
+
+    Returns the number of fix tasks created.
+    """
+    stories = await api_client.get_stories_by_status(StoryStatus.PR_REVIEW)
+    if not stories:
+        return 0
+
+    fixed = 0
+    github = GitHubAppClient()
+
+    for story in stories:
+        story_id = story.id
+        project_id = str(story.project_id)
+        log = logger.bind(story_id=story_id, project_id=project_id)
+
+        repo = await api_client.get_primary_repository(project_id)
+        if not repo:
+            continue
+
+        git_url = repo.git_url or ""
+        owner, repo_name = _parse_owner_repo(git_url)
+        branch = f"story/{story_id}"
+
+        try:
+            run = await github.get_latest_workflow_run(
+                owner,
+                repo_name,
+                workflow_file="ci.yml",
+                branch=branch,
+            )
+        except Exception:
+            log.exception("poll_ci_github_error")
+            continue
+
+        if not run:
+            continue
+
+        if run.get("status") != "completed":
+            continue
+
+        if run.get("conclusion") != "failure":
+            continue
+
+        run_url = run.get("html_url", "")
+        run_id = run.get("id", "")
+        log.info("poll_ci_failure_detected", run_url=run_url, run_id=run_id)
+
+        # Create fix task
+        task_data = {
+            "title": f"Fix CI failure (run {run_id})",
+            "description": (
+                f"CI failed on branch `{branch}`.\n\n"
+                f"Run URL: {run_url}\n\n"
+                "Read the CI logs, identify the failure, and fix the code."
+            ),
+            "type": "fix",
+            "story_id": story_id,
+            "project_id": project_id,
+            "created_by": "system",
+            "status": TaskStatus.TODO.value,
+        }
+
+        try:
+            await api_client.create_task(task_data)
+        except Exception:
+            log.exception("poll_ci_create_task_error")
+            continue
+
+        # Transition story: pr_review → failed → reopened → in_progress
+        try:
+            await api_client.transition_story(story_id, "fail")
+            await api_client.transition_story(story_id, "reopen")
+            await api_client.transition_story(story_id, "start")
+        except Exception:
+            log.exception("poll_ci_story_transition_error")
+            continue
+
+        log.info("poll_ci_fix_task_created", run_url=run_url)
+        fixed += 1
+
+    return fixed

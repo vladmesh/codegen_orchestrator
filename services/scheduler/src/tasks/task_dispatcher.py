@@ -23,7 +23,7 @@ from shared.contracts.queues.engineering import EngineeringMessage
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
-from .pr_poller import poll_merged_prs
+from .pr_poller import poll_ci_failures, poll_merged_prs
 from .scaffold_trigger import trigger_scaffolds
 from .story_completion import (
     _cleanup_story_worker,
@@ -224,6 +224,7 @@ async def task_dispatcher_loop() -> None:
                 dispatched = await dispatch_todo_tasks(api_client, redis_client)
                 completed = await complete_stories(api_client, redis_client)
                 merged = await poll_merged_prs(api_client, redis_client)
+                await poll_ci_failures(api_client)
 
                 # Supervisor checks
                 stuck_stories = await supervise_stuck_stories(api_client, redis_client)
