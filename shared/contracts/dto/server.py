@@ -66,6 +66,17 @@ class ServerUpdate(BaseModel):
     used_disk_mb: int | None = None
     os_template: str | None = None
     provisioning_started_at: datetime | None = None
+    # Health metrics (from node_exporter + cadvisor)
+    cpu_usage_pct: float | None = None
+    load_avg_1m: float | None = None
+    load_avg_5m: float | None = None
+    load_avg_15m: float | None = None
+    network_rx_errors: int | None = None
+    network_tx_errors: int | None = None
+    container_count_running: int | None = None
+    container_count_total: int | None = None
+    uptime_seconds: float | None = None
+    last_health_check: datetime | None = None
 
 
 class ServerDTO(TimestampedDTO):
@@ -86,6 +97,26 @@ class ServerDTO(TimestampedDTO):
     used_disk_mb: int = 0
     os_template: str | None = None
 
+    # Health metrics (from node_exporter + cadvisor)
+    cpu_usage_pct: float | None = None
+    load_avg_1m: float | None = None
+    load_avg_5m: float | None = None
+    load_avg_15m: float | None = None
+    network_rx_errors: int | None = None
+    network_tx_errors: int | None = None
+    container_count_running: int | None = None
+    container_count_total: int | None = None
+    uptime_seconds: float | None = None
+
     last_health_check: datetime | None = None
     provisioning_started_at: datetime | None = None
     provisioning_attempts: int = 0
+
+
+class ServerMetricsHistoryDTO(BaseModel):
+    """Server metrics history entry."""
+
+    id: int | None = None
+    server_handle: str
+    recorded_at: datetime
+    metrics: dict

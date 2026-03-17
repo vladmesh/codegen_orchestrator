@@ -18,6 +18,7 @@ from .repository import Repository
 from .resource import Resource
 from .run import Run
 from .server import Server, ServerStatus
+from .server_metrics_history import ServerMetricsHistory
 from .story import Story
 from .task import Task, TaskEvent
 from .user import User
@@ -37,6 +38,7 @@ __all__ = [
     "Repository",
     "Run",
     "Server",
+    "ServerMetricsHistory",
     "ServerStatus",
     "PortAllocation",
     "Task",

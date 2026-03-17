@@ -5,6 +5,7 @@
 ## 2026-03-17
 
 ### Added
+- **Prometheus text format parser** (task-58d52adf): Pure parser module for node_exporter + cadvisor `/metrics` endpoints. Generic `parse_prometheus_text()` handles the full exposition format (labels, timestamps, scientific notation, +Inf, NaN). `extract_node_metrics()` computes CPU% from idle ratio, RAM/disk from `/proc` values (root mount only), load avg, uptime, network errors. `extract_container_metrics()` groups cadvisor data per container, filters system entries. Public API: `parse_node_exporter(text)` and `parse_cadvisor(text)`. 38 unit tests + realistic fixture-based integration tests.
 - **Provisioning: node_exporter + cadvisor + UFW rules** (task-a0a40102): Extended monitoring Ansible role with cadvisor container alongside existing node_exporter. UFW rules restrict ports 9100/8080 to orchestrator IP only (`ORCHESTRATOR_PUBLIC_IP` env var). Monitoring role now included in `provision_software.yml` after Docker setup. `AnsibleRunner` passes `orchestrator_ip` as Ansible extra var. Server vps-267180 configured and verified — both `/metrics` endpoints return data. 19 unit tests.
 
 ## 2026-03-16

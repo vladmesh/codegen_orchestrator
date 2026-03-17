@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.base import BaseDTO, TimestampedDTO
 from shared.contracts.dto.server import ServerStatus
 
 
@@ -34,10 +34,37 @@ class ServerCreate(ServerBase):
 
 
 class ServerRead(ServerBase, TimestampedDTO):
-    """Schema for reading a server - includes usage metrics."""
+    """Schema for reading a server - includes usage and health metrics."""
 
-    # Usage metrics
+    # Usage metrics (from provider API)
     used_ram_mb: int = 0
     used_disk_mb: int = 0
     os_template: str | None = None
     provisioning_started_at: datetime | None = None
+
+    # Health metrics (from node_exporter + cadvisor)
+    cpu_usage_pct: float | None = None
+    load_avg_1m: float | None = None
+    load_avg_5m: float | None = None
+    load_avg_15m: float | None = None
+    network_rx_errors: int | None = None
+    network_tx_errors: int | None = None
+    container_count_running: int | None = None
+    container_count_total: int | None = None
+    uptime_seconds: float | None = None
+    last_health_check: datetime | None = None
+
+
+class MetricsHistoryCreate(BaseModel):
+    """Schema for creating a metrics history snapshot."""
+
+    metrics: dict
+
+
+class MetricsHistoryRead(BaseDTO):
+    """Schema for reading a metrics history entry."""
+
+    id: int
+    server_handle: str
+    recorded_at: datetime
+    metrics: dict

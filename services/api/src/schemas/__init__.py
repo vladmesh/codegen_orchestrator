@@ -9,7 +9,7 @@ from .port_allocation import AllocateNextPortRequest, PortAllocationCreate, Port
 from .project import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 from .rag import RAGDocsIngest, RAGDocsIngestResult, RAGMessageCreate, RAGMessageRead
 from .run import RunCreate, RunRead, RunUpdate
-from .server import ServerCreate, ServerRead
+from .server import MetricsHistoryCreate, MetricsHistoryRead, ServerCreate, ServerRead
 from .service_deployment import (
     DeploymentCreate,
     DeploymentRead,
@@ -50,6 +50,8 @@ __all__ = [
     "RAGDocsIngestResult",
     "RAGMessageCreate",
     "RAGMessageRead",
+    "MetricsHistoryCreate",
+    "MetricsHistoryRead",
     "ServerCreate",
     "ServerRead",
     "AllocateNextPortRequest",
