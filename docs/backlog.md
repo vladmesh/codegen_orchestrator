@@ -276,6 +276,7 @@
 
 ## Done (last 10)
 
+- Replace raw dict API clients with shared Pydantic DTOs — 2026-03-17
 - Refactor large files (>400 LOC) — extract helpers — 2026-03-17
 - #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
 - #1016 Admin UI: application health status and response times — 2026-03-17
@@ -285,7 +286,6 @@
 - #1012 Prometheus text format parser for node_exporter + cadvisor metrics — 2026-03-17
 - #1011 Provisioning: install node_exporter + cadvisor + UFW rules — 2026-03-16
 - Fix deploy failure classification and worker rejection pipeline — 2026-03-16
-- Ansible role: qa_runner provisioning on prod servers — 2026-03-16
 
 ## Ideas
 
