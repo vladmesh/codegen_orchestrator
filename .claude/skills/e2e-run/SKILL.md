@@ -220,7 +220,7 @@ If API is not healthy, STOP.
 **Worker image staleness check**:
 
 ```bash
-CURRENT_HASH=$(find shared packages/worker-wrapper packages/orchestrator-cli \
+CURRENT_HASH=$(find shared packages/worker-wrapper \
   services/worker-manager/images -type f \
   -not -path '*/__pycache__/*' -not -name '*.pyc' \
   | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)

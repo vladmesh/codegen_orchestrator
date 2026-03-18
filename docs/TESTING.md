@@ -1,6 +1,6 @@
 # Test Infrastructure
 
-> **Актуально на**: 2026-03-14
+> **Актуально на**: 2026-03-18
 
 ## Test Layers
 
@@ -63,7 +63,7 @@ Both must pass.
 | telegram_bot | 3 files | — | via frontend suite | — |
 | infra-service | — | — | 1 file (Ansible) | — |
 | shared | 9 files | — | — | — |
-| packages (cli, wrapper) | 11 files | — | 2 files | — |
+| packages (worker-wrapper) | 9 files | — | 3 files | — |
 
 ## E2E Testing
 
