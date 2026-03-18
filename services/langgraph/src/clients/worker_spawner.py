@@ -61,6 +61,7 @@ async def _wait_until_ready(
 ) -> SpawnResult | None:
     """Poll worker:status until RUNNING. Returns SpawnResult on failure, None on success."""
     start = asyncio.get_running_loop().time()
+    seen_status = False
     while (asyncio.get_running_loop().time() - start) < timeout:
         status = await redis_client.hget(f"worker:status:{worker_id}", "status")
         status_str = status.decode() if isinstance(status, bytes) else status
@@ -71,7 +72,10 @@ async def _wait_until_ready(
             error_msg = error.decode() if isinstance(error, bytes) else str(error)
             return SpawnResult(request_id, False, -1, f"Creation failed: {error_msg}")
         if status_str is None:
-            return SpawnResult(request_id, False, -1, "Worker disappeared during creation")
+            if seen_status:
+                return SpawnResult(request_id, False, -1, "Worker disappeared during creation")
+        else:
+            seen_status = True
         await asyncio.sleep(READY_POLL_INTERVAL)
     # Timeout — caller should cleanup
     logger.warning("worker_ready_timeout", worker_id=worker_id, timeout_seconds=timeout)
@@ -309,7 +313,7 @@ async def request_spawn(
         if output_resp:
             # Worker outputs: {"content": "...", "status": "success|failed|rejected|blocked"}
             status = output_resp.get("status", "")
-            is_success = status == "success" or output_resp.get("success", False)
+            is_success = status in ("success", "completed") or output_resp.get("success", False)
             content = output_resp.get(
                 "content", output_resp.get("response", output_resp.get("output", ""))
             )
@@ -436,7 +440,7 @@ async def send_task_to_worker(
 
         if output_resp:
             status = output_resp.get("status", "")
-            is_success = status == "success" or output_resp.get("success", False)
+            is_success = status in ("success", "completed") or output_resp.get("success", False)
             content = output_resp.get(
                 "content", output_resp.get("response", output_resp.get("output", ""))
             )
