@@ -4,6 +4,9 @@
 
 ## 2026-03-18
 
+### Removed
+- **orchestrator-cli package** (task-b2401a6e): Deleted `packages/orchestrator-cli/` entirely (~1500 lines). Agent now reports results via curl to localhost:9090 (`/complete`, `/failed`, `/blocker`) and manages infrastructure via curl to worker-manager compose proxy. Updated INSTRUCTIONS.md, Dockerfile, container env vars (removed `ORCHESTRATOR_API_URL`, `ORCHESTRATOR_REDIS_URL`, renamed `ORCHESTRATOR_WORKER_MANAGER_URL` → `WORKER_MANAGER_URL`). Removed `shared/schemas/tool_groups.py` and `tool_registry.py` (CLI doc generation, unused by services). Cleaned up CI matrix, test scripts, and docs.
+
 ### Added
 - **HTTP result server in worker-wrapper** (task-7397ff9b): Added localhost:9090 HTTP server that runs alongside the agent subprocess. Three POST endpoints (`/complete`, `/failed`, `/blocker`) with Pydantic validation — agent gets 400 on bad payload (can retry), 409 on duplicate. HTTP result takes priority over stdout parsing; backward compatibility preserved. Watchdog auto-publishes `failed` if agent exits without reporting. First step of decoupling workers from shared package.
 

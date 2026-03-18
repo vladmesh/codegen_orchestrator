@@ -73,7 +73,7 @@ class TestMultiTurnConsumeLoop:
         mock_redis_client.consume = mock_consume
 
         wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
-        wrapper.execute_agent = AsyncMock(return_value={"status": "success"})
+        wrapper.execute_agent = AsyncMock(return_value=None)
         wrapper.publish_lifecycle = AsyncMock()
         wrapper._git_pull = AsyncMock()
         wrapper._write_task_md = MagicMock()
@@ -103,21 +103,18 @@ class TestMultiTurnConsumeLoop:
         mock_redis_client.consume = mock_consume
 
         wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
-        wrapper.execute_agent = AsyncMock(
-            side_effect=[
-                {"content": "Result 1", "status": "success"},
-                {"content": "Result 2", "status": "success"},
-            ]
-        )
+        # execute_agent returns None — no HTTP result → watchdog fires
+        wrapper.execute_agent = AsyncMock(return_value=None)
         wrapper.publish_lifecycle = AsyncMock()
         wrapper._git_pull = AsyncMock()
         wrapper._write_task_md = MagicMock()
 
         await wrapper.run()
 
+        # Watchdog publishes failed for each message (no HTTP result)
         assert len(outputs) == 2  # noqa: PLR2004
-        assert outputs[0]["content"] == "Result 1"
-        assert outputs[1]["content"] == "Result 2"
+        assert outputs[0]["status"] == "failed"
+        assert outputs[1]["status"] == "failed"
 
 
 # ---------- 1.2: git pull before each turn ----------
@@ -145,7 +142,6 @@ class TestGitPullBeforeTurn:
 
         async def track_execute(data):
             call_order.append("execute_agent")
-            return {"status": "success"}
 
         wrapper._git_pull = track_git_pull
         wrapper.execute_agent = track_execute
@@ -177,7 +173,6 @@ class TestGitPullBeforeTurn:
 
         async def track_execute(data):
             call_order.append("execute_agent")
-            return {"status": "success"}
 
         wrapper._git_pull = track_git_pull
         wrapper.execute_agent = track_execute
@@ -247,7 +242,6 @@ class TestTaskMdUpdate:
 
         async def track_execute(data):
             call_order.append("execute_agent")
-            return {"status": "success"}
 
         wrapper._write_task_md = track_write
         wrapper.execute_agent = track_execute
@@ -281,7 +275,7 @@ class TestTaskMdUpdate:
             prompts_written.append(prompt)
 
         wrapper._write_task_md = track_write
-        wrapper.execute_agent = AsyncMock(return_value={"status": "success"})
+        wrapper.execute_agent = AsyncMock(return_value=None)
 
         await wrapper.run()
 
@@ -312,7 +306,7 @@ class TestTaskMdUpdate:
         wrapper.publish_lifecycle = AsyncMock()
         wrapper._git_pull = AsyncMock()
         wrapper._write_task_md = MagicMock()
-        wrapper.execute_agent = AsyncMock(return_value={"status": "success"})
+        wrapper.execute_agent = AsyncMock(return_value=None)
 
         await wrapper.run()
 

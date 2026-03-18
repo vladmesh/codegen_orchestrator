@@ -48,15 +48,9 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### Удалить orchestrator-cli, перевести агента на curl к localhost:9090
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: 1. Обновить шаблон INSTRUCTIONS.md / CLAUDE.md в workspace — добавить секцию Reporting results с curl-командами к localhost:9090 2. Убрать orchestrator-cli из worker-base-common Dockerfile и pyproject.toml 3. Удалить packages/orchestrator-cli/ полностью 4. Убрать ORCHESTRATOR_API_URL, ORCHESTRATO...
-
 ### Убрать result_parser из wrapper, добавить watchdog-логику
 - **Priority**: MEDIUM
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: 1. Удалить result_parser.py и парсинг <result> тегов из stdout в wrapper.py 2. Добавить watchdog-логику: после завершения agent subprocess проверить флаг (результат уже получен через HTTP?) 3. Если флаг есть — wrapper молчит (результат уже в Redis). Если нет (crash/timeout) — wrapper публикует fa...
 
@@ -294,6 +288,7 @@
 
 ## Done (last 10)
 
+- Удалить orchestrator-cli, перевести агента на curl к localhost:9090 — 2026-03-18
 - HTTP-сервер в worker-wrapper (localhost:9090) — complete/failed/blocker endpoints — 2026-03-18
 - Replace raw dict API clients with shared Pydantic DTOs — 2026-03-17
 - Refactor large files (>400 LOC) — extract helpers — 2026-03-17
@@ -303,7 +298,6 @@
 - #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts) — 2026-03-17
 - #1013 Extend Server model with health metrics + metrics history table — 2026-03-17
 - #1012 Prometheus text format parser for node_exporter + cadvisor metrics — 2026-03-17
-- #1011 Provisioning: install node_exporter + cadvisor + UFW rules — 2026-03-16
 
 ## Ideas
 

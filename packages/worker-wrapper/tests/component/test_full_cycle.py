@@ -28,41 +28,29 @@ class TestWorkerWrapperComponent:
     async def test_full_execution_flow(self, wrapper_config, fake_redis):
         """
         Verify the full flow:
-        1. Parse message
-        2. Create session
-        3. Build command
-        4. Exec subprocess (mocked)
-        5. Parse result
-        6. Capture session_id from output
+        1. Create session
+        2. Build command
+        3. Exec subprocess (mocked)
+        4. Capture session_id from output
+        5. execute_agent returns None (results via HTTP only)
         """
-        # Mock Redis client wrapper to return our fake redis
         mock_redis_client = MagicMock()
         mock_redis_client.redis = fake_redis
 
         wrapper = WorkerWrapper(config=wrapper_config, redis_client=mock_redis_client)
 
-        # Test Data
         data = {"content": "Do something"}
 
-        # Mock subprocess - include session_id in JSON output like real Claude CLI
-        # Claude CLI outputs JSON, and result tags are on separate line
-        mock_stdout = (
-            b'{"type":"result","session_id":"test-session-123"}\n'
-            b'<result>{"status": "success"}</result>'
-        )
+        mock_stdout = b'{"type":"result","session_id":"test-session-123"}\nAgent finished work'
         mock_process = MockProcess(stdout=mock_stdout, stderr=b"", returncode=0)
 
-        with (
-            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch.object(wrapper, "_get_git_head", return_value=None),
-            patch.object(wrapper, "_extract_git_commit_sha", return_value=None),
-        ):
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = mock_process
 
             result = await wrapper.execute_agent(data)
 
-            # Verify result parsed (returns raw_output when no result tags found)
-            assert "raw_output" in result or result.get("status") == "success"
+            # execute_agent now returns None — results come via HTTP
+            assert result is None
 
             # Verify session captured from output and saved to Redis
             keys = await fake_redis.keys("worker:session:*")
@@ -77,7 +65,6 @@ class TestWorkerWrapperComponent:
             args = mock_exec.call_args[0]
             assert "claude" in args
             assert "-p" in args
-            # Claude gets minimal prompt pointing to TASK.md, not the full task content
             p_idx = args.index("-p")
             assert "TASK.md" in args[p_idx + 1]
             assert "Do something" not in args
@@ -91,11 +78,7 @@ class TestWorkerWrapperComponent:
 
         mock_process = MockProcess(stdout=b"", stderr=b"Error occurred", returncode=1)
 
-        with (
-            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch.object(wrapper, "_get_git_head", return_value=None),
-            patch.object(wrapper, "_extract_git_commit_sha", return_value=None),
-        ):
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
             mock_exec.return_value = mock_process
 
             with pytest.raises(RuntimeError) as exc:

@@ -109,14 +109,13 @@ class WorkerWrapper:
                 hint="Workspace appears empty — scaffold phase likely failed or was skipped. "
                 "Refusing to launch agent to avoid wasting credits.",
             )
-            result = None
             error = f"Workspace pre-flight failed: {workspace_detail}"
             status = "failed"
             await self.redis.publish(
                 self.config.output_stream,
                 {"status": "failed", "error": error},
             )
-            await self.publish_lifecycle(status, msg_id, result=result, error=error)
+            await self.publish_lifecycle(status, msg_id, error=error)
             return
         logger.info("workspace_preflight_passed", detail=workspace_detail)
 
@@ -142,30 +141,24 @@ class WorkerWrapper:
             await self._http_server.start()
 
             try:
-                result = await self.execute_agent(data)
+                await self.execute_agent(data)
                 status = "completed"
                 error = None
             except Exception as e:
                 logger.error("execution_failed", error=str(e))
-                result = None
                 error = str(e)
                 status = "failed"
 
-            # 5. Publish result — HTTP takes priority over stdout
+            # 5. Check result — HTTP is the only path for agent results
             if self._result_event.is_set():
-                # HTTP server already published the result to Redis
                 logger.info("result_received_via_http", worker_id=self.config.consumer_name)
-            elif result:
-                # Fallback: stdout parsing result (backward compat)
-                logger.info("result_received_via_stdout", worker_id=self.config.consumer_name)
-                await self.redis.publish(self.config.output_stream, result)
             elif error:
                 await self.redis.publish(
                     self.config.output_stream,
                     {"status": "failed", "error": error},
                 )
             else:
-                # Watchdog: agent exited without reporting via HTTP or stdout
+                # Watchdog: agent exited without reporting via HTTP
                 logger.warning("agent_exited_without_result", worker_id=self.config.consumer_name)
                 error = "Agent exited without reporting result"
                 status = "failed"
@@ -173,12 +166,15 @@ class WorkerWrapper:
                     self.config.output_stream,
                     {"status": "failed", "error": error},
                 )
+
+            # 6. Collect report and archive task
+            self._collect_and_archive(data)
         finally:
             await self._http_server.stop()
             self._http_server = None
 
-        # 6. Lifecycle: Completed/Failed
-        await self.publish_lifecycle(status, msg_id, result=result, error=error)
+        # 7. Lifecycle: Completed/Failed
+        await self.publish_lifecycle(status, msg_id, error=error)
 
     async def _prepare_workspace(self, data: dict) -> None:
         """Pre-turn setup: pull, update TASK.md/STORY.md, clear session."""
@@ -413,24 +409,6 @@ class WorkerWrapper:
         except OSError as e:
             logger.warning("story_md_write_failed", error=str(e))
 
-    def _get_git_head(self) -> str | None:
-        """Get current HEAD SHA in workspace. Returns None if not a git repo or on error."""
-        try:
-            result = subprocess.run(
-                ["/usr/bin/git", "rev-parse", "HEAD"],  # noqa: S603
-                cwd=WORKSPACE_DIR,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                logger.warning("git_head_not_available", stderr=result.stderr.strip())
-                return None
-            return result.stdout.strip()
-        except Exception as e:
-            logger.warning("git_head_failed", error=str(e))
-            return None
-
     def _get_git_branch(self) -> str | None:
         """Get current branch name in workspace. Returns None if detached HEAD or error."""
         try:
@@ -452,56 +430,22 @@ class WorkerWrapper:
             logger.warning("git_branch_failed", error=str(e))
             return None
 
-    def _extract_git_commit_sha(self, initial_head: str | None) -> str | None:
-        """Compare current HEAD with initial_head to detect new commits.
+    async def execute_agent(self, data: dict[str, Any]) -> None:
+        """Execute the agent subprocess.
 
-        Returns new SHA only if HEAD changed (agent made a commit).
-        All failures return None (warning log, no crash).
+        Results are reported by the agent via HTTP (localhost:9090).
+        This method only manages the subprocess lifecycle and session.
         """
-        try:
-            result = subprocess.run(
-                ["/usr/bin/git", "log", "-1", "--format=%H"],  # noqa: S603
-                cwd=WORKSPACE_DIR,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                logger.warning("git_log_failed", stderr=result.stderr.strip())
-                return None
-            current_head = result.stdout.strip()
-            if not current_head:
-                return None
-            # If initial_head is None (empty repo before agent), any commit is new
-            if initial_head is None:
-                return current_head
-            # HEAD changed → new commit detected
-            if current_head != initial_head:
-                return current_head
-            return None
-        except Exception as e:
-            logger.warning("git_commit_sha_extraction_failed", error=str(e))
-            return None
-
-    async def execute_agent(self, data: dict[str, Any]) -> dict[str, Any] | None:
-        """
-        Execute the agent using the configured runner and parsing logic.
-        """
-        # 1. Get Session
-        # We need raw redis client for session manager
-        # RedisStreamClient exposes .redis property which is redis.Redis
         from .session import SessionManager
 
         session_manager = SessionManager(
             redis=self.redis.redis, worker_id=self.config.consumer_name
         )
 
-        # Gap solution: Claude CLI manages its own session IDs and doesn't accept random ones.
-        # So for Claude, we don't create a new random ID.
         create_new_session = self.config.agent_type != "claude"
         session_id = await session_manager.get_or_create_session(create_new=create_new_session)
 
-        # 2. Select Runner
+        # Select Runner
         from .runners.claude import ClaudeRunner
         from .runners.factory import FactoryRunner
         from .runners.noop import NoopRunner
@@ -509,21 +453,17 @@ class WorkerWrapper:
         if self.config.agent_type == "claude":
             runner = ClaudeRunner(session_id=session_id)
         elif self.config.agent_type == "factory":
-            runner = FactoryRunner()  # Factory runner might not need session or handled differently
+            runner = FactoryRunner()
         elif self.config.agent_type == "noop":
             runner = NoopRunner()
         else:
             raise ValueError(f"Unknown agent type: {self.config.agent_type}")
 
-        # 3. Build Command
         prompt = self._resolve_prompt(data)
         cmd = runner.build_command(prompt=prompt)
         logger.info("executing_agent_command", cmd=cmd)
 
-        # 3.5. Snapshot initial HEAD before agent runs
-        initial_head = self._get_git_head()
-
-        # 4. Execute Subprocess
+        # Execute Subprocess
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -556,55 +496,16 @@ class WorkerWrapper:
             )
             raise RuntimeError(f"Agent process failed with code {proc.returncode}: {stderr}")
 
-        # 5. Capture session_id from Claude CLI JSON output
-        # Claude CLI with --output-format json returns session_id in the response
+        # Capture session_id from Claude CLI JSON output
         if self.config.agent_type == "claude" and not session_id:
             captured_session_id = self._extract_session_id_from_output(stdout)
             if captured_session_id:
                 logger.info("captured_claude_session_from_output", session_id=captured_session_id)
                 await session_manager.update_session(captured_session_id)
 
-        # 6. Parse Result
-        from .result_parser import ResultParseError, ResultParser
-
-        try:
-            parsed = ResultParser.parse(stdout)
-            if parsed is None:
-                # No <result> tags — try extracting plain text from Claude CLI JSON
-                content = ResultParser.extract_text(stdout)
-                if content:
-                    result = {"content": content, "status": "success"}
-                else:
-                    logger.warning("no_result_tags_found", stdout=stdout[:500])
-                    result = {"raw_output": stdout, "status": "no_structured_result"}
-            else:
-                result = parsed
-        except ResultParseError as e:
-            logger.error("result_parsing_failed", error=str(e), stdout=stdout)
-            raise
-
-        # 7. Enrich with git metadata and collect artifacts
-        self._enrich_result_with_git(result, initial_head)
-        self._collect_and_archive(result, data)
-
-        return result
-
-    def _enrich_result_with_git(self, result: dict, initial_head: str | None) -> None:
-        """Add git SHA and branch to result dict."""
-        git_sha = self._extract_git_commit_sha(initial_head)
-        if git_sha:
-            logger.info("git_commit_sha_detected", sha=git_sha, source="git")
-            result["commit_sha"] = git_sha
-
-        git_branch = self._get_git_branch()
-        if git_branch:
-            result["branch"] = git_branch
-
-    def _collect_and_archive(self, result: dict, data: dict) -> None:
+    def _collect_and_archive(self, data: dict) -> None:
         """Collect worker report and archive task."""
         report = self._read_worker_report()
-        if report:
-            result["worker_report"] = report
         self._archive_task(data, report)
 
     def _resolve_prompt(self, data: dict[str, Any]) -> str:
@@ -743,17 +644,13 @@ class WorkerWrapper:
 
         return None
 
-    async def publish_lifecycle(
-        self, status: str, ref_msg_id: str, result: dict = None, error: str = None
-    ):
+    async def publish_lifecycle(self, status: str, ref_msg_id: str, error: str = None):
         """Publish lifecycle event."""
-        # Use shared contract
         from shared.contracts.queues.worker_lifecycle import WorkerLifecycleEvent
 
         event = WorkerLifecycleEvent(
-            worker_id=self.config.consumer_name,  # using consumer name as worker_id
+            worker_id=self.config.consumer_name,
             event=status,
-            result=result,
             error=error,
         )
 
