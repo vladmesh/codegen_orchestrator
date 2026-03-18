@@ -4,6 +4,9 @@
 
 ## 2026-03-18
 
+### Added
+- **HTTP result server in worker-wrapper** (task-7397ff9b): Added localhost:9090 HTTP server that runs alongside the agent subprocess. Three POST endpoints (`/complete`, `/failed`, `/blocker`) with Pydantic validation — agent gets 400 on bad payload (can retry), 409 on duplicate. HTTP result takes priority over stdout parsing; backward compatibility preserved. Watchdog auto-publishes `failed` if agent exits without reporting. First step of decoupling workers from shared package.
+
 ### Fixed
 - **Architect 422 on story.start** (hotfix): Architect LLM tool `transition_story` now catches 422 and returns current story state instead of crashing. Fixes race where PO already transitioned story to `in_progress` before architect runs.
 - **Deploy failure classifier blind** (hotfix): `wait_for_run_completion` now fetches GH Actions failure logs (`get_workflow_failure_logs`) and includes failed job/step names in the RuntimeError message. The deploy classifier now sees "Job 'deploy' failed: Step 'Deploy via SSH' failed" instead of just "failure".

@@ -48,15 +48,9 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### HTTP-сервер в worker-wrapper (localhost:9090) — complete/failed/blocker endpoints
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Добавить в worker-wrapper HTTP-сервер на localhost:9090 (asyncio task, параллельно с agent runner). Три эндпоинта: - POST /complete {commit, summary} → validate → xadd worker:{id}:output - POST /failed {reason} → validate → xadd worker:{id}:output - POST /blocker {reason} → validate → xadd worker...
-
 ### Удалить orchestrator-cli, перевести агента на curl к localhost:9090
 - **Priority**: MEDIUM
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: 1. Обновить шаблон INSTRUCTIONS.md / CLAUDE.md в workspace — добавить секцию Reporting results с curl-командами к localhost:9090 2. Убрать orchestrator-cli из worker-base-common Dockerfile и pyproject.toml 3. Удалить packages/orchestrator-cli/ полностью 4. Убрать ORCHESTRATOR_API_URL, ORCHESTRATO...
 
@@ -300,6 +294,7 @@
 
 ## Done (last 10)
 
+- HTTP-сервер в worker-wrapper (localhost:9090) — complete/failed/blocker endpoints — 2026-03-18
 - Replace raw dict API clients with shared Pydantic DTOs — 2026-03-17
 - Refactor large files (>400 LOC) — extract helpers — 2026-03-17
 - #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
@@ -309,7 +304,6 @@
 - #1013 Extend Server model with health metrics + metrics history table — 2026-03-17
 - #1012 Prometheus text format parser for node_exporter + cadvisor metrics — 2026-03-17
 - #1011 Provisioning: install node_exporter + cadvisor + UFW rules — 2026-03-16
-- Fix deploy failure classification and worker rejection pipeline — 2026-03-16
 
 ## Ideas
 

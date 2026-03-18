@@ -39,7 +39,7 @@
    - `dev_proj_<worker_id>` — изолированная сеть для сайдкар-контейнеров проекта.
 
 2. **Compose Proxy**:
-   Воркеры (инжектированные AI-агенты) **не имеют доступа к Docker**. Для запуска инфраструктурных зависимостей (DB, Redis) агенты вызывают `orchestrator dev-env start-infra db`, который проксирует запрос в `worker-manager`.
+   Воркеры (инжектированные AI-агенты) **не имеют доступа к Docker**. Для запуска инфраструктурных зависимостей (DB, Redis) агенты вызывают compose proxy через `curl $WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose`, который проксирует запрос в `worker-manager`.
 
 3. **Workspace Bind-Mount**:
    Scaffolded workspace монтируется в `/workspace` внутри контейнера. Два режима:

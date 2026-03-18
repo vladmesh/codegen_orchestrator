@@ -3,7 +3,7 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-17
+> **Updated**: 2026-03-18
 
 ## Current Task
 
@@ -11,15 +11,15 @@ _(no task in progress)_
 
 ## Stats
 
-| backlog: 41 | todo: 1 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 113 |
+| backlog: 44 | todo: 1 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 114 |
 
 ## Recently Completed
 
+- HTTP-сервер в worker-wrapper (localhost:9090) — complete/failed/blocker endpoints — 2026-03-18
 - Replace raw dict API clients with shared Pydantic DTOs — 2026-03-17
 - Refactor large files (>400 LOC) — extract helpers — 2026-03-17
 - #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
 - #1016 Admin UI: application health status and response times — 2026-03-17
-- #1015 Admin UI: extended server health dashboard with per-container view + charts — 2026-03-17
 
 ## Quick Links
 

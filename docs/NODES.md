@@ -50,7 +50,7 @@
 
 **Валидация**: Проверяет наличие commit SHA в результате.
 
-**Обработка блокеров**: Если developer agent не может выполнить задачу (missing credentials, 404 URLs, contradictory requirements), он запускает `orch report-blocker --reason "..."`. Worker-wrapper парсит маркер `## BLOCKED` и возвращает `block_reason` в результате. Developer node возвращает `engineering_status="developer_blocked"`. Engineering consumer вызывает `_handle_worker_blocked()`:
+**Обработка блокеров**: Если developer agent не может выполнить задачу (missing credentials, 404 URLs, contradictory requirements), он вызывает `curl POST localhost:9090/blocker`. Worker-wrapper HTTP-сервер принимает запрос и публикует `block_reason` в Redis. Developer node возвращает `engineering_status="developer_blocked"`. Engineering consumer вызывает `_handle_worker_blocked()`:
 - Task → `waiting_human_review` с `failure_metadata = {failure_reason: "developer_blocked", block_reason: ...}`
 - Story → `waiting_human_review`
 - Уведомление admin через `notify_admins()` (level=warning)

@@ -13,17 +13,17 @@ Shared DTOs already exist in `shared/contracts/dto/` but most only contain enums
 
 ## Steps
 
-1. [ ] Add response+request DTOs for Task entity
+1. [x] Add response+request DTOs for Task entity
    - **Input**: `shared/contracts/dto/task.py` (currently enums only), `services/api/src/schemas/task.py` (reference)
    - **Output**: `TaskDTO`, `TaskCreate`, `TaskUpdate`, `TaskEventDTO`, `TaskEventCreate` added to `shared/contracts/dto/task.py`
    - **Test**: Unit test validating TaskDTO parses a sample API response dict, TaskCreate serializes correctly
 
-2. [ ] Add response+request DTOs for Story entity
+2. [x] Add response+request DTOs for Story entity
    - **Input**: `shared/contracts/dto/story.py` (currently enums only), `services/api/src/schemas/story.py`
    - **Output**: `StoryDTO`, `StoryCreate`, `StoryUpdate` added to `shared/contracts/dto/story.py`
    - **Test**: Unit test validating StoryDTO parses a sample API response dict
 
-3. [ ] Add response+request DTOs for Repository, Application, Incident entities
+3. [x] Add response+request DTOs for Repository, Application, Incident entities
    - **Input**: `shared/contracts/dto/repository.py`, `application.py`, + new `incident.py`
    - **Output**: `RepositoryDTO`, `RepositoryCreate`, `RepositoryUpdate`, `ApplicationDTO`, `ApplicationCreate`, `ApplicationUpdate`, `IncidentDTO`, `IncidentCreate`, `IncidentUpdate` + move IncidentStatus/IncidentType enums from `shared/models/incident.py` to DTO
    - **Test**: Unit tests for each DTO parsing sample responses

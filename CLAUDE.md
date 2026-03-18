@@ -81,7 +81,7 @@ Caddy (/v2/*) → Docker Registry (self-hosted, basic auth)
 - `caddy`: Reverse proxy + TLS termination (HTTPS for registry endpoint)
 - `registry`: Self-hosted Docker Registry (v2, accessible via Caddy basic auth)
 
-**Packages** (`packages/`): `orchestrator-cli` (CLI tools for agents), `worker-wrapper` (agent container entrypoint).
+**Packages** (`packages/`): `worker-wrapper` (agent container entrypoint + localhost:9090 HTTP result server).
 
 **Shared** (`shared/`): Logging setup (structlog), contracts (DTOs, queue schemas), models, configuration.
   - **Docker**: plain `COPY shared ./shared` + `PYTHONPATH=/app` (not pip-installed). Shared's pip deps are in each service's own pyproject.toml.

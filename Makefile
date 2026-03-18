@@ -11,13 +11,13 @@ export
 DOCKER_COMPOSE ?= docker compose
 
 # Hash of source files baked into worker images.
-# Only includes shared submodules actually imported by worker-wrapper and orchestrator-cli,
-# plus the packages themselves and worker Dockerfiles.
+# Only includes shared submodules actually imported by worker-wrapper,
+# plus the package itself and worker Dockerfiles.
 # Changes to e.g. shared/models/ or shared/schemas/ won't trigger a worker rebuild.
 WORKER_SOURCE_HASH = $(shell find \
   shared/__init__.py shared/log_config shared/redis shared/redis_client.py \
   shared/config.py shared/queues.py shared/contracts shared/crypto.py shared/constants.py \
-  packages/worker-wrapper packages/orchestrator-cli \
+  packages/worker-wrapper \
   services/worker-manager/images -type f \
   -not -path '*/__pycache__/*' -not -name '*.pyc' \
   | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
@@ -123,7 +123,7 @@ cleanup-agents:
 
 # === Worker Base Images ===
 # Build the worker image chain: common -> claude/factory
-# Use rebuild-worker-images after changing orchestrator-cli or worker-base Dockerfiles
+# Use rebuild-worker-images after changing worker-wrapper or worker-base Dockerfiles
 
 rebuild-worker-images:
 	@echo "🔨 Building worker-base-common..."

@@ -29,7 +29,6 @@ jobs:
       scheduler: ${{ steps.filter.outputs.scheduler }}
       telegram: ${{ steps.filter.outputs.telegram }}
       worker-manager: ${{ steps.filter.outputs.worker-manager }}
-      cli: ${{ steps.filter.outputs.cli }}
       shared: ${{ steps.filter.outputs.shared }}
       packages: ${{ steps.filter.outputs.packages }}
       infra-service: ${{ steps.filter.outputs.infra-service }}
@@ -53,8 +52,6 @@ jobs:
               - 'services/telegram_bot/**'
             worker-manager:
               - 'services/worker-manager/**'
-            cli:
-              - 'packages/orchestrator-cli/**'
             shared:
               - 'shared/**'
             packages:
@@ -161,18 +158,6 @@ jobs:
               ${{
                 (needs.detect-changes.outputs.langgraph == 'true' ||
                 needs.detect-changes.outputs.worker-manager == 'true' ||
-                needs.detect-changes.outputs.api == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch')
-                && 'true' || 'false'
-              }}
-          # cli: orchestrator-cli + packages
-          - suite: cli
-            should_run: >-
-              ${{
-                (needs.detect-changes.outputs.cli == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||

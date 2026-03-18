@@ -89,9 +89,9 @@
 >
 > For **Developer-Worker** messages, the actual transport is:
 > ```
-> Developer Worker (AI Agent) → orchestrator-cli → Redis/API
+> Developer Worker (AI Agent) → curl localhost:9090 → worker-wrapper → Redis
 > ```
-> The CLI is a permission-checked proxy, not an independent actor.
+> The HTTP server in worker-wrapper validates and proxies agent results to Redis.
 
 ### Actor Roles
 

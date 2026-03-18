@@ -148,8 +148,8 @@ Workers operate on **story-level feature branches** (`story/{story_id}`). Branch
 
 If the developer agent encounters an unsolvable problem:
 
-1. Agent runs `orch report-blocker --reason "description"` (prints `## BLOCKED` marker)
-2. Worker-wrapper parses `## BLOCKED` → returns `block_reason` in result
+1. Agent calls `curl -X POST localhost:9090/blocker -d '{"reason":"description"}'`
+2. Worker-wrapper HTTP server validates and publishes `block_reason` to Redis
 3. Developer node returns `engineering_status="developer_blocked"`
 4. Engineering consumer:
    - Task → `waiting_human_review` with `failure_metadata.failure_reason = "developer_blocked"`

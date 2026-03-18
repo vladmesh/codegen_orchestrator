@@ -3,7 +3,7 @@
 # Requires: uv sync (once)
 #
 # Each service uses `from src.xxx` imports, so we set PYTHONPATH per service.
-# Packages (orchestrator-cli, worker-wrapper) and shared use proper package
+# Packages (worker-wrapper) and shared use proper package
 # names and don't need PYTHONPATH overrides.
 #
 # We clear env vars that leak from the root .env to avoid pydantic-settings
@@ -96,7 +96,6 @@ ALL_SUITES=(
     "scheduler|services/scheduler/tests/unit|$ROOT/services/scheduler"
     "worker-manager|services/worker-manager/tests/unit|$ROOT/services/worker-manager"
     "infra-service|services/infra-service/tests/unit|$ROOT/services/infra-service"
-    "orchestrator-cli|packages/orchestrator-cli/tests/unit|"
     "worker-wrapper|packages/worker-wrapper/tests/unit|"
     "shared|shared/tests|"
 )

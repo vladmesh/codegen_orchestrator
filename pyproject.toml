@@ -27,7 +27,6 @@ dev = [
     "scheduler",
     "worker-manager",
     "infra-service",
-    "orchestrator-cli",
     "worker-wrapper",
 ]
 
@@ -39,7 +38,6 @@ members = [
     "services/scheduler",
     "services/worker-manager",
     "services/infra-service",
-    "packages/orchestrator-cli",
     "packages/worker-wrapper",
 ]
 
@@ -54,7 +52,6 @@ telegram-bot = { workspace = true }
 scheduler = { workspace = true }
 worker-manager = { workspace = true }
 infra-service = { workspace = true }
-orchestrator-cli = { workspace = true }
 worker-wrapper = { workspace = true }
 
 # No build-system — this is a virtual workspace root (not a distributable package)

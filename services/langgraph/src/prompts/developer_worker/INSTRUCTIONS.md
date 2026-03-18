@@ -40,7 +40,9 @@ actually solvable by writing code. Read the task title and error description.
 
 To reject:
 ```bash
-orch reject --reason "Clear explanation of why this is not a code issue"
+curl -sf -X POST http://localhost:9090/failed \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"NOT A CODE ISSUE: <clear explanation>"}'
 ```
 
 **Only proceed** if the error is genuinely fixable by modifying application code
@@ -107,8 +109,10 @@ Do NOT commit with failing tests or lint errors.
 
 If your changes touch database code or integrations, also run:
 ```bash
-# Start infrastructure first
-orchestrator dev-env start-infra db redis
+# Start infrastructure first (see Infrastructure section below)
+curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+  -H 'Content-Type: application/json' \
+  -d '{"args":["up","-d","--wait","db","redis"],"timeout":120}'
 
 # Run integration tests
 make tests integration
@@ -121,20 +125,40 @@ pushing is safe and expected. The orchestrator manages branch creation and mergi
 Git hooks run ruff format on commit and ruff check on push.
 Make descriptive commit messages.
 
-## Expected Output
+## Reporting Results
 
-Provide a summary including:
-- Commit SHA
-- What was implemented
-- Any important notes or next steps
+When done, report via HTTP (localhost:9090 is always available inside the container):
+
+```bash
+# Success — include commit SHA and summary of what you did
+curl -sf -X POST http://localhost:9090/complete \
+  -H 'Content-Type: application/json' \
+  -d '{"commit":"<sha>","summary":"<what you did>"}'
+
+# Failure — when you tried but could not complete the task
+curl -sf -X POST http://localhost:9090/failed \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"<why it failed>"}'
+
+# Blocked — when you need human intervention
+curl -sf -X POST http://localhost:9090/blocker \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"<what you need>"}'
+```
+
+If you get a 400 response — fix the JSON payload format and retry.
+If you get a 409 response — you already submitted a result, no action needed.
 
 ## Infrastructure (Database, Redis, etc.)
 
-If your task requires database or other infrastructure services:
+If your task requires database or other infrastructure services, use the compose
+proxy (env vars `WORKER_MANAGER_URL` and `WORKER_ID` are pre-set):
 
 ```bash
 # Start infrastructure services (waits for healthchecks)
-orchestrator dev-env start-infra db redis
+curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+  -H 'Content-Type: application/json' \
+  -d '{"args":["up","-d","--wait","db","redis"],"timeout":120}'
 
 # Services are accessible by hostname on the internal network:
 #   db:5432  (PostgreSQL)
@@ -142,10 +166,19 @@ orchestrator dev-env start-infra db redis
 # Configure .env or connection strings accordingly.
 
 # Stop infrastructure (preserves data volumes)
-orchestrator dev-env stop-infra
+curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+  -H 'Content-Type: application/json' \
+  -d '{"args":["stop"],"timeout":60}'
 
 # Full reset (destroys volumes, clean slate)
-orchestrator dev-env reset-infra
+curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+  -H 'Content-Type: application/json' \
+  -d '{"args":["down","-v"],"timeout":120}'
+
+# Check container status
+curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+  -H 'Content-Type: application/json' \
+  -d '{"args":["ps"],"timeout":30}'
 ```
 
 ## Database Migrations
@@ -154,7 +187,9 @@ Database migrations require a running PostgreSQL instance. Always start infrastr
 
 ```bash
 # 1. Start the database
-orchestrator dev-env start-infra db
+curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+  -H 'Content-Type: application/json' \
+  -d '{"args":["up","-d","--wait","db"],"timeout":120}'
 
 # 2. Apply existing migrations (scaffold creates initial ones)
 make migrate
@@ -176,10 +211,10 @@ The `.env` file sets `POSTGRES_HOST=db`. This is correct — it refers to the pr
 
 If `make migrate` or `make makemigrations` fails with a database connection error:
 
-1. **Confirm the database is running**: `orchestrator dev-env start-infra db` — wait for the healthcheck to pass.
+1. **Confirm the database is running** — start it and wait for the healthcheck to pass.
 2. **Check `.env` values match compose**: `POSTGRES_HOST` must match the service name in `infra/compose.base.yml` (default: `db`). `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` must match the `db` service's `environment:` block.
 3. **If the error says "password authentication failed"**: This likely means DNS is resolving `db` to the wrong PostgreSQL instance. Record the exact error message and the output of `getent hosts db` in your PROGRESS.md — this is critical diagnostic info.
-4. **If the error says "connection refused" or "could not connect"**: The database container may not be running or not on the correct network. Record the error and output of `orchestrator dev-env compose -- ps` in PROGRESS.md.
+4. **If the error says "connection refused" or "could not connect"**: The database container may not be running or not on the correct network. Record the error in PROGRESS.md.
 5. **Do not work around database errors silently.** If you cannot connect to the database after following steps 1-2, document the exact error and diagnostic output in PROGRESS.md and proceed with other parts of the task.
 
 ## Running Tests and Tools
@@ -195,8 +230,10 @@ make generate-from-spec
 # Unit tests (run natively, no infrastructure needed)
 make tests unit
 
-# Integration tests (require infrastructure — use compose proxy)
-orchestrator dev-env compose -f infra/compose.tests.integration.yml run integration-tests
+# Integration tests (require infrastructure — start db/redis first)
+curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+  -H 'Content-Type: application/json' \
+  -d '{"args":["-f","infra/compose.tests.integration.yml","run","integration-tests"],"timeout":120}'
 ```
 
 ## When You're Stuck
@@ -210,10 +247,12 @@ doesn't work as expected — do NOT ship it. It's better to ship nothing than to
 ship code that behaves incorrectly. A missing feature is better than a broken one.
 
 When you determine that you cannot complete the task without compromising quality,
-use the `report-blocker` command:
+report a blocker:
 
 ```bash
-orch report-blocker --reason "Clear description of what is blocking you and why you cannot proceed"
+curl -sf -X POST http://localhost:9090/blocker \
+  -H 'Content-Type: application/json' \
+  -d '{"reason":"Clear description of what is blocking you and why you cannot proceed"}'
 ```
 
 This escalates the issue to a human reviewer who can provide guidance.
@@ -256,8 +295,8 @@ quality analysis. Be honest and thorough — this data helps improve the platfor
 - **Service discovery issues**: <any DNS resolution problems>
 
 ### Infrastructure Commands
-- **`orchestrator dev-env start-infra`**: success | failed (include error)
-- **`orchestrator dev-env compose -- ps`**: <paste output>
+- **start-infra**: success | failed (include error)
+- **compose ps**: <paste output>
 
 > If everything worked fine, just write "No issues" under each section.
 > But if anything failed — paste the EXACT error message and any diagnostic
@@ -282,9 +321,8 @@ quality analysis. Be honest and thorough — this data helps improve the platfor
 
 **Important**: The Environment section matters most. If `make migrate` fails, if `db` hostname
 doesn't resolve, if containers can't talk to each other — capture every detail. Include the
-exact error, the output of `getent hosts db`, the output of `orchestrator dev-env compose -- ps`,
-and anything else that helps diagnose the issue. Don't just say "database didn't work" — show
-what happened.
+exact error, the output of `getent hosts db`, and anything else that helps diagnose the issue.
+Don't just say "database didn't work" — show what happened.
 
 Do NOT commit REPORT.md — the orchestrator collects it automatically after your task finishes.
 
