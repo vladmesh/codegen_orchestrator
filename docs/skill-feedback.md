@@ -123,3 +123,9 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 - **Quote**: Step 5 "Monitor PR Review & Deploy" — no mention of CI failure without webhook
 - **Problem**: The skill documents webhook failure for *merged* PRs (manual deploy trigger), but has no recipe for CI *failure* on an open PR when webhook doesn't fire. The scheduler only polls for merged PRs. Had to manually create fix tasks and reopen stories.
 - **Suggested fix**: Add a "CI failure without webhook" subsection: check CI status via `get_latest_workflow_run`, if failed → create fix task, fail/reopen/start story. This is a common case for new repos.
+
+## [e2e-run] — 2026-03-18
+- **Type**: missing-info
+- **Quote**: Step 4 "Monitor Engineering" — no mention of `cancelled` → `todo` transition being blocked
+- **Problem**: When the supervisor cancels tasks (due to a failed dependency), the API does not allow transitioning from `cancelled` → `backlog` → `todo` via the normal `/transition` endpoint. Had to use direct SQL UPDATE to reset cancelled tasks.
+- **Suggested fix**: Document that `cancelled` status requires SQL intervention to reset, or fix the API to allow `cancelled → backlog` transitions.

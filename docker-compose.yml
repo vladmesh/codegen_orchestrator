@@ -102,7 +102,7 @@ services:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
-      - ${TELETHON_SESSION_DIR:-./secrets/telethon}:/app/telethon:ro
+      - ${TELETHON_SESSION_DIR:-./secrets/telethon}:/app/telethon
     depends_on:
       - api
       - redis

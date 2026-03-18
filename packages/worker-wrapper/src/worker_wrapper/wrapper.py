@@ -124,13 +124,14 @@ class WorkerWrapper:
 
         # 4. Start HTTP result server + execute agent
         self._result_event = asyncio.Event()
+        self._buffered_result: dict | None = None
 
-        async def _publish_http_result(redis_data: dict) -> None:
-            await self.redis.publish(self.config.output_stream, redis_data)
+        async def _buffer_http_result(redis_data: dict) -> None:
+            self._buffered_result = redis_data
 
         self._http_server = ResultHttpServer(
             worker_id=self.config.consumer_name,
-            publish_callback=_publish_http_result,
+            publish_callback=_buffer_http_result,
             result_event=self._result_event,
             host="127.0.0.1",
             port=self.config.http_server_port,
@@ -148,9 +149,16 @@ class WorkerWrapper:
                 error = str(e)
                 status = "failed"
 
-            # 5. Check result — HTTP is the only path for agent results
-            if self._result_event.is_set():
+            # 5. Collect report and archive task (before publishing result)
+            report = self._read_worker_report()
+            self._archive_task(data, report)
+
+            # 6. Publish result — enrich with worker_report if available
+            if self._result_event.is_set() and self._buffered_result is not None:
                 logger.info("result_received_via_http", worker_id=self.config.consumer_name)
+                if report:
+                    self._buffered_result["worker_report"] = report
+                await self.redis.publish(self.config.output_stream, self._buffered_result)
             elif error:
                 await self.redis.publish(
                     self.config.output_stream,
@@ -165,9 +173,6 @@ class WorkerWrapper:
                     self.config.output_stream,
                     {"status": "failed", "error": error},
                 )
-
-            # 6. Collect report and archive task
-            self._collect_and_archive(data)
         finally:
             await self._http_server.stop()
             self._http_server = None

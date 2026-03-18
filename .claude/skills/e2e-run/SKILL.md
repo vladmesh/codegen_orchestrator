@@ -110,8 +110,9 @@ QA Consumer (langgraph container, separate entrypoint)
 Tests with `tg_bot` module need a `TELEGRAM_BOT_TOKEN` for deploy.
 Secrets are read from `.claude/e2e-secrets.env` (gitignored).
 
-**Injection**: After creating the project, if the test includes `tg_bot`,
-inject secrets into `project.config.secrets`:
+**Token is given to PO in conversation** — PO validates and stores it itself.
+Do NOT inject secrets manually via API. When PO asks for the bot token during
+the conversation flow, read it from the env file and send it as a chat message:
 
 ```bash
 TG_TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' .claude/e2e-secrets.env 2>/dev/null | cut -d= -f2-)
@@ -120,29 +121,10 @@ if [ -z "$TG_TOKEN" ]; then
   echo "ERROR: TELEGRAM_BOT_TOKEN not found in .claude/e2e-secrets.env"
   # STOP this test — cannot deploy without token
 fi
-
-docker compose exec -T -e "TG_TOKEN=$TG_TOKEN" -e "PROJECT_ID=$PROJECT_ID" api python -c "
-import os, asyncio
-import httpx
-from shared.crypto import encrypt_dict
-
-async def main():
-    pid = os.environ['PROJECT_ID']
-    token = os.environ['TG_TOKEN']
-    async with httpx.AsyncClient(base_url='http://localhost:8000') as api:
-        r = await api.get(f'/api/projects/{pid}')
-        project = r.json()
-        config = project['config']
-        existing = config.get('secrets', {})
-        new_secrets = encrypt_dict({'TELEGRAM_BOT_TOKEN': token})
-        existing.update(new_secrets)
-        config['secrets'] = existing
-        await api.patch(f'/api/projects/{pid}', json={'config': config})
-        print(f'Injected TELEGRAM_BOT_TOKEN into project {pid}')
-
-asyncio.run(main())
-"
 ```
+
+Then use the standard `po:input` / `po:response` mechanism to send the token
+as `MESSAGE_TEXT="$TG_TOKEN"` when PO asks for it.
 
 ## GitHub Access
 
@@ -477,7 +459,11 @@ echo "PROJECT_ID=$PROJECT_ID STORY_ID=$STORY_ID REPO_ID=$REPO_ID"
 If either is empty, send a follow-up to PO. If PO fails after 2 attempts,
 note "PO failed to create project" in report and stop the test.
 
-**1e. If test includes `tg_bot`** — inject secrets (see "E2E Secrets").
+**1e. If test includes `tg_bot`** — PO will ask for the bot token during the
+conversation (Step 1b/1c loop). When it does, read the token from
+`.claude/e2e-secrets.env` (see "E2E Secrets") and send it as a regular chat
+message via `po:input`. PO validates and stores the token itself — do NOT
+inject secrets manually via API.
 
 ### Step 2: Monitor Scaffold
 
@@ -916,6 +902,8 @@ bash infra/scripts/ssh-to-server.sh $SERVER_IP "
 **IMPORTANT**: This step MUST complete and save files BEFORE Step 9 cleanup.
 Cleanup deletes task_events from DB — if reports aren't saved to disk first, they're lost.
 
+**7a. Collect from task_events API** (primary source):
+
 ```bash
 mkdir -p docs/e2e_results/worker_reports
 DATE=$(date +%Y%m%d)
@@ -939,20 +927,63 @@ for e in events:
     if report: print(report)
 ")
   if [ -n "$REPORT" ]; then
-    echo "=== Task: $TASK_ID ===" >> "$WORKER_REPORT"
+    TITLE=$(curl -s "http://localhost:8000/api/tasks/$TASK_ID" | python3 -c "import json,sys; print(json.load(sys.stdin)['title'])")
+    echo "## Task: $TASK_ID — $TITLE" >> "$WORKER_REPORT"
+    echo "" >> "$WORKER_REPORT"
     echo "$REPORT" >> "$WORKER_REPORT"
     echo "" >> "$WORKER_REPORT"
     FOUND_REPORTS=$((FOUND_REPORTS + 1))
   fi
 done
+```
+
+**7b. Fallback: collect from workspace archive** (if API returned nothing):
+
+Worker reports are also archived in `.story/old_tasks/` inside the scaffolder workspace.
+If the API returned 0 reports, read them directly from the workspace volume.
+
+```bash
+if [ "$FOUND_REPORTS" -eq 0 ] && [ -n "$REPO_ID" ]; then
+  echo "WARNING: No reports in API — trying workspace archive..."
+
+  # Read from scaffolder workspace (inside the scaffolder container)
+  ARCHIVE_FILES=$(docker compose exec -T scaffolder sh -c \
+    "ls /data/workspaces/$REPO_ID/.story/old_tasks/*.md 2>/dev/null" || true)
+
+  if [ -n "$ARCHIVE_FILES" ]; then
+    for ARCHIVE in $ARCHIVE_FILES; do
+      CONTENT=$(docker compose exec -T scaffolder cat "$ARCHIVE" 2>/dev/null)
+      if [ -n "$CONTENT" ]; then
+        BASENAME=$(basename "$ARCHIVE")
+        echo "## Archive: $BASENAME" >> "$WORKER_REPORT"
+        echo "" >> "$WORKER_REPORT"
+        echo "$CONTENT" >> "$WORKER_REPORT"
+        echo "" >> "$WORKER_REPORT"
+        FOUND_REPORTS=$((FOUND_REPORTS + 1))
+      fi
+    done
+  fi
+
+  # Also try the host volume directly
+  if [ "$FOUND_REPORTS" -eq 0 ]; then
+    docker run --rm -v /data/workspaces:/workspaces alpine sh -c \
+      "cat /workspaces/$REPO_ID/.story/old_tasks/*.md 2>/dev/null" \
+      >> "$WORKER_REPORT" 2>/dev/null && \
+      FOUND_REPORTS=$((FOUND_REPORTS + 1)) || true
+  fi
+fi
 
 if [ "$FOUND_REPORTS" -eq 0 ]; then
   echo "(no worker reports found)" >> "$WORKER_REPORT"
-  echo "WARNING: No worker reports collected"
+  echo "WARNING: No worker reports collected from API or workspace"
 else
   echo "Saved $FOUND_REPORTS worker report(s) to $WORKER_REPORT"
 fi
 ```
+
+**CRITICAL**: Do NOT proceed to Step 9 cleanup (especially workspace deletion in step 9.9)
+until worker reports are successfully saved to disk. The workspace archive is the last
+fallback — once deleted, reports are gone forever.
 
 ### Step 8: Write E2E Report
 
