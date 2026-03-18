@@ -2,6 +2,13 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-18
+
+### Fixed
+- **Architect 422 on story.start** (hotfix): Architect LLM tool `transition_story` now catches 422 and returns current story state instead of crashing. Fixes race where PO already transitioned story to `in_progress` before architect runs.
+- **Deploy failure classifier blind** (hotfix): `wait_for_run_completion` now fetches GH Actions failure logs (`get_workflow_failure_logs`) and includes failed job/step names in the RuntimeError message. The deploy classifier now sees "Job 'deploy' failed: Step 'Deploy via SSH' failed" instead of just "failure".
+- **Deploy retry loop after PR merge** (hotfix): `create_pull_request` now searches closed/merged PRs when 422 occurs (was only searching open). `complete_stories` detects merged PRs and triggers deploy directly instead of trying to create a duplicate PR. Breaks the infinite loop: deploy fail → in_progress → create PR (422) → exception → retry.
+
 ## 2026-03-17
 
 ### Added

@@ -819,9 +819,13 @@ class GitHubAppClient:
                     )
                     return run
                 else:
+                    try:
+                        failure_logs = await self.get_workflow_failure_logs(owner, repo, run["id"])
+                    except Exception:
+                        failure_logs = "(could not fetch failure details)"
                     raise RuntimeError(
                         f"Workflow {workflow_file} failed: {run['conclusion']}. "
-                        f"See: {run['html_url']}"
+                        f"See: {run['html_url']}\n{failure_logs}"
                     )
 
             logger.info(
@@ -976,9 +980,14 @@ class GitHubAppClient:
                     )
                     return result
                 else:
+                    # Fetch failure details for better error context
+                    try:
+                        failure_logs = await self.get_workflow_failure_logs(owner, repo, run_id)
+                    except Exception:
+                        failure_logs = "(could not fetch failure details)"
                     raise RuntimeError(
                         f"Workflow run {run_id} failed: {run.get('conclusion')}. "
-                        f"See: {run['html_url']}"
+                        f"See: {run['html_url']}\n{failure_logs}"
                     )
 
             logger.info(
@@ -1096,17 +1105,18 @@ class GitHubAppClient:
         except httpx.HTTPStatusError as e:
             if e.response.status_code != httpx.codes.UNPROCESSABLE_ENTITY:
                 raise
-            # PR already exists — find and return it
+            # PR already exists — find and return it (check open first, then closed/merged)
             logger.info("pr_already_exists", owner=owner, repo=repo, head=head)
-            list_resp = await self._make_request(
-                "GET",
-                f"https://api.github.com/repos/{owner}/{repo}/pulls",
-                headers=headers,
-                params={"head": f"{owner}:{head}", "base": base, "state": "open"},
-            )
-            prs = list_resp.json()
-            if prs:
-                return prs[0]
+            for state in ("open", "closed"):
+                list_resp = await self._make_request(
+                    "GET",
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls",
+                    headers=headers,
+                    params={"head": f"{owner}:{head}", "base": base, "state": state},
+                )
+                prs = list_resp.json()
+                if prs:
+                    return prs[0]
             raise RuntimeError(
                 f"PR creation returned 422 but no existing PR found for {head}→{base}"
             ) from e

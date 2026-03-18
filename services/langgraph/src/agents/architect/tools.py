@@ -163,8 +163,15 @@ async def transition_story(story_id: str, action: str) -> dict:
         story_id: The story ID.
         action: One of: start, complete, archive.
     """
-    story = await api_client.transition_story(story_id, action)
-    return story.model_dump(mode="json")
+    try:
+        story = await api_client.transition_story(story_id, action)
+        return story.model_dump(mode="json")
+    except Exception as e:
+        if "422" in str(e):
+            # Story already in target state (e.g. PO already started it)
+            story = await api_client.get_story(story_id)
+            return story.model_dump(mode="json")
+        raise
 
 
 def get_architect_tools() -> list:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+import uuid
 
 import structlog
 
@@ -10,8 +11,9 @@ from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
+from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
 from shared.contracts.queues.worker import DeleteWorkerCommand
-from shared.queues import ARCHITECT_QUEUE, STORY_WORKERS_KEY, WORKER_COMMANDS
+from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, STORY_WORKERS_KEY, WORKER_COMMANDS
 from shared.redis_client import RedisStreamClient
 
 if TYPE_CHECKING:
@@ -168,6 +170,36 @@ async def complete_stories(
             )
             pr_number = pr["number"]
             pr_node_id = pr.get("node_id", "")
+            pr_merged = pr.get("merged_at") is not None
+
+            if pr_merged:
+                # PR already merged (deploy retry after failure) — trigger deploy directly
+                log.info(
+                    "story_pr_already_merged",
+                    pr_number=pr_number,
+                    branch=branch,
+                )
+                await api_client.transition_story(story_id, "deploy")
+
+                run_id = f"deploy-retry-{uuid.uuid4().hex[:8]}"
+                await api_client.create_run(
+                    {"id": run_id, "type": "deploy", "project_id": project_id}
+                )
+                deploy_msg = DeployMessage(
+                    task_id=run_id,
+                    project_id=project_id,
+                    user_id="",
+                    story_id=story_id,
+                    triggered_by=DeployTrigger.WEBHOOK,
+                    action="create",
+                )
+                await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
+
+                await _cleanup_story_worker(redis_client, story_id)
+                await _trigger_next_story(api_client, redis_client, project_id)
+                completed += 1
+                continue
+
             log.info(
                 "story_pr_created",
                 pr_number=pr_number,
