@@ -165,12 +165,21 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
 
     # Mark project so scaffold_trigger stops retrying every cycle
     try:
-        project_data = await api.get_project(msg.project_id)
-        config = project_data.config or {}
+        project = await api.get_project(msg.project_id)
+        config = dict(project.config) if project.config else {}
         config["scaffold_error"] = result.error or "unknown error"
         await api.update_project_config(msg.project_id, config)
     except Exception:
-        log.warning("failed_to_mark_scaffold_error")
+        log.warning("failed_to_mark_scaffold_error", exc_info=True)
+
+    # Fail all stories so architect/dispatcher don't keep waiting
+    try:
+        stories = await api.get_stories_by_project(msg.project_id)
+        for story in stories:
+            await api.fail_story(story.id)
+            log.info("scaffold_story_failed", story_id=story.id)
+    except Exception:
+        log.warning("failed_to_fail_stories_on_scaffold_error", exc_info=True)
 
     return {"status": "failed", "error": result.error or "unknown error"}
 
@@ -216,8 +225,8 @@ async def _process_ensure_mode(
 
     # Mark project so scaffold_trigger stops retrying every cycle
     try:
-        project_data = await api.get_project(msg.project_id)
-        config = project_data.config or {}
+        project = await api.get_project(msg.project_id)
+        config = dict(project.config) if project.config else {}
         config["scaffold_error"] = result.error or "unknown error"
         await api.update_project_config(msg.project_id, config)
     except Exception:
@@ -229,8 +238,8 @@ async def _process_ensure_mode(
 async def _update_project_on_success(msg, result, api, settings, log) -> None:
     """Update project config with tree and specs after successful scaffold/ensure."""
     workspace = Path(settings.workspace_base_path) / msg.repository_id
-    project_data = await api.get_project(msg.project_id)
-    config = project_data.config or {}
+    project = await api.get_project(msg.project_id)
+    config = dict(project.config) if project.config else {}
     config["tree"] = result.tree
     config["workspace_ready"] = True
     config.pop("scaffold_error", None)

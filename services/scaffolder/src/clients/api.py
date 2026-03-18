@@ -5,6 +5,8 @@ from __future__ import annotations
 import httpx
 import structlog
 
+from shared.contracts.dto.project import ProjectDTO
+from shared.contracts.dto.story import StoryDTO
 from shared.log_config.correlation import get_correlation_id
 from src.config import get_settings
 
@@ -48,9 +50,9 @@ class ScaffolderAPIClient:
         resp.raise_for_status()
         return resp
 
-    async def get_project(self, project_id: str) -> dict:
+    async def get_project(self, project_id: str) -> ProjectDTO:
         resp = await self._request("GET", f"projects/{project_id}")
-        return resp.json()
+        return ProjectDTO.model_validate(resp.json())
 
     async def get_repository(self, repo_id: str) -> dict:
         resp = await self._request("GET", f"repositories/{repo_id}")
@@ -75,6 +77,18 @@ class ScaffolderAPIClient:
             json={"config": config},
         )
         logger.info("project_config_updated", project_id=project_id)
+
+    async def get_stories_by_project(self, project_id: str) -> list[StoryDTO]:
+        resp = await self._request("GET", f"stories/?project_id={project_id}")
+        return [StoryDTO.model_validate(s) for s in resp.json()]
+
+    async def fail_story(self, story_id: str) -> None:
+        await self._request(
+            "POST",
+            f"stories/{story_id}/fail",
+            json={"actor": "scaffolder"},
+        )
+        logger.info("story_failed", story_id=story_id)
 
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
