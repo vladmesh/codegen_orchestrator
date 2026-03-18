@@ -9,6 +9,7 @@ import structlog
 from shared.redis.client import RedisStreamClient
 
 from .config import WorkerWrapperConfig
+from .http_server import ResultHttpServer
 
 logger = structlog.get_logger(__name__)
 
@@ -34,6 +35,8 @@ class WorkerWrapper:
             self._owns_redis = True
         self._running = False
         self._task: asyncio.Task | None = None
+        self._http_server: ResultHttpServer | None = None
+        self._result_event: asyncio.Event | None = None
 
     async def run(self):
         """Main loop: connect, consume, execute, publish."""
@@ -94,27 +97,8 @@ class WorkerWrapper:
         # 1. Lifecycle: Started
         await self.publish_lifecycle("started", msg_id)
 
-        # 2. Pre-turn: pull latest changes and update TASK.md
-        await self._git_pull()
-
-        prompt = data.get("prompt")
-        if prompt:
-            self._write_task_md(prompt)
-
-        # Write .story/STORY.md if provided (story-level context for worker)
-        story_md = data.get("story_md")
-        if story_md:
-            self._write_story_md(story_md)
-
-        # Clear session if requested (hybrid resume: fresh start on retry)
-        if data.get("clear_session"):
-            from .session import SessionManager
-
-            session_manager = SessionManager(
-                redis=self.redis.redis, worker_id=self.config.consumer_name
-            )
-            await session_manager.clear_session()
-            logger.info("session_cleared_for_fresh_start")
+        # 2. Pre-turn setup
+        await self._prepare_workspace(data)
 
         # 3. Pre-flight: verify workspace has project files (not just README)
         workspace_ok, workspace_detail = self._check_workspace_ready()
@@ -140,28 +124,82 @@ class WorkerWrapper:
         self._fix_venv_shebangs()
         self._inject_makefile_overrides()
 
-        # 4. Execute
+        # 4. Start HTTP result server + execute agent
+        self._result_event = asyncio.Event()
+
+        async def _publish_http_result(redis_data: dict) -> None:
+            await self.redis.publish(self.config.output_stream, redis_data)
+
+        self._http_server = ResultHttpServer(
+            worker_id=self.config.consumer_name,
+            publish_callback=_publish_http_result,
+            result_event=self._result_event,
+            host="127.0.0.1",
+            port=self.config.http_server_port,
+        )
+
         try:
-            result = await self.execute_agent(data)
-            status = "completed"
-            error = None
-        except Exception as e:
-            logger.error("execution_failed", error=str(e))
-            result = None
-            error = str(e)
-            status = "failed"
+            await self._http_server.start()
 
-        # 4. Publish Result to output stream (success or error)
-        if result:
-            await self.redis.publish(self.config.output_stream, result)
-        elif error:
-            await self.redis.publish(
-                self.config.output_stream,
-                {"status": "failed", "error": error},
-            )
+            try:
+                result = await self.execute_agent(data)
+                status = "completed"
+                error = None
+            except Exception as e:
+                logger.error("execution_failed", error=str(e))
+                result = None
+                error = str(e)
+                status = "failed"
 
-        # 5. Lifecycle: Completed/Failed
+            # 5. Publish result — HTTP takes priority over stdout
+            if self._result_event.is_set():
+                # HTTP server already published the result to Redis
+                logger.info("result_received_via_http", worker_id=self.config.consumer_name)
+            elif result:
+                # Fallback: stdout parsing result (backward compat)
+                logger.info("result_received_via_stdout", worker_id=self.config.consumer_name)
+                await self.redis.publish(self.config.output_stream, result)
+            elif error:
+                await self.redis.publish(
+                    self.config.output_stream,
+                    {"status": "failed", "error": error},
+                )
+            else:
+                # Watchdog: agent exited without reporting via HTTP or stdout
+                logger.warning("agent_exited_without_result", worker_id=self.config.consumer_name)
+                error = "Agent exited without reporting result"
+                status = "failed"
+                await self.redis.publish(
+                    self.config.output_stream,
+                    {"status": "failed", "error": error},
+                )
+        finally:
+            await self._http_server.stop()
+            self._http_server = None
+
+        # 6. Lifecycle: Completed/Failed
         await self.publish_lifecycle(status, msg_id, result=result, error=error)
+
+    async def _prepare_workspace(self, data: dict) -> None:
+        """Pre-turn setup: pull, update TASK.md/STORY.md, clear session."""
+        await self._git_pull()
+
+        prompt = data.get("prompt")
+        if prompt:
+            self._write_task_md(prompt)
+
+        story_md = data.get("story_md")
+        if story_md:
+            self._write_story_md(story_md)
+
+        if data.get("clear_session"):
+            from .session import SessionManager
+
+            session_manager = SessionManager(
+                redis=self.redis.redis, worker_id=self.config.consumer_name
+            )
+            await session_manager.clear_session()
+            logger.info("session_cleared_for_fresh_start")
 
     def _check_workspace_ready(self) -> tuple[bool, str]:
         """Check that workspace has real project files, not just an empty repo.

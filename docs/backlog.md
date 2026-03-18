@@ -3,7 +3,7 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-17
+> **Updated**: 2026-03-18
 
 ## Queue (ordered by priority, first = next)
 
@@ -36,11 +36,35 @@
 - **Status**: backlog
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
+### Refactor shared: eliminate orchestrator code from worker containers
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: ## Problem  Worker containers copy the entire orchestrator shared/ package into /app/shared. This conflicts with user projects that also have a shared/ directory (different package, same name). Workers hit ModuleNotFoundError or import the wrong module.  ## Current state  - worker-wrapper needs: ...
+
 ### #1006 Decouple deploy worker from story lifecycle
 - **Priority**: HIGH
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
+
+### HTTP-сервер в worker-wrapper (localhost:9090) — complete/failed/blocker endpoints
+- **Priority**: MEDIUM
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Добавить в worker-wrapper HTTP-сервер на localhost:9090 (asyncio task, параллельно с agent runner). Три эндпоинта: - POST /complete {commit, summary} → validate → xadd worker:{id}:output - POST /failed {reason} → validate → xadd worker:{id}:output - POST /blocker {reason} → validate → xadd worker...
+
+### Удалить orchestrator-cli, перевести агента на curl к localhost:9090
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: 1. Обновить шаблон INSTRUCTIONS.md / CLAUDE.md в workspace — добавить секцию Reporting results с curl-командами к localhost:9090 2. Убрать orchestrator-cli из worker-base-common Dockerfile и pyproject.toml 3. Удалить packages/orchestrator-cli/ полностью 4. Убрать ORCHESTRATOR_API_URL, ORCHESTRATO...
+
+### Убрать result_parser из wrapper, добавить watchdog-логику
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: 1. Удалить result_parser.py и парсинг <result> тегов из stdout в wrapper.py 2. Добавить watchdog-логику: после завершения agent subprocess проверить флаг (результат уже получен через HTTP?) 3. Если флаг есть — wrapper молчит (результат уже в Redis). Если нет (crash/timeout) — wrapper публикует fa...
 
 ### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - **Priority**: LOW
