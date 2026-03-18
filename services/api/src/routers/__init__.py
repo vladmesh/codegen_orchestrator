@@ -20,7 +20,6 @@ from . import (
     stories,
     tasks,
     users,
-    webhooks,
 )
 
 __all__ = [
@@ -43,5 +42,4 @@ __all__ = [
     "stories",
     "tasks",
     "users",
-    "webhooks",
 ]

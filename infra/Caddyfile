@@ -12,7 +12,4 @@
         reverse_proxy registry:5000
     }
 
-    handle /webhooks/* {
-        reverse_proxy api:8000
-    }
 }

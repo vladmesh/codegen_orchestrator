@@ -57,10 +57,10 @@ User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/
                                                   deploy:queue → deploy-worker → GitHub Actions (deploy.yml)
                                                   (story complete → deploy:queue + po:proactive)
 
-GitHub (ci.yml success) → webhook → Caddy (HTTPS) → API → deploy:queue → deploy-worker → po:proactive → Telegram Bot → User
+Scheduler (pr_poller, 30s) → polls GitHub for merged PRs / CI failures → deploy:queue or fix task
+Deploy-worker → GitHub Actions (deploy.yml) → po:proactive → Telegram Bot → User
 
 Caddy (/v2/*) → Docker Registry (self-hosted, basic auth)
-Caddy (/webhooks/*) → API
 ```
 
 **Key Components:**
@@ -69,7 +69,7 @@ Caddy (/webhooks/*) → API
 - **Session Management**: PostgreSQL checkpointer (per-user thread), Redis streams for I/O
 
 **Services** (in `services/`):
-- `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs, GitHub webhook receiver (port 8000)
+- `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs (port 8000)
 - `langgraph`: LangGraph orchestration (Engineering, DevOps subgraphs)
 - `engineering-worker`: Redis stream consumer (`engineering:queue`), runs Engineering subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.consumers.engineering`)
 - `deploy-worker`: Redis stream consumer (`deploy:queue`), runs DevOps subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.consumers.deploy`)
@@ -78,7 +78,7 @@ Caddy (/webhooks/*) → API
 - `worker-manager`: Docker container lifecycle for CLI agents, mounts pre-scaffolded workspace volumes
 - `infra-service`: Ansible execution for server provisioning only (consumes `provisioner:queue`)
 - `scheduler`: Background workers (architect_consumer, task_dispatcher with scaffold trigger, github_sync, server_sync, health_checker)
-- `caddy`: Reverse proxy + TLS termination (HTTPS for webhook + registry endpoints)
+- `caddy`: Reverse proxy + TLS termination (HTTPS for registry endpoint)
 - `registry`: Self-hosted Docker Registry (v2, accessible via Caddy basic auth)
 
 **Packages** (`packages/`): `orchestrator-cli` (CLI tools for agents), `worker-wrapper` (agent container entrypoint).
