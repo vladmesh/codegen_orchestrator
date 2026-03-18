@@ -119,9 +119,8 @@ class WorkerWrapper:
             return
         logger.info("workspace_preflight_passed", detail=workspace_detail)
 
-        # 3b. Fix venv shebangs and inject Makefile overrides
+        # 3b. Fix venv shebangs
         self._fix_venv_shebangs()
-        self._inject_makefile_overrides()
 
         # 4. Start HTTP result server + execute agent
         self._result_event = asyncio.Event()
@@ -336,42 +335,6 @@ class WorkerWrapper:
             open(path, "w").close()
         except OSError:
             pass
-
-    def _inject_makefile_overrides(self):
-        """Inject Makefile overrides so `make dev-start` uses orchestrator CLI.
-
-        Workers don't have Docker socket access — they must use `orch` CLI
-        which proxies compose commands through the worker-manager HTTP API.
-        The template's Makefile defines `dev-start` using `docker compose`
-        directly. This override replaces it with `orch start-infra` so that
-        `make dev-start`, `make migrate`, `make makemigrations` all work
-        transparently inside worker containers.
-
-        The override file is .gitignored by convention (dotfile in workspace root).
-        """
-        makefile = os.path.join(WORKSPACE_DIR, "Makefile")
-        if not os.path.isfile(makefile):
-            return
-
-        override_marker = "# --- orchestrator overrides ---"
-        try:
-            content = open(makefile).read()
-            if override_marker in content:
-                return  # already injected
-
-            override = (
-                f"\n{override_marker}\n"
-                "dev-start:\n"
-                "\torchestrator dev-env start-infra $(svc)\n"
-                "\n"
-                "dev-stop:\n"
-                "\torchestrator dev-env stop-infra\n"
-            )
-            with open(makefile, "a") as f:
-                f.write(override)
-            logger.info("makefile_overrides_injected")
-        except OSError as e:
-            logger.warning("makefile_override_failed", error=str(e))
 
     async def _git_pull(self):
         """Pull latest changes before next agent turn.

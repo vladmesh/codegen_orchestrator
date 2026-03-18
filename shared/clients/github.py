@@ -318,9 +318,13 @@ class GitHubAppClient:
             token = await self.get_token(owner, repo)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == httpx.codes.NOT_FOUND:
-                logger.info("github_repo_not_found_skip_delete", owner=owner, repo=repo)
-                return False
-            raise
+                # Repo-scoped installation not found — fall back to org-level token.
+                # This happens when the GitHub App isn't installed on the specific repo
+                # (e.g. newly created repos before installation binding).
+                logger.info("github_repo_token_fallback_to_org", owner=owner, repo=repo)
+                token = await self.get_org_token(owner)
+            else:
+                raise
 
         headers = {
             "Authorization": f"token {token}",

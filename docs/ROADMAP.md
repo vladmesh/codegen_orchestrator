@@ -559,6 +559,5 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 - [ ] API authorization: scope worker access, protect destructive endpoints
 - [ ] Refactor shared: eliminate orchestrator code from worker containers
 - [ ] #1006 Decouple deploy worker from story lifecycle
-- [ ] Убрать result_parser из wrapper, добавить watchdog-логику
 - [ ] #1003 Integration test: scheduler-langgraph story worker lifecycle
 - [ ] Allocate ports only for modules that need host exposure

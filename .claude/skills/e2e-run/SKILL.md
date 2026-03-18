@@ -244,44 +244,51 @@ REPO_SLUG=$(echo "$PROJECT_NAME" | tr '_' '-')
 REPO_UNDER=$(echo "$PROJECT_NAME" | tr '-' '_')
 
 # 1. Delete leftover GitHub repos (check BOTH underscore and hyphen variants)
-for REPO_VARIANT in "$REPO_SLUG" "$REPO_UNDER"; do
-  REPO_EXISTS=$(docker compose exec -T api python -c "
-import asyncio
+# NOTE: Use org-level token, NOT GitHubAppClient.delete_repo() — the repo-scoped
+# token fails with 404 on /repos/{repo}/installation for repos where the GitHub App
+# installation is not bound yet.
+docker compose exec -T api python -c "
+import asyncio, httpx
 from shared.clients.github import GitHubAppClient
 async def main():
     gh = GitHubAppClient()
-    try:
-        await gh.list_repo_files('$ORG', '$REPO_VARIANT')
-        print('EXISTS')
-    except Exception:
-        print('CLEAN')
-asyncio.run(main())
-" 2>/dev/null | tail -1)
-
-  if [ "$REPO_EXISTS" = "EXISTS" ]; then
-    echo "WARNING: Leftover repo $REPO_VARIANT — deleting"
-    docker compose exec -T api python -c "
-import asyncio
-from shared.clients.github import GitHubAppClient
-async def main():
-    gh = GitHubAppClient()
-    await gh.delete_repo('$ORG', '$REPO_VARIANT')
-    print('Deleted')
+    token = await gh.get_org_token('$ORG')
+    async with httpx.AsyncClient() as client:
+        for repo in ['$REPO_SLUG', '$REPO_UNDER']:
+            resp = await client.delete(
+                f'https://api.github.com/repos/$ORG/{repo}',
+                headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json'}
+            )
+            if resp.status_code == 204:
+                print(f'Deleted leftover repo {repo}')
+            elif resp.status_code == 404:
+                print(f'{repo}: clean')
+            else:
+                print(f'{repo}: unexpected {resp.status_code}')
 asyncio.run(main())
 "
-  fi
-done
 
 # 2. Kill leftover worker containers (by label AND by name pattern)
 docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}" | xargs -r docker rm -f
 docker ps -a --format "{{.Names}}" | grep -iE "${REPO_SLUG}|${REPO_UNDER}" | xargs -r docker rm -f
+
+# 2.5. Clean scaffolder workspace (INSIDE the scaffolder container, not just host volume).
+# Stale workspace with local git commits causes "nothing to commit" on re-scaffold.
+REPO_ID_CLEANUP=$(curl -s "http://localhost:8000/api/projects/" \
+  | jq -r --arg name "$PROJECT_NAME" --arg slug "$REPO_SLUG" \
+    '.[] | select(.name == $name or .name == $slug) | .repositories[0].id // empty' 2>/dev/null | head -1)
+if [ -n "$REPO_ID_CLEANUP" ]; then
+  docker compose exec -T scaffolder rm -rf "/data/workspaces/$REPO_ID_CLEANUP" 2>/dev/null && \
+    echo "Cleaned scaffolder workspace: $REPO_ID_CLEANUP" || true
+  docker run --rm -v /data/workspaces:/workspaces alpine sh -c "rm -rf /workspaces/$REPO_ID_CLEANUP" 2>/dev/null || true
+fi
 
 # 3. Clean stale deployments on servers (check BOTH underscore and hyphen variants)
 #    After compose down, also force-remove containers by name and verify ports are freed.
 for SERVER_IP in $(curl -s "http://localhost:8000/api/servers/?is_managed=true" | jq -r '.[].public_ip'); do
   for DIR_NAME in "$REPO_UNDER" "$REPO_SLUG"; do
     HAS_DIR=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
-      "[ -d /opt/services/$DIR_NAME ] && echo EXISTS || echo CLEAN" 2>/dev/null || echo "SSH_FAIL")
+      "[ -d /opt/services/$DIR_NAME ] && echo EXISTS || echo CLEAN" 2>&1 | grep -xE 'EXISTS|CLEAN' || echo "SSH_FAIL")
     if [ "$HAS_DIR" = "EXISTS" ]; then
       echo "WARNING: Stale deployment $DIR_NAME on $SERVER_IP — cleaning"
       bash infra/scripts/ssh-to-server.sh $SERVER_IP "
@@ -294,8 +301,11 @@ for SERVER_IP in $(curl -s "http://localhost:8000/api/servers/?is_managed=true" 
     fi
   done
   # Verify no ports are still occupied by stale containers
+  # NOTE: ssh-to-server.sh may emit SSH warnings (known_hosts updates) to stdout/stderr.
+  # Filter to only lines that look like docker ps output (contain a container name).
   STALE_PORTS=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
-    "docker ps --format '{{.Names}} {{.Ports}}' | grep -iE '${REPO_SLUG}|${REPO_UNDER}'" 2>/dev/null || true)
+    "docker ps --format '{{.Names}} {{.Ports}}' | grep -iE '${REPO_SLUG}|${REPO_UNDER}'" 2>&1 \
+    | grep -ivE '^#|known_hosts|Warning:|^$' || true)
   if [ -n "$STALE_PORTS" ]; then
     echo "WARNING: Stale containers still running on $SERVER_IP after cleanup: $STALE_PORTS"
     echo "  Force-removing..."
@@ -476,10 +486,11 @@ It checks for DRAFT projects with stories and repositories.
 
 ```bash
 # Poll project status — scaffold transitions DRAFT → ACTIVE
-for i in $(seq 1 20); do
+# Timeout: 90s (6 × 15s). If scaffold doesn't complete in 90s, it's a bug — investigate immediately.
+for i in $(seq 1 6); do
   STATUS=$(curl -s "http://localhost:8000/api/projects/$PROJECT_ID" | jq -r '.status')
   WORKSPACE=$(curl -s "http://localhost:8000/api/projects/$PROJECT_ID" | jq -r '.config.workspace_ready // false')
-  echo "[$i/20] Project: status=$STATUS workspace_ready=$WORKSPACE"
+  echo "[$i/6] Project: status=$STATUS workspace_ready=$WORKSPACE"
   if [ "$STATUS" = "active" ] && [ "$WORKSPACE" = "true" ]; then
     echo "Scaffold complete"
     break
@@ -488,7 +499,7 @@ for i in $(seq 1 20); do
 done
 ```
 
-**If stuck after 5 minutes**: Check scaffolder and scheduler logs:
+**If stuck after 90 seconds**: This is a bug. Check scaffolder and scheduler logs:
 
 ```bash
 docker compose logs scaffolder --tail=30 --since=5m 2>/dev/null
@@ -666,7 +677,7 @@ Document the retry in the timeline. If it fails again, record and move on.
 ### Polling loop
 
 **Timeouts by phase** (only workers take a long time — everything else should be fast):
-- **Scaffold**: 5 min max (poll every 15s)
+- **Scaffold**: 90s max (poll every 15s) — if not done, it's a bug
 - **Architect**: 5 min max (poll every 10s)
 - **Engineering worker**: 30 min per task (poll every 30s) — this is the only long phase
 - **PR merge / auto-merge**: 2 min max (poll every 15s). If stuck, check and intervene
@@ -1187,6 +1198,7 @@ If the user asks to stop early:
 1. **Architect is its own container** — `docker compose logs architect`, NOT scheduler
 2. **Repo names may use hyphens OR underscores**: PO decides. Always check both variants (`$REPO_SLUG` and `$REPO_UNDER`) during cleanup and lookups
 3. **Local `gh` CLI has no access** — always use `GitHubAppClient` via docker compose exec
+3a. **Repo deletion**: `GitHubAppClient.delete_repo()` now falls back to org token automatically. Pre-flight cleanup uses direct `get_org_token()` + `httpx.delete()` as a belt-and-suspenders approach
 4. **Import path**: `from shared.clients.github import GitHubAppClient`
 5. **Worker containers**: use `docker ps --filter "label=com.codegen.type=worker"` (primary). WM API (`/wm-api/workers/`) may return 404 or non-list — always handle errors
 6. **Story must be `in_progress` for PR creation** — nudge with `POST .../start` if stuck. After PR, story goes to `pr_review`. Deploy triggers via webhook after PR merge

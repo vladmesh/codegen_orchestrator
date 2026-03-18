@@ -4,7 +4,6 @@
 - DevOps subgraph (Deployer) — deploys via GitHub Actions (deploy.yml)
 - ResourceAllocatorNode (resource allocation)
 
-PO capability tools are replaced by orchestrator-cli commands.
 """
 
 # GitHub tools

@@ -73,12 +73,11 @@ class TestHttpServerLifecycle:
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
                         with patch.object(wrapper, "_fix_venv_shebangs"):
-                            with patch.object(wrapper, "_inject_makefile_overrides"):
-                                with patch.object(wrapper, "_collect_and_archive"):
-                                    msg = MagicMock()
-                                    msg.message_id = "msg-1"
-                                    msg.data = {"prompt": "do stuff"}
-                                    await wrapper.process_message(msg)
+                            with patch.object(wrapper, "_collect_and_archive"):
+                                msg = MagicMock()
+                                msg.message_id = "msg-1"
+                                msg.data = {"prompt": "do stuff"}
+                                await wrapper.process_message(msg)
 
         redis_mock.publish.assert_any_call(
             "worker:test-w1:output",
@@ -101,12 +100,11 @@ class TestHttpServerLifecycle:
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
                         with patch.object(wrapper, "_fix_venv_shebangs"):
-                            with patch.object(wrapper, "_inject_makefile_overrides"):
-                                with patch.object(wrapper, "_collect_and_archive"):
-                                    msg = MagicMock()
-                                    msg.message_id = "msg-2"
-                                    msg.data = {"prompt": "do stuff"}
-                                    await wrapper.process_message(msg)
+                            with patch.object(wrapper, "_collect_and_archive"):
+                                msg = MagicMock()
+                                msg.message_id = "msg-2"
+                                msg.data = {"prompt": "do stuff"}
+                                await wrapper.process_message(msg)
 
         assert wrapper._http_server is None or wrapper._http_server._server is None
 
@@ -128,12 +126,11 @@ class TestWatchdog:
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
                         with patch.object(wrapper, "_fix_venv_shebangs"):
-                            with patch.object(wrapper, "_inject_makefile_overrides"):
-                                with patch.object(wrapper, "_collect_and_archive"):
-                                    msg = MagicMock()
-                                    msg.message_id = "msg-3"
-                                    msg.data = {"prompt": "do stuff"}
-                                    await wrapper.process_message(msg)
+                            with patch.object(wrapper, "_collect_and_archive"):
+                                msg = MagicMock()
+                                msg.message_id = "msg-3"
+                                msg.data = {"prompt": "do stuff"}
+                                await wrapper.process_message(msg)
 
         redis_mock.publish.assert_any_call(
             "worker:test-w1:output",
@@ -169,12 +166,11 @@ class TestWatchdog:
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
                         with patch.object(wrapper, "_fix_venv_shebangs"):
-                            with patch.object(wrapper, "_inject_makefile_overrides"):
-                                with patch.object(wrapper, "_collect_and_archive"):
-                                    msg = MagicMock()
-                                    msg.message_id = "msg-5"
-                                    msg.data = {"prompt": "do stuff"}
-                                    await wrapper.process_message(msg)
+                            with patch.object(wrapper, "_collect_and_archive"):
+                                msg = MagicMock()
+                                msg.message_id = "msg-5"
+                                msg.data = {"prompt": "do stuff"}
+                                await wrapper.process_message(msg)
 
         # HTTP result published by callback, no additional failed publish
         publish_calls = redis_mock.publish.call_args_list

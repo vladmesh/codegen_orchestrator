@@ -11,15 +11,15 @@ _(no task in progress)_
 
 ## Stats
 
-| backlog: 43 | todo: 1 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 115 |
+| backlog: 42 | todo: 1 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 116 |
 
 ## Recently Completed
 
+- Убрать result_parser из wrapper, добавить watchdog-логику — 2026-03-18
 - Удалить orchestrator-cli, перевести агента на curl к localhost:9090 — 2026-03-18
 - HTTP-сервер в worker-wrapper (localhost:9090) — complete/failed/blocker endpoints — 2026-03-18
 - Replace raw dict API clients with shared Pydantic DTOs — 2026-03-17
 - Refactor large files (>400 LOC) — extract helpers — 2026-03-17
-- #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
 
 ## Quick Links
 
