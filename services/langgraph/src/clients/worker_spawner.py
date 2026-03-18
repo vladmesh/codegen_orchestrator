@@ -27,6 +27,8 @@ from ..config.settings import get_settings
 
 logger = get_logger(__name__)
 CREATION_TIMEOUT = 60
+READY_POLL_TIMEOUT = 300  # Max wait for image build + container start
+READY_POLL_INTERVAL = 2  # Poll interval for worker status
 
 
 @dataclass
@@ -49,6 +51,42 @@ class SpawnResult:
 
 
 LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
+
+
+async def _wait_until_ready(
+    redis_client: redis.Redis,
+    worker_id: str,
+    request_id: str,
+    timeout: float = READY_POLL_TIMEOUT,
+) -> SpawnResult | None:
+    """Poll worker:status until RUNNING. Returns SpawnResult on failure, None on success."""
+    start = asyncio.get_running_loop().time()
+    while (asyncio.get_running_loop().time() - start) < timeout:
+        status = await redis_client.hget(f"worker:status:{worker_id}", "status")
+        status_str = status.decode() if isinstance(status, bytes) else status
+        if status_str == WorkerStatus.RUNNING:
+            return None
+        if status_str == WorkerStatus.FAILED:
+            error = await redis_client.get(f"worker:error:{worker_id}")
+            error_msg = error.decode() if isinstance(error, bytes) else str(error)
+            return SpawnResult(request_id, False, -1, f"Creation failed: {error_msg}")
+        if status_str is None:
+            return SpawnResult(request_id, False, -1, "Worker disappeared during creation")
+        await asyncio.sleep(READY_POLL_INTERVAL)
+    # Timeout — caller should cleanup
+    logger.warning("worker_ready_timeout", worker_id=worker_id, timeout_seconds=timeout)
+    delete_cmd = DeleteWorkerCommand(
+        request_id=f"cleanup-{request_id}",
+        worker_id=worker_id,
+        reason="timeout",
+    )
+    await redis_client.xadd(WORKER_COMMANDS, {"data": delete_cmd.model_dump_json()})
+    return SpawnResult(
+        request_id,
+        False,
+        -1,
+        f"Timeout after {timeout}s waiting for worker to become ready",
+    )
 
 
 async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool:
@@ -213,7 +251,7 @@ async def request_spawn(
         await redis_client.xadd(WORKER_COMMANDS, {"data": create_cmd.model_dump_json()})
         logger.info("worker_spawn_requested", request_id=request_id, repo=repo)
 
-        # 3. Wait for Creation Response
+        # 3. Wait for early ACK (worker_id) — should be near-instant
         create_resp = await _wait_for_response(
             redis_client, group_name, consumer_id, request_id, CREATION_TIMEOUT
         )
@@ -227,7 +265,14 @@ async def request_spawn(
             )
 
         worker_id = create_resp.get("worker_id")
-        logger.info("worker_created", request_id=request_id, worker_id=worker_id)
+        logger.info("worker_ack_received", request_id=request_id, worker_id=worker_id)
+
+        # 3b. Poll worker status until RUNNING (image build + container start)
+        ready_failure = await _wait_until_ready(redis_client, worker_id, request_id)
+        if ready_failure:
+            return ready_failure
+
+        logger.info("worker_ready", request_id=request_id, worker_id=worker_id)
 
         # 4. Set up output stream consumer group BEFORE sending task
         # Use id="0" to read any existing messages (in case worker is very fast)

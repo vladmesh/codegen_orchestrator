@@ -4,6 +4,7 @@ from enum import StrEnum
 
 
 class WorkerStatus(StrEnum):
+    BUILDING = "BUILDING"
     STARTING = "STARTING"
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"

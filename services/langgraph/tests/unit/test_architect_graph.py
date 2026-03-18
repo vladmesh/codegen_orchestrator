@@ -85,7 +85,7 @@ class TestArchitectSettings:
         ):
             from src.config.settings import Settings
 
-            s = Settings()
+            s = Settings(_env_file=None)
             assert s.architect_llm_model is None
             assert s.architect_llm_base_url is None
             assert s.architect_llm_api_key is None

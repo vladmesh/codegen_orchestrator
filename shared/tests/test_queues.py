@@ -4,6 +4,7 @@ from dataclasses import FrozenInstanceError
 
 from fakeredis import aioredis
 import pytest
+import pytest_asyncio
 
 from shared.queues import (
     ARCHITECT_GROUP,
@@ -78,7 +79,7 @@ class TestQueueTopology:
 
 
 class TestEnsureAllGroups:
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def fake_redis(self):
         r = aioredis.FakeRedis(decode_responses=True)
         yield r

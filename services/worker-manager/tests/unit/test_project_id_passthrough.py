@@ -46,6 +46,7 @@ def consumer():
     client = MagicMock()
     client.redis = MagicMock()
     client.redis.xadd = AsyncMock()
+    client.publish = AsyncMock()
     manager = MagicMock()
     manager.create_worker_with_capabilities = AsyncMock(return_value="test-worker")
     return WorkerCommandConsumer(client=client, manager=manager)

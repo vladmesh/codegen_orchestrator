@@ -7,13 +7,14 @@ import time
 
 from fakeredis.aioredis import FakeRedis
 import pytest
+import pytest_asyncio
 
 from shared.queues import PO_INPUT_QUEUE, PO_REMINDERS_KEY
 from shared.redis_client import RedisStreamClient
 from src.agents.po.reminders import _poll_once
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def raw_redis():
     """Provides a clean FakeRedis client for each test."""
     client = FakeRedis(decode_responses=True)
@@ -21,7 +22,7 @@ async def raw_redis():
     await client.aclose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def redis(raw_redis):
     """RedisStreamClient backed by FakeRedis."""
     client = RedisStreamClient(redis_url="redis://fake:6379")

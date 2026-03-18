@@ -93,19 +93,31 @@ class WorkerCommandConsumer:
             return self._create_error_response(command, str(e))
 
     async def _handle_create(self, cmd: CreateWorkerCommand) -> CreateWorkerResponse:
-        try:
-            from .config import settings
+        """Handle create command with early ACK.
 
-            # Convert capabilities enum to string list
+        Sends an immediate response with worker_id so the spawner can start
+        polling worker status, then performs the heavy work (image build,
+        container creation) which may take minutes on cache miss.
+        """
+        from .config import settings
+
+        worker_id = cmd.config.name
+
+        # Validate early (project lock, retry limit) — these are fast checks
+        # done inside create_worker_with_capabilities before the heavy work.
+        # Send early ACK with worker_id so spawner can poll status.
+        early_resp = CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
+        await self.publish_response(cmd, early_resp)
+
+        try:
             caps = [c.value for c in cmd.config.capabilities]
 
-            # Merge context into env vars (e.g., user_telegram_id → ORCHESTRATOR_USER_ID)
             env_vars = dict(cmd.config.env_vars)
             if user_id := cmd.context.get("user_telegram_id"):
                 env_vars["ORCHESTRATOR_USER_ID"] = user_id
 
-            worker_id = await self.manager.create_worker_with_capabilities(
-                worker_id=cmd.config.name,
+            await self.manager.create_worker_with_capabilities(
+                worker_id=worker_id,
                 capabilities=caps,
                 base_image=settings.WORKER_BASE_IMAGE,
                 agent_type=cmd.config.agent_type.value,
@@ -121,9 +133,13 @@ class WorkerCommandConsumer:
                 scaffold_config=cmd.config.scaffold_config,
                 branch=cmd.config.branch,
             )
-            return CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
+            # No return — early ACK already sent, status is RUNNING in Redis
+            return None
         except Exception as e:
-            return CreateWorkerResponse(request_id=cmd.request_id, success=False, error=str(e))
+            logger.error("worker_creation_failed_after_ack", worker_id=worker_id, error=str(e))
+            # Worker status is already FAILED in Redis (set by manager cleanup)
+            # No second response needed — spawner polls status and will see FAILED
+            return None
 
     async def _handle_delete(self, cmd: DeleteWorkerCommand) -> DeleteWorkerResponse:
         try:

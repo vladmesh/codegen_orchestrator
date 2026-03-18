@@ -307,9 +307,14 @@ class TestSpawnResultWorkerId:
     )
     @patch("src.clients.worker_spawner.get_settings", return_value=_mock_settings())
     @patch("src.prompts.load_developer_instructions", return_value="test instructions")
+    @patch(
+        "src.clients.worker_spawner._wait_until_ready",
+        new_callable=AsyncMock,
+        return_value=None,
+    )
     @patch("redis.asyncio.Redis.from_url")
     async def test_request_spawn_returns_worker_id(
-        self, mock_redis_from_url, mock_instructions, mock_settings, mock_uuid
+        self, mock_redis_from_url, mock_wait_ready, mock_instructions, mock_settings, mock_uuid
     ):
         """request_spawn() should include worker_id in SpawnResult on success."""
         fixed_request_id = "aabbccdd-0000-0000-0000-000000000000"
