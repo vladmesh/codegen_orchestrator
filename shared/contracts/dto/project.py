@@ -1,38 +1,22 @@
 from enum import StrEnum
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class ProjectStatus(StrEnum):
     """Project lifecycle status.
 
-    Happy path: DRAFT → SCAFFOLDING → SCAFFOLDED → DEVELOPING → TESTING → DEPLOYING → ACTIVE
+    Lifecycle only — observable state, not process.
+    Activity is derived from child entities (Story/Run).
+    Runtime state is tracked by Application.status.
     """
 
-    # Origin
     DRAFT = "draft"
-    DISCOVERED = "discovered"
-
-    # Scaffolding
-    SCAFFOLDING = "scaffolding"
-    SCAFFOLDED = "scaffolded"
-    SCAFFOLD_FAILED = "scaffold_failed"
-
-    # Development
-    DEVELOPING = "developing"
-    TESTING = "testing"
-
-    # Deployment
-    DEPLOYING = "deploying"
     ACTIVE = "active"
-
-    # Maintenance
-    MAINTENANCE = "maintenance"
-
-    # Issues
-    FAILED = "failed"
-    MISSING = "missing"
+    PAUSED = "paused"
     ARCHIVED = "archived"
 
 
@@ -68,15 +52,14 @@ class ProjectUpdate(BaseModel):
     project_spec: dict | None = None
 
 
-class ProjectDTO(BaseModel):
+class ProjectDTO(TimestampedDTO):
     """Project response."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     name: str
     description: str | None = None
     status: ProjectStatus
     modules: list[ServiceModule] = []
+    config: dict = {}
     owner_id: int
     project_spec: dict | None = None

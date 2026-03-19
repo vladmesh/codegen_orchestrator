@@ -9,6 +9,7 @@ from shared.contracts.base import QueueMeta
 class AgentType(StrEnum):
     CLAUDE = "claude"  # Claude Code
     FACTORY = "factory"  # Factory.ai Droid
+    NOOP = "noop"  # No-op runner for E2E testing (empty commit + push)
 
 
 class WorkerCapability(StrEnum):
@@ -53,7 +54,9 @@ class WorkerConfig(BaseModel):
     host_claude_dir: str | None = None
     api_key: str | None = None
     project_id: str | None = None  # Project ID for workspace persistence
+    repo_id: str | None = None  # Repository ID — mount pre-scaffolded workspace
     scaffold_config: ScaffoldConfig | None = None  # Scaffold phase config (copier + make setup)
+    branch: str | None = None  # Story branch to checkout (e.g. "story/{story_id}")
 
 
 class CreateWorkerCommand(QueueMeta):

@@ -56,3 +56,7 @@ class SessionManager:
         """Update the session ID for the worker."""
         await self.redis.set(self._key, session_id)
         await self.redis.expire(self._key, self.ttl)
+
+    async def clear_session(self) -> None:
+        """Delete existing session, forcing a fresh start on next execution."""
+        await self.redis.delete(self._key)

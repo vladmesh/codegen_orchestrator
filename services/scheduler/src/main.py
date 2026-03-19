@@ -24,10 +24,19 @@ from .tasks.provisioner_result_listener import process_provisioner_result
 from .tasks.provisioner_trigger import retry_pending_servers
 from .tasks.rag_summarizer import rag_summarizer_worker
 from .tasks.server_sync import sync_servers_worker
+from .tasks.task_dispatcher import task_dispatcher_loop
 
 logger = structlog.get_logger()
 
 CONSUMER_NAME = f"scheduler-{os.getpid()}"
+
+
+def _validate_configs():
+    """Validate system configs from DB before starting workers."""
+    from .startup import init_config
+
+    init_config()
+    logger.info("system_configs_validated")
 
 
 async def provisioner_results_worker():
@@ -76,6 +85,9 @@ async def main():
     setup_logging(service_name="scheduler")
     logger.info("scheduler_started")
 
+    # Validate all required system configs before starting workers
+    _validate_configs()
+
     # Retry provisioning for any servers stuck in pending_setup (race condition fix)
     # Wait a bit for LangGraph to be ready and subscribed
     await asyncio.sleep(5)
@@ -89,6 +101,7 @@ async def main():
             "health_checker",
             "rag_summarizer",
             "provisioner_results",
+            "task_dispatcher",
         ],
     )
 
@@ -99,6 +112,7 @@ async def main():
         asyncio.create_task(health_check_worker(), name="health_checker"),
         asyncio.create_task(rag_summarizer_worker(), name="rag_summarizer"),
         asyncio.create_task(provisioner_results_worker(), name="provisioner_results"),
+        asyncio.create_task(task_dispatcher_loop(), name="task_dispatcher"),
     ]
 
     try:

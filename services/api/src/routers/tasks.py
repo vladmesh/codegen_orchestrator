@@ -2,7 +2,6 @@
 
 from datetime import UTC, datetime
 import re
-import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -10,11 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
-from shared.contracts.dto.task import (
-    VALID_TRANSITIONS,
-    TaskEventType,
-    TaskStatus,
-)
+from shared.contracts.dto.task import TaskStatus
 from shared.models import Task, TaskEvent
 
 from ..database import get_async_session
@@ -23,118 +18,92 @@ from ..schemas.task import (
     TaskEventCreate,
     TaskEventRead,
     TaskRead,
-    TaskTransition,
     TaskUpdate,
+)
+from ._task_actions import (
+    _COMPLETE_PATH,
+    action_router,
+    complete_task,
+    fail_task,
+    reopen_task,
+    resume_task,
+    start_task,
+    transition_task,
+)
+from ._task_helpers import (
+    commit_or_raise_fk,
+    create_status_event,
+    generate_id,
+    get_last_event_summary,
+    get_task,
+    to_read,
+    validate_transition,
 )
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+# Include action endpoints (start, complete, fail, reopen, resume, transition)
+router.include_router(action_router)
 
-def _generate_id() -> str:
-    return f"task-{secrets.token_hex(4)}"
+# Backward-compatible aliases (underscore-prefixed names used internally)
+_commit_or_raise_fk = commit_or_raise_fk
+_generate_id = generate_id
+_to_read = to_read
+_get_task = get_task
+_get_last_event_summary = get_last_event_summary
+_create_status_event = create_status_event
+_validate_transition = validate_transition
 
-
-def _to_read(task: Task, last_event: str | None = None) -> TaskRead:
-    elapsed = None
-    if task.created_at:
-        elapsed = (datetime.now(UTC) - task.created_at.replace(tzinfo=UTC)).total_seconds() / 60
-    return TaskRead(
-        id=task.id,
-        project_id=task.project_id,
-        type=task.type,
-        title=task.title,
-        description=task.description,
-        plan=task.plan,
-        status=task.status,
-        priority=task.priority,
-        acceptance_criteria=task.acceptance_criteria,
-        current_iteration=task.current_iteration,
-        max_iterations=task.max_iterations,
-        need_e2e=getattr(task, "need_e2e", False),
-        created_by=task.created_by,
-        source_brainstorm_id=getattr(task, "source_brainstorm_id", None),
-        milestone_id=getattr(task, "milestone_id", None),
-        repository_id=getattr(task, "repository_id", None),
-        story_id=getattr(task, "story_id", None),
-        blocked_by_task_id=getattr(task, "blocked_by_task_id", None),
-        created_at=task.created_at,
-        updated_at=task.updated_at,
-        last_event=last_event,
-        elapsed_minutes=round(elapsed, 1) if elapsed is not None else None,
-    )
-
-
-async def _get_task(task_id: str, db: AsyncSession) -> Task:
-    query = select(Task).where(Task.id == task_id)
-    result = await db.execute(query)
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Task {task_id} not found",
-        )
-    return task
+__all__ = [
+    "_COMPLETE_PATH",
+    "_commit_or_raise_fk",
+    "_create_status_event",
+    "_generate_id",
+    "_get_last_event_summary",
+    "_get_task",
+    "_to_read",
+    "_validate_transition",
+    "commit_or_raise_fk",
+    "complete_task",
+    "create_status_event",
+    "fail_task",
+    "generate_id",
+    "get_last_event_summary",
+    "get_task",
+    "reopen_task",
+    "resume_task",
+    "router",
+    "start_task",
+    "to_read",
+    "transition_task",
+    "validate_transition",
+]
 
 
-async def _get_last_event_summary(task_id: str, db: AsyncSession) -> str | None:
-    query = (
-        select(TaskEvent)
-        .where(TaskEvent.task_id == task_id)
-        .order_by(TaskEvent.created_at.desc())
-        .limit(1)
-    )
-    result = await db.execute(query)
-    event = result.scalar_one_or_none()
-    if not event:
-        return None
-    if event.event_type == TaskEventType.STATUS_CHANGE:
-        return f"{event.from_status} → {event.to_status}"
-    return f"{event.event_type}: {event.details}" if event.details else event.event_type
-
-
-async def _create_status_event(
-    task: Task,
-    from_status: str,
-    to_status: str,
-    actor: str,
-    details: dict,
-    db: AsyncSession,
-) -> TaskEvent:
-    event = TaskEvent(
-        task_id=task.id,
-        event_type=TaskEventType.STATUS_CHANGE,
-        from_status=from_status,
-        to_status=to_status,
-        actor=actor,
-        details=details,
-    )
-    db.add(event)
-    return event
-
-
-def _validate_transition(from_status: str, to_status: str) -> None:
-    try:
-        from_s = TaskStatus(from_status)
-    except ValueError:
-        raise HTTPException(  # noqa: B904
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Invalid status: {from_status}",
-        )
-    try:
-        to_s = TaskStatus(to_status)
-    except ValueError:
-        raise HTTPException(  # noqa: B904
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Invalid status: {to_status}",
-        )
-    if to_s not in VALID_TRANSITIONS[from_s]:
-        allowed = [s.value for s in VALID_TRANSITIONS[from_s]]
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Cannot transition from {from_status} to {to_status}. " f"Allowed: {allowed}",
-        )
+class _TaskFilters:
+    def __init__(
+        self,
+        project_id: uuid.UUID | None = None,
+        status: str | None = Query(None),
+        type: str | None = Query(None),
+        source_brainstorm_id: str | None = Query(None),
+        repository_id: str | None = Query(None),
+        story_id: str | None = Query(None),
+        since: datetime | None = Query(None),
+        limit: int | None = Query(None, ge=1),
+        sort: str | None = Query(None),
+    ):
+        self.project_id = project_id
+        self.status = status
+        self.type = type
+        self.source_brainstorm_id = source_brainstorm_id
+        self.repository_id = repository_id
+        self.story_id = story_id
+        self.since = since
+        self.limit = limit
+        self.sort = sort
 
 
 # --- CRUD ---
@@ -147,12 +116,12 @@ async def create_task(
 ) -> TaskRead:
     now = datetime.now(UTC)
     task = Task(
-        id=_generate_id(),
+        id=generate_id(),
         project_id=body.project_id,
         type=body.type.value,
         title=body.title,
         description=body.description,
-        status=TaskStatus.BACKLOG.value,
+        status=body.status.value,
         priority=body.priority,
         acceptance_criteria=body.acceptance_criteria,
         current_iteration=0,
@@ -160,18 +129,18 @@ async def create_task(
         need_e2e=body.need_e2e,
         created_by=body.created_by,
         source_brainstorm_id=body.source_brainstorm_id,
-        milestone_id=body.milestone_id,
+        repository_id=body.repository_id,
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         created_at=now,
         updated_at=now,
     )
     db.add(task)
-    await db.commit()
+    await commit_or_raise_fk(db)
     await db.refresh(task)
 
     logger.info("task_created", task_id=task.id, title=task.title, type=task.type)
-    return _to_read(task)
+    return to_read(task)
 
 
 @router.post("/push", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
@@ -187,12 +156,12 @@ async def push_task(
 
     now = datetime.now(UTC)
     task = Task(
-        id=_generate_id(),
+        id=generate_id(),
         project_id=body.project_id,
         type=body.type.value,
         title=body.title,
         description=body.description,
-        status=TaskStatus.BACKLOG.value,
+        status=body.status.value,
         priority=auto_priority,
         acceptance_criteria=body.acceptance_criteria,
         current_iteration=0,
@@ -200,44 +169,18 @@ async def push_task(
         need_e2e=body.need_e2e,
         created_by=body.created_by,
         source_brainstorm_id=body.source_brainstorm_id,
-        milestone_id=body.milestone_id,
+        repository_id=body.repository_id,
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
         created_at=now,
         updated_at=now,
     )
     db.add(task)
-    await db.commit()
+    await commit_or_raise_fk(db)
     await db.refresh(task)
 
     logger.info("task_pushed", task_id=task.id, title=task.title, priority=auto_priority)
-    return _to_read(task)
-
-
-class _TaskFilters:
-    def __init__(
-        self,
-        project_id: uuid.UUID | None = None,
-        status: str | None = Query(None),
-        type: str | None = Query(None),
-        milestone_id: str | None = Query(None),
-        source_brainstorm_id: str | None = Query(None),
-        repository_id: str | None = Query(None),
-        story_id: str | None = Query(None),
-        since: datetime | None = Query(None),
-        limit: int | None = Query(None, ge=1),
-        sort: str | None = Query(None),
-    ):
-        self.project_id = project_id
-        self.status = status
-        self.type = type
-        self.milestone_id = milestone_id
-        self.source_brainstorm_id = source_brainstorm_id
-        self.repository_id = repository_id
-        self.story_id = story_id
-        self.since = since
-        self.limit = limit
-        self.sort = sort
+    return to_read(task)
 
 
 @router.get("/", response_model=list[TaskRead])
@@ -253,8 +196,6 @@ async def list_tasks(
         query = query.where(Task.status == filters.status)
     if filters.type:
         query = query.where(Task.type == filters.type)
-    if filters.milestone_id:
-        query = query.where(Task.milestone_id == filters.milestone_id)
     if filters.source_brainstorm_id:
         query = query.where(Task.source_brainstorm_id == filters.source_brainstorm_id)
     if filters.repository_id:
@@ -277,7 +218,7 @@ async def list_tasks(
 
     result = await db.execute(query)
     items = result.scalars().all()
-    return [_to_read(task) for task in items]
+    return [to_read(task) for task in items]
 
 
 @router.get("/stats")
@@ -334,18 +275,18 @@ async def get_task_by_tag(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No task with tag #{tag}",
         )
-    last_event = await _get_last_event_summary(task.id, db)
-    return _to_read(task, last_event=last_event)
+    last_event = await get_last_event_summary(task.id, db)
+    return to_read(task, last_event=last_event)
 
 
 @router.get("/{task_id}", response_model=TaskRead)
-async def get_task(
+async def get_task_endpoint(
     task_id: str,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
-    task = await _get_task(task_id, db)
-    last_event = await _get_last_event_summary(task_id, db)
-    return _to_read(task, last_event=last_event)
+    task = await get_task(task_id, db)
+    last_event = await get_last_event_summary(task_id, db)
+    return to_read(task, last_event=last_event)
 
 
 @router.patch("/{task_id}", response_model=TaskRead)
@@ -354,17 +295,17 @@ async def update_task(
     body: TaskUpdate,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
-    task = await _get_task(task_id, db)
+    task = await get_task(task_id, db)
 
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(task, field, value)
 
-    await db.commit()
+    await commit_or_raise_fk(db)
     await db.refresh(task)
 
     logger.info("task_updated", task_id=task.id, fields=list(update_data.keys()))
-    return _to_read(task)
+    return to_read(task)
 
 
 @router.delete("/{task_id}", response_model=TaskRead)
@@ -372,155 +313,20 @@ async def cancel_task(
     task_id: str,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskRead:
-    task = await _get_task(task_id, db)
+    task = await get_task(task_id, db)
     if task.status == TaskStatus.CANCELLED:
-        return _to_read(task)
+        return to_read(task)
 
-    _validate_transition(task.status, TaskStatus.CANCELLED)
+    validate_transition(task.status, TaskStatus.CANCELLED)
 
     old_status = task.status
     task.status = TaskStatus.CANCELLED
-    await _create_status_event(task, old_status, TaskStatus.CANCELLED, "system", {}, db)
+    await create_status_event(task, old_status, TaskStatus.CANCELLED, "system", {}, db)
     await db.commit()
     await db.refresh(task)
 
     logger.info("task_cancelled", task_id=task.id)
-    return _to_read(task)
-
-
-# --- Action endpoints (state machine transitions) ---
-
-
-@router.post("/{task_id}/start", response_model=TaskRead)
-async def start_task(
-    task_id: str,
-    body: TaskTransition | None = None,
-    db: AsyncSession = Depends(get_async_session),
-) -> TaskRead:
-    body = body or TaskTransition()
-    task = await _get_task(task_id, db)
-
-    # Allow start from backlog (auto-promote to todo first) or from todo
-    if task.status == TaskStatus.BACKLOG:
-        await _create_status_event(task, TaskStatus.BACKLOG, TaskStatus.TODO, body.actor, {}, db)
-        task.status = TaskStatus.TODO
-
-    _validate_transition(task.status, TaskStatus.IN_DEV)
-
-    old_status = task.status
-    task.status = TaskStatus.IN_DEV
-    await _create_status_event(task, old_status, TaskStatus.IN_DEV, body.actor, body.details, db)
-    await db.commit()
-    await db.refresh(task)
-
-    logger.info("task_started", task_id=task.id)
-    return _to_read(task)
-
-
-# Path from working statuses to done (auto-promotion chain)
-_COMPLETE_PATH: dict[str, list[str]] = {
-    TaskStatus.IN_DEV: [TaskStatus.IN_CI, TaskStatus.TESTING, TaskStatus.DONE],
-    TaskStatus.IN_CI: [TaskStatus.TESTING, TaskStatus.DONE],
-    TaskStatus.TESTING: [TaskStatus.DONE],
-}
-
-
-@router.post("/{task_id}/complete", response_model=TaskRead)
-async def complete_task(
-    task_id: str,
-    body: TaskTransition | None = None,
-    db: AsyncSession = Depends(get_async_session),
-) -> TaskRead:
-    body = body or TaskTransition()
-    task = await _get_task(task_id, db)
-
-    path = _COMPLETE_PATH.get(task.status)
-    if path is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Cannot complete task from status '{task.status}'",
-        )
-
-    for next_status in path:
-        old_status = task.status
-        task.status = next_status
-        await _create_status_event(task, old_status, next_status, body.actor, body.details, db)
-
-    await db.commit()
-    await db.refresh(task)
-
-    logger.info("task_completed", task_id=task.id)
-    return _to_read(task)
-
-
-@router.post("/{task_id}/fail", response_model=TaskRead)
-async def fail_task(
-    task_id: str,
-    body: TaskTransition | None = None,
-    db: AsyncSession = Depends(get_async_session),
-) -> TaskRead:
-    body = body or TaskTransition()
-    task = await _get_task(task_id, db)
-
-    _validate_transition(task.status, TaskStatus.FAILED)
-
-    old_status = task.status
-    task.status = TaskStatus.FAILED
-    details = body.details.copy()
-    if body.reason:
-        details["reason"] = body.reason
-    await _create_status_event(task, old_status, TaskStatus.FAILED, body.actor, details, db)
-    await db.commit()
-    await db.refresh(task)
-
-    logger.info("task_failed", task_id=task.id, reason=body.reason)
-    return _to_read(task)
-
-
-@router.post("/{task_id}/reopen", response_model=TaskRead)
-async def reopen_task(
-    task_id: str,
-    body: TaskTransition | None = None,
-    db: AsyncSession = Depends(get_async_session),
-) -> TaskRead:
-    body = body or TaskTransition()
-    task = await _get_task(task_id, db)
-
-    _validate_transition(task.status, TaskStatus.BACKLOG)
-
-    old_status = task.status
-    task.status = TaskStatus.BACKLOG
-    details = body.details.copy()
-    if body.reason:
-        details["reason"] = body.reason
-    await _create_status_event(task, old_status, TaskStatus.BACKLOG, body.actor, details, db)
-    await db.commit()
-    await db.refresh(task)
-
-    logger.info("task_reopened", task_id=task.id, reason=body.reason)
-    return _to_read(task)
-
-
-@router.post("/{task_id}/transition", response_model=TaskRead)
-async def transition_task(
-    task_id: str,
-    to_status: str = Query(...),
-    body: TaskTransition | None = None,
-    db: AsyncSession = Depends(get_async_session),
-) -> TaskRead:
-    body = body or TaskTransition()
-    task = await _get_task(task_id, db)
-
-    _validate_transition(task.status, to_status)
-
-    old_status = task.status
-    task.status = to_status
-    await _create_status_event(task, old_status, to_status, body.actor, body.details, db)
-    await db.commit()
-    await db.refresh(task)
-
-    logger.info("task_transitioned", task_id=task.id, from_s=old_status, to_s=to_status)
-    return _to_read(task)
+    return to_read(task)
 
 
 # --- Events ---
@@ -532,7 +338,7 @@ async def list_task_events(
     event_type: str | None = None,
     db: AsyncSession = Depends(get_async_session),
 ) -> list[TaskEventRead]:
-    await _get_task(task_id, db)
+    await get_task(task_id, db)
 
     query = (
         select(TaskEvent).where(TaskEvent.task_id == task_id).order_by(TaskEvent.created_at.asc())
@@ -554,7 +360,7 @@ async def create_task_event(
     body: TaskEventCreate,
     db: AsyncSession = Depends(get_async_session),
 ) -> TaskEvent:
-    await _get_task(task_id, db)
+    await get_task(task_id, db)
 
     now = datetime.now(UTC)
     event = TaskEvent(

@@ -1,7 +1,7 @@
 services:
   # The service under test
   langgraph:
-    build: 
+    build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
     environment:
@@ -39,9 +39,10 @@ services:
     command: ["pytest", "tests/service/", "-v"]
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
     depends_on:
-      langgraph:
-        condition: service_started
+      redis:
+        condition: service_healthy
     volumes:
       - ../../../services/langgraph/src:/app/src
       - ../../../services/langgraph/tests:/app/tests

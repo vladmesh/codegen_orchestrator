@@ -1,6 +1,7 @@
 import asyncio
+
 import structlog
-from pydantic import ValidationError, TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from shared.contracts.queues.worker import (
     WorkerCommand,
@@ -12,7 +13,8 @@ from shared.contracts.queues.worker import (
     StatusWorkerResponse,
     WorkerResponse,
 )
-from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP
+from shared.log_config.correlation import bind_message_context, unbind_message_context
+from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
 from shared.redis_client import RedisStreamClient
 
 from .manager import WorkerManager
@@ -43,6 +45,7 @@ class WorkerCommandConsumer:
             if msg is None:
                 continue
             try:
+                bind_message_context(msg.data)
                 await self.process_message(msg.message_id, msg.data)
                 await self.client.ack(self.stream_name, self.group_name, msg.message_id)
             except asyncio.CancelledError:
@@ -54,6 +57,8 @@ class WorkerCommandConsumer:
                     message_id=msg.message_id,
                     error=str(e),
                 )
+            finally:
+                unbind_message_context()
 
     async def process_message(self, message_id: str, data: dict):
         """Process a single message."""
@@ -88,19 +93,31 @@ class WorkerCommandConsumer:
             return self._create_error_response(command, str(e))
 
     async def _handle_create(self, cmd: CreateWorkerCommand) -> CreateWorkerResponse:
-        try:
-            from .config import settings
+        """Handle create command with early ACK.
 
-            # Convert capabilities enum to string list
+        Sends an immediate response with worker_id so the spawner can start
+        polling worker status, then performs the heavy work (image build,
+        container creation) which may take minutes on cache miss.
+        """
+        from .config import settings
+
+        worker_id = cmd.config.name
+
+        # Validate early (project lock, retry limit) — these are fast checks
+        # done inside create_worker_with_capabilities before the heavy work.
+        # Send early ACK with worker_id so spawner can poll status.
+        early_resp = CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
+        await self.publish_response(cmd, early_resp)
+
+        try:
             caps = [c.value for c in cmd.config.capabilities]
 
-            # Merge context into env vars (e.g., user_telegram_id → ORCHESTRATOR_USER_ID)
             env_vars = dict(cmd.config.env_vars)
             if user_id := cmd.context.get("user_telegram_id"):
                 env_vars["ORCHESTRATOR_USER_ID"] = user_id
 
-            worker_id = await self.manager.create_worker_with_capabilities(
-                worker_id=cmd.config.name,
+            await self.manager.create_worker_with_capabilities(
+                worker_id=worker_id,
                 capabilities=caps,
                 base_image=settings.WORKER_BASE_IMAGE,
                 agent_type=cmd.config.agent_type.value,
@@ -112,11 +129,17 @@ class WorkerCommandConsumer:
                 api_key=cmd.config.api_key,
                 worker_type=cmd.config.worker_type,
                 project_id=cmd.config.project_id,
+                repo_id=cmd.config.repo_id,
                 scaffold_config=cmd.config.scaffold_config,
+                branch=cmd.config.branch,
             )
-            return CreateWorkerResponse(request_id=cmd.request_id, success=True, worker_id=worker_id)
+            # No return — early ACK already sent, status is RUNNING in Redis
+            return None
         except Exception as e:
-            return CreateWorkerResponse(request_id=cmd.request_id, success=False, error=str(e))
+            logger.error("worker_creation_failed_after_ack", worker_id=worker_id, error=str(e))
+            # Worker status is already FAILED in Redis (set by manager cleanup)
+            # No second response needed — spawner polls status and will see FAILED
+            return None
 
     async def _handle_delete(self, cmd: DeleteWorkerCommand) -> DeleteWorkerResponse:
         try:
@@ -148,6 +171,4 @@ class WorkerCommandConsumer:
 
     async def publish_response(self, cmd: WorkerCommand, response: WorkerResponse):
         """Publish response to developer response queue."""
-        queue = "worker:responses:developer"
-
-        await self.client.redis.xadd(queue, {"data": response.model_dump_json()})
+        await self.client.publish(WORKER_RESPONSES, response.model_dump(mode="json"))

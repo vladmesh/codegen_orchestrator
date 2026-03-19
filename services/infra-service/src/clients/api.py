@@ -10,6 +10,9 @@ import os
 import httpx
 import structlog
 
+from shared.contracts.dto.server import ServerDTO
+from shared.log_config.correlation import get_correlation_id
+
 logger = structlog.get_logger(__name__)
 
 
@@ -17,7 +20,9 @@ class InfrastructureAPIClient:
     """HTTP client for infrastructure-worker's required API endpoints."""
 
     def __init__(self) -> None:
-        api_base_url = os.getenv("API_BASE_URL", "http://api:8000")
+        api_base_url = os.getenv("API_BASE_URL")
+        if not api_base_url:
+            raise RuntimeError("API_BASE_URL is not set")
         self.base_url = api_base_url.rstrip("/")
         if self.base_url.endswith("/api"):
             raise RuntimeError("API_BASE_URL must not include /api")
@@ -40,6 +45,11 @@ class InfrastructureAPIClient:
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         client = await self._get_client()
+        correlation_id = get_correlation_id()
+        if correlation_id:
+            headers = kwargs.pop("headers", None) or {}
+            headers.setdefault("X-Correlation-ID", correlation_id)
+            kwargs["headers"] = headers
         resp = await client.request(method, self._api_path(path), **kwargs)
         resp.raise_for_status()
         return resp
@@ -50,10 +60,10 @@ class InfrastructureAPIClient:
             await self._client.aclose()
             self._client = None
 
-    async def get_server(self, server_handle: str) -> dict:
+    async def get_server(self, server_handle: str) -> ServerDTO:
         """Get server info by handle."""
         resp = await self._request("GET", f"servers/{server_handle}")
-        return resp.json()
+        return ServerDTO.model_validate(resp.json())
 
     async def update_server(self, server_handle: str, payload: dict) -> dict:
         """Update server fields."""

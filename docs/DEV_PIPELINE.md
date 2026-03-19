@@ -13,8 +13,8 @@
 - Если автоматика не справляется (Spike Task), подключается **человек (Админ)** для ручного обсуждения архитектуры с LLM (в чате). Результат вносится обратно в БД для разморозки пайплайна.
 - Скилл `/triage` забирает Action Items и создаёт задачи в БД (таблица `tasks`).
 
-### 2. Приоритизация и Планирование (Milestones & Tasks)
-- Глобальные вехи хранятся в БД таблице `milestones`. На их основе автоматически генерируется `docs/ROADMAP.md`.
+### 2. Приоритизация и Планирование (Stories & Tasks)
+- Пользовательские Stories (product/technical) хранятся в БД таблице `stories`. На их основе автоматически генерируется `docs/ROADMAP.md`.
 - Конкретные задачи (Tasks) имеют статусы: `backlog`, `todo`, `in_dev`, `in_ci`, `testing`, `done`, `failed`, `cancelled`.
 - Разработчик или агент берёт задачу через `/implement` (auto-pick) или `POST /api/tasks/{id}/start`. Статус переходит в `in_dev`.
 - Быстрое добавление задачи наверх бэклога: `make task TITLE="..."` или `POST /api/tasks/push` (auto-priority = min - 1).
@@ -23,10 +23,9 @@
 ### 3. Исполнение и Итерации
 - Через скилл `/implement` агент выполняет написанный план по TDD-циклу.
 - События (TaskEvent) пишутся в таблицу `task_events`:
-  - `step_start` / `step_done` — прогресс по шагам плана
-  - `ci_fix` — что сломалось в CI и как починили
-  - `plan_deviation` — отклонения от плана с причиной
-  - `implementation_summary` — итоговый отчёт
+  - `iteration_start` / `iteration_end` — прогресс по итерациям
+  - `comment` — обсуждение задачи (Jira-style), ci_fix, plan_deviation и т.д.
+  - `note` — внутренние заметки (implementation_summary и т.д.)
 - При возобновлении работы (resume/reopen) `/implement` и `/plan` читают историю events для контекста.
 - Sibling tasks (задачи из одного brainstorm) доступны через `source_brainstorm_id` фильтр.
 

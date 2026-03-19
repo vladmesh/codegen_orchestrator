@@ -45,11 +45,19 @@ cat error.log | claude -p "Fix this error"
 Developer node в Engineering Subgraph использует coding agents через `worker-manager` сервис (PO не использует контейнеры — это LangGraph ReactAgent):
 
 1. Worker-manager создаёт контейнер из worker-base образа
-2. Контейнер клонирует репозиторий
-3. Инжектит статические инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` → agent-specific file (`CLAUDE.md` / `AGENTS.md`)
-4. Инжектит динамический `TASK.md` с project-specific задачей
-5. Запускает coding agent (Droid или Claude Code)
-6. Агент коммитит и пушит изменения
+2. Монтирует pre-scaffolded workspace (`/data/workspaces/{repo_id}/`) — код уже на месте
+3. Worker-manager creates/checks out story feature branch (`story/{story_id}`)
+4. Инжектит статические инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` → agent-specific file (`CLAUDE.md` / `AGENTS.md`)
+5. Инжектит динамический `TASK.md` в `/workspace/TASK.md` с project-specific задачей. Previous tasks archived in `.story/old_tasks/`
+6. Запускает coding agent (Droid или Claude Code) с одной строкой: `claude -p "Read TASK.md"`
+7. Агент коммитит и пушит на feature branch. Worker-wrapper pulls from current branch (not hardcoded `main`)
+8. Агент сообщает результат через HTTP: `curl -X POST localhost:9090/result -d '{"success":true,"commit":"<sha>","summary":"..."}'`
+9. При невозможности выполнения: `curl -X POST localhost:9090/result -d '{"success":false,"reason":"..."}'`
+
+**Worker-wrapper HTTP сервер** (`localhost:9090`):
+- `POST /result` — единый endpoint для результатов (success/failure). Auto-resume: если агент завершается без вызова `/result`, wrapper автоматически перезапускает его один раз.
+- `POST /infra/compose` — compose proxy для управления sidecar-инфраструктурой (db, redis). Проксируется в worker-manager.
+- Makefile override targets (`make migrate`, `make dev-start`) внутри воркера используют `curl localhost:9090/infra/compose`.
 
 ---
 

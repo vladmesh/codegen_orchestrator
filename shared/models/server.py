@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String
+from sqlalchemy import JSON, BigInteger, DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.server import ServerStatus  # Single source of truth
@@ -44,6 +44,17 @@ class Server(Base):
     provisioning_attempts: Mapped[int] = mapped_column(Integer, default=0)
     provisioning_started_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_incident: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # Health metrics (from node_exporter + cadvisor, populated by health_checker)
+    cpu_usage_pct: Mapped[float | None] = mapped_column(Float)
+    load_avg_1m: Mapped[float | None] = mapped_column(Float)
+    load_avg_5m: Mapped[float | None] = mapped_column(Float)
+    load_avg_15m: Mapped[float | None] = mapped_column(Float)
+    network_rx_errors: Mapped[int | None] = mapped_column(BigInteger)
+    network_tx_errors: Mapped[int | None] = mapped_column(BigInteger)
+    container_count_running: Mapped[int | None] = mapped_column(Integer)
+    container_count_total: Mapped[int | None] = mapped_column(Integer)
+    uptime_seconds: Mapped[float | None] = mapped_column(Float)
 
     labels: Mapped[dict] = mapped_column(JSON, default=dict)
 

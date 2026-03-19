@@ -13,12 +13,18 @@ from shared.contracts.dto.story import (
     VALID_TRANSITIONS,
     StoryStatus,
 )
+from shared.contracts.queues.architect import ArchitectMessage
 from shared.models.story import Story
+from shared.queues import ARCHITECT_QUEUE
+from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
+from ..dependencies import get_redis_client
+from ..schemas.actions import AdminAction
 from ..schemas.story import (
     StoryCreate,
     StoryRead,
+    StoryReopen,
     StoryTransition,
     StoryUpdate,
 )
@@ -47,18 +53,18 @@ async def _get_story(story_id: str, db: AsyncSession) -> Story:
 def _validate_transition(from_status: str, to_status: str) -> None:
     try:
         from_s = StoryStatus(from_status)
-    except ValueError:
-        raise HTTPException(  # noqa: B904
+    except ValueError as e:
+        raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid status: {from_status}",
-        )
+        ) from e
     try:
         to_s = StoryStatus(to_status)
-    except ValueError:
-        raise HTTPException(  # noqa: B904
+    except ValueError as e:
+        raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid status: {to_status}",
-        )
+        ) from e
     if to_s not in VALID_TRANSITIONS[from_s]:
         allowed = [s.value for s in VALID_TRANSITIONS[from_s]]
         raise HTTPException(
@@ -83,6 +89,7 @@ async def create_story(
         title=body.title,
         description=body.description,
         acceptance_criteria=body.acceptance_criteria,
+        type=body.type,
         status=StoryStatus.CREATED.value,
         priority=body.priority,
         blocked_by_story_id=body.blocked_by_story_id,
@@ -103,6 +110,7 @@ async def list_stories(
     project_id: uuid.UUID | None = None,
     status_filter: str | None = Query(None, alias="status"),
     parent_story_id: str | None = Query(None),
+    type_filter: str | None = Query(None, alias="type"),
     priority: int | None = Query(None),
     sort: str | None = Query(None),
     db: AsyncSession = Depends(get_async_session),
@@ -115,6 +123,8 @@ async def list_stories(
         query = query.where(Story.status == status_filter)
     if parent_story_id:
         query = query.where(Story.parent_story_id == parent_story_id)
+    if type_filter:
+        query = query.where(Story.type == type_filter)
     if priority is not None:
         query = query.where(Story.priority == priority)
 
@@ -213,6 +223,94 @@ async def complete_story(
     return StoryRead.model_validate(story, from_attributes=True)
 
 
+@router.post("/{story_id}/fail", response_model=StoryRead)
+async def fail_story(
+    story_id: str,
+    body: StoryTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    body = body or StoryTransition()
+    story = await _get_story(story_id, db)
+
+    _do_transition(story, StoryStatus.FAILED)
+    await db.commit()
+    await db.refresh(story)
+
+    logger.info("story_failed", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+@router.post("/{story_id}/pr_review", response_model=StoryRead)
+async def pr_review_story(
+    story_id: str,
+    body: StoryTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    body = body or StoryTransition()
+    story = await _get_story(story_id, db)
+
+    _do_transition(story, StoryStatus.PR_REVIEW)
+    await db.commit()
+    await db.refresh(story)
+
+    logger.info("story_pr_review", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+@router.post("/{story_id}/deploy", response_model=StoryRead)
+async def deploy_story(
+    story_id: str,
+    body: StoryTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    body = body or StoryTransition()
+    story = await _get_story(story_id, db)
+
+    _do_transition(story, StoryStatus.DEPLOYING)
+    await db.commit()
+    await db.refresh(story)
+
+    logger.info("story_deploying", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+@router.post("/{story_id}/test", response_model=StoryRead)
+async def test_story(
+    story_id: str,
+    body: StoryTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    body = body or StoryTransition()
+    story = await _get_story(story_id, db)
+
+    _do_transition(story, StoryStatus.TESTING)
+    await db.commit()
+    await db.refresh(story)
+
+    logger.info("story_testing", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+@router.post("/{story_id}/reopen", response_model=StoryRead)
+async def reopen_story(
+    story_id: str,
+    body: StoryReopen | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    body = body or StoryReopen()
+    story = await _get_story(story_id, db)
+
+    _do_transition(story, StoryStatus.REOPENED)
+    if body.user_report is not None:
+        story.user_report = body.user_report
+
+    await db.commit()
+    await db.refresh(story)
+
+    logger.info("story_reopened", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
 @router.post("/{story_id}/archive", response_model=StoryRead)
 async def archive_story(
     story_id: str,
@@ -227,4 +325,50 @@ async def archive_story(
     await db.refresh(story)
 
     logger.info("story_archived", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+@router.post("/{story_id}/send-to-architect", response_model=StoryRead)
+async def send_to_architect(
+    story_id: str,
+    body: AdminAction | None = None,
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+) -> StoryRead:
+    """Send a story to the architect for decomposition.
+
+    Validates status is CREATED or REOPENED, transitions to IN_PROGRESS,
+    and publishes ArchitectMessage to architect:queue.
+    """
+    body = body or AdminAction()
+    story = await _get_story(story_id, db)
+
+    allowed = {StoryStatus.CREATED.value, StoryStatus.REOPENED.value}
+    if story.status not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Cannot send to architect from status '{story.status}'."
+                " Must be created or reopened."
+            ),
+        )
+
+    is_reopen = story.status == StoryStatus.REOPENED.value
+
+    # Transition: CREATED/REOPENED → IN_PROGRESS
+    _do_transition(story, StoryStatus.IN_PROGRESS)
+    await db.commit()
+    await db.refresh(story)
+
+    # Publish to architect queue
+    msg = ArchitectMessage(
+        story_id=story.id,
+        project_id=str(story.project_id),
+        user_id="",
+        is_reopen=is_reopen,
+        user_report=story.user_report if is_reopen else None,
+    )
+    await redis.publish_message(ARCHITECT_QUEUE, msg)
+
+    logger.info("story_sent_to_architect", story_id=story.id, actor=body.actor, is_reopen=is_reopen)
     return StoryRead.model_validate(story, from_attributes=True)

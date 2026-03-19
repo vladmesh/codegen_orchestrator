@@ -15,12 +15,10 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-26.
        -o /usr/local/lib/docker/cli-plugins/docker-compose \
     && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-# Copy and install shared module
+# Copy shared as plain files (deps are in service pyproject.toml)
 COPY shared ./shared
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install ./shared
 
-# Install dependencies
+# Install service dependencies
 COPY services/worker-manager/pyproject.toml .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install .

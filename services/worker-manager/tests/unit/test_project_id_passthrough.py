@@ -4,8 +4,10 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from pathlib import Path
 
+import httpx
 from fakeredis import aioredis
 
+from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
@@ -19,8 +21,8 @@ from src.consumer import WorkerCommandConsumer
 from src.manager import WorkerManager
 
 
-def _make_create_command(project_id: str | None = None) -> CreateWorkerCommand:
-    """Build a CreateWorkerCommand with optional project_id."""
+def _make_create_command(project_id: str | None = None, repo_id: str | None = None) -> CreateWorkerCommand:
+    """Build a CreateWorkerCommand with optional project_id and repo_id."""
     config = WorkerConfig(
         name="test-worker",
         worker_type="developer",
@@ -29,6 +31,7 @@ def _make_create_command(project_id: str | None = None) -> CreateWorkerCommand:
         allowed_commands=["*"],
         capabilities=[WorkerCapability.GIT],
         project_id=project_id,
+        repo_id=repo_id,
     )
     return CreateWorkerCommand(
         request_id="req-001",
@@ -43,6 +46,7 @@ def consumer():
     client = MagicMock()
     client.redis = MagicMock()
     client.redis.xadd = AsyncMock()
+    client.publish = AsyncMock()
     manager = MagicMock()
     manager.create_worker_with_capabilities = AsyncMock(return_value="test-worker")
     return WorkerCommandConsumer(client=client, manager=manager)
@@ -83,7 +87,7 @@ async def test_consumer_passes_none_reason_when_missing():
 @pytest.mark.asyncio
 async def test_consumer_passes_project_id_to_manager(consumer):
     """project_id from WorkerConfig should be forwarded to manager."""
-    cmd = _make_create_command(project_id="proj-123")
+    cmd = _make_create_command(project_id="proj-123", repo_id="repo-123")
     await consumer._handle_create(cmd)
 
     consumer.manager.create_worker_with_capabilities.assert_awaited_once()
@@ -92,9 +96,20 @@ async def test_consumer_passes_project_id_to_manager(consumer):
 
 
 @pytest.mark.asyncio
+async def test_consumer_passes_repo_id_to_manager(consumer):
+    """repo_id from WorkerConfig should be forwarded to manager."""
+    cmd = _make_create_command(project_id="proj-123", repo_id="repo-123")
+    await consumer._handle_create(cmd)
+
+    consumer.manager.create_worker_with_capabilities.assert_awaited_once()
+    call_kwargs = consumer.manager.create_worker_with_capabilities.call_args.kwargs
+    assert call_kwargs["repo_id"] == "repo-123"
+
+
+@pytest.mark.asyncio
 async def test_consumer_passes_none_project_id_when_missing(consumer):
     """When WorkerConfig has no project_id, None should be forwarded."""
-    cmd = _make_create_command()  # project_id defaults to None
+    cmd = _make_create_command(repo_id="repo-123")  # project_id defaults to None
     await consumer._handle_create(cmd)
 
     consumer.manager.create_worker_with_capabilities.assert_awaited_once()
@@ -102,7 +117,7 @@ async def test_consumer_passes_none_project_id_when_missing(consumer):
     assert call_kwargs["project_id"] is None
 
 
-# --- Phase 2: Workspace by project_id ---
+# --- Phase 2: Workspace by repo_id ---
 
 
 def _make_docker_mock():
@@ -122,8 +137,8 @@ def _make_docker_mock():
     return docker
 
 
-class TestWorkspaceByProjectId:
-    """Tests for workspace routing based on project_id."""
+class TestWorkspaceByRepoId:
+    """Tests for workspace routing based on repo_id."""
 
     @pytest.fixture
     def mock_docker(self):
@@ -141,114 +156,108 @@ class TestWorkspaceByProjectId:
         return redis
 
     @pytest.mark.asyncio
-    async def test_create_worker_uses_project_workspace_when_project_id(self, mock_redis, mock_docker):
-        """With project_id, should call get_or_create_project_workspace (not create_workspace)."""
+    async def test_create_worker_uses_scaffolded_workspace_with_repo_id(self, mock_redis, mock_docker):
+        """With repo_id, should call get_scaffolded_workspace."""
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
-        with (
-            patch(
-                "src.manager.workspace_mod.get_or_create_project_workspace",
-                return_value=(Path("/tmp/ws/proj-1/workspace"), False),
-            ) as mock_proj_ws,
-            patch("src.manager.workspace_mod.create_workspace") as mock_worker_ws,
-        ):
+        with patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/tmp/ws/repo-1"), True),
+        ) as mock_scaffolded_ws:
             await manager.create_worker_with_capabilities(
                 worker_id="w-1",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                repo_id="repo-1",
             )
 
-        mock_proj_ws.assert_called_once()
-        assert mock_proj_ws.call_args[0][1] == "proj-1"
-        mock_worker_ws.assert_not_called()
+        mock_scaffolded_ws.assert_called_once_with(settings.SCAFFOLDED_WORKSPACE_PATH, "repo-1")
 
     @pytest.mark.asyncio
-    async def test_create_worker_uses_worker_workspace_when_no_project_id(self, mock_redis, mock_docker):
-        """Without project_id, should call create_workspace (not get_or_create_project_workspace)."""
+    async def test_create_worker_raises_without_repo_id(self, mock_redis, mock_docker):
+        """Without repo_id, should raise RuntimeError."""
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
-        with (
-            patch(
-                "src.manager.workspace_mod.get_or_create_project_workspace",
-            ) as mock_proj_ws,
-            patch(
-                "src.manager.workspace_mod.create_workspace",
-                return_value=Path("/tmp/ws/w-2/workspace"),
-            ) as mock_worker_ws,
-            patch(
-                "src.manager.workspace_mod.get_workspace_host_path",
-                return_value="/tmp/ws/w-2/workspace",
-            ),
-        ):
+        with pytest.raises(RuntimeError, match="repo_id is required"):
             await manager.create_worker_with_capabilities(
                 worker_id="w-2",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id=None,
+                repo_id=None,
             )
 
-        mock_worker_ws.assert_called_once()
-        assert mock_worker_ws.call_args[0][1] == "w-2"
-        mock_proj_ws.assert_not_called()
-
     @pytest.mark.asyncio
-    async def test_reuse_workspace_calls_refresh_token_not_clone(self, mock_redis, mock_docker):
-        """When workspace already existed, should refresh git token instead of cloning."""
+    async def test_create_worker_raises_when_scaffolded_workspace_missing(self, mock_redis, mock_docker):
+        """When scaffolded workspace doesn't exist, should raise RuntimeError."""
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with (
             patch(
-                "src.manager.workspace_mod.get_or_create_project_workspace",
-                return_value=(Path("/tmp/ws/proj-1/workspace"), True),  # already_existed=True
+                "src.manager.workspace_mod.get_scaffolded_workspace",
+                return_value=(Path("/tmp/ws/repo-missing"), False),
             ),
+            pytest.raises(RuntimeError, match="Scaffolded workspace not found"),
         ):
-            manager._setup_git_repo = AsyncMock(return_value=True)
-            manager._refresh_git_token = AsyncMock(return_value=True)
+            await manager.create_worker_with_capabilities(
+                worker_id="w-2b",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                repo_id="repo-missing",
+            )
 
+    @pytest.mark.asyncio
+    async def test_scaffolded_workspace_refreshes_git_token(self, mock_redis, mock_docker):
+        """Pre-scaffolded workspace should refresh git token, not clone."""
+        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
+
+        with (
+            patch(
+                "src.manager.workspace_mod.get_scaffolded_workspace",
+                return_value=(Path("/tmp/ws/repo-1"), True),
+            ),
+            patch(
+                "src.manager.git_ops.refresh_git_token",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_refresh,
+        ):
             await manager.create_worker_with_capabilities(
                 worker_id="w-3",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
-                project_id="proj-1",
+                repo_id="repo-1",
                 env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "ghp_test"},
             )
 
-        manager._refresh_git_token.assert_awaited_once()
-        manager._setup_git_repo.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_new_workspace_calls_clone_not_refresh(self, mock_redis, mock_docker):
-        """When workspace is new, should clone repo instead of refreshing token."""
-        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-
-        with (
-            patch(
-                "src.manager.workspace_mod.get_or_create_project_workspace",
-                return_value=(Path("/tmp/ws/proj-1/workspace"), False),  # already_existed=False
-            ),
-        ):
-            manager._setup_git_repo = AsyncMock(return_value=True)
-            manager._refresh_git_token = AsyncMock(return_value=True)
-
-            await manager.create_worker_with_capabilities(
-                worker_id="w-4",
-                capabilities=["GIT"],
-                base_image="worker-base:latest",
-                project_id="proj-1",
-                env_vars={"REPO_NAME": "org/repo", "GITHUB_TOKEN": "ghp_test"},
-            )
-
-        manager._setup_git_repo.assert_awaited_once()
-        manager._refresh_git_token.assert_not_awaited()
+        mock_refresh.assert_awaited_once()
 
 
-class TestProjectIdRedisMeta:
-    """Tests for project_id persistence in Redis."""
+class TestRepoIdRedisMeta:
+    """Tests for repo_id persistence in Redis."""
 
     @pytest.fixture
     def mock_docker(self):
         return _make_docker_mock()
+
+    @pytest.mark.asyncio
+    async def test_repo_id_saved_to_redis_meta(self, mock_docker):
+        """repo_id should be written to worker:meta:<worker_id> after creation."""
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        with patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/tmp/ws/repo-1"), True),
+        ):
+            await manager.create_worker_with_capabilities(
+                worker_id="w-5",
+                capabilities=["GIT"],
+                base_image="worker-base:latest",
+                repo_id="repo-1",
+            )
+
+        meta = await redis.hgetall("worker:meta:w-5")
+        assert meta.get("repo_id") == "repo-1"
 
     @pytest.mark.asyncio
     async def test_project_id_saved_to_redis_meta(self, mock_docker):
@@ -257,17 +266,18 @@ class TestProjectIdRedisMeta:
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
         with patch(
-            "src.manager.workspace_mod.get_or_create_project_workspace",
-            return_value=(Path("/tmp/ws/proj-1/workspace"), False),
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/tmp/ws/repo-1"), True),
         ):
             await manager.create_worker_with_capabilities(
-                worker_id="w-5",
+                worker_id="w-5b",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 project_id="proj-1",
+                repo_id="repo-1",
             )
 
-        meta = await redis.hgetall("worker:meta:w-5")
+        meta = await redis.hgetall("worker:meta:w-5b")
         assert meta.get("project_id") == "proj-1"
 
     @pytest.mark.asyncio
@@ -277,14 +287,15 @@ class TestProjectIdRedisMeta:
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
         with patch(
-            "src.manager.workspace_mod.get_or_create_project_workspace",
-            return_value=(Path("/tmp/ws/proj-1/workspace"), False),
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/tmp/ws/repo-1"), True),
         ):
             await manager.create_worker_with_capabilities(
                 worker_id="w-6",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 project_id="proj-1",
+                repo_id="repo-1",
             )
 
         members = await redis.smembers("workspace:active_projects")
@@ -292,25 +303,25 @@ class TestProjectIdRedisMeta:
 
 
 class TestDeleteWorkerPreservation:
-    """Tests for workspace preservation on delete."""
+    """Tests for workspace preservation on delete — scaffolded workspaces are never removed."""
 
     @pytest.fixture
     def mock_docker(self):
         return _make_docker_mock()
 
     @pytest.mark.asyncio
-    async def test_delete_worker_preserves_project_workspace(self, mock_docker):
+    async def test_delete_worker_preserves_workspace_with_project_id(self, mock_docker):
         """delete_worker should NOT remove workspace when meta has project_id."""
         redis = aioredis.FakeRedis(decode_responses=True)
         await redis.hset(
             "worker:meta:w-7",
             mapping={
                 "dev_network": "dev_proj_w-7",
-                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-7", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-7", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -327,17 +338,17 @@ class TestDeleteWorkerPreservation:
         mock_rm.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_delete_worker_removes_worker_workspace(self, mock_docker):
-        """delete_worker should remove workspace when meta has no project_id."""
+    async def test_delete_worker_preserves_workspace_without_project_id(self, mock_docker):
+        """delete_worker should NOT remove workspace even without project_id (scaffolded workspaces are persistent)."""
         redis = aioredis.FakeRedis(decode_responses=True)
         await redis.hset(
             "worker:meta:w-8",
             mapping={
                 "dev_network": "dev_proj_w-8",
-                "workspace_path": "/tmp/ws/w-8/workspace",
+                "workspace_path": "/tmp/ws/repo-2",
             },
         )
-        await redis.hset("worker:status:w-8", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-8", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -351,7 +362,7 @@ class TestDeleteWorkerPreservation:
 
             await manager.delete_worker("w-8")
 
-        mock_rm.assert_called_once()
+        mock_rm.assert_not_called()
 
 
 class TestOrphanGCProjectProtection:
@@ -399,11 +410,11 @@ class TestDeleteWorkerRemovesFromActiveSet:
             "worker:meta:w-9",
             mapping={
                 "dev_network": "dev_proj_w-9",
-                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-9", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-9", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -436,48 +447,78 @@ class TestWorkspaceGC:
         redis = aioredis.FakeRedis(decode_responses=True)
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        old_mtime = time.time() - (25 * 3600)  # 25 hours ago
+        old_mtime = time.time() - (36 * 3600)  # 36 hours ago (> 35h default)
 
         mock_stat = MagicMock()
         mock_stat.st_mtime = old_mtime
 
         with (
-            patch("os.listdir", return_value=["old-proj"]),
-            patch("src.manager.Path") as mock_path_cls,
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.garbage_collector.os.listdir", return_value=["old-proj"]),
+            patch("src.garbage_collector.Path") as mock_path_cls,
+            patch("src.garbage_collector.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock),
         ):
             mock_ws_dir = MagicMock()
             mock_ws_dir.stat.return_value = mock_stat
             mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
 
-            await manager.garbage_collect_workspaces(max_age_hours=24)
+            await manager.garbage_collect_workspaces()
 
-        mock_rm.assert_called_once_with(settings.WORKSPACE_BASE_PATH, "old-proj")
+        assert mock_rm.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_workspace_gc_notifies_api_on_delete(self, mock_docker):
+        """GC calls _notify_workspace_deleted for each removed workspace."""
+        import time
+
+        redis = aioredis.FakeRedis(decode_responses=True)
+        manager = WorkerManager(redis=redis, docker_client=mock_docker)
+
+        old_mtime = time.time() - (48 * 3600)
+
+        mock_stat = MagicMock()
+        mock_stat.st_mtime = old_mtime
+
+        with (
+            patch("src.garbage_collector.os.listdir", return_value=["repo-abc"]),
+            patch("src.garbage_collector.Path") as mock_path_cls,
+            patch("src.garbage_collector.workspace_mod.remove_workspace"),
+            patch("src.garbage_collector._notify_workspace_deleted", new_callable=AsyncMock) as mock_notify,
+        ):
+            mock_ws_dir = MagicMock()
+            mock_ws_dir.stat.return_value = mock_stat
+            mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
+
+            await manager.garbage_collect_workspaces()
+
+        assert mock_notify.call_count == 1
+        mock_notify.assert_any_call("repo-abc")
 
     @pytest.mark.asyncio
     async def test_workspace_gc_preserves_active_workspaces(self, mock_docker):
-        """Workspaces in active_projects set should not be removed regardless of age."""
+        """Workspaces with a live worker should not be removed regardless of age."""
         import time
 
         redis = aioredis.FakeRedis(decode_responses=True)
         await redis.sadd("workspace:active_projects", "active-proj")
+        await redis.hset("worker:meta:w1", mapping={"project_id": "active-proj"})
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        old_mtime = time.time() - (48 * 3600)  # 48 hours ago
+        old_mtime = time.time() - (48 * 3600)
 
         mock_stat = MagicMock()
         mock_stat.st_mtime = old_mtime
 
         with (
-            patch("os.listdir", return_value=["active-proj"]),
-            patch("src.manager.Path") as mock_path_cls,
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.garbage_collector.os.listdir", return_value=["active-proj"]),
+            patch("src.garbage_collector.Path") as mock_path_cls,
+            patch("src.garbage_collector.workspace_mod.remove_workspace") as mock_rm,
         ):
             mock_ws_dir = MagicMock()
             mock_ws_dir.stat.return_value = mock_stat
             mock_path_cls.return_value.__truediv__ = MagicMock(return_value=mock_ws_dir)
 
-            await manager.garbage_collect_workspaces(max_age_hours=24)
+            await manager.garbage_collect_workspaces()
 
         mock_rm.assert_not_called()
 
@@ -489,15 +530,15 @@ class TestWorkspaceGC:
         redis = aioredis.FakeRedis(decode_responses=True)
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
-        recent_mtime = time.time() - (2 * 3600)  # 2 hours ago
+        recent_mtime = time.time() - (2 * 3600)
 
         mock_stat = MagicMock()
         mock_stat.st_mtime = recent_mtime
 
         with (
-            patch("os.listdir", return_value=["recent-proj"]),
-            patch("src.manager.Path") as mock_path_cls,
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.garbage_collector.os.listdir", return_value=["recent-proj"]),
+            patch("src.garbage_collector.Path") as mock_path_cls,
+            patch("src.garbage_collector.workspace_mod.remove_workspace") as mock_rm,
         ):
             mock_ws_dir = MagicMock()
             mock_ws_dir.stat.return_value = mock_stat
@@ -506,6 +547,38 @@ class TestWorkspaceGC:
             await manager.garbage_collect_workspaces(max_age_hours=24)
 
         mock_rm.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_notify_workspace_deleted_calls_api(self, mock_docker):
+        """_notify_workspace_deleted POSTs to the API endpoint."""
+        from src.garbage_collector import _notify_workspace_deleted
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("src.garbage_collector.httpx.AsyncClient", return_value=mock_client):
+            await _notify_workspace_deleted("repo-xyz")
+
+        mock_client.post.assert_awaited_once()
+        call_url = mock_client.post.call_args[0][0]
+        assert "repo-xyz" in call_url
+        assert "notify-workspace-deleted" in call_url
+
+    @pytest.mark.asyncio
+    async def test_notify_workspace_deleted_handles_errors(self, mock_docker):
+        """_notify_workspace_deleted doesn't raise on API errors."""
+        from src.garbage_collector import _notify_workspace_deleted
+
+        with patch(
+            "src.garbage_collector.httpx.AsyncClient",
+            side_effect=httpx.ConnectError("connection refused"),
+        ):
+            await _notify_workspace_deleted("repo-xyz")
 
 
 # --- Phase 5: Project mutex ---
@@ -525,20 +598,21 @@ class TestProjectMutex:
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
         with patch(
-            "src.manager.workspace_mod.get_or_create_project_workspace",
-            return_value=(Path("/tmp/ws/proj-1/workspace"), False),
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/tmp/ws/repo-1"), True),
         ):
             await manager.create_worker_with_capabilities(
                 worker_id="w-first",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 project_id="proj-1",
+                repo_id="repo-1",
             )
 
         with (
             patch(
-                "src.manager.workspace_mod.get_or_create_project_workspace",
-                return_value=(Path("/tmp/ws/proj-1/workspace"), True),
+                "src.manager.workspace_mod.get_scaffolded_workspace",
+                return_value=(Path("/tmp/ws/repo-1"), True),
             ),
             pytest.raises(RuntimeError, match="already has active worker"),
         ):
@@ -547,6 +621,7 @@ class TestProjectMutex:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 project_id="proj-1",
+                repo_id="repo-1",
             )
 
     @pytest.mark.asyncio
@@ -556,14 +631,15 @@ class TestProjectMutex:
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
         with patch(
-            "src.manager.workspace_mod.get_or_create_project_workspace",
-            return_value=(Path("/tmp/ws/proj-1/workspace"), False),
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/tmp/ws/repo-1"), True),
         ):
             await manager.create_worker_with_capabilities(
                 worker_id="w-first",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 project_id="proj-1",
+                repo_id="repo-1",
             )
 
         with patch("src.manager.ComposeRunner") as mock_runner_cls:
@@ -573,8 +649,8 @@ class TestProjectMutex:
             await manager.delete_worker("w-first")
 
         with patch(
-            "src.manager.workspace_mod.get_or_create_project_workspace",
-            return_value=(Path("/tmp/ws/proj-1/workspace"), True),
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/tmp/ws/repo-1"), True),
         ):
             # Should not raise
             result = await manager.create_worker_with_capabilities(
@@ -582,6 +658,7 @@ class TestProjectMutex:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 project_id="proj-1",
+                repo_id="repo-1",
             )
             assert result == "w-second"
 
@@ -625,11 +702,11 @@ class TestFailureCounter:
             "worker:meta:w-10",
             mapping={
                 "dev_network": "dev_proj_w-10",
-                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-10", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-10", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -650,11 +727,11 @@ class TestFailureCounter:
             "worker:meta:w-11",
             mapping={
                 "dev_network": "dev_proj_w-11",
-                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-11", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-11", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -677,11 +754,11 @@ class TestFailureCounter:
             "worker:meta:w-12",
             mapping={
                 "dev_network": "dev_proj_w-12",
-                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-12", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-12", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -703,11 +780,11 @@ class TestFailureCounter:
             "worker:meta:w-13",
             mapping={
                 "dev_network": "dev_proj_w-13",
-                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-13", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-13", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -728,11 +805,11 @@ class TestFailureCounter:
             "worker:meta:w-14",
             mapping={
                 "dev_network": "dev_proj_w-14",
-                "workspace_path": "/tmp/ws/proj-1/workspace",
+                "workspace_path": "/tmp/ws/repo-1",
                 "project_id": "proj-1",
             },
         )
-        await redis.hset("worker:status:w-14", mapping={"status": "RUNNING"})
+        await redis.hset("worker:status:w-14", mapping={"status": WorkerStatus.RUNNING})
 
         manager = WorkerManager(redis=redis, docker_client=mock_docker)
 
@@ -748,7 +825,7 @@ class TestFailureCounter:
 
 
 class TestForceCleanAndReject:
-    """Tests for force clean and spawn rejection (6.2)."""
+    """Tests for spawn rejection at high failure count (6.2)."""
 
     @pytest.fixture
     def mock_docker(self):
@@ -765,28 +842,6 @@ class TestForceCleanAndReject:
         return redis
 
     @pytest.mark.asyncio
-    async def test_force_clean_after_two_failures(self, mock_redis, mock_docker):
-        """When failure_count=2, workspace should be wiped before creation."""
-        mock_redis.get = AsyncMock(return_value="2")
-        manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
-
-        with (
-            patch(
-                "src.manager.workspace_mod.get_or_create_project_workspace",
-                return_value=(Path("/tmp/ws/proj-1/workspace"), False),
-            ),
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
-        ):
-            await manager.create_worker_with_capabilities(
-                worker_id="w-15",
-                capabilities=["GIT"],
-                base_image="worker-base:latest",
-                project_id="proj-1",
-            )
-
-        mock_rm.assert_called_once_with(settings.WORKSPACE_BASE_PATH, "proj-1")
-
-    @pytest.mark.asyncio
     async def test_spawn_rejected_after_three_failures(self, mock_redis, mock_docker):
         """When failure_count>=3, spawn should be rejected with RuntimeError."""
         mock_redis.get = AsyncMock(return_value="3")
@@ -798,16 +853,17 @@ class TestForceCleanAndReject:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 project_id="proj-1",
+                repo_id="repo-1",
             )
 
     @pytest.mark.asyncio
-    async def test_reject_before_wipe(self, mock_redis, mock_docker):
-        """When failure_count>=3, workspace should NOT be wiped (reject happens first)."""
+    async def test_reject_before_workspace_resolution(self, mock_redis, mock_docker):
+        """When failure_count>=3, workspace should NOT be resolved (reject happens first)."""
         mock_redis.get = AsyncMock(return_value="3")
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
         with (
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
+            patch("src.manager.workspace_mod.get_scaffolded_workspace") as mock_ws,
             pytest.raises(RuntimeError, match="Max retries"),
         ):
             await manager.create_worker_with_capabilities(
@@ -815,28 +871,27 @@ class TestForceCleanAndReject:
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 project_id="proj-1",
+                repo_id="repo-1",
             )
 
-        mock_rm.assert_not_called()
+        mock_ws.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_first_attempt_creates_fresh_workspace(self, mock_redis, mock_docker):
-        """When failure_count=0, should create workspace normally without wipe."""
+    async def test_first_attempt_creates_workspace_normally(self, mock_redis, mock_docker):
+        """When failure_count=0, should create workspace normally."""
         mock_redis.get = AsyncMock(return_value=None)
         manager = WorkerManager(redis=mock_redis, docker_client=mock_docker)
 
-        with (
-            patch(
-                "src.manager.workspace_mod.get_or_create_project_workspace",
-                return_value=(Path("/tmp/ws/proj-1/workspace"), False),
-            ),
-            patch("src.manager.workspace_mod.remove_workspace") as mock_rm,
-        ):
+        with patch(
+            "src.manager.workspace_mod.get_scaffolded_workspace",
+            return_value=(Path("/tmp/ws/repo-1"), True),
+        ) as mock_ws:
             await manager.create_worker_with_capabilities(
                 worker_id="w-18",
                 capabilities=["GIT"],
                 base_image="worker-base:latest",
                 project_id="proj-1",
+                repo_id="repo-1",
             )
 
-        mock_rm.assert_not_called()
+        mock_ws.assert_called_once_with(settings.SCAFFOLDED_WORKSPACE_PATH, "repo-1")

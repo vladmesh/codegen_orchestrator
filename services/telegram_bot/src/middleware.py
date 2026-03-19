@@ -86,11 +86,11 @@ async def auth_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if update.message:
         await update.message.reply_text(
-            "🚫 **Доступ запрещён**\n\n"
+            "🚫 <b>Доступ запрещён</b>\n\n"
             "Вы не зарегистрированы в системе.\n"
             "Обратитесь к администратору для получения доступа.\n\n"
-            f"Ваш ID: `{user_id}`",
-            parse_mode="Markdown",
+            f"Ваш ID: <code>{user_id}</code>",
+            parse_mode="HTML",
         )
     elif update.callback_query:
         await update.callback_query.answer("🚫 Доступ запрещён", show_alert=True)

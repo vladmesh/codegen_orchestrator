@@ -3,7 +3,7 @@
 # Requires: uv sync (once)
 #
 # Each service uses `from src.xxx` imports, so we set PYTHONPATH per service.
-# Packages (orchestrator-cli, worker-wrapper) and shared use proper package
+# Packages (worker-wrapper) and shared use proper package
 # names and don't need PYTHONPATH overrides.
 #
 # We clear env vars that leak from the root .env to avoid pydantic-settings
@@ -35,7 +35,6 @@ CLEAN_ENV=(
     GITHUB_APP_PRIVATE_KEY_PATH="/dev/null"
     TELEGRAM_BOT_TOKEN="0000000000:test-token"
     SECRETS_ENCRYPTION_KEY="wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc="
-    GITHUB_WEBHOOK_SECRET="test-webhook-secret"
     ORCHESTRATOR_HOSTNAME="localhost"
     REGISTRY_USER="test"
     REGISTRY_PASSWORD="test"
@@ -97,7 +96,6 @@ ALL_SUITES=(
     "scheduler|services/scheduler/tests/unit|$ROOT/services/scheduler"
     "worker-manager|services/worker-manager/tests/unit|$ROOT/services/worker-manager"
     "infra-service|services/infra-service/tests/unit|$ROOT/services/infra-service"
-    "orchestrator-cli|packages/orchestrator-cli/tests/unit|"
     "worker-wrapper|packages/worker-wrapper/tests/unit|"
     "shared|shared/tests|"
 )

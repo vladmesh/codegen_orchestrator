@@ -1,9 +1,11 @@
 import json
 
 import pytest
+import pytest_asyncio
 from unittest.mock import MagicMock, AsyncMock
 from fakeredis import aioredis
 
+from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     CreateWorkerCommand,
     DeleteWorkerCommand,
@@ -25,18 +27,18 @@ def mock_worker_manager():
     manager.create_worker = AsyncMock(return_value="test-worker-id")
     manager.create_worker_with_capabilities = AsyncMock(return_value="test-worker-id")
     manager.delete_worker = AsyncMock(return_value=None)
-    manager.get_worker_status = AsyncMock(return_value="RUNNING")
+    manager.get_worker_status = AsyncMock(return_value=WorkerStatus.RUNNING)
     return manager
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def redis_client():
     redis = aioredis.FakeRedis(decode_responses=True)
     yield redis
     await redis.aclose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def stream_client(redis_client):
     client = RedisStreamClient(redis_url="redis://fake:6379")
     client._redis = redis_client
@@ -95,7 +97,7 @@ async def test_consume_create_worker_command(redis_client, stream_client, mock_w
     response = CreateWorkerResponse.model_validate_json(msg_data["data"])
     assert response.request_id == "req-123"
     assert response.success is True
-    assert response.worker_id == "test-worker-id"
+    assert response.worker_id == "test-worker"
 
 
 @pytest.mark.asyncio

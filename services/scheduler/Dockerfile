@@ -33,11 +33,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
+# Copy shared as plain files (deps are in service requirements.lock)
+COPY shared ./shared
+ENV PYTHONPATH=/app
+
 # Copy source code
 COPY services/scheduler/src ./src
-
-
-COPY shared ./shared
 
 # Run application
 CMD ["python", "-m", "src.main"]

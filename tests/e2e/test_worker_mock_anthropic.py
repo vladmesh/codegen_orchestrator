@@ -126,9 +126,9 @@ class TestWorkerMockAnthropic:
                 res_json = json.loads(result_str)
                 # The result should be the parsed JSON from mock-anthropic's <result> tags
                 # Check for expected structure
-                assert (
-                    res_json.get("status") == "success"
-                ), f"Expected success status, got: {res_json}"
+                assert res_json.get("status") == "success", (
+                    f"Expected success status, got: {res_json}"
+                )
                 assert "summary" in res_json, f"Expected summary field, got: {res_json}"
             except json.JSONDecodeError:
                 pytest.fail(f"Failed to parse worker output: {result_str}")
@@ -161,9 +161,9 @@ class TestWorkerMockAnthropic:
             # Should match 'implement' scenario from responses.py
             # returns: {"status": "success", "summary": "Implementation completed successfully"}
             assert res_json.get("status") == "success", f"Expected success status, got: {res_json}"
-            assert (
-                res_json.get("summary") == "Implementation completed successfully"
-            ), f"Expected 'Implementation completed successfully', got: {res_json.get('summary')}"
+            assert res_json.get("summary") == "Implementation completed successfully", (
+                f"Expected 'Implementation completed successfully', got: {res_json.get('summary')}"
+            )
 
         finally:
             await self._cleanup_worker(redis, worker_id)

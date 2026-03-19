@@ -1,0 +1,72 @@
+# HELP node_cpu_seconds_total Seconds the CPUs spent in each mode.
+# TYPE node_cpu_seconds_total counter
+node_cpu_seconds_total{cpu="0",mode="idle"} 1.629287951e+06
+node_cpu_seconds_total{cpu="0",mode="iowait"} 1234.56
+node_cpu_seconds_total{cpu="0",mode="irq"} 0
+node_cpu_seconds_total{cpu="0",mode="nice"} 45.67
+node_cpu_seconds_total{cpu="0",mode="softirq"} 890.12
+node_cpu_seconds_total{cpu="0",mode="steal"} 0
+node_cpu_seconds_total{cpu="0",mode="system"} 45678.9
+node_cpu_seconds_total{cpu="0",mode="user"} 123456.78
+node_cpu_seconds_total{cpu="1",mode="idle"} 1.635000000e+06
+node_cpu_seconds_total{cpu="1",mode="iowait"} 1100.00
+node_cpu_seconds_total{cpu="1",mode="irq"} 0
+node_cpu_seconds_total{cpu="1",mode="nice"} 50.00
+node_cpu_seconds_total{cpu="1",mode="softirq"} 800.00
+node_cpu_seconds_total{cpu="1",mode="steal"} 0
+node_cpu_seconds_total{cpu="1",mode="system"} 42000.00
+node_cpu_seconds_total{cpu="1",mode="user"} 120000.00
+# HELP node_memory_MemTotal_bytes Memory information field MemTotal_bytes.
+# TYPE node_memory_MemTotal_bytes gauge
+node_memory_MemTotal_bytes 4.123738112e+09
+# HELP node_memory_MemFree_bytes Memory information field MemFree_bytes.
+# TYPE node_memory_MemFree_bytes gauge
+node_memory_MemFree_bytes 2.57286144e+08
+# HELP node_memory_MemAvailable_bytes Memory information field MemAvailable_bytes.
+# TYPE node_memory_MemAvailable_bytes gauge
+node_memory_MemAvailable_bytes 1.842151424e+09
+# HELP node_memory_Buffers_bytes Memory information field Buffers_bytes.
+# TYPE node_memory_Buffers_bytes gauge
+node_memory_Buffers_bytes 1.23043840e+08
+# HELP node_memory_Cached_bytes Memory information field Cached_bytes.
+# TYPE node_memory_Cached_bytes gauge
+node_memory_Cached_bytes 1.461862400e+09
+# HELP node_filesystem_size_bytes Filesystem size in bytes.
+# TYPE node_filesystem_size_bytes gauge
+node_filesystem_size_bytes{device="/dev/vda2",fstype="ext4",mountpoint="/"} 5.1472908288e+10
+node_filesystem_size_bytes{device="/dev/vda1",fstype="vfat",mountpoint="/boot/efi"} 5.35805952e+08
+# HELP node_filesystem_avail_bytes Filesystem space available to non-root users in bytes.
+# TYPE node_filesystem_avail_bytes gauge
+node_filesystem_avail_bytes{device="/dev/vda2",fstype="ext4",mountpoint="/"} 3.8482145280e+10
+node_filesystem_avail_bytes{device="/dev/vda1",fstype="vfat",mountpoint="/boot/efi"} 5.35543808e+08
+# HELP node_load1 1m load average.
+# TYPE node_load1 gauge
+node_load1 0.68
+# HELP node_load5 5m load average.
+# TYPE node_load5 gauge
+node_load5 0.52
+# HELP node_load15 15m load average.
+# TYPE node_load15 gauge
+node_load15 0.41
+# HELP node_boot_time_seconds Node boot time, in unixtime.
+# TYPE node_boot_time_seconds gauge
+node_boot_time_seconds 1.710500000e+09
+# HELP node_network_receive_errs_total Network device statistic receive_errs.
+# TYPE node_network_receive_errs_total counter
+node_network_receive_errs_total{device="eth0"} 0
+node_network_receive_errs_total{device="lo"} 0
+# HELP node_network_transmit_errs_total Network device statistic transmit_errs.
+# TYPE node_network_transmit_errs_total counter
+node_network_transmit_errs_total{device="eth0"} 2
+node_network_transmit_errs_total{device="lo"} 0
+# HELP node_network_receive_bytes_total Network device statistic receive_bytes.
+# TYPE node_network_receive_bytes_total counter
+node_network_receive_bytes_total{device="eth0"} 1.234567890e+09
+node_network_receive_bytes_total{device="lo"} 5.678901234e+07
+# HELP node_network_transmit_bytes_total Network device statistic transmit_bytes.
+# TYPE node_network_transmit_bytes_total counter
+node_network_transmit_bytes_total{device="eth0"} 9.876543210e+08
+node_network_transmit_bytes_total{device="lo"} 5.678901234e+07
+# HELP node_uname_info Labeled system information as provided by the uname system call.
+# TYPE node_uname_info gauge
+node_uname_info{domainname="(none)",machine="x86_64",nodename="vps-267179",release="6.8.0-100-generic",sysname="Linux",version="#101-Ubuntu SMP Fri Mar 14 14:28:59 UTC 2026"} 1

@@ -30,7 +30,7 @@ class AllocationInfo(TypedDict, total=False):
     id: int
     server_handle: str
     port: int
-    project_id: str | None
+    application_id: int | None
     service_name: str
     # Enriched fields (added by tools)
     server_ip: str | None

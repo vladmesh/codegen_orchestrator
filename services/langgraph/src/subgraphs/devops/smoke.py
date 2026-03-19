@@ -8,6 +8,7 @@ Runs deterministic health checks after deployment:
 import asyncio
 import os
 
+import asyncssh
 import httpx
 import structlog
 
@@ -16,6 +17,7 @@ try:
 except ImportError:
     TelegramClient = None  # type: ignore[assignment, misc]
 
+from ...clients.api import api_client
 from ...nodes.base import FunctionalNode, RetryPolicy
 from .state import DevOpsState
 
@@ -25,6 +27,8 @@ HEALTH_CHECK_TIMEOUT = 10
 HEALTH_CHECK_RETRIES = 3
 HEALTH_CHECK_RETRY_DELAY = 5
 HTTP_OK = 200
+CONTAINER_LOG_TAIL = 50
+SERVICE_BASE_DIR = "/opt/services"
 
 
 class SmokeTesterNode(FunctionalNode):
@@ -86,6 +90,27 @@ class SmokeTesterNode(FunctionalNode):
 
         overall = "fail" if any(c["result"] == "fail" for c in checks) else "pass"
 
+        # Enrich failed checks with container logs from the server
+        if overall == "fail":
+            project_name = (state.get("project_spec") or {}).get("name")
+            # Pick server_handle from the first resource that has one
+            server_handle = None
+            first_server_ip = None
+            for alloc in allocated_resources.values():
+                if isinstance(alloc, dict) and alloc.get("server_handle"):
+                    server_handle = alloc["server_handle"]
+                    first_server_ip = alloc.get("server_ip")
+                    break
+
+            if project_name and server_handle and first_server_ip:
+                container_logs = await self._fetch_container_logs(
+                    first_server_ip, server_handle, project_name
+                )
+                if container_logs:
+                    for check in checks:
+                        if check["result"] == "fail":
+                            check["detail"] += f"\n\nContainer logs:\n{container_logs}"
+
         logger.info(
             "smoke_complete",
             status=overall,
@@ -96,6 +121,11 @@ class SmokeTesterNode(FunctionalNode):
         result = {
             "smoke_result": {"status": overall, "checks": checks},
         }
+        # Propagate bot_username from tg_bot check to state (for QA handoff)
+        for check in checks:
+            if check.get("bot_username"):
+                result["bot_username"] = check["bot_username"]
+                break
         if errors:
             result["errors"] = errors
         return result
@@ -106,6 +136,43 @@ class SmokeTesterNode(FunctionalNode):
             if isinstance(alloc, dict) and alloc.get("service_name") == module:
                 return alloc
         return None
+
+    async def _fetch_container_logs(
+        self,
+        server_ip: str,
+        server_handle: str,
+        project_name: str,
+    ) -> str | None:
+        """SSH into server and fetch docker compose logs for the project.
+
+        Returns log output (truncated) or None if fetch fails.
+        """
+        try:
+            ssh_key = await api_client.get_server_ssh_key(server_handle)
+            if not ssh_key:
+                logger.warning("smoke_logs_no_ssh_key", server_handle=server_handle)
+                return None
+
+            key = asyncssh.import_private_key(ssh_key)
+            service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
+            compose = (
+                f"docker compose -p {project_name}"
+                f" -f infra/compose.base.yml -f infra/compose.prod.yml"
+            )
+            cmd = f"cd {service_dir} && {compose} logs --tail={CONTAINER_LOG_TAIL} --no-color 2>&1"
+
+            async with asyncssh.connect(
+                server_ip,
+                username="root",
+                known_hosts=None,
+                client_keys=[key],
+            ) as conn:
+                result = await conn.run(cmd, check=False)
+                return result.stdout.strip() if result.stdout else None
+
+        except Exception:
+            logger.warning("smoke_logs_fetch_failed", server_ip=server_ip, exc_info=True)
+            return None
 
     async def _check_backend_health(self, server_ip: str, port: int) -> dict:
         """GET /health with retries."""
@@ -190,24 +257,26 @@ class SmokeTesterNode(FunctionalNode):
                     "detail": "Could not get bot username from getMe",
                 }
 
-            # Connect Telethon and send /start
+            # Connect Telethon and send /start via conversation API
             client = TelegramClient(session_path, int(api_id), api_hash)
             try:
                 await client.start()
-                await client.send_message(f"@{bot_username}", "/start")
-                response = await client.get_response(f"@{bot_username}", timeout=15)
+                async with client.conversation(f"@{bot_username}", timeout=15) as conv:
+                    await conv.send_message("/start")
+                    response = await conv.get_response()
 
-                if response and response.text:
+                    if response and response.text:
+                        return {
+                            "module": "tg_bot",
+                            "result": "pass",
+                            "detail": f"Bot responded: {response.text[:100]}",
+                            "bot_username": bot_username,
+                        }
                     return {
                         "module": "tg_bot",
-                        "result": "pass",
-                        "detail": f"Bot responded: {response.text[:100]}",
+                        "result": "fail",
+                        "detail": "Bot sent empty response",
                     }
-                return {
-                    "module": "tg_bot",
-                    "result": "fail",
-                    "detail": "Bot sent empty response",
-                }
             finally:
                 await client.disconnect()
 

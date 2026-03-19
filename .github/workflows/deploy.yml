@@ -53,7 +53,6 @@ jobs:
             # GitHub
             GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
             GITHUB_ORG=${{ secrets.GITHUB_ORG }}
-            GITHUB_WEBHOOK_SECRET=${{ secrets.GITHUB_WEBHOOK_SECRET }}
 
             # Telegram
             TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}

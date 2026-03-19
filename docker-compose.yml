@@ -12,8 +12,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: api
     depends_on:
       db:
         condition: service_healthy
@@ -60,6 +61,8 @@ services:
       SUMMARIZATION_TRIGGER_TOKENS: ${SUMMARIZATION_TRIGGER_TOKENS}
       SUMMARIZATION_MAX_SUMMARY_TOKENS: ${SUMMARIZATION_MAX_SUMMARY_TOKENS}
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: langgraph
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -79,7 +82,7 @@ services:
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile
-    command: python -m src.workers.deploy_worker
+    command: python -m src.consumers.deploy
     env_file:
       - .env
     environment:
@@ -93,11 +96,39 @@ services:
       TELETHON_API_ID: ${TELETHON_API_ID:-}
       TELETHON_API_HASH: ${TELETHON_API_HASH:-}
       TELETHON_SESSION_PATH: ${TELETHON_SESSION_PATH:-}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: deploy-worker
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
-      - ${TELETHON_SESSION_DIR:-./secrets/telethon}:/app/telethon:ro
+      - ${TELETHON_SESSION_DIR:-./secrets/telethon}:/app/telethon
+    depends_on:
+      - api
+      - redis
+    networks:
+      - internal
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+  qa-worker:
+    build:
+      context: .
+      dockerfile: services/langgraph/Dockerfile
+    command: python -m src.consumers.qa
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+      SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: qa-worker
+    volumes:
+      - ./services/langgraph/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
     depends_on:
       - api
       - redis
@@ -111,7 +142,7 @@ services:
     build:
       context: .
       dockerfile: services/langgraph/Dockerfile
-    command: python -m src.workers.engineering_worker
+    command: python -m src.consumers.engineering
     env_file:
       - .env
     environment:
@@ -123,10 +154,40 @@ services:
       ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
       REGISTRY_USER: ${REGISTRY_USER}
       REGISTRY_PASSWORD: ${REGISTRY_PASSWORD}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: engineering-worker
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
+    depends_on:
+      - api
+      - redis
+    networks:
+      - internal
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+
+  architect:
+    build:
+      context: .
+      dockerfile: services/langgraph/Dockerfile
+    command: python -m src.consumers.architect
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+      ARCHITECT_LLM_API_KEY: ${ARCHITECT_LLM_API_KEY:-}
+      ARCHITECT_LLM_BASE_URL: ${ARCHITECT_LLM_BASE_URL:-}
+      ARCHITECT_LLM_MODEL: ${ARCHITECT_LLM_MODEL:-}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: architect
+    volumes:
+      - ./services/langgraph/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
     depends_on:
       - api
       - redis
@@ -146,6 +207,9 @@ services:
       API_BASE_URL: http://api:8000
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: infra-service
+      ORCHESTRATOR_PUBLIC_IP: ${ORCHESTRATOR_PUBLIC_IP:-}
     volumes:
       - ./services/infra-service/src:/app/src:delegated
       - ./services/infra-service/ansible:/app/ansible:delegated
@@ -168,6 +232,8 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: telegram-bot
     volumes:
       - ./services/telegram_bot/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -189,16 +255,17 @@ services:
       API_BASE_URL: http://api:8000
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: worker-manager
       # Host path for mounting .claude dir into workers
       HOST_CLAUDE_DIR: ${HOST_CLAUDE_DIR:-/home/user/.claude}
-      # Dev environment settings
-      WORKSPACE_BASE_PATH: /tmp/codegen/workspaces
+      SCAFFOLDED_WORKSPACE_PATH: /data/workspaces
       INTERNAL_NETWORK: codegen_internal
       WORKER_NETWORK: codegen_worker
       WORKER_MANAGER_URL: http://worker-manager:8000
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /tmp/codegen/workspaces:/tmp/codegen/workspaces
+      - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
       - ${HOST_CLAUDE_DIR:-/home/user/.claude}:/host-claude:ro
     depends_on:
       redis:
@@ -223,6 +290,9 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: scheduler
+      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-300}
     volumes:
       - ./services/scheduler/src:/app/src:delegated
       - ./shared:/app/shared:delegated
@@ -236,6 +306,39 @@ services:
         condition: service_healthy
     networks:
       - internal
+
+  scaffolder:
+    build:
+      context: .
+      dockerfile: services/scaffolder/Dockerfile
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://api:8000
+      REDIS_URL: redis://redis:6379
+      PYTHONPATH: /app
+      WORKSPACE_BASE_PATH: /data/workspaces
+      SERVICE_TEMPLATE_PATH: /data/service-template
+      GITHUB_ORG: ${GITHUB_ORG}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      SERVICE_NAME: scaffolder
+    volumes:
+      - ./services/scaffolder/src:/app/src:delegated
+      - ./shared:/app/shared:delegated
+      - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
+      - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
+      - ${SERVICE_TEMPLATE_PATH:-../service-template}:/data/service-template:ro
+      - uv-cache:/root/.cache/uv
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+    deploy:
+      replicas: 1
 
   # === Reverse Proxy + Registry ===
 
@@ -269,6 +372,195 @@ services:
       - internal
     restart: unless-stopped
 
+  # === Observability ===
+
+  loki:
+    image: grafana/loki:3.4
+    command: -config.file=/etc/loki/loki.yml -log.format=json
+    volumes:
+      - ./infra/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --quiet --tries=1 --output-document=- http://localhost:3100/ready | grep -q ready" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - internal
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.4
+    command: -config.file=/etc/promtail/promtail.yml -log.format=json
+    volumes:
+      - ./infra/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
+  admin-frontend:
+    build:
+      context: services/admin-frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:80"
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    depends_on:
+      api:
+        condition: service_healthy
+      grafana:
+        condition: service_started
+    networks:
+      - internal
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SERVER_ROOT_URL: "http://${ORCHESTRATOR_HOSTNAME:-localhost}:3001/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_LIVE_ALLOWED_ORIGINS: "*"
+      GF_INSTALL_PLUGINS: ""
+      GF_PLUGINS_DISABLE_PLUGINS: "grafana-lokiexplore-app"
+      GF_LOG_MODE: "console"
+      GF_LOG_CONSOLE_FORMAT: "json"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./infra/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # === Langfuse (LLM Tracing) ===
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "3002:3000"
+    environment: &langfuse-env
+      # Computed / name-remapped (can't go in .env)
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/langfuse
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET}
+      SALT: ${LANGFUSE_SALT}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
+      # Docker-internal wiring
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      NEXTAUTH_URL: http://localhost:3002
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+      # S3 (MinIO) — name remapping from MINIO_ROOT_* → LANGFUSE_S3_*
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "events/"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "media/"
+    networks:
+      - internal
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *langfuse-env
+    networks:
+      - internal
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-miniosecret}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: [ "CMD", "mc", "ready", "local" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - internal
+
+  clickhouse:
+    image: clickhouse/clickhouse-server
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      TZ: UTC
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - internal
+
   # === Infrastructure ===
 
   db:
@@ -287,6 +579,7 @@ services:
       start_period: 5s
     volumes:
       - db_data:/var/lib/postgresql/data
+      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
     networks:
       - internal
 
@@ -317,3 +610,8 @@ volumes:
   caddy-config:
   registry-data:
   uv-cache:
+  loki-data:
+  grafana-data:
+  clickhouse_data:
+  clickhouse_logs:
+  minio_data:

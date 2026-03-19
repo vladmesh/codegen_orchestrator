@@ -29,7 +29,6 @@ jobs:
       scheduler: ${{ steps.filter.outputs.scheduler }}
       telegram: ${{ steps.filter.outputs.telegram }}
       worker-manager: ${{ steps.filter.outputs.worker-manager }}
-      cli: ${{ steps.filter.outputs.cli }}
       shared: ${{ steps.filter.outputs.shared }}
       packages: ${{ steps.filter.outputs.packages }}
       infra-service: ${{ steps.filter.outputs.infra-service }}
@@ -53,8 +52,6 @@ jobs:
               - 'services/telegram_bot/**'
             worker-manager:
               - 'services/worker-manager/**'
-            cli:
-              - 'packages/orchestrator-cli/**'
             shared:
               - 'shared/**'
             packages:
@@ -82,6 +79,9 @@ jobs:
       - name: Install uv
         run: pip install uv
 
+      - name: Install dependencies
+        run: uv sync
+
       - name: Check formatting with Ruff
         run: uv run ruff format --check .
 
@@ -104,6 +104,8 @@ jobs:
         include:
           - service: api
             changed: ${{ needs.detect-changes.outputs.api }}
+          - service: langgraph
+            changed: ${{ needs.detect-changes.outputs.langgraph }}
           - service: scheduler
             changed: ${{ needs.detect-changes.outputs.scheduler }}
     steps:
@@ -112,10 +114,22 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
+        if: >-
+          ${{
+            matrix.changed == 'true' ||
+            needs.detect-changes.outputs.shared == 'true' ||
+            needs.detect-changes.outputs.docker-test == 'true' ||
+            github.event_name == 'workflow_dispatch'
+          }}
 
       - name: Run service tests
-        if: ${{ matrix.changed == 'true' || needs.detect-changes.outputs.shared == 'true' }}
+        if: >-
+          ${{
+            matrix.changed == 'true' ||
+            needs.detect-changes.outputs.shared == 'true' ||
+            needs.detect-changes.outputs.docker-test == 'true' ||
+            github.event_name == 'workflow_dispatch'
+          }}
         run: make test-service SERVICE=${{ matrix.service }}
         env:
           DOCKER_BUILDKIT: 1
@@ -142,23 +156,13 @@ jobs:
           - suite: backend
             should_run: >-
               ${{
-                needs.detect-changes.outputs.langgraph == 'true' ||
+                (needs.detect-changes.outputs.langgraph == 'true' ||
                 needs.detect-changes.outputs.worker-manager == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch'
-              }}
-          # cli: orchestrator-cli + packages
-          - suite: cli
-            should_run: >-
-              ${{
-                needs.detect-changes.outputs.cli == 'true' ||
-                needs.detect-changes.outputs.packages == 'true' ||
-                needs.detect-changes.outputs.api == 'true' ||
-                needs.detect-changes.outputs.shared == 'true' ||
-                needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch'
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
               }}
           # template: always run (tests external copier template)
           - suite: template
@@ -167,22 +171,35 @@ jobs:
           - suite: frontend
             should_run: >-
               ${{
-                needs.detect-changes.outputs.telegram == 'true' ||
+                (needs.detect-changes.outputs.telegram == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch'
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
               }}
           # infra: scheduler + infra-service + api
           - suite: infra
             should_run: >-
               ${{
-                needs.detect-changes.outputs.scheduler == 'true' ||
+                (needs.detect-changes.outputs.scheduler == 'true' ||
                 needs.detect-changes.outputs.infra-service == 'true' ||
                 needs.detect-changes.outputs.api == 'true' ||
                 needs.detect-changes.outputs.shared == 'true' ||
                 needs.detect-changes.outputs.docker-test == 'true' ||
-                github.event_name == 'workflow_dispatch'
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
+              }}
+          # po-tools: langgraph PO tools + api
+          - suite: po-tools
+            should_run: >-
+              ${{
+                (needs.detect-changes.outputs.langgraph == 'true' ||
+                needs.detect-changes.outputs.api == 'true' ||
+                needs.detect-changes.outputs.shared == 'true' ||
+                needs.detect-changes.outputs.docker-test == 'true' ||
+                github.event_name == 'workflow_dispatch')
+                && 'true' || 'false'
               }}
     steps:
       - name: Checkout code

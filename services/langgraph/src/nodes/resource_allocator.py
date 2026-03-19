@@ -2,6 +2,7 @@
 
 import structlog
 
+from ..clients.api import api_client
 from ..tools.allocator import AllocationError, ensure_project_allocations
 from .base import FunctionalNode
 
@@ -42,10 +43,20 @@ class ResourceAllocatorNode(FunctionalNode):
         config = project_spec.get("config", {})
         modules = config.get("modules", ["backend"])
         min_ram_mb = config.get("estimated_ram_mb", 512)
+        service_name = project_spec.get("name", "project").replace(" ", "_").lower()
+
+        # Get repo_id from primary repository
+        repo = await api_client.get_primary_repository(project_id)
+        if not repo:
+            return {
+                "errors": state.get("errors", []) + ["No repository found for project"],
+            }
+        repo_id = repo.id
 
         logger.info(
             "resource_allocation_start",
             project_id=project_id,
+            repo_id=repo_id,
             modules=modules,
             min_ram_mb=min_ram_mb,
         )
@@ -53,6 +64,8 @@ class ResourceAllocatorNode(FunctionalNode):
         try:
             allocated = await ensure_project_allocations(
                 project_id=project_id,
+                repo_id=repo_id,
+                service_name=service_name,
                 modules=modules,
                 min_ram_mb=min_ram_mb,
             )

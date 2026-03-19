@@ -4,7 +4,7 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
-from ..schemas.tools import ServerInfo, ServerSearchResult, ServiceDeployment
+from ..schemas.tools import ApplicationInfo, ServerInfo, ServerSearchResult
 from .base import api_client
 
 
@@ -15,8 +15,8 @@ async def list_managed_servers() -> list[ServerInfo]:
     Returns servers with their capacity (RAM/Disk) and current usage.
     Only returns servers that are managed (not ghost/personal).
     """
-    resp = await api_client.list_servers(is_managed=True)
-    return [ServerInfo(**s) for s in resp]
+    servers = await api_client.list_servers(is_managed=True)
+    return [ServerInfo(**s.model_dump()) for s in servers]
 
 
 @tool
@@ -40,18 +40,18 @@ async def find_suitable_server(
     servers = await api_client.list_servers(is_managed=True)
 
     # Filter to only ready/in_use servers (active for deployment)
-    servers = [s for s in servers if s.get("status") in ("ready", "in_use")]
+    servers = [s for s in servers if s.status in ("ready", "in_use")]
 
     # Filter by available resources
     suitable = []
     for srv in servers:
-        available_ram = srv.get("capacity_ram_mb", 0) - srv.get("used_ram_mb", 0)
-        available_disk = srv.get("capacity_disk_mb", 0) - srv.get("used_disk_mb", 0)
+        available_ram = srv.capacity_ram_mb - srv.used_ram_mb
+        available_disk = srv.capacity_disk_mb - srv.used_disk_mb
 
         if available_ram >= min_ram_mb and available_disk >= min_disk_mb:
             suitable.append(
                 {
-                    **srv,
+                    **srv.model_dump(),
                     "available_ram_mb": available_ram,
                     "available_disk_mb": available_disk,
                 }
@@ -73,8 +73,8 @@ async def get_server_info(
 
     Returns capacity, usage, IP, OS, and other details for the server.
     """
-    resp = await api_client.get_server(handle)
-    return ServerInfo(**resp)
+    server = await api_client.get_server(handle)
+    return ServerInfo(**server.model_dump())
 
 
 @tool
@@ -93,10 +93,10 @@ async def update_server_status(
 @tool
 async def get_services_on_server(
     server_handle: Annotated[str, "Server handle"],
-) -> list[ServiceDeployment]:
-    """Get all active service deployments on a server.
+) -> list[ApplicationInfo]:
+    """Get all applications running on a server.
 
-    Returns service deployment records with deployment_info for redeployment after recovery.
+    Returns application records with status and port information.
     """
     resp = await api_client.get_server_services(server_handle)
-    return [ServiceDeployment(**sd) for sd in resp]
+    return [ApplicationInfo(**app) for app in resp]

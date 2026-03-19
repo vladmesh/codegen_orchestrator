@@ -1,22 +1,26 @@
 """Servers router."""
 
+from datetime import UTC
+
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.server import ServerStatus
 from shared.crypto import SecretsCipher
-from shared.models import PortAllocation, Server, ServiceDeployment, User
-from shared.models.service_deployment import DeploymentStatus
+from shared.models import Application, PortAllocation, Server, User
 
 from ..database import get_async_session
 from ..schemas import (
     AllocateNextPortRequest,
+    ApplicationRead,
+    MetricsHistoryCreate,
+    MetricsHistoryRead,
     PortAllocationCreate,
     PortAllocationRead,
     ServerCreate,
     ServerRead,
-    ServiceDeploymentRead,
 )
 
 router = APIRouter(prefix="/servers", tags=["servers"])
@@ -221,7 +225,7 @@ async def allocate_next_port(
             server_handle=handle,
             port=port,
             service_name=req.service_name,
-            project_id=req.project_id,
+            application_id=req.application_id,
         )
         db.add(allocation)
         try:
@@ -273,15 +277,29 @@ async def update_server(
         "used_ram_mb",
         "used_disk_mb",
         "os_template",
+        # Health metrics
+        "cpu_usage_pct",
+        "load_avg_1m",
+        "load_avg_5m",
+        "load_avg_15m",
+        "network_rx_errors",
+        "network_tx_errors",
+        "container_count_running",
+        "container_count_total",
+        "uptime_seconds",
+        "last_health_check",
     }
     # Fields that need datetime parsing
-    datetime_fields = {"provisioning_started_at"}
+    datetime_fields = {"provisioning_started_at", "last_health_check"}
 
     for field, value in updates.items():
         if field in allowed_fields and hasattr(server, field):
             # Parse datetime strings
             if field in datetime_fields and isinstance(value, str):
                 value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                # Strip tz for tz-naive DB columns
+                if value.tzinfo is not None:
+                    value = value.replace(tzinfo=None)
             setattr(server, field, value)
 
     await db.commit()
@@ -369,25 +387,100 @@ async def provision_server(
     }
 
 
-@router.get("/{handle}/services", response_model=list[ServiceDeploymentRead])
-async def get_server_services(
+@router.get("/{handle}/applications", response_model=list[ApplicationRead])
+async def get_server_applications(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(_require_admin_if_user),
-) -> list[ServiceDeployment]:
-    """Get all services deployed on a specific server (admin only)."""
-    # Verify server exists
+) -> list[Application]:
+    """Get all applications on a specific server (admin only)."""
     if not await db.get(Server, handle):
         raise HTTPException(status_code=404, detail="Server not found")
 
     query = (
-        select(ServiceDeployment)
+        select(Application)
         .where(
-            ServiceDeployment.server_handle == handle,
-            ServiceDeployment.status == DeploymentStatus.RUNNING.value,  # Only active deployments
+            Application.server_handle == handle,
+            Application.status != ApplicationStatus.STOPPED.value,
         )
-        .order_by(ServiceDeployment.deployed_at.desc())
+        .order_by(Application.service_name)
     )
 
     result = await db.execute(query)
     return result.scalars().all()
+
+
+@router.get("/{handle}/metrics-history", response_model=list[MetricsHistoryRead])
+async def get_metrics_history(
+    handle: str,
+    hours: int = 24,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
+) -> list:
+    """Get metrics history for a server (admin only)."""
+    from datetime import datetime, timedelta
+
+    from shared.models import ServerMetricsHistory
+
+    if not await db.get(Server, handle):
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
+    query = (
+        select(ServerMetricsHistory)
+        .where(
+            ServerMetricsHistory.server_handle == handle,
+            ServerMetricsHistory.recorded_at >= cutoff,
+        )
+        .order_by(ServerMetricsHistory.recorded_at.desc())
+    )
+
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+@router.delete("/metrics-history")
+async def delete_old_metrics_history(
+    retention_hours: int = 168,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
+) -> dict:
+    """Delete metrics history older than retention_hours (default 7 days)."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import delete as sa_delete
+
+    from shared.models import ServerMetricsHistory
+
+    cutoff = datetime.now(UTC) - timedelta(hours=retention_hours)
+    stmt = sa_delete(ServerMetricsHistory).where(ServerMetricsHistory.recorded_at < cutoff)
+    result = await db.execute(stmt)
+    await db.commit()
+    return {"deleted": result.rowcount}
+
+
+@router.post(
+    "/{handle}/metrics-history",
+    response_model=MetricsHistoryRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_metrics_history(
+    handle: str,
+    snapshot: MetricsHistoryCreate,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(_require_admin_if_user),
+) -> object:
+    """Append a metrics history snapshot for a server (internal use)."""
+    from shared.models import ServerMetricsHistory
+
+    if not await db.get(Server, handle):
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    entry = ServerMetricsHistory(
+        server_handle=handle,
+        metrics=snapshot.metrics,
+    )
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+    return entry

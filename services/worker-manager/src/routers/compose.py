@@ -47,7 +47,7 @@ async def run_compose(worker_id: str, request: ComposeRequest, req: Request) -> 
     from ..config import settings
 
     workspace_path = (
-        Path(stored_workspace) if stored_workspace else (Path(settings.WORKSPACE_BASE_PATH) / worker_id / "workspace")
+        Path(stored_workspace) if stored_workspace else (Path(settings.SCAFFOLDED_WORKSPACE_PATH) / worker_id)
     )
     container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
 

@@ -1,134 +1,90 @@
 # Code Audit
 
-> **Date**: 2026-03-05
-> **Scope**: full codebase (`services/`, `shared/`, `packages/`)
-> **Previous audit**: 2026-03-04
+> **Date**: 2026-03-17
+> **Scope**: full
+
+## Summary
+- Dead code: 1 issue
+- Code smells: 10 issues
+- Security: 0 issues
+- Contract violations: 7 issues
+- Missing DTOs & schema gaps: 5 issues
+- Convention violations: 5 issues
+- Test gaps: 1 issue (systemic — most services lack unit tests)
 
 ## CI Health
 
-✅ Last CI run passed (2026-03-04, `f6c0269`)
-
-## Summary
-
-- Dead code: 2 issues
-- Code smells: 12 issues
-- Security: 5 issues
-- Test gaps: 88 files without unit tests
-
-**Resolved since last audit:**
-- ✅ #23 Extract infra_client + constants to shared — DONE
-- ✅ #24 Fix critical getenv defaults — DONE
-
----
+✅ Last CI run passed (2026-03-17) — commit `eb17038`, workflow "CI"
 
 ## Dead Code
-
 | File | Issue | Action |
 |------|-------|--------|
-| `services/langgraph/src/list_repos.py` (72 LOC) | Standalone debug script, never imported, uses `print()` + `sys.path` hack | backlog #17 |
-| `shared/schemas/tool_registry.py:88` | Redundant `pass` after `print()` | fix now |
+| `services/scheduler/src/tasks/task_dispatcher.py:136` | `# TODO: replace with proper project.internal flag when going to prod` — stale TODO, unclear if still relevant | review / backlog |
 
 ## Code Smells
+| File | LOC | Issue | Action |
+|------|-----|-------|--------|
+| `services/worker-manager/src/manager.py` | 920 | File far exceeds 400 LOC limit | backlog — extract helpers |
+| `services/langgraph/src/consumers/engineering.py` | 881 | File far exceeds 400 LOC limit | backlog — extract helpers |
+| `services/langgraph/src/consumers/deploy.py` | 866 | File far exceeds 400 LOC limit | backlog — extract helpers |
+| `services/scheduler/src/tasks/task_dispatcher.py` | 740 | File far exceeds 400 LOC limit | backlog — extract helpers |
+| `services/api/src/routers/rag.py` | 689 | File far exceeds 400 LOC limit | backlog |
+| `services/infra-service/src/provisioner/node.py` | 642 | File exceeds 400 LOC limit | backlog |
+| `services/langgraph/src/subgraphs/devops/nodes.py` | 639 | File exceeds 400 LOC limit | backlog |
+| `services/api/src/routers/tasks.py` | 625 | File exceeds 400 LOC limit | backlog |
+| `services/langgraph/src/agents/po/tools.py` | 605 | File exceeds 400 LOC limit | backlog |
+| `services/langgraph/src/nodes/developer.py` | 513 | File exceeds 400 LOC limit | backlog |
 
-### Large files (>400 LOC)
-
-| File | Lines | Status |
-|------|------:|--------|
-| `services/langgraph/src/workers/engineering_worker.py` | 1088 | backlog #18 |
-| `shared/clients/github.py` | 986 | backlog #19 |
-| `services/worker-manager/src/manager.py` | 828 | not tracked |
-| `services/api/src/routers/rag.py` | 688 | not tracked |
-| `services/langgraph/src/subgraphs/devops/nodes.py` | 644 | Ideas |
-| `services/infra-service/src/provisioner/node.py` | 615 | not tracked |
-| `services/telegram_bot/src/main.py` | 473 | Ideas |
-| `services/langgraph/src/nodes/developer.py` | 466 | not tracked |
-| `services/langgraph/src/subgraphs/devops/env_analyzer.py` | 465 | not tracked |
-| `services/langgraph/src/clients/worker_spawner.py` | 418 | not tracked |
-| `packages/worker-wrapper/src/worker_wrapper/wrapper.py` | 414 | not tracked |
-| `services/scheduler/src/tasks/server_sync.py` | 411 | not tracked |
-
-### Functions >50 LOC (top offenders)
-
-| File | Function | LOC |
-|------|----------|----:|
-| `engineering_worker.py:588` | `process_engineering_job()` | 285 |
-| `manager.py:434` | `create_worker_with_capabilities()` | 235 |
-| `engineering_worker.py:257` | `_wait_for_ci_and_fix()` | 220 |
-| `devops/nodes.py:419` | `run()` (DeployNode) | 220 |
-| `developer.py:48` | `run()` | 203 |
-| `engineering_worker.py:875` | `_handle_engineering_success()` | 201 |
-| `worker_spawner.py:147` | `request_spawn()` | 168 |
-| `server_sync.py:109` | `_sync_server_list()` | 131 |
-| `provisioner/node.py:85` | `reinstall_and_provision()` | 115 |
-| `server_sync.py:298` | `_check_provisioning_triggers()` | 114 |
-| `wrapper.py:257` | `execute_agent()` | 108 |
-| `env_analyzer.py:363` | `env_analyzer_run()` | 103 |
-
-### Swallowed exceptions (except + pass)
-
-| File | Line | Severity |
-|------|------|----------|
-| `services/worker-manager/src/events.py` | 85, 89, 93, 104 | major — 4 silenced exceptions in cleanup |
-| `services/worker-manager/src/docker_ops.py` | 82 | minor |
-| `services/worker-manager/src/main.py` | 116 | minor |
-
-### Broad `except Exception:` clauses
-
-23 instances total. Notable: `worker-manager/routers/compose.py:82,101`, `api/main.py:45`, `api/routers/projects.py:119`, `langgraph/po/consumer.py:186`, `telegram_bot/main.py:326`.
+### noqa comments that could be fixed
+| File:Line | Comment | Assessment |
+|-----------|---------|------------|
+| `services/telegram_bot/src/handlers.py:213` | `# noqa: PLR2004 — index into callback_data parts` | acceptable — magic number is an index |
+| `services/api/src/routers/debug.py:65` | `# noqa: PLR2004` (pending > 100) | could use a named constant |
+| `services/api/src/routers/debug.py:71` | `# noqa: S110` (bare except pass) | should log the error |
+| `services/langgraph/src/consumers/engineering.py:682` | `# noqa: PLR0913` (too many args) | should refactor — extract params into a dataclass |
+| `services/langgraph/src/subgraphs/devops/nodes.py:144` | `# noqa: PLR0911` (too many returns) | should refactor — extract lookup table |
+| `services/langgraph/src/tools/specs.py:27,51,104,175` | `# noqa: PLR2004` (len != 2) | could use HTTPStatus or named const |
+| `services/langgraph/src/tools/github.py:88` | `# noqa: PLR2004` (len != 2) | could use named const |
 
 ## Security
+No hardcoded secrets, tokens, or passwords found. Subprocess calls use controlled inputs (Ansible runner, SSH manager, compose runner). The infra-service Ansible inventory uses `# noqa: S310` for `urllib.request.urlopen` — acceptable for an internal API call.
 
-| File | Issue | Severity | Action |
-|------|-------|----------|--------|
-| `packages/orchestrator-cli/src/.../engineering.py:21` | `ORCHESTRATOR_USER_ID` defaults to `"unknown"` | major | **fixed #29** |
-| `packages/orchestrator-cli/src/.../deploy.py:21` | Same | major | **fixed #29** |
-| `packages/orchestrator-cli/src/.../respond.py:32` | Same | major | **fixed #29** |
-| `services/infra-service/src/provisioner/ansible_runner.py:99` | `subprocess.run` without input validation (noqa S603) | minor | reviewed OK |
-| `services/infra-service/src/provisioner/recovery.py:73` | subprocess call | minor | reviewed OK |
+## Contract Violations
+| File:Line | Violation | Should be | Severity |
+|-----------|-----------|-----------|----------|
+| `services/api/src/routers/webhooks.py:285` | `"status": "todo"` hardcoded in task creation dict | `TaskStatus.TODO.value` | high |
+| `services/api/src/routers/webhooks.py:102` | Direct `r.xadd(DEPLOY_QUEUE, ...)` bypassing `RedisStreamClient` | `redis_client.publish_message()` | medium |
+| `services/api/src/routers/webhooks.py:111,273` | `os.getenv("API_URL", "http://localhost:8000")` — env var with default | Fail fast with `RuntimeError` | medium |
+| `services/api/src/routers/projects.py:303` | `["architect:queue", "scaffold:queue", "engineering:queue", "deploy:queue"]` hardcoded | Use `ARCHITECT_QUEUE`, `SCAFFOLD_QUEUE`, `ENGINEERING_QUEUE`, `DEPLOY_QUEUE` from `shared/queues.py` | medium |
+| `services/langgraph/src/redis_publisher.py:38` | Direct `client.xadd(stream, {"data": data})` — bypasses `RedisStreamClient.publish_message()` | Use `publish_message()` or `publish()` | medium |
+| `services/scheduler/src/tasks/task_dispatcher.py:54` + `services/langgraph/src/clients/story_worker_registry.py:19` | `STORY_WORKERS_KEY = "story:workers"` duplicated in two places | Centralize in `shared/queues.py` or a shared Redis keys module | low |
+| `services/langgraph/src/consumers/engineering.py:127` | `{"backlog", "todo", "blocked"}` hardcoded status set | Use `TaskStatus` enum members | medium |
 
-**Resolved:** `shared/notifications.py` TELEGRAM_BOT_TOKEN/API_BASE_URL defaults — fixed in #24.
+## Missing DTOs & Schema Gaps
+| File:Line | Pattern | Suggested Fix | Severity |
+|-----------|---------|---------------|----------|
+| `services/langgraph/src/clients/api.py` (30+ methods) | Nearly all methods accept `payload: dict` and return `-> dict` | Create shared Pydantic DTOs for each entity (deployment, application, incident, etc.) | high |
+| `services/scheduler/src/clients/api.py` (40+ methods) | All methods return `-> dict` with raw `resp.json()` | Validate through shared DTOs | high |
+| `services/infra-service/src/clients/api.py:62-75` | `get_server() -> dict`, `update_server(payload: dict) -> dict` | Use shared server DTO | medium |
+| `services/langgraph/src/agents/po/tools.py:125,243` | `repo_resp.json()["id"]`, `resp.json()["id"]` — raw indexing | Validate through DTO | medium |
+| `services/telegram_bot/src/clients/api.py:49,53` | `return resp.json()` unvalidated | Validate through shared DTOs | medium |
+
+## Convention Violations
+| File:Line | Violation | Rule |
+|-----------|-----------|------|
+| `services/infra-service/ansible/inventory/api_inventory.py:30,73,75,77` | `print()` statements | Use structlog (though this is an Ansible dynamic inventory script — acceptable exception) |
+| `services/api/src/routers/webhooks.py:111` | `os.getenv("API_URL", "http://localhost:8000")` | No env var defaults — fail fast |
+| `services/api/src/routers/webhooks.py:273` | `os.getenv("API_URL", "http://localhost:8000")` (same, second occurrence) | No env var defaults — fail fast |
+| `services/scheduler/src/tasks/server_sync.py:21` | `os.getenv("GHOST_SERVERS", "").split(",")` — empty string default | Borderline — empty default is reasonable for optional list, but deviates from convention |
+| `services/api/src/routers/webhooks.py:285-289` | Inline dict literal passed as `json=task_data` to internal HTTP POST | Should use a shared DTO for task creation |
 
 ## Test Gaps
 
-88 source files have no corresponding unit test. Top gaps by service:
+**150 test files exist** across all services. However, the naming convention doesn't follow a 1:1 src→test mapping — tests are organized by feature/behavior rather than by source file. This is acceptable.
 
-| Service | Untested files | Notable gaps |
-|---------|---------------:|--------------|
-| langgraph | 31 | nodes/base, tools/*, workers/_base, config/*, clients/* |
-| api | 25 | All routers except webhooks/delete/encryption/debug, all schemas |
-| infra-service | 9 | All source files (0% coverage) |
-| scheduler | 7 | health_checker, provisioner tasks, rag_summarizer |
-| telegram_bot | 6 | handlers, main, middleware, keyboards |
-| worker-wrapper | 5 | wrapper.py, runners/*, config |
-| worker-manager | 4 | manager.py, agents/*, main |
-| orchestrator-cli | 4 | client, commands/*, main |
-
-Skipped tests:
-- `tests/e2e/test_engineering_flow.py:84` — `@pytest.mark.skip` (full flow test)
-- `tests/e2e/test_real_llm.py` — 4 `@pytest.mark.skipif` (conditional on env vars — OK)
-
-## TODO/FIXME
-
-| File | Line | Comment | Status |
-|------|------|---------|--------|
-| `shared/notifications.py` | 156 | `TODO: Add is_admin field filtering` | not tracked |
-| `services/api/src/routers/servers.py` | 282 | `TODO: Trigger LangGraph provisioner node via queue/webhook` | not tracked |
-
----
-
-## New Issues (triaged 2026-03-05)
-
-1. **`ORCHESTRATOR_USER_ID` defaults to `"unknown"`** in 3 CLI command files — breaks audit trail. → backlog #29
-2. **`worker-manager/src/manager.py` (828 LOC)** — 6 functions >50 LOC, split candidate. → Ideas
-3. **infra-service: 0% unit test coverage** — 9 source files, 0 tests. → Ideas
-4. **`services/langgraph/src/tests/test_architect_routing.py`** — test file inside `src/` instead of `tests/`. → backlog #17
-
-## Already Tracked
-
-| Issue | Backlog |
-|-------|---------|
-| Split engineering_worker.py | #18 |
-| Split github.py | #19 |
-| Dead code cleanup (list_repos.py) | #17 |
-| Enable Ruff S110 + BLE001 | Ideas |
-| Split Tier 2 large files | Ideas |
+Key areas with thin or missing coverage:
+| Service | Coverage Gap |
+|---------|-------------|
+| `services/infra-service/` | Only 4 unit tests for a complex provisioning service (6 source files) |
+| `services/telegram_bot/` | 4 unit tests for 6 source files; no test for `handlers.py`, `keyboards.py`, `middleware.py` |
+| `services/api/` | No unit tests for many routers (`health`, `incidents`, `rag`, `resources`, `runs`, `servers`, `service_deployments`) — some covered by service tests |

@@ -1,30 +1,13 @@
 """Incident model for tracking server incidents."""
 
 from datetime import datetime
-from enum import StrEnum
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
+from shared.contracts.dto.incident import IncidentStatus, IncidentType  # noqa: F401
+
 from .base import Base
-
-
-class IncidentStatus(StrEnum):
-    """Incident status lifecycle."""
-
-    DETECTED = "detected"  # Инцидент обнаружен
-    RECOVERING = "recovering"  # Идет восстановление
-    RESOLVED = "resolved"  # Успешно восстановлено
-    FAILED = "failed"  # Восстановление не удалось
-
-
-class IncidentType(StrEnum):
-    """Types of incidents."""
-
-    SERVER_UNREACHABLE = "server_unreachable"  # Сервер недоступен по SSH
-    PROVISIONING_FAILED = "provisioning_failed"  # Ошибка настройки
-    SERVICE_DOWN = "service_down"  # Сервис упал
-    RESOURCE_EXHAUSTED = "resource_exhausted"  # Закончились ресурсы
 
 
 class Incident(Base):

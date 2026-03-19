@@ -25,9 +25,9 @@ class TestCopierGeneratesProject:
 
         # Backend service should exist
         assert (project / "services" / "backend").is_dir(), "Missing backend service"
-        assert (
-            project / "services" / "backend" / "Dockerfile"
-        ).exists(), "Missing backend Dockerfile"
+        assert (project / "services" / "backend" / "Dockerfile").exists(), (
+            "Missing backend Dockerfile"
+        )
 
         # Other modules should NOT exist (not requested)
         assert not (project / "services" / "tg_bot").exists(), "tg_bot should not exist"
@@ -46,15 +46,15 @@ class TestCopierGeneratesProject:
 
         # Backend should exist
         assert (project / "services" / "backend").is_dir(), "Missing backend service"
-        assert (
-            project / "services" / "backend" / "Dockerfile"
-        ).exists(), "Missing backend Dockerfile"
+        assert (project / "services" / "backend" / "Dockerfile").exists(), (
+            "Missing backend Dockerfile"
+        )
 
         # Telegram bot should exist
         assert (project / "services" / "tg_bot").is_dir(), "Missing tg_bot service"
-        assert (
-            project / "services" / "tg_bot" / "Dockerfile"
-        ).exists(), "Missing tg_bot Dockerfile"
+        assert (project / "services" / "tg_bot" / "Dockerfile").exists(), (
+            "Missing tg_bot Dockerfile"
+        )
 
     def test_generated_project_has_required_files(self, generated_backend_project: Path) -> None:
         """Test that generated project has all required files for orchestrator.

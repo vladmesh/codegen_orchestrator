@@ -27,14 +27,18 @@ class StreamMessage:
     # Helper to parse known DTOs if needed, but 'data' is raw dict
 
 
+DEFAULT_STREAM_MAXLEN = 1000
+
+
 class RedisStreamClient:
     """Client for Redis Streams-based message passing."""
 
-    def __init__(self, redis_url: str | None = None):
+    def __init__(self, redis_url: str | None = None, *, stream_maxlen: int = DEFAULT_STREAM_MAXLEN):
         """Initialize Redis client.
 
         Args:
             redis_url: Redis connection URL. Falls back to REDIS_URL env var.
+            stream_maxlen: Approximate max messages per stream (MAXLEN ~). 0 to disable.
         """
         self.redis_url = redis_url or os.getenv("REDIS_URL")
         if not self.redis_url:
@@ -42,6 +46,7 @@ class RedisStreamClient:
                 "Redis URL not provided. Pass redis_url argument or set REDIS_URL env var."
             )
         self._redis: redis.Redis | None = None
+        self._stream_maxlen = stream_maxlen
 
     async def connect(self) -> None:
         """Connect to Redis."""
@@ -65,16 +70,22 @@ class RedisStreamClient:
             raise RuntimeError("Redis not connected. Call connect() first.")
         return self._redis
 
+    def _xadd_kwargs(self) -> dict[str, Any]:
+        """Return maxlen kwargs for xadd if configured."""
+        if self._stream_maxlen:
+            return {"maxlen": self._stream_maxlen, "approximate": True}
+        return {}
+
     async def publish(self, stream: str, data: dict[str, Any]) -> str:
         """Publish a dict to a Redis Stream (wrapped in JSON 'data' field)."""
         message = {"data": json.dumps(data)}
-        message_id = await self.redis.xadd(stream, message)
+        message_id = await self.redis.xadd(stream, message, **self._xadd_kwargs())
         logger.debug("message_published", stream=stream, message_id=message_id)
         return message_id
 
     async def publish_flat(self, stream: str, fields: dict[str, str]) -> str:
         """Publish flat key-value fields directly to a Redis Stream (no JSON wrapping)."""
-        message_id = await self.redis.xadd(stream, fields)
+        message_id = await self.redis.xadd(stream, fields, **self._xadd_kwargs())
         logger.debug("message_published_flat", stream=stream, message_id=message_id)
         return message_id
 

@@ -11,13 +11,15 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.0.0",
-    "ruff>=0.8.0",
+    "ruff>=0.15.5",
     "mypy>=1.13.0",
     "httpx",
     "respx>=0.21.1",
     "fakeredis>=2.34.1",
     "makefun",
     "copier>=9.4.0",
+    # shared/ is COPY'd in Docker (not pip-installed), but tests need it
+    "shared",
     # Workspace members (all services + packages)
     "api",
     "langgraph-orchestrator",
@@ -25,7 +27,6 @@ dev = [
     "scheduler",
     "worker-manager",
     "infra-service",
-    "orchestrator-cli",
     "worker-wrapper",
 ]
 
@@ -37,7 +38,6 @@ members = [
     "services/scheduler",
     "services/worker-manager",
     "services/infra-service",
-    "packages/orchestrator-cli",
     "packages/worker-wrapper",
 ]
 
@@ -52,7 +52,6 @@ telegram-bot = { workspace = true }
 scheduler = { workspace = true }
 worker-manager = { workspace = true }
 infra-service = { workspace = true }
-orchestrator-cli = { workspace = true }
 worker-wrapper = { workspace = true }
 
 # No build-system — this is a virtual workspace root (not a distributable package)

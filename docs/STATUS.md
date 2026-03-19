@@ -3,7 +3,7 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-08
+> **Updated**: 2026-03-19
 
 ## Current Task
 
@@ -11,15 +11,15 @@ _(no task in progress)_
 
 ## Stats
 
-| backlog: 18 | todo: 0 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 24 |
+| backlog: 42 | todo: 2 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 126 |
 
 ## Recently Completed
 
-- Project ID → UUID + schema cleanup — 2026-03-08
-- Story: priority + blocked_by fields — 2026-03-08
-- #999 Smoke test task — 2026-03-07
-- make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms) — 2026-03-07
-- #64 Implement skill: PR flow + in_ci status + need_e2e — 2026-03-07
+- #1030 Decouple QA consumer from story lifecycle — 2026-03-19
+- #1025 Admin UI: Settings page (config + prompt editor) — 2026-03-19
+- #1024 Thin API endpoints for admin actions (7 endpoints) — 2026-03-19
+- #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage — 2026-03-19
+- #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs — 2026-03-19
 
 ## Quick Links
 

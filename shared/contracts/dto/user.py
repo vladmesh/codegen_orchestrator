@@ -1,10 +1,8 @@
-from pydantic import BaseModel, ConfigDict
+from shared.contracts.dto.base import TimestampedDTO
 
 
-class UserDTO(BaseModel):
+class UserDTO(TimestampedDTO):
     """User response."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: int
     telegram_id: int

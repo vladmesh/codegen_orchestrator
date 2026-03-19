@@ -7,6 +7,14 @@ from typing import Any
 
 import httpx
 
+from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.project import ProjectDTO
+from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.dto.server import ServerDTO
+from shared.contracts.dto.story import StoryDTO
+from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+from shared.contracts.dto.user import UserDTO
+from shared.log_config.correlation import get_correlation_id
 from src.config.settings import get_settings
 
 
@@ -37,6 +45,11 @@ class LanggraphAPIClient:
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         client = await self._get_client()
+        correlation_id = get_correlation_id()
+        if correlation_id:
+            headers = kwargs.pop("headers", None) or {}
+            headers.setdefault("X-Correlation-ID", correlation_id)
+            kwargs["headers"] = headers
         resp = await client.request(method, self._api_path(path), **kwargs)
         resp.raise_for_status()
         return resp
@@ -85,18 +98,21 @@ class LanggraphAPIClient:
     async def get_agent_config(self, agent_id: str) -> dict[str, Any]:
         return await self._get_json(f"agent-configs/{agent_id}")
 
-    async def list_projects(self, *, telegram_id: int | None = None) -> list[dict]:
+    async def list_projects(self, *, telegram_id: int | None = None) -> list[ProjectDTO]:
         headers = {"X-Telegram-ID": str(telegram_id)} if telegram_id else None
-        return await self._get_json("projects/", headers=headers)
+        resp = await self._request("GET", "projects/", headers=headers)
+        return [ProjectDTO.model_validate(p) for p in resp.json()]
 
-    async def list_servers(self, is_managed: bool | None = None) -> list[dict]:
+    async def list_servers(self, is_managed: bool | None = None) -> list[ServerDTO]:
         params = {}
         if is_managed is not None:
             params["is_managed"] = "true" if is_managed else "false"
-        return await self._get_json("servers/", params=params)
+        resp = await self._request("GET", "servers/", params=params)
+        return [ServerDTO.model_validate(s) for s in resp.json()]
 
-    async def get_server(self, server_handle: str) -> dict:
-        return await self._get_json(f"servers/{server_handle}")
+    async def get_server(self, server_handle: str) -> ServerDTO:
+        resp = await self._request("GET", f"servers/{server_handle}")
+        return ServerDTO.model_validate(resp.json())
 
     async def get_server_ssh_key(self, server_handle: str) -> str | None:
         """Get decrypted SSH private key for a server. Returns None if not stored."""
@@ -108,14 +124,15 @@ class LanggraphAPIClient:
                 return None
             raise
 
-    async def get_user_by_telegram(self, telegram_id: int) -> dict:
-        return await self._get_json(f"users/by-telegram/{telegram_id}")
+    async def get_user_by_telegram(self, telegram_id: int) -> UserDTO:
+        resp = await self._request("GET", f"users/by-telegram/{telegram_id}")
+        return UserDTO.model_validate(resp.json())
 
     async def update_server(self, server_handle: str, payload: dict) -> dict:
         return await self._patch_json(f"servers/{server_handle}", json=payload)
 
     async def get_server_services(self, server_handle: str) -> list[dict]:
-        return await self._get_json(f"servers/{server_handle}/services")
+        return await self._get_json(f"servers/{server_handle}/applications")
 
     async def list_server_ports(self, server_handle: str) -> list[dict]:
         return await self._get_json(f"servers/{server_handle}/ports")
@@ -128,6 +145,43 @@ class LanggraphAPIClient:
 
     async def create_service_deployment(self, payload: dict) -> dict:
         return await self._post_json("service-deployments/", json=payload)
+
+    async def create_deployment(self, payload: dict) -> dict:
+        return await self._post_json("service-deployments/", json=payload)
+
+    async def update_deployment(self, deployment_id: int, payload: dict) -> dict:
+        return await self._patch_json(f"service-deployments/{deployment_id}", json=payload)
+
+    # --- Applications ---
+
+    async def list_applications(self, params: dict | None = None) -> list[dict]:
+        return await self._get_json("applications/", params=params or {})
+
+    async def get_application(self, application_id: int) -> ApplicationDTO:
+        data = await self._get_json(f"applications/{application_id}")
+        return ApplicationDTO.model_validate(data)
+
+    async def create_application(self, payload: dict) -> dict:
+        return await self._post_json("applications/", json=payload)
+
+    async def update_application(self, application_id: int, payload: dict) -> dict:
+        return await self._patch_json(f"applications/{application_id}", json=payload)
+
+    async def get_or_create_application(
+        self, repo_id: str, server_handle: str, service_name: str
+    ) -> dict:
+        """Find existing application or create a new one."""
+        apps = await self.list_applications({"repo_id": repo_id, "server_handle": server_handle})
+        if apps:
+            return apps[0]
+        return await self.create_application(
+            {
+                "repo_id": repo_id,
+                "server_handle": server_handle,
+                "service_name": service_name,
+                "status": "not_deployed",
+            }
+        )
 
     async def query_rag(self, payload: dict) -> dict:
         return await self._post_json("rag/query", json=payload)
@@ -144,13 +198,38 @@ class LanggraphAPIClient:
     async def update_incident(self, incident_id: int, payload: dict) -> dict:
         return await self._patch_json(f"incidents/{incident_id}", json=payload)
 
+    # --- Architect: story/task methods ---
+
+    async def get_story(self, story_id: str) -> StoryDTO:
+        resp = await self._request("GET", f"stories/{story_id}")
+        return StoryDTO.model_validate(resp.json())
+
+    async def get_tasks_by_story(self, story_id: str) -> list[TaskDTO]:
+        resp = await self._request("GET", "tasks/", params={"story_id": story_id})
+        return [TaskDTO.model_validate(t) for t in resp.json()]
+
+    async def get_task_events(self, task_id: str) -> list[TaskEventDTO]:
+        resp = await self._request("GET", f"tasks/{task_id}/events")
+        return [TaskEventDTO.model_validate(e) for e in resp.json()]
+
+    async def create_task(self, task_data: dict) -> TaskDTO:
+        resp = await self._request("POST", "tasks/", json=task_data)
+        return TaskDTO.model_validate(resp.json())
+
+    async def transition_story(self, story_id: str, action: str) -> StoryDTO:
+        resp = await self._request("POST", f"stories/{story_id}/{action}")
+        return StoryDTO.model_validate(resp.json())
+
     # --- Phase 4: Project methods ---
 
-    async def get_project(self, project_id: str, *, telegram_id: int | None = None) -> dict | None:
+    async def get_project(
+        self, project_id: str, *, telegram_id: int | None = None
+    ) -> ProjectDTO | None:
         """Get a single project by ID."""
         headers = {"X-Telegram-ID": str(telegram_id)} if telegram_id else None
         try:
-            return await self._get_json(f"projects/{project_id}", headers=headers)
+            resp = await self._request("GET", f"projects/{project_id}", headers=headers)
+            return ProjectDTO.model_validate(resp.json())
         except httpx.HTTPStatusError as e:
             if e.response.status_code == HTTPStatus.NOT_FOUND:
                 return None
@@ -165,23 +244,24 @@ class LanggraphAPIClient:
             payload["env_hints"] = env_hints
         return await self._post_json(f"projects/{project_id}/config/secrets", json=payload)
 
-    async def get_project_repositories(self, project_id: str) -> list[dict]:
+    async def get_project_repositories(self, project_id: str) -> list[RepositoryDTO]:
         """Get repositories for a project."""
-        return await self._get_json("repositories/", params={"project_id": project_id})
+        resp = await self._request("GET", "repositories/", params={"project_id": project_id})
+        return [RepositoryDTO.model_validate(r) for r in resp.json()]
 
-    async def get_primary_repository(self, project_id: str) -> dict | None:
+    async def get_primary_repository(self, project_id: str) -> RepositoryDTO | None:
         """Get the primary repository for a project."""
         repos = await self.get_project_repositories(project_id)
         for repo in repos:
-            if repo.get("role") == "primary":
+            if repo.role == "primary":
                 return repo
         return repos[0] if repos else None
 
     # --- Phase 4: Allocation methods ---
 
-    async def get_project_allocations(self, project_id: str) -> list[dict]:
-        """Get all port allocations for a project."""
-        return await self._get_json("allocations/", params={"project_id": project_id})
+    async def get_application_allocations(self, application_id: int) -> list[dict]:
+        """Get all port allocations for an application."""
+        return await self._get_json("allocations/", params={"application_id": application_id})
 
     async def get_allocation(self, allocation_id: int) -> dict | None:
         """Get a single allocation by ID."""

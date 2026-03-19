@@ -19,6 +19,7 @@ import hashlib
 AGENT_BASE_IMAGES = {
     "claude": "worker-base-claude:latest",
     "factory": "worker-base-factory:latest",
+    "noop": "worker-base-claude:latest",  # Reuse claude base (has git+bash)
 }
 
 DEFAULT_BASE_IMAGE = "worker-base-claude:latest"

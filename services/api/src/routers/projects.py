@@ -3,13 +3,17 @@
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+import redis.asyncio as aioredis
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.contracts.dto.project import ProjectStatus
 from shared.crypto import decrypt_dict, encrypt_dict
-from shared.models import PortAllocation, Project, Run, User
+from shared.models import Application, PortAllocation, Project, Repository, Run, User
+from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
 
+from ..config import get_settings
 from ..database import get_async_session
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 
@@ -102,7 +106,7 @@ async def create_project(
         project = Project(
             id=project_id,
             name=project_in.name,
-            status=project_in.status or "draft",
+            status=project_in.status or ProjectStatus.DRAFT.value,
             config=project_in.config,
             owner_id=owner_id,
         )
@@ -157,15 +161,20 @@ async def get_project(
 @router.get("/", response_model=list[ProjectRead])
 async def list_projects(
     status: str | None = None,
+    owner_id: int | None = None,
     owner_only: bool = False,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> list[Project]:
-    """List projects, optionally filtered by status."""
+    """List projects, optionally filtered by status or owner_id."""
     query = select(Project)
 
+    # Direct owner_id filter (from admin panel)
+    if owner_id is not None:
+        query = query.where(Project.owner_id == owner_id)
+
     # Filter by owner if user provided and not admin, or if owner_only requested
-    if x_telegram_id is not None:
+    elif x_telegram_id is not None:
         user = await _resolve_user(x_telegram_id, db)
         if not user:
             raise HTTPException(
@@ -241,6 +250,26 @@ async def patch_project(
     return project
 
 
+@router.get("/{project_id}/config/secrets/keys")
+async def list_secret_keys(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """List secret key names for a project (no values exposed)."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db)
+
+    config = dict(project.config or {})
+    existing_secrets = config.get("secrets") or {}
+    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
+
+    return {"keys": sorted(existing_secrets.keys())}
+
+
 @router.post("/{project_id}/config/secrets")
 async def merge_secrets(
     project_id: uuid.UUID,
@@ -292,6 +321,77 @@ async def merge_secrets(
     return {"keys": sorted(existing_secrets.keys())}
 
 
+@router.delete("/{project_id}/config/secrets/{key}")
+async def delete_secret(
+    project_id: uuid.UUID,
+    key: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """Delete a single secret from project config.
+
+    Uses SELECT FOR UPDATE to prevent race conditions.
+    """
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    result = await db.execute(query)
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db)
+
+    config = dict(project.config or {})
+    existing_secrets = config.get("secrets") or {}
+    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
+
+    if key not in existing_secrets:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Secret key '{key}' not found",
+        )
+
+    del existing_secrets[key]
+    config["secrets"] = encrypt_dict(existing_secrets) if existing_secrets else {}
+
+    project.config = config
+    await db.commit()
+
+    logger.info("secret_deleted", project_id=project_id, key=key)
+    return {"keys": sorted(existing_secrets.keys())}
+
+
+_QUEUES_TO_CLEAN = [ARCHITECT_QUEUE, SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE]
+
+
+async def _cleanup_project_queue_messages(project_id: str) -> int:
+    """Remove stale queue messages referencing a deleted project.
+
+    Scans all pipeline queues and deletes messages whose project_id matches.
+    Best-effort — failures are logged but don't block project deletion.
+    """
+    settings = get_settings()
+    r = aioredis.from_url(settings.redis_url, decode_responses=True)
+    deleted = 0
+    try:
+        for queue in _QUEUES_TO_CLEAN:
+            try:
+                entries = await r.xrange(queue)
+            except Exception as exc:
+                logger.debug("queue_scan_failed", queue=queue, error=str(exc))
+                continue
+            for entry_id, fields in entries:
+                if fields.get("project_id") == project_id:
+                    await r.xdel(queue, entry_id)
+                    deleted += 1
+        # Also clear scaffold inflight marker
+        await r.delete(f"scaffold:inflight:{project_id}")
+    finally:
+        await r.aclose()
+    if deleted:
+        logger.info("project_queue_messages_cleaned", project_id=project_id, deleted=deleted)
+    return deleted
+
+
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(
     project_id: uuid.UUID,
@@ -307,9 +407,20 @@ async def delete_project(
 
     # Delete FK-constrained related records
     await db.execute(delete(Run).where(Run.project_id == project_id))
-    await db.execute(delete(PortAllocation).where(PortAllocation.project_id == project_id))
+
+    # Delete port allocations and applications via project's repositories
+    repo_ids_q = select(Repository.id).where(Repository.project_id == project_id)
+    app_ids_q = select(Application.id).where(Application.repo_id.in_(repo_ids_q))
+    await db.execute(delete(PortAllocation).where(PortAllocation.application_id.in_(app_ids_q)))
+    await db.execute(delete(Application).where(Application.repo_id.in_(repo_ids_q)))
 
     await db.delete(project)
     await db.commit()
+
+    # Best-effort cleanup: remove stale queue messages for this project
+    try:
+        await _cleanup_project_queue_messages(str(project_id))
+    except Exception as e:
+        logger.warning("project_queue_cleanup_failed", project_id=project_id, error=str(e))
 
     logger.info("project_deleted", project_id=project_id)

@@ -15,15 +15,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy packages
-COPY shared /build/shared
-COPY packages/worker-wrapper /build/packages/worker-wrapper
-COPY packages/orchestrator-cli /build/packages/orchestrator-cli
+# Install dependency wheels first (cached when pyproject.toml is stable)
+COPY packages/worker-wrapper/pyproject.toml /build/packages/worker-wrapper/pyproject.toml
+RUN python -c "\
+import tomllib; \
+data=tomllib.load(open('/build/packages/worker-wrapper/pyproject.toml','rb')); \
+print('\n'.join(sorted(data['project']['dependencies'])))" > /tmp/all-deps.txt && \
+    pip wheel --no-cache-dir --wheel-dir=/build/wheels -r /tmp/all-deps.txt
 
-# Build wheels for all packages
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels /build/shared
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels /build/packages/worker-wrapper
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels --find-links=/build/wheels /build/packages/orchestrator-cli
+# Copy package source and build code-only wheel (fast — deps already wheeled)
+# Note: shared is COPY'd as plain files in the runtime stage, not wheeled
+COPY packages/worker-wrapper /build/packages/worker-wrapper
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir=/build/wheels /build/packages/worker-wrapper
 
 # -----------------
 # Runtime Stage
@@ -57,6 +60,10 @@ COPY --from=builder /build/wheels /wheels
 
 # Install Python packages from wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
+
+# Copy shared as plain files (deps are in package pyproject.toml files)
+COPY shared /app/shared
+ENV PYTHONPATH=/app
 
 # Create non-root user
 RUN useradd -m -s /bin/bash worker

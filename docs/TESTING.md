@@ -1,6 +1,6 @@
 # Test Infrastructure
 
-> **Актуально на**: 2026-03-08
+> **Актуально на**: 2026-03-18
 
 ## Test Layers
 
@@ -9,6 +9,7 @@
 | **Unit** | `services/{svc}/tests/unit/`, `shared/tests/`, `packages/*/tests/unit/` | None (mocks) | Pre-push + CI | ~12s (parallel) |
 | **Service** | `services/{svc}/tests/service/` | Docker (single service) | CI | ~5-10 min |
 | **Integration** | `tests/integration/{backend,template,infra,frontend}/` | Docker Compose (full stack) | CI (with `run-integration-tests` label) | ~10-30 min |
+| **Live** | `tests/live/` | Full stack (real services, no LLM) | Manual | ~30s–10 min |
 | **E2E** | `.claude/skills/e2e-*` (manual), `tests/e2e/` (scripts) | Full stack + real LLM | Manual only | 10-60 min |
 
 ## Running Tests
@@ -27,6 +28,12 @@ make test-service SERVICE=api
 # NOTE: In CI, these only run if the PR has the 'run-integration-tests' label.
 make test-integration          # All (auto-discovers docker/test/integration/*.yml)
 make test-integration-backend  # Specific suite
+
+# Live pipeline (real services, no LLM — structured 3-tier)
+make test-live-smoke           # Scaffold phase only (~30s)
+make test-live-engineering     # Scaffold + engineering (~3.5 min)
+make test-live-mega            # Full pipeline with deploy (~7-10 min)
+make test-live-pipeline        # All live tests
 
 # E2E
 make test-e2e-scaffold         # Quick scaffold smoke test (~2-3 min)
@@ -50,13 +57,13 @@ Both must pass.
 | Service | Unit | Service | Integration | E2E |
 |---------|------|---------|-------------|-----|
 | api | 6 files | 2 files | via backend suite | via /e2e-run |
-| langgraph | 20+ files | — | 3 tests (engineering worker flow) | via /e2e-run |
+| langgraph | 20+ files | 3 files (engineering, reject flow, PO tools) | 3 tests (engineering worker flow) + po-tools suite (9 tests) | via /e2e-run |
 | worker-manager | 15 files | — | 4 tests (worker creation/execution) | via /e2e-run |
 | scheduler | 2 files | 2 files | — | — |
 | telegram_bot | 3 files | — | via frontend suite | — |
 | infra-service | — | — | 1 file (Ansible) | — |
 | shared | 9 files | — | — | — |
-| packages (cli, wrapper) | 11 files | — | 2 files | — |
+| packages (worker-wrapper) | 9 files | — | 3 files | — |
 
 ## E2E Testing
 
@@ -68,6 +75,22 @@ E2E tests are NOT in CI — they require a running stack + real LLM calls.
 **Reports**: Written to `docs/e2e_results/`.
 
 **Scripts** (`tests/e2e/`): Lower-level test scripts (mock anthropic, dev env smoke, live smoke). Used for development, not production E2E.
+
+## Live Pipeline Tests
+
+Structured 3-tier test suite in `tests/live/` — tests real services without LLM calls.
+
+| Tier | Makefile target | Tests | Duration | What it covers |
+|------|----------------|-------|----------|----------------|
+| Scaffold | `test-live-smoke` | ~3 | ~30s | API CRUD, scaffold phase, stream routing |
+| Engineering | `test-live-engineering` | ~3 | ~3.5 min | Worker spawn, task dispatch, engineering flow |
+| Full | `test-live-mega` | ~3 | ~7-10 min | Deploy, infra, full pipeline end-to-end |
+
+**Key properties**:
+- Module-scoped async fixtures share one pipeline run across tests per tier
+- Auto-cleanup: GitHub repos, server containers, DB records (SQL cascade), port allocations
+- Debug dump: captures context + last 30 lines of docker logs on failure
+- Queue flush at fixture start prevents stale message pollution
 
 ## Integration Test Architecture
 

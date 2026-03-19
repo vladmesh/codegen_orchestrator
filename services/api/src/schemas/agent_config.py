@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.contracts.dto.base import TimestampedDTO
+
 
 class AgentConfigBase(BaseModel):
     """Base schema with common fields."""
@@ -33,7 +35,7 @@ class AgentConfigCreate(AgentConfigBase):
     id: str = Field(..., min_length=1, max_length=50, description="Agent identifier")
 
 
-class AgentConfigRead(AgentConfigBase):
+class AgentConfigRead(AgentConfigBase, TimestampedDTO):
     """Schema for reading agent config."""
 
     id: str

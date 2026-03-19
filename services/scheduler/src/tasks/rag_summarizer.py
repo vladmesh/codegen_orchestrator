@@ -2,9 +2,13 @@ import asyncio
 
 import structlog
 
+from ..startup import config as _config
+
 logger = structlog.get_logger()
 
-SUMMARY_POLL_INTERVAL = 30
+
+def _poll_interval() -> int:
+    return _config.get_int("scheduler.rag_summarizer_poll_interval") if _config else 30
 
 
 async def rag_summarizer_worker() -> None:
@@ -14,4 +18,4 @@ async def rag_summarizer_worker() -> None:
     """
     logger.info("rag_summarizer_worker_disabled_pending_refactor")
     while True:
-        await asyncio.sleep(SUMMARY_POLL_INTERVAL)
+        await asyncio.sleep(_poll_interval())

@@ -90,7 +90,16 @@ curl -sf -X PATCH "$API/api/brainstorms/$BS_ID" \
 
 ### 5. Interactive discussion
 
-After writing the initial document, present the key findings and open questions to the user.
+**Your role is opponent, not cheerleader.** The user needs someone to stress-test their reasoning, not confirm it.
+
+- **Challenge assumptions.** If the user says "we need X" — ask why. If the reasoning has holes, say so directly.
+- **Point out what's wrong** before acknowledging what's right. Lead with problems.
+- **Propose counter-arguments** even if you partly agree. Play devil's advocate.
+- **Be blunt.** No hedging ("perhaps we could consider..."), no filler ("great point!"). Say "this won't work because..." or "you're overcomplicating this."
+- **Flag complexity creep.** If a solution is growing arms and legs — call it out. "This started as X and is now a framework for Y. Do we actually need Y?"
+- **Disagree when you disagree.** Blind agreement is worse than useless — it wastes the brainstorm. If you think an idea is bad, say so with reasons.
+
+After writing the initial document, present the key findings **and your honest critique** to the user.
 
 If the user wants to continue discussing — update the document with new insights (and sync to DB via PATCH).
 
@@ -98,7 +107,7 @@ When the discussion is complete:
 1. Set `Status: done` in the markdown header
 2. Mark done in DB: `curl -sf -X POST "$API/api/brainstorms/$BS_ID/done" -H "Content-Type: application/json" -d '{"actor": "claude"}'`
 
-### 6. Commit
+### 6. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/brainstorms/<topic-slug>.md
@@ -112,9 +121,15 @@ git commit -m "brainstorm: <topic>"
 - Don't create backlog tasks directly. That's `/triage`'s job. Just write Action Items.
 - If the brainstorm reveals the topic is simple enough to just do — say so. Not everything needs a brainstorm.
 
+### Memory Review (Mandatory)
+
+**Before generating your final response, review your memory for feedback:**
+Did you have to fix any unexpected errors, correct wrong commands, or guess missing information during this task? 
+If yes, you **MUST** append an entry to `docs/skill-feedback.md` right now, following the format described in the **Self-Feedback** section below.
+
 ## Self-Feedback
 
-After completing this skill, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
+During your final memory review, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
 
 - A command or path in this skill was **wrong or outdated**
 - A step was **missing context** that you had to figure out yourself

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from fakeredis import aioredis
 import pytest
+import pytest_asyncio
 
 from shared.contracts.base import BaseMessage
 from shared.redis.client import RedisStreamClient, StreamMessage
@@ -16,14 +17,14 @@ class SampleMessage(BaseMessage):
     content: str = "test"
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def fake_redis():
     r = aioredis.FakeRedis(decode_responses=True)
     yield r
     await r.aclose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client(fake_redis):
     c = RedisStreamClient(redis_url="redis://fake:6379")
     c._redis = fake_redis

@@ -20,11 +20,6 @@ COPY services/langgraph/requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --prefix=/install -r requirements.lock
 
-# Copy and install shared module (changes more often, but lightweight install)
-COPY shared ./shared
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --prefix=/install ./shared
-
 # === Stage 2: Production ===
 # Create minimal runtime image
 FROM python:3.12-slim AS production
@@ -40,9 +35,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
+# Copy shared as plain files (deps are in service requirements.lock)
+COPY shared ./shared
+ENV PYTHONPATH=/app
+
 # Copy source code
 COPY services/langgraph/src ./src
 COPY secrets.yaml ./secrets.yaml
 
-# Run worker
-CMD ["python", "-m", "src.worker"]
+# Run service
+CMD ["python", "-m", "src"]

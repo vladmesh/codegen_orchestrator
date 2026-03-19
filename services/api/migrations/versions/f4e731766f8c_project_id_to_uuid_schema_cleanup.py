@@ -127,14 +127,10 @@ def downgrade() -> None:
 
     # Convert back to VARCHAR
     for table, col in PLAIN_TABLES:
-        op.execute(
-            f"ALTER TABLE {table} ALTER COLUMN {col}" f" TYPE varchar(255) USING {col}::text"
-        )
+        op.execute(f"ALTER TABLE {table} ALTER COLUMN {col} TYPE varchar(255) USING {col}::text")
 
     for table, col, _, _ in FK_TABLES:
-        op.execute(
-            f"ALTER TABLE {table} ALTER COLUMN {col}" f" TYPE varchar(255) USING {col}::text"
-        )
+        op.execute(f"ALTER TABLE {table} ALTER COLUMN {col} TYPE varchar(255) USING {col}::text")
 
     op.execute("ALTER TABLE projects ALTER COLUMN id TYPE varchar(255) USING id::text")
 

@@ -82,11 +82,42 @@ All secrets must be configured in the repository's **production** environment.
 | `FACTORY_API_KEY` | Factory.ai API key |
 | `HOST_CLAUDE_DIR` | Path to `.claude` directory on prod server |
 
+### Admin UI
+
+| Secret | Description |
+|--------|-------------|
+| `ADMIN_USER` | Admin panel basic auth username |
+| `ADMIN_PASSWORD` | Admin panel basic auth password |
+
 ### Observability
 
 | Secret | Description |
 |--------|-------------|
 | `LANGCHAIN_API_KEY` | LangSmith API key (optional, for tracing) |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse public key (empty = disabled) |
+| `LANGFUSE_SECRET_KEY` | Langfuse secret key |
+| `CLICKHOUSE_PASSWORD` | ClickHouse password (for Langfuse analytics) |
+| `MINIO_ROOT_USER` | MinIO root user (for Langfuse media storage) |
+| `MINIO_ROOT_PASSWORD` | MinIO root password |
+
+## QA Node (Prod Server)
+
+Prod servers are provisioned as QA testing nodes via the `qa_runner` Ansible role (`services/infra-service/ansible/roles/qa_runner/`). This allows the QA consumer to SSH to the server and run Claude Code CLI for post-deploy testing.
+
+**What the role installs**:
+- 2GB swap file (Claude Code binary extraction needs ~2GB, OOM on 4GB servers without it)
+- Claude Code CLI (standalone binary via `curl -fsSL https://claude.ai/install.sh | bash`)
+- Python venv at `/opt/qa-runner/venv` with `telethon` + `httpx`
+- `.credentials.json` OAuth session (copied from Ansible controller's `~/.claude/.credentials.json`)
+- Optional: `telethon.session` file for Telegram bot testing
+
+**Auto-provisioning**: The role is included in `site.yml` and `provision_software.yml` — new servers get QA capabilities automatically. The `claude_credentials_file` defaults to `~/.claude/.credentials.json` on the Ansible controller.
+
+**Manual re-provisioning** (e.g. after session expiry):
+```bash
+cd services/infra-service
+ANSIBLE_STDOUT_CALLBACK=default ansible-playbook -i ansible/inventories/prod/hosts ansible/playbooks/site.yml --tags qa -e "ansible_user=root"
+```
 
 ## Deploying
 

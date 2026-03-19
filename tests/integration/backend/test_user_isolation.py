@@ -32,21 +32,20 @@ async def user_projects(api_client, seed_users):
     """Create one project per user. Cleanup after test."""
     created = []
 
-    for tg_id, proj_id, name in [
-        (111_000, "iso-proj-a", "proj-a"),
-        (222_000, "iso-proj-b", "proj-b"),
+    for tg_id, name in [
+        (111_000, "proj-a"),
+        (222_000, "proj-b"),
     ]:
         resp = await api_client.post(
             "/api/projects/",
             json={
-                "id": proj_id,
                 "name": name,
                 "status": "draft",
                 "config": {"modules": ["backend"]},
             },
             headers={"X-Telegram-ID": str(tg_id)},
         )
-        assert resp.status_code == 201, f"Failed to create {proj_id}: {resp.text}"
+        assert resp.status_code == 201, f"Failed to create {name}: {resp.text}"
         created.append(resp.json())
 
     yield created
@@ -81,7 +80,8 @@ async def test_other_user_sees_only_own_projects(api_client, user_projects):
 @pytest.mark.asyncio
 async def test_cross_user_access_denied(api_client, user_projects):
     """User 222_000 tries to GET proj-a → 403."""
-    resp = await api_client.get("/api/projects/iso-proj-a", headers={"X-Telegram-ID": "222000"})
+    proj_a_id = user_projects[0]["id"]
+    resp = await api_client.get(f"/api/projects/{proj_a_id}", headers={"X-Telegram-ID": "222000"})
     assert resp.status_code == 403  # noqa: PLR2004
 
 
@@ -102,7 +102,6 @@ async def test_create_without_header_returns_400(api_client):
     resp = await api_client.post(
         "/api/projects/",
         json={
-            "id": "iso-no-owner",
             "name": "no-owner",
             "status": "draft",
             "config": {},

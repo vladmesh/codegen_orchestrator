@@ -32,12 +32,28 @@ services:
     build:
       context: ../../..
       dockerfile: services/langgraph/Dockerfile
-    command: ["python", "-m", "src.workers.engineering_worker"]
+    command: ["python", "-m", "src.consumers.engineering"]
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
       # GitHub/registry env vars intentionally absent — tests verify
       # the flow fails at the external boundary
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - backend-test
+
+  architect:
+    build:
+      context: ../../..
+      dockerfile: services/langgraph/Dockerfile
+    command: ["python", "-m", "src.consumers.architect"]
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
     depends_on:
       redis:
         condition: service_healthy
@@ -58,6 +74,7 @@ services:
       # Worker URLs use IP because workers inside DIND can't resolve DNS
       - WORKER_REDIS_URL=redis://172.31.0.10:6379/0
       - WORKER_API_URL=http://172.31.0.20:8000
+      - SCAFFOLDED_WORKSPACE_PATH=/tmp/codegen/workspaces
     volumes:
       - workspaces:/tmp/codegen/workspaces
     depends_on:
@@ -156,6 +173,7 @@ services:
       - ../../../services:/app/services
       - ../../../shared:/app/shared
       - ../../../packages:/app/packages
+      - workspaces:/tmp/codegen/workspaces
     environment:
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://172.31.0.10:6379/0

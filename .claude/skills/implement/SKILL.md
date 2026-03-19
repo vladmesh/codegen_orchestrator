@@ -9,6 +9,10 @@ argument-hint: "[#ID]"
 
 The main development skill. Implements the current task (or a specific one) using TDD workflow.
 
+## Key References
+- [docs/TESTING.md](docs/TESTING.md) — test layers, service vs integration tests, compose files
+- [docs/CONTRACTS.md](docs/CONTRACTS.md) — queue DTOs, shared enums (use instead of literals)
+
 ## Input
 
 - No arguments: continue working on the current in_dev task, or try to unblock a blocked task, or auto-pick the highest-priority backlog task
@@ -16,7 +20,25 @@ The main development skill. Implements the current task (or a specific one) usin
 
 ## Protocol
 
-### 0. Sync docs
+### 0. Sync git + docs
+
+Ensure local repo is fully synchronized with remote before starting any work:
+
+```bash
+# 1. Check for uncommitted changes — commit or stash them
+git status --short
+# If there are changes: commit doc-only changes, stash anything else
+
+# 2. Pull latest main (fast-forward only to avoid surprise merges)
+git checkout main
+git pull --ff-only
+
+# 3. If ff-only fails (local diverged from remote), reset to remote:
+#    This happens when squash-merged PRs leave orphan local commits.
+git reset --hard origin/main
+```
+
+After this step, `git status` should show clean working tree on main, up to date with origin.
 
 ```bash
 make sync
@@ -187,13 +209,16 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
   -d '{"event_type": "comment", "details": {"action": "plan_deviation", "step": N, "reason": "<why>"}, "actor": "claude"}' || true
 ```
 
-Follow Red -> Green -> Refactor:
+Follow Red -> Green -> Refactor. **Test behavior, not implementation** (see CLAUDE.md "Testing Philosophy"):
 
-1. **Red**: Write failing test(s) based on the step's Test spec. Run `make test-unit` to confirm they fail.
-2. **Green**: Write minimal code to make tests pass. Run `make test-unit`.
-3. **Integration**: If the step is an integration test step from the plan — write the test, but do NOT run locally (CI will run it).
-4. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
-5. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
+1. **Red**: Write failing test(s) based on the step's Test spec. **Choose the right test level:**
+   - Touches DB/Redis → service test (`services/{name}/tests/service/`)
+   - Crosses service boundaries → integration test (`tests/integration/{suite}/`)
+   - Pure logic only (parsers, validators) → unit test (`tests/unit/`)
+   Run the test to confirm it fails.
+2. **Green**: Write minimal code to make tests pass. Run the test.
+3. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
+4. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
 
 **After the commit** — emit note event with commit SHA:
 ```bash
@@ -232,13 +257,12 @@ gh run list --branch "$BRANCH" --limit 1 --json status,conclusion
 ```
 
 5. **CI red** — read logs via `gh run view --log-failed`:
-   - **Failure related to current task** — fix, commit, push, re-poll. Do NOT touch docs. After fixing, emit a CI-fix event:
+   - Fix the issue, commit, push, re-poll. Do NOT touch docs. After fixing, emit a CI-fix event:
      ```bash
      curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
        -H "Content-Type: application/json" \
        -d "{\"event_type\": \"note\", \"details\": {\"action\": \"ci_fix\", \"error\": \"<brief error>\", \"fix\": \"<what was fixed>\"}, \"actor\": \"claude\"}" || true
      ```
-   - **Pre-existing failure** (unrelated) — note it, proceed to step 7.
 
 6. **CI green** — proceed to step 7.
 
@@ -311,7 +335,7 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/complete" \
 make sync
 ```
 
-6. **Commit** doc updates on main:
+6. **Commit** doc updates on main (DO NOT push — doc-only commits stay local to avoid wasting CI minutes):
 ```bash
 git add docs/CHANGELOG.md docs/backlog.md
 git commit -m "docs: complete #<ID> — <title>"
@@ -319,37 +343,17 @@ git commit -m "docs: complete #<ID> — <title>"
 
 ### 9. Report
 
-**Emit summary event** (before printing):
-```bash
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
-  -H "Content-Type: application/json" \
-  -d '{"event_type": "comment", "details": {"action": "implementation_summary", "steps_completed": N, "total_steps": N, "deviations": [], "notes": "<brief summary>"}, "actor": "claude"}' || true
-```
+> **STOP. Before writing the summary, complete the Skill Feedback step below. Do NOT skip it.**
 
-Print a summary:
-- Task: #ID — Title
-- Steps completed: N/N
-- Tests: X passed, Y added
-- Files changed: list
-- Next: suggest running `/e2e-run` if core pipeline was touched, or `/implement` to pick next task
+**9a. Skill Feedback** — review the session for problems with THIS skill:
 
-## Important
-
-- If you need to change `shared/contracts/` or DB schema that wasn't in the plan — STOP and ask the user.
-- If tests are failing and you can't figure out why after 2 attempts — STOP and report the issue.
-- Don't skip tests. Every step should have at least one test unless it's pure documentation.
-- Run `make lint` before every commit.
-
-## Self-Feedback
-
-After completing this skill, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
-
+Did you hit any of these during this task?
 - A command or path in this skill was **wrong or outdated**
 - A step was **missing context** that you had to figure out yourself
 - A step could be **simplified or reordered** for better flow
 - The skill **gave ambiguous instructions** that led to a wrong first attempt
 
-Entry format:
+If yes — append an entry to `docs/skill-feedback.md` **right now**, before proceeding:
 
 ```markdown
 ## [implement] — <today's date>
@@ -359,4 +363,64 @@ Entry format:
 - **Suggested fix**: <concrete change to the skill text>
 ```
 
-Only write feedback that is **specific and actionable**. Skip vague impressions.
+If nothing went wrong — skip the file write, but you must still explicitly confirm: "Skill feedback: none."
+
+**9b. Emit summary event**:
+```bash
+curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
+  -H "Content-Type: application/json" \
+  -d '{"event_type": "comment", "details": {"action": "implementation_summary", "steps_completed": N, "total_steps": N, "deviations": [], "notes": "<brief summary>"}, "actor": "claude"}' || true
+```
+
+**9c. Print summary**:
+- Task: #ID — Title
+- Steps completed: N/N
+- Tests: X passed, Y added
+- Files changed: list
+- Next: suggest running `/e2e-run` if core pipeline was touched, or `/implement` to pick next task
+
+## Important
+
+- If you need to change `shared/contracts/` or DB schema that wasn't in the plan — STOP and ask the user.
+- Don't skip tests. Every step should have at least one test unless it's pure documentation.
+- Run `make lint` before every commit.
+
+### Code discipline (see CLAUDE.md "Critical Anti-Patterns" for full details)
+
+- **Fail-fast**: No defaults, no fallbacks, no `get(key, default)`. Missing value = crash = fast fix. No "just in case" branches.
+- **Enums & schemas only**: Use `TaskStatus.DONE`, not `"done"`. Use `EngineeringMessage(...)`, not `{"data": ...}`. If a type doesn't exist — create it in `shared/contracts/`.
+- **Glossary compliance**: Worker = ephemeral Docker container with CLI agent. Consumer = queue listener role. Don't confuse them. Check [docs/GLOSSARY.md](docs/GLOSSARY.md).
+
+### Failing tests policy
+
+**All tests must pass before pushing.** There is no such thing as "pre-existing failures" — CI blocks merges on red tests, so main is always green. If `make test-unit` shows failures:
+- They are caused by your changes (even if indirectly — e.g. you changed a contract/DTO and a test in another service still uses the old shape).
+- Find and fix them.
+- If a failure reveals a deep architectural problem unrelated to your task that requires serious rework — **STOP immediately**. Do NOT commit, do NOT push. Report the issue to the user with details and wait for guidance.
+
+### Live test policy (service tests & integration tests)
+
+If the plan includes a live/integration test step — **it is mandatory, do not skip it.** "Unit tests already cover it" is not a valid argument — unit tests mock dependencies, live tests verify real wiring. They complement each other but do NOT substitute.
+
+Unit tests = all external services mocked. Can only **supplement** a live test, never **replace** it.
+
+There are two types of live tests. Choose the lightest one that fits:
+
+**Service tests** — single service + its infra deps (db, redis). Fast, **runs automatically in CI**.
+- Compose files: `docker/test/service/*.yml` (e.g. `api.yml`, `langgraph.yml`)
+- Run: `make test-service SERVICE=<name>`
+- Use when: testing one service's behavior against real db/redis, no cross-service calls needed.
+
+**Integration tests** — multiple services wired together. Heavier, **runs in CI only with `run-integration-tests` label** or `workflow_dispatch`.
+- Compose files: `docker/test/integration/*.yml` (e.g. `backend.yml`, `template.yml`)
+- Each file auto-becomes: `make test-integration-<name>`
+- Test code: `tests/integration/<suite>/`
+- Use when: testing cross-service flows (e.g. deploy → QA handoff, worker spawning).
+
+**When writing live tests:**
+1. Decide: service test or integration test? Prefer service test if only one service + infra is needed.
+2. Check existing compose files — can you add to an existing suite?
+3. If yes — add a test file to the corresponding directory.
+4. If no existing suite fits — create a new compose file. It will auto-register as a make target.
+5. **Run locally** after writing: `make test-service SERVICE=<name>` or `make test-integration-<suite>`.
+6. For integration tests, also add the `run-integration-tests` label to the PR.

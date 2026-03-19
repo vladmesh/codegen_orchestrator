@@ -10,8 +10,10 @@ Used by:
 
 import structlog
 
+from shared.contracts.dto.server import ServerDTO
+
 from ..clients.api import api_client
-from ..schemas.api_types import AllocationInfo, ServerInfo, get_server_ip
+from ..schemas.api_types import AllocationInfo
 
 logger = structlog.get_logger(__name__)
 
@@ -24,6 +26,8 @@ class AllocationError(Exception):
 
 async def ensure_project_allocations(
     project_id: str,
+    repo_id: str,
+    service_name: str,
     modules: list[str] | None = None,
     min_ram_mb: int = 512,
     min_disk_mb: int = 1024,
@@ -31,12 +35,15 @@ async def ensure_project_allocations(
     """Ensure a project has resource allocations, creating them if needed.
 
     This is the single source of truth for allocation logic. It:
-    1. Checks if allocations already exist for the project
-    2. If yes, returns existing allocations
-    3. If no, finds a suitable server and allocates ports
+    1. Gets or creates an Application for the repo+server
+    2. Checks if allocations already exist for the application
+    3. If yes, returns existing allocations
+    4. If no, finds a suitable server and allocates ports
 
     Args:
-        project_id: Project ID to allocate resources for
+        project_id: Project ID (for finding server/repo)
+        repo_id: Repository ID for the Application
+        service_name: Human-readable name (e.g. "fortune-teller-bot")
         modules: List of modules needing ports (default: ["backend"])
         min_ram_mb: Minimum RAM required
         min_disk_mb: Minimum disk required
@@ -50,51 +57,57 @@ async def ensure_project_allocations(
     if modules is None:
         modules = ["backend"]
 
-    # Check for existing allocations
-    existing: list[AllocationInfo] = await api_client.get_project_allocations(project_id)
+    # Find suitable server first (needed for Application creation)
+    server = await _find_suitable_server(min_ram_mb, min_disk_mb)
+    if not server:
+        raise AllocationError("No suitable server found with enough resources")
+
+    server_handle = server.handle
+    server_ip = server.public_ip
+
+    # Get or create Application
+    app = await api_client.get_or_create_application(
+        repo_id=repo_id,
+        server_handle=server_handle,
+        service_name=service_name,
+    )
+    application_id = app["id"]
+
+    # Check for existing allocations on this application
+    existing: list[AllocationInfo] = await api_client.get_application_allocations(application_id)
     if existing:
         logger.info(
             "allocations_already_exist",
-            project_id=project_id,
+            application_id=application_id,
             count=len(existing),
         )
-        # Convert to expected format
         result = {}
         for alloc in existing:
-            server_handle = alloc["server_handle"]
+            alloc_server = alloc["server_handle"]
             port = alloc["port"]
-            key = f"{server_handle}:{port}"
+            key = f"{alloc_server}:{port}"
 
-            # Get server IP if not present
-            server_ip = alloc.get("server_ip")
-            if not server_ip:
-                server: ServerInfo = await api_client.get_server(server_handle)
-                server_ip = get_server_ip(server)
+            alloc_ip = alloc.get("server_ip")
+            if not alloc_ip:
+                srv: ServerDTO = await api_client.get_server(alloc_server)
+                alloc_ip = srv.public_ip
 
             result[key] = {
                 "port": port,
-                "server_handle": server_handle,
-                "server_ip": server_ip,
+                "server_handle": alloc_server,
+                "server_ip": alloc_ip,
                 "service_name": alloc.get("service_name"),
-                "project_id": project_id,
+                "application_id": application_id,
             }
         return result
 
     # No existing allocations - create new ones
     logger.info(
         "allocating_resources",
-        project_id=project_id,
+        application_id=application_id,
         modules=modules,
         min_ram_mb=min_ram_mb,
     )
-
-    # Find suitable server
-    server = await _find_suitable_server(min_ram_mb, min_disk_mb)
-    if not server:
-        raise AllocationError("No suitable server found with enough resources")
-
-    server_handle = server["handle"]
-    server_ip = get_server_ip(server)
 
     # Allocate port for each module atomically
     allocated = {}
@@ -103,7 +116,7 @@ async def ensure_project_allocations(
             server_handle,
             {
                 "service_name": module,
-                "project_id": project_id,
+                "application_id": application_id,
             },
         )
         port = alloc_result["port"]
@@ -113,12 +126,12 @@ async def ensure_project_allocations(
             "server_handle": server_handle,
             "server_ip": server_ip,
             "service_name": module,
-            "project_id": project_id,
+            "application_id": application_id,
         }
 
         logger.info(
             "port_allocated",
-            project_id=project_id,
+            application_id=application_id,
             module=module,
             server=server_handle,
             port=port,
@@ -127,7 +140,7 @@ async def ensure_project_allocations(
     return allocated
 
 
-async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> dict | None:
+async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO | None:
     """Find a managed server with enough resources.
 
     Note: We don't check used_ram_mb because that reflects actual system RAM usage
@@ -137,20 +150,17 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> dict | Non
     servers = await api_client.list_servers(is_managed=True)
 
     # Filter to only active/ready/in_use servers
-    servers = [s for s in servers if s.get("status") in ("active", "ready", "in_use")]
+    servers = [s for s in servers if s.status in ("active", "ready", "in_use")]
 
     # Filter by total capacity (not used - that's system RAM, not allocations)
     suitable = []
     for srv in servers:
-        capacity_ram = srv.get("capacity_ram_mb", 0)
-        capacity_disk = srv.get("capacity_disk_mb", 0)
-
         # Just check total capacity is sufficient for the project
-        if capacity_ram >= min_ram_mb and capacity_disk >= min_disk_mb:
+        if srv.capacity_ram_mb >= min_ram_mb and srv.capacity_disk_mb >= min_disk_mb:
             suitable.append(srv)
 
     if not suitable:
         return None
 
     # Return the one with most capacity
-    return max(suitable, key=lambda s: s.get("capacity_ram_mb", 0))
+    return max(suitable, key=lambda s: s.capacity_ram_mb)

@@ -14,17 +14,24 @@ import yaml
 
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus, ProjectUpdate
+from shared.contracts.dto.repository import RepositoryStatus
 from shared.notifications import notify_admins
 from shared.schemas.github import GitHubRepository
 from shared.schemas.project_spec import ProjectSpecYAML
 from src.clients.api import api_client
 from src.config import get_settings
 
+from ..startup import config as _config
+
 logger = structlog.get_logger()
 
-# Config
-SYNC_INTERVAL = 300  # 5 minutes
-MISSING_THRESHOLD = 3  # Alert after 3 consecutive checks where repo is missing
+
+def _sync_interval() -> int:
+    return _config.get_int("scheduler.github_sync_interval") if _config else 300
+
+
+def _missing_threshold() -> int:
+    return _config.get_int("scheduler.github_sync_missing_threshold") if _config else 3
 
 
 async def _ingest_to_rag(
@@ -191,7 +198,7 @@ async def _sync_project_docs(
     # Ingest documents to RAG (best-effort)
     if rag_documents:
         await _ingest_to_rag(
-            project_id=project.id,
+            project_id=str(project.id),
             repo_full_name=r.full_name,
             documents=rag_documents,
         )
@@ -224,7 +231,7 @@ async def _sync_single_repo(
         )
         return
 
-    project_id = db_repo.get("project_id")
+    project_id = db_repo.project_id
     project = await api_client.get_project(str(project_id)) if project_id else None
     if not project:
         logger.warning("repo_orphaned", repo_name=repo_name, project_id=project_id)
@@ -237,15 +244,17 @@ async def _sync_single_repo(
     project_id_str = str(project.id)
     if project_id_str in missing_counters:
         del missing_counters[project_id_str]
-        if project.status == ProjectStatus.MISSING:
-            await api_client.update_project(
-                project_id_str, ProjectUpdate(status=ProjectStatus.ACTIVE)
+        # Recovery: set repository status back to active
+        repo_id_str = db_repo.id
+        if repo_id_str:
+            await api_client.update_repository(
+                repo_id_str, {"status": RepositoryStatus.ACTIVE.value}
             )
-            logger.info(
-                "project_recovered",
-                project_name=project.name,
-                provider_repo_id=repo_id,
-            )
+        logger.info(
+            "repository_recovered",
+            project_name=project.name,
+            provider_repo_id=repo_id,
+        )
 
 
 async def _detect_missing_projects(
@@ -255,21 +264,19 @@ async def _detect_missing_projects(
     """Detect and alert on projects missing from GitHub."""
     db_projects = await api_client.get_projects()
 
-    # For each active project, check if its repositories are present on GitHub
-    active_projects = [
-        p for p in db_projects if p.status not in (ProjectStatus.MISSING, ProjectStatus.ARCHIVED)
-    ]
+    # For each non-archived project, check if its repositories are present on GitHub
+    active_projects = [p for p in db_projects if p.status != ProjectStatus.ARCHIVED]
 
     for proj in active_projects:
         project_id_str = str(proj.id)
         repos = await api_client.get_repositories(project_id=project_id_str)
-        managed_repos = [r for r in repos if r.get("provider_repo_id") is not None]
+        managed_repos = [r for r in repos if r.provider_repo_id is not None]
 
         if not managed_repos:
             continue  # No repos with provider_repo_id to check
 
         # Check if any managed repo is missing from GitHub
-        all_present = all(r.get("provider_repo_id") in gh_repos_map for r in managed_repos)
+        all_present = all(r.provider_repo_id in gh_repos_map for r in managed_repos)
 
         if not all_present:
             count = missing_counters.get(project_id_str, 0) + 1
@@ -280,15 +287,20 @@ async def _detect_missing_projects(
                 project_name=proj.name,
                 project_id=project_id_str,
                 attempt=count,
-                threshold=MISSING_THRESHOLD,
+                threshold=_missing_threshold(),
             )
 
-            if count >= MISSING_THRESHOLD:
-                await api_client.update_project(
-                    project_id_str, ProjectUpdate(status=ProjectStatus.MISSING)
-                )
+            if count >= _missing_threshold():
+                # Mark repositories as missing (not the project)
+                repos = await api_client.get_repositories(project_id=project_id_str)
+                for repo in repos:
+                    repo_id = repo.id
+                    if repo_id:
+                        await api_client.update_repository(
+                            repo_id, {"status": RepositoryStatus.MISSING.value}
+                        )
                 logger.error(
-                    "project_marked_missing",
+                    "repositories_marked_missing",
                     project_name=proj.name,
                     project_id=project_id_str,
                     attempts=count,
@@ -315,8 +327,10 @@ async def sync_projects_worker() -> None:
 
             # 1. Get Organization
             try:
-                install_info = await github_client.get_first_org_installation()
-                org_name = install_info["org"]
+                org_name = os.getenv("GITHUB_ORG")
+                if not org_name:
+                    install_info = await github_client.get_first_org_installation()
+                    org_name = install_info["org"]
             except Exception as e:
                 logger.error(
                     "github_app_installation_resolve_failed",
@@ -324,7 +338,7 @@ async def sync_projects_worker() -> None:
                     error_type=type(e).__name__,
                     exc_info=True,
                 )
-                await asyncio.sleep(SYNC_INTERVAL)
+                await asyncio.sleep(_sync_interval())
                 continue
 
             logger.info("github_sync_start", org_name=org_name)
@@ -340,7 +354,7 @@ async def sync_projects_worker() -> None:
                     error_type=type(e).__name__,
                     exc_info=True,
                 )
-                await asyncio.sleep(SYNC_INTERVAL)
+                await asyncio.sleep(_sync_interval())
                 continue
 
             logger.info(
@@ -377,4 +391,4 @@ async def sync_projects_worker() -> None:
                 duration_sec=round(duration, 2),
             )
 
-        await asyncio.sleep(SYNC_INTERVAL)
+        await asyncio.sleep(_sync_interval())

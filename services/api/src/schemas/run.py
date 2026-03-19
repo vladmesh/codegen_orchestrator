@@ -4,7 +4,9 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class RunBase(BaseModel):
@@ -15,6 +17,8 @@ class RunBase(BaseModel):
     status: str
     project_id: uuid.UUID | None = None
     user_id: int | None = None
+    story_id: str | None = None
+    task_id: str | None = None
     run_metadata: dict[str, Any] = {}
     result: dict[str, Any] | None = None
     error_message: str | None = None
@@ -30,17 +34,13 @@ class RunCreate(BaseModel):
     type: str
     project_id: uuid.UUID | None = None
     user_id: int | None = None
+    story_id: str | None = None
     run_metadata: dict[str, Any] = {}
     callback_stream: str | None = None
 
 
-class RunRead(RunBase):
+class RunRead(RunBase, TimestampedDTO):
     """Schema for reading a run."""
-
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class RunUpdate(BaseModel):

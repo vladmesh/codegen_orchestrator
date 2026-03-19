@@ -1,6 +1,7 @@
 """Unit tests for stories router — CRUD + action-based status transitions."""
 
 from datetime import UTC, datetime
+from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock
 import uuid
 
@@ -20,10 +21,12 @@ def _make_story(**overrides):
         "title": "Test story",
         "description": None,
         "acceptance_criteria": None,
+        "type": "product",
         "status": "created",
         "priority": 0,
         "blocked_by_story_id": None,
         "created_by": "system",
+        "user_report": None,
         "created_at": now,
         "updated_at": now,
     }
@@ -358,6 +361,50 @@ async def test_list_stories_with_sort():
 
 
 @pytest.mark.asyncio
+async def test_fail_story_from_in_progress():
+    """Story in_progress can be failed."""
+    story = _make_story(id="story-abc", status="in_progress")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/fail")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_fail_story_from_created():
+    """Story in created can be failed."""
+    story = _make_story(id="story-abc", status="created")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/fail")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert story.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_fail_story_invalid_from_archived():
+    """Archived story cannot be failed."""
+    story = _make_story(id="story-abc", status="archived")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/fail")
+
+    assert resp.status_code == 422  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
 async def test_start_story_blocked_by_incomplete():
     """Cannot start a story whose blocker is not completed."""
     blocker = _make_story(id="story-blocker", status="in_progress")
@@ -442,3 +489,87 @@ async def test_start_story_no_blocker():
 
     assert resp.status_code == 200  # noqa: PLR2004
     assert story.status == "in_progress"
+
+
+# --- Reopen ---
+
+
+@pytest.mark.asyncio
+async def test_reopen_story_from_completed():
+    """Completed story can be reopened with user_report."""
+    story = _make_story(id="story-abc", status="completed")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/stories/story-abc/reopen",
+            json={"user_report": "Images still broken on mobile", "actor": "po"},
+        )
+
+    assert resp.status_code == HTTPStatus.OK
+    assert story.status == "reopened"
+    assert story.user_report == "Images still broken on mobile"
+
+
+@pytest.mark.asyncio
+async def test_reopen_story_without_user_report():
+    """Completed story can be reopened without user_report."""
+    story = _make_story(id="story-abc", status="completed")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/reopen")
+
+    assert resp.status_code == HTTPStatus.OK
+    assert story.status == "reopened"
+    assert story.user_report is None
+
+
+@pytest.mark.asyncio
+async def test_reopen_story_invalid_from_in_progress():
+    """IN_PROGRESS story cannot be reopened (already in progress)."""
+    story = _make_story(id="story-abc", status="in_progress")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/stories/story-abc/reopen",
+            json={"user_report": "Something wrong"},
+        )
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_test_story_from_deploying():
+    """Deploying story can transition to testing."""
+    story = _make_story(id="story-abc", status="deploying")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/test")
+
+    assert resp.status_code == HTTPStatus.OK
+    assert story.status == "testing"
+
+
+@pytest.mark.asyncio
+async def test_test_story_invalid_from_created():
+    """Created story cannot transition directly to testing."""
+    story = _make_story(id="story-abc", status="created")
+    session = _mock_session(scalar_one_or_none=story)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/stories/story-abc/test")
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY

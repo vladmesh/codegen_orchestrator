@@ -3,37 +3,66 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-08
+> **Updated**: 2026-03-19
 
 ## Queue (ordered by priority, first = next)
 
-### /architect skill — Story decomposition into Tasks
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: New skill that takes a Story and decomposes it into Tasks.  Flow: 1. Read Story from API (by ID or pick next created story) 2. Load project context (existing tasks, repos, architecture) 3. Use LLM to decompose story into concrete tasks with titles, descriptions, acceptance criteria 4. Create task...
-
-### #52 Scaffold script не экранирует task_description
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: `manager.py:819` подставляет `scaffold_config.task_description` напрямую в bash f-string: `--data "task_description={scaffold_config.task_description}"`. Описание задачи содержит многострочный текст с двойными кавычками, скобками, спецсимволами bash. При интерполяции в f-string двойные кавычки из...
-
-### #21 Deploy Pre-Check
-- **Priority**: MEDIUM
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Валидация сервера перед деплоем. Прокинуть `action` (create/feature/fix) в DeployMessage. SSH-проверка `/opt/services/<NAME>/`. Файлы: `shared/contracts/queues/deploy.py`, `engineering_worker.py`, `deploy_worker.py`.
-
-### #18 Split engineering_worker.py (1088 LOC)
+### Fix noqa suppressions that mask real complexity
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: Вынести фазы (scaffold, CI fix loop, deploy trigger) в отдельные модули.
+- **Brief**: Audit found noqa comments that should be fixed instead of suppressed: PLR0913 in engineering.py:682 (too many args — extract params dataclass), PLR0911 in devops/nodes.py:144 (too many returns — extract lookup table), PLR2004 in debug.py:65 (use named constant), S110 in debug.py:71 (bare except —...
+
+### #1005 Standardize PYTHONPATH and import patterns across service-template services
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Currently tg_bot uses PYTHONPATH=/app:/app/services/tg_bot/src (allowing relative imports) while backend and notifications_worker use PYTHONPATH=/app (requiring fully qualified imports like services.backend.src.module). This inconsistency causes coding agents to guess wrong import patterns, leadi...
+
+### debug test
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+
+### Add TTL/cleanup for stale Redis queue messages
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Queue messages from failed/completed stories accumulate in architect:queue (and potentially other queues) with no expiry or cleanup mechanism. During the 2026-03-13 escort, 75 stale messages were found blocking a real story for hours.  Required: 1. Add periodic cleanup in scheduler: scan queue me...
+
+### API authorization: scope worker access, protect destructive endpoints
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
+
+### Refactor shared: eliminate orchestrator code from worker containers
+- **Priority**: CRITICAL
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: ## Problem  Worker containers copy the entire orchestrator shared/ package into /app/shared. This conflicts with user projects that also have a shared/ directory (different package, same name). Workers hit ModuleNotFoundError or import the wrong module.  ## Current state  - worker-wrapper needs: ...
+
+### #1026 Admin UI: action buttons on entity pages
+- **Priority**: MEDIUM
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Add action buttons across admin SPA pages: Project Details — secrets editor (masked key-value), Create Story form, Deploy from Repo form. Story Details — Send to Architect button. Task Details — Spawn Worker button. Application Details — Stop, Undeploy, Redeploy, Run E2E buttons with confirmation...
+
+### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: In health_checker: compare cadvisor container list with applications from API. Orphan (on server, not in DB) → warning in admin UI on server card. Ghost (RUNNING in DB, no container) → update status to DOWN + warning in admin UI. Source: brainstorm bs-69482380, Phase 3.
+
+### #1018 Daily SSH job: filesystem drift check + docker prune
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Single SSH connection per server, once daily. Check /opt/projects/ vs API — orphan dirs → warning in structlog (NOT admin UI). Docker system prune -af --filter until=72h + docker volume prune -f. Source: brainstorm bs-69482380, Phase 3.
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Очистка зависших контейнеров/образов после деплоев (`docker image prune`). SSH hardening уже done в ansible. Priority adjusted by triage (roadmap phase change).
 
@@ -43,35 +72,32 @@
 - **Status**: backlog
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
 
-### #54 Deploy: inter-service URL должен использовать docker service name
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: DevOps-ноды генерируют `.env` на сервере с `BACKEND_API_URL=http://<external_ip>:8000`. Сервисы внутри одного compose-стека (например, tg_bot → backend) ходят через внешний IP вместо docker DNS (`http://backend:8000`). Это хрупко: зависит от внешней сети, обходит docker networking, ломается при f...
-
-### #62 /brainstorm resume — продолжение обсуждения существующего драфта
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: /brainstorm должен уметь подхватить существующий draft из БД и продолжить дискуссию. Сценарий: /brainstorm resume → GET /api/brainstorms/?status=draft → список → выбор → дополнение content. Также: миграция 14 legacy brainstorms из docs/brainstorms/ в БД (status=draft/done/triaged по текущему стат...
-
 ### Integrate Repository into production flows (webhook, scheduler, worker)
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Подключить Repository модель в production pipeline. Сейчас webhook/scheduler/worker используют Project.repository_url и Project.github_repo_id напрямую.  1. webhooks.py: lookup через Repository.provider_repo_id вместо Project.github_repo_id 2. github_sync.py: создаёт Repository записи вместо обно...
 
-### #59 PO work item tools (Step 4)
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Новые PO tools: create_work_item, list_work_items, get_work_item, start_work_item. start_work_item внутри вызывает trigger_engineering (старый механизм). PO промпт обновляется: мыслить фичами, не engineering tasks. К этому моменту API стабилен и проверен на десятках задач dogfooding. Источник: br...
+### Fix eager import chains in scaffolded projects
 
-### #60 Engineering worker work_item lifecycle (Step 5)
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: engineering_worker при наличии work_item_id: пишет iteration_start/iteration_end events, CI fix attempts → events с деталями, обновляет work_item.status (in_dev → testing → done). Deploy worker обновляет status при успешном деплое. Полный audit trail: сколько итераций, что фейлилось, почему. Reop...
+- **Brief**: __init__.py eagerly imports app/create_app, which triggers full import chain. Any broken import crashes everything including alembic. Fix: lazy imports or direct model import in env.py.
+
+### Auto-generate routers from domain specs
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Framework generates protocols and controller stubs but routers are manual. Router pattern is formulaic — generate stubs to reduce boilerplate and prevent spec drift.
+
+### Add predefined module to existing project (make add-module)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Allow adding tg_bot/notifications/frontend to a project generated without them. Currently requires re-generation.
 
 ### #2 Agent Hierarchy & Incident Response
 - **Priority**: LOW
@@ -91,6 +117,27 @@
 - **Status**: backlog
 - **Brief**: Применить SecretsCipher (Fernet) к API key values и SSH keys. TODO-комменты в `api_keys.py:36,72` и `servers.py:66`.
 
+### Unified handlers: error handling strategy
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Define error handling for event handlers: DLQ, error events, or retries with exponential backoff.
+
+### Auto-update __init__.py re-exports after generation
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: After adding new models, schemas/__init__.py etc must be manually updated. Generate these files or remove re-export pattern.
+
+### Context packer for agents (make context service=backend)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Aggregate relevant spec, AGENTS.md, signatures, linter errors into single token-optimized file for agent context.
+
 ### #11 E2E Tests Completion
 - **Priority**: LOW
 - **Plan**: —
@@ -109,64 +156,139 @@
 - **Status**: backlog
 - **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task`...
 
+### Auto-fuzzing and contract testing (schemathesis)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Integrate schemathesis into CI. Reads openapi.json, fuzzes running service with valid/invalid inputs. Auto-detect 500 errors without manual tests.
+
+### Extract type mappings into language-agnostic config
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Partially done: type_spec_to_python() centralized in spec/types.py. Remaining: unify all mappings (Python, TypeScript, OpenAPI) via single table/config. Extract to YAML/TOML for adding new languages without code.
+
+### Enum types in model field definitions
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Support enum types in YAML specs. Generated Pydantic models would use Literal or Enum instead of plain strings.
+
+### CLI wrappers (my-framework init/sync/update)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Wrap make commands into standalone CLI tool. Simplify usage for humans and agents.
+
+### Celery worker support
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Add celery-worker service type. Pre-configured Redis/RabbitMQ in docker-compose, auto-generated celery_app and task decorators.
+
 ### #46 Rename duckduckgo_search → ddgs
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Пакет `duckduckgo_search` переименован в `ddgs`. Runtime warning в логах: `This package has been renamed to ddgs! Use pip install ddgs instead.` Заменить зависимость в `services/langgraph/pyproject.toml`, обновить импорт в `services/langgraph/src/po/tools.py`, перегенерировать lock-файл (`make lo...
 
+### Audit scaffold templates for best practices
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Review templates in .framework/framework/templates/scaffold/services/ to ensure they use latest patterns adopted by main services.
+
+### Unified handlers: transactional outbox pattern
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Events published directly after DB writes. Consider transactional outbox to avoid dual write problem.
+
+### High-level architecture spec (connectivity graph)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Define service relationships in services.yml: access, exposes, consumes. Generate typed clients and network policies.
+
+### Spec-first observability (auto OpenTelemetry)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Auto-embed traces and metrics into generated endpoints. Zero-config observability from spec definitions.
+
+### Make YAML specs fully language-agnostic
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Partially done: abstract types used. Remaining: replace list[string] shorthand with JSON Schema array+items for full language-agnosticity.
+
+### Spec-only module storage (long-term)
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Store only specs and minimal scaffolds, generate all business logic on project creation. Zero distinction between built-in and custom services.
+
+### Rust PoC: backend service on Axum
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Proof of concept — Axum + SeaORM 2.0 + utoipa. Same API, same Docker, same compose as Python backend. Test how well AI agent handles Axum code generation.
+
+### Rust PoC: Telegram bot on teloxide
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: PoC Telegram bot on teloxide as alternative to python-telegram-bot. Compare developer and agent experience.
+
+### Research Tera as Jinja2 replacement for codegen
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Tera is Rust Jinja2 analog with near-identical syntax. Evaluate how many current templates can be reused. If 90%+ compatible, migration cost is low.
+
+### Add Rust service type to services.yml
+
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: New rust-axum service type. Scaffold template with Cargo.toml, multi-stage Dockerfile (cargo-chef), main.rs. Enables mixing Python and Rust services.
+
+### #1003 Integration test: scheduler-langgraph story worker lifecycle
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Create integration test compose (scheduler + langgraph + Redis) that verifies the cross-service story worker flow: dispatcher sends story_id in EngineeringMessage -> consumer reads it, spawns worker, stores in registry -> dispatcher cleanup on story complete removes worker.
+
+### Allocate ports only for modules that need host exposure
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Currently ensure_project_allocations allocates a port for every module in the list (e.g. backend + tg_bot). But tg_bot does not listen on a host port — it connects outbound to Telegram API. Allocating a port for it wastes the resource and clutters the admin UI.  Fix: modules should declare whethe...
+
 
 ## Done (last 10)
 
-- Project ID → UUID + schema cleanup — 2026-03-08
-- Story: priority + blocked_by fields — 2026-03-08
-- #999 Smoke test task — 2026-03-07
-- make sync — генерация docs из БД (backlog, roadmap, status, recent plans/brainstorms) — 2026-03-07
-- #64 Implement skill: PR flow + in_ci status + need_e2e — 2026-03-07
-- Story model + API — 2026-03-08
-- Repository model + migration — 2026-03-08
-- Rename WorkItem→Task, Task→Run — 2026-03-07
-- #63 Milestone model + ROADMAP generation — 2026-03-07
-- #61 Brainstorm model in DB — 2026-03-07
-
-## Ideas
-
-> [!WARNING]
-> **DEPRECATED**: Этот файл более не является источником правды. Идеи мигрировали в базу данных (превращаются в `brainstorms` или `work_items`). Файл временно оставлен для генерации старого backlog.md.
-
-Manually maintained list of ideas and future improvements.
-Read by `make backlog` to include in generated backlog.md.
-
-- Project Name Collision: repo_name и deploy path строятся из `project.name`, а не `project.id` — два юзера с одинаковым именем получают один GitHub-репо, один deploy path `/opt/services/{name}/`, один Docker-образ. Фикс: включить `project_id` в repo name (`my-bot-a1b2c3d4`). Затронуты: `engineering_worker.py:517-519` (repo name gen), `github.py:940` (create_repo), `devops/nodes.py:443,348` (PROJECT_NAME secret). Post-MVP. (источник: анализ #30 multi-user isolation)
-
-- Self-hosted GitLab или GH runner на VPS (источник: E2E failure rate 50%, 2026-03-02)
-- Admin UI: projects, workers, logs (источник: MVP Phase 4)
-- Tester node (полный): QA-агент с Claude + Playwright после деплоя (источник: brainstorm qa-node.md, post-MVP)
-- CI Monitor Node: вынести `_wait_for_ci_and_fix` в LangGraph-ноду (источник: audit)
-- API Authentication: заменить `x-telegram-id` на JWT (источник: audit)
-- Telegram Bot Pool: пре-зарегистрированные боты (источник: US2)
-- Cost Tracking: LLM токены per user/project (источник: roadmap Phase 6)
-- Deploy Rollback: откат при failed health checks (источник: audit)
-- Docker Python SDK для worker-manager (источник: audit-v2)
-- Fix `sys.path` hack в telegram_bot (источник: audit)
-- Split Tier 2 large files: devops/nodes.py, telegram_bot/main.py, env_analyzer.py (источник: audit-v2)
-- Worker port isolation: убрать `ports:` из compose.base.yml при параллелизации (источник: audit)
-- Enable Ruff S110 + BLE001 rules to catch swallowed/broad exceptions (источник: audit 2026-03-04)
-- pytest-xdist для backend integration tests — исследовать после параллелизации стеков (источник: brainstorm ci-integration-test-speed)
-- Split worker-manager/src/manager.py (828 LOC, 6 functions >50 LOC) (источник: audit 2026-03-05)
-- infra-service unit test coverage: 9 source files, 0 tests (источник: audit 2026-03-05)
-- ~~Task Store в БД~~ — поглощено #55 (WorkItem Model + API)
-- ~~Миграция скиллов на API-first~~ — станет #56-58 (Steps 1-3 из brainstorm orchestrator-v2-task-management)
-- Assessor node — фильтр сложности запросов, теперь на базе WorkItem (Phase 4) (источник: brainstorm epic-decomposition)
-- Architect node — декомпозиция сложных задач на WorkItems (Phase 5) (источник: brainstorm epic-decomposition)
-- SOPS для .env на проде (Phase 2B) (источник: brainstorm epic-decomposition)
-- Zero-downtime deploy — rolling restart (Phase 2B) (источник: brainstorm epic-decomposition)
-- RLS policies на PostgreSQL для multi-tenant (подготовка, не блокер для MVP) (источник: brainstorm multi-tenant-isolation)
-- Redis key prefix isolation (tenant:{id}:*) — подготовка к multi-tenant (источник: brainstorm multi-tenant-isolation)
-- Отдельная database для системных данных оркестратора (orchestrator_system) — Phase 3 (источник: brainstorm multi-tenant-isolation)
-- Унифицировать Time4VPS credentials: infra-service читает из env vars, scheduler — из api_keys таблицы через API. Один источник правды. (источник: seed/nuke audit 2026-03-05)
-- Shared Docker image layer для интеграционных тестов — собрать api/db/redis один раз, шарить между стеками через GHA artifacts (источник: brainstorm ci-integration-test-speed, Option B)
-- Объединить мелкие compose-стеки (frontend 1 тест + infra 2 теста) для экономии одного up/down цикла (источник: brainstorm ci-integration-test-speed, Option D)
-- CI: cache copier template clone для template integration tests — marginal gain ~10-15с, сложный cache invalidation (источник: brainstorm ci-integration-test-speed)
-- Отдельный UI/UX для подтверждения собранного ТЗ пользователем перед инженерным этапом (источник: brainstorm po-smart-node)
-- Functional health check: текущий healthcheck проверяет только что процесс жив (HTTP 200 на /health). Не ловит ситуации когда таблицы не созданы, миграции не прошли, seed-данные отсутствуют — бэкенд "healthy", но 500 на каждый бизнес-запрос. Можно добавить в service-template readiness probe с `SELECT 1` или проверкой ключевых таблиц (источник: fortune-telling-bot — backend healthy, но relation "fortunes" does not exist)
+- #1030 Decouple QA consumer from story lifecycle — 2026-03-19
+- #1025 Admin UI: Settings page (config + prompt editor) — 2026-03-19
+- #1024 Thin API endpoints for admin actions (7 endpoints) — 2026-03-19
+- #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage — 2026-03-19
+- #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs — 2026-03-19
+- Unify worker result API — single /result endpoint, stdout capture, auto-resume — 2026-03-19
+- Refactor engineering_status to StrEnum — 2026-03-19
+- Restore Makefile overrides in worker-wrapper (make migrate broken) — 2026-03-19
+- QA consumer: resolve by application_id, replace dicts with DTOs — 2026-03-19
+- Убрать result_parser из wrapper, добавить watchdog-логику — 2026-03-18

@@ -17,12 +17,29 @@
 >
 > **Source of Truth:** `shared/queues.py` (`QUEUE_TOPOLOGY`)
 
+### Scaffolding
+
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `scaffold:queue` | `scaffold-consumers` | ScaffoldMessage | Task Dispatcher (scheduler) | scaffolder | Prepare repo: copier + make setup + git push |
+
+---
+
+### Architect Pipeline
+
+| Queue | Group | DTO | Initiator | Consumer | Purpose |
+|-------|-------|-----|-----------|----------|---------|
+| `architect:queue` | `architect-consumers` | ArchitectMessage | PO ReactAgent | scheduler | Story → tasks LLM decomposition |
+
+---
+
 ### Engineering Flows
 
 | Queue | Group | DTO | Initiator | Consumer | Purpose |
 |-------|-------|-----|-----------|----------|---------|
-| `engineering:queue` | `capability-workers` | EngineeringMessage | PO ReactAgent | langgraph | Start development task |
-| `deploy:queue` | `capability-workers` | DeployMessage | PO ReactAgent | langgraph | Start deploy task |
+| `engineering:queue` | `capability-workers` | EngineeringMessage | Task Dispatcher (scheduler) | langgraph | Start development task |
+| `deploy:queue` | `capability-workers` | DeployMessage | Task Dispatcher (scheduler) / PO | langgraph | Start deploy task |
+| `qa:queue` | `qa-consumers` | QAMessage | Deploy Consumer | langgraph (qa-worker) | Post-deploy QA testing via Claude Code on prod server |
 
 ---
 
@@ -72,9 +89,9 @@
 >
 > For **Developer-Worker** messages, the actual transport is:
 > ```
-> Developer Worker (AI Agent) → orchestrator-cli → Redis/API
+> Developer Worker (AI Agent) → curl localhost:9090 → worker-wrapper → Redis
 > ```
-> The CLI is a permission-checked proxy, not an independent actor.
+> The HTTP server in worker-wrapper validates and proxies agent results to Redis.
 
 ### Actor Roles
 
@@ -130,6 +147,8 @@ sequenceDiagram
     participant Redis
     participant PO as PO ReactAgent
     participant API
+    participant SCH as scheduler
+    participant SCF as scaffolder
     participant LG as langgraph
     participant WM as worker-manager
 
@@ -140,26 +159,31 @@ sequenceDiagram
     Note over PO: ReactAgent tool calls
     PO->>API: create_project(name, modules)
     API-->>PO: project_id
-    PO->>API: trigger_engineering(project_id)
-    API-->>PO: task_id
-    PO->>Redis: XADD engineering:queue
+    PO->>API: create_repository(project_id)
+    PO->>API: create_story(project_id, description)
     PO->>Redis: XADD po:response:{request_id} {text: "Начал разработку!"}
     Redis-->>TG: XREAD po:response:{request_id}
     TG->>User: "Начал разработку!"
 
+    Note over SCH: Task Dispatcher (30s poll) detects draft project + stories
+    SCH->>Redis: XADD scaffold:queue {project_id, repo_id, modules}
+    Redis-->>SCF: Consumer reads scaffold:queue
+    SCF->>SCF: copier copy + make setup + git push
+    SCF->>API: PATCH /projects/{id} {config.tree, config.specs_summary, status: active}
+
+    PO->>Redis: XADD architect:queue {story_id, project_id}
+    Redis-->>SCH: Architect Consumer reads architect:queue
+    Note over SCH: Wait for project.status != draft (scaffold completion)
+    SCH->>API: GET project (tree + specs_summary)
+    Note over SCH: LLM: story → tasks (with project specs context)
+    SCH->>API: create tasks with blocked_by chains
+
+    Note over SCH: Task Dispatcher finds unblocked tasks
+    SCH->>Redis: XADD engineering:queue {task_id}
     Redis-->>LG: Consumer reads engineering:queue
-    LG->>API: GET /api/projects/{id}
-    API-->>LG: {status: CREATED, modules: [...]}
-    Note over LG: Engineering worker: _create_repo_and_set_secrets()
-    LG->>API: Create GitHub repo + set registry secrets
-    LG->>API: PATCH /projects/{id} {status: SCAFFOLDING}
-    Note over LG: Developer node builds ScaffoldConfig
-    LG->>Redis: XADD worker:commands {create, scaffold_config}
+    LG->>Redis: XADD worker:commands {create}
     Redis-->>WM: Consumer reads worker:commands
-    WM->>WM: Create worker container
-    WM->>WM: docker exec: copier + make setup + git push
-    WM->>API: PATCH /projects/{id} {status: SCAFFOLDED}
-    WM->>Redis: XADD worker:responses:developer {ready}
+    WM->>WM: Create worker container (mounts workspace volume)
     Note over LG: Developer node sends task to worker
     LG->>LG: Continue to Developer node
 ```
@@ -196,24 +220,25 @@ sequenceDiagram
     LG->>Redis: XADD po:input {type: system_event, event: completed}
 ```
 
-### Deploy Flow (Webhook-triggered)
+### Deploy Flow (PR merge detection)
 
 ```mermaid
 sequenceDiagram
     participant GH as GitHub
+    participant SCH as scheduler (pr_poller)
     participant API as api service
     participant DB as PostgreSQL
     participant Redis
     participant DW as deploy-worker
     participant TG as telegram-bot
 
-    GH->>API: POST /webhooks/github (workflow_run: ci.yml success on main)
-    API->>API: Verify HMAC-SHA256 signature
-    API->>DB: Lookup project by repository.id
-    API->>DB: Lookup owner → telegram_id
-    API->>DB: Create Task (type=deploy, triggered_by=webhook)
-    API->>Redis: XADD deploy:queue {task_id, project_id, user_id=telegram_id, callback_stream=""}
-    API-->>GH: 200 {status: accepted}
+    Note over SCH: poll_merged_prs() — every 30s
+    SCH->>API: GET stories (status=pr_review)
+    SCH->>GH: GET pulls (state=closed, head=story/{id})
+    GH-->>SCH: merged PR found
+    SCH->>API: Transition story → deploying
+    SCH->>DB: Create Run (type=deploy)
+    SCH->>Redis: XADD deploy:queue {task_id, project_id, user_id, story_id}
     Redis-->>DW: Consumer reads deploy:queue
     DW->>DW: DevOps Subgraph (EnvAnalyzer → SecretResolver → Deployer)
     alt Success
@@ -224,6 +249,8 @@ sequenceDiagram
     Redis-->>TG: XREAD po:proactive (tg-bot-proactive group)
     TG->>TG: Send Telegram message to user
 ```
+
+> **Note:** GitHub webhooks were removed. All PR merge detection and CI failure handling is done by `scheduler/src/tasks/pr_poller.py` (polling, 30s interval). This eliminates webhook reliability issues for newly scaffolded repos.
 
 ---
 
@@ -259,20 +286,22 @@ async for msg in client.consume(
 
 On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim messages that were pending for longer than `pending_timeout_ms`. This handles the case where a consumer crashes mid-processing — on restart, the message is automatically re-delivered.
 
-**Special case:** PO Consumer (`services/langgraph/src/po/consumer.py`) uses a custom while-loop for concurrent dispatch but still implements PEL recovery via direct `XAUTOCLAIM` calls on startup.
+**Special case:** PO Consumer (`services/langgraph/src/consumers/po.py`) uses a custom while-loop for concurrent dispatch but still implements PEL recovery via direct `XAUTOCLAIM` calls on startup.
 
 ### Consumer Inventory
 
 | # | Consumer | File | Queue | ACK | PEL Recovery | Validation |
 |---|----------|------|-------|-----|-------------|------------|
-| 1 | Engineering Worker | `workers/_base.py` | `engineering:queue` | manual | `claim_pending` | in `process_fn` |
-| 2 | Deploy Worker | `workers/_base.py` | `deploy:queue` | manual | `claim_pending` | in `process_fn` |
-| 3 | PO Consumer | `po/consumer.py` | `po:input` | manual (finally) | `xautoclaim` | `TypeAdapter` |
-| 4 | Worker Manager | `worker-manager/consumer.py` | `worker:commands` | manual | `claim_pending` | `validate_python` |
-| 5 | Infra Service | `infra-service/main.py` | `provisioner:queue` | manual | `claim_pending` | raw dict |
-| 6 | Scheduler | `scheduler/main.py` | `provisioner:results` | manual | `claim_pending` | `model_validate` |
-| 7 | Provisioner Notifier | `telegram_bot/notifications.py` | `provisioner:results` | auto | — | `model_validate` |
-| 8 | Proactive Listener | `telegram_bot/main.py` | `po:proactive` | auto | — | raw dict |
+| 1 | Engineering Consumer | `langgraph/src/consumers/engineering.py` | `engineering:queue` | manual | `claim_pending` | in `process_fn` |
+| 2 | Deploy Consumer | `langgraph/src/consumers/deploy.py` | `deploy:queue` | manual | `claim_pending` | in `process_fn` |
+| 3 | PO Consumer | `langgraph/src/consumers/po.py` | `po:input` | manual (finally) | `xautoclaim` | `TypeAdapter` |
+| 4 | Worker Manager | `worker-manager/src/consumer.py` | `worker:commands` | manual | `claim_pending` | `validate_python` |
+| 5 | Infra Service | `infra-service/src/main.py` | `provisioner:queue` | manual | `claim_pending` | raw dict |
+| 6 | Scheduler | `scheduler/src/main.py` | `provisioner:results` | manual | `claim_pending` | `model_validate` |
+| 7 | Provisioner Notifier | `telegram_bot/src/notifications.py` | `provisioner:results` | auto | — | `model_validate` |
+| 8 | Proactive Listener | `telegram_bot/src/main.py` | `po:proactive` | auto | — | raw dict |
+| 9 | Architect Consumer | `langgraph/src/consumers/architect.py` | `architect:queue` | manual | `claim_pending` | `model_validate` |
+| 10 | Scaffolder | `scaffolder/src/consumer.py` | `scaffold:queue` | manual | `claim_pending` | `model_validate` |
 
 ---
 
@@ -288,33 +317,15 @@ from pydantic import BaseModel, ConfigDict
 
 class ProjectStatus(StrEnum):
     """Project lifecycle status.
-    
-    Happy path: DRAFT → SCAFFOLDING → SCAFFOLDED → DEVELOPING → TESTING → DEPLOYING → ACTIVE
+
+    Lifecycle only — observable state, not process.
+    Activity is derived from child entities (Story/Run).
+    Runtime state is tracked by Application.status.
     """
 
-    # Origin
     DRAFT = "draft"
-    DISCOVERED = "discovered"
-
-    # Scaffolding
-    SCAFFOLDING = "scaffolding"
-    SCAFFOLDED = "scaffolded"
-    SCAFFOLD_FAILED = "scaffold_failed"
-
-    # Development
-    DEVELOPING = "developing"
-    TESTING = "testing"
-
-    # Deployment
-    DEPLOYING = "deploying"
     ACTIVE = "active"
-
-    # Maintenance
-    MAINTENANCE = "maintenance"
-
-    # Issues
-    FAILED = "failed"
-    MISSING = "missing"
+    PAUSED = "paused"
     ARCHIVED = "archived"
 
 
@@ -331,11 +342,10 @@ class ServiceModule(StrEnum):
 
 class ProjectCreate(BaseModel):
     """Create project request."""
-    id: str | None = None
+    id: uuid.UUID | None = None
     name: str
     description: str | None = None
     modules: list[ServiceModule] = [ServiceModule.BACKEND]  # Default: backend only
-    github_repo_id: int | None = None
     status: ProjectStatus | None = None
 
 
@@ -345,7 +355,6 @@ class ProjectUpdate(BaseModel):
     description: str | None = None
     status: ProjectStatus | None = None
     modules: list[ServiceModule] | None = None
-    github_repo_id: int | None = None
     project_spec: dict | None = None
 
 
@@ -353,40 +362,41 @@ class ProjectDTO(BaseModel):
     """Project response."""
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
+    id: uuid.UUID
     name: str
     description: str | None = None
     status: ProjectStatus
     modules: list[ServiceModule] = []
-    repository_url: str | None = None
-    github_repo_id: int | None = None
+    config: dict = {}
     owner_id: int
     project_spec: dict | None = None
 ```
 
-## WorkItemDTO
+## TaskDTO
 
 ```python
-# services/api/src/schemas/work_item.py & shared/contracts/dto/work_item.py
+# services/api/src/schemas/task.py & shared/contracts/dto/task.py
 
-class WorkItemStatus(StrEnum):
+class TaskStatus(StrEnum):
     BACKLOG = "backlog"
     TODO = "todo"
     IN_DEV = "in_dev"
-    IN_REVIEW = "in_review"
+    IN_CI = "in_ci"
     TESTING = "testing"
     DONE = "done"
+    BLOCKED = "blocked"
+    WAITING_HUMAN_REVIEW = "waiting_human_review"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
-class WorkItemType(StrEnum):
+class TaskType(StrEnum):
     CREATE = "create"
     FEATURE = "feature"
     FIX = "fix"
     REFACTOR = "refactor"
 
-class WorkItemRead(BaseModel):
-    """Schema for reading a work item."""
+class TaskRead(BaseModel):
+    """Schema for reading a task."""
     id: str
     project_id: str
     type: str
@@ -396,8 +406,10 @@ class WorkItemRead(BaseModel):
     status: str
     priority: int
     acceptance_criteria: str | None
+    need_e2e: bool = False
     current_iteration: int
     max_iterations: int
+    failure_metadata: dict[str, Any] | None = None
     created_by: str
     created_at: datetime
     updated_at: datetime
@@ -405,22 +417,22 @@ class WorkItemRead(BaseModel):
     elapsed_minutes: float | None = None
 ```
 
-## WorkItemEventDTO
+## TaskEventDTO
 
 ```python
-# services/api/src/schemas/work_item.py & shared/contracts/dto/work_item.py
+# services/api/src/schemas/task.py & shared/contracts/dto/task.py
 
-class WorkItemEventType(StrEnum):
+class TaskEventType(StrEnum):
     STATUS_CHANGE = "status_change"
     ITERATION_START = "iteration_start"
     ITERATION_END = "iteration_end"
     NOTE = "note"
-    COMMENT = "comment"
+    COMMENT = "comment"  # Jira-style discussion on a task
 
-class WorkItemEventRead(BaseModel):
-    """Schema for reading a work item event."""
+class TaskEventRead(BaseModel):
+    """Schema for reading a task event."""
     id: int
-    work_item_id: str
+    task_id: str
     event_type: str
     from_status: str | None
     to_status: str | None
@@ -430,16 +442,16 @@ class WorkItemEventRead(BaseModel):
     created_at: datetime
 ```
 
-## TaskDTO
+## RunDTO
 
 ```python
-# shared/contracts/dto/task.py
+# shared/contracts/dto/run.py
 
 from enum import StrEnum
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
-class TaskStatus(StrEnum):
+class RunStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -447,27 +459,28 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-class TaskType(StrEnum):
+class RunType(StrEnum):
     ENGINEERING = "engineering"
     DEPLOY = "deploy"
 
 
-class TaskCreate(BaseModel):
-    """Create task request."""
+class RunCreate(BaseModel):
+    """Create run request."""
     project_id: str
-    type: TaskType
+    type: RunType
     spec: str | None = None
 
 
-class TaskDTO(BaseModel):
-    """Task response."""
+class RunDTO(BaseModel):
+    """Run response."""
     model_config = ConfigDict(from_attributes=True)
 
     id: str
     project_id: str
-    type: TaskType
-    status: TaskStatus
-    task_metadata: dict[str, Any] = {}
+    task_id: str | None = None
+    type: RunType
+    status: RunStatus
+    run_metadata: dict[str, Any] = {}
     spec: str | None = None
     result: dict | None = None
     created_at: datetime
@@ -569,60 +582,77 @@ class ServerDTO(BaseModel):
     provisioning_attempts: int = 0
 ```
 
-## IncidentDTO
+## ApplicationDTO
 
 ```python
-# shared/contracts/dto/incident.py
+# shared/contracts/dto/application.py
 
 from enum import StrEnum
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
 
-class IncidentSeverity(StrEnum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
+class ApplicationStatus(StrEnum):
+    """Runtime state of an application on a server."""
+    NOT_DEPLOYED = "not_deployed"
+    RUNNING = "running"
+    STOPPED = "stopped"
+    DOWN = "down"
+    DEGRADED = "degraded"
 
-class IncidentStatus(StrEnum):
-    OPEN = "open"
-    RESOLVED = "resolved"
+# services/api/src/schemas/application.py
 
-class IncidentDTO(BaseModel):
-    """Incident response."""
-    model_config = ConfigDict(from_attributes=True)
-    
+class ApplicationRead(TimestampedDTO):
+    """Application response — runtime entity linking a repo to a server."""
     id: int
-    server_id: int
-    severity: IncidentSeverity
-    status: IncidentStatus
-    title: str
-    description: str | None = None
-    created_at: datetime
-    resolved_at: datetime | None = None
-```
-
-## ServiceDeploymentDTO
-
-```python
-# shared/contracts/dto/service_deployment.py
-
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
-
-class ServiceDeploymentDTO(BaseModel):
-    """Service Deployment response."""
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    project_id: str
-    server_id: int
+    repo_id: str
+    server_handle: str
     service_name: str
     port: int
     status: str
-    url: str | None = None
+    last_health_check: datetime | None = None
+```
+
+## DeploymentDTO
+
+```python
+# shared/contracts/dto/deployment.py
+
+from enum import StrEnum
+
+class DeploymentResult(StrEnum):
+    """Outcome of a deployment attempt. Immutable after completion."""
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+# services/api/src/schemas/service_deployment.py
+
+class DeploymentRead(TimestampedDTO):
+    """Immutable record of a deployment attempt."""
+    id: int
+    application_id: int | None = None
+    project_id: str
+    service_name: str
+    server_handle: str
+    port: int
+    result: str
     deployed_sha: str | None = None
     deployed_at: datetime
+    deployment_info: dict = {}
+```
+
+## Base DTOs
+
+```python
+# shared/contracts/dto/base.py
+
+class BaseDTO(BaseModel):
+    """Base DTO for all entities."""
+    model_config = ConfigDict(from_attributes=True)
+
+class TimestampedDTO(BaseDTO):
+    """Base DTO with timestamps."""
+    created_at: datetime
+    updated_at: datetime | None = None
 ```
 
 ## AgentConfigDTO
@@ -743,10 +773,68 @@ class BaseResult(BaseModel):
 
 ---
 
+## ScaffoldMessage
+
+**Queue:** `scaffold:queue`
+**Initiator:** Task Dispatcher (scheduler, 30s poll)
+**Consumer:** scaffolder service
+
+```python
+# shared/contracts/queues/scaffold.py
+
+class ScaffoldMessage(BaseMessage):
+    """Trigger scaffolding for a project repository.
+
+    Published by scheduler for both new (draft) and existing (active) projects.
+
+    Modes:
+        full: Full scaffold — copier + make setup + git push (new projects).
+        ensure: Verify workspace exists; if missing, clone + setup (existing projects).
+    """
+    project_id: str
+    repository_id: str
+    user_id: str
+    template_repo: str    # e.g. "gh:project-factory-organization/service-template"
+    project_name: str     # sanitized name for copier
+    modules: str          # comma-separated, e.g. "backend,tg_bot"
+    task_description: str = ""
+    mode: Literal["full", "ensure"] = "full"
+```
+
+**Flow:**
+- **Full mode** (new projects): Scheduler detects `project.status == draft` with stories → publishes ScaffoldMessage (mode=full) → Scaffolder runs copier + make setup + git push → saves tree to `project.config.tree` + parses YAML specs into `project.config.specs_summary` (models, events, domains) → sets `project.status = active`. Architect consumer waits for scaffold completion (polls project.status != draft) before decomposing stories.
+- **Ensure mode** (existing projects): Scaffold trigger detects ACTIVE projects with TODO tasks → publishes ScaffoldMessage (mode=ensure) → Scaffolder checks if workspace exists; if missing, clones repo + runs setup → sets `repository.workspace_ready = True`. Task dispatcher checks `workspace_ready` flag before dispatching. Worker-manager GC calls `POST /repositories/{repo_id}/notify-workspace-deleted` to clear `workspace_ready` on deletion.
+
+---
+
+## ArchitectMessage
+
+**Queue:** `architect:queue`
+**Initiator:** PO ReactAgent (`create_story` tool)
+**Consumer:** scheduler (Architect Consumer)
+
+```python
+# shared/contracts/queues/architect.py
+
+class ArchitectMessage(BaseMessage):
+    """Trigger story decomposition into tasks."""
+    story_id: str
+    project_id: str
+    user_id: str
+    is_reopen: bool = False          # True when story is being reopened (not first decomposition)
+    user_report: str | None = None   # User feedback on what's wrong (for reopened stories)
+```
+
+**Flow:** PO creates Story → publishes ArchitectMessage → Architect Consumer calls LLM to decompose story into N tasks with `blocked_by_task_id` dependency chains → Task Dispatcher picks up unblocked tasks and publishes EngineeringMessages.
+
+**Reopen flow:** When user reports a problem with a completed story, PO calls `reopen_story` tool → story transitions back to `in_progress` → ArchitectMessage published with `is_reopen=True` and `user_report` containing user feedback. Architect reviews previous tasks before creating new fix tasks.
+
+---
+
 ## EngineeringMessage
 
-**Queue:** `engineering:queue`  
-**Initiator:** PO-Worker  
+**Queue:** `engineering:queue`
+**Initiator:** Task Dispatcher (scheduler)
 **Consumer:** langgraph
 
 ```python
@@ -756,10 +844,14 @@ class EngineeringMessage(BaseMessage):
     """Start engineering task."""
     task_id: str
     project_id: str
-    user_id: int
+    user_id: str
     action: Literal["create", "feature", "fix"] = "create"
     description: str | None = None
     skip_deploy: bool = False
+    planning_task_id: str | None = None  # planning-layer Task ID for status updates
+    story_id: str | None = None  # story ID for worker reuse across tasks
+    deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count
+    branch: str | None = None  # story branch name (e.g. "story/{story_id}")
 
 
 class EngineeringResult(BaseResult):
@@ -776,23 +868,35 @@ class EngineeringResult(BaseResult):
 
 **Flags:**
 - `skip_deploy=True` — skip auto-deploy after CI passes (develop → CI only)
+- `planning_task_id` — when set, engineering worker updates task status (in_dev → done/failed) and writes `iteration_end` events. Dispatcher-created runs always set this + `skip_deploy=True` (deploy handled at story level).
 
 ---
 
 ## DeployMessage
 
-**Queue:** `deploy:queue`  
-**Initiator:** PO-Worker  
+**Queue:** `deploy:queue`
+**Initiator:** Task Dispatcher (scheduler) / PO
 **Consumer:** langgraph
 
 ```python
 # shared/contracts/queues/deploy.py
 
+class DeployTrigger(StrEnum):
+    """Origin of a deploy request."""
+    ENGINEERING = "engineering"
+    WEBHOOK = "webhook"
+    PO = "po"
+
+
 class DeployMessage(BaseMessage):
     """Start deploy task."""
     task_id: str
     project_id: str
-    user_id: int
+    user_id: str = ""
+    story_id: str = ""
+    triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
+    action: Literal["create", "feature", "fix"] = "create"
+    deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count (max 2)
 
 
 class DeployResult(BaseResult):
@@ -883,13 +987,13 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 class AgentType(StrEnum):
     CLAUDE = "claude"          # Claude Code
     FACTORY = "factory"        # Factory.ai Droid
+    NOOP = "noop"              # No-op runner for E2E testing
 
 
 class WorkerCapability(StrEnum):
     GIT = "git"
     GITHUB_CLI = "github_cli"
     CURL = "curl"
-    DOCKER = "docker"          # dind mount
 
 
 class WorkerChannels(StrEnum):
@@ -928,6 +1032,7 @@ class DeleteWorkerCommand(QueueMeta):
     command: Literal["delete"] = "delete"
     request_id: str
     worker_id: str
+    reason: Literal["completed", "failed", "timeout"] | None = None
 
 
 class StatusWorkerCommand(QueueMeta):
@@ -969,28 +1074,49 @@ WorkerResponse = CreateWorkerResponse | DeleteWorkerResponse | StatusWorkerRespo
 > **Note:** Message passing goes **directly** to worker queues (`worker:{id}:input`, etc.),
 > NOT through worker-manager. The manager handles only container lifecycle.
 
+## WorkerStatus
+
+```python
+# shared/contracts/dto/worker.py
+
+class WorkerStatus(StrEnum):
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
+    DEAD = "DEAD"
+    FAILED = "FAILED"
+    STOPPED = "STOPPED"
+    GONE = "GONE"       # Stale Redis entry, container no longer exists
+    UNKNOWN = "UNKNOWN"
+```
+
+Used across worker-manager (manager, events, introspect router) and langgraph (worker_spawner). Replaces all hardcoded status strings.
+
 ---
 
 
-## AgentVerdict (DTO from Agent)
+## EngineeringStatus
 
 ```python
-# shared/contracts/dto/agent_verdict.py
+# shared/contracts/dto/engineering.py
 
-class AgentVerdictStatus(StrEnum):
-    SUCCESS = "success"             # Task completed successfully
-    FAILURE = "failure"             # Task failed (retries exhausted)
-    IN_PROGRESS = "in_progress"     # Waiting for user input or external event
+class EngineeringStatus(StrEnum):
+    """Status of the engineering subgraph execution.
 
-class AgentVerdict(BaseModel):
+    Lifecycle:
+        IDLE → (subgraph runs) → DONE | GAVE_UP | FAILED
+        FAILED → (supervisor retries) → IDLE  OR  (retries exhausted) → GAVE_UP
+
+    FAILED is transient — supervisor either retries or escalates to GAVE_UP.
     """
-    Subjective result from the Agent.
-    Parsed from stdout JSON wrapped in <result> tags.
-    """
-    status: AgentVerdictStatus
-    summary: str                    # Human-readable summary
-    data: dict[str, Any] = {}       # Structured context (e.g., commit_sha)
+
+    IDLE = "idle"
+    DONE = "done"
+    GAVE_UP = "gave_up"
+    FAILED = "failed"
 ```
+
+Used by Developer node and Engineering consumer. Replaces former bare strings (`"done"`, `"developer_blocked"`, `"developer_rejected"`, etc.). The `GAVE_UP` status covers both former "blocked" (worker hit a blocker) and "rejected" (infra issue) paths — in both cases a human needs to intervene.
 
 
 
@@ -1161,15 +1287,24 @@ shared/contracts/
 │   ├── task.py              # TaskDTO, TaskCreate
 │   ├── user.py              # UserDTO
 │   ├── server.py
-│   ├── incident.py
-│   ├── service_deployment.py
+│   ├── story.py              # StoryDTO, StoryCreate
+│   ├── repository.py         # RepositoryDTO, RepositoryCreate
+│   ├── brainstorm.py         # BrainstormDTO, BrainstormCreate
+│   ├── base.py              # BaseDTO, TimestampedDTO
+│   ├── application.py       # ApplicationStatus enum
+│   ├── deployment.py        # DeploymentResult enum
+│   ├── engineering.py       # EngineeringStatus enum
+│   ├── service_deployment.py  # ServiceDeploymentDTO (legacy alias)
 │   ├── agent_config.py
 │   ├── allocation.py
-│   └── task_execution.py
+│   ├── task_execution.py
+│   └── worker.py            # WorkerStatus enum
 └── queues/
     ├── __init__.py           # Re-exports PO contracts
     ├── engineering.py
     ├── deploy.py
+    ├── scaffold.py           # ScaffoldMessage
+    ├── architect.py          # ArchitectMessage
     ├── provisioner.py
     ├── workflow.py
     ├── worker.py

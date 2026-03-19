@@ -6,7 +6,7 @@ import uuid
 from pydantic import ValidationError
 import pytest
 
-from src.schemas.story import StoryCreate, StoryRead, StoryUpdate
+from src.schemas.story import StoryCreate, StoryRead, StoryReopen, StoryUpdate
 
 PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
@@ -22,6 +22,15 @@ class TestStoryCreate:
         assert s.priority == 0
         assert s.blocked_by_story_id is None
         assert s.created_by == "system"
+        assert s.type == "product"
+
+    def test_technical_type(self):
+        s = StoryCreate(project_id=PROJECT_UUID, title="Rust migration", type="technical")
+        assert s.type == "technical"
+
+    def test_invalid_type(self):
+        with pytest.raises(ValidationError):
+            StoryCreate(project_id=PROJECT_UUID, title="Bad", type="invalid")
 
     def test_all_fields(self):
         s = StoryCreate(
@@ -61,14 +70,53 @@ class TestStoryRead:
         mock.priority = 5
         mock.blocked_by_story_id = "story-blocker"
         mock.created_by = "po"
+        mock.type = "technical"
+        mock.user_report = None
         mock.created_at = now
         mock.updated_at = now
 
         r = StoryRead.model_validate(mock, from_attributes=True)
         assert r.id == "story-abc123"
         assert r.status == "created"
+        assert r.type == "technical"
         assert r.priority == 5
         assert r.blocked_by_story_id == "story-blocker"
+        assert r.user_report is None
+
+    def test_from_attributes_with_user_report(self):
+        from unittest.mock import MagicMock
+
+        now = datetime.now(UTC)
+        mock = MagicMock()
+        mock.id = "story-abc123"
+        mock.project_id = PROJECT_UUID
+        mock.parent_story_id = None
+        mock.title = "Fix images"
+        mock.description = None
+        mock.acceptance_criteria = None
+        mock.status = "in_progress"
+        mock.priority = 0
+        mock.blocked_by_story_id = None
+        mock.created_by = "po"
+        mock.type = "product"
+        mock.user_report = "Images still broken on mobile"
+        mock.created_at = now
+        mock.updated_at = now
+
+        r = StoryRead.model_validate(mock, from_attributes=True)
+        assert r.user_report == "Images still broken on mobile"
+
+
+class TestStoryReopen:
+    def test_defaults(self):
+        r = StoryReopen()
+        assert r.user_report is None
+        assert r.actor == "system"
+
+    def test_with_user_report(self):
+        r = StoryReopen(user_report="Images broken", actor="po")
+        assert r.user_report == "Images broken"
+        assert r.actor == "po"
 
 
 class TestStoryUpdate:

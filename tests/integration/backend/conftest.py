@@ -4,7 +4,9 @@ import contextlib
 import hashlib
 import json
 import os
+import subprocess
 import time
+from uuid import uuid4
 
 import pytest
 import redis.asyncio as redis
@@ -148,13 +150,12 @@ async def seed_project(api_client):
         )
 
     async def _create(
-        project_id: str,
         name: str = "Test Project",
         status: str = "draft",
         config: dict | None = None,
         repository_url: str | None = None,
     ) -> dict:
-        body = {"id": project_id, "name": name, "status": status, "config": config or {}}
+        body = {"name": name, "status": status, "config": config or {}}
         if repository_url:
             body["repository_url"] = repository_url
         resp = await api_client.post(
@@ -163,8 +164,9 @@ async def seed_project(api_client):
             headers={"X-Telegram-ID": TEST_TELEGRAM_ID},
         )
         assert resp.status_code == 201, f"Failed to seed project: {resp.text}"
-        created_ids.append(project_id)
-        return resp.json()
+        data = resp.json()
+        created_ids.append(data["id"])
+        return data
 
     yield _create
 
@@ -179,11 +181,12 @@ async def seed_task(api_client):
     """Factory fixture to create tasks via API."""
 
     async def _create(
-        task_id: str,
-        task_type: str = "engineering",
+        title: str = "Test Task",
+        task_type: str = "feature",
         project_id: str | None = None,
+        status: str = "backlog",
     ) -> dict:
-        body = {"id": task_id, "type": task_type}
+        body = {"title": title, "type": task_type, "status": status}
         if project_id:
             body["project_id"] = project_id
         resp = await api_client.post("/api/tasks/", json=body)
@@ -272,7 +275,64 @@ async def cleanup_redis_streams(redis_client):
     await cleanup()
 
 
-_SKIP_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules"}
+WORKSPACE_BASE_PATH = "/tmp/codegen/workspaces"  # noqa: S108
+
+
+def _create_scaffolded_workspace() -> str:
+    """Create a minimal git repo at /tmp/codegen/workspaces/{repo_id}/. Returns repo_id."""
+    repo_id = str(uuid4())
+    ws_path = os.path.join(WORKSPACE_BASE_PATH, repo_id)
+    os.makedirs(ws_path, exist_ok=True)
+
+    # Initialize a minimal git repo (workers expect a git workspace)
+    subprocess.run(["git", "init", ws_path], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", ws_path, "config", "user.email", "test@test.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", ws_path, "config", "user.name", "Test"],
+        check=True,
+        capture_output=True,
+    )
+    # Create an initial commit so HEAD exists
+    readme = os.path.join(ws_path, "README.md")
+    with open(readme, "w") as f:
+        f.write("# test\n")
+    subprocess.run(["git", "-C", ws_path, "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", ws_path, "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+    return repo_id
+
+
+@pytest.fixture
+def scaffolded_workspace():
+    """Create a temporary pre-scaffolded workspace with a minimal git repo.
+
+    Returns the repo_id (UUID string). The workspace is created at
+    /tmp/codegen/workspaces/{repo_id}/ which is shared with worker-manager
+    and DinD via the 'workspaces' named volume.
+    """
+    import shutil
+
+    repo_id = _create_scaffolded_workspace()
+    yield repo_id
+    shutil.rmtree(os.path.join(WORKSPACE_BASE_PATH, repo_id), ignore_errors=True)
+
+
+_SKIP_DIRS = {
+    "__pycache__",
+    ".pytest_cache",
+    ".git",
+    "node_modules",
+    ".venv",
+    ".mypy_cache",
+    ".ruff_cache",
+}
 
 
 def _content_hash(*paths: str) -> str:
@@ -318,9 +378,10 @@ def _build_base_image(
         dest_dockerfile = os.path.join(tmp_dir, "Dockerfile")
         shutil.copy(dockerfile_path, dest_dockerfile)
 
-        # Copy shared and packages
-        shutil.copytree(shared_path, os.path.join(tmp_dir, "shared"))
-        shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"))
+        # Copy shared and packages (ignore dev artifacts with dangling symlinks)
+        _ignore = shutil.ignore_patterns(*_SKIP_DIRS)
+        shutil.copytree(shared_path, os.path.join(tmp_dir, "shared"), ignore=_ignore)
+        shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"), ignore=_ignore)
 
         try:
             image, build_logs = client.images.build(

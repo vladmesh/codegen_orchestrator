@@ -10,3 +10,4 @@ pydantic
 pydantic-settings
 tenacity
 structlog
+langchain-core

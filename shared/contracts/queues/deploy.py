@@ -9,6 +9,27 @@ class DeployTrigger(StrEnum):
     ENGINEERING = "engineering"
     WEBHOOK = "webhook"
     PO = "po"
+    ADMIN = "admin"
+
+
+class DeployAction(StrEnum):
+    """Type of deploy operation."""
+
+    CREATE = "create"
+    FEATURE = "feature"
+    FIX = "fix"
+    STOP = "stop"
+    UNDEPLOY = "undeploy"
+
+
+class DeployOutcome(StrEnum):
+    """Outcome stored in run.result for dispatcher consumption."""
+
+    SUCCESS = "success"
+    SMOKE_FAILURE = "smoke_failure"
+    CODE_FIX = "code_fix"
+    RETRY = "retry"
+    GIVE_UP = "give_up"
 
 
 class DeployMessage(BaseMessage):
@@ -17,7 +38,10 @@ class DeployMessage(BaseMessage):
     task_id: str
     project_id: str
     user_id: str = ""
+    story_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
+    action: DeployAction = DeployAction.CREATE
+    deploy_fix_attempt: int = 0
 
 
 class DeployResult(BaseResult):

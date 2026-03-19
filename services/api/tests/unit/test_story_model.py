@@ -18,6 +18,7 @@ class TestStoryModel:
             "description",
             "acceptance_criteria",
             "status",
+            "type",
             "priority",
             "blocked_by_story_id",
             "created_by",
@@ -25,6 +26,13 @@ class TestStoryModel:
             "updated_at",
         }
         assert expected.issubset(cols)
+
+    def test_type_default(self):
+        col = Story.__table__.c.type
+        assert col.default.arg == "product"
+
+    def test_type_not_nullable(self):
+        assert not Story.__table__.c.type.nullable
 
     def test_priority_default(self):
         col = Story.__table__.c.priority
@@ -70,3 +78,10 @@ class TestStoryModel:
 
     def test_acceptance_criteria_nullable(self):
         assert Story.__table__.c.acceptance_criteria.nullable
+
+    def test_user_report_column_exists(self):
+        cols = {c.name for c in Story.__table__.columns}
+        assert "user_report" in cols
+
+    def test_user_report_nullable(self):
+        assert Story.__table__.c.user_report.nullable

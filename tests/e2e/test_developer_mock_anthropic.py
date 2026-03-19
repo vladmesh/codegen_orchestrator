@@ -128,9 +128,9 @@ class TestDeveloperWorkerMockAnthropic:
             result_str = output_msg.get("data", "")
             try:
                 res_json = json.loads(result_str)
-                assert (
-                    res_json.get("status") == "success"
-                ), f"Expected success status, got: {res_json}"
+                assert res_json.get("status") == "success", (
+                    f"Expected success status, got: {res_json}"
+                )
                 assert "summary" in res_json, f"Expected summary field, got: {res_json}"
             except json.JSONDecodeError:
                 pytest.fail(f"Failed to parse worker output: {result_str}")
@@ -166,9 +166,9 @@ class TestDeveloperWorkerMockAnthropic:
 
             assert res_json.get("status") == "success", f"Expected success, got: {res_json}"
             # Clone scenario returns summary about creating test marker file
-            assert "e2e_test_marker.txt" in res_json.get(
-                "summary", ""
-            ), f"Expected clone scenario summary, got: {res_json.get('summary')}"
+            assert "e2e_test_marker.txt" in res_json.get("summary", ""), (
+                f"Expected clone scenario summary, got: {res_json.get('summary')}"
+            )
 
         finally:
             await self._cleanup_worker(redis, worker_id)

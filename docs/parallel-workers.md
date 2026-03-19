@@ -39,10 +39,13 @@
    - `dev_proj_<worker_id>` — изолированная сеть для сайдкар-контейнеров проекта.
 
 2. **Compose Proxy**:
-   Воркеры (инжектированные AI-агенты) **не имеют доступа к Docker**. Для запуска инфраструктурных зависимостей (DB, Redis) агенты вызывают `orchestrator dev-env start-infra db`, который проксирует запрос в `worker-manager`.
+   Воркеры (инжектированные AI-агенты) **не имеют доступа к Docker**. Для запуска инфраструктурных зависимостей (DB, Redis) агенты вызывают compose proxy через `curl $WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose`, который проксирует запрос в `worker-manager`.
 
 3. **Workspace Bind-Mount**:
-   Код клонируется агентом внутрь `/workspace` директории в контейнере, которая примонтирована на хост. При наличии `project_id` путь: `/tmp/codegen/workspaces/<project_id>/workspace` (сохраняется между воркерами). Без `project_id`: `/tmp/codegen/workspaces/<worker_id>/workspace` (эфемерный). `docker compose` на хосте использует файлы из этого воркспейса для поднятия сайдкар-контейнеров.
+   Scaffolded workspace монтируется в `/workspace` внутри контейнера. Два режима:
+   - **Pre-scaffolded** (story tasks): путь на хосте `/data/workspaces/{repo_id}/` — репозиторий уже подготовлен scaffolder'ом (copier + make setup + git push), workspace переиспользуется между задачами в story.
+   - **Ephemeral** (standalone tasks): `/tmp/codegen/workspaces/{worker_id}/workspace/` — создаётся на лету, удаляется после завершения.
+   `docker compose` на хосте использует файлы из этого воркспейса для поднятия сайдкар-контейнеров.
 
 ## Запрет портов и конвенции
 
@@ -56,3 +59,28 @@ Worker-base образ `worker-base-common` унифицирован:
 - **Shared Tooling Layer**: `ruff`, `pytest`, `mypy`, `copier`, и т.д. установлены на уровне образа (не дублируются на каждый воркер).
 - Non-root user `worker` (uid 1000). Код на хосте через bind-mount не становится `root`-owned.
 - Выполнение тестов и линтеров происходит **нативно** через per-service venv-ы, без запуска дополнительных эфемерных контейнеров.
+
+## Worker Lifecycle & Cleanup
+
+### Stream Cleanup
+`delete_worker()` now cleans `worker:{id}:input` and `worker:{id}:output` streams (were orphaned forever before).
+
+### Orphan GC
+Reverse check (Redis → Docker): scans `worker:status` entries and cleans stale ones where the container is gone. Introspect API shows `GONE` status for stale workers.
+
+### Workspace GC
+Scans both `WORKSPACE_BASE_PATH` and `SCAFFOLDED_WORKSPACE_PATH`. Max age: 35h. Also cleans stale `workspace:active_projects` Redis entries. When workspace is deleted, calls `POST /repositories/{repo_id}/notify-workspace-deleted` to clear `workspace_ready` flag so scaffolder re-creates it before next task dispatch.
+
+### Stale Worker Auto-Cleanup
+`_check_project_lock()` verifies `worker:status` — workers in terminal states (DEAD/FAILED/STOPPED) get their Redis keys cleaned up automatically, unblocking new task dispatch without manual intervention.
+
+## Worker-Manager Introspection API
+
+`/api/introspect/` router with 7 endpoints:
+- List workers, worker detail (with container info from Docker)
+- Container logs (tail param, max 5000 lines)
+- Workspace file tree, file content (path traversal protection)
+- Prompts (CLAUDE.md + TASK.md)
+- Kill worker
+
+Admin-frontend nginx proxies `/wm-api/` → worker-manager.

@@ -74,11 +74,11 @@ async def start(update: Update, context) -> None:
         await _ensure_user_registered(update.effective_user)
     user_is_admin = is_admin(context)
     await update.message.reply_text(
-        "🏠 **Главное меню**\n\n"
+        "🏠 <b>Главное меню</b>\n\n"
         "Привет! Я оркестратор для генерации проектов.\n\n"
         "Выберите действие или опишите проект в чате:",
         reply_markup=main_menu_keyboard(is_admin=user_is_admin),
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -88,9 +88,9 @@ async def menu(update: Update, context) -> None:
         await _ensure_user_registered(update.effective_user)
     user_is_admin = is_admin(context)
     await update.message.reply_text(
-        "🏠 **Главное меню**\n\nВыберите действие:",
+        "🏠 <b>Главное меню</b>\n\nВыберите действие:",
         reply_markup=main_menu_keyboard(is_admin=user_is_admin),
-        parse_mode=ParseMode.MARKDOWN,
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -330,7 +330,7 @@ async def handle_message(update: Update, context) -> None:
 async def _send_message_to_chat(bot, chat_id: int, text: str) -> None:
     """Send text to a Telegram chat with markdown fallback."""
     try:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.MARKDOWN)
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
     except Exception:
         await bot.send_message(chat_id=chat_id, text=text)
 

@@ -115,6 +115,23 @@ def test_testing_can_return_to_in_dev():
     assert TaskStatus.IN_DEV in VALID_TRANSITIONS[TaskStatus.TESTING]
 
 
+def test_waiting_human_review_status_value():
+    assert TaskStatus.WAITING_HUMAN_REVIEW == "waiting_human_review"
+
+
+def test_in_dev_can_go_to_waiting_human_review():
+    assert TaskStatus.WAITING_HUMAN_REVIEW in VALID_TRANSITIONS[TaskStatus.IN_DEV]
+
+
+def test_waiting_human_review_transitions():
+    allowed = VALID_TRANSITIONS[TaskStatus.WAITING_HUMAN_REVIEW]
+    assert TaskStatus.IN_DEV in allowed  # admin resumes with guidance
+    assert TaskStatus.BACKLOG in allowed  # admin re-queues
+    assert TaskStatus.FAILED in allowed  # admin gives up
+    assert TaskStatus.CANCELLED in allowed
+    assert TaskStatus.DONE not in allowed  # can't skip to done
+
+
 # --- Model instantiation tests ---
 
 

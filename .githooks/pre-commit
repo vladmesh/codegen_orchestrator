@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pre-commit hook: Auto-format code using Docker
+# Pre-commit hook: Auto-format code using uv + ruff
 # This hook runs automatically before each commit and FIXES formatting issues
 
 set -euo pipefail
@@ -16,15 +16,9 @@ NC='\033[0m' # No Color
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
-# Check if Docker is available
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}❌ Docker not found. Aborting commit.${NC}"
-    exit 1
-fi
-
-# Check if Docker daemon is running
-if ! docker info >/dev/null 2>&1; then
-    echo -e "${RED}❌ Docker daemon is not running. Aborting commit.${NC}"
+# Check if uv is available
+if ! command -v uv &> /dev/null; then
+    echo -e "${RED}❌ uv not found. Install it: https://docs.astral.sh/uv/getting-started/installation/${NC}"
     exit 1
 fi
 
@@ -36,11 +30,10 @@ if [ "${#STAGED_FILES[@]}" -eq 0 ]; then
     exit 0
 fi
 
-FILES_ESCAPED=$(printf '%q ' "${STAGED_FILES[@]}")
 echo -e "${YELLOW}📝 Formatting staged Python files...${NC}"
 
-# Run make format (ruff format + ruff check --fix)
-if ! make format FILES="$FILES_ESCAPED"; then
+# Run ruff format + check --fix directly (avoids Make quoting issues)
+if ! (uv run ruff format "${STAGED_FILES[@]}" && uv run ruff check --fix "${STAGED_FILES[@]}"); then
     echo -e "${RED}❌ Formatting failed. Aborting commit.${NC}"
     exit 1
 fi

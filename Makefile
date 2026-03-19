@@ -1,8 +1,8 @@
-.PHONY: lint format test-unit test-integration test-e2e-scaffold test-clean \
-	build up down stop logs help nuke nuke-hard seed migrate makemigrations shell \
+.PHONY: lint format test-unit test-integration test-e2e-scaffold test-live test-live-clean test-clean \
+	build up down stop logs help nuke nuke-hard seed migrate makemigrations init-langfuse-db \
 	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
-	check-worker-images .nuke-common .nuke-hard-prune
+	check-worker-images .nuke-common .nuke-hard-prune pull-worker-reports
 
 # Load .env file
 -include .env
@@ -10,16 +10,19 @@ export
 
 DOCKER_COMPOSE ?= docker compose
 
-# Hash of source files baked into worker images (shared, packages, Dockerfiles)
-WORKER_SOURCE_HASH = $(shell find shared packages/worker-wrapper packages/orchestrator-cli \
+# Hash of source files baked into worker images.
+# Only includes shared submodules actually imported by worker-wrapper,
+# plus the package itself and worker Dockerfiles.
+# Changes to e.g. shared/models/ or shared/schemas/ won't trigger a worker rebuild.
+WORKER_SOURCE_HASH = $(shell find \
+  shared/__init__.py shared/log_config shared/redis shared/redis_client.py \
+  shared/config.py shared/queues.py shared/contracts shared/crypto.py shared/constants.py \
+  packages/worker-wrapper \
   services/worker-manager/images -type f \
   -not -path '*/__pycache__/*' -not -name '*.pyc' \
   | LC_ALL=C sort | xargs sha256sum 2>/dev/null | sha256sum | cut -c1-16)
 
 COMPOSE_ENV := HOST_UID=$$(id -u) HOST_GID=$$(id -g)
-DOCKER_COMPOSE_TOOLS := $(COMPOSE_ENV) $(DOCKER_COMPOSE) -f docker-compose.tools.yml -p codegen_orchestrator_tools
-TOOLING := $(DOCKER_COMPOSE_TOOLS) run --rm tooling
-TOOLING_NON_INT := $(DOCKER_COMPOSE_TOOLS) run --rm -T tooling
 
 # Test Project Name for Isolation
 TEST_PROJECT := codegen_orchestrator_test
@@ -39,6 +42,8 @@ help:
 	@echo "  make test-unit            - Run all unit tests (fast)"
 	@echo "  make test-service SERVICE=name - Run service tests for a specific module"
 	@echo "  make test-integration     - Run all integration tests"
+	@echo "  make test-live            - Run all live tests (from host, no LLM)"
+	@echo "  make test-live N=health   - Run specific live test file"
 	@echo "  make test-e2e-scaffold    - Run scaffolding E2E tests"
 	@echo "  make test-clean           - Cleanup test containers"
 	@echo ""
@@ -48,7 +53,6 @@ help:
 	@echo "  make migrate     - Run database migrations"
 	@echo "  make makemigrations MSG='...' - Create new migration"
 	@echo ""
-	@echo "  make shell       - Open shell in tooling container"
 	@echo "  make nuke           - Full reset: clean workers, remove volumes, incremental rebuild"
 	@echo "  make nuke-hard      - Full reset: clean workers, remove volumes, NO-CACHE rebuild"
 	@echo "  make seed           - Seed database with API keys from env"
@@ -63,16 +67,15 @@ help:
 
 # === Dependency Lock Files ===
 
-TOOLING_UV := $(DOCKER_COMPOSE_TOOLS) run --rm -e XDG_CACHE_HOME=/workspace/.cache tooling
-
 lock-deps:
 	@echo "🔒 Generating requirements.lock files with uv..."
-	$(TOOLING_UV) uv pip compile services/langgraph/pyproject.toml -o services/langgraph/requirements.lock
-	$(TOOLING_UV) uv pip compile services/api/pyproject.toml -o services/api/requirements.lock
-	$(TOOLING_UV) uv pip compile services/scheduler/pyproject.toml -o services/scheduler/requirements.lock
-	$(TOOLING_UV) uv pip compile services/telegram_bot/pyproject.toml -o services/telegram_bot/requirements.lock
-	$(TOOLING_UV) uv pip compile services/worker-manager/pyproject.toml -o services/worker-manager/requirements.lock
-	$(TOOLING_UV) uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
+	uv pip compile services/langgraph/pyproject.toml -o services/langgraph/requirements.lock
+	uv pip compile services/api/pyproject.toml -o services/api/requirements.lock
+	uv pip compile services/scheduler/pyproject.toml -o services/scheduler/requirements.lock
+	uv pip compile services/telegram_bot/pyproject.toml -o services/telegram_bot/requirements.lock
+	uv pip compile services/worker-manager/pyproject.toml -o services/worker-manager/requirements.lock
+	uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
+	uv pip compile services/scaffolder/pyproject.toml -o services/scaffolder/requirements.lock
 	@echo "✅ All lock files updated!"
 
 # === Docker ===
@@ -81,15 +84,11 @@ up:
 	$(DOCKER_COMPOSE) up -d 
 
 down:
-	$(DOCKER_COMPOSE) down
-	@docker rm -f $$(docker ps -aq --filter "name=worker-dev-") 2>/dev/null || true
-
-stop:
-	@echo "🛑 Stopping stack and killing workers..."
-	$(DOCKER_COMPOSE) down
-	@echo "🔪 Killing worker containers..."
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
-	@echo "✅ Stack stopped and workers killed"
+	$(DOCKER_COMPOSE) down --remove-orphans
+	@docker network rm codegen_worker 2>/dev/null || true
+
+stop: down
 
 logs:
 	$(DOCKER_COMPOSE) logs -f
@@ -103,7 +102,7 @@ build:
 rebuild:
 	@echo "🔄 Rebuilding everything..."
 	@echo "🛑 Stopping stack..."
-	$(DOCKER_COMPOSE) down
+	$(DOCKER_COMPOSE) down --remove-orphans
 	@echo "🔪 Killing worker containers..."
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
 	@echo "🧹 Cleaning cached worker:* images..."
@@ -124,7 +123,7 @@ cleanup-agents:
 
 # === Worker Base Images ===
 # Build the worker image chain: common -> claude/factory
-# Use rebuild-worker-images after changing orchestrator-cli or worker-base Dockerfiles
+# Use rebuild-worker-images after changing worker-wrapper or worker-base Dockerfiles
 
 rebuild-worker-images:
 	@echo "🔨 Building worker-base-common..."
@@ -166,10 +165,10 @@ check-worker-images:
 # === Quality ===
 
 lint:
-	@$(DOCKER_COMPOSE_TOOLS) run --rm tooling ruff check .
+	@uv run ruff check $(if $(LINT_PATH),$(LINT_PATH),.)
 
 format:
-	@$(DOCKER_COMPOSE_TOOLS) run --rm tooling sh -c "ruff format $(if $(FILES),$(FILES),.) && ruff check --fix $(if $(FILES),$(FILES),.)"
+	@uv run ruff format $(if $(FILES),$(FILES),.) && uv run ruff check --fix $(if $(FILES),$(FILES),.)
 
 # === Git Hooks ===
 
@@ -225,6 +224,41 @@ test-integration: $(INTEGRATION_TESTS)
 
 
 
+# Live tests: run from host against running `make up` stack (no LLM)
+N ?= ""
+test-live:
+ifeq ($(N),"")
+	@echo "Running all live tests (excluding pipeline)..."
+	@uv run pytest tests/live/ -v --tb=short --ignore=tests/live/test_pipeline_scaffold.py --ignore=tests/live/test_pipeline_engineering.py --ignore=tests/live/test_full_pipeline.py
+else
+	@echo "Running live test: $(N)..."
+	@uv run pytest tests/live/test_$(N).py -v --tb=short
+endif
+
+# Pipeline tests: scaffold → engineering → deploy (real GitHub, real queues)
+test-live-smoke:
+	@echo "Running scaffold pipeline test (~1-2 min)..."
+	@uv run pytest tests/live/test_pipeline_scaffold.py -v --tb=long -x -s
+
+test-live-engineering:
+	@echo "Running engineering pipeline test (~3-5 min)..."
+	@uv run pytest tests/live/test_pipeline_engineering.py -v --tb=long -x -s
+
+test-live-mega:
+	@echo "Running MEGA pipeline test (~7-10 min)..."
+	@uv run pytest tests/live/test_full_pipeline.py -v --tb=long -x -s
+
+test-live-pipeline:
+	@echo "Running ALL pipeline tests sequentially (~15 min)..."
+	@uv run pytest tests/live/test_pipeline_scaffold.py tests/live/test_pipeline_engineering.py tests/live/test_full_pipeline.py -v --tb=long -x -s
+
+
+# Cleanup DB and artifacts left by live tests
+test-live-clean:
+	@echo "🧹 Running comprehensive live test cleanup (DB, GitHub, Workers, Workspaces, Servers)..."
+	@uv run python scripts/clean_live_tests.py
+
+
 # E2E Scaffold Test: runs against running `make up` stack
 # Creates GitHub repo, publishes CreateWorkerCommand with ScaffoldConfig,
 # verifies scaffold files pushed to GitHub, cleans up repo + worker container
@@ -253,14 +287,13 @@ test-clean:
 migrate:
 	$(DOCKER_COMPOSE) exec api alembic upgrade head
 
+# Create langfuse database on existing postgres (init script only runs on fresh volumes)
+init-langfuse-db:
+	$(DOCKER_COMPOSE) exec db psql -U $${POSTGRES_USER:-postgres} -c "SELECT 'CREATE DATABASE langfuse' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langfuse')\gexec"
+
 # Run migrations with correct user to avoid permission issues on generated files
 makemigrations:
 	$(COMPOSE_ENV) $(DOCKER_COMPOSE) run --rm --user $$(id -u):$$(id -g) api alembic revision --autogenerate -m "$(MSG)"
-
-# === Development ===
-
-shell:
-	$(TOOLING) bash
 
 # === Nuclear Option ===
 
@@ -282,7 +315,7 @@ nuke-hard: .nuke-hard-prune .nuke-common
 	@docker ps -a --filter "name=worker-" --format "{{.Names}}" | grep -v "codegen_orchestrator" | xargs -r docker rm -f 2>/dev/null || true
 	@echo "🧹 Cleaning up worker images..."
 	@docker images --filter "reference=worker*" -q | xargs -r docker rmi -f 2>/dev/null || true
-	$(DOCKER_COMPOSE) down
+	$(DOCKER_COMPOSE) down --remove-orphans
 	@echo "🧹 Removing volumes (preserving caddy-data for TLS certificates)..."
 	@for vol in db_data redis_data caddy-config registry-data; do \
 		docker volume rm codegen_orchestrator_$$vol 2>/dev/null || true; \
@@ -316,6 +349,9 @@ roadmap:
 
 status:
 	@uv run python scripts/generate_status.py
+
+pull-worker-reports:
+	@uv run python scripts/pull_worker_reports.py
 
 recent-artifacts:
 	@uv run python scripts/sync_recent_artifacts.py
@@ -364,3 +400,7 @@ seed:
 	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_agent_configs.py \
 		--api-base-url http://localhost:8000 \
 		--configs-path /app/scripts/agent_configs.yaml || echo "  ⚠️  Agent config seeding failed (API may not be ready)"
+	@echo "⚙️  Seeding system configurations..."
+	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_system_configs.py \
+		--api-base-url http://localhost:8000 \
+		--configs-path /app/scripts/system_configs.yaml || echo "  ⚠️  System config seeding failed (API may not be ready)"

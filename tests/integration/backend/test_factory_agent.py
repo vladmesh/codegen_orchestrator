@@ -13,7 +13,7 @@ TEST_TIMEOUT = 60
 
 
 @pytest.mark.integration
-async def test_factory_cli_installed(redis_client, docker_client):
+async def test_factory_cli_installed(redis_client, docker_client, scaffolded_workspace):
     """Factory worker must have factory CLI installed."""
     request_id = str(uuid.uuid4())
     worker_id = f"test-factory-{request_id[:8]}"
@@ -27,6 +27,7 @@ async def test_factory_cli_installed(redis_client, docker_client):
         capabilities=[],
         auth_mode="api_key",
         api_key="sk-test-factory-key",
+        repo_id=scaffolded_workspace,
     )
 
     cmd = CreateWorkerCommand(request_id=request_id, config=config)

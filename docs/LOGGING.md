@@ -2,6 +2,52 @@
 
 > Structured logging implementation based on `structlog` with JSON output for Grafana Loki.
 
+## Collection Architecture
+
+```
+Services (structlog JSON) → stdout → Docker → Promtail → Loki → Grafana
+```
+
+### Stack
+- **Loki** (port 3100) — log aggregation, 7-day retention
+- **Promtail** — scrapes Docker container logs, ships to Loki
+- **Grafana** (port 3000) — dashboards, log viewer, alerting
+
+All services output `LOG_FORMAT=json` in Docker. Promtail reads log files
+non-destructively (`docker logs` still works).
+
+### Correlation ID propagation
+- `BaseMessage` (shared/contracts/base.py) auto-generates `correlation_id` per message
+- All consumers bind it via `bind_message_context()` on message receipt
+- All API clients inject `X-Correlation-ID` header in outgoing requests
+- API middleware binds it on receipt
+- Result: filter by `correlation_id` in Grafana → see full request flow across all services
+
+### Infrastructure files
+```
+infra/
+├── loki.yml                          # Loki config (TSDB, 7-day retention)
+├── promtail.yml                      # Scrape Docker container logs
+└── grafana/
+    ├── datasources.yml               # Auto-provision Loki datasource
+    ├── dashboards.yml                # Dashboard provisioning config
+    └── dashboards/service-logs.json  # Pre-built "Service Logs" dashboard
+```
+
+## LLM Tracing (Langfuse)
+
+Self-hosted Langfuse v3 provides LLM call tracing for all agents.
+
+**Setup**: Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` env vars (empty = disabled). All 4 LangGraph consumers (PO, architect, engineering, deploy) auto-attach a `CallbackHandler` via `src/tracing.py`. Zero changes to agent/graph code.
+
+**Trace enrichment**: Each trace includes `user_id`, `project_id`, `agent_type` metadata for filtering.
+
+**Infrastructure**: `langfuse-web` (UI, port 3002), `langfuse-worker` (background processor), `clickhouse` (analytics), `minio` (S3-compatible media storage). Separate `langfuse` PostgreSQL database.
+
+**Access**: Via admin-frontend links or directly at `http://localhost:3002`.
+
+---
+
 ## Quick Start
 
 ```python

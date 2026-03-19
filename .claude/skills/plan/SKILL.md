@@ -9,6 +9,10 @@ argument-hint: "[#ID]"
 
 Decompose a task into actionable steps. Each step has clear Input, Output, and Test.
 
+## Key References
+- [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — task lifecycle, API workflow, status transitions
+- [docs/CONTRACTS.md](docs/CONTRACTS.md) — shared DTOs and enums (understand available contracts when planning)
+
 ## Input
 
 - `#ID` — backlog tag to plan. If omitted, uses current in_dev task from API.
@@ -119,7 +123,7 @@ echo "$PLAN" | jq -Rs '{plan: .}' | curl -sf -X PATCH "http://localhost:8000/api
 
 Run `make sync` to regenerate all read-only docs from API.
 
-### 8. Commit
+### 8. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/backlog.md
@@ -128,22 +132,17 @@ git commit -m "plan: #<ID> — <title>"
 
 ### 9. Report
 
-Print:
-- Task: #ID — Title
-- Steps: N total
-- Estimated scope: files to touch, tests to write
-- Flags: any steps needing approval, external dependencies, or risks
+> **STOP. Before writing the summary, complete the Skill Feedback step below. Do NOT skip it.**
 
-## Self-Feedback
+**9a. Skill Feedback** — review the session for problems with THIS skill:
 
-After completing this skill, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
-
+Did you hit any of these during this task?
 - A command or path in this skill was **wrong or outdated**
 - A step was **missing context** that you had to figure out yourself
 - A step could be **simplified or reordered** for better flow
 - The skill **gave ambiguous instructions** that led to a wrong first attempt
 
-Entry format:
+If yes — append an entry to `docs/skill-feedback.md` **right now**, before proceeding:
 
 ```markdown
 ## [plan] — <today's date>
@@ -153,4 +152,10 @@ Entry format:
 - **Suggested fix**: <concrete change to the skill text>
 ```
 
-Only write feedback that is **specific and actionable**. Skip vague impressions.
+If nothing went wrong — skip the file write, but you must still explicitly confirm: "Skill feedback: none."
+
+**9b. Print summary**:
+- Task: #ID — Title
+- Steps: N total
+- Estimated scope: files to touch, tests to write
+- Flags: any steps needing approval, external dependencies, or risks

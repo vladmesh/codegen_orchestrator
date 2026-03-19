@@ -1,12 +1,12 @@
 """Task API schemas (planning layer)."""
 
-from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
-from shared.contracts.dto.task import TaskEventType, TaskType
+from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.task import TaskEventType, TaskStatus, TaskType
 
 
 class TaskCreate(BaseModel):
@@ -15,6 +15,7 @@ class TaskCreate(BaseModel):
     project_id: uuid.UUID
     type: TaskType = TaskType.FEATURE
     title: str
+    status: TaskStatus = TaskStatus.BACKLOG
     description: str | None = None
     acceptance_criteria: str | None = None
     priority: int = 0
@@ -22,13 +23,12 @@ class TaskCreate(BaseModel):
     need_e2e: bool = False
     created_by: str = "system"
     source_brainstorm_id: str | None = None
-    milestone_id: str | None = None
     repository_id: str | None = None
     story_id: str | None = None
     blocked_by_task_id: str | None = None
 
 
-class TaskRead(BaseModel):
+class TaskRead(TimestampedDTO):
     """Schema for reading a task."""
 
     id: str
@@ -45,16 +45,12 @@ class TaskRead(BaseModel):
     need_e2e: bool = False
     created_by: str
     source_brainstorm_id: str | None = None
-    milestone_id: str | None = None
     repository_id: str | None = None
     story_id: str | None = None
     blocked_by_task_id: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    failure_metadata: dict[str, Any] | None = None
     last_event: str | None = None
     elapsed_minutes: float | None = None
-
-    model_config = ConfigDict(from_attributes=True)
 
 
 class TaskUpdate(BaseModel):
@@ -67,10 +63,12 @@ class TaskUpdate(BaseModel):
     acceptance_criteria: str | None = None
     priority: int | None = None
     need_e2e: bool | None = None
-    milestone_id: str | None = None
     repository_id: str | None = None
     story_id: str | None = None
     blocked_by_task_id: str | None = None
+    source_brainstorm_id: str | None = None
+    current_iteration: int | None = None
+    failure_metadata: dict[str, Any] | None = None
 
 
 class TaskTransition(BaseModel):
@@ -79,6 +77,13 @@ class TaskTransition(BaseModel):
     reason: str | None = None
     actor: str = "system"
     details: dict[str, Any] = {}
+
+
+class TaskResume(BaseModel):
+    """Schema for resuming a task from WAITING_HUMAN_REVIEW."""
+
+    guidance: str
+    actor: str = "admin"
 
 
 class TaskEventCreate(BaseModel):
@@ -90,7 +95,7 @@ class TaskEventCreate(BaseModel):
     actor: str = "system"
 
 
-class TaskEventRead(BaseModel):
+class TaskEventRead(TimestampedDTO):
     """Schema for reading a task event."""
 
     id: int
@@ -101,6 +106,3 @@ class TaskEventRead(BaseModel):
     iteration: int | None
     details: dict[str, Any]
     actor: str
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)

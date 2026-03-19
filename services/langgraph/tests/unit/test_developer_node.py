@@ -1,19 +1,59 @@
-"""Unit tests for DeveloperNode commit_sha validation and ScaffoldConfig construction.
+"""Unit tests for DeveloperNode commit_sha validation and repo_id passing.
 
 Verifies that the developer node rejects success results without a commit_sha,
-and correctly builds ScaffoldConfig for new projects.
+and correctly passes repo_id to request_spawn for workspace mounting.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
+import uuid
 
 import pytest
 
+from shared.contracts.dto.engineering import EngineeringStatus
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.repository import RepositoryDTO
 from src.clients.worker_spawner import SpawnResult
 
+_NOW = datetime(2025, 1, 1, tzinfo=UTC)
+_PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
-def _make_state(*, action="create", status="scaffolded", modules=None):
+
+def _project(**overrides) -> ProjectDTO:
+    """Factory for ProjectDTO with sensible defaults."""
+    defaults = {
+        "id": _PROJECT_UUID,
+        "name": "test-project",
+        "status": ProjectStatus.ACTIVE,
+        "config": {"modules": ["backend"], "description": "A test project"},
+        "owner_id": 1,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+    return ProjectDTO(**defaults)
+
+
+def _repo(**overrides) -> RepositoryDTO:
+    """Factory for RepositoryDTO with sensible defaults."""
+    defaults = {
+        "id": "repo-1",
+        "project_id": _PROJECT_UUID,
+        "name": "test-project",
+        "git_url": "https://github.com/org/test-project",
+        "role": "primary",
+        "visibility": "private",
+        "is_managed": True,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+    defaults.update(overrides)
+    return RepositoryDTO(**defaults)
+
+
+def _make_state(*, action="create", status=ProjectStatus.ACTIVE.value, modules=None, repo_id=None):
     return {
         "project_spec": {
             "id": "proj-1",
@@ -25,6 +65,7 @@ def _make_state(*, action="create", status="scaffolded", modules=None):
             },
         },
         "action": action,
+        "repo_id": repo_id,
         "errors": [],
     }
 
@@ -34,15 +75,13 @@ class TestDeveloperNodeCommitValidation:
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_success_without_commit_sha_returns_blocked(
+    async def test_success_without_commit_sha_returns_failed(
         self, mock_github_cls, mock_api, mock_spawn
     ):
-        """Worker success=True but commit_sha=None must return blocked, not done."""
+        """Worker success=True but commit_sha=None must return failed (technical, retryable)."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -56,7 +95,7 @@ class TestDeveloperNodeCommitValidation:
         node = DeveloperNode()
         result = await node.run(_make_state())
 
-        assert result["engineering_status"] == "blocked"
+        assert result["engineering_status"] == EngineeringStatus.FAILED
         assert any("no commit" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
@@ -69,9 +108,7 @@ class TestDeveloperNodeCommitValidation:
         """Worker success=True with commit_sha must return done."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -85,20 +122,18 @@ class TestDeveloperNodeCommitValidation:
         node = DeveloperNode()
         result = await node.run(_make_state())
 
-        assert result["engineering_status"] == "done"
+        assert result["engineering_status"] == EngineeringStatus.DONE
         assert result["commit_sha"] == "abc123"
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_failure_still_returns_blocked(self, mock_github_cls, mock_api, mock_spawn):
-        """Worker success=False must return blocked (existing behavior, sanity check)."""
+    async def test_failure_returns_failed(self, mock_github_cls, mock_api, mock_spawn):
+        """Worker success=False (generic error) must return failed (technical, retryable)."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=False,
@@ -112,70 +147,77 @@ class TestDeveloperNodeCommitValidation:
         node = DeveloperNode()
         result = await node.run(_make_state())
 
-        assert result["engineering_status"] == "blocked"
+        assert result["engineering_status"] == EngineeringStatus.FAILED
 
 
-class TestScaffoldConfigConstruction:
-    """Tests for _build_scaffold_config and scaffold flow."""
+class TestRepoIdPassing:
+    """Tests that repo_id is correctly passed to request_spawn."""
 
-    def test_scaffolding_status_creates_config(self):
-        """action=create + status=scaffolding → ScaffoldConfig is built."""
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_repo_id_from_primary_repo(self, mock_github_cls, mock_api, mock_spawn):
+        """repo_id from primary_repo is forwarded to request_spawn."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo(id="repo-abc123"))
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        project_spec = {
-            "name": "My Project",
-            "status": "scaffolding",
-            "config": {
-                "modules": ["backend", "tg_bot"],
-                "description": "Build something cool",
-            },
-        }
-        config = node._build_scaffold_config(project_spec, "create")
+        state = _make_state(action="create", status=ProjectStatus.ACTIVE.value)
+        await node.run(state)
 
-        assert config is not None
-        assert config.project_name == "my-project"
-        assert config.modules == "backend,tg_bot"
-        assert config.task_description == "Build something cool"
-        assert "service-template" in config.template_repo
+        mock_spawn.assert_awaited_once()
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["repo_id"] == "repo-abc123"
 
-    def test_feature_action_no_config(self):
-        """action=feature → no ScaffoldConfig."""
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_repo_id_fallback_from_state(self, mock_github_cls, mock_api, mock_spawn):
+        """repo_id falls back to state when primary_repo.id is empty."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo(id=""))
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        project_spec = {"name": "test", "status": "scaffolding", "config": {}}
-        config = node._build_scaffold_config(project_spec, "feature")
-        assert config is None
+        state = _make_state(
+            action="create", status=ProjectStatus.ACTIVE.value, repo_id="repo-from-state"
+        )
+        await node.run(state)
 
-    def test_scaffolded_status_no_config(self):
-        """status=scaffolded → no ScaffoldConfig (already done)."""
-        from src.nodes.developer import DeveloperNode
-
-        node = DeveloperNode()
-        project_spec = {"name": "test", "status": "scaffolded", "config": {}}
-        config = node._build_scaffold_config(project_spec, "create")
-        assert config is None
-
-    def test_draft_status_no_config(self):
-        """status=draft → no ScaffoldConfig (engineering worker sets scaffolding first)."""
-        from src.nodes.developer import DeveloperNode
-
-        node = DeveloperNode()
-        project_spec = {"name": "test", "status": "draft", "config": {}}
-        config = node._build_scaffold_config(project_spec, "create")
-        assert config is None
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["repo_id"] == "repo-from-state"
 
     @pytest.mark.asyncio
     async def test_create_with_draft_status_hard_fails(self):
-        """action=create + status=draft → hard fail (stale project dict bug)."""
+        """action=create + status=draft → hard fail (scaffolder didn't run)."""
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
         state = _make_state(action="create", status="draft")
         result = await node.run(state)
 
-        assert result["engineering_status"] == "blocked"
+        assert result["engineering_status"] == EngineeringStatus.FAILED
         assert any("draft" in e for e in result["errors"])
 
     @pytest.mark.asyncio
@@ -185,12 +227,10 @@ class TestScaffoldConfigConstruction:
     async def test_create_with_scaffolded_status_proceeds(
         self, mock_github_cls, mock_api, mock_spawn
     ):
-        """action=create + status=scaffolded → proceeds normally (scaffold already done)."""
+        """action=create + status=scaffolded → proceeds normally."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -202,85 +242,38 @@ class TestScaffoldConfigConstruction:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        state = _make_state(action="create", status="scaffolded")
+        state = _make_state(action="create", status=ProjectStatus.ACTIVE.value)
         result = await node.run(state)
 
-        assert result["engineering_status"] == "done"
+        assert result["engineering_status"] == EngineeringStatus.DONE
         mock_spawn.assert_awaited_once()
-
-    def test_sanitizes_project_name(self):
-        """Project name is sanitized for copier."""
-        from src.nodes.developer import DeveloperNode
-
-        node = DeveloperNode()
-        project_spec = {
-            "name": "My Cool Project!!!",
-            "status": "scaffolding",
-            "config": {"modules": ["backend"]},
-        }
-        config = node._build_scaffold_config(project_spec, "create")
-        assert config is not None
-        assert config.project_name == "my-cool-project"
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_scaffold_config_passed_to_spawn(self, mock_github_cls, mock_api, mock_spawn):
-        """ScaffoldConfig is forwarded to request_spawn."""
+    async def test_feature_action_passes_repo_id(self, mock_github_cls, mock_api, mock_spawn):
+        """action=feature still passes repo_id from primary_repo."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo(id="repo-feat"))
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
             exit_code=0,
             output="Done",
-            commit_sha="abc123",
+            commit_sha="feat123",
         )
 
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        state = _make_state(action="create", status="scaffolding")
+        state = _make_state(action="feature", status="active")
+        state["description"] = "Add feature"
         await node.run(state)
 
-        mock_spawn.assert_awaited_once()
         call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["scaffold_config"] is not None
-        assert call_kwargs["scaffold_config"].modules == "backend"
-
-    @pytest.mark.asyncio
-    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
-    @patch("src.nodes.developer.api_client")
-    @patch("src.nodes.developer.GitHubAppClient")
-    async def test_scaffold_failure_sets_status(self, mock_github_cls, mock_api, mock_spawn):
-        """Scaffold phase failure → status='scaffold_failed'."""
-        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
-        mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
-        mock_spawn.return_value = SpawnResult(
-            request_id="req-1",
-            success=False,
-            exit_code=1,
-            output="copier failed",
-            error_message="Scaffold phase failed",
-        )
-
-        from src.nodes.developer import DeveloperNode
-
-        node = DeveloperNode()
-        state = _make_state(action="create", status="scaffolding")
-        result = await node.run(state)
-
-        assert result["engineering_status"] == "blocked"
-        # Project should be patched to scaffold_failed
-        patch_calls = [str(c) for c in mock_api.patch.call_args_list]
-        assert any("scaffold_failed" in c for c in patch_calls)
+        assert call_kwargs["repo_id"] == "repo-feat"
 
 
 class TestFeatureFlowIntegration:
@@ -293,19 +286,14 @@ class TestFeatureFlowIntegration:
     async def test_feature_action_skips_scaffold_and_succeeds(
         self, mock_github_cls, mock_api, mock_spawn
     ):
-        """action=feature on active project → no scaffold, feature task, done."""
+        """action=feature on active project → done."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "test-project",
-                "status": "active",
-                "config": {"modules": ["backend"], "description": "A todo API"},
-            }
+            return_value=_project(
+                config={"modules": ["backend"], "description": "A todo API"},
+            )
         )
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -321,14 +309,11 @@ class TestFeatureFlowIntegration:
         state["description"] = "Add GET /todos/stats endpoint"
         result = await node.run(state)
 
-        assert result["engineering_status"] == "done"
+        assert result["engineering_status"] == EngineeringStatus.DONE
         assert result["commit_sha"] == "feat123"
 
-        # Verify scaffold_config is None (no scaffold for features)
-        call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["scaffold_config"] is None
-
         # Verify task_content uses feature template (not create template)
+        call_kwargs = mock_spawn.call_args[1]
         assert "existing, working project" in call_kwargs["task_content"]
         assert "Add GET /todos/stats endpoint" in call_kwargs["task_content"]
 
@@ -340,9 +325,7 @@ class TestFeatureFlowIntegration:
         """action=fix → task title says 'Fix Issue', template says 'existing project'."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -358,9 +341,8 @@ class TestFeatureFlowIntegration:
         state["description"] = "Fix empty input crash"
         result = await node.run(state)
 
-        assert result["engineering_status"] == "done"
+        assert result["engineering_status"] == EngineeringStatus.DONE
         call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["scaffold_config"] is None
         assert "Fix issue" in call_kwargs["task_title"]
         assert "Fix empty input crash" in call_kwargs["task_content"]
 
@@ -372,9 +354,7 @@ class TestFeatureFlowIntegration:
         """action=feature on scaffolded (not yet deployed) project works."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -386,13 +366,11 @@ class TestFeatureFlowIntegration:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        state = _make_state(action="feature", status="scaffolded")
+        state = _make_state(action="feature", status=ProjectStatus.ACTIVE.value)
         state["description"] = "Add logging"
         result = await node.run(state)
 
-        assert result["engineering_status"] == "done"
-        call_kwargs = mock_spawn.call_args[1]
-        assert call_kwargs["scaffold_config"] is None
+        assert result["engineering_status"] == EngineeringStatus.DONE
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
@@ -400,16 +378,10 @@ class TestFeatureFlowIntegration:
     @patch("src.nodes.developer.GitHubAppClient")
     async def test_feature_refreshes_project_spec(self, mock_github_cls, mock_api, mock_spawn):
         """action=feature refreshes project from API (picks up latest repo URL etc)."""
-        fresh_project = {
-            "id": "proj-1",
-            "name": "test-project",
-            "status": "active",
-            "config": {"modules": ["backend"], "description": "A test project"},
-        }
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
-        mock_api.get_project = AsyncMock(return_value=fresh_project)
+        mock_api.get_project = AsyncMock(return_value=_project())
         mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/updated-repo-name"}
+            return_value=_repo(git_url="https://github.com/org/updated-repo-name")
         )
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
@@ -431,6 +403,63 @@ class TestFeatureFlowIntegration:
         # Repo should use the refreshed URL from primary repository
         call_kwargs = mock_spawn.call_args[1]
         assert "updated-repo-name" in call_kwargs["repo"]
+
+
+class TestWorkerGaveUpReason:
+    """Tests that gave_up_reason from SpawnResult propagates to GAVE_UP status."""
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_gave_up_reason_returns_gave_up(self, mock_github_cls, mock_api, mock_spawn):
+        """SpawnResult with gave_up_reason must return engineering_status=GAVE_UP."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=False,
+            exit_code=1,
+            output="REJECTED: port conflict is infra issue",
+            gave_up_reason="Port conflict — not a code issue",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        result = await node.run(_make_state(action="fix", status="active"))
+
+        assert result["engineering_status"] == EngineeringStatus.GAVE_UP
+        assert result["gave_up_reason"] == "Port conflict — not a code issue"
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.send_task_to_worker", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_gave_up_reason_on_reused_worker(self, mock_github_cls, mock_api, mock_send):
+        """Gave-up from reused worker also returns GAVE_UP."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_send.return_value = SpawnResult(
+            request_id="req-1",
+            success=False,
+            exit_code=1,
+            output="REJECTED",
+            gave_up_reason="Missing REGISTRY_PASSWORD secret",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="fix", status="active")
+        state["description"] = "Fix deploy issue"
+        state["worker_id"] = "existing-worker-1"
+        result = await node.run(state)
+
+        assert result["engineering_status"] == EngineeringStatus.GAVE_UP
+        assert "REGISTRY_PASSWORD" in result["gave_up_reason"]
 
 
 class TestTaskMessageDescription:
@@ -466,9 +495,7 @@ class TestTaskMessageDescription:
         """config.description must appear in the task_content passed to request_spawn."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
-        mock_api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/test-project"}
-        )
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=True,
@@ -480,7 +507,7 @@ class TestTaskMessageDescription:
         from src.nodes.developer import DeveloperNode
 
         node = DeveloperNode()
-        state = _make_state(action="create", status="scaffolded")
+        state = _make_state(action="create", status=ProjectStatus.ACTIVE.value)
         # Override with specific description
         state["project_spec"]["config"]["description"] = "My specific task with audit"
         await node.run(state)
@@ -648,3 +675,90 @@ class TestCreateTaskDetailedSpecFallback:
             feature_description="Detailed from PO conversation",
         )
         assert "Detailed from PO conversation" in task_md
+
+
+class TestBranchPassing:
+    """Tests that branch is correctly passed from state to request_spawn/send_task_to_worker."""
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_branch_passed_to_request_spawn(self, mock_github_cls, mock_api, mock_spawn):
+        """branch from state is forwarded to request_spawn."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="feature", status="active")
+        state["description"] = "Add feature"
+        state["branch"] = "story/story-abc"
+        await node.run(state)
+
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["branch"] == "story/story-abc"
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_no_branch_passes_none(self, mock_github_cls, mock_api, mock_spawn):
+        """Without branch in state, None is passed to request_spawn."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_spawn.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="create", status="active")
+        await node.run(state)
+
+        call_kwargs = mock_spawn.call_args[1]
+        assert call_kwargs["branch"] is None
+
+    @pytest.mark.asyncio
+    @patch("src.nodes.developer.send_task_to_worker", new_callable=AsyncMock)
+    @patch("src.nodes.developer.api_client")
+    @patch("src.nodes.developer.GitHubAppClient")
+    async def test_branch_passed_to_send_task_to_worker(self, mock_github_cls, mock_api, mock_send):
+        """When reusing a worker, branch is passed to send_task_to_worker."""
+        mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
+        mock_api.get_project = AsyncMock(return_value=None)
+        mock_api.get_primary_repository = AsyncMock(return_value=_repo())
+        mock_send.return_value = SpawnResult(
+            request_id="req-1",
+            success=True,
+            exit_code=0,
+            output="Done",
+            commit_sha="abc123",
+        )
+
+        from src.nodes.developer import DeveloperNode
+
+        node = DeveloperNode()
+        state = _make_state(action="feature", status="active")
+        state["description"] = "Add feature"
+        state["worker_id"] = "existing-worker-1"
+        state["branch"] = "story/story-xyz"
+        await node.run(state)
+
+        call_kwargs = mock_send.call_args[1]
+        assert call_kwargs["branch"] == "story/story-xyz"

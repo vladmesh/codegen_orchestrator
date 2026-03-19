@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from fakeredis.aioredis import FakeRedis
 import pytest
+import pytest_asyncio
 
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.redis_client import RedisStreamClient
@@ -29,7 +30,7 @@ def admin_ids():
     return {111111, 222222}
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def raw_redis():
     """Provides a clean FakeRedis client."""
     client = FakeRedis(decode_responses=True)
@@ -37,7 +38,7 @@ async def raw_redis():
     await client.aclose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def stream_client(raw_redis):
     """RedisStreamClient backed by the service test Redis."""
     client = RedisStreamClient(redis_url="redis://fake:6379")

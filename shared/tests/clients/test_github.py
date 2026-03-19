@@ -348,3 +348,267 @@ async def test_wait_for_run_completion_timeout(authed_client):
                     await authed_client.wait_for_run_completion(
                         owner, repo, run_id, timeout_seconds=1, poll_interval=1
                     )
+
+
+# --- Pull Request methods ---
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.post(f"/repos/{owner}/{repo}/pulls").mock(
+                return_value=httpx.Response(
+                    201,
+                    json={
+                        "number": 42,
+                        "html_url": f"https://github.com/{owner}/{repo}/pull/42",
+                        "head": {"ref": "story/abc123"},
+                        "base": {"ref": "main"},
+                        "node_id": "PR_abc",
+                    },
+                )
+            )
+
+            result = await authed_client.create_pull_request(
+                owner, repo, head="story/abc123", base="main", title="Story: test"
+            )
+
+            assert result["number"] == 42
+            assert route.called
+            import json
+
+            body = json.loads(route.calls[0].request.content)
+            assert body["head"] == "story/abc123"
+            assert body["base"] == "main"
+            assert body["title"] == "Story: test"
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_already_exists(authed_client):
+    """422 with 'already exists' should return existing PR info."""
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.post(f"/repos/{owner}/{repo}/pulls").mock(
+                return_value=httpx.Response(
+                    422,
+                    json={
+                        "message": "Validation Failed",
+                        "errors": [{"message": "A pull request already exists"}],
+                    },
+                )
+            )
+            # Fallback: list PRs to find existing one
+            respx_mock.get(f"/repos/{owner}/{repo}/pulls").mock(
+                return_value=httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "number": 99,
+                            "html_url": f"https://github.com/{owner}/{repo}/pull/99",
+                            "head": {"ref": "story/abc123"},
+                            "base": {"ref": "main"},
+                            "node_id": "PR_existing",
+                        }
+                    ],
+                )
+            )
+
+            result = await authed_client.create_pull_request(
+                owner, repo, head="story/abc123", base="main", title="Story: test"
+            )
+            assert result["number"] == 99
+
+
+@pytest.mark.asyncio
+async def test_enable_auto_merge_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.post("/graphql").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "enablePullRequestAutoMerge": {
+                                "pullRequest": {
+                                    "number": 42,
+                                    "autoMergeRequest": {"mergeMethod": "MERGE"},
+                                }
+                            }
+                        }
+                    },
+                )
+            )
+
+            result = await authed_client.enable_auto_merge(owner, repo, pr_node_id="PR_abc")
+
+            assert result is True
+            assert route.called
+
+            import json
+
+            body = json.loads(route.calls[0].request.content)
+            assert "enablePullRequestAutoMerge" in body["query"]
+            assert body["variables"]["pullRequestId"] == "PR_abc"
+
+
+@pytest.mark.asyncio
+async def test_enable_auto_merge_not_allowed(authed_client):
+    """When repo doesn't have auto-merge enabled, GraphQL returns errors."""
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.post("/graphql").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "errors": [
+                            {
+                                "message": "Pull request is not in the correct state"
+                                " to enable auto-merge"
+                            }
+                        ]
+                    },
+                )
+            )
+
+            result = await authed_client.enable_auto_merge(owner, repo, pr_node_id="PR_abc")
+            assert result is False
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.put(f"/repos/{owner}/{repo}/pulls/42/merge").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"sha": "abc123", "merged": True},
+                )
+            )
+
+            result = await authed_client.merge_pull_request(owner, repo, 42)
+
+            assert result["merged"] is True
+            assert route.called
+
+            import json
+
+            body = json.loads(route.calls[0].request.content)
+            assert body["merge_method"] == "merge"
+
+
+@pytest.mark.asyncio
+async def test_close_pull_request_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_installation_id", return_value=111):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.patch(f"/repos/{owner}/{repo}/pulls/42").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"number": 42, "state": "closed"},
+                )
+            )
+
+            result = await authed_client.close_pull_request(owner, repo, 42)
+
+            assert result["state"] == "closed"
+            assert route.called
+
+
+# --- update_branch_protection tests ---
+
+
+@pytest.mark.asyncio
+async def test_update_branch_protection_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_org_token", return_value="org-token"):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.put(f"/repos/{owner}/{repo}/branches/main/protection").mock(
+                return_value=httpx.Response(200, json={"url": "https://api.github.com/..."})
+            )
+
+            await authed_client.update_branch_protection(
+                owner, repo, "main", required_checks=["lint-and-test"]
+            )
+
+            assert route.called
+            import json
+
+            body = json.loads(route.calls[0].request.content)
+            assert body["required_pull_request_reviews"]["required_approving_review_count"] == 0
+            assert body["required_status_checks"]["strict"] is True
+            assert body["required_status_checks"]["contexts"] == ["lint-and-test"]
+            assert body["enforce_admins"] is False
+            assert body["restrictions"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_branch_protection_custom_checks(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_org_token", return_value="org-token"):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.put(f"/repos/{owner}/{repo}/branches/main/protection").mock(
+                return_value=httpx.Response(200, json={})
+            )
+
+            await authed_client.update_branch_protection(
+                owner, repo, "main", required_checks=["ci", "lint"], enforce_admins=True
+            )
+
+            import json
+
+            body = json.loads(route.calls[0].request.content)
+            assert body["required_status_checks"]["contexts"] == ["ci", "lint"]
+            assert body["enforce_admins"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_branch_protection_404(authed_client):
+    """404 when branch doesn't exist."""
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_org_token", return_value="org-token"):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            respx_mock.put(f"/repos/{owner}/{repo}/branches/main/protection").mock(
+                return_value=httpx.Response(404)
+            )
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await authed_client.update_branch_protection(
+                    owner, repo, "main", required_checks=["lint-and-test"]
+                )
+
+
+# --- enable_repo_auto_merge tests ---
+
+
+@pytest.mark.asyncio
+async def test_enable_repo_auto_merge_success(authed_client):
+    owner, repo = "my-org", "my-repo"
+
+    with patch.object(authed_client, "get_org_token", return_value="org-token"):
+        async with respx.mock(base_url="https://api.github.com") as respx_mock:
+            route = respx_mock.patch(f"/repos/{owner}/{repo}").mock(
+                return_value=httpx.Response(200, json={"allow_auto_merge": True})
+            )
+
+            await authed_client.enable_repo_auto_merge(owner, repo)
+
+            assert route.called
+            import json
+
+            body = json.loads(route.calls[0].request.content)
+            assert body["allow_auto_merge"] is True

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -56,6 +57,7 @@ async def test_sync_server_list_discovers_new_managed(
         status=ServerStatus.PENDING_SETUP,
         provider_id="1001",
         is_managed=True,
+        created_at=datetime.now(UTC),
     )
     mock_api_client.create_server = AsyncMock(return_value=new_server_dto)
 
@@ -81,6 +83,7 @@ async def test_sync_server_details_updates_specs(mock_api_client, mock_time4vps_
         provider_id="100",
         is_managed=True,
         labels={"provider_id": "100"},
+        created_at=datetime.now(UTC),
     )
     mock_api_client.get_servers = AsyncMock(return_value=[server])
     mock_api_client.update_server = AsyncMock()
@@ -119,6 +122,7 @@ async def test_check_provisioning_triggers_detects_force_rebuild(
         status=ServerStatus.FORCE_REBUILD,
         provider_id="100",
         is_managed=True,
+        created_at=datetime.now(UTC),
     )
     mock_api_client.get_servers = AsyncMock(return_value=[server])
     mock_api_client.update_server = AsyncMock()

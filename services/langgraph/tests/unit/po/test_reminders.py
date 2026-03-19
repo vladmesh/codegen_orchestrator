@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.queues import PO_INPUT_QUEUE, PO_REMINDERS_KEY
-from src.po.reminders import _poll_once, run_reminder_poller
+from src.agents.po.reminders import _poll_once, run_reminder_poller
 
 
 @pytest.fixture
@@ -101,7 +101,7 @@ class TestPollOnce:
         """Should query from 0 to current time."""
         mock_client.redis.zrangebyscore.return_value = []
 
-        with patch("src.po.reminders.time") as mock_time:
+        with patch("src.agents.po.reminders.time") as mock_time:
             mock_time.time.return_value = 1000.0
             await _poll_once(mock_client)
 
@@ -131,7 +131,7 @@ class TestRunReminderPoller:
 
         mock_client.redis.zrangebyscore.side_effect = side_effect
 
-        with patch("src.po.reminders.asyncio.sleep", new_callable=AsyncMock):
+        with patch("src.agents.po.reminders.asyncio.sleep", new_callable=AsyncMock):
             await run_reminder_poller(mock_client)
 
         assert call_count == 2  # noqa: PLR2004
@@ -140,7 +140,7 @@ class TestRunReminderPoller:
 class TestSetReminderUsesConstant:
     def test_tools_module_imports_constant(self):
         """Verify set_reminder uses PO_REMINDERS_KEY, not a hardcoded string."""
-        import src.po.tools as tools_module
+        import src.agents.po.tools as tools_module
 
         # The module should import PO_REMINDERS_KEY
         assert hasattr(tools_module, "PO_REMINDERS_KEY")
@@ -149,7 +149,7 @@ class TestSetReminderUsesConstant:
     @pytest.mark.asyncio
     async def test_set_reminder_uses_constant(self):
         """set_reminder should call zadd with PO_REMINDERS_KEY."""
-        from src.po.tools import init_po_clients, set_reminder
+        from src.agents.po.tools import init_po_clients, set_reminder
 
         mock_client = AsyncMock()
         mock_client.redis = AsyncMock()

@@ -1,9 +1,10 @@
 """Brainstorm API schemas."""
 
-from datetime import datetime
 import uuid
 
 from pydantic import BaseModel, ConfigDict
+
+from shared.contracts.dto.base import TimestampedDTO
 
 
 class BrainstormCreate(BaseModel):
@@ -15,7 +16,7 @@ class BrainstormCreate(BaseModel):
     created_by: str = "system"
 
 
-class BrainstormRead(BaseModel):
+class BrainstormRead(TimestampedDTO):
     """Schema for reading a brainstorm."""
 
     id: str
@@ -24,8 +25,6 @@ class BrainstormRead(BaseModel):
     content: str | None
     status: str
     created_by: str
-    created_at: datetime
-    updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 

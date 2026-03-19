@@ -174,29 +174,42 @@ def _tg_bot_state(**kwargs):
     )
 
 
+def _mock_telethon_client_with_conversation(*, response_text=None, side_effect=None):
+    """Build a mock TelegramClient with conversation context manager."""
+    mock_client = AsyncMock()
+    mock_client.start = AsyncMock()
+    mock_client.disconnect = AsyncMock()
+
+    mock_conv = AsyncMock()
+    mock_conv.send_message = AsyncMock()
+
+    if side_effect:
+        mock_conv.get_response = AsyncMock(side_effect=side_effect)
+    else:
+        mock_response = MagicMock()
+        mock_response.text = response_text
+        mock_conv.get_response = AsyncMock(return_value=mock_response)
+
+    mock_conv.__aenter__ = AsyncMock(return_value=mock_conv)
+    mock_conv.__aexit__ = AsyncMock(return_value=False)
+    mock_client.conversation = MagicMock(return_value=mock_conv)
+
+    return mock_client
+
+
 class TestSmokeTesterTgBotPass:
     """Telethon /start gets a response."""
 
     async def test_pass_on_response(self, smoke_node):
         state = _tg_bot_state()
 
-        # Mock getMe API call
         mock_getme_response = AsyncMock()
         mock_getme_response.status_code = 200
         mock_getme_response.json = MagicMock(
             return_value={"ok": True, "result": {"username": "test_bot"}}
         )
 
-        # Mock Telethon client
-        mock_telethon_client = AsyncMock()
-        mock_telethon_client.start = AsyncMock()
-        mock_telethon_client.send_message = AsyncMock()
-        mock_telethon_client.disconnect = AsyncMock()
-
-        # Mock incoming message
-        mock_event = MagicMock()
-        mock_event.message = MagicMock()
-        mock_event.message.text = "Welcome!"
+        mock_telethon_client = _mock_telethon_client_with_conversation(response_text="Welcome!")
 
         with (
             patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_http_cls,
@@ -218,15 +231,13 @@ class TestSmokeTesterTgBotPass:
 
             mock_tg_cls.return_value = mock_telethon_client
 
-            # Simulate receiving a message via get_response
-            mock_telethon_client.get_response = AsyncMock(return_value=mock_event.message)
-
             result = await smoke_node.run(state)
 
         assert result["smoke_result"]["status"] == "pass"
         check = result["smoke_result"]["checks"][0]
         assert check["module"] == "tg_bot"
         assert check["result"] == "pass"
+        assert "Welcome!" in check["detail"]
 
 
 class TestSmokeTesterTgBotTimeout:
@@ -241,11 +252,9 @@ class TestSmokeTesterTgBotTimeout:
             return_value={"ok": True, "result": {"username": "test_bot"}}
         )
 
-        mock_telethon_client = AsyncMock()
-        mock_telethon_client.start = AsyncMock()
-        mock_telethon_client.send_message = AsyncMock()
-        mock_telethon_client.disconnect = AsyncMock()
-        mock_telethon_client.get_response = AsyncMock(side_effect=TimeoutError("no response"))
+        mock_telethon_client = _mock_telethon_client_with_conversation(
+            side_effect=TimeoutError("no response")
+        )
 
         with (
             patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_http_cls,
@@ -292,3 +301,157 @@ class TestSmokeTesterTgBotMissingEnv:
         check = result["smoke_result"]["checks"][0]
         assert check["module"] == "tg_bot"
         assert check["result"] == "skip"
+
+
+# ---------------------------------------------------------------------------
+# Container log capture on smoke failure
+# ---------------------------------------------------------------------------
+
+
+def _make_state_with_handle(*, modules=None, server_handle="srv-abc"):
+    """State that includes server_handle in allocated_resources + project name."""
+    if modules is None:
+        modules = ["backend"]
+    return {
+        "messages": [],
+        "project_id": "test-project",
+        "project_spec": {"name": "my-cool-project", "config": {"modules": modules}},
+        "allocated_resources": {
+            "srv-abc:8000": {
+                "server_ip": "1.2.3.4",
+                "port": 8000,
+                "service_name": "backend",
+                "server_handle": server_handle,
+            }
+        },
+        "repo_info": None,
+        "provided_secrets": {},
+        "env_variables": [],
+        "env_analysis": {},
+        "resolved_secrets": {},
+        "missing_user_secrets": [],
+        "deployment_result": {"status": "success"},
+        "deployed_url": "http://1.2.3.4:8000",
+        "errors": [],
+        "smoke_result": None,
+    }
+
+
+class TestContainerLogCapture:
+    """When smoke fails, container logs are fetched via SSH and appended to detail."""
+
+    async def test_logs_appended_on_backend_fail(self, smoke_node):
+        """Failed backend check → detail includes docker compose logs output."""
+        state = _make_state_with_handle()
+        mock_response = AsyncMock()
+        mock_response.status_code = 500
+
+        mock_ssh_result = MagicMock()
+        mock_ssh_result.stdout = (
+            "Traceback: ModuleNotFoundError: No module named 'shared.generated'"
+        )
+        mock_ssh_result.exit_status = 0
+
+        mock_conn = AsyncMock()
+        mock_conn.run = AsyncMock(return_value=mock_ssh_result)
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_client_cls,
+            patch("src.subgraphs.devops.smoke.asyncio.sleep", new_callable=AsyncMock),
+            patch("src.subgraphs.devops.smoke.api_client") as mock_api,
+            patch("src.subgraphs.devops.smoke.asyncssh") as mock_asyncssh,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            mock_api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
+            mock_asyncssh.import_private_key = MagicMock(return_value="parsed-key")
+            mock_asyncssh.connect = MagicMock(return_value=mock_conn)
+
+            result = await smoke_node.run(state)
+
+        check = result["smoke_result"]["checks"][0]
+        assert check["result"] == "fail"
+        assert "ModuleNotFoundError" in check["detail"]
+        assert "HTTP 500" in check["detail"]
+
+    async def test_logs_not_fetched_on_pass(self, smoke_node):
+        """Passing smoke check must NOT trigger SSH log fetch."""
+        state = _make_state_with_handle()
+        mock_response = AsyncMock()
+        mock_response.status_code = 200
+
+        with (
+            patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_client_cls,
+            patch("src.subgraphs.devops.smoke.api_client") as mock_api,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            result = await smoke_node.run(state)
+
+        assert result["smoke_result"]["status"] == "pass"
+        mock_api.get_server_ssh_key.assert_not_called()
+
+    async def test_logs_ssh_failure_does_not_break_smoke(self, smoke_node):
+        """If SSH log fetch fails, smoke still reports the original error."""
+        state = _make_state_with_handle()
+        mock_response = AsyncMock()
+        mock_response.status_code = 502
+
+        with (
+            patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_client_cls,
+            patch("src.subgraphs.devops.smoke.asyncio.sleep", new_callable=AsyncMock),
+            patch("src.subgraphs.devops.smoke.api_client") as mock_api,
+            patch("src.subgraphs.devops.smoke.asyncssh") as mock_asyncssh,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            mock_api.get_server_ssh_key = AsyncMock(side_effect=Exception("API down"))
+            mock_asyncssh.import_private_key = MagicMock()
+
+            result = await smoke_node.run(state)
+
+        check = result["smoke_result"]["checks"][0]
+        assert check["result"] == "fail"
+        assert "HTTP 502" in check["detail"]
+
+    async def test_logs_missing_server_handle_skips_fetch(self, smoke_node):
+        """If no server_handle in allocated_resources, skip log fetch gracefully."""
+        state = _make_state_with_handle()
+        # Remove server_handle
+        for alloc in state["allocated_resources"].values():
+            alloc.pop("server_handle", None)
+
+        mock_response = AsyncMock()
+        mock_response.status_code = 503
+
+        with (
+            patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_client_cls,
+            patch("src.subgraphs.devops.smoke.asyncio.sleep", new_callable=AsyncMock),
+            patch("src.subgraphs.devops.smoke.api_client") as mock_api,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_client
+
+            result = await smoke_node.run(state)
+
+        check = result["smoke_result"]["checks"][0]
+        assert check["result"] == "fail"
+        assert "HTTP 503" in check["detail"]
+        mock_api.get_server_ssh_key.assert_not_called()

@@ -23,10 +23,19 @@ DEPLOY_QUEUE = "deploy:queue"
 ENGINEERING_QUEUE = "engineering:queue"
 PROVISIONER_QUEUE = "provisioner:queue"
 PROVISIONER_RESULTS = "provisioner:results"
+ARCHITECT_QUEUE = "architect:queue"
+SCAFFOLD_QUEUE = "scaffold:queue"
 WORKER_COMMANDS = "worker:commands"
+WORKER_RESPONSES = "worker:responses:developer"
+QA_QUEUE = "qa:queue"
 PO_INPUT_QUEUE = "po:input"
 PO_PROACTIVE_QUEUE = "po:proactive"
 PO_REMINDERS_KEY = "po:reminders"
+
+# ---------------------------------------------------------------------------
+# Redis hash keys
+# ---------------------------------------------------------------------------
+STORY_WORKERS_KEY = "story:workers"
 
 # ---------------------------------------------------------------------------
 # Consumer group names
@@ -34,9 +43,12 @@ PO_REMINDERS_KEY = "po:reminders"
 WORKER_GROUP = "capability-workers"
 INFRA_GROUP = "infrastructure-workers"
 SCHEDULER_CONSUMER_GROUP = "scheduler-consumers"
+ARCHITECT_GROUP = "architect-consumers"
+SCAFFOLD_GROUP = "scaffold-consumers"
 TELEGRAM_BOT_GROUP = "telegram-bot"
 WORKER_MANAGER_GROUP = "worker_manager"
 PO_CONSUMER_GROUP = "po-consumer"
+QA_GROUP = "qa-consumers"
 PO_PROACTIVE_GROUP = "tg-bot-proactive"
 
 # ---------------------------------------------------------------------------
@@ -58,12 +70,15 @@ class QueueBinding:
 
 
 QUEUE_TOPOLOGY: list[QueueBinding] = [
+    QueueBinding(SCAFFOLD_QUEUE, SCAFFOLD_GROUP, "Project scaffolding"),
+    QueueBinding(ARCHITECT_QUEUE, ARCHITECT_GROUP, "Story → task decomposition"),
     QueueBinding(ENGINEERING_QUEUE, WORKER_GROUP, "Engineering tasks"),
     QueueBinding(DEPLOY_QUEUE, WORKER_GROUP, "Deploy tasks"),
     QueueBinding(PROVISIONER_QUEUE, INFRA_GROUP, "Server provisioning"),
     QueueBinding(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, "Provisioner results → scheduler"),
     QueueBinding(PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP, "Provisioner results → telegram-bot"),
     QueueBinding(WORKER_COMMANDS, WORKER_MANAGER_GROUP, "Worker lifecycle commands"),
+    QueueBinding(QA_QUEUE, QA_GROUP, "Post-deploy QA testing"),
     QueueBinding(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, "Product Owner input messages"),
     QueueBinding(PO_PROACTIVE_QUEUE, PO_PROACTIVE_GROUP, "PO proactive messages → telegram-bot"),
 ]

@@ -26,10 +26,11 @@ max-branches = 20
 max-returns = 12
 
 [lint.per-file-ignores]
-"tests/**" = ["PLR2004", "S101"]
-"**/tests/**" = ["PLR2004", "S101"]
+"tests/**" = ["PLR2004", "S101", "S607", "S110", "S608"]
+"**/tests/**" = ["PLR2004", "S101", "S607", "S110", "S608"]
 "shared/tests/**" = ["PLR2004", "S101"]
 "alembic/**" = ["F401"]
+".claude/skills/**" = ["E501", "C901", "PLR", "S607", "S603", "S101", "C4", "F841"]
 
 [lint.isort]
 combine-as-imports = true

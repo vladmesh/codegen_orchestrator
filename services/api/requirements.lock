@@ -27,13 +27,17 @@ certifi==2025.11.12
     #   httpx
     #   requests
 cffi==2.0.0
-    # via cryptography
+    # via
+    #   cryptography
+    #   pynacl
 charset-normalizer==3.4.4
     # via requests
 click==8.3.1
     # via uvicorn
 cryptography==46.0.3
-    # via pyjwt
+    # via
+    #   api (services/api/pyproject.toml)
+    #   pyjwt
 fastapi==0.127.1
     # via api (services/api/pyproject.toml)
 frozenlist==1.8.0
@@ -88,6 +92,8 @@ pydantic-core==2.41.5
 pydantic-settings==2.12.0
     # via api (services/api/pyproject.toml)
 pyjwt==2.10.1
+    # via api (services/api/pyproject.toml)
+pynacl==1.6.2
     # via api (services/api/pyproject.toml)
 python-dotenv==1.2.1
     # via

@@ -99,7 +99,7 @@ class TestWorkerContainerConfig:
         assert all(v.get("bind") != "/workspace" for v in volumes.values())
 
     def test_worker_manager_url_env_var(self):
-        """When worker_manager_url is provided, ORCHESTRATOR_WORKER_MANAGER_URL should be set."""
+        """When worker_manager_url is provided, WORKER_MANAGER_URL should be set."""
         config = WorkerContainerConfig(
             worker_id="test-1",
             worker_type="developer",
@@ -111,7 +111,7 @@ class TestWorkerContainerConfig:
             api_url="http://api",
             worker_manager_url="http://worker-manager:8000",
         )
-        assert env["ORCHESTRATOR_WORKER_MANAGER_URL"] == "http://worker-manager:8000"
+        assert env["WORKER_MANAGER_URL"] == "http://worker-manager:8000"
 
     def test_worker_manager_url_absent_when_not_provided(self):
         """When worker_manager_url is not provided, env var should not be set."""
@@ -122,4 +122,20 @@ class TestWorkerContainerConfig:
             capabilities=[],
         )
         env = config.to_env_vars(redis_url="redis://r", api_url="http://api")
-        assert "ORCHESTRATOR_WORKER_MANAGER_URL" not in env
+        assert "WORKER_MANAGER_URL" not in env
+
+    def test_no_orchestrator_env_vars(self):
+        """Env vars should not contain any ORCHESTRATOR_ prefixed keys."""
+        config = WorkerContainerConfig(
+            worker_id="test-1",
+            worker_type="developer",
+            agent_type="claude",
+            capabilities=["GIT"],
+        )
+        env = config.to_env_vars(
+            redis_url="redis://r",
+            api_url="http://api",
+            worker_manager_url="http://wm:8000",
+        )
+        orchestrator_keys = [k for k in env if k.startswith("ORCHESTRATOR_")]
+        assert orchestrator_keys == [], f"Unexpected ORCHESTRATOR_ env vars: {orchestrator_keys}"

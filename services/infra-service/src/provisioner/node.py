@@ -8,275 +8,45 @@ Handles automated server provisioning:
 5. Handles incident recovery with service redeployment
 """
 
-import asyncio
+from __future__ import annotations
+
 import os
+from typing import TYPE_CHECKING
 
 import structlog
 
-from shared.clients.time4vps import Time4VPSClient
 from shared.notifications import notify_admins
+
+if TYPE_CHECKING:
+    from shared.clients.time4vps import Time4VPSClient
 
 from ..config.constants import Provisioning, Timeouts
 from ..nodes import FunctionalNode, log_node_execution
 from .ansible_runner import AnsibleRunner
 from .api_client import (
     get_server_info,
-    save_server_ssh_key,
     update_server_labels,
     update_server_status,
 )
-from .incidents import create_incident, resolve_active_incidents
-from .recovery import redeploy_all_services
+from .handlers import handle_provisioning_success
+from .incidents import create_incident
+from .operations import reinstall_and_provision, reset_server_password
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
 
 # Configuration from centralized constants
 PROVISIONING_MAX_RETRIES = Provisioning.MAX_RETRIES
-PASSWORD_RESET_TIMEOUT = Timeouts.PASSWORD_RESET
-PASSWORD_RESET_POLL_INTERVAL = Provisioning.PASSWORD_RESET_POLL_INTERVAL
 
-
-async def reset_server_password(
-    time4vps_client: Time4VPSClient,
-    server_handle: str,
-) -> str | None:
-    """Reset server root password and wait for new password.
-
-    Args:
-        time4vps_client: Time4VPS API client
-        server_handle: Server handle to reset
-
-    Returns:
-        New root password if successful, None otherwise
-    """
-    server_id = await time4vps_client.get_server_id_by_handle(server_handle)
-    if not server_id:
-        logger.error("password_reset_server_not_found", server_handle=server_handle)
-        return None
-
-    try:
-        logger.info("password_reset_triggered", server_handle=server_handle, server_id=server_id)
-        task_id = await time4vps_client.reset_password(server_id)
-        logger.info("password_reset_task_created", task_id=task_id)
-
-        password = await time4vps_client.wait_for_password_reset(
-            server_id,
-            task_id,
-            timeout=PASSWORD_RESET_TIMEOUT,
-            poll_interval=PASSWORD_RESET_POLL_INTERVAL,
-        )
-
-        logger.info("password_reset_completed", server_handle=server_handle)
-        return password
-
-    except TimeoutError as e:
-        logger.error("password_reset_timeout", error=str(e))
-        return None
-    except Exception as e:
-        logger.error(
-            "password_reset_failed",
-            error=str(e),
-            error_type=type(e).__name__,
-            exc_info=True,
-        )
-        return None
-
-
-async def reinstall_and_provision(
-    time4vps_client: Time4VPSClient,
-    server_handle: str,
-    server_id: int,
-    server_ip: str,
-    os_template: str,
-    ssh_manager: SSHManager,
-    ansible_runner: AnsibleRunner,
-    ssh_public_key: str | None = None,
-) -> tuple[bool, str]:
-    """Reinstall OS and provision server.
-
-    Used when password reset is not sufficient (SSH password auth disabled).
-    Flow: Reinstall OS -> Reset password -> Ansible with password
-
-    Args:
-        time4vps_client: Time4VPS API client
-        server_handle: Server handle
-        server_id: Time4VPS server ID
-        server_ip: Server IP address
-        os_template: OS template to install
-        ssh_manager: SSH Manager instance
-        ansible_runner: Ansible Runner instance
-        ssh_public_key: Optional SSH public key
-
-    Returns:
-        Tuple of (success: bool, message: str)
-    """
-    logger.info("os_reinstall_start", server_handle=server_handle, server_id=server_id)
-
-    try:
-        # Step 1: Trigger reinstall
-        task_id = await time4vps_client.reinstall_server(
-            server_id=server_id, os_template=os_template, ssh_key=ssh_public_key
-        )
-
-        logger.info("reinstall_task_created", task_id=task_id)
-
-        await notify_admins(
-            f"⏳ Server *{server_handle}* OS reinstall started. This will take ~10-15 minutes.",
-            level="info",
-        )
-
-        # Step 2: Wait for reinstall to complete
-        task_result = await time4vps_client.wait_for_task(
-            server_id=server_id,
-            task_id=task_id,
-            timeout=Timeouts.REINSTALL,
-            poll_interval=Provisioning.REINSTALL_POLL_INTERVAL,
-        )
-
-        logger.info("os_reinstall_completed", server_handle=server_handle)
-
-        # Extract password from reinstall result (task_result is Time4VPSTask model)
-        results = task_result.results or ""
-        password = time4vps_client.extract_password(results)
-
-        if not password:
-            logger.warning("Could not extract password from reinstall. Trying explicit reset...")
-            password = await reset_server_password(time4vps_client, server_handle)
-
-        if not password:
-            return False, "Could not obtain root password after reinstall"
-
-        # Step 3: Wait for server to boot
-        boot_wait = Provisioning.POST_REINSTALL_BOOT_WAIT
-        logger.info("Waiting for server to fully boot...", wait_seconds=boot_wait)
-        await asyncio.sleep(boot_wait)
-
-        # Step 4: Run Access Phase
-        logger.info("Running Phase 1: Access Configuration...")
-        success_access, output_access = ansible_runner.run_playbook(
-            server_ip=server_ip,
-            server_handle=server_handle,
-            playbook_name="provision_access.yml",
-            root_password=password,
-            ssh_public_key=ssh_public_key,
-            timeout=Timeouts.ACCESS_PHASE,
-        )
-
-        if not success_access:
-            return False, f"Phase 1 (Access) failed: {output_access[:500]}"
-
-        logger.info("Phase 1 complete. SSH Access established.")
-
-        await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
-
-        await notify_admins(
-            f"✅ Server *{server_handle}* connectivity established. "
-            "Starting software installation...",
-            level="info",
-        )
-
-        # Step 5: Run Software Phase
-        logger.info("Running Phase 2: Software Installation...")
-        success_soft, output_soft = ansible_runner.run_playbook(
-            server_ip=server_ip,
-            server_handle=server_handle,
-            playbook_name="provision_software.yml",
-            root_password=None,  # Use keys now
-            timeout=Timeouts.PROVISIONING,
-        )
-
-        if success_soft:
-            await update_server_labels(server_handle, {"provisioning_phase": "complete"})
-            return True, "Provisioning (Access + Software) completed successfully"
-        else:
-            return False, f"Phase 2 (Software) failed: {output_soft[:500]}"
-
-    except TimeoutError as e:
-        logger.error("reinstall_timeout", error=str(e))
-        return False, f"Reinstall timeout: {e}"
-    except Exception as e:
-        logger.error("reinstall_failed", error=str(e), error_type=type(e).__name__, exc_info=True)
-        return False, f"Reinstall failed: {e}"
-
-
-async def handle_provisioning_success(
-    server_handle: str,
-    server_ip: str,
-    provisioning_attempts: int,
-    is_recovery: bool,
-    method_suffix: str = "",
-    ssh_manager: SSHManager | None = None,
-) -> dict:
-    """Handle successful provisioning - update status, resolve incidents, redeploy services.
-
-    Args:
-        server_handle: Server handle
-        server_ip: Server IP
-        provisioning_attempts: Number of attempts
-        is_recovery: Whether this is incident recovery
-        method_suffix: Suffix for message (e.g., " (Reinstalled)")
-        ssh_manager: SSHManager to persist the private key to DB
-
-    Returns:
-        State update dict
-    """
-    await update_server_status(server_handle, "ready")
-
-    # Persist SSH key to DB for per-server key storage
-    if ssh_manager:
-        private_key = ssh_manager.get_private_key()
-        if private_key:
-            await save_server_ssh_key(server_handle, private_key)
-
-    recovery_text = "recovered and " if is_recovery else ""
-    services_redeployed = 0
-    services_failed = 0
-
-    if is_recovery:
-        # Resolve incidents
-        await resolve_active_incidents(server_handle)
-
-        # Redeploy services
-        logger.info("service_redeployment_start", server_handle=server_handle)
-        services_redeployed, services_failed, errors = await redeploy_all_services(
-            server_handle, server_ip
-        )
-
-    message = f"""✅ Server {server_handle} {recovery_text}provisioned successfully!{method_suffix}
-    
-IP: {server_ip}
-Status: READY
-Provisioning attempt: {provisioning_attempts + 1}
-
-The server is now configured with:
-- SSH key authentication
-- Docker and Docker Compose
-- UFW firewall
-- Essential tools
-"""
-
-    if is_recovery and (services_redeployed > 0 or services_failed > 0):
-        message += f"\n📦 Services: {services_redeployed} redeployed, {services_failed} failed"
-
-    # Send notification
-    await notify_admins(
-        f"Server *{server_handle}* {recovery_text}provisioned successfully! "
-        f"IP: {server_ip}. Server is now READY.",
-        level="success",
-    )
-
-    return {
-        "messages": [{"message": message}],
-        "provisioning_result": {
-            "status": "success",
-            "server_handle": server_handle,
-            "server_ip": server_ip,
-            "services_redeployed": services_redeployed,
-            "services_failed": services_failed,
-        },
-        "current_agent": "provisioner",
-    }
+# Re-export extracted names for backward compatibility
+__all__ = [
+    "ProvisionerNode",
+    "handle_provisioning_success",
+    "provisioner_node",
+    "reinstall_and_provision",
+    "reset_server_password",
+    "run",
+]
 
 
 class ProvisionerNode(FunctionalNode):
@@ -288,6 +58,7 @@ class ProvisionerNode(FunctionalNode):
         super().__init__(node_id="provisioner")
         self.ssh_manager = ssh_manager or SSHManager()
         self.ansible_runner = ansible_runner or AnsibleRunner()
+        self.orchestrator_ip = os.getenv("ORCHESTRATOR_PUBLIC_IP")
 
     async def _get_and_validate_server_info(
         self,
@@ -307,7 +78,7 @@ class ProvisionerNode(FunctionalNode):
                 "errors": state.get("errors", []) + ["Server info fetch failed"],
             }
 
-        server_ip = server_info.get("public_ip") or server_info.get("host")
+        server_ip = server_info.public_ip or server_info.host
         if not server_ip:
             await update_server_status(server_handle, "error")
             return None, {
@@ -359,6 +130,8 @@ class ProvisionerNode(FunctionalNode):
         Returns:
             Tuple of (client, server_id, error_response).
         """
+        from shared.clients.time4vps import Time4VPSClient
+
         time4vps_username = os.getenv("TIME4VPS_LOGIN") or os.getenv("TIME4VPS_USERNAME")
         time4vps_password = os.getenv("TIME4VPS_PASSWORD")
 
@@ -377,7 +150,7 @@ class ProvisionerNode(FunctionalNode):
         time4vps_client = Time4VPSClient(time4vps_username, time4vps_password)
 
         # Get Time4VPS server ID
-        server_id = server_info.get("labels", {}).get("time4vps_id")
+        server_id = (server_info.labels or {}).get("time4vps_id")
         if server_id:
             server_id = int(server_id)
         else:
@@ -404,11 +177,7 @@ class ProvisionerNode(FunctionalNode):
         server_status: str,
         force_reinstall: bool,
     ) -> bool:
-        """Determine if server needs OS reinstall.
-
-        Returns:
-            True if reinstall is needed, False if existing access can be used.
-        """
+        """Determine if server needs OS reinstall."""
         use_reinstall = False
 
         if self.ssh_manager.check_ssh_access(server_ip):
@@ -417,7 +186,6 @@ class ProvisionerNode(FunctionalNode):
             logger.info("ssh_access_failed", server_handle=server_handle)
             use_reinstall = True
 
-        # Force reinstall override
         if force_reinstall or server_status == "force_rebuild":
             logger.info("force_reinstall_requested", server_handle=server_handle)
             use_reinstall = True
@@ -426,7 +194,7 @@ class ProvisionerNode(FunctionalNode):
 
     async def _run_reinstall_path(
         self,
-        time4vps_client: Time4VPSClient,
+        time4vps_client,
         server_handle: str,
         server_id: int,
         server_ip: str,
@@ -435,11 +203,7 @@ class ProvisionerNode(FunctionalNode):
         is_recovery: bool,
         state: dict,
     ) -> dict:
-        """Execute reinstall provisioning path.
-
-        Returns:
-            State update dict.
-        """
+        """Execute reinstall provisioning path."""
         ssh_public_key = self.ssh_manager.get_public_key()
 
         success, message = await reinstall_and_provision(
@@ -451,6 +215,7 @@ class ProvisionerNode(FunctionalNode):
             ssh_manager=self.ssh_manager,
             ansible_runner=self.ansible_runner,
             ssh_public_key=ssh_public_key,
+            orchestrator_ip=self.orchestrator_ip,
         )
 
         if success:
@@ -483,11 +248,7 @@ class ProvisionerNode(FunctionalNode):
         is_recovery: bool,
         state: dict,
     ) -> dict:
-        """Execute provisioning using existing SSH access.
-
-        Returns:
-            State update dict.
-        """
+        """Execute provisioning using existing SSH access."""
         logger.info("provisioning_existing_setup", server_handle=server_handle)
 
         # Phase 1: Access
@@ -497,6 +258,7 @@ class ProvisionerNode(FunctionalNode):
             playbook_name="provision_access.yml",
             root_password=None,
             ssh_public_key=self.ssh_manager.get_public_key(),
+            orchestrator_ip=self.orchestrator_ip,
             timeout=Timeouts.ACCESS_PHASE,
         )
 
@@ -520,6 +282,7 @@ class ProvisionerNode(FunctionalNode):
             server_handle=server_handle,
             playbook_name="provision_software.yml",
             root_password=None,
+            orchestrator_ip=self.orchestrator_ip,
             timeout=Timeouts.PROVISIONING,
         )
 
@@ -556,12 +319,6 @@ class ProvisionerNode(FunctionalNode):
         4. Run Ansible playbooks
         5. Update server status
         6. Handle incident recovery
-
-        Args:
-            state: Graph state
-
-        Returns:
-            Updated state with provisioning result
         """
         server_handle = state.get("server_to_provision")
         is_recovery = state.get("is_incident_recovery", False)
@@ -578,10 +335,10 @@ class ProvisionerNode(FunctionalNode):
         if error:
             return error
 
-        server_ip = server_info.get("public_ip") or server_info.get("host")
-        server_status = server_info.get("status", "")
-        os_template = server_info.get("os_template", Provisioning.DEFAULT_OS_TEMPLATE)
-        provisioning_attempts = server_info.get("provisioning_attempts", 0)
+        server_ip = server_info.public_ip or server_info.host
+        server_status = server_info.status or ""
+        os_template = server_info.os_template or Provisioning.DEFAULT_OS_TEMPLATE
+        provisioning_attempts = server_info.provisioning_attempts
 
         # Step 2: Check max attempts
         error = await self._check_max_attempts(server_handle, provisioning_attempts, state)

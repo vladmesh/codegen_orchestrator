@@ -23,7 +23,6 @@ make makemigrations MSG='description'  # Create new migration
 make backlog               # Generate backlog.md from Tasks API
 make seed                  # Seed database with API keys
 make nuke                  # Full reset (volumes, rebuild, migrate, seed)
-make shell                 # Open shell in tooling container
 make lock-deps             # Regenerate all requirements.lock files
 
 # Code Quality
@@ -38,72 +37,123 @@ make test-all              # All tests
 make test-{service}-unit   # Service-specific: api, langgraph, scheduler, telegram
 make test-{service}-integration
 make test-clean            # Cleanup test containers
+
+# Server access
+./infra/scripts/ssh-to-server.sh <server_ip> [command...]  # SSH via API-stored key
+# Example: ./infra/scripts/ssh-to-server.sh 80.209.235.229 'docker ps'
+# Fetches SSH key from API, writes to tempfile, connects. No local key needed.
 ```
 
 ## Architecture
 
-```
-User → Telegram Bot → po:input → PO ReactAgent (langgraph) → tools (API/Redis) → po:response → Telegram Bot → User
-                                                               ↕
-                                                  engineering:queue → engineering-worker → worker:commands → worker-manager
-                                                  deploy:queue → deploy-worker → GitHub Actions (deploy.yml)
+`User → Telegram → PO Agent → (scaffold → architect → engineer → CI → deploy → QA) → User`
 
-GitHub (ci.yml success) → webhook → Caddy (HTTPS) → API → deploy:queue → deploy-worker → po:proactive → Telegram Bot → User
+Full pipeline: [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md). Agent nodes: [docs/NODES.md](docs/NODES.md). Queue contracts: [docs/CONTRACTS.md](docs/CONTRACTS.md).
 
-Caddy (/v2/*) → Docker Registry (self-hosted, basic auth)
-Caddy (/webhooks/*) → API
-```
+**Key non-obvious details:**
+- `engineering-worker` and `deploy-worker` share the `langgraph` Docker image (different entrypoints)
+- `shared/` is `COPY`'d into Docker images (not pip-installed). After adding/removing files in `shared/`, run `uv sync --reinstall-package shared` before running tests locally.
+- External coding agents (Claude Code, Factory.ai Droid) run inside worker containers managed by `worker-manager`
 
-**Key Components:**
-- **PO ReactAgent**: LangGraph agent (`services/langgraph/src/po/`), communicates via Redis Streams
-- **Tool System**: PO uses native Python tools; Developer workers use CLI tools via OpenAPI
-- **Session Management**: PostgreSQL checkpointer (per-user thread), Redis streams for I/O
+**Related Projects**: `/home/vlad/projects/service-template` — spec-first framework for generating microservices
 
-**Services** (in `services/`):
-- `api`: FastAPI + SQLAlchemy, stores projects/servers/agent_configs, GitHub webhook receiver (port 8000)
-- `langgraph`: LangGraph orchestration (Engineering, DevOps subgraphs)
-- `engineering-worker`: Redis stream consumer (`engineering:queue`), runs Engineering subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.workers.engineering_worker`)
-- `deploy-worker`: Redis stream consumer (`deploy:queue`), runs DevOps subgraph. Same Docker image as `langgraph`, separate container with own entrypoint (`src.workers.deploy_worker`)
-- `telegram_bot`: python-telegram-bot interface (PO via Redis Streams)
-- `worker-manager`: Docker container lifecycle for CLI agents, runs scaffold phase (copier + make setup) via docker exec
-- `infra-service`: Ansible execution for server provisioning only (consumes `provisioner:queue`)
-- `scheduler`: Background workers (github_sync, server_sync, health_checker)
-- `caddy`: Reverse proxy + TLS termination (HTTPS for webhook + registry endpoints)
-- `registry`: Self-hosted Docker Registry (v2, accessible via Caddy basic auth)
+## Critical Anti-Patterns
 
-**Packages** (`packages/`): `orchestrator-cli` (CLI tools for agents), `worker-wrapper` (agent container entrypoint).
+These three mistakes cause the most debugging pain. They apply everywhere — code, skills, plans, configs.
 
-**Shared** (`shared/`): Logging setup (structlog), contracts (DTOs, queue schemas), models, configuration.
-  - Installed as a package (`hatchling`) in the uv venv. Uses `force-include` (static copy, not symlink). After adding/removing files in `shared/`, run `uv sync --reinstall-package shared` before running tests.
+### 1. Fail-fast, no fallbacks
 
-**External Coding Agents**: Claude Code and Factory.ai Droid for actual code generation (not custom agents).
+This is a prototype, not legacy. No backward compatibility needed. When something is missing or wrong — crash immediately. The faster we see the error, the faster we fix it.
 
-**Related Projects**:
-- `/home/vlad/projects/service-template` - Spec-first framework for generating microservices
-
-## Code Patterns
-
-### Environment Variables
-Never use default values:
 ```python
-# Wrong
-api_key = os.getenv("OPENAI_API_KEY", "sk-test")
+# WRONG — hides the problem, delays debugging
+value = config.get("key", "some_default")
+result = response.get("data") or fallback_value
+status = task.get("status", "unknown")
 
-# Correct
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise RuntimeError("OPENAI_API_KEY is not set")
+# RIGHT — crash, see the error, fix the root cause
+value = config["key"]  # KeyError if missing — good
+result = response["data"]  # KeyError if missing — good
+status = task.status  # AttributeError if wrong type — good
 ```
+
+**No shims, no "just in case" branches, no `or default`.** If a function can receive `None` — don't handle it silently, raise. If an env var is missing — `RuntimeError`, not a default. If a key doesn't exist — let it crash, don't `get()` with a fallback. If you're removing something — remove it completely, no compatibility wrappers.
+
+### 2. Enums and schemas, never hardcoded strings or dicts
+
+Every status, queue name, and message has a defined type in `shared/`. Use it. Never guess keys or construct dicts by hand.
+
+```python
+# WRONG — hardcoded strings, guessing, multi-branch "just in case"
+if status in ("done", "completed", "success"):  # three guesses at one value
+redis.xadd("engineering:queue", {"data": json.dumps(payload)})
+task_data = {"status": "todo", "project_id": pid}  # raw dict
+
+# RIGHT — one source of truth
+if status == TaskStatus.DONE:  # or TaskStatus.DONE.value for string comparison
+await redis_client.publish_message(ENGINEERING_QUEUE, EngineeringMessage(...))
+task = TaskCreate(status=TaskStatus.TODO, project_id=pid)
+```
+
+If a schema or enum doesn't exist for something — create it in `shared/contracts/`. Don't work around missing types with raw dicts.
+
+### 3. Follow the glossary — [docs/GLOSSARY.md](docs/GLOSSARY.md)
+
+Terms have precise meanings. Misusing them causes confusion in code, logs, container names, and docs.
+
+Key distinctions:
+- **Worker** = ephemeral Docker container with CLI coding agent inside. Only Developer Workers exist. Nothing else is a "worker".
+- **Consumer** = a role, not a service name. `langgraph` service is a consumer of `engineering:queue`. Don't name containers `*-worker` if they're consumers.
+- **Service** = long-lived process, one container = one service.
+- **Service Agent** = LangGraph ReactAgent inside the `langgraph` service (PO, Architect). Not a worker.
+
+When naming containers, variables, queues, or writing docs — check the glossary.
 
 ## Important Rules
 
-1. **TDD Workflow**: Follow Red → Green → Refactor. Write tests first.
-2. **Never use default values for env vars**: Fail fast with `RuntimeError` if missing.
-3. **Review Trigger**: If a change requires modifying `shared/contracts/` or DB schema not described in the plan — STOP and ask.
-4. **Structured logging**: Use `structlog` everywhere, never `print()`.
-5. **Run tests before committing**: `make test-unit` at minimum.
-6. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the full flow (`/plan` → `/implement`).
-7. **Do not edit docs/backlog.md manually**: It is an auto-generated read-only view of the database. Use API or commands to manage tasks.
+1. **TDD — test behavior, not implementation**: Red → Green → Refactor still applies, but tests must verify **what the code does**, not how it's structured. Test real data pipelines, real exceptions, real status transitions — not "key exists in dict" or "function returns value". See testing philosophy below.
+2. **Review Trigger**: If a change requires modifying `shared/contracts/` or DB schema not described in the plan — STOP and ask.
+3. **Structured logging**: Use `structlog` everywhere, never `print()`.
+4. **Run tests before committing**: `make test-unit` at minimum.
+5. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the full flow (`/plan` → `/implement`).
+6. **Do not edit docs/backlog.md manually**: It is an auto-generated read-only view of the database. Use API or commands to manage tasks.
+
+### Testing Philosophy
+
+**Prefer integration/service tests over unit tests.** Unit tests are a quick pre-push sanity check, not real coverage. A feature "covered by unit tests" is an undertested feature.
+
+**Test hierarchy** (prefer higher):
+1. **Service tests** (single service + real DB/Redis) — best bang for buck, runs in CI
+2. **Integration tests** (multiple services wired together) — for cross-service flows
+3. **Unit tests** (everything mocked) — only for fast pre-push smoke, not a substitute for the above
+
+**What makes a good test:**
+```python
+# WRONG — tests implementation details, not behavior
+def test_create_task_returns_dict():
+    result = create_task(data)
+    assert "id" in result
+    assert result["status"] == "backlog"
+
+# RIGHT — tests behavior through the real pipeline
+async def test_task_creation_and_dispatch(api_client, redis):
+    # Create task via API (real DB)
+    resp = await api_client.post("/api/tasks/", json={...})
+    task_id = resp.json()["id"]
+
+    # Transition it — does the state machine work?
+    await api_client.post(f"/api/tasks/{task_id}/start")
+
+    # Was a message published to the queue?
+    messages = await redis.xrange("engineering:queue")
+    assert any(task_id in m for m in messages)
+```
+
+**Rules:**
+- If something touches DB or Redis — write a service test, not a unit test
+- If something crosses service boundaries — write an integration test
+- Unit tests are for pure logic only (parsers, validators, algorithms)
+- Never mock what you can test for real — mocks hide bugs at boundaries
 
 ### LangGraph Nodes
 Always define state as TypedDict and return complete state:
@@ -139,25 +189,31 @@ def deploy_to_server(server_handle: str):
     github.set_repository_secrets(repo, {"DEPLOY_HOST": server.public_ip, ...})
 ```
 
-## Key Configuration
+## Documentation Map
 
-- **Ruff**: Line length 100, Python 3.12, checks: E, F, I (isort), UP, B, C4, S, PLR, C901
-- **Git Hooks**: Pre-commit auto-formats (never blocks), pre-push runs lint+tests (blocks on failure)
-- **Tests**: pytest with asyncio, unit tests in `tests/unit/`, integration in `tests/integration/`
-- **LangSmith**: Set `LANGCHAIN_TRACING_V2=true` for agent execution tracing
+### Architecture (read when working with code)
+- [DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — **mandatory**: data-driven task lifecycle, DB/API workflow
+- [PIPELINE_V2.md](docs/PIPELINE_V2.md) — target 7-phase pipeline architecture
+- [NODES.md](docs/NODES.md) — agent nodes, tools, Redis Streams communication
+- [CONTRACTS.md](docs/CONTRACTS.md) — queue registry, DTOs, correlation IDs
+- [coding-agents.md](docs/coding-agents.md) — external agent integration (Claude Code, Factory.ai)
+- [parallel-workers.md](docs/parallel-workers.md) — worker containers, networks, bind-mounts
 
-## Tech Stack
+### Operations (read when deploying/debugging)
+- [DEPLOY.md](docs/DEPLOY.md) — production deployment, GitHub Secrets
+- [SECRETS.md](docs/SECRETS.md) — 3-level secret model (L1 platform / L2 project / L3 user)
+- [resource-management.md](docs/resource-management.md) — handles vs secrets, ResourceAllocator
+- [ERROR_HANDLING.md](docs/ERROR_HANDLING.md) — error categories, retry/timeout policies
+- [LOGGING.md](docs/LOGGING.md) — structlog patterns, Loki/Grafana stack
+- [TESTING.md](docs/TESTING.md) — test layers (unit/service/integration/live/e2e), commands
+- [GLOSSARY.md](docs/GLOSSARY.md) — project terminology
+- [playbooks/line2-engineering.md](docs/playbooks/line2-engineering.md) — manual test matrix
 
-| Component | Technology |
-|-----------|------------|
-| Language | Python 3.12+ |
-| Orchestration | LangGraph |
-| API | FastAPI + SQLAlchemy 2.0+ |
-| Database | PostgreSQL |
-| Cache/Queues | Redis (streams, pub/sub) |
-| Bot | python-telegram-bot |
-| Logging | structlog (JSON in prod, console in dev) |
-| Linting | Ruff |
-| Container Isolation | Dual-network (internal + dev_proj), bind-mounted workspaces |
-| Secrets | project.config.secrets (PostgreSQL, Fernet-encrypted), GitHub Repository Secrets |
+### Auto-generated (do not edit manually)
+- [backlog.md](docs/backlog.md), [ROADMAP.md](docs/ROADMAP.md), [STATUS.md](docs/STATUS.md) — mirrors from DB via `make backlog`
+- [CHANGELOG.md](docs/CHANGELOG.md) — release history
+
+### Working files
+- [audit.md](docs/audit.md) — latest /audit results
+- [skill-feedback.md](docs/skill-feedback.md) — accumulated skill execution feedback
 

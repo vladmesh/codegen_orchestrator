@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from http import HTTPStatus
 import time
 import uuid
 
@@ -14,15 +15,16 @@ from shared.log_config import setup_logging
 
 from . import routers
 from .database import engine
+from .dependencies import close_redis, init_redis
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
     setup_logging(service_name="api")
-    # Startup - nothing to do, background tasks are in scheduler service
+    await init_redis()
     yield
-    # Shutdown
+    await close_redis()
     await engine.dispose()
 
 
@@ -75,7 +77,7 @@ async def correlation_middleware(request: Request, call_next):
         duration_ms = (time.time() - start) * 1000
 
         # Log 4xx and 5xx as errors/warnings
-        if response.status_code >= 500:  # noqa: PLR2004
+        if response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR:
             logger.error(
                 "http_request_failed",
                 status_code=response.status_code,
@@ -121,14 +123,14 @@ app.include_router(routers.allocations.router, prefix="/api")
 app.include_router(routers.api_keys.router, prefix="/api")
 app.include_router(routers.incidents.router, prefix="/api")
 app.include_router(routers.service_deployments.router, prefix="/api")
+app.include_router(routers.applications.router, prefix="/api")
 app.include_router(routers.agent_configs.router, prefix="/api")
+app.include_router(routers.system_configs.router, prefix="/api")
 
 app.include_router(routers.available_models.router, prefix="/api")
 app.include_router(routers.rag.router, prefix="/api")
 app.include_router(routers.runs.router, prefix="/api")
 app.include_router(routers.tasks.router, prefix="/api")
 app.include_router(routers.brainstorms.router, prefix="/api")
-app.include_router(routers.milestones.router, prefix="/api")
 app.include_router(routers.repositories.router, prefix="/api")
 app.include_router(routers.stories.router, prefix="/api")
-app.include_router(routers.webhooks.router)

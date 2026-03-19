@@ -19,26 +19,33 @@
 graph TD
     User((User)) <--> |Telegram| Bot[Telegram Bot Service]
     Bot <--> |"Redis Stream"| PO[Product Owner Agent]
-    
+
     subgraph "LangGraph Service"
         PO
         EngGraph[Engineering Subgraph]
         DepGraph[DevOps Subgraph]
     end
-    
+
     PO --> |"tools"| API[API Service]
-    PO --> |"push task"| EngQueue[engineering:queue]
-    PO --> |"push task"| DeployQueue[deploy:queue]
-    
+    PO --> |"create story"| ArchQueue[architect:queue]
+
+    subgraph "Scheduler"
+        Dispatcher[Task Dispatcher]
+        ArchConsumer[Architect Consumer]
+    end
+
+    Dispatcher --> |"scaffold:queue"| Scaffolder[Scaffolder Service]
+    ArchQueue --> ArchConsumer
+    Dispatcher --> |"engineering:queue"| EngGraph
+    Dispatcher --> |"story complete"| DeployQueue[deploy:queue]
+
     subgraph "Worker Manager"
         Worker[Developer Worker Containers]
     end
-    
+
     EngGraph --> |"Manage"| Worker
-    
+
     API --> |"data"| DB[(PostgreSQL)]
-    
-    EngQueue --> EngGraph
     DeployQueue --> DepGraph
 
     %% Feedback Loops
@@ -51,10 +58,13 @@ graph TD
 - **API**: FastAPI сервис, единственный источник правды (DAL) для PostgreSQL.
 - **Telegram Bot**: Интерфейс для пользователя, управляет PO сессиями.
 - **Product Owner (PO)**: LangGraph ReactAgent, общающийся с пользователем и ставящий задачи.
-- **Worker Manager**: Управляет Docker контейнерами Developer агентов с проксированием `docker compose` для sidecar-инфраструктуры (Flat Dev Environment). Воркеры изолированы в сети `codegen_worker`.
+- **Scaffolder**: Подготовка репозиториев (copier + make setup + git push). Запускается до architect.
+- **Worker Manager**: Управляет Docker контейнерами Developer агентов. Монтирует pre-scaffolded workspaces. Воркеры изолированы в сети `codegen_worker`.
 - **LangGraph**: Оркестратор бизнес-процессов (Engineering, DevOps). Engineering-worker и deploy-worker — отдельные контейнеры того же Docker-образа с собственными entrypoint'ами (Redis stream consumers).
 - **Infra Service**: Ansible runner для настройки серверов.
-- **Scheduler**: Фоновые задачи (синхронизация, проверка здоровья, сборка мусора).
+- **Scheduler**: Architect consumer (story→tasks), task dispatcher (scaffold trigger, dispatch, supervisor), github_sync, server_sync, health_checker.
+- **Admin Frontend**: React SPA (port 3001) — dashboard, projects, tasks, workers, queues, users, LLM tracing. Nginx proxy with basic auth.
+- **Observability**: Loki + Promtail + Grafana (structured logs), Langfuse v3 (LLM tracing with ClickHouse + MinIO).
 
 ### Связанные проекты
 

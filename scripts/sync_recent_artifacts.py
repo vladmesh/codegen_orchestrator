@@ -31,11 +31,15 @@ def _slugify(title: str) -> str:
 
 
 async def fetch_window_tasks(api_url: str, keep: int) -> list[dict]:
-    """Fetch in_dev + last N done tasks."""
+    """Fetch in_dev + backlog-with-plan + last N done tasks."""
     async with httpx.AsyncClient(base_url=api_url, timeout=10) as client:
         in_dev_resp = await client.get("/api/tasks/", params={"status": "in_dev"})
         in_dev_resp.raise_for_status()
         in_dev = in_dev_resp.json()
+
+        backlog_resp = await client.get("/api/tasks/", params={"status": "backlog"})
+        backlog_resp.raise_for_status()
+        backlog_with_plan = [t for t in backlog_resp.json() if t.get("plan")]
 
         done_resp = await client.get(
             "/api/tasks/",
@@ -44,7 +48,7 @@ async def fetch_window_tasks(api_url: str, keep: int) -> list[dict]:
         done_resp.raise_for_status()
         done = done_resp.json()
 
-    return in_dev + done
+    return in_dev + backlog_with_plan + done
 
 
 async def fetch_brainstorm(api_url: str, brainstorm_id: str) -> dict | None:
@@ -108,16 +112,13 @@ def sync_artifacts(
             path.write_text(content)
             written.append(str(path))
 
-    # Delete files not in the active window
+    # Delete plan files not in the active window
     for f in plans_dir.glob("*.md"):
         if f.name not in expected_plan_files:
             f.unlink()
             deleted.append(str(f))
 
-    for f in brainstorms_dir.glob("*.md"):
-        if f.name not in expected_bs_files:
-            f.unlink()
-            deleted.append(str(f))
+    # Never delete brainstorm files — they accumulate and are cleaned up manually.
 
     return {"written": written, "deleted": deleted}
 

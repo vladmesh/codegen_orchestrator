@@ -4,6 +4,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 
+from shared.contracts.dto.base import TimestampedDTO
+
 
 class APIKeyBase(BaseModel):
     """Base API key schema."""
@@ -19,7 +21,7 @@ class APIKeyCreate(APIKeyBase):
     value: dict | str  # Accept dict (for JSON) or str
 
 
-class APIKeyRead(APIKeyBase):
+class APIKeyRead(APIKeyBase, TimestampedDTO):
     """Schema for reading an API key."""
 
     id: int

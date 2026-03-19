@@ -13,6 +13,7 @@ from shared.contracts.dto.server import ServerCreate, ServerStatus, ServerUpdate
 from shared.notifications import notify_admins
 from src.clients.api import api_client
 
+from ..startup import config as _config
 from .provisioner_trigger import publish_provisioner_trigger
 
 logger = structlog.get_logger()
@@ -21,14 +22,21 @@ logger = structlog.get_logger()
 GHOST_SERVERS = os.getenv("GHOST_SERVERS", "").split(",")
 GHOST_SERVERS = [ip.strip() for ip in GHOST_SERVERS if ip.strip()]
 
-# How often to sync (seconds)
-SYNC_INTERVAL = 60
-# How often to fetch detailed specs (more expensive, do less often)
-DETAILS_SYNC_INTERVAL = 300  # 5 minutes
-# Trigger re-provisioning if a server is stuck in provisioning for too long.
-PROVISIONING_STUCK_TIMEOUT_SECONDS = 30 * 60
-# Avoid duplicate triggers shortly after a provisioning trigger.
-PROVISIONING_TRIGGER_COOLDOWN_SECONDS = 120
+
+def _sync_interval() -> int:
+    return _config.get_int("scheduler.server_sync_interval") if _config else 60
+
+
+def _details_sync_interval() -> int:
+    return _config.get_int("scheduler.server_details_sync_interval") if _config else 300
+
+
+def _provisioning_stuck_timeout() -> int:
+    return _config.get_int("scheduler.provisioning_stuck_timeout_seconds") if _config else 1800
+
+
+def _provisioning_cooldown() -> int:
+    return _config.get_int("scheduler.provisioning_trigger_cooldown_seconds") if _config else 120
 
 
 async def get_time4vps_client() -> Time4VPSClient | None:
@@ -77,7 +85,7 @@ async def sync_servers_worker():
 
                 # Detailed specs sync less frequently
                 now = time.monotonic()
-                if now - last_details_sync > DETAILS_SYNC_INTERVAL:
+                if now - last_details_sync > _details_sync_interval():
                     details_updated = await _sync_server_details(client)
                     last_details_sync = now
 
@@ -103,7 +111,7 @@ async def sync_servers_worker():
                 duration_sec=round(duration, 2),
             )
 
-        await asyncio.sleep(SYNC_INTERVAL)
+        await asyncio.sleep(_sync_interval())
 
 
 async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
@@ -306,8 +314,8 @@ async def _check_provisioning_triggers() -> int:
     """
     triggers_published = 0
     now = datetime.now(UTC).replace(tzinfo=None)
-    stuck_timeout = timedelta(seconds=PROVISIONING_STUCK_TIMEOUT_SECONDS)
-    trigger_cooldown = timedelta(seconds=PROVISIONING_TRIGGER_COOLDOWN_SECONDS)
+    stuck_timeout = timedelta(seconds=_provisioning_stuck_timeout())
+    trigger_cooldown = timedelta(seconds=_provisioning_cooldown())
 
     # Check for servers needing action
     # We fetch all servers and filter in memory.
@@ -327,7 +335,7 @@ async def _check_provisioning_triggers() -> int:
                 server_handle=server.handle,
                 status=server.status,
                 started_at=server.provisioning_started_at.isoformat(),
-                cooldown_seconds=PROVISIONING_TRIGGER_COOLDOWN_SECONDS,
+                cooldown_seconds=_provisioning_cooldown(),
             )
             continue
 
@@ -365,7 +373,7 @@ async def _check_provisioning_triggers() -> int:
                 server_handle=server.handle,
                 status=server.status,
                 started_at=server.provisioning_started_at.isoformat(),
-                cooldown_seconds=PROVISIONING_TRIGGER_COOLDOWN_SECONDS,
+                cooldown_seconds=_provisioning_cooldown(),
             )
             continue
 
@@ -398,7 +406,7 @@ async def _check_provisioning_triggers() -> int:
             "provisioning_timeout_trigger",
             server_handle=server.handle,
             started_at=server.provisioning_started_at.isoformat(),
-            timeout_seconds=PROVISIONING_STUCK_TIMEOUT_SECONDS,
+            timeout_seconds=_provisioning_stuck_timeout(),
             attempts=server.provisioning_attempts,
         )
 

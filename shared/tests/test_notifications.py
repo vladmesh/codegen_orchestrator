@@ -92,3 +92,83 @@ class TestNotificationConfig:
         # but _ensure_config is not called at import time
         assert hasattr(notifications_mod, "notify_admins")
         assert hasattr(notifications_mod, "send_telegram_message")
+
+
+class TestSendTelegramParseRetry:
+    """send_telegram_message retries without parse_mode on entity parse errors."""
+
+    async def test_retries_without_parse_mode_on_parse_error(self):
+        """400 'can't parse entities' → retry with no parse_mode → success."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        env = {
+            "TELEGRAM_BOT_TOKEN": TEST_TOKEN,
+            "API_BASE_URL": TEST_API_URL,
+        }
+
+        # First call: 400 parse error. Second call: 200 OK.
+        mock_resp_400 = AsyncMock()
+        mock_resp_400.status = 400
+        mock_resp_400.text = AsyncMock(
+            return_value='{"ok":false,"description":"Bad Request: can\'t parse entities"}'
+        )
+        mock_resp_400.__aenter__ = AsyncMock(return_value=mock_resp_400)
+        mock_resp_400.__aexit__ = AsyncMock(return_value=False)
+
+        mock_resp_200 = AsyncMock()
+        mock_resp_200.status = 200
+        mock_resp_200.__aenter__ = AsyncMock(return_value=mock_resp_200)
+        mock_resp_200.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(side_effect=[mock_resp_400, mock_resp_200])
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("shared.notifications.aiohttp.ClientSession", return_value=mock_session),
+        ):
+            result = await notifications_mod.send_telegram_message(
+                telegram_id=123, text="test <b>bad</b>", parse_mode="HTML"
+            )
+
+        assert result is True
+        # Second call should NOT have parse_mode
+        second_call_payload = mock_session.post.call_args_list[1]
+        assert "parse_mode" not in second_call_payload.kwargs.get(
+            "json", second_call_payload[1].get("json", {})
+        )
+
+    async def test_no_retry_on_other_400_errors(self):
+        """400 that is NOT about parse entities → no retry, return False."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        env = {
+            "TELEGRAM_BOT_TOKEN": TEST_TOKEN,
+            "API_BASE_URL": TEST_API_URL,
+        }
+
+        mock_resp_400 = AsyncMock()
+        mock_resp_400.status = 400
+        mock_resp_400.text = AsyncMock(
+            return_value='{"ok":false,"description":"Bad Request: chat not found"}'
+        )
+        mock_resp_400.__aenter__ = AsyncMock(return_value=mock_resp_400)
+        mock_resp_400.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.post = MagicMock(side_effect=[mock_resp_400])
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("shared.notifications.aiohttp.ClientSession", return_value=mock_session),
+        ):
+            result = await notifications_mod.send_telegram_message(
+                telegram_id=123, text="test", parse_mode="HTML"
+            )
+
+        assert result is False
+        assert mock_session.post.call_count == 1

@@ -40,4 +40,6 @@ class DevOpsState(TypedDict):
     deployment_result: dict | None
     deployed_url: str | None
     smoke_result: dict | None
+    application_id: int | None
+    bot_username: str | None
     errors: Annotated[list[str], _merge_errors]

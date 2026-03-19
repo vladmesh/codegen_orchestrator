@@ -57,7 +57,7 @@ class OrchestratorState(TypedDict):
     # ============================================================
     current_project: str | None
     project_spec: dict | None
-    po_intent: str | None  # "new_project", "deploy" - set by orchestrator-cli
+    po_intent: str | None  # "new_project", "deploy" - set by PO tools
 
     # ============================================================
     # ALLOCATED RESOURCES

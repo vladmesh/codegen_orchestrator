@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
 
+from shared.models.project import Project
 from shared.models.repository import Repository
 
 from ..database import get_async_session
@@ -127,6 +128,37 @@ async def update_repository(
 
     logger.info("repository_updated", repository_id=repo.id, fields=list(update_data.keys()))
     return RepositoryRead.model_validate(repo, from_attributes=True)
+
+
+@router.post("/{repo_id}/notify-workspace-deleted")
+async def notify_workspace_deleted(
+    repo_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """Called by worker-manager GC when a workspace is deleted.
+
+    Clears workspace_ready from the linked project's config so
+    scaffold_trigger will re-scaffold before the next pipeline run.
+    """
+    repo = await _get_repository(repo_id, db)
+    project = await db.get(Project, repo.project_id)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project {repo.project_id} not found",
+        )
+
+    config = dict(project.config or {})
+    config.pop("workspace_ready", None)
+    project.config = config
+
+    await db.commit()
+    logger.info(
+        "workspace_ready_cleared",
+        repo_id=repo_id,
+        project_id=str(project.id),
+    )
+    return {"project_id": str(project.id), "workspace_ready": False}
 
 
 @router.delete("/{repo_id}", response_model=RepositoryRead)

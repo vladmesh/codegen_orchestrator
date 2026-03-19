@@ -1,12 +1,10 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from shared.contracts.dto.base import TimestampedDTO
 
 
-class AllocationDTO(BaseModel):
+class AllocationDTO(TimestampedDTO):
     """Port allocation on a server."""
-
-    model_config = ConfigDict(from_attributes=True)
 
     id: int
     server_id: int

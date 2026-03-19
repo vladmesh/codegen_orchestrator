@@ -28,6 +28,10 @@ dependencies = [
     "pyjwt[crypto]>=2.8.0",
     "PyYAML>=6.0.2",
     "tiktoken>=0.12.0",
+
+    # shared/ deps (shared is COPY'd as plain files, not pip-installed)
+    "pynacl>=1.5.0",
+    "cryptography>=43.0.0",
 ]
 
 [build-system]

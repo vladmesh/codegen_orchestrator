@@ -1,0 +1,152 @@
+# System configuration defaults.
+# Seeded via `make seed` — values are only written if key doesn't exist yet.
+
+# --- scheduler ---
+- key: scheduler.dispatch_interval_seconds
+  value: 30
+  category: scheduler
+  description: "Task dispatcher poll interval in seconds"
+
+- key: scheduler.github_sync_interval
+  value: 300
+  category: scheduler
+  description: "GitHub organization sync interval in seconds"
+
+- key: scheduler.github_sync_missing_threshold
+  value: 3
+  category: scheduler
+  description: "Consecutive missing repo checks before alerting"
+
+- key: scheduler.server_sync_interval
+  value: 60
+  category: scheduler
+  description: "Server list sync interval in seconds"
+
+- key: scheduler.server_details_sync_interval
+  value: 300
+  category: scheduler
+  description: "Detailed server specs sync interval in seconds"
+
+- key: scheduler.provisioning_stuck_timeout_seconds
+  value: 1800
+  category: scheduler
+  description: "Seconds before re-triggering stuck provisioning (30 min)"
+
+- key: scheduler.provisioning_trigger_cooldown_seconds
+  value: 120
+  category: scheduler
+  description: "Cooldown between provisioning trigger attempts in seconds"
+
+- key: scheduler.scaffold_inflight_ttl
+  value: 600
+  category: scheduler
+  description: "TTL for in-flight scaffold job markers in seconds (10 min)"
+
+- key: scheduler.ssl_check_timeout
+  value: 5
+  category: scheduler
+  description: "SSL certificate check socket timeout in seconds"
+
+- key: scheduler.rag_summarizer_poll_interval
+  value: 30
+  category: scheduler
+  description: "RAG summarizer poll interval in seconds"
+
+# --- supervisor ---
+- key: supervisor.story_stuck_threshold_minutes
+  value: 5
+  category: supervisor
+  description: "Minutes before a story in 'created' status is considered stuck"
+
+- key: supervisor.task_stuck_threshold_minutes
+  value: 30
+  category: supervisor
+  description: "Minutes before a task in 'in_dev' is considered stuck"
+
+- key: supervisor.story_max_architect_retries
+  value: 3
+  category: supervisor
+  description: "Max architect retry attempts for stuck stories"
+
+- key: supervisor.story_retry_ttl
+  value: 3600
+  category: supervisor
+  description: "Redis TTL for story retry counter in seconds (1 hour)"
+
+# --- deploy ---
+- key: deploy.max_deploy_fix_attempts
+  value: 2
+  category: deploy
+  description: "Max engineering fix attempts for deploy failures"
+
+- key: deploy.max_deploy_retries
+  value: 3
+  category: deploy
+  description: "Max deploy failures before story is marked failed"
+
+- key: deploy.deploy_retry_ttl
+  value: 86400
+  category: deploy
+  description: "Redis TTL for deploy retry counter in seconds (24 hours)"
+
+- key: deploy.deploy_lock_ttl
+  value: 3600
+  category: deploy
+  description: "TTL for deploy lock in seconds (1 hour)"
+
+# --- health ---
+- key: health.ram_threshold_pct
+  value: 90.0
+  category: health
+  description: "RAM usage percentage threshold for alerts"
+
+- key: health.disk_threshold_pct
+  value: 90.0
+  category: health
+  description: "Disk usage percentage threshold for alerts"
+
+- key: health.consecutive_failure_threshold
+  value: 3
+  category: health
+  description: "Consecutive health check failures before SERVICE_DOWN incident"
+
+- key: health.ssl_expiry_warning_days
+  value: 7
+  category: health
+  description: "Days before SSL expiry to trigger warning"
+
+- key: health.metrics_retention_hours
+  value: 168
+  category: health
+  description: "How many hours of metrics history to retain (7 days)"
+
+- key: health.metrics_cleanup_interval_seconds
+  value: 86400
+  category: health
+  description: "How often to run metrics cleanup in seconds (24 hours)"
+
+- key: health.http_timeout
+  value: 10.0
+  category: health
+  description: "HTTP client timeout for health checks in seconds"
+
+# --- llm ---
+- key: llm.summarization_trigger_tokens
+  value: 60000
+  category: llm
+  description: "Conversation token count that triggers summarization"
+
+- key: llm.summarization_max_tokens
+  value: 50000
+  category: llm
+  description: "Max tokens to keep after summarization"
+
+- key: llm.summarization_max_summary_tokens
+  value: 2000
+  category: llm
+  description: "Max tokens in the summary itself"
+
+- key: llm.task_default_max_iterations
+  value: 3
+  category: llm
+  description: "Default max iterations for engineering tasks"

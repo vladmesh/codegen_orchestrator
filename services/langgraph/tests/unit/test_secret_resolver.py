@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from src.subgraphs.devops.nodes import SecretResolverNode
+from src.subgraphs.devops.secret_resolver import SecretResolverNode
 
 
 class TestSecretResolverComputeSecret:
@@ -101,8 +101,8 @@ class TestSecretResolverComputeSecret:
         assert self.node._compute_secret("POSTGRES_PORT", project_spec, state) == "5432"
         assert self.node._compute_secret("POSTGRES_REQUIRE_SSL", project_spec, state) == "false"
 
-    def test_compute_backend_url_with_resources(self):
-        """BACKEND_URL should use allocated resources when available."""
+    def test_compute_backend_url_uses_docker_service_name(self):
+        """BACKEND_API_URL should use docker service name for inter-service communication."""
         project_spec = {"name": "test"}
         state = {
             "allocated_resources": {
@@ -115,15 +115,24 @@ class TestSecretResolverComputeSecret:
         }
 
         result = self.node._compute_secret("BACKEND_API_URL", project_spec, state)
-        assert result == "http://192.168.1.100:8080"
+        assert result == "http://backend:8000"
 
-    def test_compute_backend_url_fallback(self):
-        """BACKEND_URL should fallback to localhost when no resources."""
+    def test_compute_backend_url_without_resources(self):
+        """BACKEND_API_URL should use docker service name even without allocated resources."""
         project_spec = {"name": "test"}
         state = {}
 
         result = self.node._compute_secret("BACKEND_API_URL", project_spec, state)
-        assert result == "http://localhost:8000"
+        assert result == "http://backend:8000"
+
+    def test_compute_api_url_variants(self):
+        """All inter-service URL variants should use docker service name."""
+        project_spec = {"name": "test"}
+        state = {}
+
+        for var in ("BACKEND_API_URL", "API_URL", "API_BASE_URL", "BACKEND_URL"):
+            result = self.node._compute_secret(var, project_spec, state)
+            assert result == "http://backend:8000", f"{var} should be http://backend:8000"
 
     def test_compute_backend_port_with_resources(self):
         """BACKEND_PORT should resolve to allocated port."""
@@ -194,8 +203,8 @@ class TestSecretResolverEncryption:
         self.node = SecretResolverNode()
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.decrypt_dict")
+    @patch("src.subgraphs.devops.secret_resolver.api_client")
+    @patch("src.subgraphs.devops.secret_resolver.decrypt_dict")
     async def test_saves_secrets_via_merge_endpoint(self, mock_decrypt, mock_api):
         """Generated secrets should be saved via merge_secrets (atomic, server-side crypto)."""
         mock_decrypt.return_value = {}
@@ -218,7 +227,7 @@ class TestSecretResolverEncryption:
     @pytest.mark.asyncio
     async def test_save_secrets_uses_atomic_merge(self):
         """_save_secrets_to_project delegates to api_client.merge_secrets."""
-        with patch("src.subgraphs.devops.nodes.api_client") as mock_api:
+        with patch("src.subgraphs.devops.secret_resolver.api_client") as mock_api:
             mock_api.merge_secrets = AsyncMock(return_value={"keys": ["OLD_KEY", "NEW_KEY"]})
 
             await self.node._save_secrets_to_project("proj-123", {"NEW_KEY": "new-plaintext"})
@@ -229,8 +238,8 @@ class TestSecretResolverEncryption:
             mock_api.patch.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.decrypt_dict")
+    @patch("src.subgraphs.devops.secret_resolver.api_client")
+    @patch("src.subgraphs.devops.secret_resolver.decrypt_dict")
     async def test_decrypts_existing_secrets(self, mock_decrypt, mock_api):
         """decrypt_dict should be called on config_secrets from project_spec."""
         mock_decrypt.return_value = {"EXISTING_KEY": "decrypted-value"}
@@ -265,8 +274,8 @@ class TestSecretResolverGroupIntegration:
         return parsed.password
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.decrypt_dict")
+    @patch("src.subgraphs.devops.secret_resolver.api_client")
+    @patch("src.subgraphs.devops.secret_resolver.decrypt_dict")
     async def test_postgres_password_matches_database_url(self, mock_decrypt, mock_api):
         """DATABASE_URL and POSTGRES_PASSWORD must share the same password."""
         mock_decrypt.return_value = {}
@@ -293,8 +302,8 @@ class TestSecretResolverGroupIntegration:
         assert secrets["POSTGRES_DB"] == "db_my_project"
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.decrypt_dict")
+    @patch("src.subgraphs.devops.secret_resolver.api_client")
+    @patch("src.subgraphs.devops.secret_resolver.decrypt_dict")
     async def test_async_database_url_coherent(self, mock_decrypt, mock_api):
         """ASYNC_DATABASE_URL password must match DATABASE_URL password."""
         mock_decrypt.return_value = {}
@@ -321,8 +330,8 @@ class TestSecretResolverGroupIntegration:
         assert secrets["ASYNC_DATABASE_URL"].startswith("postgresql+asyncpg://")
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.decrypt_dict")
+    @patch("src.subgraphs.devops.secret_resolver.api_client")
+    @patch("src.subgraphs.devops.secret_resolver.decrypt_dict")
     async def test_cached_secrets_bypass_groups(self, mock_decrypt, mock_api):
         """Secrets already in config_secrets should NOT be regenerated by groups."""
         mock_api.merge_secrets = AsyncMock(return_value={"keys": []})
@@ -352,8 +361,45 @@ class TestSecretResolverGroupIntegration:
         assert secrets["POSTGRES_PASSWORD"] == cached_pw
 
     @pytest.mark.asyncio
-    @patch("src.subgraphs.devops.nodes.api_client")
-    @patch("src.subgraphs.devops.nodes.decrypt_dict")
+    @patch("src.subgraphs.devops.secret_resolver.api_client")
+    @patch("src.subgraphs.devops.secret_resolver.decrypt_dict")
+    async def test_config_secrets_injected_when_missing_from_env_analysis(
+        self, mock_decrypt, mock_api
+    ):
+        """PO-provided secrets not in .env.example must still appear in resolved."""
+        bot_token_key = "TELEGRAM_BOT_TOKEN"  # noqa: S105
+        admin_id_key = "ADMIN_TELEGRAM_ID"
+        mock_decrypt.return_value = {
+            bot_token_key: "decrypted-bot-token",
+            admin_id_key: "999",
+        }
+        mock_api.merge_secrets = AsyncMock(return_value={"keys": []})
+
+        state = {
+            # env_analysis only has bot token — admin ID missing from .env.example
+            "env_analysis": {bot_token_key: "user"},
+            "provided_secrets": {},
+            "project_spec": {
+                "name": "test",
+                "config": {
+                    "secrets": {
+                        bot_token_key: "enc-tok",
+                        admin_id_key: "enc-admin",
+                    }
+                },
+            },
+            "project_id": "proj-1",
+        }
+
+        result = await self.node.run(state)
+        secrets = result["resolved_secrets"]
+
+        assert secrets[bot_token_key] == "decrypted-bot-token"
+        assert secrets[admin_id_key] == "999"
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.secret_resolver.api_client")
+    @patch("src.subgraphs.devops.secret_resolver.decrypt_dict")
     async def test_non_grouped_infra_uses_fallback(self, mock_decrypt, mock_api):
         """Infra variables not covered by groups should use _generate_infra_secret fallback."""
         mock_decrypt.return_value = {}

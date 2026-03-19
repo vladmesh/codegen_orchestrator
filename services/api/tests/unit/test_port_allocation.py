@@ -1,7 +1,7 @@
 """Unit tests for port allocation endpoints."""
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
-import uuid
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -9,7 +9,7 @@ import pytest
 from src.database import get_async_session
 from src.main import app
 
-PROJECT_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+APPLICATION_ID = 42
 
 
 def _mock_session(
@@ -56,6 +56,11 @@ def _mock_session(
 
     async def _refresh(obj):
         obj.id = 1
+        now = datetime.now(UTC)
+        if not getattr(obj, "created_at", None):
+            obj.created_at = now
+        if not getattr(obj, "updated_at", None):
+            obj.updated_at = now
 
     session.refresh = _refresh
 
@@ -66,19 +71,19 @@ def _mock_session(
 
 
 def _make_allocation(
-    server_handle="srv-1", port=8000, service_name="backend", project_id=PROJECT_UUID
+    server_handle="srv-1", port=8000, service_name="backend", application_id=APPLICATION_ID
 ):
     alloc = MagicMock()
     alloc.id = 1
     alloc.server_handle = server_handle
     alloc.port = port
     alloc.service_name = service_name
-    alloc.project_id = project_id
+    alloc.application_id = application_id
     return alloc
 
 
 class TestPortAllocationModel:
-    """Test that PortAllocation model has unique constraint."""
+    """Test that PortAllocation model has correct structure."""
 
     def test_unique_constraint_on_server_handle_port(self):
         from sqlalchemy import UniqueConstraint as UC
@@ -93,6 +98,21 @@ class TestPortAllocationModel:
             for uc in unique_constraints
         )
         assert found, "PortAllocation must have a UniqueConstraint on (server_handle, port)"
+
+    def test_has_application_id_fk(self):
+        """PortAllocation must have application_id FK to applications."""
+        from shared.models.port_allocation import PortAllocation
+
+        col = PortAllocation.__table__.c.application_id
+        fk_targets = [fk.target_fullname for fk in col.foreign_keys]
+        assert "applications.id" in fk_targets
+
+    def test_no_project_id_column(self):
+        """PortAllocation should NOT have project_id — ports belong to Application."""
+        from shared.models.port_allocation import PortAllocation
+
+        cols = {c.name for c in PortAllocation.__table__.columns}
+        assert "project_id" not in cols
 
 
 class TestAllocateNextPort:
@@ -114,7 +134,7 @@ class TestAllocateNextPort:
                     "/api/servers/srv-1/ports/allocate-next",
                     json={
                         "service_name": "backend",
-                        "project_id": str(PROJECT_UUID),
+                        "application_id": APPLICATION_ID,
                     },
                 )
             assert resp.status_code == 200, resp.text  # noqa: PLR2004
@@ -147,7 +167,7 @@ class TestAllocateNextPort:
                     "/api/servers/srv-1/ports/allocate-next",
                     json={
                         "service_name": "backend",
-                        "project_id": str(PROJECT_UUID),
+                        "application_id": APPLICATION_ID,
                     },
                 )
             assert resp.status_code == 200, resp.text  # noqa: PLR2004
@@ -172,7 +192,7 @@ class TestAllocateNextPort:
                     "/api/servers/nonexistent/ports/allocate-next",
                     json={
                         "service_name": "backend",
-                        "project_id": str(PROJECT_UUID),
+                        "application_id": APPLICATION_ID,
                     },
                 )
             assert resp.status_code == 404  # noqa: PLR2004

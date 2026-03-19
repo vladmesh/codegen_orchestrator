@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from tests.unit.factories import make_project, make_repository
 
 from shared.contracts.queues.deploy import DeployTrigger
 from shared.queues import PO_PROACTIVE_QUEUE
@@ -15,23 +16,32 @@ def mock_redis():
     r = AsyncMock()
     r.redis = AsyncMock()
     r.redis.xadd = AsyncMock()
+    r.redis.set = AsyncMock(return_value=True)  # lock acquired
+    r.redis.delete = AsyncMock()
+    r.redis.incr = AsyncMock(return_value=1)
+    r.redis.expire = AsyncMock()
     r.publish_flat = AsyncMock()
     return r
 
 
 @pytest.fixture
 def mock_api():
-    with patch("src.workers.deploy_worker.api_client") as api:
+    with (
+        patch("src.consumers.deploy.api_client") as api,
+        patch("src.consumers.deploy_result_handler.api_client", api),
+        patch("src.consumers.deploy_failure_handler.api_client", api),
+        patch("src.consumers.deploy_precheck.api_client", api),
+    ):
         api.patch = AsyncMock()
         api.get = AsyncMock(return_value=[])
         api.get_project = AsyncMock(
-            return_value={
-                "name": "my-project",
-                "config": {"modules": ["backend"]},
-            }
+            return_value=make_project(
+                name="my-project",
+                config={"modules": ["backend"]},
+            )
         )
         api.get_primary_repository = AsyncMock(
-            return_value={"git_url": "https://github.com/org/my-project"}
+            return_value=make_repository(git_url="https://github.com/org/my-project")
         )
         yield api
 
@@ -48,7 +58,7 @@ def mock_allocations():
 
 @pytest.fixture
 def mock_devops_subgraph():
-    with patch("src.workers.deploy_worker.create_devops_subgraph") as factory:
+    with patch("src.consumers.deploy.create_devops_subgraph") as factory:
         graph = AsyncMock()
         factory.return_value = graph
         yield graph
@@ -80,7 +90,7 @@ async def test_deploy_worker_smoke_pass(
         }
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
@@ -96,11 +106,11 @@ async def test_deploy_worker_smoke_pass(
 @pytest.mark.asyncio
 async def test_build_subgraph_input_includes_smoke_result():
     """_build_subgraph_input must include smoke_result key so LangGraph tracks it."""
-    from src.workers.deploy_worker import _build_subgraph_input
+    from src.consumers.deploy import _build_subgraph_input
 
     result = _build_subgraph_input(
         project_id="proj-1",
-        project={"name": "test"},
+        project=make_project(name="test"),
         git_url="https://github.com/org/repo",
         allocated_resources={"srv:8000": {"server_ip": "1.2.3.4", "port": 8000}},
         job_data={},
@@ -113,7 +123,7 @@ async def test_build_subgraph_input_includes_smoke_result():
 async def test_deploy_worker_smoke_fail(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """When smoke fails, task is marked failed but project stays active."""
+    """When smoke fails, task is marked failed."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": "http://1.2.3.4:8080",
@@ -128,32 +138,29 @@ async def test_deploy_worker_smoke_fail(
         }
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
     assert "smoke" in result["error"].lower()
 
-    # Project status should be active (deploy succeeded)
-    project_status_calls = [c for c in mock_api.patch.call_args_list if "projects/" in str(c)]
-    # Last project status update should be active (not failed)
-    last_project_update = project_status_calls[-1]
-    assert last_project_update[1]["json"]["status"] == "active"
+    # No project service_status updates (Application status is the source of truth)
+    project_patch_calls = [c for c in mock_api.patch.call_args_list if "projects/" in str(c)]
+    assert len(project_patch_calls) == 0
 
-    # Should send proactive notification about smoke failure
+    # Smoke failure is internal — no proactive message (spam filter)
     proactive_calls = [
         c for c in mock_redis.publish_flat.call_args_list if c[0][0] == PO_PROACTIVE_QUEUE
     ]
-    assert len(proactive_calls) == 1
-    assert "smoke" in proactive_calls[0][0][1]["text"].lower()
+    assert len(proactive_calls) == 0
 
 
 @pytest.mark.asyncio
-async def test_deploy_worker_missing_secrets_resets_project_status(
+async def test_deploy_worker_missing_secrets_fails(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """When missing_user_secrets, project status must be rolled back from deploying."""
+    """When missing_user_secrets, deploy should fail."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": None,
@@ -162,18 +169,9 @@ async def test_deploy_worker_missing_secrets_resets_project_status(
         }
     )
 
-    from src.workers.deploy_worker import process_deploy_job
+    from src.consumers.deploy import process_deploy_job
 
     result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
     assert "missing" in result["error"].lower()
-
-    # Project status must be rolled back — NOT left as "deploying"
-    project_patch_calls = [c for c in mock_api.patch.call_args_list if "projects/proj-1" in str(c)]
-    # Should have: set to deploying, then rollback
-    assert len(project_patch_calls) >= 2  # noqa: PLR2004
-    last_project_status = project_patch_calls[-1][1]["json"]["status"]
-    assert (
-        last_project_status != "deploying"
-    ), "Project stuck in deploying — missing_user_secrets must roll back status"

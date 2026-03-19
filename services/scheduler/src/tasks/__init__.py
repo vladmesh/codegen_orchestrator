@@ -1,11 +1,8 @@
-"""Background tasks for scheduler service."""
+"""Background tasks for scheduler service.
 
-from .github_sync import sync_projects_worker
-from .health_checker import health_check_worker
-from .provisioner_result_listener import process_provisioner_result
-from .provisioner_trigger import publish_provisioner_trigger, retry_pending_servers
-from .rag_summarizer import rag_summarizer_worker
-from .server_sync import sync_servers_worker
+Imports are lazy to avoid triggering Settings validation at import time
+(needed for unit tests that don't set env vars).
+"""
 
 __all__ = [
     "sync_projects_worker",
@@ -16,3 +13,21 @@ __all__ = [
     "rag_summarizer_worker",
     "process_provisioner_result",
 ]
+
+
+def __getattr__(name: str):
+    _imports = {
+        "sync_projects_worker": ".github_sync",
+        "health_check_worker": ".health_checker",
+        "process_provisioner_result": ".provisioner_result_listener",
+        "publish_provisioner_trigger": ".provisioner_trigger",
+        "retry_pending_servers": ".provisioner_trigger",
+        "rag_summarizer_worker": ".rag_summarizer",
+        "sync_servers_worker": ".server_sync",
+    }
+    if name in _imports:
+        import importlib
+
+        module = importlib.import_module(_imports[name], __package__)
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -37,7 +37,7 @@ curl -sf "$API/api/tasks/?status=in_dev"
 
 Read:
 - `docs/CHANGELOG.md` — recent entries
-- `docs/ROADMAP.md` — milestone progress
+- `docs/ROADMAP.md` — story progress
 - `git log --oneline` since last checkpoint date
 
 ### 2. Audit (unless --skip-audit)
@@ -73,7 +73,7 @@ curl -sf "$API/api/tasks/?status=done&sort=-created_at"
 For each completed task:
 - Find it in ROADMAP.md
 - Mark as `[x]`
-- If all items in a milestone are done, update milestone status
+- If all tasks in a story are done, note it
 
 ### 6. Update User Stories
 
@@ -112,7 +112,7 @@ For each file in `docs/e2e_results/`:
 - If processed AND older than 2 days — delete
 - Keep the latest passing report per scenario
 
-### 11. Commit
+### 11. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/CHANGELOG.md docs/ROADMAP.md docs/USER_STORIES.md docs/backlog.md docs/audit.md docs/plans/ docs/e2e_results/ docs/brainstorms/ docs/ideas.md ARCHITECTURE.md README.md CLAUDE.md docs/CONTRACTS.md
@@ -148,7 +148,7 @@ Print a comprehensive summary:
 - Template tasks: N
 
 ### ROADMAP Progress
-- <Milestone>: X/Y complete
+- <Story>: X/Y tasks complete
 
 ### Recommended Next Task
 - #<ID> — <Title> (<reason>)
@@ -157,9 +157,15 @@ Print a comprehensive summary:
 - <anything that needs human input>
 ```
 
+### Memory Review (Mandatory)
+
+**Before generating your final response, review your memory for feedback:**
+Did you have to fix any unexpected errors, correct wrong commands, or guess missing information during this task? 
+If yes, you **MUST** append an entry to `docs/skill-feedback.md` right now, following the format described in the **Self-Feedback** section below.
+
 ## Self-Feedback
 
-After completing this skill, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
+During your final memory review, if you encountered any of the following — add an entry to `docs/skill-feedback.md`:
 
 - A command or path in this skill was **wrong or outdated**
 - A step was **missing context** that you had to figure out yourself

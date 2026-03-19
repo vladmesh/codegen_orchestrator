@@ -8,15 +8,21 @@
 
 **Роль**: Центральный координатор. Управляет жизненным циклом проекта через API tools, единственная точка коммуникации с пользователем.
 
-**Реализация**: LangGraph `create_react_agent` в `services/langgraph/src/po/`. Runs as an async consumer inside the langgraph container — no separate Docker container needed. Conversation state persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); falls back to in-memory `MemorySaver` without `CHECKPOINT_DATABASE_URL`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) — old messages are summarized into a running summary stored in `state["context"]` instead of being silently dropped.
+**Реализация**: LangGraph `create_react_agent` в `services/langgraph/src/agents/po/`. Runs as an async consumer inside the langgraph container — no separate Docker container needed. Conversation state persisted via PostgreSQL checkpointer (`AsyncPostgresSaver`, schema `langgraph`); falls back to in-memory `MemorySaver` without `CHECKPOINT_DATABASE_URL`. Long conversations are compressed via `langmem.SummarizationNode` (`pre_model_hook`) — old messages are summarized into a running summary stored in `state["context"]` instead of being silently dropped.
 
-**Инструменты** (`src/po/tools.py`):
+**Инструменты** (`src/agents/po/tools.py`):
 - `create_project`, `list_projects`, `get_project`: управление проектами через API
 - `set_project_secret`: сохранение секретов
-- `trigger_engineering`, `trigger_deploy`: запуск subgraphs через API + Redis
-- `get_task_status`: статус задач
+- `validate_telegram_token`: validates Telegram bot token via `getMe` API, extracts bot username, stores both token and username as project secrets. Invalid tokens fail fast at PO stage.
+- `create_story`: создание user story + автоматический запуск engineering work
+- `reopen_story`: переоткрытие завершённой story с user_report (контекст проблемы)
+- `list_stories`, `get_story`: просмотр stories, привязанных tasks и их runs (с id, status, type, error, timing)
+- `get_run_status`: детальный статус конкретного engineering/deploy run
 - `set_reminder`: отложенные проверки через Redis ZSET
-- `notify_user`: proactive message to user via `po:proactive` stream (Phase 2.3)
+- `notify_user`: proactive message to user via `po:proactive` stream
+- `web_search`: поиск документации внешних API через DuckDuckGo
+
+**System events**: PO consumer принимает три story-level события: `story_completed` (deploy success), `story_failed` (permanent failure after retries), `story_blocked` (developer hit a blocker, WAITING_HUMAN_REVIEW). Все остальные system events дропаются — PO проверяет прогресс через reminders.
 
 **Communication**: Redis streams — `po:input` (inbound, user messages + system events), `po:response:{request_id}` (outbound, sync replies), `po:proactive` (outbound, async notifications). All PO streams use Pydantic contracts from `shared.contracts.queues.po` (`POInputMessage`, `POResponse`, `POProactiveMessage`) with flat-field serialization (`to_flat_fields()` / `from_flat_fields()`). PO Consumer has PEL recovery via `XAUTOCLAIM` on startup. Workers write system events to `po:input` via `callback_stream`. PO uses `notify_user` tool to send proactive messages when handling system events.
 
@@ -34,16 +40,26 @@
 - При rework от Tester (до 3 итераций)
 
 **Реализация**:
-1. Engineering worker создает GitHub-репозиторий и устанавливает registry secrets (`_create_repo_and_set_secrets()`)
-2. Developer node строит `ScaffoldConfig` (modules, project_name, task description) и передаёт worker spawner
-3. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai) с `scaffold_config` в команде
-4. Worker-manager выполняет scaffold phase внутри контейнера (`docker exec`: copier + make setup + git push), затем устанавливает `project.status = "scaffolded"`
-5. Worker-manager инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` с project-specific задачей
-6. Агент клонирует scaffolded repo и пишет бизнес-логику
+1. Scaffolder service (отдельный микросервис) выполняет scaffold phase: copier + make setup + git push, сохраняет tree + specs_summary в DB, ставит `project.status = active`
+2. Architect Consumer (langgraph) ждёт завершения scaffold (poll project.status != draft, до 5 мин), затем декомпозирует story в tasks (видит tree, specs summary: модели, домены, события)
+3. Task Dispatcher находит разблокированные tasks, создаёт Runs, публикует в `engineering:queue` с `branch=story/{story_id}`
+4. Engineering worker создает GitHub-репозиторий и устанавливает registry secrets
+5. Спавнит контейнер через `worker-manager` (Claude Code / Factory.ai)
+6. Worker-manager creates/checks out `story/{story_id}` branch, инжектит инструкции из `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` и `TASK.md` (в `/workspace/TASK.md`)
+7. Агент работает на feature branch и пушит туда
 
 **Валидация**: Проверяет наличие commit SHA в результате.
 
-**Выход**: Код в репозитории → Tester
+**Обработка gave-up**: Если developer agent не может выполнить задачу (missing credentials, 404 URLs, contradictory requirements), он вызывает `curl -X POST localhost:9090/result -d '{"success":false,"reason":"..."}'`. Worker-wrapper HTTP-сервер принимает запрос и публикует результат в Redis. Developer node возвращает `engineering_status=EngineeringStatus.GAVE_UP`. Engineering consumer вызывает `handle_worker_gave_up()`:
+- Task → `waiting_human_review` с `failure_metadata = {reason: "..."}`
+- Story → `waiting_human_review`
+- Уведомление admin через `notify_admins()` (level=warning)
+- Уведомление пользователя через PO (`story_blocked` event)
+- Worker container **не удаляется** (admin может инспектировать)
+
+Для возобновления: `POST /tasks/{id}/resume` (admin даёт guidance, task WHR → IN_DEV).
+
+**Выход**: Код в репозитории → Tester | Или `GAVE_UP` → WHR flow
 
 ---
 
@@ -62,7 +78,7 @@
 **Выход**:
 - `test_results` с passed/failed/skipped
 - При неудаче → возврат к Developer (max 3 итерации)
-- При успехе → `engineering_status="done"` → DevOps
+- При успехе → `EngineeringStatus.DONE` → DevOps
 
 ---
 
@@ -73,7 +89,7 @@
 **Когда вызывается**:
 - После Engineering Subgraph
 - При `trigger_deploy` от PO
-- При GitHub webhook (`workflow_run: ci.yml success on main`) → API → deploy:queue
+- При обнаружении merged PR (PR poller в scheduler, 30s poll) → deploy:queue
 
 **Структура пакета** (`src/subgraphs/devops/`):
 ```
@@ -112,12 +128,14 @@ devops/
    - Тригерит `deploy.yml` через `trigger_workflow_dispatch`
    - Ждёт завершения через `wait_for_workflow_completion` (poll, timeout 600s)
    - Post-deployment операции:
-     * Создает service deployment record в БД (с `deployed_sha`)
+     * Creates or updates Application record (repo + server → runtime entity with `ApplicationStatus`)
+     * Создает Deployment record (immutable deploy log с `DeploymentResult` и `deployed_sha`)
      * Устанавливает статус проекта = active
 
 5. **SmokeTester (Functional)**:
    - Делает HTTP `/health` check для бекендов и Telethon `/start` check для tg_bot модулей.
    - Реализует retry logic (3 попытки, 5s delay) и graceful skip.
+   - On failure: SSHes into deploy server, captures `docker compose logs --tail=50`, appends to check `detail` field. Logs flow through deploy→engineering feedback loop so fix tasks get actual tracebacks.
    - Записывает `smoke_result` в `DevOpsState` для проброса статуса в deploy-worker.
 
 **Архитектура**:
@@ -135,8 +153,11 @@ Deployer → build_dotenv → set_repository_secrets (GitHub API)
 - `deployed_url` при успехе
 - `missing_user_secrets` если нужны секреты от пользователя
 
-**Proactive notifications** (webhook-triggered deploys):
-Когда deploy запущен через webhook (нет `callback_stream`), deploy-worker отправляет результат напрямую в `po:proactive` → telegram-bot → пользователь. Сообщения: успех (deployed URL), missing secrets, ошибка.
+**Proactive notifications**:
+Filtered to reduce spam — only two events reach user via `po:proactive`: (1) deploy success (deployed URL), (2) permanent story failure (user-friendly message). All intermediate failures (smoke, precheck, workflow) are routed through the deploy→engineering feedback loop for automated fixing.
+
+**Deploy→Engineering Feedback Loop**:
+When deploy succeeds but smoke test fails, or workflow fails entirely, deploy worker re-dispatches a fix task to `engineering:queue`. Capped at 2 retry attempts via `deploy_fix_attempt` counter. After limit, story fails permanently and user is notified.
 
 ---
 
@@ -179,7 +200,15 @@ PO ReactAgent (in langgraph container)
      │ tool calls (httpx/Redis)
      ├──────────────▶ po:response:{request_id} ──▶ Пользователь
      │
-     ├──────────────▶ trigger_engineering
+     ├──────────────▶ scaffold:queue → Scaffolder Service
+     │               (copier + make setup + git push, saves tree + specs_summary)
+     │                     │
+     │                     ▼
+     │               architect:queue → Architect Consumer
+     │               (waits for scaffold, then LLM: story → tasks with specs context)
+     │                     │
+     │                     ▼
+     │               Task Dispatcher → engineering:queue
      │                     │
      │                     ▼
      │               Engineering Subgraph
@@ -187,7 +216,6 @@ PO ReactAgent (in langgraph container)
      │                     │
      │                     ▼
      │               Developer node → worker-manager
-     │               scaffold phase (copier + make setup)
      │               → agent writes code → Tester
      │                                     │
      ├──────────────▶ trigger_deploy ◄─────┘
@@ -199,11 +227,11 @@ PO ReactAgent (in langgraph container)
      └──────────────▶ (завершение) ◄─────────────────────────┘
 
 
-GitHub (webhook: ci.yml success on main)
-     │
+PR Poller (scheduler, 30s poll)
+     │ detects merged PR on story/* branch
      ▼
-API: POST /webhooks/github
-     │ verify HMAC → lookup project → create Task
+Scheduler → story → deploying, create Run
+     │
      ▼
 Redis (deploy:queue) → deploy-worker → DevOps Subgraph
      │
@@ -211,4 +239,4 @@ Redis (deploy:queue) → deploy-worker → DevOps Subgraph
 Redis (po:proactive) → Telegram Bot → Пользователь
 ```
 
-**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Engineering worker создаёт репозиторий и устанавливает registry secrets inline. Worker-manager выполняет scaffold phase (copier + make setup + git push) внутри worker-контейнера через docker exec перед запуском агента. Webhook-triggered deploys обходят PO — API публикует напрямую в deploy:queue, результат уходит через po:proactive.
+**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder (отдельный сервис) подготавливает репозиторий (copier + make setup + git push) до запуска architect. Worker-manager монтирует pre-scaffolded workspace volume из `/data/workspaces/{repo_id}/` в контейнер воркера. Deploy после merge обнаруживается PR poller'ом в scheduler — webhook'и удалены.

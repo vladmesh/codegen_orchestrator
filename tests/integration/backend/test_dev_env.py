@@ -52,7 +52,7 @@ async def wait_for_create_response(redis, request_id: str, timeout: int = 120):
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestDevEnvIntegration:
-    async def test_workspace_bind_mount(self, redis_client, docker_client):
+    async def test_workspace_bind_mount(self, redis_client, docker_client, scaffolded_workspace):
         """Create worker -> touch file in /workspace -> verify via docker exec."""
         req_id = f"dev-env-{uuid4().hex[:6]}"
         worker_name = f"test-ws-mount-{req_id}"
@@ -66,6 +66,7 @@ class TestDevEnvIntegration:
                 instructions="Test workspace",
                 allowed_commands=[],
                 capabilities=[],
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
@@ -83,7 +84,9 @@ class TestDevEnvIntegration:
         exit_code, output = container.exec_run("ls /workspace/test.txt")
         assert exit_code == 0, f"File not found: {output.decode()}"
 
-    async def test_compose_rejects_absolute_volumes(self, redis_client, docker_client):
+    async def test_compose_rejects_absolute_volumes(
+        self, redis_client, docker_client, scaffolded_workspace
+    ):
         """POST compose with absolute volume mounts should return 400."""
         req_id = f"dev-env-{uuid4().hex[:6]}"
         worker_name = f"test-vols-{req_id}"
@@ -97,6 +100,7 @@ class TestDevEnvIntegration:
                 instructions="Test compose",
                 allowed_commands=[],
                 capabilities=[],
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})
@@ -132,7 +136,9 @@ class TestDevEnvIntegration:
         assert response.status_code == 400
         assert "absolute" in response.json()["detail"].lower()
 
-    async def test_delete_cleans_everything(self, redis_client, docker_client):
+    async def test_delete_cleans_everything(
+        self, redis_client, docker_client, scaffolded_workspace
+    ):
         """Create worker -> delete -> verify container gone."""
         req_id = f"dev-env-{uuid4().hex[:6]}"
         worker_name = f"test-del-{req_id}"
@@ -146,6 +152,7 @@ class TestDevEnvIntegration:
                 instructions="Test delete",
                 allowed_commands=[],
                 capabilities=[],
+                repo_id=scaffolded_workspace,
             ),
         )
         await redis_client.xadd(REDIS_STREAM_COMMANDS, {"data": cmd.model_dump_json()})

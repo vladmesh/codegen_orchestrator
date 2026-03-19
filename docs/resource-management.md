@@ -107,8 +107,8 @@ PO вызывает tool `set_project_secret`, который сохраняет
 Для параллельных воркеров (см. [docs/parallel-workers.md](parallel-workers.md)) система создает временные ресурсы (workspaces, networks, containers) на хосте.
 
 1. **Жизненный цикл**:
-   * Воркер получает выделенный workspace директорию в `/tmp/codegen/workspaces/<worker_id>` и изолированную Docker сеть `dev_proj_<worker_id>`.
-   * Агент вызывает `orchestrator dev-env compose up`/`down` для управления sidecar'ами внутри этого пространства имён.
+   * Воркер получает workspace директорию (pre-scaffolded: `/data/workspaces/{repo_id}/`, ephemeral: `/tmp/codegen/workspaces/{worker_id}/`) и изолированную Docker сеть `dev_proj_<worker_id>`.
+   * Агент вызывает compose proxy через `curl $WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose` для управления sidecar'ами внутри этого пространства имён.
 2. **Очистка (Garbage Collection)**:
    * Явное удаление: при завершении LangGraph вызывает `worker-manager` `delete_worker`, который удаляет контейнеры, сеть, и пространство на диске.
    * Фоновый сбор мусора (GC): `scheduler` раз в 30 минут триггерит GC в `worker-manager`. Метод `WorkerManager.garbage_collect_orphaned_resources()` находит "осиротевшие" контейнеры воркеров, сети `dev_proj_*` и директории на диске (сопоставляя с активными ключами `worker:status:*` в Redis) и удаляет их, защищая систему от утечек после крэшей или OOM-событий.

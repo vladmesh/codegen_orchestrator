@@ -11,24 +11,24 @@ import uuid
 
 import redis.asyncio as redis
 
+from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
     AgentType,
     CreateWorkerCommand,
     DeleteWorkerCommand,
-    ScaffoldConfig,
     WorkerCapability,
     WorkerConfig,
 )
 from shared.log_config import get_logger
+from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
 
 from ..config.constants import Timeouts
 from ..config.settings import get_settings
 
 logger = get_logger(__name__)
-
-COMMAND_STREAM = "worker:commands"
-RESPONSE_STREAM = "worker:responses:developer"
 CREATION_TIMEOUT = 60
+READY_POLL_TIMEOUT = 300  # Max wait for image build + container start
+READY_POLL_INTERVAL = 2  # Poll interval for worker status
 
 
 @dataclass
@@ -45,10 +45,51 @@ class SpawnResult:
     error_message: str | None = None
     logs_tail: str | None = None
     worker_id: str | None = None
+    gave_up_reason: str | None = None
+    worker_report: str | None = None
 
 
 LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
-WORKER_DEAD_STATUS = "DEAD"
+
+
+async def _wait_until_ready(
+    redis_client: redis.Redis,
+    worker_id: str,
+    request_id: str,
+    timeout: float = READY_POLL_TIMEOUT,
+) -> SpawnResult | None:
+    """Poll worker:status until RUNNING. Returns SpawnResult on failure, None on success."""
+    start = asyncio.get_running_loop().time()
+    seen_status = False
+    while (asyncio.get_running_loop().time() - start) < timeout:
+        status = await redis_client.hget(f"worker:status:{worker_id}", "status")
+        status_str = status.decode() if isinstance(status, bytes) else status
+        if status_str == WorkerStatus.RUNNING:
+            return None
+        if status_str == WorkerStatus.FAILED:
+            error = await redis_client.get(f"worker:error:{worker_id}")
+            error_msg = error.decode() if isinstance(error, bytes) else str(error)
+            return SpawnResult(request_id, False, -1, f"Creation failed: {error_msg}")
+        if status_str is None:
+            if seen_status:
+                return SpawnResult(request_id, False, -1, "Worker disappeared during creation")
+        else:
+            seen_status = True
+        await asyncio.sleep(READY_POLL_INTERVAL)
+    # Timeout — caller should cleanup
+    logger.warning("worker_ready_timeout", worker_id=worker_id, timeout_seconds=timeout)
+    delete_cmd = DeleteWorkerCommand(
+        request_id=f"cleanup-{request_id}",
+        worker_id=worker_id,
+        reason="timeout",
+    )
+    await redis_client.xadd(WORKER_COMMANDS, {"data": delete_cmd.model_dump_json()})
+    return SpawnResult(
+        request_id,
+        False,
+        -1,
+        f"Timeout after {timeout}s waiting for worker to become ready",
+    )
 
 
 async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool:
@@ -63,7 +104,7 @@ async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool
         return False
     # Handle both bytes and str (depends on decode_responses setting)
     status_str = status.decode() if isinstance(status, bytes) else status
-    if status_str == WORKER_DEAD_STATUS:
+    if status_str == WorkerStatus.DEAD:
         return False
     return True
 
@@ -74,7 +115,7 @@ async def _wait_for_response(
     consumer_id: str,
     request_id: str | None,
     timeout_s: float,
-    stream: str = RESPONSE_STREAM,
+    stream: str = WORKER_RESPONSES,
     worker_id: str | None = None,
 ) -> dict | None:
     """Wait for a specific response in the stream.
@@ -149,11 +190,12 @@ async def request_spawn(
     github_token: str,
     task_content: str,
     task_title: str = "AI generated changes",
-    model: str = "claude-sonnet-4-5-20250929",
-    agents_content: str | None = None,
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
     project_id: str | None = None,
-    scaffold_config: ScaffoldConfig | None = None,
+    repo_id: str | None = None,
+    agent_type: AgentType = AgentType.CLAUDE,
+    story_md: str | None = None,
+    branch: str | None = None,
 ) -> SpawnResult:
     """Request a coding worker spawn and wait for result.
 
@@ -173,7 +215,7 @@ async def request_spawn(
     try:
         # 1. Create consumer group for responses
         try:
-            await redis_client.xgroup_create(RESPONSE_STREAM, group_name, id="$", mkstream=True)
+            await redis_client.xgroup_create(WORKER_RESPONSES, group_name, id="$", mkstream=True)
         except redis.ResponseError as e:
             if "BUSYGROUP" not in str(e):
                 raise
@@ -186,14 +228,14 @@ async def request_spawn(
 
         instructions = load_developer_instructions()
         if not instructions:
-            instructions = "Read TASK.md for your implementation task."
+            instructions = "Read /workspace/TASK.md for your implementation task."
 
         create_cmd = CreateWorkerCommand(
             request_id=request_id,
             config=WorkerConfig(
                 name=worker_name,
                 worker_type="developer",
-                agent_type=AgentType.CLAUDE,
+                agent_type=agent_type,
                 instructions=instructions,
                 task_content=task_content,
                 allowed_commands=["*"],
@@ -203,15 +245,16 @@ async def request_spawn(
                     "REPO_NAME": repo,
                 },
                 project_id=project_id,
-                scaffold_config=scaffold_config,
+                repo_id=repo_id,
+                branch=branch,
             ),
             context={"source": "langgraph", "repo": repo, "project_id": project_id or ""},
         )
 
-        await redis_client.xadd(COMMAND_STREAM, {"data": create_cmd.model_dump_json()})
+        await redis_client.xadd(WORKER_COMMANDS, {"data": create_cmd.model_dump_json()})
         logger.info("worker_spawn_requested", request_id=request_id, repo=repo)
 
-        # 3. Wait for Creation Response
+        # 3. Wait for early ACK (worker_id) — should be near-instant
         create_resp = await _wait_for_response(
             redis_client, group_name, consumer_id, request_id, CREATION_TIMEOUT
         )
@@ -225,7 +268,14 @@ async def request_spawn(
             )
 
         worker_id = create_resp.get("worker_id")
-        logger.info("worker_created", request_id=request_id, worker_id=worker_id)
+        logger.info("worker_ack_received", request_id=request_id, worker_id=worker_id)
+
+        # 3b. Poll worker status until RUNNING (image build + container start)
+        ready_failure = await _wait_until_ready(redis_client, worker_id, request_id)
+        if ready_failure:
+            return ready_failure
+
+        logger.info("worker_ready", request_id=request_id, worker_id=worker_id)
 
         # 4. Set up output stream consumer group BEFORE sending task
         # Use id="0" to read any existing messages (in case worker is very fast)
@@ -243,6 +293,8 @@ async def request_spawn(
             "prompt": task_content,
             "user_id": 0,  # System task
         }
+        if story_md:
+            task_message["story_md"] = story_md
         await redis_client.xadd(input_stream, {"data": json.dumps(task_message)})
         logger.info("task_sent_to_worker", request_id=request_id, worker_id=worker_id)
 
@@ -258,8 +310,9 @@ async def request_spawn(
         )
 
         if output_resp:
-            # Worker outputs: {"content": "...", "status": "success|failed"}
-            is_success = output_resp.get("status") == "success" or output_resp.get("success", False)
+            # Worker outputs: {"content": "...", "status": "success|failed|rejected|blocked"}
+            status = output_resp.get("status", "")
+            is_success = status in ("success", "completed") or output_resp.get("success", False)
             content = output_resp.get(
                 "content", output_resp.get("response", output_resp.get("output", ""))
             )
@@ -273,6 +326,10 @@ async def request_spawn(
                 files_changed=output_resp.get("files_changed"),
                 error_message=output_resp.get("error"),
                 worker_id=worker_id,
+                gave_up_reason=(
+                    output_resp.get("block_reason") or output_resp.get("reject_reason")
+                ),
+                worker_report=output_resp.get("worker_report"),
             )
         else:
             # Timeout - cleanup the zombie container
@@ -287,7 +344,7 @@ async def request_spawn(
                     worker_id=worker_id,
                     reason="timeout",
                 )
-                await redis_client.xadd(COMMAND_STREAM, {"data": delete_cmd.model_dump_json()})
+                await redis_client.xadd(WORKER_COMMANDS, {"data": delete_cmd.model_dump_json()})
 
             return SpawnResult(
                 request_id,
@@ -304,7 +361,7 @@ async def request_spawn(
     finally:
         # Cleanup consumer groups (ignore errors - groups may not exist)
         try:
-            await redis_client.xgroup_destroy(RESPONSE_STREAM, group_name)
+            await redis_client.xgroup_destroy(WORKER_RESPONSES, group_name)
         except Exception as e:
             logger.debug("cleanup_response_group_failed", error=str(e))
         if worker_id:
@@ -319,11 +376,20 @@ async def send_task_to_worker(
     worker_id: str,
     task_content: str,
     timeout_seconds: int = Timeouts.WORKER_SPAWN,
+    *,
+    clear_session: bool = False,
+    story_md: str | None = None,
+    branch: str | None = None,
 ) -> SpawnResult:
     """Send a new task to an existing worker and wait for output.
 
     Unlike request_spawn(), this does NOT create a new container.
     It sends a prompt to the worker's input stream and waits for output.
+
+    Args:
+        clear_session: If True, worker clears its session before executing,
+            forcing a fresh Claude CLI session (no --resume). Use for retries
+            to avoid inheriting errors from a failed previous attempt.
     """
     request_id = str(uuid.uuid4())
     settings = get_settings()
@@ -348,6 +414,12 @@ async def send_task_to_worker(
             "request_id": request_id,
             "prompt": task_content,
         }
+        if clear_session:
+            task_message["clear_session"] = True
+        if story_md:
+            task_message["story_md"] = story_md
+        if branch:
+            task_message["branch"] = branch
         await redis_client.xadd(input_stream, {"data": json.dumps(task_message)})
         logger.info(
             "task_sent_to_existing_worker",
@@ -367,7 +439,8 @@ async def send_task_to_worker(
         )
 
         if output_resp:
-            is_success = output_resp.get("status") == "success" or output_resp.get("success", False)
+            status = output_resp.get("status", "")
+            is_success = status in ("success", "completed") or output_resp.get("success", False)
             content = output_resp.get(
                 "content", output_resp.get("response", output_resp.get("output", ""))
             )
@@ -381,6 +454,10 @@ async def send_task_to_worker(
                 files_changed=output_resp.get("files_changed"),
                 error_message=output_resp.get("error"),
                 worker_id=worker_id,
+                gave_up_reason=(
+                    output_resp.get("block_reason") or output_resp.get("reject_reason")
+                ),
+                worker_report=output_resp.get("worker_report"),
             )
         else:
             return SpawnResult(
@@ -417,7 +494,7 @@ async def delete_worker(
             worker_id=worker_id,
             reason=reason,
         )
-        await redis_client.xadd(COMMAND_STREAM, {"data": delete_cmd.model_dump_json()})
+        await redis_client.xadd(WORKER_COMMANDS, {"data": delete_cmd.model_dump_json()})
         logger.info("worker_delete_requested", worker_id=worker_id)
     finally:
         await redis_client.aclose()

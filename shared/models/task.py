@@ -37,9 +37,6 @@ class Task(Base):
     source_brainstorm_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("brainstorms.id"), nullable=True
     )
-    milestone_id: Mapped[str | None] = mapped_column(
-        String(255), ForeignKey("milestones.id"), nullable=True, index=True
-    )
     repository_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("repositories.id"), nullable=True
     )
@@ -49,6 +46,7 @@ class Task(Base):
     blocked_by_task_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("tasks.id"), nullable=True
     )
+    failure_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
 
 
 class TaskEvent(Base):

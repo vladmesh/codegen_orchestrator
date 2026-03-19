@@ -86,6 +86,6 @@ async def _handle_failure(result: ProvisionerResult, log) -> None:
             )
 
     # Notify admins about provisioning failure
-    message = f"Provisioning failed for server `{result.server_handle}`\n" f"Errors: {errors_str}"
+    message = f"Provisioning failed for server `{result.server_handle}`\nErrors: {errors_str}"
     await notify_admins(message, level="error")
     log.info("admins_notified_about_failure")

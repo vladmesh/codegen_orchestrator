@@ -28,11 +28,11 @@ def _make_task(**overrides):
         "max_iterations": 3,
         "created_by": "system",
         "source_brainstorm_id": None,
-        "milestone_id": None,
         "repository_id": None,
         "story_id": None,
         "blocked_by_task_id": None,
         "need_e2e": False,
+        "failure_metadata": None,
         "created_at": now,
         "updated_at": now,
     }
@@ -861,3 +861,74 @@ async def test_events_for_nonexistent_task():
         resp = await client.get("/api/tasks/task-nonexistent/events")
 
     assert resp.status_code == 404  # noqa: PLR2004
+
+
+# --- Resume (WAITING_HUMAN_REVIEW → IN_DEV) ---
+
+
+@pytest.mark.asyncio
+async def test_resume_from_whr():
+    """Resume from waiting_human_review → in_dev with guidance."""
+    task = _make_task(id="task-whr", status="waiting_human_review")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/tasks/task-whr/resume",
+            json={"guidance": "Use picsum.photos instead of Wikimedia", "actor": "admin"},
+        )
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert task.status == "in_dev"
+    # 2 adds: status_change event + guidance note event
+    assert session.add.call_count == 2  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_resume_from_wrong_status_fails():
+    """Resume from non-WHR status fails with 422."""
+    task = _make_task(id="task-dev", status="in_dev")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/tasks/task-dev/resume",
+            json={"guidance": "some guidance"},
+        )
+
+    from http import HTTPStatus
+
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_resume_requires_guidance():
+    """Resume without guidance field fails with 422."""
+    task = _make_task(id="task-whr", status="waiting_human_review")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/tasks/task-whr/resume", json={})
+
+    assert resp.status_code == 422  # noqa: PLR2004
+
+
+@pytest.mark.asyncio
+async def test_reopen_from_whr_to_backlog():
+    """Reopen from waiting_human_review → backlog (admin re-queues)."""
+    task = _make_task(id="task-whr", status="waiting_human_review")
+    session = _mock_session(scalar_one_or_none=task)
+    _override_session(session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/tasks/task-whr/reopen")
+
+    assert resp.status_code == 200  # noqa: PLR2004
+    assert task.status == "backlog"
