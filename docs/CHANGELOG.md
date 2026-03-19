@@ -4,6 +4,9 @@
 
 ## 2026-03-19
 
+### Changed
+- **Decouple deploy worker from story lifecycle** (#1006): Deploy worker stripped of all story transitions (`_transition_story_safe`, QA handoff, retry tracking, admin notifications). Now only updates `run.status` and `run.result` with a `DeployOutcome` enum (SUCCESS/SMOKE_FAILURE/CODE_FIX/RETRY/GIVE_UP). New `supervise_deploying_stories()` in dispatcher polls DEPLOYING stories, reads deploy run outcome, and routes: SUCCESS → TESTING + QA, CODE_FIX → engineering redispatch, RETRY → redeploy with counter, GIVE_UP → FAILED + admin notification. Added `story_id` FK to Run model for efficient querying. Deploy is now a pure technical worker callable outside story context.
+
 ### Added
 - **Admin UI: Settings page** (#1025): New `/settings` page in admin SPA with two tabs. System Configs tab shows all configs grouped by category (scheduler, supervisor, deploy, health, llm) with inline edit per row. Agent Configs tab shows expandable cards with prompt textarea editor, model/temperature fields. Sidebar navigation item added.
 - **SystemConfig model + API + ConfigStore** (#1020): New `system_configs` DB table for externalizing operational constants. CRUD API at `/api/system-configs/`. `ConfigStore` client in shared/ with TTL cache. Seed script populates 29 defaults from YAML (`make seed`). Scheduler validates all required configs at startup (fail-fast). Replaced hardcoded constants in 12 scheduler/langgraph task modules with DB-backed values.

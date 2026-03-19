@@ -42,12 +42,6 @@
 - **Status**: backlog
 - **Brief**: ## Problem  Worker containers copy the entire orchestrator shared/ package into /app/shared. This conflicts with user projects that also have a shared/ directory (different package, same name). Workers hit ModuleNotFoundError or import the wrong module.  ## Current state  - worker-wrapper needs: ...
 
-### #1006 Decouple deploy worker from story lifecycle
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
-
 ### #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage
 - **Priority**: HIGH
 - **Plan**: —
@@ -77,6 +71,12 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Single SSH connection per server, once daily. Check /opt/projects/ vs API — orphan dirs → warning in structlog (NOT admin UI). Docker system prune -af --filter until=72h + docker volume prune -f. Source: brainstorm bs-69482380, Phase 3.
+
+### #1030 Decouple QA consumer from story lifecycle
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: QA consumer (qa.py) directly manages story transitions — same anti-pattern as deploy before #1006.  Current transitions: - L177: complete — QA passed - L209: fail — retries exhausted - L246: start — QA failed, fix task created - L113: fail — bot_username missing - L179-183, L210-218: publish_stor...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW

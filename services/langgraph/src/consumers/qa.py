@@ -1,8 +1,8 @@
 """QA Worker — consumes from qa:queue and runs post-deploy QA testing.
 
-After deploy+smoke succeed, the QA consumer SSHes to the prod server,
-runs Claude Code with a QA prompt built from the story description,
-and routes the result: pass → complete story, fail → create fix task.
+Pure technical worker: only updates run.status and run.result.
+Story lifecycle (TESTING → COMPLETED/FAILED) is managed by the dispatcher's
+supervise_testing_stories(), which reads run.result.qa_outcome.
 
 Run standalone: python -m src.consumers.qa
 """
@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import structlog
 
-from shared.contracts.queues.qa import QAMessage, QAServerInfo
+from shared.contracts.dto.run import RunStatus
+from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ._base import start_worker
-from ._events import publish_story_event
 from ._qa_runner import QAResult, run_qa_on_server
 
 logger = structlog.get_logger(__name__)
@@ -66,14 +66,14 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
     Args:
         job_data: Job data from Redis queue (QAMessage fields)
-        redis: Redis client for publishing events and inflight markers
+        redis: Redis client for inflight markers
 
     Returns:
         Result dict with status and details
     """
     msg = QAMessage.model_validate(job_data)
     story_id = msg.story_id
-    user_id = msg.user_id
+    run_id = msg.run_id
 
     logger.info(
         "qa_job_started",
@@ -110,7 +110,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                     "Deploy smoke test should have resolved it via getMe."
                 )
                 logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
-                await _transition_story_safe(story_id, "fail")
+                await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
                 return {"status": "error", "error": error}
 
         # Fetch story description for QA prompt
@@ -145,19 +145,12 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             )
 
         if qa_result.passed:
-            return await _handle_qa_pass(
-                story_id=story_id,
-                user_id=user_id,
-                deployed_url=msg.deployed_url,
-                project_name=server_info.project_name,
-                redis=redis,
-            )
+            return await _handle_qa_pass(run_id=run_id, deployed_url=msg.deployed_url)
         else:
             return await _handle_qa_fail(
-                msg=msg,
+                run_id=run_id,
+                qa_attempt=msg.qa_attempt,
                 qa_result=qa_result,
-                project_name=server_info.project_name,
-                redis=redis,
             )
 
     finally:
@@ -165,103 +158,81 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         await redis.redis.delete(inflight_key)
 
 
-async def _handle_qa_pass(
-    *,
-    story_id: str,
-    user_id: str,
-    deployed_url: str,
-    project_name: str,
-    redis: RedisStreamClient,
-) -> dict:
-    """Handle QA pass — complete story, notify user."""
-    await _transition_story_safe(story_id, "complete")
-
-    await publish_story_event(
-        redis,
-        user_id=user_id,
-        event="story_completed",
-        text=f"QA passed. Project '{project_name}' is live at {deployed_url}",
+async def _handle_qa_pass(*, run_id: str, deployed_url: str) -> dict:
+    """Handle QA pass — store PASSED outcome in run."""
+    await _update_run(
+        run_id,
+        RunStatus.COMPLETED,
+        QAOutcome.PASSED,
+        deployed_url=deployed_url,
     )
-
-    logger.info("qa_passed", story_id=story_id)
+    logger.info("qa_passed", run_id=run_id)
     return {"status": "passed"}
 
 
 async def _handle_qa_fail(
     *,
-    msg: QAMessage,
+    run_id: str,
+    qa_attempt: int,
     qa_result: QAResult,
-    project_name: str,
-    redis: RedisStreamClient,
 ) -> dict:
-    """Handle QA fail — create fix task or fail story if retries exhausted."""
-    story_id = msg.story_id
-    user_id = msg.user_id
-    attempt = msg.qa_attempt
+    """Handle QA fail — store FAILED or EXHAUSTED outcome in run."""
+    failed_checks = [c for c in qa_result.checks if not c.get("pass", True)]
 
-    if attempt >= MAX_QA_LOOPS:
+    if qa_attempt >= MAX_QA_LOOPS:
         logger.warning(
             "qa_loops_exhausted",
-            story_id=story_id,
-            attempt=attempt,
+            run_id=run_id,
+            attempt=qa_attempt,
             max_loops=MAX_QA_LOOPS,
         )
-        await _transition_story_safe(story_id, "fail")
-        await publish_story_event(
-            redis,
-            user_id=user_id,
-            event="story_failed",
-            text=(
-                f"QA failed after {attempt} fix attempts for '{project_name}'. "
-                f"Last issue: {qa_result.summary}"
-            ),
+        await _update_run(
+            run_id,
+            RunStatus.COMPLETED,
+            QAOutcome.EXHAUSTED,
+            summary=qa_result.summary,
+            failed_checks=failed_checks,
+            qa_attempt=qa_attempt,
         )
         return {"status": "qa_exhausted"}
 
-    # Build fix task description from QA checks
-    failed_checks = [c for c in qa_result.checks if not c.get("pass", True)]
-    issues_text = "\n".join(
-        f"- {c.get('name', 'unknown')}: {c.get('detail', 'failed')}" for c in failed_checks
+    await _update_run(
+        run_id,
+        RunStatus.COMPLETED,
+        QAOutcome.FAILED,
+        summary=qa_result.summary,
+        failed_checks=failed_checks,
+        qa_attempt=qa_attempt,
     )
-    if not issues_text:
-        issues_text = qa_result.summary or "QA testing failed"
-
-    fix_description = (
-        f"QA testing found issues after deploy. Fix the following:\n\n"
-        f"{issues_text}\n\n"
-        f"QA summary: {qa_result.summary}"
-    )
-
-    await api_client.create_task(
-        {
-            "project_id": msg.project_id,
-            "story_id": story_id,
-            "title": f"QA fix: {qa_result.summary[:80]}",
-            "type": "fix",
-            "status": "todo",
-            "description": fix_description,
-        }
-    )
-
-    await _transition_story_safe(story_id, "start")
 
     logger.info(
-        "qa_fix_task_created",
-        story_id=story_id,
-        attempt=attempt + 1,
+        "qa_failed",
+        run_id=run_id,
+        attempt=qa_attempt,
     )
     return {"status": "qa_failed"}
 
 
-async def _transition_story_safe(story_id: str, action: str) -> None:
-    """Transition story status, logging errors without raising."""
-    if not story_id:
+async def _update_run(
+    run_id: str,
+    status: RunStatus,
+    qa_outcome: QAOutcome,
+    **extra_result: object,
+) -> None:
+    """Update run status and result with QA outcome."""
+    if not run_id:
+        logger.warning("qa_no_run_id_skip_update")
         return
-    try:
-        await api_client.transition_story(story_id, action)
-        logger.info("story_transitioned", story_id=story_id, action=action)
-    except Exception:
-        logger.warning("story_transition_failed", story_id=story_id, action=action, exc_info=True)
+    await api_client.patch(
+        f"runs/{run_id}",
+        json={
+            "status": status.value,
+            "result": {
+                "qa_outcome": qa_outcome.value,
+                **extra_result,
+            },
+        },
+    )
 
 
 def main():

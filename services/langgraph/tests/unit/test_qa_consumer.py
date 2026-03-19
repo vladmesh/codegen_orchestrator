@@ -1,4 +1,9 @@
-"""Unit tests for QA consumer — process QAMessage, route pass/fail."""
+"""Unit tests for QA consumer — process QAMessage, store outcome in run.result.
+
+After #1030 decoupling: QA consumer is a pure technical worker. It updates
+run.status and run.result only — no story transitions, no user notifications.
+Story lifecycle is managed by the dispatcher's supervise_testing_stories().
+"""
 
 from __future__ import annotations
 
@@ -9,9 +14,10 @@ import pytest
 
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
-from shared.contracts.queues.qa import QAServerInfo
+from shared.contracts.queues.qa import QAOutcome, QAServerInfo
 from src.consumers.qa import (
     MAX_QA_LOOPS,
     _resolve_server_info,
@@ -86,7 +92,7 @@ def mock_api_client():
         mock.get_server_ssh_key = AsyncMock(
             return_value="-----BEGIN RSA KEY-----\nfake\n-----END RSA KEY-----"
         )
-        mock.transition_story = AsyncMock(return_value={})
+        mock.patch = AsyncMock(return_value={})
         mock.create_task = AsyncMock(return_value={"id": "task-fix-1"})
         yield mock
 
@@ -110,6 +116,7 @@ def qa_message_data():
         "user_id": "12345",
         "deployed_url": "https://weather.example.com",
         "application_id": 1,
+        "run_id": "qa-run-1",
         "bot_username": None,
         "qa_attempt": 0,
     }
@@ -143,36 +150,43 @@ class TestResolveServerInfo:
 
 class TestProcessQAJobPass:
     @pytest.mark.asyncio
-    async def test_qa_pass_completes_story(self, mock_api_client, mock_redis, qa_message_data):
+    async def test_qa_pass_stores_outcome_in_run(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
         from src.consumers._qa_runner import QAResult
 
         with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
-            with patch("src.consumers.qa.publish_story_event", new_callable=AsyncMock):
-                result = await process_qa_job(qa_message_data, mock_redis)
+            result = await process_qa_job(qa_message_data, mock_redis)
 
         assert result["status"] == "passed"
-        mock_api_client.transition_story.assert_called_once_with("story-1", "complete")
+        mock_api_client.patch.assert_called_once()
+        call_kwargs = mock_api_client.patch.call_args
+        assert call_kwargs[0][0] == "runs/qa-run-1"
+        run_data = call_kwargs[1]["json"]
+        assert run_data["status"] == RunStatus.COMPLETED.value
+        assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
 
     @pytest.mark.asyncio
-    async def test_qa_pass_notifies_user(self, mock_api_client, mock_redis, qa_message_data):
+    async def test_qa_pass_does_not_transition_story(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
         from src.consumers._qa_runner import QAResult
 
         with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=True, checks=[], summary="All good", raw="")
-            with patch(
-                "src.consumers.qa.publish_story_event", new_callable=AsyncMock
-            ) as mock_event:
-                await process_qa_job(qa_message_data, mock_redis)
+            await process_qa_job(qa_message_data, mock_redis)
 
-        mock_event.assert_called_once()
-        call_kwargs = mock_event.call_args
-        assert call_kwargs.kwargs["event"] == "story_completed"
+        assert not hasattr(mock_api_client, "transition_story") or (
+            not mock_api_client.transition_story.called
+        )
 
 
 class TestProcessQAJobFail:
     @pytest.mark.asyncio
-    async def test_qa_fail_creates_fix_task(self, mock_api_client, mock_redis, qa_message_data):
+    async def test_qa_fail_stores_failed_outcome(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
         from src.consumers._qa_runner import QAResult
 
         with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
@@ -182,61 +196,60 @@ class TestProcessQAJobFail:
                 summary="Weather endpoint broken",
                 raw="",
             )
-            with patch("src.consumers.qa.publish_story_event", new_callable=AsyncMock):
-                result = await process_qa_job(qa_message_data, mock_redis)
+            result = await process_qa_job(qa_message_data, mock_redis)
 
         assert result["status"] == "qa_failed"
-        mock_api_client.create_task.assert_called_once()
-        task_data = mock_api_client.create_task.call_args[0][0]
-        assert task_data["story_id"] == "story-1"
-        assert "weather" in task_data["description"].lower() or "404" in task_data["description"]
+        call_kwargs = mock_api_client.patch.call_args
+        run_data = call_kwargs[1]["json"]
+        assert run_data["result"]["qa_outcome"] == QAOutcome.FAILED.value
+        assert run_data["result"]["summary"] == "Weather endpoint broken"
+        assert len(run_data["result"]["failed_checks"]) == 1
 
     @pytest.mark.asyncio
-    async def test_qa_fail_creates_task_with_todo_status(
+    async def test_qa_fail_does_not_transition_story(
         self, mock_api_client, mock_redis, qa_message_data
     ):
         from src.consumers._qa_runner import QAResult
 
         with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = QAResult(
-                passed=False,
-                checks=[{"name": "health", "pass": False, "detail": "503"}],
-                summary="Service unhealthy",
-                raw="",
-            )
-            with patch("src.consumers.qa.publish_story_event", new_callable=AsyncMock):
-                await process_qa_job(qa_message_data, mock_redis)
+            mock_run.return_value = QAResult(passed=False, checks=[], summary="Broken", raw="")
+            await process_qa_job(qa_message_data, mock_redis)
 
-        task_data = mock_api_client.create_task.call_args[0][0]
-        assert task_data["status"] == "todo"
+        assert not hasattr(mock_api_client, "transition_story") or (
+            not mock_api_client.transition_story.called
+        )
 
     @pytest.mark.asyncio
-    async def test_qa_fail_rolls_back_story(self, mock_api_client, mock_redis, qa_message_data):
+    async def test_qa_fail_does_not_create_fix_task(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """Fix task creation moved to dispatcher — QA consumer only stores result."""
         from src.consumers._qa_runner import QAResult
 
         with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(passed=False, checks=[], summary="Broken", raw="")
-            with patch("src.consumers.qa.publish_story_event", new_callable=AsyncMock):
-                await process_qa_job(qa_message_data, mock_redis)
+            await process_qa_job(qa_message_data, mock_redis)
 
-        mock_api_client.transition_story.assert_called_once_with("story-1", "start")
+        mock_api_client.create_task.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_max_qa_loops_fails_story(self, mock_api_client, mock_redis, qa_message_data):
+    async def test_max_qa_loops_stores_exhausted_outcome(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
         from src.consumers._qa_runner import QAResult
 
-        qa_message_data["qa_attempt"] = MAX_QA_LOOPS  # at limit
+        qa_message_data["qa_attempt"] = MAX_QA_LOOPS
 
         with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = QAResult(
                 passed=False, checks=[], summary="Still broken", raw=""
             )
-            with patch("src.consumers.qa.publish_story_event", new_callable=AsyncMock):
-                result = await process_qa_job(qa_message_data, mock_redis)
+            result = await process_qa_job(qa_message_data, mock_redis)
 
         assert result["status"] == "qa_exhausted"
-        mock_api_client.transition_story.assert_called_once_with("story-1", "fail")
-        mock_api_client.create_task.assert_not_called()
+        call_kwargs = mock_api_client.patch.call_args
+        run_data = call_kwargs[1]["json"]
+        assert run_data["result"]["qa_outcome"] == QAOutcome.EXHAUSTED.value
 
 
 class TestProcessQAJobEdgeCases:
@@ -261,3 +274,24 @@ class TestProcessQAJobEdgeCases:
 
         result = await process_qa_job(qa_message_data, mock_redis)
         assert result["status"] == "skipped"
+
+    @pytest.mark.asyncio
+    async def test_bot_username_missing_for_tg_bot_stores_error(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        mock_api_client.get_project.return_value = ProjectDTO(
+            id="116c9678-5872-4ce5-8332-9a267ab27604",
+            name="tg_bot_project",
+            status=ProjectStatus.ACTIVE,
+            config={"modules": ["tg_bot"]},
+            owner_id=1,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        qa_message_data["bot_username"] = None
+
+        result = await process_qa_job(qa_message_data, mock_redis)
+        assert result["status"] == "error"
+        call_kwargs = mock_api_client.patch.call_args
+        run_data = call_kwargs[1]["json"]
+        assert run_data["result"]["qa_outcome"] == QAOutcome.ERROR.value

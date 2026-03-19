@@ -16,6 +16,7 @@ class RunStatus(StrEnum):
 class RunType(StrEnum):
     ENGINEERING = "engineering"
     DEPLOY = "deploy"
+    QA = "qa"
 
 
 class RunCreate(BaseModel):

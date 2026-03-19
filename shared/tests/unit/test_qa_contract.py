@@ -1,6 +1,7 @@
 """Unit tests for QA queue message contract and queue topology."""
 
-from shared.contracts.queues.qa import QAMessage
+from shared.contracts.dto.run import RunType
+from shared.contracts.queues.qa import QAMessage, QAOutcome
 from shared.queues import QA_GROUP, QA_QUEUE, QUEUE_TOPOLOGY
 
 
@@ -73,6 +74,56 @@ class TestQAMessage:
         assert restored.qa_attempt == msg.qa_attempt
         assert restored.bot_username == msg.bot_username
         assert restored.application_id == 17
+
+
+class TestRunTypeQA:
+    def test_qa_run_type_exists(self):
+        assert RunType.QA == "qa"
+
+    def test_qa_run_type_value(self):
+        assert RunType.QA.value == "qa"
+
+
+class TestQAOutcome:
+    def test_values(self):
+        assert QAOutcome.PASSED == "passed"
+        assert QAOutcome.FAILED == "failed"
+        assert QAOutcome.EXHAUSTED == "exhausted"
+        assert QAOutcome.ERROR == "error"
+
+    def test_is_str_enum(self):
+        assert isinstance(QAOutcome.PASSED, str)
+        assert QAOutcome.PASSED.value == "passed"
+
+    def test_roundtrip_via_string(self):
+        for outcome in QAOutcome:
+            assert QAOutcome(outcome.value) == outcome
+
+
+class TestQAMessageRunId:
+    def test_run_id_field(self):
+        msg = QAMessage(
+            story_id="story-abc",
+            project_id="proj-123",
+            user_id="user-1",
+            deployed_url="https://example.com",
+            application_id=17,
+            run_id="qa-run-001",
+        )
+        assert msg.run_id == "qa-run-001"
+
+    def test_run_id_roundtrip(self):
+        msg = QAMessage(
+            story_id="story-abc",
+            project_id="proj-123",
+            user_id="user-1",
+            deployed_url="https://example.com",
+            application_id=17,
+            run_id="qa-run-002",
+        )
+        data = msg.model_dump()
+        restored = QAMessage.model_validate(data)
+        assert restored.run_id == "qa-run-002"
 
 
 class TestQAQueueTopology:

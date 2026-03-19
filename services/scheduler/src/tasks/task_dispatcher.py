@@ -38,6 +38,7 @@ from .supervisor import (
     supervise_failed_tasks,
     supervise_stuck_stories,
     supervise_stuck_tasks,
+    supervise_testing_stories,
 )
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ __all__ = [
     "supervise_failed_tasks",
     "supervise_stuck_stories",
     "supervise_stuck_tasks",
+    "supervise_testing_stories",
     "task_dispatcher_loop",
 ]
 
@@ -224,6 +226,7 @@ async def task_dispatcher_loop() -> None:
                 stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
                 failed_tasks = await supervise_failed_tasks(api_client, redis_client)
                 deploying = await supervise_deploying_stories(api_client, redis_client)
+                testing = await supervise_testing_stories(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -243,6 +246,9 @@ async def task_dispatcher_loop() -> None:
                     + deploying.get("retried", 0)
                     + deploying.get("redispatched", 0)
                     + deploying.get("failed", 0)
+                    + testing.get("completed", 0)
+                    + testing.get("redispatched", 0)
+                    + testing.get("failed", 0)
                 )
                 if supervisor_active:
                     logger.info(
@@ -256,6 +262,9 @@ async def task_dispatcher_loop() -> None:
                         deploy_retried=deploying.get("retried", 0),
                         deploy_redispatched=deploying.get("redispatched", 0),
                         deploy_failed=deploying.get("failed", 0),
+                        qa_completed=testing.get("completed", 0),
+                        qa_redispatched=testing.get("redispatched", 0),
+                        qa_failed=testing.get("failed", 0),
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")
