@@ -42,12 +42,6 @@
 - **Status**: backlog
 - **Brief**: ## Problem  Worker containers copy the entire orchestrator shared/ package into /app/shared. This conflicts with user projects that also have a shared/ directory (different package, same name). Workers hit ModuleNotFoundError or import the wrong module.  ## Current state  - worker-wrapper needs: ...
 
-### #1024 Thin API endpoints for admin actions (7 endpoints)
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Add 7 thin endpoints (validate → DB → Redis publish): (1) POST /stories/{id}/send-to-architect — status update + publish architect:queue. (2) POST /tasks/{id}/spawn-worker — status→in_dev, create Run, publish engineering:queue. (3) POST /applications/{id}/stop — status update + publish deploy:que...
-
 ### #1026 Admin UI: action buttons on entity pages
 - **Priority**: MEDIUM
 - **Plan**: —
@@ -290,6 +284,7 @@
 
 - #1030 Decouple QA consumer from story lifecycle — 2026-03-19
 - #1025 Admin UI: Settings page (config + prompt editor) — 2026-03-19
+- #1024 Thin API endpoints for admin actions (7 endpoints) — 2026-03-19
 - #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage — 2026-03-19
 - #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs — 2026-03-19
 - Unify worker result API — single /result endpoint, stdout capture, auto-resume — 2026-03-19
@@ -297,4 +292,3 @@
 - Restore Makefile overrides in worker-wrapper (make migrate broken) — 2026-03-19
 - QA consumer: resolve by application_id, replace dicts with DTOs — 2026-03-19
 - Убрать result_parser из wrapper, добавить watchdog-логику — 2026-03-18
-- Удалить orchestrator-cli, перевести агента на curl к localhost:9090 — 2026-03-18
