@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-19
+
+### Fixed
+- **QA consumer resolves wrong application** (task-611d788f): QA consumer called `list_applications({"project_id": ...})` but the API has no `project_id` filter — returned ALL applications, picked wrong one (e.g. codegen_orchestrator instead of weather-bot). Now threads `application_id` from deployer → deploy result → QAMessage → QA consumer, using single `GET /applications/{id}` instead of broken list+filter. Also: fix tasks now created with `status=todo` (was defaulting to `backlog`, so dispatcher never picked them up). Replaced dict soup with `QAServerInfo` dataclass and `ApplicationDTO` for typed API responses.
+
 ## 2026-03-18
 
 ### Removed

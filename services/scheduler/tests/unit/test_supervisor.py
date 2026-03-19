@@ -335,7 +335,7 @@ class TestCompleteStoriesTriggersNext:
 
 
 class TestSuperviseFailedTasks:
-    """Detect failed tasks and retry or escalate."""
+    """Detect failed tasks and retry or escalate to WHR."""
 
     @pytest.mark.asyncio
     async def test_retries_failed_task(self, api_client, redis_client):
@@ -366,8 +366,8 @@ class TestSuperviseFailedTasks:
         api_client.update_task.assert_called_once_with("task-1", {"current_iteration": 1})
 
     @pytest.mark.asyncio
-    async def test_fails_story_when_retries_exhausted(self, api_client, redis_client):
-        """Failed task at max iterations -> fail story."""
+    async def test_escalates_to_whr_when_retries_exhausted(self, api_client, redis_client):
+        """Failed task at max iterations -> escalate to waiting_human_review."""
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -379,17 +379,18 @@ class TestSuperviseFailedTasks:
                 max_iterations=3,
             )
         ]
-        api_client.get_tasks_by_story.return_value = [
-            _make_task(id="task-1", status="failed", story_id="story-1"),
-            _make_task(id="task-2", status="in_dev", story_id="story-1"),
-        ]
         api_client.transition_task.return_value = {}
-        api_client.fail_story.return_value = {}
+        api_client.transition_story.return_value = {}
 
         result = await supervise_failed_tasks(api_client, redis_client)
 
-        assert result["failed"] == 1
-        api_client.fail_story.assert_called_once_with("story-1")
+        assert result["escalated"] == 1
+        # Task should be transitioned to WHR
+        api_client.transition_task.assert_called_once_with(
+            "task-1", "waiting_human_review", "supervisor"
+        )
+        # Story should also be transitioned to WHR
+        api_client.transition_story.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_skips_task_without_story(self, api_client, redis_client):
@@ -409,38 +410,8 @@ class TestSuperviseFailedTasks:
         result = await supervise_failed_tasks(api_client, redis_client)
 
         assert result["retried"] == 0
-        assert result["failed"] == 0
+        assert result["escalated"] == 0
         api_client.transition_task.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_cancels_sibling_tasks_on_terminal_failure(self, api_client, redis_client):
-        """When story fails, cancel remaining non-failed sibling tasks."""
-        from src.tasks.task_dispatcher import supervise_failed_tasks
-
-        api_client.get_tasks_by_status.return_value = [
-            _make_task(
-                id="task-1",
-                story_id="story-1",
-                status="failed",
-                current_iteration=3,
-                max_iterations=3,
-            )
-        ]
-        api_client.get_tasks_by_story.return_value = [
-            _make_task(id="task-1", status="failed", story_id="story-1"),
-            _make_task(id="task-2", status="todo", story_id="story-1"),
-        ]
-        api_client.transition_task.return_value = {}
-        api_client.fail_story.return_value = {}
-
-        await supervise_failed_tasks(api_client, redis_client)
-
-        # task-2 should be cancelled
-        cancel_calls = [
-            c for c in api_client.transition_task.call_args_list if c.args[1] == "cancelled"
-        ]
-        assert len(cancel_calls) == 1
-        assert cancel_calls[0].args[0] == "task-2"
 
 
 class TestSuperviseStuckTasks:
@@ -562,9 +533,8 @@ class TestStoryWorkerCleanup:
         redis_client.redis.hdel.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_cleanup_on_story_failure(self, api_client, redis_client):
-        """Story failed (task retries exhausted) -> worker cleaned up."""
-        from shared.queues import STORY_WORKERS_KEY
+    async def test_escalation_transitions_story_to_whr(self, api_client, redis_client):
+        """Task retries exhausted -> story transitioned to WHR (not failed)."""
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -576,18 +546,11 @@ class TestStoryWorkerCleanup:
                 max_iterations=3,
             )
         ]
-        api_client.get_tasks_by_story.return_value = [
-            _make_task(id="task-1", status="failed", story_id="story-1"),
-        ]
         api_client.transition_task.return_value = {}
-        api_client.fail_story.return_value = {}
-
-        # Story has a worker registered
-        redis_client.redis.hget.return_value = b"dev-failed-worker"
+        api_client.transition_story.return_value = {}
 
         await supervise_failed_tasks(api_client, redis_client)
 
-        # Should cleanup worker
-        redis_client.redis.hget.assert_called_with(STORY_WORKERS_KEY, "story-1")
-        redis_client.publish.assert_called_once()
-        redis_client.redis.hdel.assert_called_with(STORY_WORKERS_KEY, "story-1")
+        # Story should NOT be failed — just transitioned to WHR
+        api_client.fail_story.assert_not_called()
+        api_client.transition_story.assert_called_once()

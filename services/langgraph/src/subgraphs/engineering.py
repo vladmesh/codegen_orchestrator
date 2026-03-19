@@ -13,6 +13,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
+from shared.contracts.dto.engineering import EngineeringStatus
+
 from ..nodes.base import FunctionalNode
 from ..nodes.developer import developer_node
 
@@ -56,7 +58,7 @@ class EngineeringState(TypedDict):
     branch: str | None
 
     # Engineering result
-    engineering_status: str  # "idle" | "working" | "done" | "blocked" | "worker_rejected"
+    engineering_status: str  # EngineeringStatus: idle | done | gave_up | failed
     commit_sha: str | None
     worker_id: str | None
     worker_report: str | None
@@ -77,12 +79,12 @@ class EngineeringState(TypedDict):
 def route_after_developer(state: EngineeringState) -> str:
     """Route after developer node.
 
-    If developer returned 'blocked' or 'worker_rejected', go to blocked.
-    Otherwise proceed to done.
+    GAVE_UP or FAILED → blocked node (needs human or retry).
+    DONE → done node.
     """
-    status = state.get("engineering_status", "idle")
+    status = state.get("engineering_status", EngineeringStatus.IDLE)
 
-    if status in ("blocked", "worker_rejected"):
+    if status in (EngineeringStatus.GAVE_UP, EngineeringStatus.FAILED):
         return "blocked"
 
     # Also check for errors list
@@ -101,23 +103,30 @@ class DoneNode(FunctionalNode):
 
     async def run(self, state: EngineeringState) -> dict:
         return {
-            "engineering_status": "done",
+            "engineering_status": EngineeringStatus.DONE,
             "needs_human_approval": False,
         }
 
 
 class BlockedNode(FunctionalNode):
-    """Mark engineering as blocked, needs human intervention."""
+    """Mark engineering as needing human intervention or retry."""
 
     def __init__(self):
         super().__init__(node_id="blocked")
 
     async def run(self, state: EngineeringState) -> dict:
-        return {
-            "engineering_status": "blocked",
+        result: dict = {
             "needs_human_approval": True,
             "human_approval_reason": "Developer failed to complete the task.",
         }
+        # Preserve GAVE_UP / FAILED set by developer node.
+        # Only overwrite for unexpected statuses (e.g. DONE that arrived here via errors).
+        if state.get("engineering_status") not in (
+            EngineeringStatus.GAVE_UP,
+            EngineeringStatus.FAILED,
+        ):
+            result["engineering_status"] = EngineeringStatus.GAVE_UP
+        return result
 
 
 done_node = DoneNode()

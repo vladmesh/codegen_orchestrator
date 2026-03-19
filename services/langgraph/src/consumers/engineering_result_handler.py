@@ -1,4 +1,4 @@
-"""Result handlers for engineering worker outcomes (success, blocked, rejected)."""
+"""Result handlers for engineering worker outcomes (success, gave_up, technical failure)."""
 
 from __future__ import annotations
 
@@ -84,114 +84,33 @@ async def fail_job(task_id: str, error_msg: str, planning_task_id: str | None = 
     return {"status": "failed", "error": error_msg}
 
 
-async def handle_worker_reject(
+async def handle_worker_gave_up(
     task_id: str,
     project_id: str,
     planning_task_id: str | None,
     story_id: str | None,
-    reject_reason: str,
-    ci_attempts: list[dict],
-) -> dict:
-    """Handle worker reject: task -> blocked, story -> failed, admin notified."""
-    logger.warning(
-        "worker_rejected_ci_fix",
-        task_id=task_id,
-        project_id=project_id,
-        reject_reason=reject_reason[:200],
-    )
-
-    await api_client.patch(
-        f"runs/{task_id}",
-        json={
-            "status": "failed",
-            "error_message": f"Worker rejected: {reject_reason[:500]}",
-        },
-    )
-
-    if planning_task_id:
-        await _update_task_status(api_client, planning_task_id, TaskStatus.FAILED)
-        try:
-            await api_client.patch(
-                f"tasks/{planning_task_id}",
-                json={
-                    "failure_metadata": {
-                        "failure_reason": "worker_rejected",
-                        "reject_reason": reject_reason,
-                    },
-                },
-            )
-        except Exception:
-            logger.warning(
-                "task_failure_metadata_write_failed",
-                planning_task_id=planning_task_id,
-                exc_info=True,
-            )
-        await _write_task_event(
-            api_client,
-            planning_task_id,
-            "note",
-            {
-                "action": "worker_rejected",
-                "reject_reason": reject_reason,
-                "ci_attempts": len(ci_attempts),
-            },
-        )
-
-    if story_id:
-        try:
-            await api_client.patch(
-                f"stories/{story_id}",
-                json={
-                    "status": "failed",
-                    "failure_metadata": {
-                        "failure_reason": "worker_rejected",
-                        "reject_reason": reject_reason,
-                        "task_id": task_id,
-                        "planning_task_id": planning_task_id,
-                    },
-                },
-            )
-        except Exception:
-            logger.warning("story_fail_on_reject_failed", story_id=story_id, exc_info=True)
-
-    try:
-        await notify_admins(
-            f"Worker rejected CI fix for task {task_id} (project {project_id}):\n{reject_reason}",
-            level="error",
-        )
-    except Exception:
-        logger.warning("admin_notify_on_reject_failed", task_id=task_id, exc_info=True)
-
-    return {
-        "status": "failed",
-        "rejected": True,
-        "reject_reason": reject_reason,
-        "finished_at": datetime.now(UTC).isoformat(),
-    }
-
-
-async def handle_worker_blocked(
-    task_id: str,
-    project_id: str,
-    planning_task_id: str | None,
-    story_id: str | None,
-    block_reason: str,
+    reason: str,
     user_id: str,
     redis: RedisStreamClient,
 ) -> dict:
-    """Handle developer blocker: task/story -> WHR, admin notified, user informed."""
+    """Handle worker gave_up: task/story → WHR, admin notified, user informed.
+
+    Covers both former "blocked" (worker hit a blocker) and "rejected" (infra issue)
+    paths — in both cases the worker explicitly could not complete the task and
+    a human needs to intervene.
+    """
     logger.warning(
-        "worker_blocked",
+        "worker_gave_up",
         task_id=task_id,
         project_id=project_id,
-        block_reason=block_reason[:200],
+        reason=reason[:200],
     )
 
     await api_client.patch(
         f"runs/{task_id}",
         json={
             "status": "failed",
-            "error_message": f"Developer blocked: {block_reason[:500]}",
+            "error_message": f"Worker gave up: {reason[:500]}",
         },
     )
 
@@ -212,15 +131,12 @@ async def handle_worker_blocked(
             await api_client.patch(
                 f"tasks/{planning_task_id}",
                 json={
-                    "failure_metadata": {
-                        "failure_reason": "developer_blocked",
-                        "block_reason": block_reason,
-                    },
+                    "failure_metadata": {"reason": reason},
                 },
             )
         except Exception:
             logger.warning(
-                "task_block_metadata_write_failed",
+                "task_gave_up_metadata_write_failed",
                 planning_task_id=planning_task_id,
                 exc_info=True,
             )
@@ -228,10 +144,7 @@ async def handle_worker_blocked(
             api_client,
             planning_task_id,
             "note",
-            {
-                "action": "developer_blocked",
-                "block_reason": block_reason,
-            },
+            {"action": "worker_gave_up", "reason": reason},
         )
 
     if story_id:
@@ -241,16 +154,16 @@ async def handle_worker_blocked(
                 json={"status": StoryStatus.WAITING_HUMAN_REVIEW.value},
             )
         except Exception:
-            logger.warning("story_whr_on_block_failed", story_id=story_id, exc_info=True)
+            logger.warning("story_whr_on_gave_up_failed", story_id=story_id, exc_info=True)
 
     try:
         await notify_admins(
-            f"Developer blocked on task {planning_task_id or task_id} "
-            f"(project {project_id}):\n{block_reason}",
+            f"Worker gave up on task {planning_task_id or task_id} "
+            f"(project {project_id}):\n{reason}",
             level="warning",
         )
     except Exception:
-        logger.warning("admin_notify_on_block_failed", task_id=task_id, exc_info=True)
+        logger.warning("admin_notify_on_gave_up_failed", task_id=task_id, exc_info=True)
 
     if user_id:
         try:
@@ -259,16 +172,16 @@ async def handle_worker_blocked(
                 user_id=user_id,
                 event="story_blocked",
                 text=(
-                    f"Task hit a blocker: {block_reason[:200]}. "
+                    f"Task hit a blocker: {reason[:200]}. "
                     "Our specialist is reviewing — work will continue once resolved."
                 ),
             )
         except Exception:
-            logger.warning("po_notify_on_block_failed", task_id=task_id, exc_info=True)
+            logger.warning("po_notify_on_gave_up_failed", task_id=task_id, exc_info=True)
 
     return {
-        "status": "blocked",
-        "block_reason": block_reason,
+        "status": "gave_up",
+        "reason": reason,
         "finished_at": datetime.now(UTC).isoformat(),
     }
 

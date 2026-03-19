@@ -32,7 +32,6 @@ from .story_completion import (
     complete_stories,
 )
 from .supervisor import (
-    NON_RETRYABLE_REASONS,
     STORY_MAX_ARCHITECT_RETRIES,
     STORY_RETRY_KEY_PREFIX,
     STORY_RETRY_TTL,
@@ -49,7 +48,6 @@ if TYPE_CHECKING:
 
 # Re-export for backward compatibility with tests
 __all__ = [
-    "NON_RETRYABLE_REASONS",
     "STORY_MAX_ARCHITECT_RETRIES",
     "STORY_RETRY_KEY_PREFIX",
     "STORY_RETRY_TTL",
@@ -144,12 +142,9 @@ async def dispatch_todo_tasks(
                 log.info("task_skipped_story_busy")
                 continue
 
-            # Guard: don't dispatch if any sibling has a non-retryable failure
-            if any(
-                (s.failure_metadata or {}).get("failure_reason") in NON_RETRYABLE_REASONS
-                for s in siblings
-            ):
-                log.info("task_skipped_story_has_rejected_sibling")
+            # Guard: don't dispatch if any sibling is waiting for human review
+            if any(s.status == TaskStatus.WAITING_HUMAN_REVIEW for s in siblings):
+                log.info("task_skipped_story_has_gave_up_sibling")
                 continue
 
         # Build cumulative context from sibling tasks

@@ -13,8 +13,6 @@ from shared.contracts.queues.architect import ArchitectMessage
 from shared.queues import ARCHITECT_QUEUE
 from shared.redis_client import RedisStreamClient
 
-from .story_completion import _cleanup_story_worker
-
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
@@ -24,9 +22,6 @@ logger = structlog.get_logger(__name__)
 STORY_STUCK_THRESHOLD_MINUTES = 5
 TASK_STUCK_THRESHOLD_MINUTES = 30
 STORY_MAX_ARCHITECT_RETRIES = 3
-
-# Failure reasons that should not be retried by the supervisor
-NON_RETRYABLE_REASONS = {"worker_rejected", "ci_infra_failure", "developer_blocked"}
 
 STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
 STORY_RETRY_TTL = 3600  # 1 hour — retries expire after this
@@ -125,13 +120,17 @@ async def supervise_failed_tasks(
     api_client: SchedulerAPIClient,
     redis_client: RedisStreamClient,
 ) -> dict[str, int]:
-    """Detect failed tasks and retry or escalate to story failure.
+    """Detect failed tasks and retry or escalate to waiting_human_review.
 
-    Returns dict with 'retried' and 'failed' counts.
+    FAILED status means technical failure (crash, OOM, timeout) — the worker
+    never explicitly gave up. Supervisor retries if iterations remain, otherwise
+    transitions to WAITING_HUMAN_REVIEW (same as gave_up — needs human).
+
+    Returns dict with 'retried' and 'escalated' counts.
     """
     tasks = await api_client.get_tasks_by_status(TaskStatus.FAILED)
     retried = 0
-    failed = 0
+    escalated = 0
 
     for task in tasks:
         task_id = task.id
@@ -139,11 +138,6 @@ async def supervise_failed_tasks(
 
         # Skip standalone tasks (not part of a story)
         if not story_id:
-            continue
-
-        # Skip non-retryable failures — needs admin intervention, not retry
-        failure_reason = (task.failure_metadata or {}).get("failure_reason")
-        if failure_reason in NON_RETRYABLE_REASONS:
             continue
 
         current_iter = task.current_iteration
@@ -162,36 +156,31 @@ async def supervise_failed_tasks(
             )
             retried += 1
         else:
-            # Terminal failure — cancel siblings, fail story, notify user
-            log.error(
-                "task_terminal_failure",
-                reason="retries_exhausted",
+            # Retries exhausted → escalate to human (same as gave_up)
+            log.warning(
+                "task_retries_exhausted",
+                reason="escalating_to_human",
             )
-            siblings = await api_client.get_tasks_by_story(story_id)
-            for sibling in siblings:
-                if sibling.id != task_id and sibling.status not in (
-                    TaskStatus.DONE,
-                    TaskStatus.FAILED,
-                    TaskStatus.CANCELLED,
-                ):
-                    await api_client.transition_task(
-                        sibling.id,
-                        TaskStatus.CANCELLED,
-                        "supervisor",
+            try:
+                await api_client.transition_task(
+                    task_id, TaskStatus.WAITING_HUMAN_REVIEW, "supervisor"
+                )
+            except Exception:
+                log.warning("task_whr_transition_failed", task_id=task_id, exc_info=True)
+
+            if story_id:
+                try:
+                    await api_client.transition_story(story_id, StoryStatus.WAITING_HUMAN_REVIEW)
+                except Exception:
+                    log.warning(
+                        "story_whr_on_retries_exhausted_failed",
+                        story_id=story_id,
+                        exc_info=True,
                     )
 
-            try:
-                await api_client.fail_story(story_id)
-            except Exception:
-                log.warning("fail_story_transition_failed", story_id=story_id, exc_info=True)
+            escalated += 1
 
-            # Cleanup story worker container
-            await _cleanup_story_worker(redis_client, story_id)
-
-            # StoryDTO has no user_id field — skip user notification
-            failed += 1
-
-    return {"retried": retried, "failed": failed}
+    return {"retried": retried, "escalated": escalated}
 
 
 async def supervise_stuck_tasks(

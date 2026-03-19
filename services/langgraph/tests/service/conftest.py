@@ -7,6 +7,8 @@ import os
 import pytest
 import redis.asyncio as aioredis
 
+from shared.queues import STORY_WORKERS_KEY, WORKER_COMMANDS
+
 
 @pytest.fixture
 async def real_redis():
@@ -20,7 +22,7 @@ async def real_redis():
 @pytest.fixture(autouse=True)
 async def _clean_redis(real_redis):
     """Clean up test keys before and after each test."""
-    keys_to_clean = ["story:workers", "worker:commands"]
+    keys_to_clean = [STORY_WORKERS_KEY, WORKER_COMMANDS]
     for key in keys_to_clean:
         await real_redis.delete(key)
     yield

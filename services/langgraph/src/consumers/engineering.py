@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 import structlog
 
+from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
 from shared.queues import ENGINEERING_QUEUE
@@ -26,8 +27,7 @@ from .engineering_result_handler import (
     _write_task_event,
     fail_job as _fail_job,
     handle_engineering_success as _handle_engineering_success,
-    handle_worker_blocked as _handle_worker_blocked,
-    handle_worker_reject as _handle_worker_reject,
+    handle_worker_gave_up as _handle_worker_gave_up,
 )
 from .story_context import (
     build_story_context as _build_story_context,
@@ -40,8 +40,7 @@ __all__ = [
     "_build_story_md",
     "_fail_job",
     "_handle_engineering_success",
-    "_handle_worker_blocked",
-    "_handle_worker_reject",
+    "_handle_worker_gave_up",
     "_update_task_status",
     "_write_task_event",
     "process_engineering_job",
@@ -175,7 +174,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "repo_id": repo_id,
             "commit_sha": None,
             "worker_id": existing_worker_id,
-            "engineering_status": "idle",
+            "engineering_status": EngineeringStatus.IDLE,
             "iteration_count": 0,
             "test_results": None,
             "needs_human_approval": False,
@@ -217,7 +216,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 report_size=len(worker_report),
             )
 
-        if result.get("engineering_status") == "done":
+        eng_status = result.get("engineering_status", EngineeringStatus.FAILED)
+
+        if eng_status == EngineeringStatus.DONE:
             logger.info(
                 "engineering_job_success",
                 task_id=task_id,
@@ -238,28 +239,23 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 deploy_fix_attempt=deploy_fix_attempt,
             )
 
-        elif result.get("engineering_status") == "developer_blocked":
-            block_reason = result.get("block_reason", "Unknown blocker")
-            return await _handle_worker_blocked(
+        elif eng_status == EngineeringStatus.GAVE_UP:
+            reason = (
+                result.get("block_reason")
+                or result.get("reject_reason")
+                or "Worker could not complete the task"
+            )
+            return await _handle_worker_gave_up(
                 task_id=task_id,
                 project_id=project_id,
                 planning_task_id=planning_task_id,
                 story_id=story_id,
-                block_reason=block_reason,
+                reason=reason,
                 user_id=user_id,
                 redis=redis,
             )
-        elif result.get("engineering_status") == "worker_rejected":
-            reject_reason = result.get("reject_reason", "Unknown rejection reason")
-            return await _handle_worker_reject(
-                task_id=task_id,
-                project_id=project_id,
-                planning_task_id=planning_task_id,
-                story_id=story_id,
-                reject_reason=reject_reason,
-                ci_attempts=[],
-            )
         else:
+            # FAILED (technical) or unexpected status — treat as technical failure
             errors = result.get("errors", ["Unknown engineering status"])
             error_msg = "; ".join(errors)
             logger.error("engineering_job_failed_status", task_id=task_id, errors=errors)

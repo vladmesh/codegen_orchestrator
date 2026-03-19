@@ -209,9 +209,8 @@ Follow Red -> Green -> Refactor:
 
 1. **Red**: Write failing test(s) based on the step's Test spec. Run `make test-unit` to confirm they fail.
 2. **Green**: Write minimal code to make tests pass. Run `make test-unit`.
-3. **Integration**: If the step is an integration test step from the plan — write the test, but do NOT run locally (CI will run it).
-4. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
-5. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
+3. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
+4. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
 
 **After the commit** — emit note event with commit SHA:
 ```bash
@@ -250,13 +249,12 @@ gh run list --branch "$BRANCH" --limit 1 --json status,conclusion
 ```
 
 5. **CI red** — read logs via `gh run view --log-failed`:
-   - **Failure related to current task** — fix, commit, push, re-poll. Do NOT touch docs. After fixing, emit a CI-fix event:
+   - Fix the issue, commit, push, re-poll. Do NOT touch docs. After fixing, emit a CI-fix event:
      ```bash
      curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
        -H "Content-Type: application/json" \
        -d "{\"event_type\": \"note\", \"details\": {\"action\": \"ci_fix\", \"error\": \"<brief error>\", \"fix\": \"<what was fixed>\"}, \"actor\": \"claude\"}" || true
      ```
-   - **Pre-existing failure** (unrelated) — note it, proceed to step 7.
 
 6. **CI green** — proceed to step 7.
 
@@ -376,6 +374,39 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
 ## Important
 
 - If you need to change `shared/contracts/` or DB schema that wasn't in the plan — STOP and ask the user.
-- If tests are failing and you can't figure out why after 2 attempts — STOP and report the issue.
 - Don't skip tests. Every step should have at least one test unless it's pure documentation.
 - Run `make lint` before every commit.
+
+### Failing tests policy
+
+**All tests must pass before pushing.** There is no such thing as "pre-existing failures" — CI blocks merges on red tests, so main is always green. If `make test-unit` shows failures:
+- They are caused by your changes (even if indirectly — e.g. you changed a contract/DTO and a test in another service still uses the old shape).
+- Find and fix them.
+- If a failure reveals a deep architectural problem unrelated to your task that requires serious rework — **STOP immediately**. Do NOT commit, do NOT push. Report the issue to the user with details and wait for guidance.
+
+### Live test policy (service tests & integration tests)
+
+If the plan includes a live/integration test step — **it is mandatory, do not skip it.** "Unit tests already cover it" is not a valid argument — unit tests mock dependencies, live tests verify real wiring. They complement each other but do NOT substitute.
+
+Unit tests = all external services mocked. Can only **supplement** a live test, never **replace** it.
+
+There are two types of live tests. Choose the lightest one that fits:
+
+**Service tests** — single service + its infra deps (db, redis). Fast, **runs automatically in CI**.
+- Compose files: `docker/test/service/*.yml` (e.g. `api.yml`, `langgraph.yml`)
+- Run: `make test-service SERVICE=<name>`
+- Use when: testing one service's behavior against real db/redis, no cross-service calls needed.
+
+**Integration tests** — multiple services wired together. Heavier, **runs in CI only with `run-integration-tests` label** or `workflow_dispatch`.
+- Compose files: `docker/test/integration/*.yml` (e.g. `backend.yml`, `template.yml`)
+- Each file auto-becomes: `make test-integration-<name>`
+- Test code: `tests/integration/<suite>/`
+- Use when: testing cross-service flows (e.g. deploy → QA handoff, worker spawning).
+
+**When writing live tests:**
+1. Decide: service test or integration test? Prefer service test if only one service + infra is needed.
+2. Check existing compose files — can you add to an existing suite?
+3. If yes — add a test file to the corresponding directory.
+4. If no existing suite fits — create a new compose file. It will auto-register as a make target.
+5. **Run locally** after writing: `make test-service SERVICE=<name>` or `make test-integration-<suite>`.
+6. For integration tests, also add the `run-integration-tests` label to the PR.

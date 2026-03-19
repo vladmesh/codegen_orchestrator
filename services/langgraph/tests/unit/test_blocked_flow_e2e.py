@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from tests.unit.factories import make_project, make_repository
 
+from shared.contracts.dto.engineering import EngineeringStatus
+
 
 class TestBlockedFlowEndToEnd:
     """Full blocked path: worker output → developer node → consumer handler."""
@@ -19,10 +21,8 @@ class TestBlockedFlowEndToEnd:
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
     @patch("src.nodes.developer.request_spawn")
-    async def test_developer_node_returns_developer_blocked(
-        self, mock_spawn, mock_github_cls, mock_api
-    ):
-        """Developer node sets engineering_status=developer_blocked when worker reports blocker."""
+    async def test_developer_node_returns_gave_up(self, mock_spawn, mock_github_cls, mock_api):
+        """Developer node sets engineering_status=gave_up when worker reports blocker."""
         from src.clients.worker_spawner import SpawnResult
         from src.nodes.developer import DeveloperNode
 
@@ -58,7 +58,7 @@ class TestBlockedFlowEndToEnd:
             }
         )
 
-        assert result["engineering_status"] == "developer_blocked"
+        assert result["engineering_status"] == EngineeringStatus.GAVE_UP
         assert result["block_reason"] == "Missing API credentials for Stripe"
         assert result["worker_id"] == "w-1"
 
@@ -66,9 +66,9 @@ class TestBlockedFlowEndToEnd:
     @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.api_client")
-    async def test_handle_worker_blocked_full_chain(self, mock_api, mock_po_event, mock_notify):
-        """_handle_worker_blocked transitions task+story to WHR, notifies admin and user."""
-        from src.consumers.engineering import _handle_worker_blocked
+    async def test_handle_worker_gave_up_full_chain(self, mock_api, mock_po_event, mock_notify):
+        """handle_worker_gave_up transitions task+story to WHR, notifies admin and user."""
+        from src.consumers.engineering import _handle_worker_gave_up
 
         mock_api.patch = AsyncMock()
         mock_api.post = AsyncMock()
@@ -80,19 +80,19 @@ class TestBlockedFlowEndToEnd:
         redis.redis.xadd = AsyncMock()
         redis.publish_flat = AsyncMock()
 
-        result = await _handle_worker_blocked(
+        result = await _handle_worker_gave_up(
             task_id="eng-1",
             project_id="proj-1",
             planning_task_id="task-1",
             story_id="story-1",
-            block_reason="56/78 image URLs return 404",
+            reason="56/78 image URLs return 404",
             user_id="u-1",
             redis=redis,
         )
 
-        # Returns blocked status
-        assert result["status"] == "blocked"
-        assert "56/78" in result["block_reason"]
+        # Returns gave_up status
+        assert result["status"] == "gave_up"
+        assert "56/78" in result["reason"]
 
         # Task transitioned to WHR
         task_transitions = [c for c in mock_api.post.call_args_list if "transition" in str(c)]
@@ -101,7 +101,7 @@ class TestBlockedFlowEndToEnd:
             for c in task_transitions
         )
 
-        # Task failure_metadata set
+        # Task failure_metadata set (no failure_reason key — just reason)
         task_patches = [
             c
             for c in mock_api.patch.call_args_list
@@ -109,7 +109,7 @@ class TestBlockedFlowEndToEnd:
         ]
         assert len(task_patches) >= 1
         metadata = task_patches[0][1]["json"]["failure_metadata"]
-        assert metadata["failure_reason"] == "developer_blocked"
+        assert "56/78" in metadata["reason"]
 
         # Story transitioned to WHR
         story_patches = [c for c in mock_api.patch.call_args_list if "stories" in str(c)]

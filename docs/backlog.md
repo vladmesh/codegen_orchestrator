@@ -48,6 +48,12 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
+### Refactor engineering_status to StrEnum
+- **Priority**: HIGH
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: engineering_status is currently bare strings scattered across developer.py, engineering.py (EngineeringState comment, BlockedNode, DoneNode, route_after_developer), and engineering consumer. This caused a bug where "developer_blocked" was not in the documented enum and was silently overwritten by...
+
 ### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - **Priority**: LOW
 - **Plan**: —
@@ -71,6 +77,12 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
+
+### Unify worker result API — single /result endpoint, stdout capture, auto-resume
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Unify the three worker HTTP endpoints (/complete, /failed, /blocker) into a single `POST /result` with binary outcome (success: true/false). Add infra compose proxy to wrapper so workers use only localhost:9090. Capture agent stdout tail for analytics. Auto-resume agent once if it exits without c...
 
 ### Integrate Repository into production flows (webhook, scheduler, worker)
 - **Priority**: LOW
@@ -101,7 +113,7 @@
 
 ### Restore Makefile overrides in worker-wrapper (make migrate broken)
 - **Priority**: LOW
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: ## Problem  `make migrate` inside worker containers fails because `make dev-start svc=db` tries to run `docker compose up -d db` — but workers have no Docker CLI or socket.  Discovered in E2E: worker report says "make migrate calls make dev-start svc=db which requires Docker CLI", worker had to r...
 
@@ -143,12 +155,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Aggregate relevant spec, AGENTS.md, signatures, linter errors into single token-optimized file for agent context.
-
-### QA consumer: resolve by application_id, replace dicts with DTOs
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: QA consumer resolves server info via `list_applications({"project_id": ...})` which silently fails — applications API has no project_id filter, returns all apps, picks wrong one (e.g. codegen_orchestrator instead of weather-bot). Additionally, QA fix tasks are created with default `backlog` statu...
 
 ### #11 E2E Tests Completion
 - **Priority**: LOW
@@ -294,6 +300,7 @@
 
 ## Done (last 10)
 
+- QA consumer: resolve by application_id, replace dicts with DTOs — 2026-03-19
 - Убрать result_parser из wrapper, добавить watchdog-логику — 2026-03-18
 - Удалить orchestrator-cli, перевести агента на curl к localhost:9090 — 2026-03-18
 - HTTP-сервер в worker-wrapper (localhost:9090) — complete/failed/blocker endpoints — 2026-03-18
@@ -303,7 +310,6 @@
 - #1016 Admin UI: application health status and response times — 2026-03-17
 - #1015 Admin UI: extended server health dashboard with per-container view + charts — 2026-03-17
 - #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts) — 2026-03-17
-- #1013 Extend Server model with health metrics + metrics history table — 2026-03-17
 
 ## Ideas
 

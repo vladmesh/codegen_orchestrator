@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
+from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.worker import AgentType
 
@@ -77,7 +78,7 @@ class DeveloperNode(FunctionalNode):
         if not project_spec:
             return {
                 "messages": [AIMessage(content="No project specification found.")],
-                "engineering_status": "blocked",
+                "engineering_status": EngineeringStatus.FAILED,
                 "errors": state.get("errors", []) + ["No project specification"],
             }
 
@@ -139,7 +140,7 @@ class DeveloperNode(FunctionalNode):
             )
             return {
                 "messages": [AIMessage(content=f"Error in developer node: {str(e)}")],
-                "engineering_status": "blocked",
+                "engineering_status": EngineeringStatus.FAILED,
                 "errors": state.get("errors", []) + [f"Developer error: {str(e)}"],
             }
 
@@ -168,7 +169,7 @@ class DeveloperNode(FunctionalNode):
                     "Scaffolder must run before developer. Check pipeline."
                 )
             ],
-            "engineering_status": "blocked",
+            "engineering_status": EngineeringStatus.FAILED,
             "errors": state.get("errors", [])
             + ["Scaffold required but project status is 'draft'. Scaffolder must run first."],
         }
@@ -293,7 +294,7 @@ class DeveloperNode(FunctionalNode):
                             content=f"Worker completed but made no commit in '{project_name}'."
                         )
                     ],
-                    "engineering_status": "blocked",
+                    "engineering_status": EngineeringStatus.FAILED,
                     "errors": state.get("errors", [])
                     + ["Worker reported success but no commit was made"],
                 }
@@ -312,7 +313,7 @@ class DeveloperNode(FunctionalNode):
                         f"Output:\n{worker_result.output[:500]}"
                     )
                 ],
-                "engineering_status": "done",
+                "engineering_status": EngineeringStatus.DONE,
                 "commit_sha": worker_result.commit_sha,
                 "worker_id": worker_result.worker_id,
                 "worker_report": worker_result.worker_report,
@@ -328,7 +329,7 @@ class DeveloperNode(FunctionalNode):
                 "messages": [
                     AIMessage(content=f"Worker rejected task: {worker_result.reject_reason}")
                 ],
-                "engineering_status": "worker_rejected",
+                "engineering_status": EngineeringStatus.GAVE_UP,
                 "reject_reason": worker_result.reject_reason,
                 "worker_id": worker_result.worker_id,
                 "worker_report": worker_result.worker_report,
@@ -344,7 +345,7 @@ class DeveloperNode(FunctionalNode):
             )
             return {
                 "messages": [AIMessage(content=f"Developer blocked: {worker_result.block_reason}")],
-                "engineering_status": "developer_blocked",
+                "engineering_status": EngineeringStatus.GAVE_UP,
                 "block_reason": worker_result.block_reason,
                 "worker_id": worker_result.worker_id,
                 "worker_report": worker_result.worker_report,
@@ -363,7 +364,7 @@ class DeveloperNode(FunctionalNode):
         )
         return {
             "messages": [AIMessage(content=f"Development failed:\n{error_msg}")],
-            "engineering_status": "blocked",
+            "engineering_status": EngineeringStatus.FAILED,
             "errors": state.get("errors", []) + [f"Development failed: {error_msg}"],
         }
 

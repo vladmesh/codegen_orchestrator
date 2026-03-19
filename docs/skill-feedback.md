@@ -3,6 +3,16 @@
 Entries are added by skills during execution when they encounter issues caused by the skill prompt itself.
 Processed by `/optimize` — obvious fixes applied automatically (with diff review), non-obvious items brought to user.
 
+## [test-maintenance] — 2026-03-19
+- **Type**: infrastructure
+- **Problem**: First-run review of all tests + all code is extremely context-heavy. The skill says "if first run, review all test files" but doesn't suggest parallelizing by suite or prioritizing by staleness signals from git blame.
+- **Suggested fix**: Add guidance for first run: "Use parallel subagents per suite. Prioritize suites with tests older than the most recent CHANGELOG entries — these are most likely to be stale."
+
+## [test-maintenance] — 2026-03-19
+- **Type**: stale-pattern
+- **Problem**: Phase 4 (now Phase 3/4) says to run service tests "for each service that changed since last_commit" but on first run (null last_commit) doesn't clarify which services to run. Had to infer "all services with service tests."
+- **Suggested fix**: Add explicit guidance: "If first run, run service tests for all services that have a tests/service/ directory."
+
 <!-- entries below -->
 
 ## [e2e-run] — 2026-03-19 (run 2)

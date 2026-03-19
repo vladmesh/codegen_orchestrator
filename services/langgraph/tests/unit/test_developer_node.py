@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 
+from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from src.clients.worker_spawner import SpawnResult
@@ -74,10 +75,10 @@ class TestDeveloperNodeCommitValidation:
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_success_without_commit_sha_returns_blocked(
+    async def test_success_without_commit_sha_returns_failed(
         self, mock_github_cls, mock_api, mock_spawn
     ):
-        """Worker success=True but commit_sha=None must return blocked, not done."""
+        """Worker success=True but commit_sha=None must return failed (technical, retryable)."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
@@ -94,7 +95,7 @@ class TestDeveloperNodeCommitValidation:
         node = DeveloperNode()
         result = await node.run(_make_state())
 
-        assert result["engineering_status"] == "blocked"
+        assert result["engineering_status"] == EngineeringStatus.FAILED
         assert any("no commit" in e.lower() for e in result["errors"])
 
     @pytest.mark.asyncio
@@ -121,15 +122,15 @@ class TestDeveloperNodeCommitValidation:
         node = DeveloperNode()
         result = await node.run(_make_state())
 
-        assert result["engineering_status"] == "done"
+        assert result["engineering_status"] == EngineeringStatus.DONE
         assert result["commit_sha"] == "abc123"
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_failure_still_returns_blocked(self, mock_github_cls, mock_api, mock_spawn):
-        """Worker success=False must return blocked (existing behavior, sanity check)."""
+    async def test_failure_returns_failed(self, mock_github_cls, mock_api, mock_spawn):
+        """Worker success=False (generic error) must return failed (technical, retryable)."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
@@ -146,7 +147,7 @@ class TestDeveloperNodeCommitValidation:
         node = DeveloperNode()
         result = await node.run(_make_state())
 
-        assert result["engineering_status"] == "blocked"
+        assert result["engineering_status"] == EngineeringStatus.FAILED
 
 
 class TestRepoIdPassing:
@@ -216,7 +217,7 @@ class TestRepoIdPassing:
         state = _make_state(action="create", status="draft")
         result = await node.run(state)
 
-        assert result["engineering_status"] == "blocked"
+        assert result["engineering_status"] == EngineeringStatus.FAILED
         assert any("draft" in e for e in result["errors"])
 
     @pytest.mark.asyncio
@@ -244,7 +245,7 @@ class TestRepoIdPassing:
         state = _make_state(action="create", status=ProjectStatus.ACTIVE.value)
         result = await node.run(state)
 
-        assert result["engineering_status"] == "done"
+        assert result["engineering_status"] == EngineeringStatus.DONE
         mock_spawn.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -308,7 +309,7 @@ class TestFeatureFlowIntegration:
         state["description"] = "Add GET /todos/stats endpoint"
         result = await node.run(state)
 
-        assert result["engineering_status"] == "done"
+        assert result["engineering_status"] == EngineeringStatus.DONE
         assert result["commit_sha"] == "feat123"
 
         # Verify task_content uses feature template (not create template)
@@ -340,7 +341,7 @@ class TestFeatureFlowIntegration:
         state["description"] = "Fix empty input crash"
         result = await node.run(state)
 
-        assert result["engineering_status"] == "done"
+        assert result["engineering_status"] == EngineeringStatus.DONE
         call_kwargs = mock_spawn.call_args[1]
         assert "Fix issue" in call_kwargs["task_title"]
         assert "Fix empty input crash" in call_kwargs["task_content"]
@@ -369,7 +370,7 @@ class TestFeatureFlowIntegration:
         state["description"] = "Add logging"
         result = await node.run(state)
 
-        assert result["engineering_status"] == "done"
+        assert result["engineering_status"] == EngineeringStatus.DONE
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
@@ -431,7 +432,7 @@ class TestWorkerRejectReason:
         node = DeveloperNode()
         result = await node.run(_make_state(action="fix", status="active"))
 
-        assert result["engineering_status"] == "worker_rejected"
+        assert result["engineering_status"] == EngineeringStatus.GAVE_UP
         assert result["reject_reason"] == "Port conflict — not a code issue"
 
     @pytest.mark.asyncio
@@ -459,7 +460,7 @@ class TestWorkerRejectReason:
         state["worker_id"] = "existing-worker-1"
         result = await node.run(state)
 
-        assert result["engineering_status"] == "worker_rejected"
+        assert result["engineering_status"] == EngineeringStatus.GAVE_UP
         assert "REGISTRY_PASSWORD" in result["reject_reason"]
 
 

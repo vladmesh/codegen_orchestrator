@@ -410,12 +410,11 @@ class TestDispatchTodoTasks:
                 status="todo",
             )
         ]
-        # Sibling task-1 failed with worker_rejected metadata
+        # Sibling task-1 is waiting for human review (gave_up)
         api_client.get_tasks_by_story.return_value = [
             _task(
                 id="task-1",
-                status="failed",
-                failure_metadata={"failure_reason": "worker_rejected"},
+                status="waiting_human_review",
                 story_id="story-1",
                 project_id=PROJ_ID,
             ),
@@ -424,7 +423,7 @@ class TestDispatchTodoTasks:
 
         await dispatch_todo_tasks(api_client, redis_client)
 
-        # Should NOT dispatch — story has a rejected task
+        # Should NOT dispatch — story has a gave_up task awaiting human
         api_client.create_run.assert_not_called()
         redis_client.publish_message.assert_not_called()
 
@@ -680,11 +679,11 @@ class TestCompleteStories:
 
 
 class TestSuperviseFailedTasks:
-    """Supervisor skips worker-rejected tasks."""
+    """Supervisor retries failed tasks or escalates to WHR."""
 
     @pytest.mark.asyncio
-    async def test_skips_worker_rejected_task(self, api_client, redis_client):
-        """Failed task with worker_rejected metadata -> not retried."""
+    async def test_retries_failed_task_with_iterations_left(self, api_client, redis_client):
+        """Failed task with retries left → retry (backlog → todo)."""
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -693,7 +692,6 @@ class TestSuperviseFailedTasks:
                 story_id="story-1",
                 current_iteration=0,
                 max_iterations=3,
-                failure_metadata={"failure_reason": "worker_rejected"},
                 status="failed",
                 project_id=PROJ_ID,
             )
@@ -701,41 +699,43 @@ class TestSuperviseFailedTasks:
 
         result = await supervise_failed_tasks(api_client, redis_client)
 
-        # Should NOT retry — worker rejected, needs admin
-        api_client.transition_task.assert_not_called()
-        assert result["retried"] == 0
-        assert result["failed"] == 0
+        assert result["retried"] == 1
+        assert result["escalated"] == 0
 
     @pytest.mark.asyncio
-    async def test_skips_developer_blocked_task(self, api_client, redis_client):
-        """Failed task with developer_blocked metadata -> not retried."""
+    async def test_escalates_failed_task_retries_exhausted(self, api_client, redis_client):
+        """Failed task with retries exhausted → waiting_human_review."""
         from src.tasks.task_dispatcher import supervise_failed_tasks
 
         api_client.get_tasks_by_status.return_value = [
             _task(
                 id="task-1",
                 story_id="story-1",
-                current_iteration=0,
+                current_iteration=3,
                 max_iterations=3,
-                failure_metadata={"failure_reason": "developer_blocked"},
                 status="failed",
                 project_id=PROJ_ID,
             )
         ]
+        api_client.transition_task.return_value = {}
+        api_client.transition_story.return_value = {}
 
         result = await supervise_failed_tasks(api_client, redis_client)
 
-        api_client.transition_task.assert_not_called()
         assert result["retried"] == 0
-        assert result["failed"] == 0
+        assert result["escalated"] == 1
+        # Task should be transitioned to WHR
+        api_client.transition_task.assert_called_once_with(
+            "task-1", "waiting_human_review", "supervisor"
+        )
 
 
-class TestDispatchSkipsDeveloperBlocked:
-    """Dispatcher skips stories with developer-blocked siblings."""
+class TestDispatchSkipsGaveUpSibling:
+    """Dispatcher skips stories with gave_up (WHR) siblings."""
 
     @pytest.mark.asyncio
-    async def test_skips_task_when_sibling_developer_blocked(self, api_client, redis_client):
-        """Todo task in story with a developer_blocked sibling -> not dispatched."""
+    async def test_skips_task_when_sibling_waiting_human_review(self, api_client, redis_client):
+        """Todo task in story with a WHR sibling → not dispatched."""
         from src.tasks.task_dispatcher import dispatch_todo_tasks
 
         api_client.get_tasks_by_status.return_value = [
@@ -754,7 +754,6 @@ class TestDispatchSkipsDeveloperBlocked:
             _task(
                 id="task-1",
                 status="waiting_human_review",
-                failure_metadata={"failure_reason": "developer_blocked"},
                 story_id="story-1",
                 project_id=PROJ_ID,
             ),

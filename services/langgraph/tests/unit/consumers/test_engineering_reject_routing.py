@@ -1,4 +1,4 @@
-"""Test that engineering consumer routes worker_rejected status to _handle_worker_reject."""
+"""Test that engineering consumer routes gave_up status to _handle_worker_gave_up."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from tests.unit.factories import make_project, make_repository, make_story
+
+from shared.contracts.dto.engineering import EngineeringStatus
 
 _PATCH = "src.consumers.engineering"
 
@@ -51,43 +53,42 @@ def mock_redis():
     return redis
 
 
-class TestWorkerRejectedRouting:
-    """Engineering consumer routes worker_rejected to _handle_worker_reject."""
+class TestGaveUpRouting:
+    """Engineering consumer routes gave_up to _handle_worker_gave_up."""
 
     @pytest.mark.asyncio
     @patch(f"{_PATCH}.publish_callback_event", new_callable=AsyncMock)
-    @patch(f"{_PATCH}._handle_worker_reject", new_callable=AsyncMock)
+    @patch(f"{_PATCH}._handle_worker_gave_up", new_callable=AsyncMock)
     @patch(f"{_PATCH}._resolve_allocations", new_callable=AsyncMock)
     @patch(f"{_PATCH}.get_story_worker", new_callable=AsyncMock)
     @patch("src.subgraphs.engineering.create_engineering_subgraph")
-    async def test_worker_rejected_routes_to_handler(
+    async def test_gave_up_routes_to_handler(
         self,
         mock_create_subgraph,
         mock_get_worker,
         mock_allocations,
-        mock_handle_reject,
+        mock_handle_gave_up,
         mock_publish,
         mock_api,
         mock_redis,
     ):
-        """When subgraph returns worker_rejected, call _handle_worker_reject."""
+        """When subgraph returns gave_up, call _handle_worker_gave_up."""
         mock_allocations.return_value = {"backend": {"server_ip": "1.2.3.4"}}
         mock_get_worker.return_value = None
 
-        # Subgraph returns worker_rejected
+        # Subgraph returns gave_up (with reject_reason — former worker_rejected path)
         mock_subgraph = AsyncMock()
         mock_subgraph.ainvoke.return_value = {
-            "engineering_status": "worker_rejected",
+            "engineering_status": EngineeringStatus.GAVE_UP,
             "reject_reason": "Port conflict is not a code issue",
             "worker_report": None,
             "errors": ["Worker rejected: Port conflict is not a code issue"],
         }
         mock_create_subgraph.return_value = mock_subgraph
 
-        mock_handle_reject.return_value = {
-            "status": "failed",
-            "rejected": True,
-            "reject_reason": "Port conflict is not a code issue",
+        mock_handle_gave_up.return_value = {
+            "status": "gave_up",
+            "reason": "Port conflict is not a code issue",
             "finished_at": datetime.now(UTC).isoformat(),
         }
 
@@ -95,10 +96,10 @@ class TestWorkerRejectedRouting:
 
         result = await process_engineering_job(_make_job_data(), mock_redis)
 
-        mock_handle_reject.assert_called_once()
-        call_kwargs = mock_handle_reject.call_args[1]
+        mock_handle_gave_up.assert_called_once()
+        call_kwargs = mock_handle_gave_up.call_args[1]
         assert call_kwargs["task_id"] == "eng-test-1"
-        assert call_kwargs["reject_reason"] == "Port conflict is not a code issue"
+        assert call_kwargs["reason"] == "Port conflict is not a code issue"
         assert call_kwargs["planning_task_id"] == "task-plan-1"
         assert call_kwargs["story_id"] == "story-1"
-        assert result["rejected"] is True
+        assert result["status"] == "gave_up"

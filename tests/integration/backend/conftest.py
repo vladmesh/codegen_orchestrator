@@ -324,7 +324,15 @@ def scaffolded_workspace():
     shutil.rmtree(os.path.join(WORKSPACE_BASE_PATH, repo_id), ignore_errors=True)
 
 
-_SKIP_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules"}
+_SKIP_DIRS = {
+    "__pycache__",
+    ".pytest_cache",
+    ".git",
+    "node_modules",
+    ".venv",
+    ".mypy_cache",
+    ".ruff_cache",
+}
 
 
 def _content_hash(*paths: str) -> str:
@@ -370,9 +378,10 @@ def _build_base_image(
         dest_dockerfile = os.path.join(tmp_dir, "Dockerfile")
         shutil.copy(dockerfile_path, dest_dockerfile)
 
-        # Copy shared and packages
-        shutil.copytree(shared_path, os.path.join(tmp_dir, "shared"))
-        shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"))
+        # Copy shared and packages (ignore dev artifacts with dangling symlinks)
+        _ignore = shutil.ignore_patterns(*_SKIP_DIRS)
+        shutil.copytree(shared_path, os.path.join(tmp_dir, "shared"), ignore=_ignore)
+        shutil.copytree(packages_path, os.path.join(tmp_dir, "packages"), ignore=_ignore)
 
         try:
             image, build_logs = client.images.build(

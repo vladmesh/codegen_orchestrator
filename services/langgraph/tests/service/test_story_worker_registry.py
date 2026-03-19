@@ -74,6 +74,7 @@ class TestStoryWorkerRegistryReal:
 
         cmd_data = json.dumps(
             {
+                "command": "delete",
                 "request_id": "cleanup-story-cleanup",
                 "worker_id": worker_id,
                 "reason": "completed",

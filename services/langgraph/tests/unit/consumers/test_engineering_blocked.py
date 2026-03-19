@@ -1,9 +1,9 @@
-"""Unit tests for engineering consumer handling of developer blocker.
+"""Unit tests for engineering consumer handling of worker gave_up.
 
-When developer agent reports ## BLOCKED, the engineering consumer must:
+When a worker gives up (blocker or reject), the engineering consumer must:
 - Transition planning task to 'waiting_human_review' with failure_metadata
 - Transition story to 'waiting_human_review'
-- Call notify_admins with blocker details (level=warning)
+- Call notify_admins with reason details (level=warning)
 - Publish story_blocked event to PO for user notification
 - NOT delete worker container (admin may need to inspect)
 """
@@ -33,55 +33,54 @@ def mock_api():
         yield api
 
 
-class TestBlockedHandling:
-    """Tests for _handle_worker_blocked."""
+class TestGaveUpHandling:
+    """Tests for handle_worker_gave_up (merged blocked + reject)."""
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
-    async def test_blocked_returns_blocked_status(
+    async def test_gave_up_returns_gave_up_status(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
-        """_handle_worker_blocked returns status=blocked."""
-        from src.consumers.engineering import _handle_worker_blocked
+        """handle_worker_gave_up returns status=gave_up."""
+        from src.consumers.engineering import _handle_worker_gave_up
 
         mock_notify.return_value = 1
 
-        result = await _handle_worker_blocked(
+        result = await _handle_worker_gave_up(
             task_id="eng-1",
             project_id="proj-1",
             planning_task_id="task-123",
             story_id="story-1",
-            block_reason="56/78 image URLs return 404",
+            reason="56/78 image URLs return 404",
             user_id="u1",
             redis=mock_redis,
         )
 
-        assert result["status"] == "blocked"
-        assert "56/78" in result["block_reason"]
+        assert result["status"] == "gave_up"
+        assert "56/78" in result["reason"]
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
-    async def test_blocked_transitions_task_to_whr(
+    async def test_gave_up_transitions_task_to_whr(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
-        """Developer blocker → planning task transitions to waiting_human_review."""
-        from src.consumers.engineering import _handle_worker_blocked
+        """Worker gave_up → planning task transitions to waiting_human_review."""
+        from src.consumers.engineering import _handle_worker_gave_up
 
         mock_notify.return_value = 1
 
-        await _handle_worker_blocked(
+        await _handle_worker_gave_up(
             task_id="eng-1",
             project_id="proj-1",
             planning_task_id="task-123",
             story_id="story-1",
-            block_reason="Missing credentials",
+            reason="Missing credentials",
             user_id="u1",
             redis=mock_redis,
         )
 
-        # Check task transition to WHR
         task_transition_calls = [c for c in mock_api.post.call_args_list if "transition" in str(c)]
         assert len(task_transition_calls) >= 1
         call_params = task_transition_calls[0][1].get("params", {})
@@ -90,25 +89,24 @@ class TestBlockedHandling:
     @pytest.mark.asyncio
     @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
-    async def test_blocked_transitions_story_to_whr(
+    async def test_gave_up_transitions_story_to_whr(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
-        """Developer blocker → story transitions to waiting_human_review."""
-        from src.consumers.engineering import _handle_worker_blocked
+        """Worker gave_up → story transitions to waiting_human_review."""
+        from src.consumers.engineering import _handle_worker_gave_up
 
         mock_notify.return_value = 1
 
-        await _handle_worker_blocked(
+        await _handle_worker_gave_up(
             task_id="eng-1",
             project_id="proj-1",
             planning_task_id="task-123",
             story_id="story-1",
-            block_reason="API key missing",
+            reason="API key missing",
             user_id="u1",
             redis=mock_redis,
         )
 
-        # Check story patched to WHR
         story_patch_calls = [c for c in mock_api.patch.call_args_list if "stories" in str(c)]
         assert len(story_patch_calls) >= 1
         call_json = story_patch_calls[0][1].get("json", {})
@@ -117,18 +115,18 @@ class TestBlockedHandling:
     @pytest.mark.asyncio
     @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
-    async def test_blocked_notifies_admin(self, mock_po_event, mock_notify, mock_redis, mock_api):
-        """Developer blocker → admin notified with warning level."""
-        from src.consumers.engineering import _handle_worker_blocked
+    async def test_gave_up_notifies_admin(self, mock_po_event, mock_notify, mock_redis, mock_api):
+        """Worker gave_up → admin notified with warning level."""
+        from src.consumers.engineering import _handle_worker_gave_up
 
         mock_notify.return_value = 1
 
-        await _handle_worker_blocked(
+        await _handle_worker_gave_up(
             task_id="eng-1",
             project_id="proj-1",
             planning_task_id="task-123",
             story_id="story-1",
-            block_reason="URLs return 404",
+            reason="URLs return 404",
             user_id="u1",
             redis=mock_redis,
         )
@@ -141,20 +139,20 @@ class TestBlockedHandling:
     @pytest.mark.asyncio
     @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
-    async def test_blocked_notifies_user_via_po(
+    async def test_gave_up_notifies_user_via_po(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
-        """Developer blocker → PO receives story_blocked event."""
-        from src.consumers.engineering import _handle_worker_blocked
+        """Worker gave_up → PO receives story_blocked event."""
+        from src.consumers.engineering import _handle_worker_gave_up
 
         mock_notify.return_value = 1
 
-        await _handle_worker_blocked(
+        await _handle_worker_gave_up(
             task_id="eng-1",
             project_id="proj-1",
             planning_task_id="task-123",
             story_id="story-1",
-            block_reason="External API down",
+            reason="External API down",
             user_id="u1",
             redis=mock_redis,
         )
@@ -167,25 +165,24 @@ class TestBlockedHandling:
     @pytest.mark.asyncio
     @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
-    async def test_blocked_sets_failure_metadata(
+    async def test_gave_up_sets_failure_metadata(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
-        """Developer blocker → task gets failure_metadata with developer_blocked reason."""
-        from src.consumers.engineering import _handle_worker_blocked
+        """Worker gave_up → task gets failure_metadata with reason."""
+        from src.consumers.engineering import _handle_worker_gave_up
 
         mock_notify.return_value = 1
 
-        await _handle_worker_blocked(
+        await _handle_worker_gave_up(
             task_id="eng-1",
             project_id="proj-1",
             planning_task_id="task-123",
             story_id="story-1",
-            block_reason="Contradictory requirements",
+            reason="Contradictory requirements",
             user_id="u1",
             redis=mock_redis,
         )
 
-        # Find the patch call that sets failure_metadata on the task
         task_metadata_calls = [
             c
             for c in mock_api.patch.call_args_list
@@ -193,26 +190,25 @@ class TestBlockedHandling:
         ]
         assert len(task_metadata_calls) >= 1
         metadata = task_metadata_calls[0][1]["json"]["failure_metadata"]
-        assert metadata["failure_reason"] == "developer_blocked"
-        assert "Contradictory" in metadata["block_reason"]
+        assert "Contradictory" in metadata["reason"]
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
-    async def test_blocked_without_story_skips_story_transition(
+    async def test_gave_up_without_story_skips_story_transition(
         self, mock_po_event, mock_notify, mock_redis, mock_api
     ):
-        """Developer blocker without story_id → no story transition."""
-        from src.consumers.engineering import _handle_worker_blocked
+        """Worker gave_up without story_id → no story transition."""
+        from src.consumers.engineering import _handle_worker_gave_up
 
         mock_notify.return_value = 1
 
-        await _handle_worker_blocked(
+        await _handle_worker_gave_up(
             task_id="eng-1",
             project_id="proj-1",
             planning_task_id="task-123",
             story_id=None,
-            block_reason="Some issue",
+            reason="Some issue",
             user_id="u1",
             redis=mock_redis,
         )
