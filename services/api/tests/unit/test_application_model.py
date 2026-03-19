@@ -106,4 +106,4 @@ class TestApplicationStatusEnum:
 
     def test_membership(self):
         values = list(ApplicationStatus)
-        assert len(values) == 5
+        assert len(values) == 8

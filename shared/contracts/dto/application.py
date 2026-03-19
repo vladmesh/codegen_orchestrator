@@ -13,8 +13,11 @@ class ApplicationStatus(StrEnum):
     """Runtime state of an application on a server."""
 
     NOT_DEPLOYED = "not_deployed"
+    DEPLOYING = "deploying"
     RUNNING = "running"
+    STOPPING = "stopping"
     STOPPED = "stopped"
+    UNDEPLOYING = "undeploying"
     DOWN = "down"
     DEGRADED = "degraded"
 

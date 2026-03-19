@@ -15,15 +15,16 @@ from shared.log_config import setup_logging
 
 from . import routers
 from .database import engine
+from .dependencies import close_redis, init_redis
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
     setup_logging(service_name="api")
-    # Startup - nothing to do, background tasks are in scheduler service
+    await init_redis()
     yield
-    # Shutdown
+    await close_redis()
     await engine.dispose()
 
 

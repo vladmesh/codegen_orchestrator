@@ -9,6 +9,7 @@ class DeployTrigger(StrEnum):
     ENGINEERING = "engineering"
     WEBHOOK = "webhook"
     PO = "po"
+    ADMIN = "admin"
 
 
 class DeployAction(StrEnum):

@@ -13,9 +13,14 @@ from shared.contracts.dto.story import (
     VALID_TRANSITIONS,
     StoryStatus,
 )
+from shared.contracts.queues.architect import ArchitectMessage
 from shared.models.story import Story
+from shared.queues import ARCHITECT_QUEUE
+from shared.redis.client import RedisStreamClient
 
 from ..database import get_async_session
+from ..dependencies import get_redis_client
+from ..schemas.actions import AdminAction
 from ..schemas.story import (
     StoryCreate,
     StoryRead,
@@ -320,4 +325,50 @@ async def archive_story(
     await db.refresh(story)
 
     logger.info("story_archived", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
+@router.post("/{story_id}/send-to-architect", response_model=StoryRead)
+async def send_to_architect(
+    story_id: str,
+    body: AdminAction | None = None,
+    db: AsyncSession = Depends(get_async_session),
+    redis: RedisStreamClient = Depends(get_redis_client),
+) -> StoryRead:
+    """Send a story to the architect for decomposition.
+
+    Validates status is CREATED or REOPENED, transitions to IN_PROGRESS,
+    and publishes ArchitectMessage to architect:queue.
+    """
+    body = body or AdminAction()
+    story = await _get_story(story_id, db)
+
+    allowed = {StoryStatus.CREATED.value, StoryStatus.REOPENED.value}
+    if story.status not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Cannot send to architect from status '{story.status}'."
+                " Must be created or reopened."
+            ),
+        )
+
+    is_reopen = story.status == StoryStatus.REOPENED.value
+
+    # Transition: CREATED/REOPENED → IN_PROGRESS
+    _do_transition(story, StoryStatus.IN_PROGRESS)
+    await db.commit()
+    await db.refresh(story)
+
+    # Publish to architect queue
+    msg = ArchitectMessage(
+        story_id=story.id,
+        project_id=str(story.project_id),
+        user_id="",
+        is_reopen=is_reopen,
+        user_report=story.user_report if is_reopen else None,
+    )
+    await redis.publish_message(ARCHITECT_QUEUE, msg)
+
+    logger.info("story_sent_to_architect", story_id=story.id, actor=body.actor, is_reopen=is_reopen)
     return StoryRead.model_validate(story, from_attributes=True)

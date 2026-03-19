@@ -11,15 +11,15 @@ _(no task in progress)_
 
 ## Stats
 
-| backlog: 46 | todo: 1 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 121 |
+| backlog: 43 | todo: 1 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 125 |
 
 ## Recently Completed
 
+- #1030 Decouple QA consumer from story lifecycle — 2026-03-19
+- #1025 Admin UI: Settings page (config + prompt editor) — 2026-03-19
+- #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage — 2026-03-19
 - #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs — 2026-03-19
 - Unify worker result API — single /result endpoint, stdout capture, auto-resume — 2026-03-19
-- Refactor engineering_status to StrEnum — 2026-03-19
-- Restore Makefile overrides in worker-wrapper (make migrate broken) — 2026-03-19
-- QA consumer: resolve by application_id, replace dicts with DTOs — 2026-03-19
 
 ## Quick Links
 

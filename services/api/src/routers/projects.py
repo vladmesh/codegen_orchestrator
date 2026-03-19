@@ -301,6 +301,45 @@ async def merge_secrets(
     return {"keys": sorted(existing_secrets.keys())}
 
 
+@router.delete("/{project_id}/config/secrets/{key}")
+async def delete_secret(
+    project_id: uuid.UUID,
+    key: str,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """Delete a single secret from project config.
+
+    Uses SELECT FOR UPDATE to prevent race conditions.
+    """
+    query = select(Project).where(Project.id == project_id).with_for_update()
+    result = await db.execute(query)
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db)
+
+    config = dict(project.config or {})
+    existing_secrets = config.get("secrets") or {}
+    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
+
+    if key not in existing_secrets:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Secret key '{key}' not found",
+        )
+
+    del existing_secrets[key]
+    config["secrets"] = encrypt_dict(existing_secrets) if existing_secrets else {}
+
+    project.config = config
+    await db.commit()
+
+    logger.info("secret_deleted", project_id=project_id, key=key)
+    return {"keys": sorted(existing_secrets.keys())}
+
+
 _QUEUES_TO_CLEAN = [ARCHITECT_QUEUE, SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE]
 
 

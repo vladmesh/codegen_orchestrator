@@ -4,6 +4,9 @@
 
 ## 2026-03-19
 
+### Added
+- **Queue contracts: Optional story_id + action field** (#1023): `DeployAction` StrEnum replaces `Literal["create", "feature", "fix"]` — adds `stop` and `undeploy` values for lifecycle operations from admin. `QAMessage.story_id` now optional (defaults to `""`) for standalone E2E triggers. New `deploy_lifecycle` module handles stop/undeploy via SSH, skipping the full DevOps subgraph. QA consumer uses `application_id` for inflight dedup when no story. Engineering and architect consumers verified compatible with direct publish.
+
 ### Changed
 - **Decouple QA consumer from story lifecycle** (#1030): QA consumer stripped of all story transitions (`_transition_story_safe`, `publish_story_event`) and fix task creation. Now only updates `run.status` and `run.result` with a `QAOutcome` enum (PASSED/FAILED/EXHAUSTED/ERROR). Added `RunType.QA` and `QAMessage.run_id` to shared contracts. Dispatcher creates QA run before publishing QAMessage. New `supervise_testing_stories()` in dispatcher polls TESTING stories, reads QA run outcome, and routes: PASSED → complete story, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story. QA is now a pure technical worker, same pattern as deploy (#1006).
 - **Decouple deploy worker from story lifecycle** (#1006): Deploy worker stripped of all story transitions (`_transition_story_safe`, QA handoff, retry tracking, admin notifications). Now only updates `run.status` and `run.result` with a `DeployOutcome` enum (SUCCESS/SMOKE_FAILURE/CODE_FIX/RETRY/GIVE_UP). New `supervise_deploying_stories()` in dispatcher polls DEPLOYING stories, reads deploy run outcome, and routes: SUCCESS → TESTING + QA, CODE_FIX → engineering redispatch, RETRY → redeploy with counter, GIVE_UP → FAILED + admin notification. Added `story_id` FK to Run model for efficient querying. Deploy is now a pure technical worker callable outside story context.

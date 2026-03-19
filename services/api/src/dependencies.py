@@ -1,12 +1,43 @@
-"""FastAPI dependencies for authorization."""
+"""FastAPI dependencies for authorization and shared resources."""
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.models import User
+from shared.redis.client import RedisStreamClient
 
+from .config import get_settings
 from .database import get_async_session
+
+# ---------------------------------------------------------------------------
+# Redis client singleton
+# ---------------------------------------------------------------------------
+
+_redis_client: RedisStreamClient | None = None
+
+
+async def init_redis() -> None:
+    """Initialize the Redis client singleton. Call during app startup."""
+    global _redis_client  # noqa: PLW0603
+    settings = get_settings()
+    _redis_client = RedisStreamClient(redis_url=settings.redis_url)
+    await _redis_client.connect()
+
+
+async def close_redis() -> None:
+    """Close the Redis client. Call during app shutdown."""
+    global _redis_client  # noqa: PLW0603
+    if _redis_client is not None:
+        await _redis_client.close()
+        _redis_client = None
+
+
+def get_redis_client() -> RedisStreamClient:
+    """FastAPI dependency — returns the Redis client singleton."""
+    if _redis_client is None:
+        raise RuntimeError("Redis client not initialized. Call init_redis() during app startup.")
+    return _redis_client
 
 
 async def get_current_user(

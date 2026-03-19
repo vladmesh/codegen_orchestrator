@@ -469,7 +469,7 @@ Internal tooling: task management system, skills, brainstorms, docs generation, 
 
 Code quality improvements: splitting large files, reducing complexity, cleanup.
 
-- [ ] #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage
+- [x] #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage
 - [x] #18 Split engineering_worker.py (1088 LOC)
 - [ ] #19 Split github.py Client (986 LOC)
 - [ ] Extract type mappings into language-agnostic config
@@ -538,7 +538,7 @@ Feature-стенды, полноценный CI перед деплоем. Previ
 - [ ] #1021 ConfigStore helper with TTL cache
 - [ ] #1024 Thin API endpoints for admin actions (7 endpoints)
 - [ ] #1022 Switch services from hardcoded constants to ConfigStore
-- [ ] #1025 Admin UI: Settings page (config + prompt editor)
+- [x] #1025 Admin UI: Settings page (config + prompt editor)
 - [ ] #1026 Admin UI: action buttons on entity pages
 
 # Technical Initiatives
@@ -566,6 +566,5 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 - [ ] Add TTL/cleanup for stale Redis queue messages
 - [ ] API authorization: scope worker access, protect destructive endpoints
 - [ ] Refactor shared: eliminate orchestrator code from worker containers
-- [ ] #1006 Decouple deploy worker from story lifecycle
 - [ ] #1003 Integration test: scheduler-langgraph story worker lifecycle
 - [ ] Allocate ports only for modules that need host exposure

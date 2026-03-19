@@ -1,5 +1,6 @@
 """Common schemas."""
 
+from .actions import AdminAction, FromRepoRequest, SpawnWorkerRequest
 from .agent_config import AgentConfigCreate, AgentConfigRead, AgentConfigUpdate
 from .api_key import APIKeyCreate, APIKeyRead
 from .application import (
@@ -36,6 +37,9 @@ from .task import (
 from .user import UserCreate, UserRead, UserUpdate, UserUpsert
 
 __all__ = [
+    "AdminAction",
+    "FromRepoRequest",
+    "SpawnWorkerRequest",
     "AgentConfigCreate",
     "AgentConfigRead",
     "AgentConfigUpdate",
