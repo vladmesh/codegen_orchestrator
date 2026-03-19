@@ -80,10 +80,10 @@ async def test_deploy_failure_rolls_back_when_under_limit(mock_redis, mock_api):
 
 @pytest.mark.asyncio
 async def test_deploy_failure_fails_story_when_limit_exceeded(mock_redis, mock_api):
-    """After MAX_DEPLOY_RETRIES failures, story should transition to failed."""
-    from src.consumers.deploy_failure_handler import MAX_DEPLOY_RETRIES
+    """After max deploy retries, story should transition to failed."""
+    from src.consumers.deploy_failure_handler import _max_deploy_retries
 
-    mock_redis.redis.incr = AsyncMock(return_value=MAX_DEPLOY_RETRIES)
+    mock_redis.redis.incr = AsyncMock(return_value=_max_deploy_retries())
 
     from src.consumers.deploy_failure_handler import _handle_deploy_failure
 

@@ -24,6 +24,7 @@ from .service_deployment import (
     ServiceDeploymentRead,
     ServiceDeploymentUpdate,
 )
+from .system_config import SystemConfigCreate, SystemConfigRead, SystemConfigUpdate
 from .task import (
     TaskCreate,
     TaskEventCreate,
@@ -86,4 +87,7 @@ __all__ = [
     "TaskTransition",
     "TaskUpdate",
     "UserUpsert",
+    "SystemConfigCreate",
+    "SystemConfigRead",
+    "SystemConfigUpdate",
 ]

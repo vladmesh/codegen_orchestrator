@@ -18,11 +18,18 @@ from shared.notifications import notify_admins
 from src.clients.api import api_client
 from src.tasks.ssl_checker import check_ssl_expiry
 
+from ..startup import config as _config
+
 logger = structlog.get_logger()
 
-# Incident thresholds
-CONSECUTIVE_FAILURE_THRESHOLD = 3
-SSL_EXPIRY_WARNING_DAYS = 7
+
+def _consecutive_failure_threshold() -> int:
+    return _config.get_int("health.consecutive_failure_threshold") if _config else 3
+
+
+def _ssl_expiry_warning_days() -> int:
+    return _config.get_int("health.ssl_expiry_warning_days") if _config else 7
+
 
 # In-memory state for consecutive failure tracking (reset on worker restart)
 _consecutive_failures: dict[int, int] = {}
@@ -95,7 +102,7 @@ async def check_application(
         await api_client.update_application(app_id, fields)
 
         # Create SERVICE_DOWN incident after threshold
-        if consecutive_failures >= CONSECUTIVE_FAILURE_THRESHOLD:
+        if consecutive_failures >= _consecutive_failure_threshold():
             active = await api_client.get_active_incidents(
                 app.server_handle, IncidentType.SERVICE_DOWN
             )
@@ -126,7 +133,7 @@ async def check_application(
     # SSL expiry incident check
     if ssl_expiry:
         days_until_expiry = (ssl_expiry - now).days
-        if days_until_expiry < SSL_EXPIRY_WARNING_DAYS:
+        if days_until_expiry < _ssl_expiry_warning_days():
             active = await api_client.get_active_incidents(
                 app.server_handle, IncidentType.SSL_EXPIRING
             )

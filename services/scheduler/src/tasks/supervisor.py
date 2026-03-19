@@ -16,15 +16,27 @@ from shared.redis_client import RedisStreamClient
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
+from ..startup import config as _config
+
 logger = structlog.get_logger(__name__)
 
-# Supervisor thresholds
-STORY_STUCK_THRESHOLD_MINUTES = 5
-TASK_STUCK_THRESHOLD_MINUTES = 30
-STORY_MAX_ARCHITECT_RETRIES = 3
-
 STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
-STORY_RETRY_TTL = 3600  # 1 hour — retries expire after this
+
+
+def _story_stuck_threshold() -> int:
+    return _config.get_int("supervisor.story_stuck_threshold_minutes") if _config else 5
+
+
+def _task_stuck_threshold() -> int:
+    return _config.get_int("supervisor.task_stuck_threshold_minutes") if _config else 30
+
+
+def _max_architect_retries() -> int:
+    return _config.get_int("supervisor.story_max_architect_retries") if _config else 3
+
+
+def _story_retry_ttl() -> int:
+    return _config.get_int("supervisor.story_retry_ttl") if _config else 3600
 
 
 def _parse_datetime(value: str | datetime) -> datetime:
@@ -68,7 +80,7 @@ async def supervise_stuck_stories(
         created_at = _parse_datetime(story.created_at)
         age_minutes = (now - created_at).total_seconds() / 60
 
-        if age_minutes < STORY_STUCK_THRESHOLD_MINUTES:
+        if age_minutes < _story_stuck_threshold():
             continue
 
         # Skip if project already has an active story (sequential processing)
@@ -86,7 +98,7 @@ async def supervise_stuck_stories(
         raw = await redis.get(retry_key)
         current_retries = int(raw) if raw else 0
 
-        if current_retries >= STORY_MAX_ARCHITECT_RETRIES:
+        if current_retries >= _max_architect_retries():
             log.error(
                 "story_terminal_failure",
                 reason="architect_retries_exhausted",
@@ -104,12 +116,12 @@ async def supervise_stuck_stories(
             user_id="",
         )
         await redis_client.publish_message(ARCHITECT_QUEUE, arch_msg)
-        await redis.set(retry_key, current_retries + 1, ex=STORY_RETRY_TTL)
+        await redis.set(retry_key, current_retries + 1, ex=_story_retry_ttl())
 
         log.warning(
             "story_stuck_retry",
             retry_attempt=current_retries + 1,
-            max_retries=STORY_MAX_ARCHITECT_RETRIES,
+            max_retries=_max_architect_retries(),
         )
         retried += 1
 
@@ -201,11 +213,11 @@ async def supervise_stuck_tasks(
         updated_at = _parse_datetime(task.updated_at)
         age_minutes = (now - updated_at).total_seconds() / 60
 
-        if age_minutes < TASK_STUCK_THRESHOLD_MINUTES:
+        if age_minutes < _task_stuck_threshold():
             continue
 
         log = logger.bind(task_id=task_id, age_minutes=round(age_minutes, 1))
-        log.warning("task_stuck_timeout", threshold_minutes=TASK_STUCK_THRESHOLD_MINUTES)
+        log.warning("task_stuck_timeout", threshold_minutes=_task_stuck_threshold())
 
         await api_client.transition_task(task_id, TaskStatus.FAILED, "supervisor")
         timed_out += 1

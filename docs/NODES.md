@@ -50,8 +50,8 @@
 
 **Валидация**: Проверяет наличие commit SHA в результате.
 
-**Обработка блокеров**: Если developer agent не может выполнить задачу (missing credentials, 404 URLs, contradictory requirements), он вызывает `curl POST localhost:9090/blocker`. Worker-wrapper HTTP-сервер принимает запрос и публикует `block_reason` в Redis. Developer node возвращает `engineering_status="developer_blocked"`. Engineering consumer вызывает `_handle_worker_blocked()`:
-- Task → `waiting_human_review` с `failure_metadata = {failure_reason: "developer_blocked", block_reason: ...}`
+**Обработка gave-up**: Если developer agent не может выполнить задачу (missing credentials, 404 URLs, contradictory requirements), он вызывает `curl -X POST localhost:9090/result -d '{"success":false,"reason":"..."}'`. Worker-wrapper HTTP-сервер принимает запрос и публикует результат в Redis. Developer node возвращает `engineering_status=EngineeringStatus.GAVE_UP`. Engineering consumer вызывает `handle_worker_gave_up()`:
+- Task → `waiting_human_review` с `failure_metadata = {reason: "..."}`
 - Story → `waiting_human_review`
 - Уведомление admin через `notify_admins()` (level=warning)
 - Уведомление пользователя через PO (`story_blocked` event)
@@ -59,7 +59,7 @@
 
 Для возобновления: `POST /tasks/{id}/resume` (admin даёт guidance, task WHR → IN_DEV).
 
-**Выход**: Код в репозитории → Tester | Или `developer_blocked` → WHR flow
+**Выход**: Код в репозитории → Tester | Или `GAVE_UP` → WHR flow
 
 ---
 
@@ -78,7 +78,7 @@
 **Выход**:
 - `test_results` с passed/failed/skipped
 - При неудаче → возврат к Developer (max 3 итерации)
-- При успехе → `engineering_status="done"` → DevOps
+- При успехе → `EngineeringStatus.DONE` → DevOps
 
 ---
 
@@ -89,8 +89,7 @@
 **Когда вызывается**:
 - После Engineering Subgraph
 - При `trigger_deploy` от PO
-- При GitHub webhook (`pull_request: merged story/* → main`) → API → deploy:queue
-- При GitHub webhook (`workflow_run: ci.yml success on main`) → API → deploy:queue
+- При обнаружении merged PR (PR poller в scheduler, 30s poll) → deploy:queue
 
 **Структура пакета** (`src/subgraphs/devops/`):
 ```
@@ -228,11 +227,11 @@ PO ReactAgent (in langgraph container)
      └──────────────▶ (завершение) ◄─────────────────────────┘
 
 
-GitHub (webhook: ci.yml success on main)
-     │
+PR Poller (scheduler, 30s poll)
+     │ detects merged PR on story/* branch
      ▼
-API: POST /webhooks/github
-     │ verify HMAC → lookup project → create Task
+Scheduler → story → deploying, create Run
+     │
      ▼
 Redis (deploy:queue) → deploy-worker → DevOps Subgraph
      │
@@ -240,4 +239,4 @@ Redis (deploy:queue) → deploy-worker → DevOps Subgraph
 Redis (po:proactive) → Telegram Bot → Пользователь
 ```
 
-**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder (отдельный сервис) подготавливает репозиторий (copier + make setup + git push) до запуска architect. Worker-manager монтирует pre-scaffolded workspace volume из `/data/workspaces/{repo_id}/` в контейнер воркера. Webhook-triggered deploys обходят PO — API публикует напрямую в deploy:queue, результат уходит через po:proactive.
+**Важно**: PO ReactAgent координирует весь flow через LangChain tools. Scaffolder (отдельный сервис) подготавливает репозиторий (copier + make setup + git push) до запуска architect. Worker-manager монтирует pre-scaffolded workspace volume из `/data/workspaces/{repo_id}/` в контейнер воркера. Deploy после merge обнаруживается PR poller'ом в scheduler — webhook'и удалены.

@@ -19,9 +19,11 @@ from src.clients.api import api_client
 from src.metrics import parse_cadvisor, parse_node_exporter
 from src.tasks.app_health_prober import app_health_probe_cycle
 
+from ..startup import config as _config
+
 logger = structlog.get_logger()
 
-# Configuration
+# HEALTH_CHECK_INTERVAL stays as env var (polling frequency, not tunable threshold)
 _interval = os.getenv("HEALTH_CHECK_INTERVAL")
 if not _interval:
     raise RuntimeError("HEALTH_CHECK_INTERVAL is not set")
@@ -29,15 +31,27 @@ HEALTH_CHECK_INTERVAL = int(_interval)
 
 NODE_EXPORTER_PORT = 9100
 CADVISOR_PORT = 8080
-HTTP_TIMEOUT = 10.0
 
-# Thresholds for resource exhaustion alerts
-RAM_THRESHOLD_PCT = 90.0
-DISK_THRESHOLD_PCT = 90.0
 
-# Cleanup: run once per day
-CLEANUP_INTERVAL_SECONDS = 86400
-RETENTION_HOURS = 168  # 7 days
+def _http_timeout() -> float:
+    return _config.get_float("health.http_timeout") if _config else 10.0
+
+
+def _ram_threshold_pct() -> float:
+    return _config.get_float("health.ram_threshold_pct") if _config else 90.0
+
+
+def _disk_threshold_pct() -> float:
+    return _config.get_float("health.disk_threshold_pct") if _config else 90.0
+
+
+def _cleanup_interval() -> int:
+    return _config.get_int("health.metrics_cleanup_interval_seconds") if _config else 86400
+
+
+def _retention_hours() -> int:
+    return _config.get_int("health.metrics_retention_hours") if _config else 168
+
 
 # Statuses that indicate a server should be health-checked
 _CHECKABLE_STATUSES = {"active", "in_use", "ready"}
@@ -45,7 +59,7 @@ _CHECKABLE_STATUSES = {"active", "in_use", "ready"}
 
 def _get_http_client() -> httpx.AsyncClient:
     """Create an HTTP client for metrics fetching."""
-    return httpx.AsyncClient(timeout=HTTP_TIMEOUT)
+    return httpx.AsyncClient(timeout=_http_timeout())
 
 
 def _get_checkable_servers(servers: list) -> list:
@@ -201,7 +215,7 @@ async def _check_resource_thresholds(server, node_metrics) -> None:
         and node_metrics.ram_total_bytes > 0
     ):
         ram_pct = (node_metrics.ram_used_bytes / node_metrics.ram_total_bytes) * 100
-        if ram_pct > RAM_THRESHOLD_PCT:
+        if ram_pct > _ram_threshold_pct():
             await _create_resource_incident(server, "ram", round(ram_pct, 1))
 
     # Disk check
@@ -211,7 +225,7 @@ async def _check_resource_thresholds(server, node_metrics) -> None:
         and node_metrics.disk_total_bytes > 0
     ):
         disk_pct = (node_metrics.disk_used_bytes / node_metrics.disk_total_bytes) * 100
-        if disk_pct > DISK_THRESHOLD_PCT:
+        if disk_pct > _disk_threshold_pct():
             await _create_resource_incident(server, "disk", round(disk_pct, 1))
 
 
@@ -227,31 +241,31 @@ async def _create_resource_incident(server, resource: str, usage_pct: float) -> 
         details={
             "resource": resource,
             "usage_pct": usage_pct,
-            "threshold_pct": RAM_THRESHOLD_PCT if resource == "ram" else DISK_THRESHOLD_PCT,
+            "threshold_pct": _ram_threshold_pct() if resource == "ram" else _disk_threshold_pct(),
             "ip": server.public_ip,
         },
     )
     await notify_admins(
         f"Server *{server.handle}* ({server.public_ip}): "
         f"{resource.upper()} at {usage_pct}% (threshold: "
-        f"{RAM_THRESHOLD_PCT if resource == 'ram' else DISK_THRESHOLD_PCT}%).",
+        f"{_ram_threshold_pct() if resource == 'ram' else _disk_threshold_pct()}%).",
         level="warning",
     )
 
 
 async def _cleanup_old_history() -> int:
     """Delete metrics history older than retention period."""
-    result = await api_client.delete_old_metrics_history(RETENTION_HOURS)
+    result = await api_client.delete_old_metrics_history(_retention_hours())
     deleted = result.get("deleted", 0)
     if deleted > 0:
-        logger.info("metrics_history_cleanup", deleted=deleted, retention_hours=RETENTION_HOURS)
+        logger.info("metrics_history_cleanup", deleted=deleted, retention_hours=_retention_hours())
 
     # Also clean up application health history
-    app_result = await api_client.delete_old_app_health_history(RETENTION_HOURS)
+    app_result = await api_client.delete_old_app_health_history(_retention_hours())
     app_deleted = app_result.get("deleted", 0)
     if app_deleted > 0:
         logger.info(
-            "app_health_history_cleanup", deleted=app_deleted, retention_hours=RETENTION_HOURS
+            "app_health_history_cleanup", deleted=app_deleted, retention_hours=_retention_hours()
         )
 
     return deleted
@@ -287,7 +301,7 @@ async def health_check_worker():
 
             # Daily cleanup
             now = time.monotonic()
-            if now - last_cleanup > CLEANUP_INTERVAL_SECONDS:
+            if now - last_cleanup > _cleanup_interval():
                 await _cleanup_old_history()
                 last_cleanup = now
 

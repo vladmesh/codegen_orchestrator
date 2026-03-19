@@ -9,6 +9,7 @@
 - **EngineeringStatus StrEnum** (task-9f294c98): Replaced 6 bare `engineering_status` strings with `EngineeringStatus(StrEnum)` — 4 values: IDLE, DONE, GAVE_UP, FAILED. Merged `_handle_worker_blocked` + `_handle_worker_reject` → `handle_worker_gave_up` (both → WAITING_HUMAN_REVIEW). FAILED is transient: supervisor retries or escalates to GAVE_UP when retries exhausted. Removed `NON_RETRYABLE_REASONS` — semantics encoded in task status. Fixed bug where `block_reason` path returned `"blocked"` indistinguishable from generic crash.
 
 ### Fixed
+- **Restored Makefile overrides in worker-wrapper** (task-ae3ca2fb): Re-added `_inject_makefile_overrides()` removed in b8864abd. Override targets now `curl localhost:9090/infra/compose` (compose proxy from task-1b2bdf73) instead of deleted `orchestrator` CLI. Fixes `make migrate`, `make dev-start svc=db` inside worker containers.
 - **QA consumer resolves wrong application** (task-611d788f): QA consumer called `list_applications({"project_id": ...})` but the API has no `project_id` filter — returned ALL applications, picked wrong one (e.g. codegen_orchestrator instead of weather-bot). Now threads `application_id` from deployer → deploy result → QAMessage → QA consumer, using single `GET /applications/{id}` instead of broken list+filter. Also: fix tasks now created with `status=todo` (was defaulting to `backlog`, so dispatcher never picked them up). Replaced dict soup with `QAServerInfo` dataclass and `ApplicationDTO` for typed API responses.
 
 ## 2026-03-18

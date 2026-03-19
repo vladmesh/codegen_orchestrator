@@ -400,3 +400,7 @@ seed:
 	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_agent_configs.py \
 		--api-base-url http://localhost:8000 \
 		--configs-path /app/scripts/agent_configs.yaml || echo "  ⚠️  Agent config seeding failed (API may not be ready)"
+	@echo "⚙️  Seeding system configurations..."
+	@$(DOCKER_COMPOSE) exec api python /app/scripts/seed_system_configs.py \
+		--api-base-url http://localhost:8000 \
+		--configs-path /app/scripts/system_configs.yaml || echo "  ⚠️  System config seeding failed (API may not be ready)"

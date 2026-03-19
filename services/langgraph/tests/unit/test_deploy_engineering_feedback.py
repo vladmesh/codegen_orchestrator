@@ -260,10 +260,12 @@ class TestDeployFixRetryLimit:
             "src.consumers.deploy_result_handler._classify_deploy_failure",
             AsyncMock(return_value="CODE_FIX"),
         ):
-            from src.consumers.deploy import MAX_DEPLOY_FIX_ATTEMPTS, process_deploy_job
+            from src.consumers.deploy import process_deploy_job
+            from src.consumers.deploy_failure_handler import _max_deploy_fix_attempts
 
+            max_fix = _max_deploy_fix_attempts()
             # Set attempt to max — should NOT re-dispatch
-            job = _job(deploy_fix_attempt=MAX_DEPLOY_FIX_ATTEMPTS)
+            job = _job(deploy_fix_attempt=max_fix)
             result = await process_deploy_job(job, mock_redis)
 
         assert result["status"] == "failed"
@@ -271,9 +273,7 @@ class TestDeployFixRetryLimit:
         eng_calls = [
             c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
         ]
-        assert len(eng_calls) == 0, (
-            f"After {MAX_DEPLOY_FIX_ATTEMPTS} attempts, must NOT re-dispatch"
-        )
+        assert len(eng_calls) == 0, f"After {max_fix} attempts, must NOT re-dispatch"
 
     @pytest.mark.asyncio
     async def test_attempt_counter_increments(

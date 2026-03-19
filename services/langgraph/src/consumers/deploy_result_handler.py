@@ -135,6 +135,7 @@ async def _handle_deploy_success(
                 user_id=user_id,
                 deployed_url=result["deployed_url"],
                 application_id=application_id,
+                bot_username=result.get("bot_username"),
             ),
         )
         logger.info("qa_handoff", story_id=story_id, deployed_url=result["deployed_url"])

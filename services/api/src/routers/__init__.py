@@ -18,6 +18,7 @@ from . import (
     servers,
     service_deployments,
     stories,
+    system_configs,
     tasks,
     users,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "servers",
     "service_deployments",
     "stories",
+    "system_configs",
     "tasks",
     "users",
 ]

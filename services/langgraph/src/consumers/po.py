@@ -85,15 +85,35 @@ async def run_po_consumer() -> None:
 
     init_po_clients(api_client, client)
 
+    # Read summarization config from DB (ConfigStore), fall back to settings
+    from shared.config_store import ConfigStore
+
+    try:
+        _cfg = ConfigStore(settings.api_base_url)
+        _sum_max = _cfg.get_int(
+            "llm.summarization_max_tokens", default=settings.summarization_max_tokens
+        )
+        _sum_trigger = _cfg.get_int(
+            "llm.summarization_trigger_tokens", default=settings.summarization_trigger_tokens
+        )
+        _sum_max_summary = _cfg.get_int(
+            "llm.summarization_max_summary_tokens",
+            default=settings.summarization_max_summary_tokens,
+        )
+    except Exception:
+        _sum_max = settings.summarization_max_tokens
+        _sum_trigger = settings.summarization_trigger_tokens
+        _sum_max_summary = settings.summarization_max_summary_tokens
+
     graph = await create_po_graph(
         model=settings.po_llm_model,
         base_url=settings.po_llm_base_url,
         api_key=settings.po_llm_api_key,
         checkpoint_database_url=settings.checkpoint_database_url,
         summarization_model=settings.summarization_model,
-        summarization_max_tokens=settings.summarization_max_tokens,
-        summarization_trigger_tokens=settings.summarization_trigger_tokens,
-        summarization_max_summary_tokens=settings.summarization_max_summary_tokens,
+        summarization_max_tokens=_sum_max,
+        summarization_trigger_tokens=_sum_trigger,
+        summarization_max_summary_tokens=_sum_max_summary,
     )
     logger.info(
         "po_summarization_configured",

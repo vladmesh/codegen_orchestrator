@@ -220,25 +220,25 @@ sequenceDiagram
     LG->>Redis: XADD po:input {type: system_event, event: completed}
 ```
 
-### Deploy Flow (Webhook-triggered)
+### Deploy Flow (PR merge detection)
 
 ```mermaid
 sequenceDiagram
     participant GH as GitHub
+    participant SCH as scheduler (pr_poller)
     participant API as api service
     participant DB as PostgreSQL
     participant Redis
     participant DW as deploy-worker
     participant TG as telegram-bot
 
-    GH->>API: POST /webhooks/github (pull_request: merged story/* → main)
-    API->>API: Verify HMAC-SHA256 signature
-    API->>DB: Lookup project by repository.id, verify story exists
-    API->>API: Transition story → deploying
-    API->>DB: Lookup owner → telegram_id
-    API->>DB: Create Run (type=deploy, triggered_by=webhook)
-    API->>Redis: XADD deploy:queue {task_id, project_id, user_id=telegram_id, story_id}
-    API-->>GH: 200 {status: accepted}
+    Note over SCH: poll_merged_prs() — every 30s
+    SCH->>API: GET stories (status=pr_review)
+    SCH->>GH: GET pulls (state=closed, head=story/{id})
+    GH-->>SCH: merged PR found
+    SCH->>API: Transition story → deploying
+    SCH->>DB: Create Run (type=deploy)
+    SCH->>Redis: XADD deploy:queue {task_id, project_id, user_id, story_id}
     Redis-->>DW: Consumer reads deploy:queue
     DW->>DW: DevOps Subgraph (EnvAnalyzer → SecretResolver → Deployer)
     alt Success
@@ -249,6 +249,8 @@ sequenceDiagram
     Redis-->>TG: XREAD po:proactive (tg-bot-proactive group)
     TG->>TG: Send Telegram message to user
 ```
+
+> **Note:** GitHub webhooks were removed. All PR merge detection and CI failure handling is done by `scheduler/src/tasks/pr_poller.py` (polling, 30s interval). This eliminates webhook reliability issues for newly scaffolded repos.
 
 ---
 
@@ -1093,25 +1095,28 @@ Used across worker-manager (manager, events, introspect router) and langgraph (w
 ---
 
 
-## AgentVerdict (DTO from Agent)
+## EngineeringStatus
 
 ```python
-# shared/contracts/dto/agent_verdict.py
+# shared/contracts/dto/engineering.py
 
-class AgentVerdictStatus(StrEnum):
-    SUCCESS = "success"             # Task completed successfully
-    FAILURE = "failure"             # Task failed (retries exhausted)
-    IN_PROGRESS = "in_progress"     # Waiting for user input or external event
+class EngineeringStatus(StrEnum):
+    """Status of the engineering subgraph execution.
 
-class AgentVerdict(BaseModel):
+    Lifecycle:
+        IDLE → (subgraph runs) → DONE | GAVE_UP | FAILED
+        FAILED → (supervisor retries) → IDLE  OR  (retries exhausted) → GAVE_UP
+
+    FAILED is transient — supervisor either retries or escalates to GAVE_UP.
     """
-    Subjective result from the Agent.
-    Parsed from stdout JSON wrapped in <result> tags.
-    """
-    status: AgentVerdictStatus
-    summary: str                    # Human-readable summary
-    data: dict[str, Any] = {}       # Structured context (e.g., commit_sha)
+
+    IDLE = "idle"
+    DONE = "done"
+    GAVE_UP = "gave_up"
+    FAILED = "failed"
 ```
+
+Used by Developer node and Engineering consumer. Replaces former bare strings (`"done"`, `"developer_blocked"`, `"developer_rejected"`, etc.). The `GAVE_UP` status covers both former "blocked" (worker hit a blocker) and "rejected" (infra issue) paths — in both cases a human needs to intervene.
 
 
 
@@ -1288,6 +1293,7 @@ shared/contracts/
 │   ├── base.py              # BaseDTO, TimestampedDTO
 │   ├── application.py       # ApplicationStatus enum
 │   ├── deployment.py        # DeploymentResult enum
+│   ├── engineering.py       # EngineeringStatus enum
 │   ├── service_deployment.py  # ServiceDeploymentDTO (legacy alias)
 │   ├── agent_config.py
 │   ├── allocation.py

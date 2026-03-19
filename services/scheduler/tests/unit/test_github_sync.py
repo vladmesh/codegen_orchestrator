@@ -148,7 +148,7 @@ async def test_detect_missing_projects_marks_missing(mock_api_client, mock_notif
     )
 
     gh_repos_map = {1: MagicMock()}  # Repo 1 exists, Repo 2 missing
-    missing_counters = {str(PROJ2_UUID): github_sync.MISSING_THRESHOLD - 1}  # Almost threshold
+    missing_counters = {str(PROJ2_UUID): github_sync._missing_threshold() - 1}  # Almost threshold
 
     # Execution
     await github_sync._detect_missing_projects(gh_repos_map, missing_counters)

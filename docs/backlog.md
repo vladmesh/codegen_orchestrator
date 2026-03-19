@@ -48,6 +48,36 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
+### #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs
+- **Priority**: HIGH
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: Phase 1 backend (all-in-one): (1) New SystemConfig table (key PK, value JSON, description, category, updated_at, updated_by). (2) CRUD endpoints at /api/system-configs/. (3) Seed script populates ~25 defaults from current hardcoded values (categories: scheduler, supervisor, deploy, health, llm). ...
+
+### #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Extend queue message contracts for standalone triggers from admin: (1) DeployMessage — add action: Literal["deploy", "stop", "undeploy"] (default "deploy"), make story_id Optional. Deploy consumer: skip story transitions if story_id is None, handle stop/undeploy actions. (2) QAMessage — make stor...
+
+### #1024 Thin API endpoints for admin actions (7 endpoints)
+- **Priority**: HIGH
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Add 7 thin endpoints (validate → DB → Redis publish): (1) POST /stories/{id}/send-to-architect — status update + publish architect:queue. (2) POST /tasks/{id}/spawn-worker — status→in_dev, create Run, publish engineering:queue. (3) POST /applications/{id}/stop — status update + publish deploy:que...
+
+### #1025 Admin UI: Settings page (config + prompt editor)
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: New Settings page in admin SPA. Table grouped by category (scheduler, supervisor, deploy, health, llm). Inline edit for numeric/string values. Textarea with syntax highlighting for prompts (agent_configs). Save button per row. Shows description and current value. Blocked by #1020.
+
+### #1026 Admin UI: action buttons on entity pages
+- **Priority**: MEDIUM
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Add action buttons across admin SPA pages: Project Details — secrets editor (masked key-value), Create Story form, Deploy from Repo form. Story Details — Send to Architect button. Task Details — Spawn Worker button. Application Details — Stop, Undeploy, Redeploy, Run E2E buttons with confirmation...
+
 ### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - **Priority**: LOW
 - **Plan**: —
@@ -98,12 +128,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Allow adding tg_bot/notifications/frontend to a project generated without them. Currently requires re-generation.
-
-### Restore Makefile overrides in worker-wrapper (make migrate broken)
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: ## Problem  `make migrate` inside worker containers fails because `make dev-start svc=db` tries to run `docker compose up -d db` — but workers have no Docker CLI or socket.  Discovered in E2E: worker report says "make migrate calls make dev-start svc=db which requires Docker CLI", worker had to r...
 
 ### #2 Agent Hierarchy & Incident Response
 - **Priority**: LOW
@@ -290,6 +314,7 @@
 
 - Unify worker result API — single /result endpoint, stdout capture, auto-resume — 2026-03-19
 - Refactor engineering_status to StrEnum — 2026-03-19
+- Restore Makefile overrides in worker-wrapper (make migrate broken) — 2026-03-19
 - QA consumer: resolve by application_id, replace dicts with DTOs — 2026-03-19
 - Убрать result_parser из wrapper, добавить watchdog-логику — 2026-03-18
 - Удалить orchestrator-cli, перевести агента на curl к localhost:9090 — 2026-03-18
@@ -297,7 +322,6 @@
 - Replace raw dict API clients with shared Pydantic DTOs — 2026-03-17
 - Refactor large files (>400 LOC) — extract helpers — 2026-03-17
 - #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
-- #1016 Admin UI: application health status and response times — 2026-03-17
 
 ## Ideas
 

@@ -21,6 +21,8 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.queues import SCAFFOLD_QUEUE
 
+from ..startup import config as _config
+
 if TYPE_CHECKING:
     from shared.redis_client import RedisStreamClient
 
@@ -33,8 +35,10 @@ DEFAULT_TEMPLATE_REPO = "gh:project-factory-organization/service-template"
 
 # Redis key for tracking in-flight scaffold jobs (dedup)
 SCAFFOLD_INFLIGHT_KEY = "scaffold:inflight"
-# Safety TTL so stale entries expire even if consumer crashes (10 min)
-SCAFFOLD_INFLIGHT_TTL = 600
+
+
+def _scaffold_inflight_ttl() -> int:
+    return _config.get_int("scheduler.scaffold_inflight_ttl") if _config else 600
 
 
 async def _mark_inflight(redis_client: RedisStreamClient, project_id: str) -> bool:
@@ -44,7 +48,7 @@ async def _mark_inflight(redis_client: RedisStreamClient, project_id: str) -> bo
     Returns False if the project already has an inflight job (duplicate).
     """
     member_key = f"{SCAFFOLD_INFLIGHT_KEY}:{project_id}"
-    was_set = await redis_client.redis.set(member_key, "1", nx=True, ex=SCAFFOLD_INFLIGHT_TTL)
+    was_set = await redis_client.redis.set(member_key, "1", nx=True, ex=_scaffold_inflight_ttl())
     return bool(was_set)
 
 

@@ -198,12 +198,11 @@ class TestSuperviseStuckStories:
     @pytest.mark.asyncio
     async def test_fails_story_after_max_retries(self, api_client, redis_client):
         """Story retried 3 times -> fail the story."""
-        from src.tasks.task_dispatcher import (
-            STORY_MAX_ARCHITECT_RETRIES,
-            supervise_stuck_stories,
-        )
+        from src.tasks.supervisor import _max_architect_retries
+        from src.tasks.task_dispatcher import supervise_stuck_stories
 
-        old_enough = datetime.now(UTC) - timedelta(minutes=10 * (STORY_MAX_ARCHITECT_RETRIES + 1))
+        max_retries = _max_architect_retries()
+        old_enough = datetime.now(UTC) - timedelta(minutes=10 * (max_retries + 1))
         old = datetime.now(UTC) - timedelta(minutes=10)
         api_client.get_stories_by_status.side_effect = lambda status: (
             [
@@ -221,7 +220,7 @@ class TestSuperviseStuckStories:
         api_client.fail_story.return_value = {}
 
         # Simulate retry count already at max in Redis
-        redis_client._redis.get.return_value = str(STORY_MAX_ARCHITECT_RETRIES)
+        redis_client._redis.get.return_value = str(max_retries)
 
         result = await supervise_stuck_stories(api_client, redis_client)
 

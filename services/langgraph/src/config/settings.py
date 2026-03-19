@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     checkpoint_database_url: str | None = None
 
     # Summarization config (used by SummarizationNode)
+    # Defaults here are fallbacks — production reads from system_configs DB via ConfigStore
     summarization_model: str | None = None  # None = fallback to po_llm_model
     summarization_max_tokens: int = 20000
     summarization_trigger_tokens: int = 70000

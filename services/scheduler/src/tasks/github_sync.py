@@ -21,11 +21,17 @@ from shared.schemas.project_spec import ProjectSpecYAML
 from src.clients.api import api_client
 from src.config import get_settings
 
+from ..startup import config as _config
+
 logger = structlog.get_logger()
 
-# Config
-SYNC_INTERVAL = 300  # 5 minutes
-MISSING_THRESHOLD = 3  # Alert after 3 consecutive checks where repo is missing
+
+def _sync_interval() -> int:
+    return _config.get_int("scheduler.github_sync_interval") if _config else 300
+
+
+def _missing_threshold() -> int:
+    return _config.get_int("scheduler.github_sync_missing_threshold") if _config else 3
 
 
 async def _ingest_to_rag(
@@ -281,10 +287,10 @@ async def _detect_missing_projects(
                 project_name=proj.name,
                 project_id=project_id_str,
                 attempt=count,
-                threshold=MISSING_THRESHOLD,
+                threshold=_missing_threshold(),
             )
 
-            if count >= MISSING_THRESHOLD:
+            if count >= _missing_threshold():
                 # Mark repositories as missing (not the project)
                 repos = await api_client.get_repositories(project_id=project_id_str)
                 for repo in repos:
@@ -332,7 +338,7 @@ async def sync_projects_worker() -> None:
                     error_type=type(e).__name__,
                     exc_info=True,
                 )
-                await asyncio.sleep(SYNC_INTERVAL)
+                await asyncio.sleep(_sync_interval())
                 continue
 
             logger.info("github_sync_start", org_name=org_name)
@@ -348,7 +354,7 @@ async def sync_projects_worker() -> None:
                     error_type=type(e).__name__,
                     exc_info=True,
                 )
-                await asyncio.sleep(SYNC_INTERVAL)
+                await asyncio.sleep(_sync_interval())
                 continue
 
             logger.info(
@@ -385,4 +391,4 @@ async def sync_projects_worker() -> None:
                 duration_sec=round(duration, 2),
             )
 
-        await asyncio.sleep(SYNC_INTERVAL)
+        await asyncio.sleep(_sync_interval())

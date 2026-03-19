@@ -31,6 +31,14 @@ logger = structlog.get_logger()
 CONSUMER_NAME = f"scheduler-{os.getpid()}"
 
 
+def _validate_configs():
+    """Validate system configs from DB before starting workers."""
+    from .startup import init_config
+
+    init_config()
+    logger.info("system_configs_validated")
+
+
 async def provisioner_results_worker():
     """Consumer loop for provisioner:results stream.
 
@@ -76,6 +84,9 @@ async def main():
     """Run all background workers concurrently."""
     setup_logging(service_name="scheduler")
     logger.info("scheduler_started")
+
+    # Validate all required system configs before starting workers
+    _validate_configs()
 
     # Retry provisioning for any servers stuck in pending_setup (race condition fix)
     # Wait a bit for LangGraph to be ready and subscribed

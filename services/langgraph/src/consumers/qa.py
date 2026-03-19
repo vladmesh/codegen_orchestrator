@@ -100,6 +100,19 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             )
             return {"status": "error", "error": error}
 
+        # Fail-fast: if project has tg_bot module, bot_username is required
+        if not msg.bot_username:
+            project = await api_client.get_project(msg.project_id)
+            modules = (project.config or {}).get("modules", [])
+            if "tg_bot" in modules:
+                error = (
+                    "Project has tg_bot module but bot_username is missing in QAMessage. "
+                    "Deploy smoke test should have resolved it via getMe."
+                )
+                logger.error("qa_bot_username_missing", story_id=story_id, modules=modules)
+                await _transition_story_safe(story_id, "fail")
+                return {"status": "error", "error": error}
+
         # Fetch story description for QA prompt
         story = await api_client.get_story(story_id)
         story_description = story.description or ""
@@ -120,7 +133,16 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             passed=qa_result.passed,
             summary=qa_result.summary,
             checks_count=len(qa_result.checks),
+            has_report=bool(qa_result.report),
         )
+
+        # Log the full QA report for observability
+        if qa_result.report:
+            logger.info(
+                "qa_report_content",
+                story_id=story_id,
+                report=qa_result.report[:2000],
+            )
 
         if qa_result.passed:
             return await _handle_qa_pass(

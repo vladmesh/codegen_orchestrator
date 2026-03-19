@@ -633,9 +633,10 @@ class TestCompleteStories:
 
     @pytest.mark.asyncio
     async def test_no_deploy_when_pr_already_merged(self, api_client, redis_client):
-        """PR already merged at creation time -> still transitions to pr_review, NO deploy msg.
+        """PR already merged at creation time -> skip story entirely.
 
-        Deploy is always triggered by poll_merged_prs, never by complete_stories.
+        When a PR is already merged, complete_stories must NOT transition to pr_review
+        (that would create a loop with pr_poller). Deploy is handled by pr_poller.
         """
         from unittest.mock import patch
 
@@ -652,7 +653,6 @@ class TestCompleteStories:
             git_url="https://github.com/my-org/weather-bot",
             project_id=PROJ_ID,
         )
-        api_client.transition_story.return_value = {}
 
         mock_github = AsyncMock()
         # PR already merged (e.g., fast auto-merge)
@@ -665,8 +665,8 @@ class TestCompleteStories:
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
             await complete_stories(api_client, redis_client)
 
-        # Should transition to pr_review (poll_merged_prs will pick it up)
-        api_client.transition_story.assert_called_once_with("story-1", "pr_review")
+        # Must NOT transition story — skip entirely to avoid pr_poller loop
+        api_client.transition_story.assert_not_called()
 
         # Must NOT publish deploy message
         deploy_calls = [

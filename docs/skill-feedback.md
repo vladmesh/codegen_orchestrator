@@ -151,3 +151,9 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 - **Quote**: Step 4 "Monitor Engineering" — no mention of `cancelled` → `todo` transition being blocked
 - **Problem**: When the supervisor cancels tasks (due to a failed dependency), the API does not allow transitioning from `cancelled` → `backlog` → `todo` via the normal `/transition` endpoint. Had to use direct SQL UPDATE to reset cancelled tasks.
 - **Suggested fix**: Document that `cancelled` status requires SQL intervention to reset, or fix the API to allow `cancelled → backlog` transitions.
+
+## [e2e-run] — 2026-03-19
+- **Type**: missing-info
+- **Quote**: "Step 0: pre-flight cleanup — Clean stale deployments on servers"
+- **Problem**: Pre-flight cleanup checked server directory and reported CLEAN, but deploy-worker later found `/opt/services/weather-bot/` exists and auto-fell back to `action=feature`. The pre-flight SSH check may have failed silently or the directory was created between cleanup and deploy by an earlier failed deploy run in the same test.
+- **Suggested fix**: Add a note that pre-flight cleanup should also clear deploy:queue and check for in-flight deploy runs. The cleanup/deploy race window exists when pr_poller triggers deploys faster than cleanup runs.

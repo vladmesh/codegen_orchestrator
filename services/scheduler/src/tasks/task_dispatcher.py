@@ -32,11 +32,7 @@ from .story_completion import (
     complete_stories,
 )
 from .supervisor import (
-    STORY_MAX_ARCHITECT_RETRIES,
     STORY_RETRY_KEY_PREFIX,
-    STORY_RETRY_TTL,
-    STORY_STUCK_THRESHOLD_MINUTES,
-    TASK_STUCK_THRESHOLD_MINUTES,
     _parse_datetime,
     supervise_failed_tasks,
     supervise_stuck_stories,
@@ -48,11 +44,7 @@ if TYPE_CHECKING:
 
 # Re-export for backward compatibility with tests
 __all__ = [
-    "STORY_MAX_ARCHITECT_RETRIES",
     "STORY_RETRY_KEY_PREFIX",
-    "STORY_RETRY_TTL",
-    "STORY_STUCK_THRESHOLD_MINUTES",
-    "TASK_STUCK_THRESHOLD_MINUTES",
     "_build_cumulative_context",
     "_cleanup_story_worker",
     "_parse_datetime",
@@ -67,9 +59,13 @@ __all__ = [
     "task_dispatcher_loop",
 ]
 
+from ..startup import config as _config
+
 logger = structlog.get_logger(__name__)
 
-DISPATCH_INTERVAL_SECONDS = 30
+
+def _dispatch_interval() -> int:
+    return _config.get_int("scheduler.dispatch_interval_seconds") if _config else 30
 
 
 def _build_cumulative_context(sibling_events: list) -> str:
@@ -210,7 +206,7 @@ async def task_dispatcher_loop() -> None:
     redis_client = RedisStreamClient()
     await redis_client.connect()
 
-    logger.info("task_dispatcher_started", interval=DISPATCH_INTERVAL_SECONDS)
+    logger.info("task_dispatcher_started", interval=_dispatch_interval())
 
     try:
         while True:
@@ -235,24 +231,24 @@ async def task_dispatcher_loop() -> None:
                     prs_merged=merged,
                 )
                 supervisor_active = (
-                    stuck_stories["retried"]
-                    + stuck_stories["failed"]
-                    + stuck_tasks["timed_out"]
-                    + failed_tasks["retried"]
-                    + failed_tasks["failed"]
+                    stuck_stories.get("retried", 0)
+                    + stuck_stories.get("failed", 0)
+                    + stuck_tasks.get("timed_out", 0)
+                    + failed_tasks.get("retried", 0)
+                    + failed_tasks.get("escalated", 0)
                 )
                 if supervisor_active:
                     logger.info(
                         "supervisor_cycle",
-                        stories_retried=stuck_stories["retried"],
-                        stories_failed=stuck_stories["failed"],
-                        tasks_timed_out=stuck_tasks["timed_out"],
-                        tasks_retried=failed_tasks["retried"],
-                        tasks_failed=failed_tasks["failed"],
+                        stories_retried=stuck_stories.get("retried", 0),
+                        stories_failed=stuck_stories.get("failed", 0),
+                        tasks_timed_out=stuck_tasks.get("timed_out", 0),
+                        tasks_retried=failed_tasks.get("retried", 0),
+                        tasks_escalated=failed_tasks.get("escalated", 0),
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")
-            await asyncio.sleep(DISPATCH_INTERVAL_SECONDS)
+            await asyncio.sleep(_dispatch_interval())
     finally:
         await redis_client.close()
         logger.info("task_dispatcher_stopped")

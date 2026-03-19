@@ -1,6 +1,6 @@
 # Архитектура
 
-> **Актуально на**: 2026-03-18
+> **Актуально на**: 2026-03-19
 
 ## Обзор
 
@@ -48,7 +48,7 @@ Codegen Orchestrator — мультиагентная система для ав
 Возможности Developer агента конфигурируются через `WorkerConfig.capabilities`:
 - `git`, `github` — работа с репозиториями
 - `python`, `node` — runtime environments
-- Docker больше не предоставляется внутри контейнера (DinD удален). Инфраструктура поднимается через прокси-команды `orchestrator dev-env`.
+- Docker больше не предоставляется внутри контейнера (DinD удален). Инфраструктура поднимается через compose proxy (`curl localhost:9090/infra/compose`) — запрос проксируется worker-wrapper'ом в worker-manager.
 
 ## Сервисы
 
@@ -153,11 +153,11 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
 
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
 All tasks done → Dispatcher creates PR story/* → main (auto-merge) → story pr_review
-PR merged (webhook/polling) → deploy:queue → deploy
+PR merged (PR poller, 30s) → deploy:queue → deploy
 Deploy success → qa:queue → QA consumer SSHes to prod → Claude Code tests → story testing
 QA pass → story completed → PO notification
 QA fail → fix task created → story back to in_progress → re-engineer → re-deploy → re-QA
-CI failure on story branch (webhook) → fix task created → story back to in_progress
+CI failure on story branch (PR poller) → fix task created → story back to in_progress
 ```
 
 **Key Features:**

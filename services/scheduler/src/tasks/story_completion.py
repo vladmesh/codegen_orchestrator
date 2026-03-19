@@ -171,13 +171,16 @@ async def complete_stories(
             pr_merged = pr.get("merged_at") is not None
 
             if pr_merged:
-                # PR already merged (fast auto-merge). Don't publish deploy here —
-                # poll_merged_prs() will detect the merge and trigger deploy.
+                # PR already merged — deploy was already triggered (or will be by
+                # pr_poller). Do NOT transition to pr_review again, as that creates
+                # a loop: in_progress → pr_review → pr_poller triggers deploy →
+                # deploy fails → in_progress → repeat.
                 log.info(
                     "story_pr_already_merged",
                     pr_number=pr_number,
                     branch=branch,
                 )
+                continue
 
             log.info(
                 "story_pr_created",

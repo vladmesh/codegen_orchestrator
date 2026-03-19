@@ -27,6 +27,7 @@ class QAResult:
     checks: list[dict] = field(default_factory=list)
     summary: str = ""
     raw: str = ""
+    report: str = ""
 
 
 def build_qa_prompt(
@@ -37,38 +38,104 @@ def build_qa_prompt(
     """Build the QA prompt for Claude Code on the server."""
     bot_section = ""
     if bot_username:
-        bot_section = f"""- Bot: @{bot_username}
-
-For Telegram bot testing, Telethon is pre-installed.
-Session file: /opt/qa-runner/telethon.session
-Use: python3 -c "from telethon.sync import TelegramClient; ..."
+        bot_section = f"""
+### Telegram bot
+- Bot: @{bot_username}
+- Test via Telethon (pre-installed in /opt/qa-runner/venv):
+  ```bash
+  /opt/qa-runner/venv/bin/python3 -c "
+  from telethon.sync import TelegramClient
+  client = TelegramClient('/opt/qa-runner/telethon.session', api_id=0, api_hash='')
+  client.start()
+  client.send_message('@{bot_username}', '/weather Moscow')
+  import time; time.sleep(3)
+  msgs = client.get_messages('@{bot_username}', limit=3)
+  for m in msgs:
+      print(m.text)
+  client.disconnect()
+  "
+  ```
+- api_id/api_hash can be 0/empty when session file already exists
 """
 
     return f"""\
-You are a QA tester. Test this deployed project as a real user would.
+You are a QA tester doing END-TO-END testing of a deployed project.
+
+Your job is to TEST THE RUNNING APPLICATION as a real user would — by making
+HTTP requests, sending Telegram commands, and observing actual responses.
+
+CRITICAL RULES:
+- You are testing a DEPLOYED APPLICATION, not reviewing source code.
+- Do NOT read source code, do NOT docker exec into containers, do NOT inspect
+  implementation. You are a BLACK-BOX tester.
+- Every check MUST be based on an actual request/response you performed.
+- "Code inspection confirms X" is NOT a valid test result.
+- If a test requires sending a Telegram command, you MUST actually send it
+  and verify the bot's response — not read the handler code.
 
 ## Story (what the user asked for)
 {story_description}
 
-## Deployed at
+## Deployment
 - URL: {deployed_url}
+- Compose (status only): see "Container health" below
 {bot_section}
-## Your task
-1. Test every feature described in the story
-2. For web/API: curl endpoints, check responses, test edge cases
-3. For Telegram bots: use Telethon to send commands, check responses
-4. Check that the UI/responses match the story description
+## How to test
 
-## Rules
-- Test ONLY what's described in the story — don't invent extra requirements
-- Be practical: if the story says "show weather", check that weather is shown, not pixel-perfect
-- Timeout: 20 minutes max
+### REST API — use curl:
+```bash
+curl -sf {deployed_url}/health | jq .
+curl -sf {deployed_url}/api/weather/Moscow | jq .
+```
+
+### Container health — check status only (no exec):
+```bash
+cd infra && docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml ps -a
+```
+
+### Caching — call same endpoint twice, compare:
+```bash
+curl -sf {deployed_url}/api/weather/TestCity | jq .
+sleep 2
+curl -sf {deployed_url}/api/weather/TestCity | jq .
+# Same data = cache works
+```
+
+## Checklist
+1. Health endpoint responds with 200
+2. Every API endpoint from the story — call it, verify response fields
+3. Caching — two calls to same city return identical data
+4. Containers running and healthy (ps, no restart loops)
+5. Telegram bot — ACTUALLY SEND each command, verify response text
+6. Edge cases — empty input, unknown city, missing parameters
+
+## Report
+Write QA_REPORT.md in the project root (NOT in infra/).
+In each check, describe WHAT YOU DID and WHAT YOU RECEIVED — paste actual
+curl output or bot response. Do not describe code.
+
+```markdown
+# QA Report
+
+## Summary
+- **Result**: passed / failed
+- **Checks**: X passed, Y failed
+
+## Checks
+
+### 1. <check name>
+- **Result**: pass / fail
+- **Detail**: <exact command you ran and response you got>
+
+## Issues Encountered
+(any problems found, or "None")
+```
 
 ## Output
-Return ONLY a JSON object:
+After writing QA_REPORT.md, return ONLY this JSON:
 {{
   "pass": true/false,
-  "checks": [{{"name": "check name", "pass": true/false, "detail": "what happened"}}],
+  "checks": [{{"name": "check name", "pass": true/false, "detail": "one-line summary"}}],
   "summary": "brief summary"
 }}"""
 
@@ -76,17 +143,31 @@ Return ONLY a JSON object:
 def parse_qa_result(raw: str) -> QAResult:
     """Parse Claude Code's JSON output into a QAResult.
 
-    Handles raw JSON, JSON wrapped in markdown code blocks, and malformed output.
+    Handles:
+    - --output-format json wrapper: {"type":"result","result":"..."}
+    - Raw QA JSON: {"pass": true, ...}
+    - JSON wrapped in markdown code blocks
     """
     if not raw or not raw.strip():
         return QAResult(passed=False, summary="QA produced no output", raw=raw)
 
-    # Try to extract JSON from markdown code blocks
     json_str = raw.strip()
+
+    # Step 1: Unwrap --output-format json wrapper if present
+    try:
+        wrapper = json.loads(json_str)
+        if isinstance(wrapper, dict) and wrapper.get("type") == "result":
+            # Extract the inner result text
+            json_str = wrapper.get("result", "")
+    except json.JSONDecodeError:
+        pass  # Not a wrapper, continue with raw
+
+    # Step 2: Extract JSON from markdown code blocks
     code_block_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", json_str, re.DOTALL)
     if code_block_match:
         json_str = code_block_match.group(1).strip()
 
+    # Step 3: Parse as QA result
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError:
@@ -135,11 +216,15 @@ async def run_qa_on_server(
     prompt = build_qa_prompt(story_description, deployed_url, bot_username)
 
     # Escape prompt for shell — use heredoc to avoid quoting issues
+    # Prepend ~/.local/bin to PATH — non-interactive SSH doesn't source .bashrc
+    # Permissions are configured via /root/.claude/settings.json (allowlist),
+    # NOT --dangerously-skip-permissions (blocked when running as root).
     cmd = (
+        f'export PATH="$HOME/.local/bin:$PATH" && '
         f"cd {SERVICE_BASE_DIR}/{project_name} && "
         f"timeout {timeout} claude -p {_shell_quote(prompt)} "
         f"--output-format json "
-        f"--max-turns 50 "
+        f"--max-turns 30 "
         f"--model claude-sonnet-4-6 "
         f"2>/dev/null"
     )
@@ -160,6 +245,9 @@ async def run_qa_on_server(
             )
             result = await conn.run(cmd, check=False)
 
+            # Collect QA_REPORT.md regardless of exit status
+            report = await _collect_qa_report(conn, project_name)
+
             if result.exit_status != 0:
                 logger.warning(
                     "qa_claude_nonzero_exit",
@@ -168,15 +256,20 @@ async def run_qa_on_server(
                     stderr=result.stderr[:500] if result.stderr else "",
                 )
                 if result.stdout:
-                    return parse_qa_result(result.stdout)
+                    qa_result = parse_qa_result(result.stdout)
+                    qa_result.report = report
+                    return qa_result
                 return QAResult(
                     passed=False,
                     summary=f"Claude Code exited with status {result.exit_status}: "
                     f"{result.stderr[:300] if result.stderr else 'no output'}",
                     raw=result.stdout or "",
+                    report=report,
                 )
 
-            return parse_qa_result(result.stdout or "")
+            qa_result = parse_qa_result(result.stdout or "")
+            qa_result.report = report
+            return qa_result
 
     except Exception as e:
         logger.error("qa_ssh_failed", server_ip=server_ip, error=str(e))
@@ -185,6 +278,23 @@ async def run_qa_on_server(
             summary=f"SSH connection failed to {server_ip}: {e}",
             raw="",
         )
+
+
+async def _collect_qa_report(
+    conn: asyncssh.SSHClientConnection,
+    project_name: str,
+) -> str:
+    """Read and remove QA_REPORT.md from the project directory on the server."""
+    report_path = f"{SERVICE_BASE_DIR}/{project_name}/QA_REPORT.md"
+    try:
+        result = await conn.run(f"cat {report_path} 2>/dev/null", check=False)
+        if result.exit_status == 0 and result.stdout:
+            await conn.run(f"rm -f {report_path}", check=False)
+            logger.info("qa_report_collected", size=len(result.stdout))
+            return result.stdout
+    except Exception as e:
+        logger.warning("qa_report_collect_failed", error=str(e))
+    return ""
 
 
 def _shell_quote(s: str) -> str:

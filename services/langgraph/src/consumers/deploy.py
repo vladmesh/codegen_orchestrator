@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 import structlog
 
+from shared.config_store import ConfigStore
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.queues.deploy import DeployMessage
@@ -22,8 +23,6 @@ from ._base import start_worker
 from ._events import publish_callback_event
 from .deploy_failure_handler import (
     CLASSIFY_PROMPT,
-    MAX_DEPLOY_FIX_ATTEMPTS,
-    MAX_DEPLOY_RETRIES,
     _classify_deploy_failure,
     _handle_deploy_failure,
     _handle_give_up,
@@ -45,8 +44,6 @@ from .deploy_result_handler import (
 # Re-export for backward compatibility with tests
 __all__ = [
     "CLASSIFY_PROMPT",
-    "MAX_DEPLOY_FIX_ATTEMPTS",
-    "MAX_DEPLOY_RETRIES",
     "SERVICE_BASE_DIR",
     "_build_subgraph_input",
     "_classify_deploy_failure",
@@ -65,7 +62,19 @@ __all__ = [
 
 logger = structlog.get_logger(__name__)
 
-DEPLOY_LOCK_TTL = 3600  # 1 hour — generous TTL for long deploys
+_config: ConfigStore | None = None
+
+
+def _deploy_lock_ttl() -> int:
+    global _config  # noqa: PLW0603
+    if _config is None:
+        import os
+
+        api_base_url = os.getenv("API_BASE_URL")
+        if not api_base_url:
+            raise RuntimeError("API_BASE_URL is not set")
+        _config = ConfigStore(api_base_url)
+    return _config.get_int("deploy.deploy_lock_ttl", default=3600)
 
 
 async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | str:
@@ -142,7 +151,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
     try:
         # Atomic Redis lock: only one consumer can process a deploy per project
-        acquired = await redis.redis.set(lock_key, task_id, nx=True, ex=DEPLOY_LOCK_TTL)
+        acquired = await redis.redis.set(lock_key, task_id, nx=True, ex=_deploy_lock_ttl())
         if not acquired:
             logger.info(
                 "deploy_lock_not_acquired",

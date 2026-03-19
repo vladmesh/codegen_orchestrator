@@ -144,15 +144,15 @@ Workers operate on **story-level feature branches** (`story/{story_id}`). Branch
 4. If CI red → Claude reads logs, fixes, pushes again
 5. If Claude can't fix → task fails → supervisor creates retry task
 
-### Developer Blocker Escalation
+### Developer Gave-Up Escalation
 
 If the developer agent encounters an unsolvable problem:
 
-1. Agent calls `curl -X POST localhost:9090/blocker -d '{"reason":"description"}'`
-2. Worker-wrapper HTTP server validates and publishes `block_reason` to Redis
-3. Developer node returns `engineering_status="developer_blocked"`
-4. Engineering consumer:
-   - Task → `waiting_human_review` with `failure_metadata.failure_reason = "developer_blocked"`
+1. Agent calls `curl -X POST localhost:9090/result -d '{"success":false,"reason":"description"}'`
+2. Worker-wrapper HTTP server validates and publishes result to Redis (status `"blocked"`, `gave_up_reason`)
+3. Developer node returns `engineering_status=EngineeringStatus.GAVE_UP`
+4. Engineering consumer calls `handle_worker_gave_up()`:
+   - Task → `waiting_human_review` with `failure_metadata = {reason: "..."}`
    - Story → `waiting_human_review`
    - Admin notified via Telegram (warning level)
    - User notified via PO ("story_blocked" event)
@@ -166,13 +166,13 @@ If the developer agent encounters an unsolvable problem:
 - Container stays alive between tasks
 - Workspace volume persists state (code, venv, node_modules, etc.)
 - Worker is destroyed after story completes (or fails permanently)
-- On blocker: worker is kept alive for admin inspection
+- On gave-up: worker is kept alive for admin inspection
 
 ---
 
 ## Phase 4b: PR-Based CI Gate
 
-**Actor**: Task Dispatcher (scheduler) + GitHub webhook handler (API)
+**Actor**: Task Dispatcher (scheduler) + PR Poller (scheduler)
 
 **Trigger**: All tasks in story `done`
 
@@ -183,12 +183,10 @@ If the developer agent encounters an unsolvable problem:
 5. Triggers next queued story for this project (doesn't wait for PR merge)
 
 **CI runs on the PR:**
-- **Green CI** → auto-merge → `pull_request` webhook (merged) OR dispatcher poll detects merged PR → deploy
-- **Red CI** → `workflow_run` webhook (failure on story branch) → creates fix task → story back to `in_progress`
+- **Green CI** → auto-merge → PR poller detects merged PR → deploy
+- **Red CI** → PR poller detects CI failure → creates fix task → story back to `in_progress`
 
-**PR merge detection**: Dispatcher polls GitHub for merged PRs on stories in `pr_review` status (every 30s). This eliminates dependency on the webhook — works even if webhook doesn't fire for newly scaffolded repos. → dispatcher picks up fix task
-
-This replaced the previous polling-based CI gate (`_ci_gate.py`, deleted).
+**PR merge detection**: PR poller (`scheduler/src/tasks/pr_poller.py`) polls GitHub for merged PRs and CI failures on stories in `pr_review` status (every 30s). No webhook dependency — works reliably for all repos including newly scaffolded ones.
 
 ---
 
@@ -196,7 +194,7 @@ This replaced the previous polling-based CI gate (`_ci_gate.py`, deleted).
 
 **Actor**: Deploy worker (consumes `deploy:queue`)
 
-**Trigger**: PR merged to main (webhook) OR PO manual trigger
+**Trigger**: PR merged to main (detected by PR poller) OR PO manual trigger
 
 1. Resolve server for the project (or provision new one)
 2. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)

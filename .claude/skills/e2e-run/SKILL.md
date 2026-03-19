@@ -42,6 +42,9 @@ Workers already write `/workspace/REPORT.md` (per INSTRUCTIONS.md) with Issues E
 and Suggestions sections. This IS the audit report — no separate AUDIT_REPORT.md needed.
 Worker reports are collected via task events API (step 7a).
 
+QA worker writes `QA_REPORT.md` in the project dir on the server and logs the content
+as `qa_report_content` event. QA reports are collected via qa-worker logs (step 7c).
+
 ## Architecture Quick Reference
 
 Understanding the pipeline flow helps you know where to look when things stall:
@@ -990,9 +993,56 @@ else
 fi
 ```
 
+**7c. Collect QA report** (from qa-worker logs):
+
+The QA worker logs the full QA_REPORT.md content as a structured log event
+(`qa_report_content`). Collect it the same way as worker reports.
+
+```bash
+QA_REPORT="docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-qa.md"
+
+# Extract QA report from qa-worker logs (logged as qa_report_content event)
+docker compose logs qa-worker --since=30m 2>/dev/null \
+  | grep "qa_report_content" \
+  | grep "$STORY_ID" \
+  | tail -1 \
+  | python3 -c "
+import json, sys
+line = sys.stdin.read().strip()
+idx = line.find('{')
+if idx >= 0:
+    data = json.loads(line[idx:])
+    report = data.get('report', '')
+    if report:
+        print(report)
+" > "$QA_REPORT" 2>/dev/null
+
+if [ -s "$QA_REPORT" ]; then
+  echo "QA report saved to $QA_REPORT"
+else
+  echo "WARNING: No QA report found in logs"
+  echo "(no QA report collected)" > "$QA_REPORT"
+fi
+```
+
+**Fallback**: If logs are empty, try reading QA_REPORT.md directly from the server
+(QA runner writes it to the project dir before collecting):
+
+```bash
+if [ ! -s "$QA_REPORT" ] || grep -q "no QA report" "$QA_REPORT"; then
+  REPORT_FROM_SERVER=$(bash infra/scripts/ssh-to-server.sh $SERVER_IP \
+    "cat /opt/services/$REPO_NAME/QA_REPORT.md 2>/dev/null" 2>&1 \
+    | grep -v "^#.*known_hosts\|Warning:")
+  if [ -n "$REPORT_FROM_SERVER" ]; then
+    echo "$REPORT_FROM_SERVER" > "$QA_REPORT"
+    echo "QA report collected from server"
+  fi
+fi
+```
+
 **CRITICAL**: Do NOT proceed to Step 9 cleanup (especially workspace deletion in step 9.9)
-until worker reports are successfully saved to disk. The workspace archive is the last
-fallback — once deleted, reports are gone forever.
+until worker reports AND QA report are successfully saved to disk. The workspace archive
+is the last fallback — once deleted, reports are gone forever.
 
 ### Step 8: Write E2E Report
 
@@ -1019,6 +1069,7 @@ Classify each problem by type:
 > **Feature phase**: passed / failed / skipped (only if --feature)
 > **Smoke**: pass / fail / none
 > **Worker reports**: collected (N) | none
+> **QA report**: collected | none
 
 ---
 

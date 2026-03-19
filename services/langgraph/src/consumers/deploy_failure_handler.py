@@ -8,6 +8,7 @@ import os
 from langchain_openai import ChatOpenAI
 import structlog
 
+from shared.config_store import ConfigStore
 from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.queues.deploy import DeployMessage
 from shared.contracts.queues.engineering import EngineeringMessage
@@ -22,9 +23,32 @@ from ._events import publish_callback_event
 
 logger = structlog.get_logger(__name__)
 
-MAX_DEPLOY_FIX_ATTEMPTS = 2
-MAX_DEPLOY_RETRIES = 3  # max deploy failures before story is marked failed
-DEPLOY_RETRY_TTL = 86400  # 24h — counter expires after a day
+_config: ConfigStore | None = None
+
+
+def _get_config() -> ConfigStore:
+    global _config  # noqa: PLW0603
+    if _config is None:
+        import os
+
+        api_base_url = os.getenv("API_BASE_URL")
+        if not api_base_url:
+            raise RuntimeError("API_BASE_URL is not set")
+        _config = ConfigStore(api_base_url)
+    return _config
+
+
+def _max_deploy_fix_attempts() -> int:
+    return _get_config().get_int("deploy.max_deploy_fix_attempts", default=2)
+
+
+def _max_deploy_retries() -> int:
+    return _get_config().get_int("deploy.max_deploy_retries", default=3)
+
+
+def _deploy_retry_ttl() -> int:
+    return _get_config().get_int("deploy.deploy_retry_ttl", default=86400)
+
 
 CLASSIFY_PROMPT = """\
 Classify this deployment failure into one of three categories.
@@ -106,7 +130,7 @@ async def _redispatch_to_engineering(
     Returns True if re-dispatched, False if retry limit reached.
     """
     attempt = msg.deploy_fix_attempt
-    if attempt >= MAX_DEPLOY_FIX_ATTEMPTS:
+    if attempt >= _max_deploy_fix_attempts():
         logger.warning(
             "deploy_fix_retries_exhausted",
             task_id=msg.task_id,
@@ -235,7 +259,7 @@ async def _route_deploy_failure(
 async def _track_deploy_retry(*, redis: RedisStreamClient, story_id: str) -> None:
     """Increment deploy retry counter and transition story.
 
-    After MAX_DEPLOY_RETRIES failures, marks story as failed (HITL).
+    After _max_deploy_retries() failures, marks story as failed (HITL).
     Otherwise rolls story back to "start" for another deploy attempt.
     """
     if not story_id:
@@ -244,14 +268,14 @@ async def _track_deploy_retry(*, redis: RedisStreamClient, story_id: str) -> Non
 
     attempt_key = f"deploy:{story_id}:attempts"
     attempts = await redis.redis.incr(attempt_key)
-    await redis.redis.expire(attempt_key, DEPLOY_RETRY_TTL)
+    await redis.redis.expire(attempt_key, _deploy_retry_ttl())
 
-    if attempts >= MAX_DEPLOY_RETRIES:
+    if attempts >= _max_deploy_retries():
         logger.warning(
             "deploy_max_retries_exceeded",
             story_id=story_id,
             attempts=attempts,
-            max_retries=MAX_DEPLOY_RETRIES,
+            max_retries=_max_deploy_retries(),
         )
         await _transition_story_safe(story_id, "fail")
         try:
@@ -271,7 +295,7 @@ async def _track_deploy_retry(*, redis: RedisStreamClient, story_id: str) -> Non
             "deploy_failure_rollback",
             story_id=story_id,
             attempt=attempts,
-            max_retries=MAX_DEPLOY_RETRIES,
+            max_retries=_max_deploy_retries(),
         )
         await _transition_story_safe(story_id, "start")
 
@@ -288,7 +312,7 @@ async def _handle_deploy_failure(
 ) -> dict:
     """Common handler for deploy failures — update run, rollback story, notify.
 
-    Tracks consecutive deploy failures per story in Redis. After MAX_DEPLOY_RETRIES
+    Tracks consecutive deploy failures per story in Redis. After _max_deploy_retries()
     failures, transitions story to failed instead of back to in_progress (prevents
     infinite deploy-fail-retry loops).
     """

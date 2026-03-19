@@ -181,7 +181,7 @@ class TestRunQAOnServer:
                 timeout=600,
             )
 
-        # Verify timeout is passed to the command
-        run_call = mock_conn.run.call_args
-        cmd = run_call[0][0]
+        # Verify timeout is passed to the claude command (first run call)
+        first_call = mock_conn.run.call_args_list[0]
+        cmd = first_call[0][0]
         assert "600" in cmd

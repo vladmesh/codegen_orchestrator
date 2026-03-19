@@ -13,9 +13,13 @@ import ssl
 
 import structlog
 
+from ..startup import config as _config
+
 logger = structlog.get_logger()
 
-SSL_CHECK_TIMEOUT = 5
+
+def _ssl_check_timeout() -> int:
+    return _config.get_int("scheduler.ssl_check_timeout") if _config else 5
 
 
 def _get_cert_expiry(host: str, port: int) -> datetime | None:
@@ -25,7 +29,7 @@ def _get_cert_expiry(host: str, port: int) -> datetime | None:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-        with socket.create_connection((host, port), timeout=SSL_CHECK_TIMEOUT) as sock:
+        with socket.create_connection((host, port), timeout=_ssl_check_timeout()) as sock:
             with ctx.wrap_socket(sock, server_hostname=host) as ssock:
                 cert = ssock.getpeercert()
                 if not cert or "notAfter" not in cert:

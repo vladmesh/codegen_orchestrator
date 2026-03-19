@@ -82,6 +82,23 @@
     mode: '0600'
   no_log: true
 
+- name: Configure Claude Code permissions (allowlist for QA)
+  copy:
+    dest: /root/.claude/settings.json
+    owner: root
+    mode: '0600'
+    content: |
+      {
+        "permissions": {
+          "allow": [
+            "Bash(*)", "Read(*)", "Write(*)", "Edit(*)",
+            "Glob(*)", "Grep(*)", "WebFetch(*)", "WebSearch(*)"
+          ],
+          "deny": []
+        }
+      }
+  no_log: true
+
 # --- Telethon session (optional) ---
 
 - name: Copy Telethon session file

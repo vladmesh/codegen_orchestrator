@@ -121,6 +121,11 @@ class SmokeTesterNode(FunctionalNode):
         result = {
             "smoke_result": {"status": overall, "checks": checks},
         }
+        # Propagate bot_username from tg_bot check to state (for QA handoff)
+        for check in checks:
+            if check.get("bot_username"):
+                result["bot_username"] = check["bot_username"]
+                break
         if errors:
             result["errors"] = errors
         return result
@@ -265,6 +270,7 @@ class SmokeTesterNode(FunctionalNode):
                             "module": "tg_bot",
                             "result": "pass",
                             "detail": f"Bot responded: {response.text[:100]}",
+                            "bot_username": bot_username,
                         }
                     return {
                         "module": "tg_bot",

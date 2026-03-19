@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from shared.contracts.dto.application import ApplicationDTO
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.queues.qa import QAServerInfo
@@ -70,11 +71,15 @@ def mock_api_client():
     with patch("src.consumers.qa.api_client") as mock:
         mock.get_story = AsyncMock(return_value=_qa_story())
         mock.get_project = AsyncMock(
-            return_value={
-                "id": "proj-1",
-                "name": "weather_bot",
-                "config": {},
-            }
+            return_value=ProjectDTO(
+                id="116c9678-5872-4ce5-8332-9a267ab27604",
+                name="weather_bot",
+                status=ProjectStatus.ACTIVE,
+                config={},
+                owner_id=1,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
         )
         mock.get_application = AsyncMock(return_value=_application())
         mock.get_server = AsyncMock(return_value=_server())
