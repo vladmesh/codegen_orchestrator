@@ -101,15 +101,47 @@ async def send_telegram_message(
                     logger.info("notification_sent", telegram_id=telegram_id)
                     _record_message(telegram_id)
                     return True
-                else:
-                    error_text = await resp.text()
-                    logger.error(
-                        "notification_failed",
+
+                error_text = await resp.text()
+
+                # Retry without parse_mode if Telegram can't parse entities
+                if (
+                    resp.status == HTTPStatus.BAD_REQUEST
+                    and "can't parse entities" in error_text
+                    and parse_mode
+                ):
+                    logger.warning(
+                        "notification_parse_retry",
                         telegram_id=telegram_id,
-                        status=resp.status,
-                        error=error_text,
+                        parse_mode=parse_mode,
                     )
-                    return False
+                    plain_payload = {
+                        "chat_id": telegram_id,
+                        "text": text,
+                    }
+                    async with session.post(
+                        url, json=plain_payload, timeout=aiohttp.ClientTimeout(total=10)
+                    ) as retry_resp:
+                        if retry_resp.status == HTTPStatus.OK:
+                            logger.info("notification_sent", telegram_id=telegram_id)
+                            _record_message(telegram_id)
+                            return True
+                        retry_error = await retry_resp.text()
+                        logger.error(
+                            "notification_failed",
+                            telegram_id=telegram_id,
+                            status=retry_resp.status,
+                            error=retry_error,
+                        )
+                        return False
+
+                logger.error(
+                    "notification_failed",
+                    telegram_id=telegram_id,
+                    status=resp.status,
+                    error=error_text,
+                )
+                return False
     except TimeoutError:
         logger.error("notification_timeout", telegram_id=telegram_id)
         return False
