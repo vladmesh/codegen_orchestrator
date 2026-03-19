@@ -86,6 +86,11 @@ class TestParseQAResult:
 
 
 class TestRunQAOnServer:
+    @pytest.fixture(autouse=True)
+    def _skip_credential_refresh(self):
+        with patch("src.consumers._qa_runner._ensure_claude_credentials", new_callable=AsyncMock):
+            yield
+
     @pytest.mark.asyncio
     async def test_successful_qa_pass(self):
         mock_result = MagicMock()

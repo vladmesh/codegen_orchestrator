@@ -1,7 +1,7 @@
 """QA runner — SSH to prod server, run Claude Code, parse result.
 
 Delegates actual testing to Claude Code CLI running on the target server.
-The prompt is built from the story description and deployment URL.
+The prompt is built from the acceptance criteria and deployment URL.
 """
 
 from __future__ import annotations
@@ -9,14 +9,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import re
+import time
 
 import asyncssh
+import httpx
 import structlog
 
 logger = structlog.get_logger(__name__)
 
 QA_TIMEOUT = 1200  # 20 minutes
 SERVICE_BASE_DIR = "/opt/services"
+CREDENTIALS_PATH = "/root/.claude/.credentials.json"
+OAUTH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
+OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+OAUTH_REFRESH_BUFFER_S = 300  # refresh if expires within 5 minutes
 
 
 @dataclass
@@ -187,6 +193,57 @@ def parse_qa_result(raw: str) -> QAResult:
     )
 
 
+async def _ensure_claude_credentials(conn: asyncssh.SSHClientConnection) -> None:
+    """Check Claude Code OAuth credentials on server, refresh if expired."""
+    result = await conn.run(f"cat {CREDENTIALS_PATH} 2>/dev/null", check=False)
+    if result.exit_status != 0 or not result.stdout:
+        raise RuntimeError(f"No Claude credentials at {CREDENTIALS_PATH} on server")
+
+    creds = json.loads(result.stdout)
+    oauth = creds["claudeAiOauth"]
+    expires_at = oauth["expiresAt"] / 1000  # ms → seconds
+    now = time.time()
+
+    if now < expires_at - OAUTH_REFRESH_BUFFER_S:
+        logger.info("claude_credentials_valid", ttl_s=int(expires_at - now))
+        return
+
+    logger.info("claude_credentials_expired", expired_ago_s=int(now - expires_at))
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            OAUTH_ENDPOINT,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": oauth["refreshToken"],
+                "client_id": OAUTH_CLIENT_ID,
+            },
+        )
+        resp.raise_for_status()
+        token_data = resp.json()
+
+    new_creds = {
+        "claudeAiOauth": {
+            "accessToken": token_data["access_token"],
+            "refreshToken": token_data["refresh_token"],
+            "expiresAt": int((now + token_data["expires_in"]) * 1000),
+            "scopes": oauth["scopes"],
+            "subscriptionType": oauth.get("subscriptionType", ""),
+            "rateLimitTier": oauth.get("rateLimitTier", ""),
+        }
+    }
+    new_creds_json = json.dumps(new_creds, indent=2)
+
+    await conn.run(
+        f"cat > {CREDENTIALS_PATH} << 'CREDS_EOF'\n{new_creds_json}\nCREDS_EOF",
+        check=True,
+    )
+    logger.info(
+        "claude_credentials_refreshed",
+        expires_in=token_data["expires_in"],
+    )
+
+
 async def run_qa_on_server(
     *,
     server_ip: str,
@@ -241,6 +298,10 @@ async def run_qa_on_server(
                 project_name=project_name,
                 timeout=timeout,
             )
+
+            # Ensure Claude Code credentials are fresh before running
+            await _ensure_claude_credentials(conn)
+
             result = await conn.run(cmd, check=False)
 
             # Collect QA_REPORT.md regardless of exit status
