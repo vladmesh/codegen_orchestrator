@@ -66,12 +66,6 @@
 - **Status**: backlog
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
 
-### Regression E2E: acceptance criteria on Repository + QA report in admin UI
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: ## Problem  Сейчас кнопка "Run E2E" в админке на странице Application — чёрная дыра:  1. **QA не знает что тестировать.** При standalone-запуске (из админки) `story_id` пустой → QA-промпт не получает бизнес-требований. Claude Code проверяет только "живо ли приложение" (health 200, контейнеры heal...
-
 ### Integrate Repository into production flows (webhook, scheduler, worker)
 - **Priority**: LOW
 - **Plan**: —
@@ -282,6 +276,7 @@
 
 ## Done (last 10)
 
+- Regression E2E: acceptance criteria on Repository + QA report in admin UI — 2026-03-19
 - #1030 Decouple QA consumer from story lifecycle — 2026-03-19
 - #1026 Admin UI: action buttons on entity pages — 2026-03-19
 - #1025 Admin UI: Settings page (config + prompt editor) — 2026-03-19
@@ -291,4 +286,3 @@
 - Unify worker result API — single /result endpoint, stdout capture, auto-resume — 2026-03-19
 - Refactor engineering_status to StrEnum — 2026-03-19
 - Restore Makefile overrides in worker-wrapper (make migrate broken) — 2026-03-19
-- QA consumer: resolve by application_id, replace dicts with DTOs — 2026-03-19
