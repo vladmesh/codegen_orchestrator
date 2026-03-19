@@ -402,6 +402,10 @@ Implement infrastructure monitoring: node_exporter + cadvisor on prod servers, h
 - [ ] #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - [ ] #1018 Daily SSH job: filesystem drift check + docker prune
 
+## Smoke test story
+
+- [ ] Initialize project foundation and verify smoke test
+
 ## Product decomposition + Architect node
 
 PO умеет принимать от юзера высокоуровневое описание и формулировать из него продуктовые stories. Architect нода берёт story + контекст проекта (спеки, кодбаза) и дробит на технические tasks с зависимостями. Юзер видит stories (продуктовый уровень), tasks абстрагированы. Юзер может влиять на stories через диалог с PO.
@@ -536,7 +540,7 @@ Feature-стенды, полноценный CI перед деплоем. Previ
 
 - [x] #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs
 - [ ] #1021 ConfigStore helper with TTL cache
-- [ ] #1024 Thin API endpoints for admin actions (7 endpoints)
+- [x] #1024 Thin API endpoints for admin actions (7 endpoints)
 - [ ] #1022 Switch services from hardcoded constants to ConfigStore
 - [x] #1025 Admin UI: Settings page (config + prompt editor)
 - [ ] #1026 Admin UI: action buttons on entity pages

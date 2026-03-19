@@ -5,6 +5,7 @@
 ## 2026-03-19
 
 ### Added
+- **Thin API endpoints for admin actions** (#1024): 8 new endpoints on the API service. `POST /stories/{id}/send-to-architect` (validate+transition+publish ArchitectMessage). `POST /tasks/{id}/spawn-worker` (transition+create Run+publish EngineeringMessage). `POST /applications/{id}/stop|undeploy|redeploy` (status transitions + publish DeployMessage). `POST /applications/{id}/run-e2e` (create Run + publish QAMessage). `POST /applications/from-repo` (create Repo+App+port+deploy). `DELETE /projects/{id}/config/secrets/{key}`. Added `ADMIN` to `DeployTrigger`, `DEPLOYING/STOPPING/UNDEPLOYING` to `ApplicationStatus`. API now has `RedisStreamClient` singleton for queue publishing.
 - **Queue contracts: Optional story_id + action field** (#1023): `DeployAction` StrEnum replaces `Literal["create", "feature", "fix"]` — adds `stop` and `undeploy` values for lifecycle operations from admin. `QAMessage.story_id` now optional (defaults to `""`) for standalone E2E triggers. New `deploy_lifecycle` module handles stop/undeploy via SSH, skipping the full DevOps subgraph. QA consumer uses `application_id` for inflight dedup when no story. Engineering and architect consumers verified compatible with direct publish.
 
 ### Changed

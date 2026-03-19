@@ -16,6 +16,8 @@ import { TracingPage } from '@/pages/TracingPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { UserDetailPage } from '@/pages/UserDetailPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { StoryDetailPage } from '@/pages/StoryDetailPage'
+import { ApplicationDetailPage } from '@/pages/ApplicationDetailPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -44,6 +46,8 @@ export default function App() {
             <Route path="queues/:stream/:group" element={<QueueDetailPage />} />
             <Route path="users" element={<UsersPage />} />
             <Route path="users/:id" element={<UserDetailPage />} />
+            <Route path="stories/:id" element={<StoryDetailPage />} />
+            <Route path="applications/:id" element={<ApplicationDetailPage />} />
             <Route path="servers" element={<ServersPage />} />
             <Route path="logs" element={<LogsPage />} />
             <Route path="tracing" element={<TracingPage />} />

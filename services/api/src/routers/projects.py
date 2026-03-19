@@ -250,6 +250,26 @@ async def patch_project(
     return project
 
 
+@router.get("/{project_id}/config/secrets/keys")
+async def list_secret_keys(
+    project_id: uuid.UUID,
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """List secret key names for a project (no values exposed)."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    await _check_project_access(project, x_telegram_id, db)
+
+    config = dict(project.config or {})
+    existing_secrets = config.get("secrets") or {}
+    existing_secrets = decrypt_dict(existing_secrets) if existing_secrets else {}
+
+    return {"keys": sorted(existing_secrets.keys())}
+
+
 @router.post("/{project_id}/config/secrets")
 async def merge_secrets(
     project_id: uuid.UUID,
