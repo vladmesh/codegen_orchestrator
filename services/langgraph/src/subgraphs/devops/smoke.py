@@ -252,24 +252,25 @@ class SmokeTesterNode(FunctionalNode):
                     "detail": "Could not get bot username from getMe",
                 }
 
-            # Connect Telethon and send /start
+            # Connect Telethon and send /start via conversation API
             client = TelegramClient(session_path, int(api_id), api_hash)
             try:
                 await client.start()
-                await client.send_message(f"@{bot_username}", "/start")
-                response = await client.get_response(f"@{bot_username}", timeout=15)
+                async with client.conversation(f"@{bot_username}", timeout=15) as conv:
+                    await conv.send_message("/start")
+                    response = await conv.get_response()
 
-                if response and response.text:
+                    if response and response.text:
+                        return {
+                            "module": "tg_bot",
+                            "result": "pass",
+                            "detail": f"Bot responded: {response.text[:100]}",
+                        }
                     return {
                         "module": "tg_bot",
-                        "result": "pass",
-                        "detail": f"Bot responded: {response.text[:100]}",
+                        "result": "fail",
+                        "detail": "Bot sent empty response",
                     }
-                return {
-                    "module": "tg_bot",
-                    "result": "fail",
-                    "detail": "Bot sent empty response",
-                }
             finally:
                 await client.disconnect()
 

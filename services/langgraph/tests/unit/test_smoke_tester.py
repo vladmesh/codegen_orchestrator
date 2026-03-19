@@ -174,29 +174,42 @@ def _tg_bot_state(**kwargs):
     )
 
 
+def _mock_telethon_client_with_conversation(*, response_text=None, side_effect=None):
+    """Build a mock TelegramClient with conversation context manager."""
+    mock_client = AsyncMock()
+    mock_client.start = AsyncMock()
+    mock_client.disconnect = AsyncMock()
+
+    mock_conv = AsyncMock()
+    mock_conv.send_message = AsyncMock()
+
+    if side_effect:
+        mock_conv.get_response = AsyncMock(side_effect=side_effect)
+    else:
+        mock_response = MagicMock()
+        mock_response.text = response_text
+        mock_conv.get_response = AsyncMock(return_value=mock_response)
+
+    mock_conv.__aenter__ = AsyncMock(return_value=mock_conv)
+    mock_conv.__aexit__ = AsyncMock(return_value=False)
+    mock_client.conversation = MagicMock(return_value=mock_conv)
+
+    return mock_client
+
+
 class TestSmokeTesterTgBotPass:
     """Telethon /start gets a response."""
 
     async def test_pass_on_response(self, smoke_node):
         state = _tg_bot_state()
 
-        # Mock getMe API call
         mock_getme_response = AsyncMock()
         mock_getme_response.status_code = 200
         mock_getme_response.json = MagicMock(
             return_value={"ok": True, "result": {"username": "test_bot"}}
         )
 
-        # Mock Telethon client
-        mock_telethon_client = AsyncMock()
-        mock_telethon_client.start = AsyncMock()
-        mock_telethon_client.send_message = AsyncMock()
-        mock_telethon_client.disconnect = AsyncMock()
-
-        # Mock incoming message
-        mock_event = MagicMock()
-        mock_event.message = MagicMock()
-        mock_event.message.text = "Welcome!"
+        mock_telethon_client = _mock_telethon_client_with_conversation(response_text="Welcome!")
 
         with (
             patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_http_cls,
@@ -218,15 +231,13 @@ class TestSmokeTesterTgBotPass:
 
             mock_tg_cls.return_value = mock_telethon_client
 
-            # Simulate receiving a message via get_response
-            mock_telethon_client.get_response = AsyncMock(return_value=mock_event.message)
-
             result = await smoke_node.run(state)
 
         assert result["smoke_result"]["status"] == "pass"
         check = result["smoke_result"]["checks"][0]
         assert check["module"] == "tg_bot"
         assert check["result"] == "pass"
+        assert "Welcome!" in check["detail"]
 
 
 class TestSmokeTesterTgBotTimeout:
@@ -241,11 +252,9 @@ class TestSmokeTesterTgBotTimeout:
             return_value={"ok": True, "result": {"username": "test_bot"}}
         )
 
-        mock_telethon_client = AsyncMock()
-        mock_telethon_client.start = AsyncMock()
-        mock_telethon_client.send_message = AsyncMock()
-        mock_telethon_client.disconnect = AsyncMock()
-        mock_telethon_client.get_response = AsyncMock(side_effect=TimeoutError("no response"))
+        mock_telethon_client = _mock_telethon_client_with_conversation(
+            side_effect=TimeoutError("no response")
+        )
 
         with (
             patch("src.subgraphs.devops.smoke.httpx.AsyncClient") as mock_http_cls,
