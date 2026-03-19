@@ -3,7 +3,7 @@
 > [!WARNING]
 > Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
 
-> **Updated**: 2026-03-18
+> **Updated**: 2026-03-19
 
 ## Queue (ordered by priority, first = next)
 
@@ -99,6 +99,12 @@
 - **Status**: backlog
 - **Brief**: Allow adding tg_bot/notifications/frontend to a project generated without them. Currently requires re-generation.
 
+### Restore Makefile overrides in worker-wrapper (make migrate broken)
+- **Priority**: LOW
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: ## Problem  `make migrate` inside worker containers fails because `make dev-start svc=db` tries to run `docker compose up -d db` — but workers have no Docker CLI or socket.  Discovered in E2E: worker report says "make migrate calls make dev-start svc=db which requires Docker CLI", worker had to r...
+
 ### #2 Agent Hierarchy & Incident Response
 - **Priority**: LOW
 - **Plan**: —
@@ -137,6 +143,12 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Aggregate relevant spec, AGENTS.md, signatures, linter errors into single token-optimized file for agent context.
+
+### QA consumer: resolve by application_id, replace dicts with DTOs
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: QA consumer resolves server info via `list_applications({"project_id": ...})` which silently fails — applications API has no project_id filter, returns all apps, picks wrong one (e.g. codegen_orchestrator instead of weather-bot). Additionally, QA fix tasks are created with default `backlog` statu...
 
 ### #11 E2E Tests Completion
 - **Priority**: LOW

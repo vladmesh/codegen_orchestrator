@@ -5,6 +5,12 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 
 <!-- entries below -->
 
+## [e2e-run] — 2026-03-19 (run 2)
+- **Type**: missing-info
+- **Quote**: "Step 0: Health check + pre-flight cleanup" — pre-flight cleanup section
+- **Problem**: Pre-flight cleanup does not clean applications API records from previous runs. The applications API `project_id` filter doesn't actually work (returns all apps), which causes QA runner to pick up unrelated application records (e.g., `codegen_orchestrator` instead of `weather-bot`). The skill should note this as a known issue and suggest using `service-deployments` API for server resolution.
+- **Suggested fix**: Add a note in "Common Gotchas" about the applications API filter being broken. QA runner will fail if stale application records exist. Workaround: use `service-deployments` API which correctly filters by project_id.
+
 ## [e2e-run] — 2026-03-19
 - **Type**: bug
 - **Quote**: "Step 5: Monitor PR Review & Deploy" — webhook failure section

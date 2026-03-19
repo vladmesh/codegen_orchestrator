@@ -105,6 +105,7 @@ async def _handle_deploy_success(
     user_id: str,
     story_id: str,
     redis: RedisStreamClient,
+    application_id: int | None = None,
 ) -> dict:
     """Handle successful deploy (with or without smoke)."""
     logger.info(
@@ -133,6 +134,7 @@ async def _handle_deploy_success(
                 project_id=project_id,
                 user_id=user_id,
                 deployed_url=result["deployed_url"],
+                application_id=application_id,
             ),
         )
         logger.info("qa_handoff", story_id=story_id, deployed_url=result["deployed_url"])

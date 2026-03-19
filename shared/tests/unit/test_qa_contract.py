@@ -11,11 +11,13 @@ class TestQAMessage:
             project_id="proj-123",
             user_id="user-1",
             deployed_url="https://example.com",
+            application_id=17,
         )
         assert msg.story_id == "story-abc"
         assert msg.project_id == "proj-123"
         assert msg.user_id == "user-1"
         assert msg.deployed_url == "https://example.com"
+        assert msg.application_id == 17
 
     def test_defaults(self):
         msg = QAMessage(
@@ -23,6 +25,7 @@ class TestQAMessage:
             project_id="proj-123",
             user_id="user-1",
             deployed_url="https://example.com",
+            application_id=1,
         )
         assert msg.qa_attempt == 0
         assert msg.bot_username is None
@@ -37,6 +40,7 @@ class TestQAMessage:
             project_id="proj-123",
             user_id="user-1",
             deployed_url="https://example.com",
+            application_id=1,
             bot_username="my_test_bot",
         )
         assert msg.bot_username == "my_test_bot"
@@ -47,6 +51,7 @@ class TestQAMessage:
             project_id="proj-123",
             user_id="user-1",
             deployed_url="https://example.com",
+            application_id=1,
             qa_attempt=2,
         )
         assert msg.qa_attempt == 2
@@ -57,6 +62,7 @@ class TestQAMessage:
             project_id="proj-123",
             user_id="user-1",
             deployed_url="https://example.com",
+            application_id=17,
             bot_username="bot",
             qa_attempt=1,
         )
@@ -66,6 +72,7 @@ class TestQAMessage:
         assert restored.deployed_url == msg.deployed_url
         assert restored.qa_attempt == msg.qa_attempt
         assert restored.bot_username == msg.bot_username
+        assert restored.application_id == 17
 
 
 class TestQAQueueTopology:

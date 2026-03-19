@@ -7,13 +7,29 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
+from shared.contracts.queues.qa import QAServerInfo
 from src.consumers.qa import (
     MAX_QA_LOOPS,
     _resolve_server_info,
     process_qa_job,
 )
+
+
+def _application(**overrides) -> ApplicationDTO:
+    base = {
+        "id": 1,
+        "repo_id": "repo-1",
+        "server_handle": "vps-1",
+        "service_name": "weather_bot",
+        "status": "running",
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
+    base.update(overrides)
+    return ApplicationDTO(**base)
 
 
 def _server(**overrides) -> ServerDTO:
@@ -60,9 +76,7 @@ def mock_api_client():
                 "config": {},
             }
         )
-        mock.list_applications = AsyncMock(
-            return_value=[{"id": 1, "server_handle": "vps-1", "service_name": "weather_bot"}]
-        )
+        mock.get_application = AsyncMock(return_value=_application())
         mock.get_server = AsyncMock(return_value=_server())
         mock.get_server_ssh_key = AsyncMock(
             return_value="-----BEGIN RSA KEY-----\nfake\n-----END RSA KEY-----"
@@ -90,6 +104,7 @@ def qa_message_data():
         "project_id": "proj-1",
         "user_id": "12345",
         "deployed_url": "https://weather.example.com",
+        "application_id": 1,
         "bot_username": None,
         "qa_attempt": 0,
     }
@@ -97,25 +112,28 @@ def qa_message_data():
 
 class TestResolveServerInfo:
     @pytest.mark.asyncio
-    async def test_resolves_server_ip_and_key(self, mock_api_client):
-        ip, key, name = await _resolve_server_info("proj-1")
-        assert ip == "1.2.3.4"
-        assert "RSA" in key
-        assert name == "weather_bot"
+    async def test_resolves_server_info(self, mock_api_client):
+        info = await _resolve_server_info(1)
+        assert isinstance(info, QAServerInfo)
+        assert info.server_ip == "1.2.3.4"
+        assert "RSA" in info.ssh_key
+        assert info.project_name == "weather_bot"
+        mock_api_client.get_application.assert_called_once_with(1)
 
     @pytest.mark.asyncio
-    async def test_no_applications(self, mock_api_client):
-        mock_api_client.list_applications.return_value = []
-        ip, key, name = await _resolve_server_info("proj-1")
-        assert ip is None
-        assert key is None
+    async def test_application_not_found(self, mock_api_client):
+        mock_api_client.get_application.side_effect = Exception("Not found")
+        assert await _resolve_server_info(999) is None
 
     @pytest.mark.asyncio
-    async def test_no_ssh_key(self, mock_api_client):
+    async def test_no_ssh_key_returns_none(self, mock_api_client):
         mock_api_client.get_server_ssh_key.return_value = None
-        ip, key, name = await _resolve_server_info("proj-1")
-        assert ip == "1.2.3.4"
-        assert key is None
+        assert await _resolve_server_info(1) is None
+
+    @pytest.mark.asyncio
+    async def test_no_server_handle_returns_none(self, mock_api_client):
+        mock_api_client.get_application.return_value = _application(server_handle="")
+        assert await _resolve_server_info(1) is None
 
 
 class TestProcessQAJobPass:
@@ -169,6 +187,25 @@ class TestProcessQAJobFail:
         assert "weather" in task_data["description"].lower() or "404" in task_data["description"]
 
     @pytest.mark.asyncio
+    async def test_qa_fail_creates_task_with_todo_status(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        from src.consumers._qa_runner import QAResult
+
+        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(
+                passed=False,
+                checks=[{"name": "health", "pass": False, "detail": "503"}],
+                summary="Service unhealthy",
+                raw="",
+            )
+            with patch("src.consumers.qa.publish_story_event", new_callable=AsyncMock):
+                await process_qa_job(qa_message_data, mock_redis)
+
+        task_data = mock_api_client.create_task.call_args[0][0]
+        assert task_data["status"] == "todo"
+
+    @pytest.mark.asyncio
     async def test_qa_fail_rolls_back_story(self, mock_api_client, mock_redis, qa_message_data):
         from src.consumers._qa_runner import QAResult
 
@@ -199,15 +236,15 @@ class TestProcessQAJobFail:
 
 class TestProcessQAJobEdgeCases:
     @pytest.mark.asyncio
-    async def test_no_server_found(self, mock_api_client, mock_redis, qa_message_data):
-        mock_api_client.list_applications.return_value = []
+    async def test_application_not_found(self, mock_api_client, mock_redis, qa_message_data):
+        mock_api_client.get_application.side_effect = Exception("Not found")
 
         result = await process_qa_job(qa_message_data, mock_redis)
         assert result["status"] == "error"
-        assert "server" in result.get("error", "").lower()
+        assert "application" in result.get("error", "").lower()
 
     @pytest.mark.asyncio
-    async def test_no_ssh_key(self, mock_api_client, mock_redis, qa_message_data):
+    async def test_no_ssh_key_errors(self, mock_api_client, mock_redis, qa_message_data):
         mock_api_client.get_server_ssh_key.return_value = None
 
         result = await process_qa_job(qa_message_data, mock_redis)

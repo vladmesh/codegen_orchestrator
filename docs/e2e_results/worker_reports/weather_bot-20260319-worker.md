@@ -1,100 +1,83 @@
 # Worker Reports: weather_bot
 
-## Task: task-5878ae48 — Implement Telegram bot /weather command
+## Task: task-9db9ce1e — Implement backend weather API with PostgreSQL caching
 
 # Developer Report
 
 ## Summary
-- **Task**: Implement Telegram bot /weather command
+- **Task**: Build backend weather API with PostgreSQL caching
 - **Result**: completed
-- **Commit**: 2da5f47
-
-## Environment
-
-### Database
-- **Connection**: not needed
-- **Migrations**: not needed
-
-### Network
-- No issues
-
-### Infrastructure Commands
-- No infrastructure needed for this task
-
-## What Worked
-- Existing BackendClient/ServiceClient pattern made it easy to add get_weather method
-- python-telegram-bot CommandHandler pattern was straightforward
-- Unit test patterns from existing test_command_handler.py were clear and easy to follow
-
-## Issues Encountered
-
-### 1. Framework module not installed
-- **Category**: tooling
-- **Severity**: minor
-- **Error**: `ModuleNotFoundError: No module named 'framework'` during `make lint` (spec validation step)
-- **Workaround**: Installed framework package via `uv pip install -e /workspace/.framework/ --python .venv/bin/python`
-
-### 2. shared.logging not found in tg_bot venv
-- **Category**: tooling
-- **Severity**: minor
-- **Error**: `ModuleNotFoundError: No module named 'shared.logging'` when collecting test_middleware.py
-- **Workaround**: Pre-existing issue, does not affect our tests. Running tests with correct PYTHONPATH works for test_command_handler.py
-
-## Suggestions
-- Install framework package during `make setup` to avoid spec validation failures
-- Ensure shared package is properly installed in service venvs for test collection
-
-## Task: task-4beefba0 — Implement weather API endpoint with PostgreSQL caching
-
-# Developer Report
-
-## Summary
-- **Task**: Implement weather API endpoint with PostgreSQL caching
-- **Result**: completed
-- **Commit**: f870f36
+- **Commit**: f2870ea
 
 ## Environment
 
 ### Database
 - **Connection**: success
 - **`getent hosts db`**: 172.20.0.3 db
-- **Error**: none
-- **Migrations**: ran successfully (applied existing + new add_weather_cache migration)
-- **Workaround**: none
+- **Error**: None
+- **Migrations**: ran successfully (applied existing + new weather_cache migration)
+- **Workaround**: Ran alembic directly with env vars sourced from .env since `make migrate` tried to use Docker
+
+### Network
+- **Docker network**: No issues
+- **Service discovery issues**: None
+
+### Infrastructure Commands
+- **start-infra**: success
+- **compose ps**: db healthy
+
+> No issues.
+
+## What Worked
+- Spec-first workflow (models.yaml + domain spec + make generate-from-spec) generated schemas, protocols, and controller stub cleanly
+- Existing patterns in users domain served as clear reference for weather implementation
+- All 35 tests pass (13 backend + 22 tg_bot)
+- Lint, spec validation, and controller sync checks all pass
+
+## Issues Encountered
+
+### 1. make migrate requires Docker
+- **Category**: tooling
+- **Severity**: minor
+- **Error**: `make migrate` calls `make dev-start svc=db` which requires Docker CLI
+- **Workaround**: Ran alembic directly: `PYTHONPATH=. services/backend/.venv/bin/alembic -c services/backend/migrations/alembic.ini upgrade head`
+
+## Suggestions
+- None
+
+## Task: task-6efad996 — Implement Telegram bot /weather command
+
+# Developer Report
+
+## Summary
+- **Task**: Implement Telegram bot /weather command
+- **Result**: completed
+- **Commit**: 58016aa
+
+## Environment
+
+### Database
+- **Connection**: not needed for this task
+- **Migrations**: not needed
+- **Workaround**: N/A
 
 ### Network
 - No issues
 
 ### Infrastructure Commands
-- **start-infra**: success (db container started and healthy via compose proxy)
-- **compose ps**: not checked separately, db was healthy
+- Not needed for this task
+
+> No issues.
 
 ## What Worked
-- Spec-first workflow: added model to models.yaml, created domain spec, ran generate-from-spec — protocols and controller stub generated automatically
-- Existing test infrastructure (SQLite-based conftest) worked well for testing
-- Pre-push hooks validated everything: lint, spec validation, spec compliance, controller sync, dep checks, and all 18 tests
+- Existing BackendClient pattern made adding get_weather method straightforward
+- Existing handler patterns (handle_start, handle_command) served as clear reference
+- Existing test patterns made writing weather handler tests easy
+- All 42 tests pass (13 backend + 29 tg_bot)
 
 ## Issues Encountered
-
-### 1. shared package not installed in backend venv
-- **Category**: tooling
-- **Severity**: minor
-- **Error**: `ModuleNotFoundError: No module named 'shared.logging'` when running alembic
-- **Workaround**: `uv pip install -e /workspace/shared/ --python services/backend/.venv/bin/python`
-
-### 2. framework package not installed in root venv
-- **Category**: tooling
-- **Severity**: minor
-- **Error**: `ModuleNotFoundError: No module named 'framework'` during make lint (spec validation)
-- **Workaround**: Already installed by previous task developer
-
-### 3. JSONB vs JSON for test compatibility
-- **Category**: framework
-- **Severity**: minor
-- **Error**: SQLite doesn't support JSONB dialect
-- **Workaround**: Used SQLAlchemy's generic JSON type in model (works with both SQLite and PostgreSQL). Migration file correctly uses postgresql.JSONB.
+None.
 
 ## Suggestions
-- Run `make setup` or equivalent to install shared/framework packages into service venvs automatically
-- Consider adding a conftest helper that installs shared package if missing
+None.
 

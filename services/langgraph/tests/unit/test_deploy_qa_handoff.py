@@ -92,6 +92,7 @@ async def test_deploy_success_transitions_to_testing(
             "deployed_url": "http://1.2.3.4:8080",
             "deployment_result": {},
             "smoke_result": {"status": "pass", "checks": []},
+            "application_id": 1,
         }
     )
 
@@ -114,6 +115,7 @@ async def test_deploy_success_publishes_qa_message(
             "deployed_url": "http://1.2.3.4:8080",
             "deployment_result": {},
             "smoke_result": {"status": "pass", "checks": []},
+            "application_id": 1,
         }
     )
 
@@ -130,6 +132,7 @@ async def test_deploy_success_publishes_qa_message(
     assert qa_msg.project_id == "proj-1"
     assert qa_msg.deployed_url == "http://1.2.3.4:8080"
     assert qa_msg.user_id == "12345"
+    assert qa_msg.application_id == 1
 
 
 @pytest.mark.asyncio
@@ -142,6 +145,7 @@ async def test_deploy_success_does_not_delete_worker(
             "deployed_url": "http://1.2.3.4:8080",
             "deployment_result": {},
             "smoke_result": {"status": "pass", "checks": []},
+            "application_id": 1,
         }
     )
 
@@ -163,6 +167,7 @@ async def test_deploy_success_no_story_skips_qa(
             "deployed_url": "http://1.2.3.4:8080",
             "deployment_result": {},
             "smoke_result": {"status": "pass", "checks": []},
+            "application_id": 1,
         }
     )
 

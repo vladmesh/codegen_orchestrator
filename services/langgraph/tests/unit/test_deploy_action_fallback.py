@@ -112,6 +112,7 @@ class TestDeployActionFallback:
                 "deployed_url": "http://1.2.3.4:8080",
                 "deployment_result": {},
                 "smoke_result": {"status": "pass", "checks": []},
+                "application_id": 1,
                 "errors": [],
             }
         )
@@ -155,6 +156,7 @@ class TestDeployActionFallback:
                     "deployed_url": "http://1.2.3.4:8080",
                     "deployment_result": {},
                     "smoke_result": None,
+                    "application_id": 1,
                     "errors": [],
                 }
             )

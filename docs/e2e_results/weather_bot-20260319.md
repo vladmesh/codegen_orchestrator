@@ -1,10 +1,11 @@
-# E2E Report: weather_bot — Deploy smoke false positive (backend OK, tg_bot actually running)
+# E2E Report: weather_bot — Deploy OK, QA bug
 
 > **Date**: 2026-03-19
-> **Project**: weather_bot (project_id: `6ed593a1-342b-484a-bf8f-b9deb812107a`)
-> **Story**: story-2eb52bb9
-> **Status**: Failed (false positive — actual deploy succeeded)
-> **Smoke**: fail (backend pass, tg_bot false fail)
+> **Project**: weather-bot (project_id: `f5ffe4a7-90da-4f73-86ca-09f4b529c288`)
+> **Story**: story-eedb8dc7
+> **Status**: Passed (with manual intervention)
+> **Feature phase**: skipped
+> **Smoke**: pass (health + /api/weather/moscow + cache verified)
 > **Worker reports**: collected (2)
 
 ---
@@ -12,63 +13,66 @@
 ## Timeline
 
 ```
-23:26  PO: project creation request sent
-23:26  PO: project "weather-bot" created, asks for bot token
-23:26  PO: token sent, story story-2eb52bb9 created
-23:27  Scaffold complete (project: active, workspace_ready: true)
-23:27  Architect: 2 tasks created
-        task-5878ae48: Implement Telegram bot /weather command
-        task-4beefba0: Implement weather API endpoint with PostgreSQL caching
-23:28  task-5878ae48 → in_dev (worker started)
-23:32  task-5878ae48 → done (~4 min)
-23:32  task-4beefba0 → in_dev (second worker started, same container reused)
-23:39  task-4beefba0 → done (~7 min)
-23:39  Story → pr_review (PR created, auto-merge enabled)
-23:40  CI passed on story branch, PR merged, CI passed on main
-23:40  First deploy message published (action=feature, wrong action type)
-23:40  Story went back to in_progress briefly (webhook race?)
-23:42  Second deploy message published (action=create, retry)
-23:42  Deploy-worker: env analysis, secret resolution, GitHub secrets configured
-23:42  Deploy-worker: deploy.yml workflow triggered
-23:43  Deploy completed, containers running on server
-23:44  Smoke test: backend PASS, tg_bot FAIL (TelegramClient bug)
-23:44  Deploy-worker classified as GIVE_UP → story failed
+00:58  PO message sent (create weather_bot with backend + tg_bot)
+00:58  PO responded — asked for bot token
+00:58  Bot token sent, PO confirmed (@factory_e2e_test_bot)
+00:59  Project created (weather-bot, status=draft)
+00:59  Scaffold complete (draft → active, workspace_ready=true)
+01:02  Architect created 2 tasks:
+       - task-9db9ce1e: Implement backend weather API with PostgreSQL caching
+       - task-6efad996: Implement Telegram bot /weather command
+01:01  Task 1 dispatched to worker (in_dev)
+03:06  Task 1 done
+03:07  Task 2 dispatched (in_dev)
+03:10  Task 2 done
+~01:11 PR #1 merged (story/story-eedb8dc7 → main)
+~01:14 Deploy succeeded (port 8012 on 80.209.235.229)
+01:14  QA started — FAILED (wrong project_name: "codegen_orchestrator")
+01:14  QA created fix task (task-e3ac149e), story → in_progress
+01:15  [intervention] Cancelled stale QA fix task
+01:18  [intervention] Verified deploy manually — all healthy
+01:18  [intervention] Story → completed
 ```
 
 ## PO Interaction
 
-Smooth. PO created project, asked for bot token, accepted and stored it. No issues.
+- PO created project as `weather-bot` (hyphenated, as expected)
+- PO asked for bot token, validated it, saved secrets
+- Smooth 2-message interaction, no issues
 
-## Deployment Verification (manual)
+## Verification Results
 
-Despite the smoke failure, actual deployment is fully functional:
-- Backend: healthy at http://80.209.235.229:8012
-- `GET /api/weather/moscow` returns `{"city": "moscow", "temperature": 0.3, "humidity": 62, "description": "Rainy"}`
-- tg_bot container: running (Up, no healthcheck defined)
-- All 3 containers up: backend (healthy), db (healthy), redis (healthy), tg_bot (running)
-- Both `BACKEND_IMAGE` and `TG_BOT_IMAGE` env vars correctly set
+- **Health**: `GET /health` → `{"status": "ok"}` ✅
+- **Weather API**: `GET /api/weather/moscow` → `{"city": "moscow", "temperature": 32.9, "humidity": 81, "description": "Foggy", "cached_at": "..."}` ✅
+- **Caching**: Second request returned same `cached_at` timestamp ✅
+- **CI**: green on main ✅
+- **Containers**: 4/4 up (backend, db, redis, tg_bot), 0 restarts ✅
 
 ## Problems Found
 
-### Problem 1: Smoke test TelegramClient bug
-- **Type**: orchestrator
-- **Severity**: major
-- **Backlog**: new
-- **Description**: Smoke test `_check_tg_bot` fails with `'TelegramClient' object has no attribute 'get_response'`. This is a bug in the deploy-worker's Telethon smoke checker, not in the deployed bot. The bot is actually running fine.
-- **Root cause**: The `TelegramClient` (Telethon) API call `get_response` doesn't exist. Previous fix `1dea9740` addressed readonly session but this method issue persists.
-- **Suggested fix**: Fix the `_check_tg_bot` method in `services/langgraph/src/agents/devops/nodes/smoke.py` to use the correct Telethon API for sending messages and reading responses.
+### Problem 1: QA runner uses wrong project_name — resolves to unrelated application
 
-### Problem 2: Double deploy message with wrong action type
+- **Type**: orchestrator
+- **Severity**: critical
+- **Backlog**: new
+- **Description**: QA runner (`services/langgraph/src/consumers/qa.py:37-44`) calls `api_client.list_applications({"project_id": project_id})`, but the API returns ALL applications, not filtered by project_id. `apps[0]` picks up `codegen_orchestrator` (id=5) instead of `weather-bot` (id=17). QA then SSHes to server and runs `cd /opt/services/codegen_orchestrator` which doesn't exist, causing QA to fail and create a bogus fix task.
+- **Root cause**: Applications API filter by `project_id` doesn't work — returns all applications. The application records are not properly associated with projects (they're linked through repos, but the filter chain is broken).
+- **Suggested fix**: Either fix the `project_id` filter in the applications API, or change QA runner to use `service-deployments` API instead (`/api/service-deployments/?project_id=X`) which correctly filters and returns `service_name=weather-bot`.
+
+### Problem 2: git_pull_failed warning on first task
+
 - **Type**: orchestrator
 - **Severity**: minor
-- **Backlog**: new
-- **Description**: Two deploy messages were published to `deploy:queue`. The first had `action=feature` (wrong — this is a new project, not a feature add). The second had `action=create` (correct, retry). This suggests the webhook handler or PR poller has a race condition where it fires twice with different action types.
-- **Root cause**: Likely the PR merge webhook and the PR poller both detected the merge and published separate deploy messages with different `action` values.
-- **Suggested fix**: Deduplicate deploy messages by story_id, or use an idempotency key to prevent double-publish.
+- **Backlog**: —
+- **Description**: Worker wrapper logs `git_pull_failed` with `fatal: couldn't find remote ref story/story-eedb8dc7` when the first task starts. Branch doesn't exist on remote yet.
+- **Root cause**: `_git_pull()` in `wrapper.py:344-358` runs unconditionally before every agent run. For the first task, the story branch hasn't been pushed yet.
+- **Suggested fix**: Suppress warning when the branch doesn't exist on remote (expected for first task). Or skip pull if `git ls-remote` shows no such ref.
 
-### Problem 3: Telegram notification parse error
+### Problem 3: 18 stale in_progress stories in database
+
 - **Type**: orchestrator
 - **Severity**: minor
-- **Backlog**: existing (notification formatting)
-- **Description**: Admin notification failed with `Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 322`. The HTML message sent to the admin had malformed entities.
-- **Suggested fix**: Sanitize/escape HTML entities in error messages before sending via Telegram.
+- **Backlog**: —
+- **Description**: `GET /api/stories/?status=in_progress` returns 18 stories from previous runs. Dispatcher iterates all of them every 30s cycle, adding latency.
+- **Root cause**: Pre-flight cleanup doesn't clean stories from other projects. `make nuke` was skipped (--no-nuke).
+- **Suggested fix**: Not a bug per se — `make nuke` would fix it. But dispatcher could benefit from only checking stories updated in the last 24h.

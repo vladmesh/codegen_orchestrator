@@ -201,6 +201,19 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
     @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_result_contains_application_id(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """Deployer result should include application_id for QA handoff."""
+        _setup_happy_mocks(mock_api, mock_gh_cls)
+
+        result = await deployer.run(base_state)
+
+        assert result["application_id"] == 1
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_no_project_status_update(self, mock_api, mock_gh_cls, deployer, base_state):
         """Deploy should not update project status — Application status is updated instead."""
         _setup_happy_mocks(mock_api, mock_gh_cls)

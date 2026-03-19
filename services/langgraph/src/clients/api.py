@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.server import ServerDTO
@@ -155,6 +156,10 @@ class LanggraphAPIClient:
 
     async def list_applications(self, params: dict | None = None) -> list[dict]:
         return await self._get_json("applications/", params=params or {})
+
+    async def get_application(self, application_id: int) -> ApplicationDTO:
+        data = await self._get_json(f"applications/{application_id}")
+        return ApplicationDTO.model_validate(data)
 
     async def create_application(self, payload: dict) -> dict:
         return await self._post_json("applications/", json=payload)

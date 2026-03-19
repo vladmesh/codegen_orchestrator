@@ -302,6 +302,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 user_id=user_id,
                 story_id=story_id,
                 redis=redis,
+                application_id=result.get("application_id"),
             )
         elif result.get("missing_user_secrets"):
             missing = result.get("missing_user_secrets")

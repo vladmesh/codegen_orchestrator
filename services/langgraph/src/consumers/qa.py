@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import structlog
 
-from shared.contracts.queues.qa import QAMessage
+from shared.contracts.queues.qa import QAMessage, QAServerInfo
 from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -26,32 +26,39 @@ MAX_QA_LOOPS = 2  # max QA→Engineering cycles before story is marked failed
 QA_INFLIGHT_TTL = 1500  # 25 min TTL for inflight marker
 
 
-async def _resolve_server_info(
-    project_id: str,
-) -> tuple[str | None, str | None, str | None]:
-    """Resolve server IP, SSH key, and project name from project_id.
+async def _resolve_server_info(application_id: int) -> QAServerInfo | None:
+    """Resolve server IP, SSH key, and project name from application_id.
 
     Returns:
-        Tuple of (server_ip, ssh_key, project_name). Any may be None on failure.
+        QAServerInfo with connection details, or None on failure.
     """
-    apps = await api_client.list_applications({"project_id": project_id})
-    if not apps:
-        logger.warning("qa_no_applications", project_id=project_id)
-        return None, None, None
+    try:
+        app = await api_client.get_application(application_id)
+    except Exception:
+        logger.warning("qa_application_not_found", application_id=application_id, exc_info=True)
+        return None
 
-    app = apps[0]
-    server_handle = app.get("server_handle")
-    project_name = app.get("service_name", project_id)
+    if not app.server_handle:
+        logger.warning("qa_no_server_handle", application_id=application_id)
+        return None
 
-    if not server_handle:
-        logger.warning("qa_no_server_handle", project_id=project_id)
-        return None, None, project_name
+    server = await api_client.get_server(app.server_handle)
+    ssh_key = await api_client.get_server_ssh_key(app.server_handle)
 
-    server = await api_client.get_server(server_handle)
-    server_ip = server.public_ip
-    ssh_key = await api_client.get_server_ssh_key(server_handle)
+    if not server.public_ip or not ssh_key:
+        logger.warning(
+            "qa_server_incomplete",
+            application_id=application_id,
+            has_ip=bool(server.public_ip),
+            has_ssh_key=bool(ssh_key),
+        )
+        return None
 
-    return server_ip, ssh_key, project_name
+    return QAServerInfo(
+        server_ip=server.public_ip,
+        ssh_key=ssh_key,
+        project_name=app.service_name,
+    )
 
 
 async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
@@ -66,13 +73,12 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """
     msg = QAMessage.model_validate(job_data)
     story_id = msg.story_id
-    project_id = msg.project_id
     user_id = msg.user_id
 
     logger.info(
         "qa_job_started",
         story_id=story_id,
-        project_id=project_id,
+        application_id=msg.application_id,
         qa_attempt=msg.qa_attempt,
     )
 
@@ -85,14 +91,13 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
     try:
         # Resolve server info
-        server_ip, ssh_key, project_name = await _resolve_server_info(project_id)
-        if not server_ip or not ssh_key:
-            error = f"Cannot resolve server for project {project_id}"
-            if not server_ip:
-                error = f"No server found for project {project_id}"
-            elif not ssh_key:
-                error = f"No SSH key for project {project_id} server"
-            logger.error("qa_server_resolve_failed", project_id=project_id, error=error)
+        server_info = await _resolve_server_info(msg.application_id)
+        if not server_info:
+            error = f"Cannot resolve server for application {msg.application_id}"
+            logger.error(
+                "qa_server_resolve_failed",
+                application_id=msg.application_id,
+            )
             return {"status": "error", "error": error}
 
         # Fetch story description for QA prompt
@@ -101,9 +106,9 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
         # Run QA on server
         qa_result = await run_qa_on_server(
-            server_ip=server_ip,
-            ssh_key=ssh_key,
-            project_name=project_name or project_id,
+            server_ip=server_info.server_ip,
+            ssh_key=server_info.ssh_key,
+            project_name=server_info.project_name,
             story_description=story_description,
             deployed_url=msg.deployed_url,
             bot_username=msg.bot_username,
@@ -122,14 +127,14 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 story_id=story_id,
                 user_id=user_id,
                 deployed_url=msg.deployed_url,
-                project_name=project_name or project_id,
+                project_name=server_info.project_name,
                 redis=redis,
             )
         else:
             return await _handle_qa_fail(
                 msg=msg,
                 qa_result=qa_result,
-                project_name=project_name or project_id,
+                project_name=server_info.project_name,
                 redis=redis,
             )
 
@@ -211,6 +216,7 @@ async def _handle_qa_fail(
             "story_id": story_id,
             "title": f"QA fix: {qa_result.summary[:80]}",
             "type": "fix",
+            "status": "todo",
             "description": fix_description,
         }
     )

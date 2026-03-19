@@ -25,10 +25,13 @@ async def _create_deployment_record(
     port: int,
     deployment_info: dict,
     deployed_sha: str | None = None,
-) -> bool:
+) -> int | None:
     """Create a deployment record and update the Application status via API.
 
     Application should already exist (created during resource allocation).
+
+    Returns:
+        application_id if successfully resolved, None otherwise.
     """
     try:
         # Find existing Application (created during allocation)
@@ -63,7 +66,7 @@ async def _create_deployment_record(
 
         await api_client.create_deployment(payload)
         logger.info("deployment_record_created", service_name=service_name)
-        return True
+        return application_id
     except Exception as e:
         logger.error(
             "deployment_record_error",
@@ -71,7 +74,7 @@ async def _create_deployment_record(
             error=str(e),
             error_type=type(e).__name__,
         )
-        return False
+        return None
 
 
 async def _write_deploy_secrets(
@@ -307,7 +310,7 @@ class DeployerNode(FunctionalNode):
             if isinstance(modules, list):
                 modules = ",".join(modules)
 
-            await _create_deployment_record(
+            application_id = await _create_deployment_record(
                 project_id=project_id,
                 service_name=project_name,
                 server_handle=server_handle,
@@ -324,6 +327,7 @@ class DeployerNode(FunctionalNode):
             return {
                 "deployment_result": {"status": "success", "run_id": run_info["id"]},
                 "deployed_url": deployed_url,
+                "application_id": application_id,
                 "messages": [AIMessage(content=f"Deployment successful! URL: {deployed_url}")],
             }
 
@@ -347,7 +351,7 @@ class DeployerNode(FunctionalNode):
                 if isinstance(modules, list):
                     modules = ",".join(modules)
 
-                await _create_deployment_record(
+                application_id = await _create_deployment_record(
                     project_id=project_id,
                     service_name=project_name,
                     server_handle=server_handle,
@@ -367,6 +371,7 @@ class DeployerNode(FunctionalNode):
                         "run_id": run_info["id"],
                     },
                     "deployed_url": deployed_url,
+                    "application_id": application_id,
                     "messages": [
                         AIMessage(
                             content=f"Deployment successful (after rerun)! URL: {deployed_url}"

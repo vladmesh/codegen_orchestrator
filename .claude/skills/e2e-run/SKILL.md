@@ -170,6 +170,12 @@ $COMPOSE logs backend --tail=50
 
 ## Execution Flow
 
+> **MANDATORY STEPS**: Every test run MUST execute ALL steps in order:
+> Steps 0–8.5 (test + report + commit), then **Step 9 (Cleanup)**.
+> Cleanup is NOT optional — skip it ONLY if `--no-cleanup` was explicitly passed.
+> After Step 8.5, proceed to Step 9 immediately. Do NOT stop, summarize, or
+> wait for user input between commit and cleanup.
+
 Run tests **sequentially** (one at a time).
 
 **Repo naming**: PO may create the GitHub repo with **either** underscores (`weather_bot`) or
@@ -450,10 +456,13 @@ PROJECT_ID=$(curl -s "http://localhost:8000/api/projects/" \
 STORY_ID=$(curl -s "http://localhost:8000/api/stories/?sort=-created_at" \
   | jq -r --arg pid "$PROJECT_ID" '.[] | select(.project_id == $pid) | .id' | head -1)
 
-REPO_ID=$(curl -s "http://localhost:8000/api/projects/$PROJECT_ID" \
-  | jq -r '.repositories[0].id // empty')
+REPO_ID=$(curl -s "http://localhost:8000/api/repositories/?project_id=$PROJECT_ID" \
+  | jq -r '.[0].id // empty')
 
-echo "PROJECT_ID=$PROJECT_ID STORY_ID=$STORY_ID REPO_ID=$REPO_ID"
+REPO_NAME=$(curl -s "http://localhost:8000/api/repositories/?project_id=$PROJECT_ID" \
+  | jq -r '.[0].name // empty')
+
+echo "PROJECT_ID=$PROJECT_ID STORY_ID=$STORY_ID REPO_ID=$REPO_ID REPO_NAME=$REPO_NAME"
 ```
 
 If either is empty, send a follow-up to PO. If PO fails after 2 attempts,
@@ -1079,7 +1088,9 @@ git commit -m "e2e: $PROJECT_NAME — <pass/fail>"
 
 Do NOT push.
 
-### Step 9: Cleanup (skip if --no-cleanup)
+**Proceed to Step 9 immediately — do NOT stop here.**
+
+### Step 9: Cleanup (skip ONLY if --no-cleanup)
 
 ```bash
 # 1. Kill worker containers
@@ -1116,17 +1127,19 @@ curl -s "http://localhost:8000/api/service-deployments/?project_id=$PROJECT_ID" 
     curl -s -X DELETE "http://localhost:8000/api/service-deployments/$ID"
   done
 
-# 5. Delete project from DB via SQL (API endpoint doesn't cascade stories)
+# 5. Delete project from DB via SQL (single transaction — partial deletes cause FK issues)
+# Tasks have project_id directly. application_health_history must go before applications.
 docker compose exec -T db psql -U postgres -d orchestrator -c "
   BEGIN;
-  DELETE FROM task_events WHERE task_id IN (SELECT id FROM tasks WHERE story_id IN (SELECT id FROM stories WHERE project_id = '$PROJECT_ID'));
+  DELETE FROM task_events WHERE task_id IN (SELECT id FROM tasks WHERE project_id = '$PROJECT_ID');
   DELETE FROM runs WHERE project_id = '$PROJECT_ID';
-  DELETE FROM tasks WHERE story_id IN (SELECT id FROM stories WHERE project_id = '$PROJECT_ID');
+  DELETE FROM tasks WHERE project_id = '$PROJECT_ID';
   DELETE FROM stories WHERE project_id = '$PROJECT_ID';
+  DELETE FROM application_health_history WHERE application_id IN (SELECT id FROM applications WHERE repo_id IN (SELECT id FROM repositories WHERE project_id = '$PROJECT_ID'));
   DELETE FROM port_allocations WHERE application_id IN (SELECT id FROM applications WHERE repo_id IN (SELECT id FROM repositories WHERE project_id = '$PROJECT_ID'));
   DELETE FROM applications WHERE repo_id IN (SELECT id FROM repositories WHERE project_id = '$PROJECT_ID');
-  DELETE FROM repositories WHERE project_id = '$PROJECT_ID';
   DELETE FROM service_deployments WHERE project_id = '$PROJECT_ID';
+  DELETE FROM repositories WHERE project_id = '$PROJECT_ID';
   DELETE FROM projects WHERE id = '$PROJECT_ID';
   COMMIT;
 "
