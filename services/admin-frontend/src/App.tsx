@@ -15,6 +15,7 @@ import { LogsPage } from '@/pages/LogsPage'
 import { TracingPage } from '@/pages/TracingPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { UserDetailPage } from '@/pages/UserDetailPage'
+import { SettingsPage } from '@/pages/SettingsPage'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="servers" element={<ServersPage />} />
             <Route path="logs" element={<LogsPage />} />
             <Route path="tracing" element={<TracingPage />} />
+            <Route path="settings" element={<SettingsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

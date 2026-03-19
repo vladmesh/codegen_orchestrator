@@ -534,7 +534,7 @@ Feature-стенды, полноценный CI перед деплоем. Previ
 
 Мегадашборд: все метрики, все юзеры, полная observability. Графики, алерты, drill-down в любую сущность.
 
-- [ ] #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs
+- [x] #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs
 - [ ] #1021 ConfigStore helper with TTL cache
 - [ ] #1024 Thin API endpoints for admin actions (7 endpoints)
 - [ ] #1022 Switch services from hardcoded constants to ConfigStore

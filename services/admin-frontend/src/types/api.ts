@@ -312,3 +312,31 @@ export interface LangfuseTracesResponse {
   data: LangfuseTrace[]
   meta: { totalItems: number; page: number; totalPages: number }
 }
+
+// System configuration (key-value, grouped by category)
+export interface SystemConfig {
+  key: string
+  value: unknown
+  description: string | null
+  category: string
+  updated_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+// Agent configuration (prompts, model settings)
+export interface AgentConfig {
+  id: string
+  name: string
+  system_prompt: string
+  model_name: string
+  temperature: number
+  is_active: boolean
+  llm_provider: string
+  model_identifier: string
+  openrouter_site_url: string | null
+  openrouter_app_name: string | null
+  version: number
+  created_at: string
+  updated_at: string
+}

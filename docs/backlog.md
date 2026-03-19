@@ -48,12 +48,6 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Phase 1 backend (all-in-one): (1) New SystemConfig table (key PK, value JSON, description, category, updated_at, updated_by). (2) CRUD endpoints at /api/system-configs/. (3) Seed script populates ~25 defaults from current hardcoded values (categories: scheduler, supervisor, deploy, health, llm). ...
-
 ### #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage
 - **Priority**: HIGH
 - **Plan**: —
@@ -68,7 +62,7 @@
 
 ### #1025 Admin UI: Settings page (config + prompt editor)
 - **Priority**: MEDIUM
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: New Settings page in admin SPA. Table grouped by category (scheduler, supervisor, deploy, health, llm). Inline edit for numeric/string values. Textarea with syntax highlighting for prompts (agent_configs). Save button per row. Shows description and current value. Blocked by #1020.
 
@@ -312,6 +306,7 @@
 
 ## Done (last 10)
 
+- #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs — 2026-03-19
 - Unify worker result API — single /result endpoint, stdout capture, auto-resume — 2026-03-19
 - Refactor engineering_status to StrEnum — 2026-03-19
 - Restore Makefile overrides in worker-wrapper (make migrate broken) — 2026-03-19
@@ -321,7 +316,6 @@
 - HTTP-сервер в worker-wrapper (localhost:9090) — complete/failed/blocker endpoints — 2026-03-18
 - Replace raw dict API clients with shared Pydantic DTOs — 2026-03-17
 - Refactor large files (>400 LOC) — extract helpers — 2026-03-17
-- #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
 
 ## Ideas
 

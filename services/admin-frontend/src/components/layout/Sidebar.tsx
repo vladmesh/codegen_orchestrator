@@ -10,6 +10,7 @@ import {
   ScrollText,
   BrainCircuit,
   Users,
+  Settings,
 } from 'lucide-react'
 
 interface NavItem {
@@ -29,6 +30,7 @@ const navItems: NavItem[] = [
   { label: 'Servers', path: '/servers', icon: Server },
   { label: 'Logs', path: '/logs', icon: ScrollText },
   { label: 'LLM Tracing', path: '/tracing', icon: BrainCircuit },
+  { label: 'Settings', path: '/settings', icon: Settings },
 ]
 
 export function Sidebar() {
