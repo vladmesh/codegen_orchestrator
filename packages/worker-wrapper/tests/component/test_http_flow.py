@@ -42,7 +42,7 @@ class TestHttpToRedisFlow:
     """Full flow: HTTP POST → validate → publish callback."""
 
     @pytest.mark.asyncio
-    async def test_complete_flow(self):
+    async def test_success_flow(self):
         publish = AsyncMock()
         event = asyncio.Event()
         server = ResultHttpServer(
@@ -56,8 +56,8 @@ class TestHttpToRedisFlow:
         try:
             status, body = await _post(
                 server.port,
-                "/complete",
-                {"commit": "a1b2c3d", "summary": "Implemented auth flow"},
+                "/result",
+                {"success": True, "commit": "a1b2c3d", "summary": "Implemented auth flow"},
             )
             assert status == 200
             assert body["ok"] is True
@@ -73,7 +73,7 @@ class TestHttpToRedisFlow:
             await server.stop()
 
     @pytest.mark.asyncio
-    async def test_failed_flow(self):
+    async def test_failure_flow(self):
         publish = AsyncMock()
         event = asyncio.Event()
         server = ResultHttpServer(
@@ -87,42 +87,14 @@ class TestHttpToRedisFlow:
         try:
             status, body = await _post(
                 server.port,
-                "/failed",
-                {"reason": "Tests fail after 3 retries"},
-            )
-            assert status == 200
-            publish.assert_awaited_once_with(
-                {
-                    "status": "failed",
-                    "error": "Tests fail after 3 retries",
-                }
-            )
-        finally:
-            await server.stop()
-
-    @pytest.mark.asyncio
-    async def test_blocker_flow(self):
-        publish = AsyncMock()
-        event = asyncio.Event()
-        server = ResultHttpServer(
-            worker_id="w-003",
-            publish_callback=publish,
-            result_event=event,
-            host="127.0.0.1",
-            port=0,
-        )
-        await server.start()
-        try:
-            status, body = await _post(
-                server.port,
-                "/blocker",
-                {"reason": "Need clarification on auth spec"},
+                "/result",
+                {"success": False, "reason": "Tests fail after 3 retries"},
             )
             assert status == 200
             publish.assert_awaited_once_with(
                 {
                     "status": "blocked",
-                    "block_reason": "Need clarification on auth spec",
+                    "block_reason": "Tests fail after 3 retries",
                 }
             )
         finally:
@@ -141,11 +113,11 @@ class TestHttpToRedisFlow:
         )
         await server.start()
         try:
-            # Missing required 'commit' field
+            # Missing required 'commit' for success=true
             status, body = await _post(
                 server.port,
-                "/complete",
-                {"summary": "done"},
+                "/result",
+                {"success": True, "summary": "done"},
             )
             assert status == 400
             assert "error" in body
@@ -170,16 +142,16 @@ class TestHttpToRedisFlow:
             # First call succeeds
             s1, _ = await _post(
                 server.port,
-                "/complete",
-                {"commit": "aaa", "summary": "first"},
+                "/result",
+                {"success": True, "commit": "aaa", "summary": "first"},
             )
             assert s1 == 200
 
             # Second call rejected
             s2, body = await _post(
                 server.port,
-                "/failed",
-                {"reason": "actually failed"},
+                "/result",
+                {"success": False, "reason": "actually failed"},
             )
             assert s2 == 409
             assert publish.await_count == 1

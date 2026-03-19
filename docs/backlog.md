@@ -48,12 +48,6 @@
 - **Status**: backlog
 - **Brief**: Deploy worker currently manages story status transitions (complete/rollback) and sends user notifications. This couples deploy to story lifecycle, preventing standalone deploys (server migration, infra hotfix).  Changes: 1. Deploy worker: remove all _transition_story_safe() calls and publish_stor...
 
-### Refactor engineering_status to StrEnum
-- **Priority**: HIGH
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: engineering_status is currently bare strings scattered across developer.py, engineering.py (EngineeringState comment, BlockedNode, DoneNode, route_after_developer), and engineering consumer. This caused a bug where "developer_blocked" was not in the documented enum and was silently overwritten by...
-
 ### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - **Priority**: LOW
 - **Plan**: —
@@ -80,7 +74,7 @@
 
 ### Unify worker result API — single /result endpoint, stdout capture, auto-resume
 - **Priority**: LOW
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Unify the three worker HTTP endpoints (/complete, /failed, /blocker) into a single `POST /result` with binary outcome (success: true/false). Add infra compose proxy to wrapper so workers use only localhost:9090. Capture agent stdout tail for analytics. Auto-resume agent once if it exits without c...
 
@@ -300,6 +294,7 @@
 
 ## Done (last 10)
 
+- Refactor engineering_status to StrEnum — 2026-03-19
 - QA consumer: resolve by application_id, replace dicts with DTOs — 2026-03-19
 - Убрать result_parser из wrapper, добавить watchdog-логику — 2026-03-18
 - Удалить orchestrator-cli, перевести агента на curl к localhost:9090 — 2026-03-18
@@ -309,7 +304,6 @@
 - #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
 - #1016 Admin UI: application health status and response times — 2026-03-17
 - #1015 Admin UI: extended server health dashboard with per-container view + charts — 2026-03-17
-- #1014 Implement health_checker worker (HTTP polling + auto-incidents + alerts) — 2026-03-17
 
 ## Ideas
 

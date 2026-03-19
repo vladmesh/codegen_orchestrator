@@ -62,7 +62,7 @@ class EngineeringState(TypedDict):
     commit_sha: str | None
     worker_id: str | None
     worker_report: str | None
-    reject_reason: str | None
+    gave_up_reason: str | None
 
     # Loop tracking
     iteration_count: int

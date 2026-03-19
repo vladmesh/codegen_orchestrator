@@ -181,7 +181,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             "human_approval_reason": None,
             "branch": branch,
             "worker_report": None,
-            "reject_reason": None,
+            "gave_up_reason": None,
             "errors": [],
         }
 
@@ -240,11 +240,7 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             )
 
         elif eng_status == EngineeringStatus.GAVE_UP:
-            reason = (
-                result.get("block_reason")
-                or result.get("reject_reason")
-                or "Worker could not complete the task"
-            )
+            reason = result.get("gave_up_reason") or "Worker could not complete the task"
             return await _handle_worker_gave_up(
                 task_id=task_id,
                 project_id=project_id,

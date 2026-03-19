@@ -40,9 +40,9 @@ actually solvable by writing code. Read the task title and error description.
 
 To reject:
 ```bash
-curl -sf -X POST http://localhost:9090/failed \
+curl -sf -X POST http://localhost:9090/result \
   -H 'Content-Type: application/json' \
-  -d '{"reason":"NOT A CODE ISSUE: <clear explanation>"}'
+  -d '{"success":false,"reason":"NOT A CODE ISSUE: <clear explanation>"}'
 ```
 
 **Only proceed** if the error is genuinely fixable by modifying application code
@@ -110,7 +110,7 @@ Do NOT commit with failing tests or lint errors.
 If your changes touch database code or integrations, also run:
 ```bash
 # Start infrastructure first (see Infrastructure section below)
-curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+curl -sf -X POST http://localhost:9090/infra/compose \
   -H 'Content-Type: application/json' \
   -d '{"args":["up","-d","--wait","db","redis"],"timeout":120}'
 
@@ -130,33 +130,52 @@ Make descriptive commit messages.
 When done, report via HTTP (localhost:9090 is always available inside the container):
 
 ```bash
-# Success — include commit SHA and summary of what you did
-curl -sf -X POST http://localhost:9090/complete \
+# Task completed — include commit SHA and summary
+curl -sf -X POST http://localhost:9090/result \
   -H 'Content-Type: application/json' \
-  -d '{"commit":"<sha>","summary":"<what you did>"}'
+  -d '{"success":true,"commit":"<sha>","summary":"<what you did>"}'
 
-# Failure — when you tried but could not complete the task
-curl -sf -X POST http://localhost:9090/failed \
+# Task not completed — explain why
+curl -sf -X POST http://localhost:9090/result \
   -H 'Content-Type: application/json' \
-  -d '{"reason":"<why it failed>"}'
-
-# Blocked — when you need human intervention
-curl -sf -X POST http://localhost:9090/blocker \
-  -H 'Content-Type: application/json' \
-  -d '{"reason":"<what you need>"}'
+  -d '{"success":false,"reason":"<why you cannot complete this task>"}'
 ```
 
 If you get a 400 response — fix the JSON payload format and retry.
 If you get a 409 response — you already submitted a result, no action needed.
 
+### When to report failure (success: false)
+
+Report failure when the task **cannot be completed by writing code**:
+
+**Infrastructure / environment issues:**
+- Required API keys, secrets, or credentials missing from .env
+- Database unreachable after following troubleshooting steps
+- External services/URLs referenced in task are unreachable
+- Port conflicts, DNS failures, container runtime issues
+
+**Task definition issues:**
+- Requirements contradict each other or the existing codebase
+- Task depends on code/APIs that don't exist yet
+- The only solution would produce broken or incorrect functionality
+
+**Capability limits:**
+- You tried multiple approaches but none produce correct behavior
+- The fix requires changes outside your workspace (infrastructure, CI config, other repos)
+- The task is too ambiguous to implement without clarification
+
+When in doubt: report failure. A failed task gets escalated to a human who can
+fix the root cause, clarify requirements, or decompose the task further.
+Shipping broken code wastes more time than escalating.
+
 ## Infrastructure (Database, Redis, etc.)
 
 If your task requires database or other infrastructure services, use the compose
-proxy (env vars `WORKER_MANAGER_URL` and `WORKER_ID` are pre-set):
+proxy (all requests go through localhost:9090 — no env vars needed):
 
 ```bash
 # Start infrastructure services (waits for healthchecks)
-curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+curl -sf -X POST http://localhost:9090/infra/compose \
   -H 'Content-Type: application/json' \
   -d '{"args":["up","-d","--wait","db","redis"],"timeout":120}'
 
@@ -166,17 +185,17 @@ curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
 # Configure .env or connection strings accordingly.
 
 # Stop infrastructure (preserves data volumes)
-curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+curl -sf -X POST http://localhost:9090/infra/compose \
   -H 'Content-Type: application/json' \
   -d '{"args":["stop"],"timeout":60}'
 
 # Full reset (destroys volumes, clean slate)
-curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+curl -sf -X POST http://localhost:9090/infra/compose \
   -H 'Content-Type: application/json' \
   -d '{"args":["down","-v"],"timeout":120}'
 
 # Check container status
-curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+curl -sf -X POST http://localhost:9090/infra/compose \
   -H 'Content-Type: application/json' \
   -d '{"args":["ps"],"timeout":30}'
 ```
@@ -187,7 +206,7 @@ Database migrations require a running PostgreSQL instance. Always start infrastr
 
 ```bash
 # 1. Start the database
-curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+curl -sf -X POST http://localhost:9090/infra/compose \
   -H 'Content-Type: application/json' \
   -d '{"args":["up","-d","--wait","db"],"timeout":120}'
 
@@ -231,7 +250,7 @@ make generate-from-spec
 make tests unit
 
 # Integration tests (require infrastructure — start db/redis first)
-curl -sf -X POST "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" \
+curl -sf -X POST http://localhost:9090/infra/compose \
   -H 'Content-Type: application/json' \
   -d '{"args":["-f","infra/compose.tests.integration.yml","run","integration-tests"],"timeout":120}'
 ```
@@ -247,24 +266,17 @@ doesn't work as expected — do NOT ship it. It's better to ship nothing than to
 ship code that behaves incorrectly. A missing feature is better than a broken one.
 
 When you determine that you cannot complete the task without compromising quality,
-report a blocker:
+report failure:
 
 ```bash
-curl -sf -X POST http://localhost:9090/blocker \
+curl -sf -X POST http://localhost:9090/result \
   -H 'Content-Type: application/json' \
-  -d '{"reason":"Clear description of what is blocking you and why you cannot proceed"}'
+  -d '{"success":false,"reason":"Clear description of what is blocking you and why you cannot proceed"}'
 ```
 
 This escalates the issue to a human reviewer who can provide guidance.
-**Do not silently fail or produce incomplete work** — always report blockers
+**Do not silently fail or produce incomplete work** — always report failures
 explicitly.
-
-Examples of when to report a blocker:
-- Required API keys or credentials are missing from the environment
-- Task requirements contradict each other or the existing codebase
-- External URLs or services referenced in the task are unreachable
-- The codebase is in a broken state that prevents your changes from working
-- The only available approach would produce a degraded or incorrect user experience
 
 
 ## Developer Report

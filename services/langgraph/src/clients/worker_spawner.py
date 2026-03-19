@@ -45,8 +45,7 @@ class SpawnResult:
     error_message: str | None = None
     logs_tail: str | None = None
     worker_id: str | None = None
-    reject_reason: str | None = None
-    block_reason: str | None = None
+    gave_up_reason: str | None = None
     worker_report: str | None = None
 
 
@@ -327,8 +326,9 @@ async def request_spawn(
                 files_changed=output_resp.get("files_changed"),
                 error_message=output_resp.get("error"),
                 worker_id=worker_id,
-                reject_reason=output_resp.get("reject_reason"),
-                block_reason=output_resp.get("block_reason"),
+                gave_up_reason=(
+                    output_resp.get("block_reason") or output_resp.get("reject_reason")
+                ),
                 worker_report=output_resp.get("worker_report"),
             )
         else:
@@ -454,8 +454,9 @@ async def send_task_to_worker(
                 files_changed=output_resp.get("files_changed"),
                 error_message=output_resp.get("error"),
                 worker_id=worker_id,
-                reject_reason=output_resp.get("reject_reason"),
-                block_reason=output_resp.get("block_reason"),
+                gave_up_reason=(
+                    output_resp.get("block_reason") or output_resp.get("reject_reason")
+                ),
                 worker_report=output_resp.get("worker_report"),
             )
         else:

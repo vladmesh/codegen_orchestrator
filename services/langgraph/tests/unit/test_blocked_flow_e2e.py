@@ -26,7 +26,7 @@ class TestBlockedFlowEndToEnd:
         from src.clients.worker_spawner import SpawnResult
         from src.nodes.developer import DeveloperNode
 
-        # Simulate worker returning a block_reason
+        # Simulate worker returning a gave_up_reason
         mock_spawn.return_value = SpawnResult(
             request_id="req-1",
             success=False,
@@ -35,7 +35,7 @@ class TestBlockedFlowEndToEnd:
             commit_sha=None,
             worker_id="w-1",
             error_message=None,
-            block_reason="Missing API credentials for Stripe",
+            gave_up_reason="Missing API credentials for Stripe",
         )
 
         mock_api.get_project = AsyncMock(return_value=make_project(status="active", config={}))
@@ -59,7 +59,7 @@ class TestBlockedFlowEndToEnd:
         )
 
         assert result["engineering_status"] == EngineeringStatus.GAVE_UP
-        assert result["block_reason"] == "Missing API credentials for Stripe"
+        assert result["gave_up_reason"] == "Missing API credentials for Stripe"
         assert result["worker_id"] == "w-1"
 
     @pytest.mark.asyncio

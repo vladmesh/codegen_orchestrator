@@ -13,15 +13,15 @@ class TestDeveloperInstructions:
         assert self.content, "INSTRUCTIONS.md should not be empty"
 
     def test_contains_result_reporting_endpoints(self):
-        assert "localhost:9090/complete" in self.content
-        assert "localhost:9090/failed" in self.content
-        assert "localhost:9090/blocker" in self.content
+        assert "localhost:9090/result" in self.content
+        assert '"success":true' in self.content
+        assert '"success":false' in self.content
 
     def test_contains_curl_commands(self):
         assert "curl -sf -X POST http://localhost:9090" in self.content
 
     def test_contains_infra_compose_proxy(self):
-        assert "$WORKER_MANAGER_URL/api/worker/$WORKER_ID/infra/compose" in self.content
+        assert "localhost:9090/infra/compose" in self.content
 
     def test_no_orchestrator_cli_references(self):
         assert "orchestrator dev-env" not in self.content

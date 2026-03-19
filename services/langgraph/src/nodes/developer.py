@@ -319,38 +319,20 @@ class DeveloperNode(FunctionalNode):
                 "worker_report": worker_result.worker_report,
             }
 
-        if worker_result.reject_reason:
+        if worker_result.gave_up_reason:
             logger.warning(
-                "developer_node_worker_rejected",
+                "developer_node_gave_up",
                 project_name=project_name,
-                reject_reason=worker_result.reject_reason[:200],
+                gave_up_reason=worker_result.gave_up_reason[:200],
             )
             return {
-                "messages": [
-                    AIMessage(content=f"Worker rejected task: {worker_result.reject_reason}")
-                ],
+                "messages": [AIMessage(content=f"Worker gave up: {worker_result.gave_up_reason}")],
                 "engineering_status": EngineeringStatus.GAVE_UP,
-                "reject_reason": worker_result.reject_reason,
+                "gave_up_reason": worker_result.gave_up_reason,
                 "worker_id": worker_result.worker_id,
                 "worker_report": worker_result.worker_report,
                 "errors": state.get("errors", [])
-                + [f"Worker rejected: {worker_result.reject_reason}"],
-            }
-
-        if worker_result.block_reason:
-            logger.warning(
-                "developer_node_blocked",
-                project_name=project_name,
-                block_reason=worker_result.block_reason[:200],
-            )
-            return {
-                "messages": [AIMessage(content=f"Developer blocked: {worker_result.block_reason}")],
-                "engineering_status": EngineeringStatus.GAVE_UP,
-                "block_reason": worker_result.block_reason,
-                "worker_id": worker_result.worker_id,
-                "worker_report": worker_result.worker_report,
-                "errors": state.get("errors", [])
-                + [f"Developer blocked: {worker_result.block_reason}"],
+                + [f"Worker gave up: {worker_result.gave_up_reason}"],
             }
 
         error_msg = worker_result.error_message or worker_result.output or "Unknown error"

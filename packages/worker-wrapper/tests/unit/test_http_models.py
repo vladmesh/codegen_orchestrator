@@ -3,91 +3,74 @@
 from pydantic import ValidationError
 import pytest
 from worker_wrapper.http_models import (
-    BlockerRequest,
-    CompleteRequest,
-    FailedRequest,
+    ResultRequest,
     to_redis_output,
 )
 
 
-class TestCompleteRequest:
-    def test_valid(self):
-        req = CompleteRequest(commit="abc123def", summary="Implemented feature X")
+class TestResultRequestSuccess:
+    def test_valid_success(self):
+        req = ResultRequest(success=True, commit="abc123def", summary="Implemented feature X")
+        assert req.success is True
         assert req.commit == "abc123def"
         assert req.summary == "Implemented feature X"
 
-    def test_missing_commit(self):
+    def test_success_missing_commit(self):
+        with pytest.raises(ValidationError, match="commit.*required when success=true"):
+            ResultRequest(success=True, summary="done")
+
+    def test_success_missing_summary(self):
+        with pytest.raises(ValidationError, match="summary.*required when success=true"):
+            ResultRequest(success=True, commit="abc123")
+
+    def test_success_empty_commit_rejected(self):
         with pytest.raises(ValidationError):
-            CompleteRequest(summary="done")
+            ResultRequest(success=True, commit="", summary="done")
 
-    def test_missing_summary(self):
+    def test_success_empty_summary_rejected(self):
         with pytest.raises(ValidationError):
-            CompleteRequest(commit="abc123")
+            ResultRequest(success=True, commit="abc123", summary="")
 
-    def test_empty_commit_rejected(self):
-        with pytest.raises(ValidationError):
-            CompleteRequest(commit="", summary="done")
-
-    def test_empty_summary_rejected(self):
-        with pytest.raises(ValidationError):
-            CompleteRequest(commit="abc123", summary="")
+    def test_success_ignores_reason(self):
+        req = ResultRequest(
+            success=True, commit="abc123", summary="done", reason="should be ignored"
+        )
+        assert req.reason == "should be ignored"  # stored but not used
 
 
-class TestFailedRequest:
-    def test_valid(self):
-        req = FailedRequest(reason="Tests don't pass after 3 attempts")
+class TestResultRequestFailure:
+    def test_valid_failure(self):
+        req = ResultRequest(success=False, reason="Tests don't pass after 3 attempts")
+        assert req.success is False
         assert req.reason == "Tests don't pass after 3 attempts"
 
-    def test_missing_reason(self):
+    def test_failure_missing_reason(self):
+        with pytest.raises(ValidationError, match="reason.*required when success=false"):
+            ResultRequest(success=False)
+
+    def test_failure_empty_reason_rejected(self):
         with pytest.raises(ValidationError):
-            FailedRequest()
+            ResultRequest(success=False, reason="")
 
-    def test_empty_reason_rejected(self):
+    def test_failure_whitespace_reason_rejected(self):
         with pytest.raises(ValidationError):
-            FailedRequest(reason="")
-
-
-class TestBlockerRequest:
-    def test_valid(self):
-        req = BlockerRequest(reason="Spec ambiguous, need clarification on auth flow")
-        assert req.reason == "Spec ambiguous, need clarification on auth flow"
-
-    def test_missing_reason(self):
-        with pytest.raises(ValidationError):
-            BlockerRequest()
-
-    def test_empty_reason_rejected(self):
-        with pytest.raises(ValidationError):
-            BlockerRequest(reason="")
+            ResultRequest(success=False, reason="   ")
 
 
 class TestToRedisOutput:
-    def test_complete(self):
-        req = CompleteRequest(commit="abc123def", summary="Added login endpoint")
-        result = to_redis_output("complete", req)
+    def test_success_result(self):
+        req = ResultRequest(success=True, commit="abc123def", summary="Added login endpoint")
+        result = to_redis_output(req)
         assert result == {
             "status": "completed",
             "commit_sha": "abc123def",
             "content": "Added login endpoint",
         }
 
-    def test_failed(self):
-        req = FailedRequest(reason="Timeout on CI")
-        result = to_redis_output("failed", req)
-        assert result == {
-            "status": "failed",
-            "error": "Timeout on CI",
-        }
-
-    def test_blocker(self):
-        req = BlockerRequest(reason="Need API key for external service")
-        result = to_redis_output("blocker", req)
+    def test_failure_result(self):
+        req = ResultRequest(success=False, reason="Need API key for external service")
+        result = to_redis_output(req)
         assert result == {
             "status": "blocked",
             "block_reason": "Need API key for external service",
         }
-
-    def test_unknown_action_raises(self):
-        req = CompleteRequest(commit="abc", summary="done")
-        with pytest.raises(ValueError, match="Unknown action"):
-            to_redis_output("unknown", req)

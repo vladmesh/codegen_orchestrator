@@ -405,17 +405,15 @@ class TestFeatureFlowIntegration:
         assert "updated-repo-name" in call_kwargs["repo"]
 
 
-class TestWorkerRejectReason:
-    """Tests that reject_reason from SpawnResult propagates to worker_rejected status."""
+class TestWorkerGaveUpReason:
+    """Tests that gave_up_reason from SpawnResult propagates to GAVE_UP status."""
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.request_spawn", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_reject_reason_returns_worker_rejected(
-        self, mock_github_cls, mock_api, mock_spawn
-    ):
-        """SpawnResult with reject_reason must return engineering_status=worker_rejected."""
+    async def test_gave_up_reason_returns_gave_up(self, mock_github_cls, mock_api, mock_spawn):
+        """SpawnResult with gave_up_reason must return engineering_status=GAVE_UP."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
@@ -424,7 +422,7 @@ class TestWorkerRejectReason:
             success=False,
             exit_code=1,
             output="REJECTED: port conflict is infra issue",
-            reject_reason="Port conflict — not a code issue",
+            gave_up_reason="Port conflict — not a code issue",
         )
 
         from src.nodes.developer import DeveloperNode
@@ -433,14 +431,14 @@ class TestWorkerRejectReason:
         result = await node.run(_make_state(action="fix", status="active"))
 
         assert result["engineering_status"] == EngineeringStatus.GAVE_UP
-        assert result["reject_reason"] == "Port conflict — not a code issue"
+        assert result["gave_up_reason"] == "Port conflict — not a code issue"
 
     @pytest.mark.asyncio
     @patch("src.nodes.developer.send_task_to_worker", new_callable=AsyncMock)
     @patch("src.nodes.developer.api_client")
     @patch("src.nodes.developer.GitHubAppClient")
-    async def test_reject_reason_on_reused_worker(self, mock_github_cls, mock_api, mock_send):
-        """Reject from reused worker also returns worker_rejected."""
+    async def test_gave_up_reason_on_reused_worker(self, mock_github_cls, mock_api, mock_send):
+        """Gave-up from reused worker also returns GAVE_UP."""
         mock_github_cls.return_value.get_token = AsyncMock(return_value="ghs_fake")
         mock_api.get_project = AsyncMock(return_value=None)
         mock_api.get_primary_repository = AsyncMock(return_value=_repo())
@@ -449,7 +447,7 @@ class TestWorkerRejectReason:
             success=False,
             exit_code=1,
             output="REJECTED",
-            reject_reason="Missing REGISTRY_PASSWORD secret",
+            gave_up_reason="Missing REGISTRY_PASSWORD secret",
         )
 
         from src.nodes.developer import DeveloperNode
@@ -461,7 +459,7 @@ class TestWorkerRejectReason:
         result = await node.run(state)
 
         assert result["engineering_status"] == EngineeringStatus.GAVE_UP
-        assert "REGISTRY_PASSWORD" in result["reject_reason"]
+        assert "REGISTRY_PASSWORD" in result["gave_up_reason"]
 
 
 class TestTaskMessageDescription:

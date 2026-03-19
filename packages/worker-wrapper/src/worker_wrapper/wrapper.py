@@ -37,6 +37,7 @@ class WorkerWrapper:
         self._task: asyncio.Task | None = None
         self._http_server: ResultHttpServer | None = None
         self._result_event: asyncio.Event | None = None
+        self._agent_stdout_tail: str | None = None
 
     async def run(self):
         """Main loop: connect, consume, execute, publish."""
@@ -153,32 +154,63 @@ class WorkerWrapper:
             report = self._read_worker_report()
             self._archive_task(data, report)
 
-            # 6. Publish result — enrich with worker_report if available
-            if self._result_event.is_set() and self._buffered_result is not None:
-                logger.info("result_received_via_http", worker_id=self.config.consumer_name)
-                if report:
-                    self._buffered_result["worker_report"] = report
-                await self.redis.publish(self.config.output_stream, self._buffered_result)
-            elif error:
-                await self.redis.publish(
-                    self.config.output_stream,
-                    {"status": "failed", "error": error},
-                )
-            else:
-                # Watchdog: agent exited without reporting via HTTP
-                logger.warning("agent_exited_without_result", worker_id=self.config.consumer_name)
-                error = "Agent exited without reporting result"
-                status = "failed"
-                await self.redis.publish(
-                    self.config.output_stream,
-                    {"status": "failed", "error": error},
-                )
+            # 6. Publish result
+            status, error = await self._publish_result(data, error, status, report)
         finally:
             await self._http_server.stop()
             self._http_server = None
 
         # 7. Lifecycle: Completed/Failed
         await self.publish_lifecycle(status, msg_id, error=error)
+
+    async def _publish_result(
+        self, data: dict, error: str | None, status: str, report: str | None
+    ) -> tuple[str, str | None]:
+        """Publish task result to Redis, handling HTTP results, errors, and auto-resume.
+
+        Returns (status, error) — potentially updated if watchdog triggers.
+        """
+        stdout_tail = self._agent_stdout_tail
+
+        if self._result_event.is_set() and self._buffered_result is not None:
+            logger.info("result_received_via_http", worker_id=self.config.consumer_name)
+            if report:
+                self._buffered_result["worker_report"] = report
+            if stdout_tail:
+                self._buffered_result["agent_stdout_tail"] = stdout_tail
+            await self.redis.publish(self.config.output_stream, self._buffered_result)
+            return status, error
+
+        if error:
+            result_data: dict[str, Any] = {"status": "failed", "error": error}
+            if stdout_tail:
+                result_data["agent_stdout_tail"] = stdout_tail
+            await self.redis.publish(self.config.output_stream, result_data)
+            return status, error
+
+        # Watchdog: agent exited without reporting via HTTP
+        # Attempt one auto-resume for Claude agents before failing
+        if self.config.agent_type == "claude":
+            resumed = await self._attempt_auto_resume(data)
+            if resumed and self._result_event.is_set() and self._buffered_result is not None:
+                logger.info("result_received_after_resume", worker_id=self.config.consumer_name)
+                stdout_tail = self._agent_stdout_tail
+                if report:
+                    self._buffered_result["worker_report"] = report
+                if stdout_tail:
+                    self._buffered_result["agent_stdout_tail"] = stdout_tail
+                await self.redis.publish(self.config.output_stream, self._buffered_result)
+                return status, error
+
+        logger.warning("agent_exited_without_result", worker_id=self.config.consumer_name)
+        error = "Agent exited without reporting result"
+        status = "failed"
+        stdout_tail = self._agent_stdout_tail
+        result_data = {"status": "failed", "error": error}
+        if stdout_tail:
+            result_data["agent_stdout_tail"] = stdout_tail
+        await self.redis.publish(self.config.output_stream, result_data)
+        return status, error
 
     async def _prepare_workspace(self, data: dict) -> None:
         """Pre-turn setup: pull, update TASK.md/STORY.md, clear session."""
@@ -474,6 +506,13 @@ class WorkerWrapper:
         stdout = stdout_bytes.decode().strip()
         stderr = stderr_bytes.decode().strip()
 
+        # Capture stdout tail for analytics/debugging (last ~10KB)
+        max_tail = 10_000
+        combined = stdout
+        if stderr:
+            combined = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
+        self._agent_stdout_tail = combined[-max_tail:] if combined else None
+
         if proc.returncode != 0:
             logger.error(
                 "agent_process_failed", stderr=stderr, stdout=stdout, exit_code=proc.returncode
@@ -486,6 +525,82 @@ class WorkerWrapper:
             if captured_session_id:
                 logger.info("captured_claude_session_from_output", session_id=captured_session_id)
                 await session_manager.update_session(captured_session_id)
+
+    async def _attempt_auto_resume(self, data: dict) -> bool:
+        """Attempt one resume of the Claude agent to get it to call /result.
+
+        Returns True if the resume subprocess completed (result may or may not
+        have been received via HTTP — caller checks _result_event).
+        """
+        logger.warning("attempting_auto_resume", worker_id=self.config.consumer_name)
+
+        from .session import SessionManager
+
+        session_manager = SessionManager(
+            redis=self.redis.redis, worker_id=self.config.consumer_name
+        )
+        session_id = await session_manager.get_or_create_session(create_new=False)
+
+        if not session_id:
+            logger.warning("auto_resume_no_session", worker_id=self.config.consumer_name)
+            return False
+
+        resume_prompt = (
+            "You finished without calling the result endpoint. "
+            "Call POST http://localhost:9090/result with your result now. "
+            'If the task is done: {"success": true, "commit": "<sha>", "summary": "..."}. '
+            'If you could not complete it: {"success": false, "reason": "..."}.'
+        )
+
+        from .runners.claude import ClaudeRunner
+
+        runner = ClaudeRunner(session_id=session_id)
+        cmd = runner.build_command(prompt=resume_prompt)
+        logger.info("auto_resume_command", cmd=cmd)
+
+        agent_env = os.environ.copy()
+        existing = agent_env.get("PYTHONPATH", "")
+        cleaned = os.pathsep.join(p for p in existing.split(os.pathsep) if p and p != "/app")
+        if cleaned:
+            agent_env["PYTHONPATH"] = cleaned
+        else:
+            agent_env.pop("PYTHONPATH", None)
+
+        try:
+            resume_timeout = min(120, self.config.subprocess_timeout_seconds)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=agent_env,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=resume_timeout
+            )
+
+            # Update stdout tail with resume output
+            stdout = stdout_bytes.decode().strip()
+            stderr = stderr_bytes.decode().strip()
+            max_tail = 10_000
+            combined = stdout
+            if stderr:
+                combined = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
+            if combined:
+                prev = self._agent_stdout_tail or ""
+                self._agent_stdout_tail = (prev + "\n--- resume ---\n" + combined)[-max_tail:]
+
+            return True
+        except TimeoutError:
+            logger.error("auto_resume_timed_out", worker_id=self.config.consumer_name)
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            return False
+        except Exception:
+            logger.exception("auto_resume_failed", worker_id=self.config.consumer_name)
+            return False
 
     def _collect_and_archive(self, data: dict) -> None:
         """Collect worker report and archive task."""

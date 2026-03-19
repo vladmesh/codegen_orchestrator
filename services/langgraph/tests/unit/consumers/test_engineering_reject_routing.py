@@ -76,13 +76,13 @@ class TestGaveUpRouting:
         mock_allocations.return_value = {"backend": {"server_ip": "1.2.3.4"}}
         mock_get_worker.return_value = None
 
-        # Subgraph returns gave_up (with reject_reason — former worker_rejected path)
+        # Subgraph returns gave_up with gave_up_reason
         mock_subgraph = AsyncMock()
         mock_subgraph.ainvoke.return_value = {
             "engineering_status": EngineeringStatus.GAVE_UP,
-            "reject_reason": "Port conflict is not a code issue",
+            "gave_up_reason": "Port conflict is not a code issue",
             "worker_report": None,
-            "errors": ["Worker rejected: Port conflict is not a code issue"],
+            "errors": ["Worker gave up: Port conflict is not a code issue"],
         }
         mock_create_subgraph.return_value = mock_subgraph
 
