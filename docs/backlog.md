@@ -44,7 +44,7 @@
 
 ### #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage
 - **Priority**: HIGH
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Extend queue message contracts for standalone triggers from admin: (1) DeployMessage — add action: Literal["deploy", "stop", "undeploy"] (default "deploy"), make story_id Optional. Deploy consumer: skip story transitions if story_id is None, handle stop/undeploy actions. (2) QAMessage — make stor...
 
@@ -71,12 +71,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Single SSH connection per server, once daily. Check /opt/projects/ vs API — orphan dirs → warning in structlog (NOT admin UI). Docker system prune -af --filter until=72h + docker volume prune -f. Source: brainstorm bs-69482380, Phase 3.
-
-### #1030 Decouple QA consumer from story lifecycle
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: QA consumer (qa.py) directly manages story transitions — same anti-pattern as deploy before #1006.  Current transitions: - L177: complete — QA passed - L209: fail — retries exhausted - L246: start — QA failed, fix task created - L113: fail — bot_username missing - L179-183, L210-218: publish_stor...
 
 ### #7 Security Audit: Deploy Cleanup
 - **Priority**: LOW
@@ -300,6 +294,7 @@
 
 ## Done (last 10)
 
+- #1030 Decouple QA consumer from story lifecycle — 2026-03-19
 - #1025 Admin UI: Settings page (config + prompt editor) — 2026-03-19
 - #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs — 2026-03-19
 - Unify worker result API — single /result endpoint, stdout capture, auto-resume — 2026-03-19
@@ -309,4 +304,3 @@
 - Убрать result_parser из wrapper, добавить watchdog-логику — 2026-03-18
 - Удалить orchestrator-cli, перевести агента на curl к localhost:9090 — 2026-03-18
 - HTTP-сервер в worker-wrapper (localhost:9090) — complete/failed/blocker endpoints — 2026-03-18
-- Replace raw dict API clients with shared Pydantic DTOs — 2026-03-17

@@ -1,5 +1,4 @@
 from enum import StrEnum
-from typing import Literal
 
 from shared.contracts.base import BaseMessage, BaseResult
 
@@ -10,6 +9,16 @@ class DeployTrigger(StrEnum):
     ENGINEERING = "engineering"
     WEBHOOK = "webhook"
     PO = "po"
+
+
+class DeployAction(StrEnum):
+    """Type of deploy operation."""
+
+    CREATE = "create"
+    FEATURE = "feature"
+    FIX = "fix"
+    STOP = "stop"
+    UNDEPLOY = "undeploy"
 
 
 class DeployOutcome(StrEnum):
@@ -30,7 +39,7 @@ class DeployMessage(BaseMessage):
     user_id: str = ""
     story_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
-    action: Literal["create", "feature", "fix"] = "create"
+    action: DeployAction = DeployAction.CREATE
     deploy_fix_attempt: int = 0
 
 

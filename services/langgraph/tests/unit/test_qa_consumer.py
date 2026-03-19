@@ -276,6 +276,56 @@ class TestProcessQAJobEdgeCases:
         assert result["status"] == "skipped"
 
     @pytest.mark.asyncio
+    async def test_inflight_dedup_uses_application_id_when_no_story(
+        self, mock_api_client, mock_redis
+    ):
+        """Standalone QA (no story_id) uses application_id for inflight dedup."""
+        from src.consumers._qa_runner import QAResult
+
+        data = {
+            "story_id": "",
+            "project_id": "proj-1",
+            "user_id": "12345",
+            "deployed_url": "https://weather.example.com",
+            "application_id": 42,
+            "run_id": "qa-run-1",
+            "qa_attempt": 0,
+        }
+
+        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            await process_qa_job(data, mock_redis)
+
+        # Inflight key should use application_id, not empty story_id
+        set_call = mock_redis.redis.set.call_args
+        inflight_key = set_call[0][0]
+        assert "42" in inflight_key
+        assert inflight_key != "qa:inflight:"  # not empty
+
+    @pytest.mark.asyncio
+    async def test_standalone_qa_skips_story_fetch(self, mock_api_client, mock_redis):
+        """Standalone QA (no story_id) skips story fetch and passes empty description."""
+        from src.consumers._qa_runner import QAResult
+
+        data = {
+            "story_id": "",
+            "project_id": "proj-1",
+            "user_id": "12345",
+            "deployed_url": "https://weather.example.com",
+            "application_id": 1,
+            "run_id": "qa-run-1",
+            "qa_attempt": 0,
+        }
+
+        with patch("src.consumers.qa.run_qa_on_server", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = QAResult(passed=True, checks=[], summary="OK", raw="")
+            result = await process_qa_job(data, mock_redis)
+
+        assert result["status"] == "passed"
+        # Story fetch should NOT have been called
+        mock_api_client.get_story.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_bot_username_missing_for_tg_bot_stores_error(
         self, mock_api_client, mock_redis, qa_message_data
     ):

@@ -13,7 +13,7 @@ import structlog
 from shared.config_store import ConfigStore
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
+from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployOutcome
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -28,6 +28,7 @@ from .deploy_failure_handler import (
     _classify_deploy_failure,
     _handle_deploy_failure,
 )
+from .deploy_lifecycle import process_lifecycle_action
 from .deploy_precheck import (
     SERVICE_BASE_DIR,
     _pre_check_server,
@@ -123,6 +124,38 @@ def _build_subgraph_input(
     }
 
 
+async def _handle_lifecycle_action(
+    msg: DeployMessage,
+    task_id: str,
+    project_id: str,
+    project: ProjectDTO,
+    allocated_resources: dict,
+) -> dict:
+    """Handle stop/undeploy lifecycle actions — SSH only, no DevOps subgraph."""
+    project_name = (project.name or project_id).replace(" ", "_").lower()
+    lifecycle_result = await process_lifecycle_action(
+        action=msg.action,
+        task_id=task_id,
+        project_id=project_id,
+        project_name=project_name,
+        allocated_resources=allocated_resources,
+    )
+    run_status = (
+        RunStatus.COMPLETED if lifecycle_result["status"] == "success" else RunStatus.FAILED
+    )
+    run_patch: dict = {
+        "status": run_status.value,
+        "result": {
+            "deploy_outcome": lifecycle_result["deploy_outcome"],
+            "action": msg.action.value,
+        },
+    }
+    if lifecycle_result.get("error"):
+        run_patch["error_message"] = lifecycle_result["error"]
+    await api_client.patch(f"runs/{task_id}", json=run_patch)
+    return lifecycle_result
+
+
 async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single deploy job by running DevOps Subgraph."""
     msg = DeployMessage.model_validate(job_data)
@@ -204,6 +237,12 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             )
             return {"status": "failed", "error": alloc_result}
         allocated_resources = alloc_result
+
+        # Lifecycle actions (stop/undeploy) — skip DevOps subgraph entirely
+        if msg.action in (DeployAction.STOP, DeployAction.UNDEPLOY):
+            return await _handle_lifecycle_action(
+                msg, task_id, project_id, project, allocated_resources
+            )
 
         # Pre-check: validate server state via SSH before deploying
         action = msg.action

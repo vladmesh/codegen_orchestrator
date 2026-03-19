@@ -77,16 +77,17 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
 
     logger.info(
         "qa_job_started",
-        story_id=story_id,
+        story_id=story_id or None,
         application_id=msg.application_id,
         qa_attempt=msg.qa_attempt,
     )
 
-    # Inflight dedup — prevent concurrent QA on same story
-    inflight_key = f"qa:inflight:{story_id}"
+    # Inflight dedup — prevent concurrent QA on same story/application
+    dedup_id = story_id if story_id else str(msg.application_id)
+    inflight_key = f"qa:inflight:{dedup_id}"
     acquired = await redis.redis.set(inflight_key, "1", nx=True, ex=QA_INFLIGHT_TTL)
     if not acquired:
-        logger.info("qa_already_inflight", story_id=story_id)
+        logger.info("qa_already_inflight", dedup_id=dedup_id)
         return {"status": "skipped", "reason": "already_inflight"}
 
     try:
@@ -113,9 +114,12 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
                 return {"status": "error", "error": error}
 
-        # Fetch story description for QA prompt
-        story = await api_client.get_story(story_id)
-        story_description = story.description or ""
+        # Fetch story description for QA prompt (skip for standalone triggers)
+        if story_id:
+            story = await api_client.get_story(story_id)
+            story_description = story.description or ""
+        else:
+            story_description = ""
 
         # Run QA on server
         qa_result = await run_qa_on_server(

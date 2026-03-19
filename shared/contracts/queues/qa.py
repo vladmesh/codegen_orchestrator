@@ -16,7 +16,7 @@ class QAOutcome(StrEnum):
 class QAMessage(BaseMessage):
     """Trigger QA testing for a deployed project."""
 
-    story_id: str
+    story_id: str = ""
     project_id: str
     user_id: str
     deployed_url: str

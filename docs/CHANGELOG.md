@@ -5,6 +5,7 @@
 ## 2026-03-19
 
 ### Changed
+- **Decouple QA consumer from story lifecycle** (#1030): QA consumer stripped of all story transitions (`_transition_story_safe`, `publish_story_event`) and fix task creation. Now only updates `run.status` and `run.result` with a `QAOutcome` enum (PASSED/FAILED/EXHAUSTED/ERROR). Added `RunType.QA` and `QAMessage.run_id` to shared contracts. Dispatcher creates QA run before publishing QAMessage. New `supervise_testing_stories()` in dispatcher polls TESTING stories, reads QA run outcome, and routes: PASSED → complete story, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story. QA is now a pure technical worker, same pattern as deploy (#1006).
 - **Decouple deploy worker from story lifecycle** (#1006): Deploy worker stripped of all story transitions (`_transition_story_safe`, QA handoff, retry tracking, admin notifications). Now only updates `run.status` and `run.result` with a `DeployOutcome` enum (SUCCESS/SMOKE_FAILURE/CODE_FIX/RETRY/GIVE_UP). New `supervise_deploying_stories()` in dispatcher polls DEPLOYING stories, reads deploy run outcome, and routes: SUCCESS → TESTING + QA, CODE_FIX → engineering redispatch, RETRY → redeploy with counter, GIVE_UP → FAILED + admin notification. Added `story_id` FK to Run model for efficient querying. Deploy is now a pure technical worker callable outside story context.
 
 ### Added

@@ -126,6 +126,51 @@ class TestQAMessageRunId:
         assert restored.run_id == "qa-run-002"
 
 
+class TestQAMessageOptionalStoryId:
+    def test_story_id_defaults_to_empty(self):
+        """QAMessage story_id defaults to empty string for standalone triggers."""
+        msg = QAMessage(
+            project_id="proj-123",
+            user_id="user-1",
+            deployed_url="https://example.com",
+            application_id=17,
+        )
+        assert msg.story_id == ""
+
+    def test_story_id_explicit(self):
+        msg = QAMessage(
+            story_id="story-abc",
+            project_id="proj-123",
+            user_id="user-1",
+            deployed_url="https://example.com",
+            application_id=17,
+        )
+        assert msg.story_id == "story-abc"
+
+    def test_standalone_roundtrip(self):
+        """QAMessage without story_id survives serialization."""
+        msg = QAMessage(
+            project_id="proj-123",
+            user_id="user-1",
+            deployed_url="https://example.com",
+            application_id=17,
+        )
+        data = msg.model_dump()
+        restored = QAMessage.model_validate(data)
+        assert restored.story_id == ""
+
+    def test_backward_compat_no_story_id_in_dict(self):
+        """QAMessage works when story_id is missing from input dict."""
+        data = {
+            "project_id": "proj-123",
+            "user_id": "user-1",
+            "deployed_url": "https://example.com",
+            "application_id": 17,
+        }
+        msg = QAMessage.model_validate(data)
+        assert msg.story_id == ""
+
+
 class TestQAQueueTopology:
     def test_qa_queue_constant(self):
         assert QA_QUEUE == "qa:queue"
