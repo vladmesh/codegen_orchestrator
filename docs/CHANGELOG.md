@@ -5,6 +5,7 @@
 ## 2026-03-19
 
 ### Changed
+- **Unified worker result API** (task-1b2bdf73): Replaced three HTTP endpoints (`/complete`, `/failed`, `/blocker`) with single `POST /result` accepting `{success: true/false}`. Added `/infra/compose` proxy route so workers use only `localhost:9090`. Captures agent stdout tail (~10KB) for debugging. Auto-resumes Claude agents once if they exit without calling `/result`. Merged `reject_reason`/`block_reason` into `gave_up_reason` across SpawnResult, developer node, and engineering consumer.
 - **EngineeringStatus StrEnum** (task-9f294c98): Replaced 6 bare `engineering_status` strings with `EngineeringStatus(StrEnum)` — 4 values: IDLE, DONE, GAVE_UP, FAILED. Merged `_handle_worker_blocked` + `_handle_worker_reject` → `handle_worker_gave_up` (both → WAITING_HUMAN_REVIEW). FAILED is transient: supervisor retries or escalates to GAVE_UP when retries exhausted. Removed `NON_RETRYABLE_REASONS` — semantics encoded in task status. Fixed bug where `block_reason` path returned `"blocked"` indistinguishable from generic crash.
 
 ### Fixed

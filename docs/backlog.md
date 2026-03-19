@@ -72,12 +72,6 @@
 - **Status**: backlog
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
 
-### Unify worker result API — single /result endpoint, stdout capture, auto-resume
-- **Priority**: LOW
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Unify the three worker HTTP endpoints (/complete, /failed, /blocker) into a single `POST /result` with binary outcome (success: true/false). Add infra compose proxy to wrapper so workers use only localhost:9090. Capture agent stdout tail for analytics. Auto-resume agent once if it exits without c...
-
 ### Integrate Repository into production flows (webhook, scheduler, worker)
 - **Priority**: LOW
 - **Plan**: —
@@ -294,6 +288,7 @@
 
 ## Done (last 10)
 
+- Unify worker result API — single /result endpoint, stdout capture, auto-resume — 2026-03-19
 - Refactor engineering_status to StrEnum — 2026-03-19
 - QA consumer: resolve by application_id, replace dicts with DTOs — 2026-03-19
 - Убрать result_parser из wrapper, добавить watchdog-логику — 2026-03-18
@@ -303,7 +298,6 @@
 - Refactor large files (>400 LOC) — extract helpers — 2026-03-17
 - #1019 HTTP health prober for deployed applications + SSL expiry check — 2026-03-17
 - #1016 Admin UI: application health status and response times — 2026-03-17
-- #1015 Admin UI: extended server health dashboard with per-container view + charts — 2026-03-17
 
 ## Ideas
 

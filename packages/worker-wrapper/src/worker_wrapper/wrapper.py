@@ -123,6 +123,9 @@ class WorkerWrapper:
         # 3b. Fix venv shebangs
         self._fix_venv_shebangs()
 
+        # 3c. Inject Makefile overrides for compose proxy
+        self._inject_makefile_overrides()
+
         # 4. Start HTTP result server + execute agent
         self._result_event = asyncio.Event()
         self._buffered_result: dict | None = None
@@ -372,6 +375,45 @@ class WorkerWrapper:
             open(path, "w").close()
         except OSError:
             pass
+
+    def _inject_makefile_overrides(self):
+        """Inject Makefile overrides so `make dev-start` uses the compose proxy.
+
+        Workers don't have Docker socket access. The wrapper's HTTP server
+        proxies /infra/compose to worker-manager. This override replaces
+        the template's `dev-start` (which calls `docker compose` directly)
+        with a `curl` to localhost:9090/infra/compose, so that
+        `make dev-start svc=db`, `make migrate`, etc. work transparently.
+        """
+        makefile = os.path.join(WORKSPACE_DIR, "Makefile")
+        if not os.path.isfile(makefile):
+            return
+
+        override_marker = "# --- orchestrator overrides ---"
+        try:
+            content = open(makefile).read()
+            if override_marker in content:
+                return  # already injected
+
+            override = (
+                f"\n{override_marker}\n"
+                "dev-start:\n"
+                "\t@curl -sf -X POST http://localhost:9090/infra/compose "
+                """-H 'Content-Type: application/json' """
+                """-d '{"args": ["up", "-d", "--wait", "$(svc)"], "cwd": "."}' """
+                "| jq -r .stderr || echo 'compose proxy failed'\n"
+                "\n"
+                "dev-stop:\n"
+                "\t@curl -sf -X POST http://localhost:9090/infra/compose "
+                """-H 'Content-Type: application/json' """
+                """-d '{"args": ["down", "--remove-orphans"], "cwd": "."}' """
+                "| jq -r .stderr || echo 'compose proxy failed'\n"
+            )
+            with open(makefile, "a") as f:
+                f.write(override)
+            logger.info("makefile_overrides_injected")
+        except OSError as e:
+            logger.warning("makefile_override_failed", error=str(e))
 
     async def _git_pull(self):
         """Pull latest changes before next agent turn.
