@@ -5,6 +5,12 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 
 <!-- entries below -->
 
+## [e2e-run] — 2026-03-19
+- **Type**: bug
+- **Quote**: "Step 5: Monitor PR Review & Deploy" — webhook failure section
+- **Problem**: Two deploy messages were published to deploy:queue — first with `action=feature` (wrong), second with `action=create`. The skill doesn't mention that the webhook and PR poller can race and produce duplicate messages with different actions. Also, the first deploy attempt consumed the `feature` message and failed on the TG_BOT_IMAGE env var interpolation (because the first deploy.yml run hadn't built it yet), causing a confusing cascade.
+- **Suggested fix**: Add a note to Step 5 about checking deploy:queue for duplicate messages after PR merge. If multiple messages exist, consider clearing the stale one before the deploy-worker picks it up.
+
 ## [escort] — 2026-03-13 (first real run)
 - **Type**: bug
 - **Quote**: "Find what the user recently submitted. Look for stories created in the last 10 minutes"

@@ -431,11 +431,27 @@ class WorkerWrapper:
         cmd = runner.build_command(prompt=prompt)
         logger.info("executing_agent_command", cmd=cmd)
 
+        # Build subprocess env: remove /app from PYTHONPATH.
+        # The worker image sets PYTHONPATH=/app so the wrapper itself can
+        # import orchestrator's ``shared``.  But the agent subprocess runs
+        # inside a scaffolded project whose venvs have their own ``shared``
+        # package (installed via .pth editable links).  Keeping /app in
+        # PYTHONPATH shadows the project's shared — e.g. the orchestrator's
+        # shared has no ``logging`` module, causing ModuleNotFoundError.
+        agent_env = os.environ.copy()
+        existing = agent_env.get("PYTHONPATH", "")
+        cleaned = os.pathsep.join(p for p in existing.split(os.pathsep) if p and p != "/app")
+        if cleaned:
+            agent_env["PYTHONPATH"] = cleaned
+        else:
+            agent_env.pop("PYTHONPATH", None)
+
         # Execute Subprocess
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=agent_env,
         )
 
         try:
