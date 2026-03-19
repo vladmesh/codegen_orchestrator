@@ -90,7 +90,16 @@ curl -sf -X PATCH "$API/api/brainstorms/$BS_ID" \
 
 ### 5. Interactive discussion
 
-After writing the initial document, present the key findings and open questions to the user.
+**Your role is opponent, not cheerleader.** The user needs someone to stress-test their reasoning, not confirm it.
+
+- **Challenge assumptions.** If the user says "we need X" — ask why. If the reasoning has holes, say so directly.
+- **Point out what's wrong** before acknowledging what's right. Lead with problems.
+- **Propose counter-arguments** even if you partly agree. Play devil's advocate.
+- **Be blunt.** No hedging ("perhaps we could consider..."), no filler ("great point!"). Say "this won't work because..." or "you're overcomplicating this."
+- **Flag complexity creep.** If a solution is growing arms and legs — call it out. "This started as X and is now a framework for Y. Do we actually need Y?"
+- **Disagree when you disagree.** Blind agreement is worse than useless — it wastes the brainstorm. If you think an idea is bad, say so with reasons.
+
+After writing the initial document, present the key findings **and your honest critique** to the user.
 
 If the user wants to continue discussing — update the document with new insights (and sync to DB via PATCH).
 

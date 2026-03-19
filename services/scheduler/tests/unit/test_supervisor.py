@@ -9,8 +9,10 @@ from uuid import UUID
 import pytest
 
 from shared.contracts.dto.repository import RepositoryDTO
+from shared.contracts.dto.run import RunDTO, RunStatus, RunType
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO
+from shared.contracts.queues.deploy import DeployOutcome
 
 # ---------------------------------------------------------------------------
 # Factory helpers — build DTO instances with sensible defaults
@@ -88,6 +90,29 @@ def _make_repo(
         role=role,
         visibility=visibility,
         is_managed=is_managed,
+        created_at=created_at or _NOW,
+        updated_at=updated_at,
+    )
+
+
+def _make_run(
+    *,
+    id: str = "deploy-1",
+    project_id: str = "00000000-0000-0000-0000-000000000001",
+    type: str = RunType.DEPLOY,
+    status: str = RunStatus.COMPLETED,
+    story_id: str | None = "story-1",
+    result: dict | None = None,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+) -> RunDTO:
+    return RunDTO(
+        id=id,
+        project_id=project_id,
+        type=type,
+        status=status,
+        story_id=story_id,
+        result=result,
         created_at=created_at or _NOW,
         updated_at=updated_at,
     )
@@ -553,3 +578,181 @@ class TestStoryWorkerCleanup:
         # Story should NOT be failed — just transitioned to WHR
         api_client.fail_story.assert_not_called()
         api_client.transition_story.assert_called_once()
+
+
+class TestSuperviseDeployingStories:
+    """Poll DEPLOYING stories and route based on deploy run outcome."""
+
+    @pytest.mark.asyncio
+    async def test_success_transitions_to_testing(self, api_client, redis_client):
+        """SUCCESS outcome → story TESTING, QA message published."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_runs_by_story.return_value = [
+            _make_run(
+                result={
+                    "deploy_outcome": DeployOutcome.SUCCESS.value,
+                    "deployed_url": "https://example.com",
+                    "application_id": 42,
+                },
+            )
+        ]
+        api_client.transition_story.return_value = {}
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["tested"] == 1
+        api_client.transition_story.assert_called_once_with("story-1", "test")
+        # QA message should be published
+        from shared.queues import QA_QUEUE
+
+        qa_calls = [c for c in redis_client.publish_message.call_args_list if c[0][0] == QA_QUEUE]
+        assert len(qa_calls) == 1
+        qa_msg = qa_calls[0][0][1]
+        assert qa_msg.deployed_url == "https://example.com"
+        assert qa_msg.application_id == 42
+
+    @pytest.mark.asyncio
+    async def test_give_up_fails_story(self, api_client, redis_client):
+        """GIVE_UP outcome → story FAILED, admin notified."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_runs_by_story.return_value = [
+            _make_run(
+                status=RunStatus.FAILED,
+                result={
+                    "deploy_outcome": DeployOutcome.GIVE_UP.value,
+                    "error_details": "port already allocated",
+                },
+            )
+        ]
+        api_client.fail_story.return_value = {}
+
+        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+        mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_code_fix_redispatches_to_engineering(self, api_client, redis_client):
+        """CODE_FIX outcome → story IN_PROGRESS, engineering message published."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_runs_by_story.return_value = [
+            _make_run(
+                status=RunStatus.FAILED,
+                result={
+                    "deploy_outcome": DeployOutcome.CODE_FIX.value,
+                    "error_details": "ImportError: no module",
+                    "deploy_fix_attempt": 0,
+                },
+            )
+        ]
+        api_client.transition_story.return_value = {}
+        api_client.create_run.return_value = {}
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["redispatched"] == 1
+        api_client.transition_story.assert_called_once_with("story-1", "start")
+
+        from shared.queues import ENGINEERING_QUEUE
+
+        eng_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
+        ]
+        assert len(eng_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_republishes_deploy(self, api_client, redis_client):
+        """RETRY outcome → new deploy run created, deploy message published."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_runs_by_story.return_value = [
+            _make_run(
+                status=RunStatus.FAILED,
+                result={"deploy_outcome": DeployOutcome.RETRY.value},
+            )
+        ]
+        api_client.create_run.return_value = {}
+        # First retry
+        redis_client._redis.incr.return_value = 1
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["retried"] == 1
+        from shared.queues import DEPLOY_QUEUE
+
+        deploy_calls = [
+            c for c in redis_client.publish_message.call_args_list if c[0][0] == DEPLOY_QUEUE
+        ]
+        assert len(deploy_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted_fails_story(self, api_client, redis_client):
+        """RETRY with max retries exceeded → story FAILED."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_runs_by_story.return_value = [
+            _make_run(
+                status=RunStatus.FAILED,
+                result={"deploy_outcome": DeployOutcome.RETRY.value},
+            )
+        ]
+        api_client.fail_story.return_value = {}
+        # Max retries hit
+        redis_client._redis.incr.return_value = 3  # default max is 3
+
+        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock):
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+
+    @pytest.mark.asyncio
+    async def test_skips_running_deploys(self, api_client, redis_client):
+        """RUNNING deploy → skip (still in progress)."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_runs_by_story.return_value = [
+            _make_run(status=RunStatus.RUNNING, result=None)
+        ]
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result == {"tested": 0, "retried": 0, "redispatched": 0, "failed": 0}
+        api_client.transition_story.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_story_with_no_runs(self, api_client, redis_client):
+        """DEPLOYING story with no runs → skip."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_runs_by_story.return_value = []
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result == {"tested": 0, "retried": 0, "redispatched": 0, "failed": 0}

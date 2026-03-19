@@ -1,16 +1,22 @@
-"""Unit tests for deploy failure routing (three-way classification → correct handler)."""
+"""Unit tests for deploy success/smoke-failure result handlers.
 
-from unittest.mock import AsyncMock, MagicMock, patch
+Verifies that handlers store correct deploy_outcome in run.result
+and do NOT perform story transitions (dispatcher's job).
+"""
+
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
+from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
 
-_PATCH = "src.consumers.deploy_failure_handler"
+_HANDLER_PATCH = "src.consumers.deploy_result_handler"
+_FAILURE_PATCH = "src.consumers.deploy_failure_handler"
 
 
-def _make_deploy_msg(**overrides) -> dict:
-    """Build a valid DeployMessage dict."""
+def _make_deploy_msg(**overrides) -> DeployMessage:
+    """Build a valid DeployMessage."""
     defaults = {
         "task_id": "deploy-test-1",
         "project_id": "proj-1",
@@ -22,152 +28,124 @@ def _make_deploy_msg(**overrides) -> dict:
         "deploy_fix_attempt": 0,
     }
     defaults.update(overrides)
-    return defaults
+    return DeployMessage.model_validate(defaults)
 
 
-class TestDeployFailureRouting:
-    """Tests for _route_deploy_failure() three-way routing."""
-
-    @pytest.mark.asyncio
-    async def test_code_fix_dispatches_to_engineering(self):
-        """CODE_FIX classification should call _redispatch_to_engineering."""
-        from src.consumers.deploy_failure_handler import _route_deploy_failure
-
-        redis = AsyncMock()
-        msg = DeployMessage.model_validate(_make_deploy_msg())
-
-        with patch(f"{_PATCH}._redispatch_to_engineering", new_callable=AsyncMock) as mock_rd:
-            mock_rd.return_value = True
-            await _route_deploy_failure(
-                classification="CODE_FIX",
-                redis=redis,
-                msg=msg,
-                error_details="ImportError: no module named foo",
-                story_id="story-1",
-            )
-            mock_rd.assert_called_once()
+class TestHandleDeploySuccess:
+    """_handle_deploy_success stores success outcome, no story transitions."""
 
     @pytest.mark.asyncio
-    async def test_retry_does_not_dispatch_to_engineering(self):
-        """RETRY classification should NOT dispatch to engineering."""
-        from src.consumers.deploy_failure_handler import _route_deploy_failure
+    async def test_stores_success_outcome(self):
+        from src.consumers.deploy_result_handler import _handle_deploy_success
 
-        redis = AsyncMock()
-        msg = DeployMessage.model_validate(_make_deploy_msg())
+        mock_redis = AsyncMock()
+        project = ProjectDTO(
+            id="00000000-0000-0000-0000-000000000001",
+            name="test-project",
+            status=ProjectStatus.ACTIVE,
+            owner_id=1,
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+        )
 
-        with patch(f"{_PATCH}._redispatch_to_engineering", new_callable=AsyncMock) as mock_rd:
-            await _route_deploy_failure(
-                classification="RETRY",
-                redis=redis,
-                msg=msg,
-                error_details="SSH timeout",
-                story_id="story-1",
-            )
-            mock_rd.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_give_up_calls_handle_give_up(self):
-        """GIVE_UP classification should call _handle_give_up."""
-        from src.consumers.deploy_failure_handler import _route_deploy_failure
-
-        redis = AsyncMock()
-        msg = DeployMessage.model_validate(_make_deploy_msg())
-
-        with (
-            patch(f"{_PATCH}._handle_give_up", new_callable=AsyncMock) as mock_gu,
-            patch(f"{_PATCH}._redispatch_to_engineering", new_callable=AsyncMock) as mock_rd,
-        ):
-            await _route_deploy_failure(
-                classification="GIVE_UP",
-                redis=redis,
-                msg=msg,
-                error_details="port is already allocated",
-                story_id="story-1",
-            )
-            mock_gu.assert_called_once()
-            mock_rd.assert_not_called()
-
-
-class TestHandleGiveUp:
-    """Tests for _handle_give_up() — terminal failure, admin notified."""
-
-    @pytest.mark.asyncio
-    async def test_story_transitioned_to_failed(self):
-        """GIVE_UP should transition story to failed."""
-        from src.consumers.deploy_failure_handler import _handle_give_up
-
-        redis = MagicMock()
-        redis.redis = AsyncMock()
-
-        with (
-            patch(f"{_PATCH}._transition_story_safe", new_callable=AsyncMock) as mock_ts,
-            patch(f"{_PATCH}.notify_admins", new_callable=AsyncMock),
-            patch(
-                f"{_PATCH}.get_story_worker",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            await _handle_give_up(
-                story_id="story-1",
+        with patch(f"{_HANDLER_PATCH}.api_client") as mock_api:
+            mock_api.patch = AsyncMock()
+            result = await _handle_deploy_success(
+                result={"deployed_url": "https://example.com", "bot_username": "test_bot"},
+                smoke_result=None,
                 task_id="deploy-1",
                 project_id="proj-1",
-                error_details="port already allocated",
-                redis=redis,
+                project=project,
+                callback_stream="cb:1",
+                user_id="123",
+                story_id="story-1",
+                redis=mock_redis,
+                application_id=42,
             )
-            mock_ts.assert_called_once_with("story-1", "fail")
+
+            # Verify run was patched with success outcome
+            patch_call = mock_api.patch.call_args
+            run_result = patch_call[1]["json"]["result"]
+            assert run_result["deploy_outcome"] == DeployOutcome.SUCCESS.value
+            assert run_result["deployed_url"] == "https://example.com"
+            assert run_result["application_id"] == 42
+            assert run_result["bot_username"] == "test_bot"
+
+        assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    async def test_admin_notified(self):
-        """GIVE_UP should notify admins."""
-        from src.consumers.deploy_failure_handler import _handle_give_up
+    async def test_no_story_transitions(self):
+        """Success handler must NOT call transition_story or publish QA."""
+        from src.consumers.deploy_result_handler import _handle_deploy_success
 
-        redis = MagicMock()
-        redis.redis = AsyncMock()
+        mock_redis = AsyncMock()
+        project = ProjectDTO(
+            id="00000000-0000-0000-0000-000000000001",
+            name="test",
+            status=ProjectStatus.ACTIVE,
+            owner_id=1,
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+        )
 
-        with (
-            patch(f"{_PATCH}._transition_story_safe", new_callable=AsyncMock),
-            patch(f"{_PATCH}.notify_admins", new_callable=AsyncMock) as mock_na,
-            patch(
-                f"{_PATCH}.get_story_worker",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-        ):
-            await _handle_give_up(
-                story_id="story-1",
+        with patch(f"{_HANDLER_PATCH}.api_client") as mock_api:
+            mock_api.patch = AsyncMock()
+            await _handle_deploy_success(
+                result={"deployed_url": "https://example.com"},
+                smoke_result=None,
                 task_id="deploy-1",
                 project_id="proj-1",
-                error_details="port already allocated",
-                redis=redis,
+                project=project,
+                callback_stream="cb:1",
+                user_id="123",
+                story_id="story-1",
+                redis=mock_redis,
             )
-            mock_na.assert_called_once()
-            assert "port already allocated" in mock_na.call_args[0][0]
+
+            for call in mock_api.method_calls:
+                assert "transition_story" not in str(call)
+
+            # No QA message published
+            mock_redis.publish_message.assert_not_called()
+
+
+class TestHandleSmokeFailure:
+    """_handle_smoke_failure classifies and stores outcome, no story transitions."""
 
     @pytest.mark.asyncio
-    async def test_worker_deleted_if_exists(self):
-        """GIVE_UP should delete worker if one exists for the story."""
-        from src.consumers.deploy_failure_handler import _handle_give_up
+    async def test_stores_classified_outcome(self):
+        from src.consumers.deploy_result_handler import _handle_smoke_failure
 
-        redis = MagicMock()
-        redis.redis = AsyncMock()
+        mock_redis = AsyncMock()
+        msg = _make_deploy_msg()
 
         with (
-            patch(f"{_PATCH}._transition_story_safe", new_callable=AsyncMock),
-            patch(f"{_PATCH}.notify_admins", new_callable=AsyncMock),
+            patch(f"{_HANDLER_PATCH}.api_client") as mock_api,
             patch(
-                f"{_PATCH}.get_story_worker",
+                f"{_HANDLER_PATCH}._classify_deploy_failure",
                 new_callable=AsyncMock,
-                return_value="worker-123",
+                return_value="CODE_FIX",
             ),
-            patch(f"{_PATCH}.delete_worker", new_callable=AsyncMock) as mock_dw,
-            patch(f"{_PATCH}.clear_story_worker", new_callable=AsyncMock),
         ):
-            await _handle_give_up(
-                story_id="story-1",
+            mock_api.patch = AsyncMock()
+            result = await _handle_smoke_failure(
+                result={"deployed_url": "https://example.com"},
+                smoke_result={
+                    "status": "fail",
+                    "checks": [{"module": "http", "detail": "500", "result": "fail"}],
+                },
                 task_id="deploy-1",
                 project_id="proj-1",
-                error_details="port already allocated",
-                redis=redis,
+                project_name="test",
+                callback_stream="cb:1",
+                user_id="123",
+                story_id="story-1",
+                redis=mock_redis,
+                msg=msg,
             )
-            mock_dw.assert_called_once_with("worker-123", reason="failed")
+
+            patch_call = mock_api.patch.call_args
+            run_result = patch_call[1]["json"]["result"]
+            assert run_result["deploy_outcome"] == DeployOutcome.CODE_FIX.value
+
+        assert result["status"] == "failed"

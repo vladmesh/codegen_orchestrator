@@ -16,6 +16,9 @@ argument-hint: "[full] <group>"
 
 Keep living docs in sync with the codebase.
 
+## Key References
+- See **Documentation Map** in [CLAUDE.md](CLAUDE.md) for the full list of docs grouped by purpose.
+
 ## Modes
 
 ### `/update-docs` — incremental, all groups
@@ -84,7 +87,7 @@ Each group bundles logically related docs. The "Code signals" column tells incre
 | `docs/resource-management.md` | secret handles, worker env, allocation logic |
 | `services/langgraph/src/prompts/developer_worker/INSTRUCTIONS.md` | CLI tools, worker-wrapper, task lifecycle |
 
-### `ops` — Deploy, secrets, testing, logging
+### `ops` — Deploy, secrets, testing, logging, shared recipes
 
 | Doc | Code signals |
 |-----|-------------|
@@ -92,6 +95,7 @@ Each group bundles logically related docs. The "Code signals" column tells incre
 | `docs/SECRETS.md` | encryption code, secret-related env vars, GitHub secrets flow |
 | `docs/TESTING.md` | Makefile test targets, CI config, pytest setup, new test dirs |
 | `docs/LOGGING.md` | `shared/log_config.py`, structlog usage patterns |
+| `.claude/skills/shared/pipeline-recipes.md` | queue APIs, worker-manager API, GitHubAppClient, story/task transitions, debug endpoints |
 
 ### `workflow` — Dev process & user stories
 

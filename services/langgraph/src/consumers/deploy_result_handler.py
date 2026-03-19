@@ -1,4 +1,8 @@
-"""Deploy result handlers for success and smoke-test failure outcomes."""
+"""Deploy result handlers — pure run.status/result updates, no story transitions.
+
+Story lifecycle (DEPLOYING → TESTING/FAILED) is managed by the dispatcher's
+supervise_deploying_stories(), which reads run.result.deploy_outcome.
+"""
 
 from __future__ import annotations
 
@@ -7,19 +11,13 @@ from datetime import UTC, datetime
 import structlog
 
 from shared.contracts.dto.project import ProjectDTO
-from shared.contracts.queues.deploy import DeployMessage
-from shared.contracts.queues.qa import QAMessage
-from shared.queues import QA_QUEUE
+from shared.contracts.dto.run import RunStatus
+from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ._events import publish_callback_event
-from .deploy_failure_handler import (
-    _classify_deploy_failure,
-    _route_deploy_failure,
-    _track_deploy_retry,
-    _transition_story_safe,
-)
+from .deploy_failure_handler import _classify_deploy_failure
 
 logger = structlog.get_logger(__name__)
 
@@ -37,7 +35,11 @@ async def _handle_smoke_failure(
     redis: RedisStreamClient,
     msg: DeployMessage,
 ) -> dict:
-    """Handle deploy success with smoke test failure."""
+    """Handle deploy success with smoke test failure.
+
+    Classifies the failure and stores the classification in run.result
+    for the dispatcher to act on.
+    """
     smoke_details = "; ".join(
         f"{c['module']}: {c['detail']}"
         for c in smoke_result.get("checks", [])
@@ -50,30 +52,30 @@ async def _handle_smoke_failure(
         deployed_url=result["deployed_url"],
         smoke_details=smoke_details,
     )
+
+    # Classify failure for dispatcher routing
+    classification = await _classify_deploy_failure(smoke_details)
+    deploy_outcome = {
+        "CODE_FIX": DeployOutcome.CODE_FIX,
+        "RETRY": DeployOutcome.RETRY,
+        "GIVE_UP": DeployOutcome.GIVE_UP,
+    }.get(classification, DeployOutcome.RETRY)
+
     await api_client.patch(
         f"runs/{task_id}",
         json={
-            "status": "failed",
+            "status": RunStatus.FAILED.value,
             "error_message": error_msg,
             "result": {
+                "deploy_outcome": deploy_outcome.value,
                 "deployed_url": result["deployed_url"],
                 "deployment_result": result.get("deployment_result"),
                 "smoke_result": smoke_result,
+                "error_details": smoke_details,
+                "deploy_fix_attempt": msg.deploy_fix_attempt,
             },
         },
     )
-    # Classify and route failure
-    classification = await _classify_deploy_failure(smoke_details)
-    await _route_deploy_failure(
-        classification=classification,
-        redis=redis,
-        msg=msg,
-        error_details=smoke_details,
-        story_id=story_id,
-    )
-    # For RETRY, also track via retry counter
-    if classification == "RETRY":
-        await _track_deploy_retry(redis=redis, story_id=story_id)
 
     await publish_callback_event(
         redis,
@@ -84,7 +86,6 @@ async def _handle_smoke_failure(
         user_id=user_id,
         project_id=project_id,
     )
-    # No proactive message — smoke failure is internal (retried or redispatched)
 
     return {
         "status": "failed",
@@ -107,7 +108,11 @@ async def _handle_deploy_success(
     redis: RedisStreamClient,
     application_id: int | None = None,
 ) -> dict:
-    """Handle successful deploy (with or without smoke)."""
+    """Handle successful deploy — update run, no story transitions.
+
+    Stores deploy_outcome=success with deployed_url and application_id
+    so dispatcher can hand off to QA.
+    """
     logger.info(
         "deploy_job_success",
         task_id=task_id,
@@ -116,31 +121,20 @@ async def _handle_deploy_success(
     await api_client.patch(
         f"runs/{task_id}",
         json={
-            "status": "completed",
+            "status": RunStatus.COMPLETED.value,
             "result": {
+                "deploy_outcome": DeployOutcome.SUCCESS.value,
                 "deployed_url": result["deployed_url"],
                 "deployment_result": result.get("deployment_result"),
                 "smoke_result": smoke_result,
+                "application_id": application_id,
+                "bot_username": result.get("bot_username"),
             },
         },
     )
-    # Hand off to QA if story exists, otherwise complete directly
-    if story_id:
-        await _transition_story_safe(story_id, "test")
-        await redis.publish_message(
-            QA_QUEUE,
-            QAMessage(
-                story_id=story_id,
-                project_id=project_id,
-                user_id=user_id,
-                deployed_url=result["deployed_url"],
-                application_id=application_id,
-                bot_username=result.get("bot_username"),
-            ),
-        )
-        logger.info("qa_handoff", story_id=story_id, deployed_url=result["deployed_url"])
-        # Worker container NOT deleted — QA may need it for fix tasks
-    else:
+
+    # Callback for standalone deploys (no story)
+    if not story_id:
         await publish_callback_event(
             redis,
             callback_stream,

@@ -12,6 +12,16 @@ class DeployTrigger(StrEnum):
     PO = "po"
 
 
+class DeployOutcome(StrEnum):
+    """Outcome stored in run.result for dispatcher consumption."""
+
+    SUCCESS = "success"
+    SMOKE_FAILURE = "smoke_failure"
+    CODE_FIX = "code_fix"
+    RETRY = "retry"
+    GIVE_UP = "give_up"
+
+
 class DeployMessage(BaseMessage):
     """Start deploy task."""
 

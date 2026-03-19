@@ -1,18 +1,19 @@
 """Deploy Worker — consumes from jobs:deploy queue and runs DevOps.
 
+Pure technical worker: only updates run.status and run.result.
+Story lifecycle transitions are handled by the dispatcher.
+
 Run standalone: python -m src.consumers.deploy
 """
 
 from __future__ import annotations
-
-from datetime import UTC, datetime
 
 import structlog
 
 from shared.config_store import ConfigStore
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
-from shared.contracts.queues.deploy import DeployMessage
+from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -23,13 +24,9 @@ from ._base import start_worker
 from ._events import publish_callback_event
 from .deploy_failure_handler import (
     CLASSIFY_PROMPT,
+    _classification_to_outcome,
     _classify_deploy_failure,
     _handle_deploy_failure,
-    _handle_give_up,
-    _redispatch_to_engineering,
-    _route_deploy_failure,
-    _track_deploy_retry,
-    _transition_story_safe,
 )
 from .deploy_precheck import (
     SERVICE_BASE_DIR,
@@ -49,14 +46,9 @@ __all__ = [
     "_classify_deploy_failure",
     "_handle_deploy_failure",
     "_handle_deploy_success",
-    "_handle_give_up",
     "_handle_smoke_failure",
     "_pre_check_server",
-    "_redispatch_to_engineering",
-    "_route_deploy_failure",
     "_run_deploy_precheck",
-    "_track_deploy_retry",
-    "_transition_story_safe",
     "process_deploy_job",
 ]
 
@@ -191,7 +183,11 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             error_msg = f"Project {project_id} not found"
             await api_client.patch(
                 f"runs/{task_id}",
-                json={"status": "failed", "error_message": error_msg},
+                json={
+                    "status": RunStatus.FAILED.value,
+                    "error_message": error_msg,
+                    "result": {"deploy_outcome": DeployOutcome.GIVE_UP.value},
+                },
             )
             return {"status": "failed", "error": error_msg}
 
@@ -200,7 +196,11 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         if isinstance(alloc_result, str):
             await api_client.patch(
                 f"runs/{task_id}",
-                json={"status": "failed", "error_message": alloc_result},
+                json={
+                    "status": RunStatus.FAILED.value,
+                    "error_message": alloc_result,
+                    "result": {"deploy_outcome": DeployOutcome.GIVE_UP.value},
+                },
             )
             return {"status": "failed", "error": alloc_result}
         allocated_resources = alloc_result
@@ -247,6 +247,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
+                deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
         # Resolve git_url from primary Repository entity
@@ -324,29 +325,17 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
+                deploy_outcome=DeployOutcome.GIVE_UP,
+                deploy_fix_attempt=msg.deploy_fix_attempt,
             )
         else:
             errors = result.get("errors", ["Unknown deployment error"])
             logger.error("deploy_job_failed", task_id=task_id, errors=errors)
             error_msg = "; ".join(errors)
 
-            # Classify and route failure
+            # Classify failure and store outcome for dispatcher
             classification = await _classify_deploy_failure(error_msg)
-            await _route_deploy_failure(
-                classification=classification,
-                redis=redis,
-                msg=msg,
-                error_details=error_msg,
-                story_id=story_id,
-            )
-            # GIVE_UP already handled (story failed, admin notified) — skip retry
-            if classification == "GIVE_UP":
-                return {
-                    "status": "failed",
-                    "error": error_msg,
-                    "classification": "GIVE_UP",
-                    "finished_at": datetime.now(UTC).isoformat(),
-                }
+            deploy_outcome = _classification_to_outcome(classification)
 
             return await _handle_deploy_failure(
                 task_id=task_id,
@@ -356,6 +345,8 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 callback_stream=callback_stream,
                 user_id=user_id,
                 redis=redis,
+                deploy_outcome=deploy_outcome,
+                deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
     except Exception as e:
@@ -374,6 +365,7 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             callback_stream=callback_stream,
             user_id=user_id,
             redis=redis,
+            deploy_fix_attempt=msg.deploy_fix_attempt,
         )
     finally:
         # Always release the deploy lock so the next deploy can proceed

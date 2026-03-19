@@ -130,6 +130,17 @@ class SchedulerAPIClient:
         resp = await self._request("POST", "runs/", json=run_data)
         return RunDTO.model_validate(resp.json())
 
+    async def get_run(self, run_id: str) -> RunDTO:
+        resp = await self._request("GET", f"runs/{run_id}")
+        return RunDTO.model_validate(resp.json())
+
+    async def get_runs_by_story(self, story_id: str, run_type: str | None = None) -> list[RunDTO]:
+        params: dict[str, str] = {"story_id": story_id}
+        if run_type:
+            params["run_type"] = run_type
+        resp = await self._request("GET", "runs/", params=params)
+        return [RunDTO.model_validate(r) for r in resp.json()]
+
     # --- Stories ---
 
     async def get_story(self, story_id: str) -> StoryDTO:

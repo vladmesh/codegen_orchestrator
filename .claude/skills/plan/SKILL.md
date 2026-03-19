@@ -9,6 +9,10 @@ argument-hint: "[#ID]"
 
 Decompose a task into actionable steps. Each step has clear Input, Output, and Test.
 
+## Key References
+- [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — task lifecycle, API workflow, status transitions
+- [docs/CONTRACTS.md](docs/CONTRACTS.md) — shared DTOs and enums (understand available contracts when planning)
+
 ## Input
 
 - `#ID` — backlog tag to plan. If omitted, uses current in_dev task from API.

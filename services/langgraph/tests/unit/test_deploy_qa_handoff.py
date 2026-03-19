@@ -1,7 +1,7 @@
-"""Unit tests for deploy → QA handoff.
+"""Unit tests for deploy success outcome storage.
 
-After successful deploy+smoke, deploy consumer should transition story
-to TESTING and publish QAMessage to qa:queue instead of completing.
+After successful deploy+smoke, deploy worker stores deploy_outcome=SUCCESS
+in run.result. Story transition and QA handoff are handled by the dispatcher.
 """
 
 from __future__ import annotations
@@ -9,10 +9,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from tests.unit.factories import make_project, make_repository, make_story
+from tests.unit.factories import make_project, make_repository
 
-from shared.contracts.queues.deploy import DeployTrigger
-from shared.queues import QA_QUEUE
+from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
 
 
 @pytest.fixture
@@ -21,8 +20,6 @@ def mock_redis():
     r.redis = AsyncMock()
     r.redis.set = AsyncMock(return_value=True)  # lock acquired
     r.redis.delete = AsyncMock()
-    r.redis.incr = AsyncMock(return_value=1)
-    r.redis.expire = AsyncMock()
     r.publish_flat = AsyncMock()
     r.publish_message = AsyncMock()
     return r
@@ -30,26 +27,26 @@ def mock_redis():
 
 @pytest.fixture
 def mock_api():
+    api = AsyncMock()
+    api.patch = AsyncMock()
+    api.get = AsyncMock(return_value=[])
+    api.get_project = AsyncMock(
+        return_value=make_project(
+            name="weather-bot",
+            config={"modules": ["backend"]},
+        )
+    )
+    api.get_primary_repository = AsyncMock(
+        return_value=make_repository(
+            git_url="https://github.com/org/weather-bot",
+        )
+    )
     with (
-        patch("src.consumers.deploy.api_client") as api,
+        patch("src.consumers.deploy.api_client", api),
         patch("src.consumers.deploy_result_handler.api_client", api),
         patch("src.consumers.deploy_failure_handler.api_client", api),
         patch("src.consumers.deploy_precheck.api_client", api),
     ):
-        api.patch = AsyncMock()
-        api.get = AsyncMock(return_value=[])
-        api.get_project = AsyncMock(
-            return_value=make_project(
-                name="weather-bot",
-                config={"modules": ["backend"]},
-            )
-        )
-        api.get_primary_repository = AsyncMock(
-            return_value=make_repository(
-                git_url="https://github.com/org/weather-bot",
-            )
-        )
-        api.transition_story = AsyncMock(return_value=make_story(status="testing"))
         yield api
 
 
@@ -83,10 +80,10 @@ def _job(*, story_id="story-1", user_id="12345"):
 
 
 @pytest.mark.asyncio
-async def test_deploy_success_transitions_to_testing(
+async def test_deploy_success_stores_outcome(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Successful deploy should transition story to TESTING, not COMPLETED."""
+    """Successful deploy stores deploy_outcome=SUCCESS in run.result."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": "http://1.2.3.4:8080",
@@ -101,15 +98,22 @@ async def test_deploy_success_transitions_to_testing(
     result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "success"
-    # Story should transition to "test", NOT "complete"
-    mock_api.transition_story.assert_called_once_with("story-1", "test")
+    # Run should be patched with success outcome
+    patch_calls = mock_api.patch.call_args_list
+    # Find the final patch (status=completed)
+    completed_patch = [c for c in patch_calls if c[1].get("json", {}).get("status") == "completed"]
+    assert len(completed_patch) == 1
+    run_result = completed_patch[0][1]["json"]["result"]
+    assert run_result["deploy_outcome"] == DeployOutcome.SUCCESS.value
+    assert run_result["deployed_url"] == "http://1.2.3.4:8080"
+    assert run_result["application_id"] == 1
 
 
 @pytest.mark.asyncio
-async def test_deploy_success_publishes_qa_message(
+async def test_deploy_success_does_not_transition_story(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Successful deploy should publish QAMessage to qa:queue."""
+    """Deploy worker must NOT transition story — dispatcher does that."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": "http://1.2.3.4:8080",
@@ -123,38 +127,9 @@ async def test_deploy_success_publishes_qa_message(
 
     await process_deploy_job(_job(), mock_redis)
 
-    # Should publish QAMessage to qa:queue
-    mock_redis.publish_message.assert_called_once()
-    call_args = mock_redis.publish_message.call_args
-    assert call_args[0][0] == QA_QUEUE
-    qa_msg = call_args[0][1]
-    assert qa_msg.story_id == "story-1"
-    assert qa_msg.project_id == "proj-1"
-    assert qa_msg.deployed_url == "http://1.2.3.4:8080"
-    assert qa_msg.user_id == "12345"
-    assert qa_msg.application_id == 1
-
-
-@pytest.mark.asyncio
-async def test_deploy_success_does_not_delete_worker(
-    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
-):
-    """Worker container should NOT be deleted — QA may need it for fixes."""
-    mock_devops_subgraph.ainvoke = AsyncMock(
-        return_value={
-            "deployed_url": "http://1.2.3.4:8080",
-            "deployment_result": {},
-            "smoke_result": {"status": "pass", "checks": []},
-            "application_id": 1,
-        }
-    )
-
-    with patch("src.consumers.deploy_failure_handler.delete_worker") as mock_delete:
-        from src.consumers.deploy import process_deploy_job
-
-        await process_deploy_job(_job(), mock_redis)
-
-        mock_delete.assert_not_called()
+    # No story transition, no QA message
+    mock_api.transition_story.assert_not_called()
+    mock_redis.publish_message.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -176,5 +151,4 @@ async def test_deploy_success_no_story_skips_qa(
     result = await process_deploy_job(_job(story_id=""), mock_redis)
 
     assert result["status"] == "success"
-    # No QA message published when no story
     mock_redis.publish_message.assert_not_called()

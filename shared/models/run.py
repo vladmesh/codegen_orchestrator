@@ -48,6 +48,11 @@ class Run(Base):
     # Redis stream for progress events
     callback_stream: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # Link to Story — nullable (standalone deploys have no story)
+    story_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("stories.id"), nullable=True, index=True
+    )
+
     # Link to Task (planning layer) — nullable for backward compat
     task_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("tasks.id"), nullable=True, index=True

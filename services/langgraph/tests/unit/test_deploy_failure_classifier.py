@@ -1,4 +1,8 @@
-"""Unit tests for deploy failure LLM classifier (CODE_FIX / RETRY / GIVE_UP)."""
+"""Unit tests for deploy failure LLM classifier (CODE_FIX / RETRY / GIVE_UP).
+
+Classification tests verify the LLM classifier returns the correct category.
+Integration tests verify that deploy worker stores the classified outcome in run.result.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from tests.unit.factories import make_project, make_repository
 
-from shared.contracts.queues.deploy import DeployTrigger
-from shared.queues import ENGINEERING_QUEUE
+from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
 
 
 @pytest.fixture
@@ -18,8 +21,6 @@ def mock_redis():
     r.redis.xadd = AsyncMock()
     r.redis.set = AsyncMock(return_value=True)  # lock acquired
     r.redis.delete = AsyncMock()
-    r.redis.incr = AsyncMock(return_value=1)
-    r.redis.expire = AsyncMock()
     r.publish_flat = AsyncMock()
     r.publish_message = AsyncMock()
     return r
@@ -39,22 +40,18 @@ def _configure_api_mock(api):
     api.get_primary_repository = AsyncMock(
         return_value=make_repository(git_url="https://github.com/org/my-project")
     )
-    api.transition_story = AsyncMock()
-    api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
 
 
 @pytest.fixture
 def mock_api():
+    api = AsyncMock()
+    _configure_api_mock(api)
     with (
-        patch("src.consumers.deploy.api_client") as api,
-        patch("src.consumers.deploy_failure_handler.api_client") as fh_api,
-        patch("src.consumers.deploy_result_handler.api_client") as rh_api,
-        patch("src.consumers.deploy_precheck.api_client") as pc_api,
+        patch("src.consumers.deploy.api_client", api),
+        patch("src.consumers.deploy_failure_handler.api_client", api),
+        patch("src.consumers.deploy_result_handler.api_client", api),
+        patch("src.consumers.deploy_precheck.api_client", api),
     ):
-        _configure_api_mock(api)
-        _configure_api_mock(fh_api)
-        _configure_api_mock(rh_api)
-        _configure_api_mock(pc_api)
         yield api
 
 
@@ -169,14 +166,23 @@ async def test_classify_defaults_to_retry_without_api_key():
         assert result == "RETRY"
 
 
-# -- Integration: smoke failure with classification --
+# -- Integration: deploy stores classified outcome in run.result --
+
+
+def _find_failed_patches(mock_api):
+    """Find all PATCH calls that set status=failed and return their result dicts."""
+    return [
+        c[1]["json"]["result"]
+        for c in mock_api.patch.call_args_list
+        if c[1].get("json", {}).get("status") == "failed" and "result" in c[1].get("json", {})
+    ]
 
 
 @pytest.mark.asyncio
-async def test_smoke_failure_code_fix_dispatches_to_engineering(
+async def test_smoke_failure_code_fix_stores_outcome(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Smoke failure classified as CODE_FIX → dispatches fix task to engineering."""
+    """Smoke failure classified as CODE_FIX → stores deploy_outcome=code_fix."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": "http://1.2.3.4:8080",
@@ -184,11 +190,7 @@ async def test_smoke_failure_code_fix_dispatches_to_engineering(
             "smoke_result": {
                 "status": "fail",
                 "checks": [
-                    {
-                        "module": "backend",
-                        "result": "fail",
-                        "detail": "HTTP 500 Internal Server Error",
-                    },
+                    {"module": "backend", "result": "fail", "detail": "HTTP 500"},
                 ],
             },
         }
@@ -203,18 +205,15 @@ async def test_smoke_failure_code_fix_dispatches_to_engineering(
         result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
-    # Engineering fix task should be published
-    engineering_calls = [
-        c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-    ]
-    assert len(engineering_calls) == 1
+    results = _find_failed_patches(mock_api)
+    assert any(r["deploy_outcome"] == DeployOutcome.CODE_FIX.value for r in results)
 
 
 @pytest.mark.asyncio
-async def test_smoke_failure_retry_retries_deploy(
+async def test_smoke_failure_retry_stores_outcome(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Smoke failure classified as RETRY → no engineering task, story retried."""
+    """Smoke failure classified as RETRY → stores deploy_outcome=retry."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": "http://1.2.3.4:8080",
@@ -222,11 +221,7 @@ async def test_smoke_failure_retry_retries_deploy(
             "smoke_result": {
                 "status": "fail",
                 "checks": [
-                    {
-                        "module": "backend",
-                        "result": "fail",
-                        "detail": "Healthcheck timeout after 30s",
-                    },
+                    {"module": "backend", "result": "fail", "detail": "Healthcheck timeout"},
                 ],
             },
         }
@@ -241,20 +236,17 @@ async def test_smoke_failure_retry_retries_deploy(
         result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
-    # No engineering fix task
-    engineering_calls = [
-        c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-    ]
-    assert len(engineering_calls) == 0
-    # Story should be rolled back to "start" (retry counter incremented)
-    mock_redis.redis.incr.assert_called()
+    results = _find_failed_patches(mock_api)
+    assert any(r["deploy_outcome"] == DeployOutcome.RETRY.value for r in results)
+    # No engineering message — dispatcher handles routing
+    mock_redis.publish_message.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_devops_error_retry_skips_engineering(
+async def test_devops_error_retry_stores_outcome(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Devops subgraph errors classified as RETRY → no engineering task."""
+    """Devops subgraph errors classified as RETRY → stores deploy_outcome=retry."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": None,
@@ -271,21 +263,19 @@ async def test_devops_error_retry_skips_engineering(
         result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
-    engineering_calls = [
-        c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-    ]
-    assert len(engineering_calls) == 0
+    results = _find_failed_patches(mock_api)
+    assert any(r["deploy_outcome"] == DeployOutcome.RETRY.value for r in results)
 
 
 @pytest.mark.asyncio
-async def test_devops_error_code_fix_dispatches_to_engineering(
+async def test_devops_error_code_fix_stores_outcome(
     mock_redis, mock_api, mock_allocations, mock_devops_subgraph
 ):
-    """Devops subgraph errors classified as CODE_FIX → dispatches to engineering."""
+    """Devops errors classified as CODE_FIX → stores deploy_outcome=code_fix."""
     mock_devops_subgraph.ainvoke = AsyncMock(
         return_value={
             "deployed_url": None,
-            "errors": ["Container exited with code 1: ImportError: cannot import name 'app'"],
+            "errors": ["Container exited with code 1: ImportError"],
         }
     )
 
@@ -298,7 +288,5 @@ async def test_devops_error_code_fix_dispatches_to_engineering(
         result = await process_deploy_job(_job(), mock_redis)
 
     assert result["status"] == "failed"
-    engineering_calls = [
-        c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-    ]
-    assert len(engineering_calls) == 1
+    results = _find_failed_patches(mock_api)
+    assert any(r["deploy_outcome"] == DeployOutcome.CODE_FIX.value for r in results)

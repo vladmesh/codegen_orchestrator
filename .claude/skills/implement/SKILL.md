@@ -9,6 +9,10 @@ argument-hint: "[#ID]"
 
 The main development skill. Implements the current task (or a specific one) using TDD workflow.
 
+## Key References
+- [docs/TESTING.md](docs/TESTING.md) — test layers, service vs integration tests, compose files
+- [docs/CONTRACTS.md](docs/CONTRACTS.md) — queue DTOs, shared enums (use instead of literals)
+
 ## Input
 
 - No arguments: continue working on the current in_dev task, or try to unblock a blocked task, or auto-pick the highest-priority backlog task
@@ -205,10 +209,14 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
   -d '{"event_type": "comment", "details": {"action": "plan_deviation", "step": N, "reason": "<why>"}, "actor": "claude"}' || true
 ```
 
-Follow Red -> Green -> Refactor:
+Follow Red -> Green -> Refactor. **Test behavior, not implementation** (see CLAUDE.md "Testing Philosophy"):
 
-1. **Red**: Write failing test(s) based on the step's Test spec. Run `make test-unit` to confirm they fail.
-2. **Green**: Write minimal code to make tests pass. Run `make test-unit`.
+1. **Red**: Write failing test(s) based on the step's Test spec. **Choose the right test level:**
+   - Touches DB/Redis → service test (`services/{name}/tests/service/`)
+   - Crosses service boundaries → integration test (`tests/integration/{suite}/`)
+   - Pure logic only (parsers, validators) → unit test (`tests/unit/`)
+   Run the test to confirm it fails.
+2. **Green**: Write minimal code to make tests pass. Run the test.
 3. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
 4. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
 
@@ -376,6 +384,12 @@ curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
 - If you need to change `shared/contracts/` or DB schema that wasn't in the plan — STOP and ask the user.
 - Don't skip tests. Every step should have at least one test unless it's pure documentation.
 - Run `make lint` before every commit.
+
+### Code discipline (see CLAUDE.md "Critical Anti-Patterns" for full details)
+
+- **Fail-fast**: No defaults, no fallbacks, no `get(key, default)`. Missing value = crash = fast fix. No "just in case" branches.
+- **Enums & schemas only**: Use `TaskStatus.DONE`, not `"done"`. Use `EngineeringMessage(...)`, not `{"data": ...}`. If a type doesn't exist — create it in `shared/contracts/`.
+- **Glossary compliance**: Worker = ephemeral Docker container with CLI agent. Consumer = queue listener role. Don't confuse them. Check [docs/GLOSSARY.md](docs/GLOSSARY.md).
 
 ### Failing tests policy
 

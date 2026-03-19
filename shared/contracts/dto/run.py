@@ -33,5 +33,6 @@ class RunDTO(TimestampedDTO):
     project_id: str
     type: RunType
     status: RunStatus
+    story_id: str | None = None
     spec: str | None = None
     result: dict | None = None

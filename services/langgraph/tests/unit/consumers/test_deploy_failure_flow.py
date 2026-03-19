@@ -1,33 +1,16 @@
-"""Integration test: deploy failure → classify → route to correct handler.
+"""Unit test: deploy failure classification → correct deploy_outcome stored.
 
-Tests the full flow from classification through routing, verifying that:
-- port conflict → GIVE_UP → no engineering dispatch
-- import error → CODE_FIX → engineering dispatch
-- SSH timeout → RETRY → retry counter (no engineering dispatch)
+Tests that the classify → outcome mapping works correctly, and that
+_handle_deploy_failure stores the right deploy_outcome in run.result.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
+from shared.contracts.queues.deploy import DeployOutcome
 
 _PATCH = "src.consumers.deploy_failure_handler"
-
-
-def _make_deploy_msg(**overrides) -> dict:
-    defaults = {
-        "task_id": "deploy-flow-1",
-        "project_id": "proj-1",
-        "user_id": "123",
-        "callback_stream": "cb:123",
-        "triggered_by": DeployTrigger.ENGINEERING.value,
-        "action": "create",
-        "story_id": "story-1",
-        "deploy_fix_attempt": 0,
-    }
-    defaults.update(overrides)
-    return defaults
 
 
 def _mock_llm_response(content: str):
@@ -39,26 +22,18 @@ def _mock_llm_response(content: str):
     return mock_llm
 
 
-class TestDeployFailureFlow:
-    """End-to-end flow: classify + route for each failure type."""
+class TestDeployFailureClassification:
+    """Classification + outcome mapping for each failure type."""
 
     @pytest.fixture(autouse=True)
     def _env(self, monkeypatch):
         monkeypatch.setenv("OPEN_ROUTER_KEY", "test-key")
 
     @pytest.mark.asyncio
-    async def test_port_conflict_gives_up_no_engineering(self):
-        """Port conflict → GIVE_UP → _handle_give_up, NO _redispatch."""
-        from src.consumers.deploy_failure_handler import (
-            _classify_deploy_failure,
-            _route_deploy_failure,
-        )
+    async def test_port_conflict_classifies_as_give_up(self):
+        """Port conflict → GIVE_UP classification."""
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
-        msg = DeployMessage.model_validate(_make_deploy_msg())
-        redis = MagicMock()
-        redis.redis = AsyncMock()
-
-        # Classify
         with patch(f"{_PATCH}.ChatOpenAI") as mock_cls:
             mock_cls.return_value = _mock_llm_response("GIVE_UP")
             classification = await _classify_deploy_failure(
@@ -67,35 +42,10 @@ class TestDeployFailureFlow:
 
         assert classification == "GIVE_UP"
 
-        # Route
-        with (
-            patch(f"{_PATCH}._handle_give_up", new_callable=AsyncMock) as mock_gu,
-            patch(
-                f"{_PATCH}._redispatch_to_engineering",
-                new_callable=AsyncMock,
-            ) as mock_rd,
-        ):
-            await _route_deploy_failure(
-                classification=classification,
-                redis=redis,
-                msg=msg,
-                error_details="port is already allocated",
-                story_id="story-1",
-            )
-            mock_gu.assert_called_once()
-            mock_rd.assert_not_called()
-
     @pytest.mark.asyncio
-    async def test_import_error_dispatches_to_engineering(self):
-        """Import error → CODE_FIX → _redispatch_to_engineering."""
-        from src.consumers.deploy_failure_handler import (
-            _classify_deploy_failure,
-            _route_deploy_failure,
-        )
-
-        msg = DeployMessage.model_validate(_make_deploy_msg())
-        redis = MagicMock()
-        redis.redis = AsyncMock()
+    async def test_import_error_classifies_as_code_fix(self):
+        """Import error → CODE_FIX classification."""
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         with patch(f"{_PATCH}.ChatOpenAI") as mock_cls:
             mock_cls.return_value = _mock_llm_response("CODE_FIX")
@@ -105,39 +55,10 @@ class TestDeployFailureFlow:
 
         assert classification == "CODE_FIX"
 
-        with (
-            patch(f"{_PATCH}._handle_give_up", new_callable=AsyncMock) as mock_gu,
-            patch(
-                f"{_PATCH}._redispatch_to_engineering",
-                new_callable=AsyncMock,
-            ) as mock_rd,
-            patch(
-                f"{_PATCH}._transition_story_safe",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_rd.return_value = True
-            await _route_deploy_failure(
-                classification=classification,
-                redis=redis,
-                msg=msg,
-                error_details="ModuleNotFoundError",
-                story_id="story-1",
-            )
-            mock_rd.assert_called_once()
-            mock_gu.assert_not_called()
-
     @pytest.mark.asyncio
-    async def test_ssh_timeout_retries_no_engineering(self):
-        """SSH timeout → RETRY → no engineering dispatch, no give_up."""
-        from src.consumers.deploy_failure_handler import (
-            _classify_deploy_failure,
-            _route_deploy_failure,
-        )
-
-        msg = DeployMessage.model_validate(_make_deploy_msg())
-        redis = MagicMock()
-        redis.redis = AsyncMock()
+    async def test_ssh_timeout_classifies_as_retry(self):
+        """SSH timeout → RETRY classification."""
+        from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         with patch(f"{_PATCH}.ChatOpenAI") as mock_cls:
             mock_cls.return_value = _mock_llm_response("RETRY")
@@ -145,26 +66,9 @@ class TestDeployFailureFlow:
 
         assert classification == "RETRY"
 
-        with (
-            patch(f"{_PATCH}._handle_give_up", new_callable=AsyncMock) as mock_gu,
-            patch(
-                f"{_PATCH}._redispatch_to_engineering",
-                new_callable=AsyncMock,
-            ) as mock_rd,
-        ):
-            await _route_deploy_failure(
-                classification=classification,
-                redis=redis,
-                msg=msg,
-                error_details="SSH timeout",
-                story_id="story-1",
-            )
-            mock_rd.assert_not_called()
-            mock_gu.assert_not_called()
-
     @pytest.mark.asyncio
     async def test_llm_failure_defaults_to_retry(self):
-        """LLM crash → fallback RETRY → no engineering dispatch."""
+        """LLM crash → fallback RETRY."""
         from src.consumers.deploy_failure_handler import _classify_deploy_failure
 
         with patch(f"{_PATCH}.ChatOpenAI") as mock_cls:
@@ -174,3 +78,84 @@ class TestDeployFailureFlow:
             classification = await _classify_deploy_failure("any error")
 
         assert classification == "RETRY"
+
+
+class TestClassificationToOutcome:
+    """_classification_to_outcome maps strings to DeployOutcome enum."""
+
+    def test_code_fix(self):
+        from src.consumers.deploy_failure_handler import _classification_to_outcome
+
+        assert _classification_to_outcome("CODE_FIX") == DeployOutcome.CODE_FIX
+
+    def test_retry(self):
+        from src.consumers.deploy_failure_handler import _classification_to_outcome
+
+        assert _classification_to_outcome("RETRY") == DeployOutcome.RETRY
+
+    def test_give_up(self):
+        from src.consumers.deploy_failure_handler import _classification_to_outcome
+
+        assert _classification_to_outcome("GIVE_UP") == DeployOutcome.GIVE_UP
+
+    def test_unknown_defaults_to_retry(self):
+        from src.consumers.deploy_failure_handler import _classification_to_outcome
+
+        assert _classification_to_outcome("UNKNOWN") == DeployOutcome.RETRY
+
+
+class TestHandleDeployFailure:
+    """_handle_deploy_failure stores deploy_outcome in run.result."""
+
+    @pytest.mark.asyncio
+    async def test_stores_outcome_in_run_result(self):
+        from src.consumers.deploy_failure_handler import _handle_deploy_failure
+
+        mock_redis = AsyncMock()
+
+        with patch(f"{_PATCH}.api_client") as mock_api:
+            mock_api.patch = AsyncMock()
+            result = await _handle_deploy_failure(
+                task_id="deploy-1",
+                project_id="proj-1",
+                error_msg="SSH timeout",
+                story_id="story-1",
+                callback_stream="cb:1",
+                user_id="123",
+                redis=mock_redis,
+                deploy_outcome=DeployOutcome.RETRY,
+                deploy_fix_attempt=1,
+            )
+
+            # Verify run was patched with deploy_outcome
+            patch_call = mock_api.patch.call_args_list[0]
+            assert patch_call[0][0] == "runs/deploy-1"
+            run_result = patch_call[1]["json"]["result"]
+            assert run_result["deploy_outcome"] == DeployOutcome.RETRY.value
+            assert run_result["error_details"] == "SSH timeout"
+            assert run_result["deploy_fix_attempt"] == 1
+
+        assert result["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_does_not_call_transition_story(self):
+        """Deploy worker must NOT transition stories — dispatcher does that."""
+        from src.consumers.deploy_failure_handler import _handle_deploy_failure
+
+        mock_redis = AsyncMock()
+
+        with patch(f"{_PATCH}.api_client") as mock_api:
+            mock_api.patch = AsyncMock()
+            await _handle_deploy_failure(
+                task_id="deploy-1",
+                project_id="proj-1",
+                error_msg="error",
+                story_id="story-1",
+                callback_stream="cb:1",
+                user_id="123",
+                redis=mock_redis,
+            )
+
+            # Verify no transition_story calls
+            for call in mock_api.method_calls:
+                assert "transition_story" not in str(call)

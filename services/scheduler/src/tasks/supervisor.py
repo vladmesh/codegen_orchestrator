@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+import uuid
 
 import structlog
 
+from shared.contracts.dto.run import RunStatus, RunType
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
-from shared.queues import ARCHITECT_QUEUE
+from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
+from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.queues.qa import QAMessage
+from shared.notifications import notify_admins
+from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
 if TYPE_CHECKING:
@@ -21,6 +27,19 @@ from ..startup import config as _config
 logger = structlog.get_logger(__name__)
 
 STORY_RETRY_KEY_PREFIX = "story:architect_retries:"
+DEPLOY_RETRY_KEY_PREFIX = "deploy:retries:"
+
+
+def _max_deploy_retries() -> int:
+    return _config.get_int("deploy.max_deploy_retries") if _config else 3
+
+
+def _max_deploy_fix_attempts() -> int:
+    return _config.get_int("deploy.max_deploy_fix_attempts") if _config else 2
+
+
+def _deploy_retry_ttl() -> int:
+    return _config.get_int("deploy.deploy_retry_ttl") if _config else 86400
 
 
 def _story_stuck_threshold() -> int:
@@ -223,3 +242,267 @@ async def supervise_stuck_tasks(
         timed_out += 1
 
     return {"timed_out": timed_out}
+
+
+async def supervise_deploying_stories(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+) -> dict[str, int]:
+    """Poll DEPLOYING stories and route based on deploy run outcome.
+
+    Reads run.result.deploy_outcome set by the deploy worker:
+    - SUCCESS → story TESTING, publish QAMessage
+    - SMOKE_FAILURE / CODE_FIX → story IN_PROGRESS, redispatch to engineering
+    - RETRY → increment retry counter, re-publish DeployMessage or FAILED
+    - GIVE_UP → story FAILED, notify admins
+
+    Returns dict with counts of actions taken.
+    """
+    stories = await api_client.get_stories_by_status(StoryStatus.DEPLOYING)
+    if not stories:
+        return {"tested": 0, "retried": 0, "redispatched": 0, "failed": 0}
+
+    tested = 0
+    retried = 0
+    redispatched = 0
+    failed = 0
+    redis = redis_client._redis
+
+    for story in stories:
+        story_id = story.id
+        project_id = str(story.project_id)
+        log = logger.bind(story_id=story_id, project_id=project_id)
+
+        # Find latest deploy run for this story
+        runs = await api_client.get_runs_by_story(story_id, run_type="deploy")
+        if not runs:
+            continue
+
+        # Runs are returned newest-first
+        run = runs[0]
+
+        # Skip runs still in progress
+        if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
+            continue
+
+        result = run.result or {}
+        outcome_str = result.get("deploy_outcome", "")
+
+        try:
+            outcome = DeployOutcome(outcome_str)
+        except ValueError:
+            log.warning("deploy_outcome_unknown", outcome=outcome_str, run_id=run.id)
+            continue
+
+        if outcome == DeployOutcome.SUCCESS:
+            await _handle_deploy_success_story(
+                api_client, redis_client, story_id, project_id, result, log
+            )
+            tested += 1
+
+        elif outcome in (DeployOutcome.CODE_FIX, DeployOutcome.SMOKE_FAILURE):
+            dispatched = await _handle_deploy_code_fix(
+                api_client, redis_client, story_id, project_id, run, result, log
+            )
+            if dispatched:
+                redispatched += 1
+            else:
+                failed += 1
+
+        elif outcome == DeployOutcome.RETRY:
+            was_retried = await _handle_deploy_retry(
+                api_client, redis_client, redis, story_id, project_id, run, log
+            )
+            if was_retried:
+                retried += 1
+            else:
+                failed += 1
+
+        elif outcome == DeployOutcome.GIVE_UP:
+            await _handle_deploy_give_up(api_client, story_id, project_id, run, log)
+            failed += 1
+
+    return {
+        "tested": tested,
+        "retried": retried,
+        "redispatched": redispatched,
+        "failed": failed,
+    }
+
+
+async def _handle_deploy_success_story(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    result: dict,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Deploy succeeded — transition story to TESTING, publish QA message."""
+    await api_client.transition_story(story_id, "test")
+
+    deployed_url = result["deployed_url"]
+    application_id = result.get("application_id")
+    bot_username = result.get("bot_username")
+
+    await redis_client.publish_message(
+        QA_QUEUE,
+        QAMessage(
+            story_id=story_id,
+            project_id=project_id,
+            user_id="",
+            deployed_url=deployed_url,
+            application_id=application_id,
+            bot_username=bot_username,
+        ),
+    )
+    log.info("deploy_supervisor_qa_handoff", deployed_url=deployed_url)
+
+
+async def _handle_deploy_code_fix(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    story_id: str,
+    project_id: str,
+    run,
+    result: dict,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Deploy failed with CODE_FIX — redispatch to engineering if retries remain.
+
+    Returns True if redispatched, False if retries exhausted.
+    """
+    attempt = result.get("deploy_fix_attempt", 0)
+    if attempt >= _max_deploy_fix_attempts():
+        log.warning(
+            "deploy_fix_retries_exhausted",
+            attempt=attempt,
+            max=_max_deploy_fix_attempts(),
+        )
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(run.id, project_id, "deploy fix retries exhausted")
+        return False
+
+    # Transition story back to IN_PROGRESS
+    await api_client.transition_story(story_id, "start")
+
+    error_details = result.get("error_details", "unknown deploy error")
+    fix_task_id = f"eng-deploy-fix-{run.id}-{attempt + 1}"
+
+    # Create a run record for the fix task
+    try:
+        await api_client.create_run(
+            {
+                "id": fix_task_id,
+                "type": RunType.ENGINEERING.value,
+                "project_id": project_id,
+                "story_id": story_id,
+                "status": RunStatus.QUEUED.value,
+            }
+        )
+    except Exception:
+        log.warning("deploy_fix_run_create_failed", fix_task_id=fix_task_id, exc_info=True)
+
+    fix_msg = EngineeringMessage(
+        task_id=fix_task_id,
+        project_id=project_id,
+        user_id="",
+        action="fix",
+        description=(
+            f"Deploy failed — fix the code so containers start cleanly.\n\n"
+            f"Error: {error_details}\n\n"
+            f"Run the service locally or check imports/dependencies before pushing."
+        ),
+        skip_deploy=False,
+        story_id=story_id,
+        deploy_fix_attempt=attempt + 1,
+    )
+
+    await redis_client.publish_message(ENGINEERING_QUEUE, fix_msg)
+    log.info("deploy_supervisor_code_fix", fix_task_id=fix_task_id, attempt=attempt + 1)
+    return True
+
+
+async def _handle_deploy_retry(
+    api_client: SchedulerAPIClient,
+    redis_client: RedisStreamClient,
+    redis,
+    story_id: str,
+    project_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Deploy failed with RETRY — re-publish deploy message if retries remain.
+
+    Returns True if retried, False if max retries exceeded.
+    """
+    retry_key = f"{DEPLOY_RETRY_KEY_PREFIX}{story_id}"
+    attempts = await redis.incr(retry_key)
+    await redis.expire(retry_key, _deploy_retry_ttl())
+
+    if attempts >= _max_deploy_retries():
+        log.warning(
+            "deploy_max_retries_exceeded",
+            story_id=story_id,
+            attempts=attempts,
+            max_retries=_max_deploy_retries(),
+        )
+        await api_client.fail_story(story_id)
+        await redis.delete(retry_key)
+        await _notify_admin_failure(run.id, project_id, f"deploy retries exhausted ({attempts})")
+        return False
+
+    # Re-publish deploy message for retry
+    new_run_id = f"deploy-retry-{uuid.uuid4().hex[:8]}"
+    await api_client.create_run(
+        {
+            "id": new_run_id,
+            "type": RunType.DEPLOY.value,
+            "project_id": project_id,
+            "story_id": story_id,
+            "status": RunStatus.QUEUED.value,
+            "run_metadata": {"triggered_by": "supervisor_retry", "attempt": attempts},
+        }
+    )
+
+    deploy_msg = DeployMessage(
+        task_id=new_run_id,
+        project_id=project_id,
+        user_id="",
+        story_id=story_id,
+        triggered_by=DeployTrigger.WEBHOOK,
+        action="feature",
+    )
+    await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
+    log.info(
+        "deploy_supervisor_retry",
+        new_run_id=new_run_id,
+        attempt=attempts,
+        max_retries=_max_deploy_retries(),
+    )
+    return True
+
+
+async def _handle_deploy_give_up(
+    api_client: SchedulerAPIClient,
+    story_id: str,
+    project_id: str,
+    run,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Deploy failed with GIVE_UP — terminal failure, admin notified."""
+    log.warning("deploy_supervisor_give_up", run_id=run.id)
+    await api_client.fail_story(story_id)
+    error_msg = (run.result or {}).get("error_details", "unknown error")
+    await _notify_admin_failure(run.id, project_id, error_msg)
+
+
+async def _notify_admin_failure(run_id: str, project_id: str, error: str) -> None:
+    """Best-effort admin notification for deploy failures."""
+    try:
+        await notify_admins(
+            f"Deploy GIVE_UP for run {run_id} (project {project_id}):\n{error[:500]}",
+            level="error",
+        )
+    except Exception:
+        logger.warning("deploy_admin_notify_failed", run_id=run_id, exc_info=True)

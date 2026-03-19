@@ -9,6 +9,11 @@ argument-hint: "[--scope <path>]"
 
 Scan the codebase for issues and create actionable tasks.
 
+## Key References
+- [docs/CONTRACTS.md](docs/CONTRACTS.md) — queue registry, shared DTOs (source of truth for contract violations)
+- [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) — error categories, retry policies
+- [docs/LOGGING.md](docs/LOGGING.md) — structlog patterns to check against
+
 ## Input
 
 - `--scope <path>` — limit audit to a specific directory (e.g. `services/langgraph`). Default: full codebase.
@@ -72,8 +77,15 @@ Check each category:
 **Convention violations:**
 - `print()` in service code — must use `structlog` (see CLAUDE.md)
 - `os.getenv("VAR", "default")` with fallback values — must fail fast with `RuntimeError` (see CLAUDE.md)
+- `.get(key, default)` fallbacks that hide missing data — must use direct access or raise
+- `or fallback_value` patterns that silently swallow None — must crash if data is missing
+- `if status in ("done", "completed", "success")` multi-guess branches — must use single enum value
 - Cross-service imports (`from services.X import ...`) — services must be isolated, communicate via queues/API only
 - `json.dumps(model.model_dump())` instead of `model.model_dump_json()` — redundant serialization
+
+**Glossary violations** (see [docs/GLOSSARY.md](docs/GLOSSARY.md)):
+- Container/variable/log names using "worker" for non-Worker entities (Worker = ephemeral Docker container with CLI agent only)
+- Confusing Consumer (queue listener role) with Service (long-lived process) or Worker
 
 **Test gaps:**
 - Source files in `services/*/src/` without corresponding test in `tests/unit/`

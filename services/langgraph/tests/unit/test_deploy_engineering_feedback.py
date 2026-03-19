@@ -1,7 +1,7 @@
-"""Tests for deploy → engineering feedback loop.
+"""Tests for deploy failure outcome storage for dispatcher routing.
 
-When deploy or smoke fails due to a code bug, the deploy worker should
-re-dispatch a fix task to engineering:queue so the developer can fix the issue.
+Deploy worker stores deploy_outcome and deploy_fix_attempt in run.result.
+The dispatcher reads these to decide whether to redispatch to engineering.
 """
 
 from __future__ import annotations
@@ -11,8 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from tests.unit.factories import make_project, make_repository
 
-from shared.contracts.queues.deploy import DeployTrigger
-from shared.queues import ENGINEERING_QUEUE
+from shared.contracts.queues.deploy import DeployOutcome, DeployTrigger
 
 
 @pytest.fixture
@@ -22,8 +21,6 @@ def mock_redis():
     r.redis.xadd = AsyncMock()
     r.redis.set = AsyncMock(return_value=True)  # lock acquired
     r.redis.delete = AsyncMock()
-    r.redis.incr = AsyncMock(return_value=1)
-    r.redis.expire = AsyncMock()
     r.publish_flat = AsyncMock()
     r.publish_message = AsyncMock()
     return r
@@ -34,7 +31,6 @@ def _configure_api_mock(api):
     api.patch = AsyncMock()
     api.get = AsyncMock(return_value=[])
     api.post = AsyncMock()
-    api.transition_story = AsyncMock()
     api.get_project = AsyncMock(
         return_value=make_project(
             name="my-project",
@@ -44,21 +40,18 @@ def _configure_api_mock(api):
     api.get_primary_repository = AsyncMock(
         return_value=make_repository(git_url="https://github.com/org/my-project")
     )
-    api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
 
 
 @pytest.fixture
 def mock_api():
+    api = AsyncMock()
+    _configure_api_mock(api)
     with (
-        patch("src.consumers.deploy.api_client") as api,
-        patch("src.consumers.deploy_failure_handler.api_client") as fh_api,
-        patch("src.consumers.deploy_result_handler.api_client") as rh_api,
-        patch("src.consumers.deploy_precheck.api_client") as pc_api,
+        patch("src.consumers.deploy.api_client", api),
+        patch("src.consumers.deploy_failure_handler.api_client", api),
+        patch("src.consumers.deploy_result_handler.api_client", api),
+        patch("src.consumers.deploy_precheck.api_client", api),
     ):
-        _configure_api_mock(api)
-        _configure_api_mock(fh_api)
-        _configure_api_mock(rh_api)
-        _configure_api_mock(pc_api)
         yield api
 
 
@@ -92,14 +85,23 @@ def _job(*, story_id="story-1", user_id="12345", deploy_fix_attempt=0):
     }
 
 
-class TestSmokeFailureRedispatch:
-    """When smoke test fails, deploy worker should re-dispatch to engineering."""
+def _find_failed_patches(mock_api):
+    """Find PATCH calls that set status=failed and return their result dicts."""
+    return [
+        c[1]["json"]["result"]
+        for c in mock_api.patch.call_args_list
+        if c[1].get("json", {}).get("status") == "failed" and "result" in c[1].get("json", {})
+    ]
+
+
+class TestSmokeFailureOutcome:
+    """Smoke failure stores classified deploy_outcome for dispatcher."""
 
     @pytest.mark.asyncio
-    async def test_smoke_failure_publishes_engineering_fix(
+    async def test_smoke_failure_stores_code_fix_outcome(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """Smoke failure classified as CODE_FIX should publish fix task to engineering:queue."""
+        """Smoke failure classified as CODE_FIX stores outcome in run.result."""
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": "http://1.2.3.4:8080",
@@ -110,7 +112,7 @@ class TestSmokeFailureRedispatch:
                         {"module": "tg_bot", "result": "fail", "detail": "No response within 15s"},
                     ],
                 },
-                "errors": ["Smoke failed: tg_bot check — No response within 15s"],
+                "errors": ["Smoke failed"],
             }
         )
 
@@ -123,23 +125,14 @@ class TestSmokeFailureRedispatch:
             result = await process_deploy_job(_job(), mock_redis)
 
         assert result["status"] == "failed"
-
-        # Should publish engineering fix task
-        eng_calls = [
-            c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-        ]
-        assert len(eng_calls) == 1, "Smoke failure must re-dispatch a fix task to engineering:queue"
-
-        eng_msg = eng_calls[0][0][1]
-        assert eng_msg.action == "fix"
-        assert eng_msg.project_id == "proj-1"
-        assert "smoke" in eng_msg.description.lower() or "tg_bot" in eng_msg.description.lower()
+        results = _find_failed_patches(mock_api)
+        assert any(r["deploy_outcome"] == DeployOutcome.CODE_FIX.value for r in results)
 
     @pytest.mark.asyncio
-    async def test_smoke_failure_includes_error_context_in_description(
+    async def test_smoke_failure_stores_error_details(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """Engineering fix description should contain the smoke failure details."""
+        """Smoke failure stores error details for dispatcher to use."""
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": "http://1.2.3.4:8080",
@@ -147,14 +140,9 @@ class TestSmokeFailureRedispatch:
                 "smoke_result": {
                     "status": "fail",
                     "checks": [
-                        {
-                            "module": "backend",
-                            "result": "fail",
-                            "detail": "HTTP 502 Bad Gateway",
-                        },
+                        {"module": "backend", "result": "fail", "detail": "HTTP 502 Bad Gateway"},
                     ],
                 },
-                "errors": ["Smoke failed: backend health check — HTTP 502 Bad Gateway"],
             }
         )
 
@@ -166,27 +154,24 @@ class TestSmokeFailureRedispatch:
 
             await process_deploy_job(_job(), mock_redis)
 
-        eng_calls = [
-            c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-        ]
-        eng_msg = eng_calls[0][0][1]
-        assert "502" in eng_msg.description or "Bad Gateway" in eng_msg.description
+        results = _find_failed_patches(mock_api)
+        assert any("502" in r.get("error_details", "") for r in results)
 
 
-class TestDeployWorkflowFailureRedispatch:
-    """When deploy workflow fails (no deployed_url), re-dispatch to engineering."""
+class TestDeployWorkflowFailureOutcome:
+    """Deploy workflow failure stores classified outcome for dispatcher."""
 
     @pytest.mark.asyncio
-    async def test_deploy_failure_publishes_engineering_fix(
+    async def test_deploy_failure_stores_code_fix_outcome(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """Deploy workflow failure classified as CODE_FIX should publish fix task."""
+        """Deploy workflow failure classified as CODE_FIX stores outcome."""
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": None,
-                "deployment_result": {"status": "failed", "error": "Container tg_bot crashed"},
+                "deployment_result": {},
                 "smoke_result": None,
-                "errors": ["Deploy workflow failed: Container tg_bot exited with code 1"],
+                "errors": ["Container tg_bot exited with code 1"],
             }
         )
 
@@ -199,23 +184,14 @@ class TestDeployWorkflowFailureRedispatch:
             result = await process_deploy_job(_job(), mock_redis)
 
         assert result["status"] == "failed"
-
-        eng_calls = [
-            c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-        ]
-        assert len(eng_calls) == 1, (
-            "Deploy failure must re-dispatch a fix task to engineering:queue"
-        )
-
-        eng_msg = eng_calls[0][0][1]
-        assert eng_msg.action == "fix"
-        assert eng_msg.project_id == "proj-1"
+        results = _find_failed_patches(mock_api)
+        assert any(r["deploy_outcome"] == DeployOutcome.CODE_FIX.value for r in results)
 
     @pytest.mark.asyncio
-    async def test_deploy_failure_does_not_redispatch_for_missing_secrets(
+    async def test_missing_secrets_stores_give_up_outcome(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """Missing secrets is NOT a code bug — should NOT re-dispatch to engineering."""
+        """Missing secrets should store GIVE_UP outcome (not a code bug)."""
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": None,
@@ -228,20 +204,18 @@ class TestDeployWorkflowFailureRedispatch:
 
         await process_deploy_job(_job(), mock_redis)
 
-        eng_calls = [
-            c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-        ]
-        assert len(eng_calls) == 0, "Missing secrets must NOT trigger engineering re-dispatch"
+        results = _find_failed_patches(mock_api)
+        assert any(r["deploy_outcome"] == DeployOutcome.GIVE_UP.value for r in results)
 
 
-class TestDeployFixRetryLimit:
-    """Deploy→engineering loop must have a retry limit to prevent infinite cycles."""
+class TestDeployFixAttempt:
+    """deploy_fix_attempt is stored in run.result for dispatcher routing."""
 
     @pytest.mark.asyncio
-    async def test_max_retries_stops_redispatch(
+    async def test_attempt_counter_stored_in_result(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """After MAX deploy fix attempts, should NOT re-dispatch — just fail."""
+        """deploy_fix_attempt from message is stored in run.result."""
         mock_devops_subgraph.ainvoke = AsyncMock(
             return_value={
                 "deployed_url": "http://1.2.3.4:8080",
@@ -252,45 +226,6 @@ class TestDeployFixRetryLimit:
                         {"module": "backend", "result": "fail", "detail": "HTTP 500"},
                     ],
                 },
-                "errors": ["Smoke failed"],
-            }
-        )
-
-        with patch(
-            "src.consumers.deploy_result_handler._classify_deploy_failure",
-            AsyncMock(return_value="CODE_FIX"),
-        ):
-            from src.consumers.deploy import process_deploy_job
-            from src.consumers.deploy_failure_handler import _max_deploy_fix_attempts
-
-            max_fix = _max_deploy_fix_attempts()
-            # Set attempt to max — should NOT re-dispatch
-            job = _job(deploy_fix_attempt=max_fix)
-            result = await process_deploy_job(job, mock_redis)
-
-        assert result["status"] == "failed"
-
-        eng_calls = [
-            c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-        ]
-        assert len(eng_calls) == 0, f"After {max_fix} attempts, must NOT re-dispatch"
-
-    @pytest.mark.asyncio
-    async def test_attempt_counter_increments(
-        self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
-    ):
-        """Re-dispatched engineering message should have incremented attempt counter."""
-        mock_devops_subgraph.ainvoke = AsyncMock(
-            return_value={
-                "deployed_url": "http://1.2.3.4:8080",
-                "deployment_result": {},
-                "smoke_result": {
-                    "status": "fail",
-                    "checks": [
-                        {"module": "backend", "result": "fail", "detail": "HTTP 500"},
-                    ],
-                },
-                "errors": ["Smoke failed"],
             }
         )
 
@@ -303,12 +238,8 @@ class TestDeployFixRetryLimit:
             job = _job(deploy_fix_attempt=1)
             await process_deploy_job(job, mock_redis)
 
-        eng_calls = [
-            c for c in mock_redis.publish_message.call_args_list if c[0][0] == ENGINEERING_QUEUE
-        ]
-        assert len(eng_calls) == 1
-        eng_msg = eng_calls[0][0][1]
-        assert eng_msg.deploy_fix_attempt == 2  # noqa: PLR2004
+        results = _find_failed_patches(mock_api)
+        assert any(r.get("deploy_fix_attempt") == 1 for r in results)
 
 
 class TestEngineringMessagePassthrough:

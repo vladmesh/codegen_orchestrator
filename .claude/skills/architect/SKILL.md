@@ -9,6 +9,9 @@ argument-hint: "[story-ID]"
 
 Takes a Story and decomposes it into actionable Tasks via the API.
 
+## Key References
+- [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — task lifecycle, status transitions, decomposition patterns
+
 ## Input
 
 - `story-ID` — story ID to decompose (e.g. `story-abc123`). If omitted, picks the next `created` story by priority.

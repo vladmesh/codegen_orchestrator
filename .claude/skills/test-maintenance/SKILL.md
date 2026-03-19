@@ -12,6 +12,9 @@ allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Agent
 
 Run integration and service tests, fix what's broken, propose tests for uncovered logic.
 
+## Key References
+- [docs/TESTING.md](docs/TESTING.md) — test layers, compose files, make targets, CI labels
+
 ## Context
 
 This project has three relevant test layers (unit tests and E2E are out of scope — they serve different purposes and cannot substitute for integration/service tests):

@@ -34,6 +34,7 @@ from .story_completion import (
 from .supervisor import (
     STORY_RETRY_KEY_PREFIX,
     _parse_datetime,
+    supervise_deploying_stories,
     supervise_failed_tasks,
     supervise_stuck_stories,
     supervise_stuck_tasks,
@@ -53,6 +54,7 @@ __all__ = [
     "complete_stories",
     "dispatch_todo_tasks",
     "poll_merged_prs",
+    "supervise_deploying_stories",
     "supervise_failed_tasks",
     "supervise_stuck_stories",
     "supervise_stuck_tasks",
@@ -221,6 +223,7 @@ async def task_dispatcher_loop() -> None:
                 stuck_stories = await supervise_stuck_stories(api_client, redis_client)
                 stuck_tasks = await supervise_stuck_tasks(api_client, redis_client)
                 failed_tasks = await supervise_failed_tasks(api_client, redis_client)
+                deploying = await supervise_deploying_stories(api_client, redis_client)
 
                 # Always log the cycle summary for observability
                 logger.info(
@@ -236,6 +239,10 @@ async def task_dispatcher_loop() -> None:
                     + stuck_tasks.get("timed_out", 0)
                     + failed_tasks.get("retried", 0)
                     + failed_tasks.get("escalated", 0)
+                    + deploying.get("tested", 0)
+                    + deploying.get("retried", 0)
+                    + deploying.get("redispatched", 0)
+                    + deploying.get("failed", 0)
                 )
                 if supervisor_active:
                     logger.info(
@@ -245,6 +252,10 @@ async def task_dispatcher_loop() -> None:
                         tasks_timed_out=stuck_tasks.get("timed_out", 0),
                         tasks_retried=failed_tasks.get("retried", 0),
                         tasks_escalated=failed_tasks.get("escalated", 0),
+                        deploy_tested=deploying.get("tested", 0),
+                        deploy_retried=deploying.get("retried", 0),
+                        deploy_redispatched=deploying.get("redispatched", 0),
+                        deploy_failed=deploying.get("failed", 0),
                     )
             except Exception:
                 logger.exception("dispatcher_cycle_error")

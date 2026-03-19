@@ -96,10 +96,10 @@ async def poll_merged_prs(
             "id": run_id,
             "type": "deploy",
             "project_id": str(project_id),
+            "story_id": story_id,
             "run_metadata": {
                 "triggered_by": "pr_poll",
                 "head_sha": head_sha,
-                "story_id": story_id,
             },
         }
         await api_client.create_run(run_data)

@@ -45,58 +45,11 @@ Worker reports are collected via task events API (step 7a).
 QA worker writes `QA_REPORT.md` in the project dir on the server and logs the content
 as `qa_report_content` event. QA reports are collected via qa-worker logs (step 7c).
 
-## Architecture Quick Reference
-
-Understanding the pipeline flow helps you know where to look when things stall:
-
-```
-Project (DRAFT) + Repository + Story (CREATED)
-  ↓
-scaffold_trigger (scheduler, 30s cycle)
-  → publishes ScaffoldMessage to scaffold:queue
-  ↓
-Scaffolder container
-  → copier template + make setup + git push
-  → project: DRAFT → ACTIVE, workspace_ready=true
-  ↓
-architect:queue → Architect container (separate from langgraph!)
-  → waits for scaffold (polls 10s, max 5min)
-  → story: CREATED → IN_PROGRESS
-  → LLM decomposes story into Tasks
-  ↓
-Task Dispatcher (scheduler, 30s cycle)
-  → finds TODO tasks with no blockers
-  → creates Run record, publishes EngineeringMessage to engineering:queue
-  → task: TODO → IN_DEV
-  ↓
-Engineering Worker (langgraph container, separate entrypoint)
-  → spawns worker container via worker-manager
-  → worker runs Claude CLI agent on story/{story_id} branch
-  → agent commits, pushes to feature branch
-  → task: IN_DEV → DONE (or FAILED)
-  ↓
-All tasks DONE → Dispatcher creates PR story/{id} → main
-  → enables auto-merge
-  → story: IN_PROGRESS → PR_REVIEW
-  ↓
-CI runs on PR → green → auto-merge → webhook (pull_request merged)
-  → story: PR_REVIEW → DEPLOYING
-  → publishes DeployMessage to deploy:queue
-  (Red CI → webhook creates fix task → story back to IN_PROGRESS)
-  ↓
-Deploy Worker (langgraph container, separate entrypoint)
-  → configures GitHub secrets
-  → triggers deploy.yml workflow
-  → runs smoke test
-  → story: DEPLOYING → TESTING
-  → publishes QAMessage to qa:queue
-  ↓
-QA Consumer (langgraph container, separate entrypoint)
-  → SSHes to prod server as root
-  → runs Claude Code CLI with QA prompt (tests deployed project as real user)
-  → Claude Code tests endpoints, checks responses, validates against story
-  → story: TESTING → COMPLETED (pass) or back to IN_PROGRESS (fail → fix task)
-```
+## Key References
+- [docs/PIPELINE_V2.md](docs/PIPELINE_V2.md) — full pipeline architecture and status transitions
+- [docs/parallel-workers.md](docs/parallel-workers.md) — worker containers, networks, bind-mounts
+- [docs/DEPLOY.md](docs/DEPLOY.md) — deploy workflow, GitHub Actions, server setup
+- [docs/SECRETS.md](docs/SECRETS.md) — secret levels and handling
 
 **Key containers** (each is separate in docker-compose):
 - `langgraph` — PO agent
@@ -107,6 +60,8 @@ QA Consumer (langgraph container, separate entrypoint)
 - `qa-worker` — QA consumer (post-deploy testing via Claude Code on prod server)
 - `worker-manager` — spawns worker containers
 - `scaffolder` — project scaffolding
+
+**Status flow**: `DRAFT → scaffold → ACTIVE → architect → tasks (TODO→IN_DEV→DONE) → PR_REVIEW → DEPLOYING → TESTING → COMPLETED`
 
 ## E2E Secrets (for tg_bot tests)
 
@@ -129,47 +84,10 @@ fi
 Then use the standard `po:input` / `po:response` mechanism to send the token
 as `MESSAGE_TEXT="$TG_TOKEN"` when PO asks for it.
 
-## GitHub Access
+## GitHub & Server Access
 
-**IMPORTANT**: The local `gh` CLI does NOT have access to `project-factory-organization`.
-Always use `GitHubAppClient` via docker compose exec:
-
-```bash
-docker compose exec -T api python -c "
-import asyncio
-from shared.clients.github import GitHubAppClient
-
-async def main():
-    gh = GitHubAppClient()
-    # gh.list_repo_files(owner, repo, path='', ref='main') -> list[str]
-    # gh.get_file_contents(owner, repo, path, ref='main') -> str | None
-    # gh.get_latest_workflow_run(owner, repo, workflow_file, branch, created_after=None) -> dict
-    # gh.delete_repo(owner, repo) -> None
-    # gh.create_repo(org, name, description, private) -> dict
-    # gh.get_org_token(org) -> str
-    result = await gh.list_repo_files('project-factory-organization', 'REPO_NAME')
-    print(result)
-
-asyncio.run(main())
-"
-```
-
-## Server Access
-
-SSH keys are stored in the DB (encrypted). Use the helper script:
-
-```bash
-bash infra/scripts/ssh-to-server.sh $SERVER_IP "hostname"
-```
-
-**Server filesystem layout**: `/opt/services/<REPO_NAME>/` (may use hyphens OR underscores — check actual repo name from API)
-
-```bash
-# Docker compose on server — always use both compose files:
-COMPOSE="docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml"
-$COMPOSE ps -a
-$COMPOSE logs backend --tail=50
-```
+> See "GitHub Access" and "Server Access" in `.claude/skills/shared/pipeline-recipes.md`.
+> Key point: local `gh` CLI has NO access — always use `GitHubAppClient` via docker compose exec.
 
 ## Execution Flow
 
@@ -309,58 +227,9 @@ done
 ### Step 0.5: Queue Health Check
 
 **Before starting, check queues for stale messages.** Stale messages from previous
-runs can clog the architect for hours — each triggers a full LLM call or 5-min scaffold timeout.
+runs can clog the architect for hours.
 
-Cross-check the Debug API and raw Redis:
-
-```bash
-# Debug API (preferred)
-curl -s http://localhost:8000/debug/queues | python3 -m json.tool
-
-# Architect queue messages
-curl -s "http://localhost:8000/debug/queues/architect:queue/messages?count=50" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-print(f'Total messages: {data[\"total\"]}')
-for m in data['messages']:
-    story_id = m['data'].get('story_id', '?')
-    print(f\"  {m['id']}  story={story_id}  ts={m['timestamp']}\")
-"
-
-# Raw Redis cross-check
-docker compose exec -T api python3 -c "
-import asyncio, redis.asyncio as redis
-async def check():
-    r = redis.from_url('redis://redis:6379')
-    for q in ['architect:queue', 'engineering:queue', 'deploy:queue', 'scaffold:queue', 'qa:queue']:
-        try:
-            length = await r.xlen(q)
-            print(f'{q}: {length} messages')
-        except:
-            print(f'{q}: does not exist')
-    await r.aclose()
-asyncio.run(check())
-"
-```
-
-**If queue length > 5**: Clean stale messages via API:
-
-```bash
-curl -s "http://localhost:8000/debug/queues/architect:queue/messages?count=200" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for m in data['messages']:
-    story_id = m['data'].get('story_id', '?')
-    print(f\"{m['id']}  story={story_id}\")
-print(f'Total: {data[\"total\"]}')
-"
-
-# Delete stale messages (repeat per ID)
-curl -X DELETE "http://localhost:8000/debug/queues/architect:queue/messages/<message_id>"
-
-# Ack stuck pending messages
-curl -X POST "http://localhost:8000/debug/queues/architect:queue/architect-consumers/ack/<message_id>"
-```
+> **Recipes**: See "Queue Health Check" in `.claude/skills/shared/pipeline-recipes.md` for bash commands (Debug API, raw Redis cross-check, stale message cleanup).
 
 ### Step 1: Create via PO agent
 
@@ -585,87 +454,20 @@ If no dispatch after 2 min, the dispatcher may be stuck or the task isn't in `to
 
 Track each task through its lifecycle. This is the longest phase.
 
-```bash
-# Poll task statuses every 30-60s
-curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID&sort=created_at" | python3 -c "
-import json, sys
-tasks = json.load(sys.stdin)
-for t in tasks:
-    blocked = f' (blocked by {t.get(\"blocked_by_task_id\",\"\")})' if t.get('blocked_by_task_id') else ''
-    print(f\"{t['id']}  {t['status']:25s}  {t['title']}{blocked}\")
-"
-```
+> **Recipes**: See "Task Status Polling", "Worker Monitoring", and "CI Status Check" in `.claude/skills/shared/pipeline-recipes.md` for bash commands.
 
 ### What to check at each status:
 
 **`todo` → `in_dev`**: Task dispatcher picks up unblocked TODO tasks every 30s.
 - If stuck > 2 min and not blocked: check scheduler logs
-  ```bash
-  docker compose logs scheduler --tail=30 --since=5m 2>/dev/null | grep -v "HTTP Request" | tail -15
-  ```
 
-**`in_dev`**: Worker is running.
-- Check via Docker (primary — most reliable):
-  ```bash
-  docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}\t{{.Status}}"
-  ```
-- Worker logs (via docker directly):
-  ```bash
-  WORKER_CONTAINER=$(docker ps --filter "label=com.codegen.type=worker" --format "{{.Names}}" | head -1)
-  docker logs "$WORKER_CONTAINER" --tail=20 2>&1
-  ```
-- Worker-Manager API may also work, but handle errors (can return 404 or non-list):
-  ```bash
-  curl -s http://localhost:8000/wm-api/workers/ | python3 -c "
-  import json, sys
-  data = json.load(sys.stdin)
-  if isinstance(data, list):
-      for w in data:
-          print(f\"{w['container_name']}  status={w['status']}  task={w.get('task_id','?')}\")
-  else:
-      print(f'WM API error: {data}')
-  " 2>/dev/null || echo "WM API unavailable"
-  ```
+**`in_dev`**: Worker is running. Use Docker ps (primary) and WM API (cross-check) from recipes.
 
-**`in_ci`**: Code pushed, CI running.
-```bash
-docker compose exec -T api python -c "
-import asyncio
-from shared.clients.github import GitHubAppClient
-async def main():
-    gh = GitHubAppClient()
-    run = await gh.get_latest_workflow_run('project-factory-organization', '$REPO_SLUG', 'ci.yml', 'main')
-    if run:
-        print(f\"CI: {run['status']} / {run.get('conclusion','pending')} — {run['html_url']}\")
-    else:
-        print('No CI run found')
-asyncio.run(main())
-"
-```
+**`in_ci`**: Code pushed, CI running. Use CI Status Check recipe.
 
-**`done`**: Task completed. Collect worker report:
-```bash
-curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
-import json, sys
-for e in json.load(sys.stdin):
-    report = e.get('details', {}).get('report', '')
-    if report: print(report)
-    else: print('(no worker report)')
-"
-```
+**`done`**: Collect worker report via task events API (`event_type=worker_report`).
 
-**`failed`**: Check why. Read failure_metadata and events:
-```bash
-curl -s http://localhost:8000/api/tasks/$TASK_ID | python3 -c "
-import json, sys
-t = json.load(sys.stdin)
-print('Status:', t['status'])
-print('Failure metadata:', json.dumps(t.get('failure_metadata'), indent=2))
-"
-```
-
-**Light intervention on failure**: If the failure looks retriable (timeout, transient error),
-retry the task:
+**`failed`**: Read `failure_metadata` from task API. If retriable:
 ```bash
 curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=backlog"
 curl -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=todo"
@@ -711,14 +513,7 @@ curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
 
 ### Story API: Action-based endpoints
 
-Stories use action-based endpoints, NOT generic PATCH:
-```
-POST /api/stories/{id}/start     → created → in_progress
-POST /api/stories/{id}/deploy    → in_progress/pr_review → deploying
-POST /api/stories/{id}/complete  → in_progress/deploying → completed
-POST /api/stories/{id}/fail      → any → failed
-POST /api/stories/{id}/reopen    → completed/failed → in_progress
-```
+> See "Story API — Action-Based Transitions" in `.claude/skills/shared/pipeline-recipes.md`.
 
 ### Webhook failure & manual deploy trigger
 
@@ -914,84 +709,9 @@ bash infra/scripts/ssh-to-server.sh $SERVER_IP "
 **IMPORTANT**: This step MUST complete and save files BEFORE Step 9 cleanup.
 Cleanup deletes task_events from DB — if reports aren't saved to disk first, they're lost.
 
-**7a. Collect from task_events API** (primary source):
+**7a. Collect worker reports** (primary + fallback):
 
-```bash
-mkdir -p docs/e2e_results/worker_reports
-DATE=$(date +%Y%m%d)
-WORKER_REPORT="docs/e2e_results/worker_reports/${PROJECT_NAME}-${DATE}-worker.md"
-
-# Collect all worker reports from task events and save to file
-echo "# Worker Reports: ${PROJECT_NAME}" > "$WORKER_REPORT"
-echo "" >> "$WORKER_REPORT"
-
-FOUND_REPORTS=0
-for TASK_ID in $(curl -s "http://localhost:8000/api/tasks/?story_id=$STORY_ID" | python3 -c "
-import json, sys
-for t in json.load(sys.stdin):
-    print(t['id'])
-"); do
-  REPORT=$(curl -s "http://localhost:8000/api/tasks/$TASK_ID/events?event_type=worker_report" | python3 -c "
-import json, sys
-events = json.load(sys.stdin)
-for e in events:
-    report = e.get('details', {}).get('report', '')
-    if report: print(report)
-")
-  if [ -n "$REPORT" ]; then
-    TITLE=$(curl -s "http://localhost:8000/api/tasks/$TASK_ID" | python3 -c "import json,sys; print(json.load(sys.stdin)['title'])")
-    echo "## Task: $TASK_ID — $TITLE" >> "$WORKER_REPORT"
-    echo "" >> "$WORKER_REPORT"
-    echo "$REPORT" >> "$WORKER_REPORT"
-    echo "" >> "$WORKER_REPORT"
-    FOUND_REPORTS=$((FOUND_REPORTS + 1))
-  fi
-done
-```
-
-**7b. Fallback: collect from workspace archive** (if API returned nothing):
-
-Worker reports are also archived in `.story/old_tasks/` inside the scaffolder workspace.
-If the API returned 0 reports, read them directly from the workspace volume.
-
-```bash
-if [ "$FOUND_REPORTS" -eq 0 ] && [ -n "$REPO_ID" ]; then
-  echo "WARNING: No reports in API — trying workspace archive..."
-
-  # Read from scaffolder workspace (inside the scaffolder container)
-  ARCHIVE_FILES=$(docker compose exec -T scaffolder sh -c \
-    "ls /data/workspaces/$REPO_ID/.story/old_tasks/*.md 2>/dev/null" || true)
-
-  if [ -n "$ARCHIVE_FILES" ]; then
-    for ARCHIVE in $ARCHIVE_FILES; do
-      CONTENT=$(docker compose exec -T scaffolder cat "$ARCHIVE" 2>/dev/null)
-      if [ -n "$CONTENT" ]; then
-        BASENAME=$(basename "$ARCHIVE")
-        echo "## Archive: $BASENAME" >> "$WORKER_REPORT"
-        echo "" >> "$WORKER_REPORT"
-        echo "$CONTENT" >> "$WORKER_REPORT"
-        echo "" >> "$WORKER_REPORT"
-        FOUND_REPORTS=$((FOUND_REPORTS + 1))
-      fi
-    done
-  fi
-
-  # Also try the host volume directly
-  if [ "$FOUND_REPORTS" -eq 0 ]; then
-    docker run --rm -v /data/workspaces:/workspaces alpine sh -c \
-      "cat /workspaces/$REPO_ID/.story/old_tasks/*.md 2>/dev/null" \
-      >> "$WORKER_REPORT" 2>/dev/null && \
-      FOUND_REPORTS=$((FOUND_REPORTS + 1)) || true
-  fi
-fi
-
-if [ "$FOUND_REPORTS" -eq 0 ]; then
-  echo "(no worker reports found)" >> "$WORKER_REPORT"
-  echo "WARNING: No worker reports collected from API or workspace"
-else
-  echo "Saved $FOUND_REPORTS worker report(s) to $WORKER_REPORT"
-fi
-```
+> See "Worker Report Collection" in `.claude/skills/shared/pipeline-recipes.md` for the full bash script (task events API + workspace archive fallback).
 
 **7c. Collect QA report** (from qa-worker logs):
 
@@ -1290,22 +1010,13 @@ If the user asks to stop early:
 
 ## Common Gotchas
 
-1. **Architect is its own container** — `docker compose logs architect`, NOT scheduler
-2. **Repo names may use hyphens OR underscores**: PO decides. Always check both variants (`$REPO_SLUG` and `$REPO_UNDER`) during cleanup and lookups
-3. **Local `gh` CLI has no access** — always use `GitHubAppClient` via docker compose exec
-3a. **Repo deletion**: `GitHubAppClient.delete_repo()` now falls back to org token automatically. Pre-flight cleanup uses direct `get_org_token()` + `httpx.delete()` as a belt-and-suspenders approach
-4. **Import path**: `from shared.clients.github import GitHubAppClient`
-5. **Worker containers**: use `docker ps --filter "label=com.codegen.type=worker"` (primary). WM API (`/wm-api/workers/`) may return 404 or non-list — always handle errors
-6. **Story must be `in_progress` for PR creation** — nudge with `POST .../start` if stuck. After PR, story goes to `pr_review`. Deploy triggers via webhook after PR merge
-7. **Story transitions are action-based** — `POST /start`, `/complete`, NOT PATCH
-8. **Stale queue messages** can clog architect for hours — check queues early
-9. **Project needs a Repository record** — scaffold_trigger won't fire without it
-10. **Cross-check sources** — compare API data with Docker/Redis. Desync is a finding.
-11. **Webhook may not fire for new repos** — if story stays `pr_review` >60s after merge, use the manual deploy trigger recipe (see "Webhook failure" in Step 5).
-12. **Deploy Run record uses `type` field** (not `run_type`) — `POST /api/runs/` with `{"type": "deploy"}`.
-13. **DeployMessage requires `task_id`** — this is actually the Run ID (format `deploy-e2e-{hex}`), not a task ID.
-14. **QA phase after deploy** — story goes `deploying` → `testing` → `completed`. The `qa-worker` container SSHes to prod server and runs Claude Code CLI. If QA fails, story goes back to `in_progress` with a fix task.
-15. **QA node prerequisites** — prod server must have Claude Code CLI installed + `.credentials.json` session + 2GB swap. Provisioned via `qa_runner` Ansible role.
+> See "Common Gotchas" in `.claude/skills/shared/pipeline-recipes.md` for the full list.
+
+**E2E-specific additions:**
+- **Repo deletion in pre-flight**: uses `get_org_token()` + `httpx.delete()` directly (belt-and-suspenders, not just `GitHubAppClient.delete_repo()`)
+- **Webhook may not fire for new repos** — if story stays `pr_review` >60s after merge, use the manual deploy trigger recipe (see "Webhook failure" in Step 5)
+- **Deploy Run record uses `type` field** (not `run_type`) — `POST /api/runs/` with `{"type": "deploy"}`
+- **DeployMessage requires `task_id`** — this is actually the Run ID (format `deploy-e2e-{hex}`), not a task ID
 
 ## Self-Feedback (Mandatory)
 
