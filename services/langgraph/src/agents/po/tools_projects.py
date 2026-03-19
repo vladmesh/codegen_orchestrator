@@ -211,6 +211,20 @@ async def validate_telegram_token(project_id: str, token: str, *, config: Runnab
         headers=headers,
     )
 
+    # 3. Store bot_username on the primary repository (plain text, not a secret)
+    repos_resp = await api.get(f"/api/repositories/?project_id={project_id}", headers=headers)
+    repos = repos_resp.json() if repos_resp.status_code == HTTP_OK else []
+    primary_repo = next(
+        (r for r in repos if r.get("role") == "primary"),
+        repos[0] if repos else None,
+    )
+    if primary_repo:
+        await api.patch(
+            f"/api/repositories/{primary_repo['id']}",
+            json={"bot_username": bot_username},
+            headers=headers,
+        )
+
     logger.info(
         "telegram_token_validated",
         project_id=project_id,

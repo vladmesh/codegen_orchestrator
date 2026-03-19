@@ -42,12 +42,6 @@
 - **Status**: backlog
 - **Brief**: ## Problem  Worker containers copy the entire orchestrator shared/ package into /app/shared. This conflicts with user projects that also have a shared/ directory (different package, same name). Workers hit ModuleNotFoundError or import the wrong module.  ## Current state  - worker-wrapper needs: ...
 
-### #1026 Admin UI: action buttons on entity pages
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Add action buttons across admin SPA pages: Project Details — secrets editor (masked key-value), Create Story form, Deploy from Repo form. Story Details — Send to Architect button. Task Details — Spawn Worker button. Application Details — Stop, Undeploy, Redeploy, Run E2E buttons with confirmation...
-
 ### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - **Priority**: LOW
 - **Plan**: —
@@ -71,6 +65,12 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
+
+### Regression E2E: acceptance criteria on Repository + QA report in admin UI
+- **Priority**: LOW
+- **Plan**: yes (in work item)
+- **Status**: backlog
+- **Brief**: ## Problem  Сейчас кнопка "Run E2E" в админке на странице Application — чёрная дыра:  1. **QA не знает что тестировать.** При standalone-запуске (из админки) `story_id` пустой → QA-промпт не получает бизнес-требований. Claude Code проверяет только "живо ли приложение" (health 200, контейнеры heal...
 
 ### Integrate Repository into production flows (webhook, scheduler, worker)
 - **Priority**: LOW
@@ -283,6 +283,7 @@
 ## Done (last 10)
 
 - #1030 Decouple QA consumer from story lifecycle — 2026-03-19
+- #1026 Admin UI: action buttons on entity pages — 2026-03-19
 - #1025 Admin UI: Settings page (config + prompt editor) — 2026-03-19
 - #1024 Thin API endpoints for admin actions (7 endpoints) — 2026-03-19
 - #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage — 2026-03-19
@@ -291,4 +292,3 @@
 - Refactor engineering_status to StrEnum — 2026-03-19
 - Restore Makefile overrides in worker-wrapper (make migrate broken) — 2026-03-19
 - QA consumer: resolve by application_id, replace dicts with DTOs — 2026-03-19
-- Убрать result_parser из wrapper, добавить watchdog-логику — 2026-03-18

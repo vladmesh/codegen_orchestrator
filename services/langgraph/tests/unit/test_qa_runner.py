@@ -16,16 +16,16 @@ from src.consumers._qa_runner import (
 class TestBuildQAPrompt:
     def test_basic_prompt(self):
         prompt = build_qa_prompt(
-            story_description="Build a weather API",
+            acceptance_criteria="- GET /health returns 200\n- GET /api/weather returns forecast",
             deployed_url="https://weather.example.com",
         )
-        assert "Build a weather API" in prompt
+        assert "GET /health returns 200" in prompt
         assert "https://weather.example.com" in prompt
-        assert "pass" in prompt.lower()
+        assert "regression" in prompt.lower()
 
     def test_prompt_with_bot_username(self):
         prompt = build_qa_prompt(
-            story_description="Build a Telegram bot",
+            acceptance_criteria="- Telegram: /start responds with welcome",
             deployed_url="https://bot.example.com",
             bot_username="weather_bot",
         )
@@ -34,7 +34,7 @@ class TestBuildQAPrompt:
 
     def test_prompt_without_bot_username(self):
         prompt = build_qa_prompt(
-            story_description="REST API",
+            acceptance_criteria="- GET /api/items returns list",
             deployed_url="https://api.example.com",
         )
         assert "@" not in prompt
@@ -106,7 +106,7 @@ class TestRunQAOnServer:
                 server_ip="1.2.3.4",
                 ssh_key="-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
                 project_name="weather_bot",
-                story_description="Build a weather bot",
+                acceptance_criteria="Build a weather bot",
                 deployed_url="https://weather.example.com",
             )
 
@@ -123,7 +123,7 @@ class TestRunQAOnServer:
                 server_ip="1.2.3.4",
                 ssh_key="fake",
                 project_name="test",
-                story_description="Test",
+                acceptance_criteria="Test",
                 deployed_url="https://test.com",
             )
 
@@ -150,7 +150,7 @@ class TestRunQAOnServer:
                 server_ip="1.2.3.4",
                 ssh_key="fake",
                 project_name="test",
-                story_description="Test",
+                acceptance_criteria="Test",
                 deployed_url="https://test.com",
             )
 
@@ -176,7 +176,7 @@ class TestRunQAOnServer:
                 server_ip="1.2.3.4",
                 ssh_key="fake",
                 project_name="test",
-                story_description="Test",
+                acceptance_criteria="Test",
                 deployed_url="https://test.com",
                 timeout=600,
             )

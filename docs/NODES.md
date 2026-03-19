@@ -157,7 +157,7 @@ Deployer → build_dotenv → set_repository_secrets (GitHub API)
 Filtered to reduce spam — only two events reach user via `po:proactive`: (1) deploy success (deployed URL), (2) permanent story failure (user-friendly message). All intermediate failures (smoke, precheck, workflow) are routed through the deploy→engineering feedback loop for automated fixing.
 
 **Deploy→Engineering Feedback Loop**:
-When deploy succeeds but smoke test fails, or workflow fails entirely, deploy worker re-dispatches a fix task to `engineering:queue`. Capped at 2 retry attempts via `deploy_fix_attempt` counter. After limit, story fails permanently and user is notified.
+Deploy worker writes `DeployOutcome` to `run.result`. The supervisor (`supervise_deploying_stories()` in scheduler) reads this and routes: `CODE_FIX` → creates fix task and dispatches to `engineering:queue`, `RETRY` → redeploys (max 3), `GIVE_UP` → story fails and admin is notified. Deploy worker no longer transitions stories or creates tasks directly.
 
 ---
 

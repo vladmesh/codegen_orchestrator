@@ -543,7 +543,7 @@ Feature-стенды, полноценный CI перед деплоем. Previ
 - [x] #1024 Thin API endpoints for admin actions (7 endpoints)
 - [ ] #1022 Switch services from hardcoded constants to ConfigStore
 - [x] #1025 Admin UI: Settings page (config + prompt editor)
-- [ ] #1026 Admin UI: action buttons on entity pages
+- [x] #1026 Admin UI: action buttons on entity pages
 
 # Technical Initiatives
 

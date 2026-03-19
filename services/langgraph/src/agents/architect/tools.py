@@ -156,6 +156,43 @@ async def create_task(
 
 
 @tool
+async def update_acceptance_criteria(project_id: str, acceptance_criteria: str) -> dict:
+    """Update the repository's acceptance criteria for regression testing.
+
+    Call this AFTER creating all tasks. Pass the COMPLETE updated list of
+    acceptance criteria — not just the new ones. Read the current criteria
+    first (returned in the response), add checks for new functionality from
+    this story, and remove checks for deleted functionality.
+
+    Format: one check per line, starting with "- ". Each check should be
+    concrete and verifiable via curl or Telegram command:
+        - GET /health returns 200
+        - POST /api/cities with {"name": "Moscow"} returns 201
+        - Telegram: /start responds with welcome message
+
+    Args:
+        project_id: Project ID (same as used in create_task).
+        acceptance_criteria: The FULL updated acceptance criteria text.
+    """
+    repo = await api_client.get_primary_repository(project_id)
+    if not repo:
+        return {"error": f"No repository found for project {project_id}"}
+
+    updated = await api_client.update_repository(
+        repo.id, {"acceptance_criteria": acceptance_criteria}
+    )
+    logger.info(
+        "architect_acceptance_criteria_updated",
+        repo_id=repo.id,
+        criteria_length=len(acceptance_criteria),
+    )
+    return {
+        "repo_id": updated.id,
+        "acceptance_criteria": updated.acceptance_criteria,
+    }
+
+
+@tool
 async def transition_story(story_id: str, action: str) -> dict:
     """Transition a story's status.
 
@@ -176,4 +213,11 @@ async def transition_story(story_id: str, action: str) -> dict:
 
 def get_architect_tools() -> list:
     """Return all architect tools."""
-    return [get_story, get_project_spec, get_tasks_by_story, create_task, transition_story]
+    return [
+        get_story,
+        get_project_spec,
+        get_tasks_by_story,
+        create_task,
+        update_acceptance_criteria,
+        transition_story,
+    ]

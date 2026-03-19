@@ -31,11 +31,17 @@ class QAResult:
 
 
 def build_qa_prompt(
-    story_description: str,
+    acceptance_criteria: str,
     deployed_url: str,
     bot_username: str | None = None,
 ) -> str:
-    """Build the QA prompt for Claude Code on the server."""
+    """Build the QA prompt for Claude Code on the server.
+
+    Args:
+        acceptance_criteria: Full regression test criteria from the repository.
+        deployed_url: URL where the application is deployed.
+        bot_username: Telegram bot username (if applicable).
+    """
     bot_section = ""
     if bot_username:
         bot_section = f"""
@@ -47,7 +53,7 @@ def build_qa_prompt(
   from telethon.sync import TelegramClient
   client = TelegramClient('/opt/qa-runner/telethon.session', api_id=0, api_hash='')
   client.start()
-  client.send_message('@{bot_username}', '/weather Moscow')
+  client.send_message('@{bot_username}', '/start')
   import time; time.sleep(3)
   msgs = client.get_messages('@{bot_username}', limit=3)
   for m in msgs:
@@ -59,10 +65,12 @@ def build_qa_prompt(
 """
 
     return f"""\
-You are a QA tester doing END-TO-END testing of a deployed project.
+You are a QA tester doing REGRESSION testing of a deployed project.
 
 Your job is to TEST THE RUNNING APPLICATION as a real user would — by making
 HTTP requests, sending Telegram commands, and observing actual responses.
+You must verify ALL acceptance criteria below — this is a regression test,
+not just a check of the latest feature.
 
 CRITICAL RULES:
 - You are testing a DEPLOYED APPLICATION, not reviewing source code.
@@ -73,8 +81,8 @@ CRITICAL RULES:
 - If a test requires sending a Telegram command, you MUST actually send it
   and verify the bot's response — not read the handler code.
 
-## Story (what the user asked for)
-{story_description}
+## Acceptance Criteria (what the application must do)
+{acceptance_criteria}
 
 ## Deployment
 - URL: {deployed_url}
@@ -85,7 +93,7 @@ CRITICAL RULES:
 ### REST API — use curl:
 ```bash
 curl -sf {deployed_url}/health | jq .
-curl -sf {deployed_url}/api/weather/Moscow | jq .
+curl -sf {deployed_url}/api/<endpoint> | jq .
 ```
 
 ### Container health — check status only (no exec):
@@ -93,21 +101,11 @@ curl -sf {deployed_url}/api/weather/Moscow | jq .
 cd infra && docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml ps -a
 ```
 
-### Caching — call same endpoint twice, compare:
-```bash
-curl -sf {deployed_url}/api/weather/TestCity | jq .
-sleep 2
-curl -sf {deployed_url}/api/weather/TestCity | jq .
-# Same data = cache works
-```
-
 ## Checklist
 1. Health endpoint responds with 200
-2. Every API endpoint from the story — call it, verify response fields
-3. Caching — two calls to same city return identical data
-4. Containers running and healthy (ps, no restart loops)
-5. Telegram bot — ACTUALLY SEND each command, verify response text
-6. Edge cases — empty input, unknown city, missing parameters
+2. Every check from acceptance criteria — execute and verify
+3. Containers running and healthy (ps, no restart loops)
+4. Edge cases — empty input, missing parameters, invalid values
 
 ## Report
 Write QA_REPORT.md in the project root (NOT in infra/).
@@ -194,7 +192,7 @@ async def run_qa_on_server(
     server_ip: str,
     ssh_key: str,
     project_name: str,
-    story_description: str,
+    acceptance_criteria: str,
     deployed_url: str,
     bot_username: str | None = None,
     timeout: int = QA_TIMEOUT,
@@ -205,7 +203,7 @@ async def run_qa_on_server(
         server_ip: Target server IP address
         ssh_key: PEM-encoded SSH private key
         project_name: Project directory name under /opt/services/
-        story_description: Full story description for the QA prompt
+        acceptance_criteria: Regression test criteria from repository
         deployed_url: URL where the project is deployed
         bot_username: Telegram bot username (if applicable)
         timeout: Timeout in seconds for the Claude Code run
@@ -213,7 +211,7 @@ async def run_qa_on_server(
     Returns:
         QAResult with pass/fail status and check details
     """
-    prompt = build_qa_prompt(story_description, deployed_url, bot_username)
+    prompt = build_qa_prompt(acceptance_criteria, deployed_url, bot_username)
 
     # Escape prompt for shell — use heredoc to avoid quoting issues
     # Prepend ~/.local/bin to PATH — non-interactive SSH doesn't source .bashrc

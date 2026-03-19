@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useParams, Link } from 'react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -5,7 +6,92 @@ import { Card } from '@/components/ui/Card'
 import { ConfirmButton } from '@/components/ui/ConfirmButton'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate } from '@/lib/utils'
-import type { Application, ApplicationHealthEntry, Repository } from '@/types/api'
+import type { Application, ApplicationHealthEntry, Repository, Run } from '@/types/api'
+
+function QAOutcomeBadge({ outcome }: { outcome: string }) {
+  const colors: Record<string, string> = {
+    passed: 'bg-green-900/50 text-green-400',
+    failed: 'bg-red-900/50 text-red-400',
+    exhausted: 'bg-orange-900/50 text-orange-400',
+    error: 'bg-red-900/50 text-red-400',
+  }
+  return (
+    <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${colors[outcome] ?? 'bg-muted text-muted-foreground'}`}>
+      {outcome}
+    </span>
+  )
+}
+
+function QARunCard({ run }: { run: Run }) {
+  const [expanded, setExpanded] = useState(false)
+  const outcome = run.result?.qa_outcome ?? (run.status === 'queued' || run.status === 'running' ? 'pending' : 'unknown')
+  const isPending = outcome === 'pending'
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-medium text-foreground">Last QA Run</h3>
+          {isPending ? (
+            <span className="inline-block rounded bg-blue-900/50 px-2 py-0.5 text-xs font-medium text-blue-400 animate-pulse">
+              {run.status}...
+            </span>
+          ) : (
+            <QAOutcomeBadge outcome={outcome} />
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span>{formatDate(run.created_at)}</span>
+          <span className="font-mono">{run.id}</span>
+          {!isPending && (
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="text-primary hover:underline"
+            >
+              {expanded ? 'collapse' : 'details'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {run.result?.summary && (
+        <p className="mt-2 text-sm text-muted-foreground">{run.result.summary}</p>
+      )}
+      {run.result?.error && (
+        <p className="mt-2 text-sm text-red-400">{run.result.error}</p>
+      )}
+      {run.error_message && (
+        <p className="mt-2 text-sm text-red-400">{run.error_message}</p>
+      )}
+
+      {expanded && run.result && (
+        <div className="mt-4 space-y-3">
+          {run.result.failed_checks && run.result.failed_checks.length > 0 && (
+            <div>
+              <h4 className="text-xs font-medium text-muted-foreground mb-1">Failed checks</h4>
+              <ul className="space-y-1">
+                {run.result.failed_checks.map((check, i) => (
+                  <li key={i} className="text-sm text-red-400">
+                    <span className="font-medium">{check.name}</span>
+                    {check.detail && <span className="text-muted-foreground"> — {check.detail}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {run.result.report && (
+            <div>
+              <h4 className="text-xs font-medium text-muted-foreground mb-1">Full report</h4>
+              <pre className="max-h-96 overflow-auto rounded bg-muted/50 p-3 text-xs text-foreground whitespace-pre-wrap">
+                {run.result.report}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
 
 export function ApplicationDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -30,28 +116,36 @@ export function ApplicationDetailPage() {
     enabled: !!id,
   })
 
-  const invalidateApp = () => {
+  const { data: qaRuns } = useQuery({
+    queryKey: ['app-qa-runs', id],
+    queryFn: () => api.get<Run[]>(`/applications/${id}/runs?run_type=qa&limit=5`),
+    enabled: !!id,
+    refetchInterval: 10_000,
+  })
+
+  const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ['application', id] })
+    queryClient.invalidateQueries({ queryKey: ['app-qa-runs', id] })
   }
 
   const stopMutation = useMutation({
     mutationFn: () => api.post<Application>(`/applications/${id}/stop`, { actor: 'admin' }),
-    onSuccess: invalidateApp,
+    onSuccess: invalidateAll,
   })
 
   const undeployMutation = useMutation({
     mutationFn: () => api.post<Application>(`/applications/${id}/undeploy`, { actor: 'admin' }),
-    onSuccess: invalidateApp,
+    onSuccess: invalidateAll,
   })
 
   const redeployMutation = useMutation({
     mutationFn: () => api.post<Application>(`/applications/${id}/redeploy`, { actor: 'admin' }),
-    onSuccess: invalidateApp,
+    onSuccess: invalidateAll,
   })
 
   const e2eMutation = useMutation({
     mutationFn: () => api.post<unknown>(`/applications/${id}/run-e2e`, { actor: 'admin' }),
-    onSuccess: invalidateApp,
+    onSuccess: invalidateAll,
   })
 
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>
@@ -62,6 +156,7 @@ export function ApplicationDetailPage() {
   const canE2E = app.status === 'running'
 
   const githubUrl = repo?.git_url?.replace(/\.git$/, '')
+  const latestQA = qaRuns?.[0]
 
   return (
     <div className="space-y-6">
@@ -188,6 +283,15 @@ export function ApplicationDetailPage() {
           <p className="mt-1 text-foreground">{formatDate(app.updated_at)}</p>
         </Card>
       </div>
+
+      {/* QA Run status */}
+      {latestQA ? (
+        <QARunCard run={latestQA} />
+      ) : (
+        <Card>
+          <p className="text-sm text-muted-foreground">No QA runs yet</p>
+        </Card>
+      )}
 
       {/* Health history */}
       <Card>

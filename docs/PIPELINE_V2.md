@@ -81,14 +81,13 @@ This prevents crashes when a workspace is GC'd between tasks in a story.
 5. Creates **1–2 tasks** for the diff (business logic only, not infra)
    - Strict linear chain: each task `blocked_by` the previous
    - Does NOT specify implementation details — worker has AGENTS.md
-6. System auto-appends a **final task**: "Run full test suite, verify CI green, smoke test"
-7. Transitions story to `in_progress` immediately on pickup (prevents supervisor from re-publishing the same story every 30s)
-8. Skips stories already decomposed (IN_PROGRESS + has tasks)
+6. Transitions story to `in_progress` immediately on pickup (prevents supervisor from re-publishing the same story every 30s)
+7. Skips stories already decomposed (IN_PROGRESS + has tasks)
 
 **Outputs**: Tasks in `todo` status, linearly chained
 
 **Rules**:
-- Simple project = 1 task + auto CI task
+- Simple project = 1 task
 - Never create tasks for Docker, compose, CI, deployment — scaffolding handles it
 - Focus on what the worker needs to BUILD, not how
 
@@ -136,13 +135,6 @@ Workers operate on **story-level feature branches** (`story/{story_id}`). Branch
 3. Claude invoked again — `--resume` session (fresh on first task or retry)
 4. Previous tasks visible via `.story/old_tasks/` directory
 5. Repeat
-
-**Final task (auto-generated CI check)**:
-1. TASK.md: "Run full test suite. Push to GitHub. Wait for CI. If CI fails, fix and retry."
-2. Claude pushes to `story/{story_id}`, monitors CI
-3. If CI green → task done → story ready for PR
-4. If CI red → Claude reads logs, fixes, pushes again
-5. If Claude can't fix → task fails → supervisor creates retry task
 
 ### Developer Gave-Up Escalation
 
@@ -192,49 +184,58 @@ If the developer agent encounters an unsolvable problem:
 
 ## Phase 5: Deploy
 
-**Actor**: Deploy worker (consumes `deploy:queue`)
+**Actor**: Deploy worker (consumes `deploy:queue`) — pure technical worker
 
-**Trigger**: PR merged to main (detected by PR poller) OR PO manual trigger
+**Trigger**: PR merged to main (detected by PR poller) OR PO manual trigger OR Admin API
 
 1. Resolve server for the project (or provision new one)
 2. Set GitHub repository secrets (DEPLOY_HOST, SSH keys, etc.)
 3. Trigger GitHub Actions deploy workflow
 4. Wait for deploy to complete
 5. Smoke test: HTTP `/health` for backends, Telethon `/start` for tg_bot
-6. On smoke failure: LLM classifier (haiku) categorizes failure as CODE vs INFRA
-   - CODE failure → dispatch fix task to `engineering:queue` (max 2 retries via `deploy_fix_attempt`)
-   - INFRA failure → retry deploy directly (no engineering waste)
-   - After max retries → story `failed` for HITL
-7. On success: story → `testing`, publish `QAMessage` to `qa:queue`. Worker container NOT deleted (QA may need it for fix tasks).
+6. On smoke failure: LLM classifier (haiku) categorizes failure as CODE_FIX / RETRY / GIVE_UP
+7. Write `DeployOutcome` to `run.result` (SUCCESS / SMOKE_FAILURE / CODE_FIX / RETRY / GIVE_UP)
+8. Deploy worker does NOT transition stories or create tasks — it is a pure technical worker
 
-**Deploy retry limit**: Max 3 consecutive deploy failures per story (tracked in Redis). After limit, story transitions to `failed`.
+**Supervisor routing** (`supervise_deploying_stories()` in scheduler, 30s poll):
+- Reads deploy run outcome from DB
+- SUCCESS → story `testing`, create QA run, publish `QAMessage` to `qa:queue`
+- CODE_FIX → create fix task, dispatch to `engineering:queue`
+- RETRY → redeploy with counter (max 3 consecutive failures)
+- GIVE_UP → story `failed`, admin notified
 
 **Deploy deduplication**: Atomic Redis `SET NX` lock per project prevents duplicate deploys.
 
-**Outputs**: Running service on server with domain + SSL
+**Lifecycle operations**: `stop` and `undeploy` actions (from Admin API) are handled by `deploy_lifecycle` module — SSHes to server and runs `docker compose stop/down` directly, skipping the full DevOps subgraph.
+
+**Outputs**: Running service on server with domain + SSL, or `DeployOutcome` in run.result for supervisor
 
 ---
 
 ## Phase 6: Post-Deploy QA
 
-**Actor**: QA consumer (`qa-worker` container, consumes `qa:queue`)
+**Actor**: QA consumer (`qa-worker` container, consumes `qa:queue`) — pure technical worker
 
-**Trigger**: Successful deploy (deploy-worker publishes `QAMessage`)
+**Trigger**: Supervisor detects successful deploy → creates QA run → publishes `QAMessage`
 
 **How it works**:
-1. QA consumer receives `QAMessage` with `story_id`, `project_id`, `deployed_url`, optional `bot_username`
+1. QA consumer receives `QAMessage` with `project_id`, `deployed_url`, `application_id`, `run_id`, optional `story_id` and `bot_username`
 2. SSHes to the target prod server as root (via SSH key from DB)
 3. `cd /opt/services/{project_name}` — enters the deployed project directory
 4. Runs `claude -p "<QA prompt>" --output-format json --max-turns 50 --model claude-sonnet-4-6`
 5. QA prompt is built from story description + deployed URL. Claude tests every feature described in the story: curls endpoints, checks responses, tests edge cases. For Telegram bots, uses Telethon (pre-installed in `/opt/qa-runner/venv`)
 6. Claude returns JSON: `{"pass": bool, "checks": [...], "summary": "..."}`
-7. If QA passes → story `completed` → user notified via PO
-8. If QA fails:
-   - Creates fix task describing what failed (from QA checks)
-   - Story → `in_progress` (loops back to Phase 4)
-   - Max 2 QA→Engineering loops (tracked via `qa_attempt` counter)
-   - After max loops → story `failed`
-9. Inflight deduplication: Redis key `qa:inflight:{story_id}` with 25-min TTL prevents duplicate runs
+7. Write `QAOutcome` to `run.result` (PASSED / FAILED / EXHAUSTED / ERROR)
+8. QA consumer does NOT transition stories or create tasks — it is a pure technical worker
+
+**Supervisor routing** (`supervise_testing_stories()` in scheduler, 30s poll):
+- Reads QA run outcome from DB
+- PASSED → story `completed`, user notified via PO
+- FAILED → create fix task, dispatch to `engineering:queue`, story → `in_progress`
+- EXHAUSTED → story `failed` (max QA→Engineering loops reached)
+- ERROR → story `failed`
+
+**Inflight deduplication**: Uses `application_id` for dedup when no story (standalone E2E triggers). Story-based runs use `story_id`.
 
 **Server prerequisites** (provisioned by `qa_runner` Ansible role):
 - Claude Code CLI (standalone binary via `curl install.sh | bash`)
@@ -243,7 +244,7 @@ If the developer agent encounters an unsolvable problem:
 - Python venv at `/opt/qa-runner/venv` with `telethon` + `httpx`
 - Optional: `telethon.session` file for Telegram bot testing
 
-**Outputs**: Story `completed` OR new fix tasks
+**Outputs**: `QAOutcome` in run.result for supervisor
 
 ---
 

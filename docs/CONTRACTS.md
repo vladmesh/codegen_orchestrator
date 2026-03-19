@@ -39,7 +39,7 @@
 |-------|-------|-----|-----------|----------|---------|
 | `engineering:queue` | `capability-workers` | EngineeringMessage | Task Dispatcher (scheduler) | langgraph | Start development task |
 | `deploy:queue` | `capability-workers` | DeployMessage | Task Dispatcher (scheduler) / PO | langgraph | Start deploy task |
-| `qa:queue` | `qa-consumers` | QAMessage | Deploy Consumer | langgraph (qa-worker) | Post-deploy QA testing via Claude Code on prod server |
+| `qa:queue` | `qa-consumers` | QAMessage | Task Dispatcher (scheduler) / Admin API | langgraph (qa-worker) | Post-deploy QA testing via Claude Code on prod server |
 
 ---
 
@@ -241,13 +241,16 @@ sequenceDiagram
     SCH->>Redis: XADD deploy:queue {task_id, project_id, user_id, story_id}
     Redis-->>DW: Consumer reads deploy:queue
     DW->>DW: DevOps Subgraph (EnvAnalyzer → SecretResolver → Deployer)
-    alt Success
-        DW->>Redis: XADD po:proactive {text: "Deployed project: url"}
-    else Error
-        DW->>Redis: XADD po:proactive {text: "Deploy failed: error"}
+    DW->>API: PATCH run.result = DeployOutcome (SUCCESS/CODE_FIX/RETRY/GIVE_UP)
+    Note over SCH: supervise_deploying_stories() — every 30s
+    SCH->>API: Read deploy run outcome
+    alt SUCCESS
+        SCH->>API: Story → testing, create QA run
+        SCH->>Redis: XADD qa:queue {project_id, deployed_url, ...}
+    else GIVE_UP
+        SCH->>API: Story → failed
+        SCH->>Redis: XADD po:proactive {text: "Deploy failed"}
     end
-    Redis-->>TG: XREAD po:proactive (tg-bot-proactive group)
-    TG->>TG: Send Telegram message to user
 ```
 
 > **Note:** GitHub webhooks were removed. All PR merge detection and CI failure handling is done by `scheduler/src/tasks/pr_poller.py` (polling, 30s interval). This eliminates webhook reliability issues for newly scaffolded repos.
@@ -302,6 +305,7 @@ On startup with `claim_pending=True`, the consumer calls `XAUTOCLAIM` to reclaim
 | 8 | Proactive Listener | `telegram_bot/src/main.py` | `po:proactive` | auto | — | raw dict |
 | 9 | Architect Consumer | `langgraph/src/consumers/architect.py` | `architect:queue` | manual | `claim_pending` | `model_validate` |
 | 10 | Scaffolder | `scaffolder/src/consumer.py` | `scaffold:queue` | manual | `claim_pending` | `model_validate` |
+| 11 | QA Consumer | `langgraph/src/consumers/qa.py` | `qa:queue` | manual | `claim_pending` | `model_validate` |
 
 ---
 
@@ -462,6 +466,7 @@ class RunStatus(StrEnum):
 class RunType(StrEnum):
     ENGINEERING = "engineering"
     DEPLOY = "deploy"
+    QA = "qa"
 
 
 class RunCreate(BaseModel):
@@ -471,20 +476,16 @@ class RunCreate(BaseModel):
     spec: str | None = None
 
 
-class RunDTO(BaseModel):
+class RunDTO(TimestampedDTO):
     """Run response."""
-    model_config = ConfigDict(from_attributes=True)
 
     id: str
     project_id: str
-    task_id: str | None = None
     type: RunType
     status: RunStatus
-    run_metadata: dict[str, Any] = {}
+    story_id: str | None = None
     spec: str | None = None
     result: dict | None = None
-    created_at: datetime
-    updated_at: datetime | None = None
 ```
 
 ## UserDTO
@@ -592,22 +593,27 @@ from enum import StrEnum
 class ApplicationStatus(StrEnum):
     """Runtime state of an application on a server."""
     NOT_DEPLOYED = "not_deployed"
+    DEPLOYING = "deploying"
     RUNNING = "running"
+    STOPPING = "stopping"
     STOPPED = "stopped"
+    UNDEPLOYING = "undeploying"
     DOWN = "down"
     DEGRADED = "degraded"
 
-# services/api/src/schemas/application.py
 
-class ApplicationRead(TimestampedDTO):
-    """Application response — runtime entity linking a repo to a server."""
+class ApplicationDTO(TimestampedDTO):
+    """Application response from API."""
     id: int
     repo_id: str
     server_handle: str
     service_name: str
-    port: int
     status: str
     last_health_check: datetime | None = None
+    response_time_ms: int | None = None
+    ssl_expires_at: datetime | None = None
+    uptime_pct_24h: float | None = None
+    ports: list[dict[str, Any]] = []
 ```
 
 ## DeploymentDTO
@@ -886,6 +892,25 @@ class DeployTrigger(StrEnum):
     ENGINEERING = "engineering"
     WEBHOOK = "webhook"
     PO = "po"
+    ADMIN = "admin"
+
+
+class DeployAction(StrEnum):
+    """Type of deploy operation."""
+    CREATE = "create"
+    FEATURE = "feature"
+    FIX = "fix"
+    STOP = "stop"
+    UNDEPLOY = "undeploy"
+
+
+class DeployOutcome(StrEnum):
+    """Outcome stored in run.result for dispatcher consumption."""
+    SUCCESS = "success"
+    SMOKE_FAILURE = "smoke_failure"
+    CODE_FIX = "code_fix"
+    RETRY = "retry"
+    GIVE_UP = "give_up"
 
 
 class DeployMessage(BaseMessage):
@@ -895,8 +920,8 @@ class DeployMessage(BaseMessage):
     user_id: str = ""
     story_id: str = ""
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
-    action: Literal["create", "feature", "fix"] = "create"
-    deploy_fix_attempt: int = 0  # tracks deploy→engineering retry count (max 2)
+    action: DeployAction = DeployAction.CREATE
+    deploy_fix_attempt: int = 0
 
 
 class DeployResult(BaseResult):
@@ -905,6 +930,43 @@ class DeployResult(BaseResult):
     server_ip: str | None = None
     port: int | None = None
 
+
+---
+
+## QAMessage
+
+**Queue:** `qa:queue`
+**Initiator:** Task Dispatcher (scheduler) / Admin API
+**Consumer:** langgraph (qa-worker)
+
+```python
+# shared/contracts/queues/qa.py
+
+class QAOutcome(StrEnum):
+    """Outcome stored in run.result for dispatcher consumption."""
+    PASSED = "passed"
+    FAILED = "failed"
+    EXHAUSTED = "exhausted"
+    ERROR = "error"
+
+
+class QAMessage(BaseMessage):
+    """Trigger QA testing for a deployed project."""
+    story_id: str = ""
+    project_id: str
+    user_id: str
+    deployed_url: str
+    application_id: int
+    run_id: str = ""
+    bot_username: str | None = None
+    qa_attempt: int = 0
+```
+
+**Flow:** Deploy succeeds → supervisor creates QA run → publishes QAMessage → QA consumer SSHes to prod server → runs Claude Code with QA prompt → writes `QAOutcome` to `run.result`. Supervisor polls run outcome and routes: PASSED → complete story, FAILED → create fix task + redispatch to engineering, EXHAUSTED/ERROR → fail story.
+
+**Lifecycle operations:** `stop` and `undeploy` actions are handled by the `deploy_lifecycle` module, which SSHes to the server and runs `docker compose stop/down` directly — skipping the full DevOps subgraph.
+
+---
 
 ## Workflow DTOs
 
@@ -1291,8 +1353,9 @@ shared/contracts/
 │   ├── repository.py         # RepositoryDTO, RepositoryCreate
 │   ├── brainstorm.py         # BrainstormDTO, BrainstormCreate
 │   ├── base.py              # BaseDTO, TimestampedDTO
-│   ├── application.py       # ApplicationStatus enum
+│   ├── application.py       # ApplicationDTO, ApplicationStatus enum
 │   ├── deployment.py        # DeploymentResult enum
+│   ├── run.py               # RunDTO, RunType, RunStatus enums
 │   ├── engineering.py       # EngineeringStatus enum
 │   ├── service_deployment.py  # ServiceDeploymentDTO (legacy alias)
 │   ├── agent_config.py
@@ -1308,6 +1371,7 @@ shared/contracts/
     ├── provisioner.py
     ├── workflow.py
     ├── worker.py
+    ├── qa.py                 # QAMessage, QAOutcome, QAServerInfo
     ├── developer_worker.py
     └── po.py                 # POInputMessage, POResponse, POProactiveMessage, flat-field helpers
 ```

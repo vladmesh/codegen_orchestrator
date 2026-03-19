@@ -106,14 +106,15 @@ graph TD
 
     DeployQueue --> DepConsumer[Deploy Consumer]
     DepConsumer --> DepGraph[DevOps Subgraph]
-    DepGraph --> |"XADD qa:queue"| QAQueue[qa:queue]
+    DepGraph --> |"run.result = DeployOutcome"| API
+    Dispatcher --> |"supervise: deploy SUCCESS → QA"| QAQueue[qa:queue]
     QAQueue --> QAConsumer[QA Consumer]
     QAConsumer --> |"SSH to prod server<br/>Claude Code QA test"| QAResult{QA Pass?}
 
     %% Feedback Loops
     EngGraph --> |"task done → API"| API
-    QAResult --> |"pass → story completed"| API
-    QAResult --> |"fail → fix task"| EngQueue
+    QAResult --> |"run.result = QAOutcome"| API
+    Dispatcher --> |"supervise: QA FAILED → fix task"| EngQueue
     Dispatcher -.-> |"story completed → po:proactive"| Bot
 ```
 
@@ -154,9 +155,9 @@ User → Telegram Bot → XADD po:input {type, user_id, request_id, text}
 Engineering completion → API (task done) → Dispatcher picks next unblocked task
 All tasks done → Dispatcher creates PR story/* → main (auto-merge) → story pr_review
 PR merged (PR poller, 30s) → deploy:queue → deploy
-Deploy success → qa:queue → QA consumer SSHes to prod → Claude Code tests → story testing
-QA pass → story completed → PO notification
-QA fail → fix task created → story back to in_progress → re-engineer → re-deploy → re-QA
+Deploy success → run.result = DeployOutcome → supervisor → qa:queue → QA consumer SSHes to prod → Claude Code tests → story testing
+QA pass → run.result = QAOutcome.PASSED → supervisor → story completed → PO notification
+QA fail → run.result = QAOutcome.FAILED → supervisor → fix task created → story back to in_progress → re-engineer → re-deploy → re-QA
 CI failure on story branch (PR poller) → fix task created → story back to in_progress
 ```
 

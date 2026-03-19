@@ -27,7 +27,11 @@ need full field definitions to decide how to split work.
 3. For reopened stories, call `get_tasks_by_story` FIRST to review previous work.
 4. Analyze the gap between current state and story requirements.
 5. Create tasks using `create_task`.
-6. After all tasks are created, call `transition_story` with action "start".
+6. Call `update_acceptance_criteria` with the FULL updated criteria list. \
+Read the current criteria from the tool response, add new checks for \
+functionality introduced by this story, remove checks for deleted functionality. \
+Each check must be concrete and verifiable via curl or Telegram command.
+7. After all tasks are created, call `transition_story` with action "start".
 
 ## Task Decomposition Philosophy
 

@@ -54,6 +54,8 @@ class TestRepositoryRead:
         mock.role = "primary"
         mock.visibility = "private"
         mock.is_managed = True
+        mock.acceptance_criteria = None
+        mock.bot_username = None
         mock.created_at = now
         mock.updated_at = now
 

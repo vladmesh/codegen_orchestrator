@@ -24,6 +24,8 @@ def _make_repo(**overrides):
         "role": "primary",
         "visibility": "private",
         "is_managed": True,
+        "acceptance_criteria": None,
+        "bot_username": None,
         "created_at": now,
         "updated_at": now,
     }

@@ -114,19 +114,26 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
                 return {"status": "error", "error": error}
 
-        # Fetch story description for QA prompt (skip for standalone triggers)
-        if story_id:
-            story = await api_client.get_story(story_id)
-            story_description = story.description or ""
-        else:
-            story_description = ""
+        # Resolve acceptance criteria from repository
+        app = await api_client.get_application(msg.application_id)
+        repo = await api_client.get_repository(app.repo_id)
+        acceptance_criteria = repo.acceptance_criteria or ""
+
+        if not acceptance_criteria:
+            error = (
+                f"Repository {repo.id} has no acceptance_criteria. "
+                "Cannot run QA without regression test criteria."
+            )
+            logger.error("qa_no_acceptance_criteria", repo_id=repo.id)
+            await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
+            return {"status": "error", "error": error}
 
         # Run QA on server
         qa_result = await run_qa_on_server(
             server_ip=server_info.server_ip,
             ssh_key=server_info.ssh_key,
             project_name=server_info.project_name,
-            story_description=story_description,
+            acceptance_criteria=acceptance_criteria,
             deployed_url=msg.deployed_url,
             bot_username=msg.bot_username,
         )

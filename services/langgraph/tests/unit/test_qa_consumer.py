@@ -14,6 +14,7 @@ import pytest
 
 from shared.contracts.dto.application import ApplicationDTO
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
+from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.server import ServerDTO
 from shared.contracts.dto.story import StoryDTO
@@ -91,6 +92,22 @@ def mock_api_client():
         mock.get_server = AsyncMock(return_value=_server())
         mock.get_server_ssh_key = AsyncMock(
             return_value="-----BEGIN RSA KEY-----\nfake\n-----END RSA KEY-----"
+        )
+        mock.get_repository = AsyncMock(
+            return_value=RepositoryDTO(
+                id="repo-1",
+                project_id="116c9678-5872-4ce5-8332-9a267ab27604",
+                name="weather_bot",
+                git_url="https://github.com/test/weather_bot.git",
+                role="primary",
+                visibility="private",
+                is_managed=True,
+                acceptance_criteria=(
+                    "- GET /health returns 200\n- GET /api/weather returns forecast"
+                ),
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
         )
         mock.patch = AsyncMock(return_value={})
         mock.create_task = AsyncMock(return_value={"id": "task-fix-1"})
@@ -282,6 +299,8 @@ class TestProcessQAJobEdgeCases:
         """Standalone QA (no story_id) uses application_id for inflight dedup."""
         from src.consumers._qa_runner import QAResult
 
+        mock_api_client.get_application.return_value = _application(id=42)
+
         data = {
             "story_id": "",
             "project_id": "proj-1",
@@ -303,8 +322,8 @@ class TestProcessQAJobEdgeCases:
         assert inflight_key != "qa:inflight:"  # not empty
 
     @pytest.mark.asyncio
-    async def test_standalone_qa_skips_story_fetch(self, mock_api_client, mock_redis):
-        """Standalone QA (no story_id) skips story fetch and passes empty description."""
+    async def test_standalone_qa_uses_acceptance_criteria(self, mock_api_client, mock_redis):
+        """Standalone QA (no story_id) uses repo acceptance_criteria, not story description."""
         from src.consumers._qa_runner import QAResult
 
         data = {
@@ -322,7 +341,8 @@ class TestProcessQAJobEdgeCases:
             result = await process_qa_job(data, mock_redis)
 
         assert result["status"] == "passed"
-        # Story fetch should NOT have been called
+        # Acceptance criteria fetched from repo, not story
+        mock_api_client.get_repository.assert_called_once()
         mock_api_client.get_story.assert_not_called()
 
     @pytest.mark.asyncio

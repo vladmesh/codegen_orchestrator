@@ -109,6 +109,8 @@ export interface Repository {
   role: string
   visibility: string
   is_managed: boolean
+  acceptance_criteria: string | null
+  bot_username: string | null
   created_at: string
   updated_at: string
 }
@@ -292,6 +294,30 @@ export interface ApplicationHealthEntry {
   metrics: ApplicationHealthMetrics
   created_at: string
   updated_at: string | null
+}
+
+export interface QACheck {
+  name: string
+  pass: boolean
+  detail: string
+}
+
+export interface Run {
+  id: string
+  type: string
+  status: string
+  project_id: string | null
+  run_metadata: Record<string, unknown>
+  result: {
+    qa_outcome?: string
+    summary?: string
+    failed_checks?: QACheck[]
+    report?: string
+    error?: string
+  } | null
+  error_message: string | null
+  created_at: string
+  completed_at: string | null
 }
 
 // Langfuse traces (proxied via /langfuse-api/)

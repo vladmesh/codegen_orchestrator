@@ -39,6 +39,8 @@ class RepositoryDTO(TimestampedDTO):
     role: str
     visibility: str
     is_managed: bool
+    acceptance_criteria: str | None = None
+    bot_username: str | None = None
 
 
 # --- Request DTOs ---
@@ -65,3 +67,5 @@ class RepositoryUpdate(BaseModel):
     role: RepositoryRole | None = None
     visibility: RepositoryVisibility | None = None
     is_managed: bool | None = None
+    acceptance_criteria: str | None = None
+    bot_username: str | None = None

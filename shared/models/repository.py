@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Uuid
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared.contracts.dto.repository import RepositoryRole, RepositoryStatus, RepositoryVisibility
@@ -26,3 +26,5 @@ class Repository(Base):
     visibility: Mapped[str] = mapped_column(String(20), default=RepositoryVisibility.PRIVATE.value)
     is_managed: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String(50), default=RepositoryStatus.ACTIVE.value)
+    acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bot_username: Mapped[str | None] = mapped_column(String(255), nullable=True)

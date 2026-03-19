@@ -404,6 +404,7 @@ async def run_e2e(
         deployed_url=deployed_url,
         application_id=application_id,
         run_id=run_id,
+        bot_username=repo.bot_username,
     )
     await redis.publish_message(QA_QUEUE, msg)
 
@@ -412,6 +413,29 @@ async def run_e2e(
         "application": ApplicationRead.model_validate(app, from_attributes=True),
         "run": RunRead.model_validate(run, from_attributes=True),
     }
+
+
+@router.get("/{application_id}/runs", response_model=list[RunRead])
+async def list_application_runs(
+    application_id: int,
+    run_type: str | None = None,
+    limit: int = Query(10, ge=1, le=50),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[Run]:
+    """List runs associated with an application (stored in run_metadata)."""
+    from sqlalchemy import String, cast
+
+    query = (
+        select(Run)
+        .where(cast(Run.run_metadata["application_id"].as_string(), String) == str(application_id))
+        .order_by(Run.created_at.desc())
+        .limit(limit)
+    )
+    if run_type:
+        query = query.where(Run.type == run_type)
+
+    result = await db.execute(query)
+    return list(result.scalars().all())
 
 
 @router.post("/from-repo", status_code=status.HTTP_201_CREATED)

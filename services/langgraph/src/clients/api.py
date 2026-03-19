@@ -257,6 +257,16 @@ class LanggraphAPIClient:
                 return repo
         return repos[0] if repos else None
 
+    async def get_repository(self, repo_id: str) -> RepositoryDTO:
+        """Get a single repository by ID."""
+        resp = await self._request("GET", f"repositories/{repo_id}")
+        return RepositoryDTO.model_validate(resp.json())
+
+    async def update_repository(self, repo_id: str, payload: dict) -> RepositoryDTO:
+        """PATCH a repository."""
+        resp = await self._request("PATCH", f"repositories/{repo_id}", json=payload)
+        return RepositoryDTO.model_validate(resp.json())
+
     # --- Phase 4: Allocation methods ---
 
     async def get_application_allocations(self, application_id: int) -> list[dict]:
