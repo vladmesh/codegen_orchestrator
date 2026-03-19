@@ -177,10 +177,13 @@ class TestProcessQAJobPass:
             result = await process_qa_job(qa_message_data, mock_redis)
 
         assert result["status"] == "passed"
-        mock_api_client.patch.assert_called_once()
-        call_kwargs = mock_api_client.patch.call_args
-        assert call_kwargs[0][0] == "runs/qa-run-1"
-        run_data = call_kwargs[1]["json"]
+        # Two patch calls: RUNNING status + COMPLETED with result
+        assert mock_api_client.patch.call_count == 2
+        running_call = mock_api_client.patch.call_args_list[0]
+        assert running_call[1]["json"]["status"] == RunStatus.RUNNING.value
+        completed_call = mock_api_client.patch.call_args_list[1]
+        assert completed_call[0][0] == "runs/qa-run-1"
+        run_data = completed_call[1]["json"]
         assert run_data["status"] == RunStatus.COMPLETED.value
         assert run_data["result"]["qa_outcome"] == QAOutcome.PASSED.value
 

@@ -128,6 +128,13 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
             return {"status": "error", "error": error}
 
+        # Mark run as running before starting Claude Code
+        if run_id:
+            await api_client.patch(
+                f"runs/{run_id}",
+                json={"status": RunStatus.RUNNING.value},
+            )
+
         # Run QA on server
         qa_result = await run_qa_on_server(
             server_ip=server_info.server_ip,
@@ -156,7 +163,11 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
             )
 
         if qa_result.passed:
-            return await _handle_qa_pass(run_id=run_id, deployed_url=msg.deployed_url)
+            return await _handle_qa_pass(
+                run_id=run_id,
+                deployed_url=msg.deployed_url,
+                report=qa_result.report,
+            )
         else:
             return await _handle_qa_fail(
                 run_id=run_id,
@@ -169,13 +180,14 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         await redis.redis.delete(inflight_key)
 
 
-async def _handle_qa_pass(*, run_id: str, deployed_url: str) -> dict:
+async def _handle_qa_pass(*, run_id: str, deployed_url: str, report: str = "") -> dict:
     """Handle QA pass — store PASSED outcome in run."""
     await _update_run(
         run_id,
         RunStatus.COMPLETED,
         QAOutcome.PASSED,
         deployed_url=deployed_url,
+        report=report,
     )
     logger.info("qa_passed", run_id=run_id)
     return {"status": "passed"}
@@ -204,6 +216,7 @@ async def _handle_qa_fail(
             summary=qa_result.summary,
             failed_checks=failed_checks,
             qa_attempt=qa_attempt,
+            report=qa_result.report,
         )
         return {"status": "qa_exhausted"}
 
@@ -214,6 +227,7 @@ async def _handle_qa_fail(
         summary=qa_result.summary,
         failed_checks=failed_checks,
         qa_attempt=qa_attempt,
+        report=qa_result.report,
     )
 
     logger.info(

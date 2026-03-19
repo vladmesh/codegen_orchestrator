@@ -279,7 +279,7 @@ async def run_qa_on_server(
         f"cd {SERVICE_BASE_DIR}/{project_name} && "
         f"timeout {timeout} claude -p {_shell_quote(prompt)} "
         f"--output-format json "
-        f"--max-turns 30 "
+        f"--max-turns 200 "
         f"--model claude-sonnet-4-6 "
         f"2>/dev/null"
     )
