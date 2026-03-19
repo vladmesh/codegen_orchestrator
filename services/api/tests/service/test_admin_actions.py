@@ -377,6 +377,46 @@ class TestFromRepo:
 # ---------------------------------------------------------------------------
 
 
+class TestListSecretKeys:
+    @pytest.mark.asyncio
+    async def test_list_keys_returns_sorted_names(self, client, _ensure_project):
+        pid = TASK_TEST_PROJECT_ID
+
+        # Merge secrets
+        await client.post(
+            f"/api/projects/{pid}/config/secrets",
+            json={"secrets": {"Z_KEY": "z", "A_KEY": "a"}},
+        )
+
+        resp = await client.get(f"/api/projects/{pid}/config/secrets/keys")
+        assert resp.status_code == HTTPStatus.OK
+        keys = resp.json()["keys"]
+        assert "A_KEY" in keys
+        assert "Z_KEY" in keys
+        # Values must NOT be exposed
+        assert "a" not in str(resp.json())
+        assert "z" not in str(resp.json())
+
+    @pytest.mark.asyncio
+    async def test_list_keys_empty_project(self, client):
+        # Create a fresh project with no secrets
+        fresh_pid = str(uuid.uuid4())
+        await client.post(
+            "/api/projects/",
+            json={
+                "id": fresh_pid,
+                "name": "No secrets project",
+                "status": "active",
+                "config": {},
+            },
+            headers={"X-Telegram-ID": str(TASK_TEST_TELEGRAM_ID)},
+        )
+
+        resp = await client.get(f"/api/projects/{fresh_pid}/config/secrets/keys")
+        assert resp.status_code == HTTPStatus.OK
+        assert resp.json()["keys"] == []
+
+
 class TestDeleteSecret:
     @pytest.mark.asyncio
     async def test_delete_existing_secret(self, client, _ensure_project):
