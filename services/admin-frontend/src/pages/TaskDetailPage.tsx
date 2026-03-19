@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
+import { ConfirmButton } from '@/components/ui/ConfirmButton'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatDate } from '@/lib/utils'
 import type { Task, TaskEvent } from '@/types/api'
@@ -121,10 +122,11 @@ export function TaskDetailPage() {
 
 /* ---------- Task Action Buttons ---------- */
 
+const SPAWN_STATUSES = new Set(['backlog', 'todo', 'failed'])
+
 function TaskActions({ task, onSuccess }: { task: Task; onSuccess: () => void }) {
   const [showResume, setShowResume] = useState(false)
   const [guidance, setGuidance] = useState('')
-  const [confirmRetry, setConfirmRetry] = useState(false)
 
   const retryMutation = useMutation({
     mutationFn: () =>
@@ -132,10 +134,7 @@ function TaskActions({ task, onSuccess }: { task: Task; onSuccess: () => void })
         actor: 'admin',
         details: { action: 'retry_from_admin' },
       }),
-    onSuccess: () => {
-      setConfirmRetry(false)
-      onSuccess()
-    },
+    onSuccess,
   })
 
   const resumeMutation = useMutation({
@@ -151,37 +150,35 @@ function TaskActions({ task, onSuccess }: { task: Task; onSuccess: () => void })
     },
   })
 
+  const spawnMutation = useMutation({
+    mutationFn: () =>
+      api.post<unknown>(`/tasks/${task.id}/spawn-worker`, { actor: 'admin' }),
+    onSuccess,
+  })
+
   return (
     <div className="flex items-center gap-2">
       {/* Retry: failed → backlog */}
       {task.status === 'failed' && (
-        <>
-          {confirmRetry ? (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">Retry this task?</span>
-              <button
-                onClick={() => retryMutation.mutate()}
-                disabled={retryMutation.isPending}
-                className="rounded-md bg-blue-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-600 disabled:opacity-50"
-              >
-                {retryMutation.isPending ? 'Retrying...' : 'Confirm'}
-              </button>
-              <button
-                onClick={() => setConfirmRetry(false)}
-                className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setConfirmRetry(true)}
-              className="rounded-md border border-blue-800 px-3 py-1.5 text-sm text-blue-400 hover:bg-blue-900/30"
-            >
-              Retry
-            </button>
-          )}
-        </>
+        <ConfirmButton
+          label="Retry"
+          confirmText="Retry this task?"
+          pendingLabel="Retrying..."
+          onConfirm={() => retryMutation.mutate()}
+          isPending={retryMutation.isPending}
+        />
+      )}
+
+      {/* Spawn Worker: backlog/todo/failed → in_dev */}
+      {SPAWN_STATUSES.has(task.status) && (
+        <ConfirmButton
+          label="Spawn Worker"
+          confirmText="Spawn a worker for this task?"
+          pendingLabel="Spawning..."
+          onConfirm={() => spawnMutation.mutate()}
+          isPending={spawnMutation.isPending}
+          variant="green"
+        />
       )}
 
       {/* Resume: waiting_human_review → in_dev with guidance */}
