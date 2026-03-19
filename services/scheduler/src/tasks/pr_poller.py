@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+_COMPLETED_STATUSES = {StoryStatus.COMPLETED.value, "completed"}
+
 
 async def poll_merged_prs(
     api_client: SchedulerAPIClient,
@@ -83,6 +85,11 @@ async def poll_merged_prs(
         # StoryDTO has no user_id field
         user_id = ""
 
+        # Determine action: "create" for first deploy, "feature" for subsequent
+        all_stories = await api_client.get_stories_by_project(project_id)
+        has_completed = any(s.status in _COMPLETED_STATUSES for s in all_stories)
+        action = "feature" if has_completed else "create"
+
         # Publish deploy message
         run_id = f"deploy-poll-{uuid.uuid4().hex[:8]}"
         run_data = {
@@ -103,7 +110,7 @@ async def poll_merged_prs(
             user_id=str(user_id),
             story_id=story_id,
             triggered_by=DeployTrigger.WEBHOOK,
-            action="feature",
+            action=action,
         )
         await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
 

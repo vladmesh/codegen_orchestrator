@@ -632,6 +632,52 @@ class TestCompleteStories:
 
         api_client.transition_story.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_no_deploy_when_pr_already_merged(self, api_client, redis_client):
+        """PR already merged at creation time -> still transitions to pr_review, NO deploy msg.
+
+        Deploy is always triggered by poll_merged_prs, never by complete_stories.
+        """
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import complete_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _story(id="story-1", project_id=PROJ_ID, title="Add weather API")
+        ]
+        api_client.get_tasks_by_story.return_value = [
+            _task(id="task-1", status="done", story_id="story-1", project_id=PROJ_ID),
+        ]
+        api_client.get_primary_repository.return_value = _repo(
+            id="repo-1",
+            git_url="https://github.com/my-org/weather-bot",
+            project_id=PROJ_ID,
+        )
+        api_client.transition_story.return_value = {}
+
+        mock_github = AsyncMock()
+        # PR already merged (e.g., fast auto-merge)
+        mock_github.create_pull_request.return_value = {
+            "number": 42,
+            "node_id": "PR_abc",
+            "merged_at": "2026-03-19T01:00:00Z",
+        }
+
+        with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
+            await complete_stories(api_client, redis_client)
+
+        # Should transition to pr_review (poll_merged_prs will pick it up)
+        api_client.transition_story.assert_called_once_with("story-1", "pr_review")
+
+        # Must NOT publish deploy message
+        deploy_calls = [
+            c for c in redis_client.publish_message.call_args_list if "deploy" in str(c).lower()
+        ]
+        assert len(deploy_calls) == 0
+
+        # Must NOT create a Run record
+        api_client.create_run.assert_not_called()
+
 
 class TestSuperviseFailedTasks:
     """Supervisor skips worker-rejected tasks."""
@@ -725,8 +771,8 @@ class TestPollMergedPRs:
     """Poll GitHub for merged PRs on stories in pr_review."""
 
     @pytest.mark.asyncio
-    async def test_triggers_deploy_when_pr_merged(self, api_client, redis_client):
-        """Story in pr_review with merged PR -> deploy triggered."""
+    async def test_triggers_create_deploy_for_first_story(self, api_client, redis_client):
+        """First story merge -> action='create'."""
         from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
@@ -739,7 +785,10 @@ class TestPollMergedPRs:
             git_url="https://github.com/my-org/weather-bot",
             project_id=PROJ_ID,
         )
-        api_client.get_story.return_value = _story(id="story-1", project_id=PROJ_ID)
+        # No completed stories — first deploy
+        api_client.get_stories_by_project.return_value = [
+            _story(id="story-1", project_id=PROJ_ID, status="pr_review"),
+        ]
         api_client.transition_story.return_value = {}
         api_client.create_run.return_value = {}
 
@@ -757,15 +806,52 @@ class TestPollMergedPRs:
 
         assert result == 1
         api_client.transition_story.assert_called_once_with("story-1", "deploy")
-        api_client.create_run.assert_called_once()
         redis_client.publish_message.assert_called_once()
 
-        # Verify deploy message contents
-        call_args = redis_client.publish_message.call_args
-        assert call_args[0][0] == "deploy:queue"
-        deploy_msg = call_args[0][1]
+        deploy_msg = redis_client.publish_message.call_args[0][1]
         assert deploy_msg.project_id == PROJ_ID
         assert deploy_msg.story_id == "story-1"
+        assert deploy_msg.action == "create"
+
+    @pytest.mark.asyncio
+    async def test_triggers_feature_deploy_when_previous_story_completed(
+        self, api_client, redis_client
+    ):
+        """Project with a completed story -> action='feature'."""
+        from unittest.mock import patch
+
+        from src.tasks.task_dispatcher import poll_merged_prs
+
+        api_client.get_stories_by_status.return_value = [
+            _story(id="story-2", project_id=PROJ_ID, status="pr_review")
+        ]
+        api_client.get_primary_repository.return_value = _repo(
+            id="repo-1",
+            git_url="https://github.com/my-org/weather-bot",
+            project_id=PROJ_ID,
+        )
+        # Has a previously completed story
+        api_client.get_stories_by_project.return_value = [
+            _story(id="story-1", project_id=PROJ_ID, status="completed"),
+            _story(id="story-2", project_id=PROJ_ID, status="pr_review"),
+        ]
+        api_client.transition_story.return_value = {}
+        api_client.create_run.return_value = {}
+
+        mock_github = AsyncMock()
+        mock_github.list_pull_requests.return_value = [
+            {
+                "number": 43,
+                "merged_at": "2026-03-16T13:00:00Z",
+                "head": {"sha": "def456"},
+            }
+        ]
+
+        with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
+            result = await poll_merged_prs(api_client, redis_client)
+
+        assert result == 1
+        deploy_msg = redis_client.publish_message.call_args[0][1]
         assert deploy_msg.action == "feature"
 
     @pytest.mark.asyncio
@@ -813,13 +899,10 @@ class TestPollMergedPRs:
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
+        proj2_id = "00000000-0000-0000-0000-000000000002"
         api_client.get_stories_by_status.return_value = [
             _story(id="story-1", project_id=PROJ_ID, status="pr_review"),
-            _story(
-                id="story-2",
-                project_id="00000000-0000-0000-0000-000000000002",
-                status="pr_review",
-            ),
+            _story(id="story-2", project_id=proj2_id, status="pr_review"),
         ]
         api_client.get_primary_repository.side_effect = [
             _repo(
@@ -830,13 +913,13 @@ class TestPollMergedPRs:
             _repo(
                 id="repo-2",
                 git_url="https://github.com/my-org/repo2",
-                project_id="00000000-0000-0000-0000-000000000002",
+                project_id=proj2_id,
             ),
         ]
-        api_client.get_story.return_value = _story(
-            id="story-2",
-            project_id="00000000-0000-0000-0000-000000000002",
-        )
+        # First story for this project → action=create
+        api_client.get_stories_by_project.return_value = [
+            _story(id="story-2", project_id=proj2_id, status="pr_review"),
+        ]
         api_client.transition_story.return_value = {}
         api_client.create_run.return_value = {}
 
