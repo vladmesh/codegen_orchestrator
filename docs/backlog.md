@@ -44,7 +44,7 @@
 
 ### #1026 Admin UI: action buttons on entity pages
 - **Priority**: MEDIUM
-- **Plan**: —
+- **Plan**: yes (in work item)
 - **Status**: backlog
 - **Brief**: Add action buttons across admin SPA pages: Project Details — secrets editor (masked key-value), Create Story form, Deploy from Repo form. Story Details — Send to Architect button. Task Details — Spawn Worker button. Application Details — Stop, Undeploy, Redeploy, Run E2E buttons with confirmation...
 
