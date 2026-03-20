@@ -10,3 +10,4 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault(
     "SECRETS_ENCRYPTION_KEY", "wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc="
 )  # Valid Fernet key for tests only
+os.environ.setdefault("LK_JWT_SECRET", "unit-test-lk-jwt-secret")

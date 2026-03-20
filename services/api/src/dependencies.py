@@ -1,6 +1,10 @@
 """FastAPI dependencies for authorization and shared resources."""
 
+import datetime as dt
+
 from fastapi import Depends, Header, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,5 +73,64 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
+        )
+    return user
+
+
+# ---------------------------------------------------------------------------
+# Raw Redis (key-value access for LK tokens)
+# ---------------------------------------------------------------------------
+
+_bearer_scheme = HTTPBearer()
+
+LK_JWT_ALGORITHM = "HS256"
+LK_JWT_TTL = dt.timedelta(hours=24)
+
+
+def get_raw_redis():
+    """Return the underlying redis.asyncio.Redis instance for key-value ops."""
+    client = get_redis_client()
+    return client.redis
+
+
+def create_lk_jwt(user_id: int) -> str:
+    """Create a JWT for LK user with 24h TTL."""
+    settings = get_settings()
+    payload = {
+        "sub": str(user_id),
+        "exp": dt.datetime.now(dt.UTC) + LK_JWT_TTL,
+        "iat": dt.datetime.now(dt.UTC),
+    }
+    return jwt.encode(payload, settings.lk_jwt_secret, algorithm=LK_JWT_ALGORITHM)
+
+
+async def get_lk_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    db: AsyncSession = Depends(get_async_session),
+) -> User:
+    """Decode LK JWT and return the authenticated user.
+
+    Raises 401 if token is invalid, expired, or user not found.
+    """
+    settings = get_settings()
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.lk_jwt_secret,
+            algorithms=[LK_JWT_ALGORITHM],
+        )
+        user_id = int(payload["sub"])
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError, KeyError, ValueError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        ) from e
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
         )
     return user

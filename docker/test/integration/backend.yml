@@ -121,6 +121,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
+      - LK_JWT_SECRET=test-lk-jwt-secret
     depends_on: [db, redis]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

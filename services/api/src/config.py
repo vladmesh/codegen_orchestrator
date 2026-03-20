@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Optional - notifications work without token in dev
     telegram_bot_token: str = telegram_token_field(required=False)
 
+    # LK (user dashboard) JWT auth — required, no default
+    lk_jwt_secret: str
+
 
 @lru_cache
 def get_settings() -> Settings:

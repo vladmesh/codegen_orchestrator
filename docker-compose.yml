@@ -13,6 +13,7 @@ services:
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
+      LK_JWT_SECRET: ${LK_JWT_SECRET}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: api
     depends_on:
