@@ -120,8 +120,8 @@ class WorkerWrapper:
             return
         logger.info("workspace_preflight_passed", detail=workspace_detail)
 
-        # 3b. Fix venv shebangs
-        self._fix_venv_shebangs()
+        # 3b. Fix venv paths (shebangs, .pth files, direct_url.json)
+        self._fix_venv_paths()
 
         # 3c. Inject Makefile overrides for compose proxy
         self._inject_makefile_overrides()
@@ -319,29 +319,49 @@ class WorkerWrapper:
                     return first_line[shebang_len:idx]
         return None
 
-    def _fix_venv_shebangs(self):
-        """Fix venv shebang paths that don't match the container mount point.
+    def _fix_venv_paths(self):
+        """Fix venv paths that don't match the container mount point.
 
         Scaffolder creates venvs at /data/workspaces/<repo_id>/, but workers
-        mount the same directory at /workspace. Detects the original scaffold
-        prefix and rewrites all venv script shebangs. Runs once per workspace.
+        mount the same directory at /workspace. This causes three problems:
+
+        1. Shebangs in .venv/bin/ scripts point to the wrong prefix
+        2. .pth files (editable installs) point to the wrong absolute path,
+           so `import shared` / `import framework` fails with ModuleNotFoundError
+        3. direct_url.json in .dist-info/ dirs has wrong file:// URLs
+
+        Detects the original scaffold prefix and rewrites all affected files.
+        Runs once per workspace (sentinel: .venv_paths_fixed).
         """
-        sentinel = os.path.join(WORKSPACE_DIR, ".shebangs_fixed")
+        sentinel = os.path.join(WORKSPACE_DIR, ".venv_paths_fixed")
         if os.path.exists(sentinel):
             return
+
+        # Also skip if old sentinel exists (workspace already had shebangs fixed
+        # by previous wrapper version — but .pth files still need fixing)
+        old_sentinel = os.path.join(WORKSPACE_DIR, ".shebangs_fixed")
 
         import glob
         import re
 
         scaffold_prefix = self._detect_scaffold_prefix()
         if not scaffold_prefix:
+            # No shebang mismatch — but .pth files might still be wrong.
+            # Try detecting from .pth files directly.
+            scaffold_prefix = self._detect_scaffold_prefix_from_pth()
+
+        if not scaffold_prefix:
             self._touch(sentinel)
+            if os.path.exists(old_sentinel):
+                os.remove(old_sentinel)
             return
 
-        logger.info("fixing_venv_shebangs", scaffold_prefix=scaffold_prefix)
-
-        fixed_count = 0
+        logger.info("fixing_venv_paths", scaffold_prefix=scaffold_prefix)
         escaped_prefix = re.escape(scaffold_prefix)
+        target_prefix = WORKSPACE_DIR + "/"
+
+        # 1. Fix shebangs in .venv/bin/
+        shebang_count = 0
         for venv_bin in glob.glob(os.path.join(WORKSPACE_DIR, "**/.venv/bin"), recursive=True):
             for entry in os.scandir(venv_bin):
                 if not entry.is_file():
@@ -356,17 +376,92 @@ class WorkerWrapper:
 
                 new_content = re.sub(
                     f"#!{escaped_prefix}",
-                    f"#!{WORKSPACE_DIR}/",
+                    f"#!{target_prefix}",
                     content,
                     count=1,
                 )
                 if new_content != content:
                     with open(entry.path, "w") as f:
                         f.write(new_content)
-                    fixed_count += 1
+                    shebang_count += 1
 
-        logger.info("venv_shebangs_fixed", count=fixed_count)
+        # 2. Fix .pth files in .venv/lib/*/site-packages/
+        pth_count = 0
+        for pth_file in glob.glob(
+            os.path.join(WORKSPACE_DIR, "**/.venv/lib/*/site-packages/_*.pth"),
+            recursive=True,
+        ):
+            try:
+                content = open(pth_file).read()
+            except OSError:
+                continue
+            new_content = re.sub(escaped_prefix, target_prefix, content)
+            if new_content != content:
+                with open(pth_file, "w") as f:
+                    f.write(new_content)
+                pth_count += 1
+
+        # 3. Fix direct_url.json in .dist-info/ dirs
+        url_count = 0
+        for url_file in glob.glob(
+            os.path.join(WORKSPACE_DIR, "**/.venv/lib/*/site-packages/*.dist-info/direct_url.json"),
+            recursive=True,
+        ):
+            try:
+                content = open(url_file).read()
+            except OSError:
+                continue
+            new_content = re.sub(escaped_prefix, target_prefix, content)
+            if new_content != content:
+                with open(url_file, "w") as f:
+                    f.write(new_content)
+                url_count += 1
+
+        logger.info(
+            "venv_paths_fixed",
+            shebangs=shebang_count,
+            pth_files=pth_count,
+            direct_urls=url_count,
+        )
         self._touch(sentinel)
+        # Remove old sentinel if present
+        if os.path.exists(old_sentinel):
+            os.remove(old_sentinel)
+
+    def _detect_scaffold_prefix_from_pth(self) -> str | None:
+        """Detect scaffold prefix from .pth files when shebangs are already fixed.
+
+        Reads _*.pth files in site-packages. If any contain an absolute path
+        that doesn't start with WORKSPACE_DIR, extracts the prefix.
+        """
+        import glob
+
+        for pth_file in glob.glob(
+            os.path.join(WORKSPACE_DIR, "**/.venv/lib/*/site-packages/_*.pth"),
+            recursive=True,
+        ):
+            try:
+                content = open(pth_file).read().strip()
+            except OSError:
+                continue
+            # Skip virtualenv's own _virtualenv.pth (contains Python code, not paths)
+            if content.startswith("import "):
+                continue
+            if not content.startswith("/"):
+                continue
+            if content.startswith(WORKSPACE_DIR + "/"):
+                continue
+            # content is an absolute path like /data/workspaces/<repo_id>/shared
+            # We need to find where the workspace-relative part starts.
+            # The .pth content should end with a path that exists under WORKSPACE_DIR.
+            # Try progressively shorter suffixes.
+            parts = content.split("/")
+            for i in range(1, len(parts)):
+                suffix = "/".join(parts[i:])
+                candidate = os.path.join(WORKSPACE_DIR, suffix)
+                if os.path.exists(candidate):
+                    return "/".join(parts[:i]) + "/"
+        return None
 
     @staticmethod
     def _touch(path: str):

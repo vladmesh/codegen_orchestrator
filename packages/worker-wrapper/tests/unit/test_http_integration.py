@@ -72,7 +72,7 @@ class TestHttpServerLifecycle:
             with patch.object(wrapper, "publish_lifecycle", new_callable=AsyncMock):
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
-                        with patch.object(wrapper, "_fix_venv_shebangs"):
+                        with patch.object(wrapper, "_fix_venv_paths"):
                             with patch.object(wrapper, "_collect_and_archive"):
                                 msg = MagicMock()
                                 msg.message_id = "msg-1"
@@ -99,7 +99,7 @@ class TestHttpServerLifecycle:
             with patch.object(wrapper, "publish_lifecycle", new_callable=AsyncMock):
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
-                        with patch.object(wrapper, "_fix_venv_shebangs"):
+                        with patch.object(wrapper, "_fix_venv_paths"):
                             with patch.object(wrapper, "_collect_and_archive"):
                                 msg = MagicMock()
                                 msg.message_id = "msg-2"
@@ -143,7 +143,7 @@ class TestStdoutCapture:
             with patch.object(wrapper, "publish_lifecycle", new_callable=AsyncMock):
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
-                        with patch.object(wrapper, "_fix_venv_shebangs"):
+                        with patch.object(wrapper, "_fix_venv_paths"):
                             with patch.object(wrapper, "_collect_and_archive"):
                                 msg = MagicMock()
                                 msg.message_id = "msg-stdout"
@@ -171,7 +171,7 @@ class TestStdoutCapture:
             with patch.object(wrapper, "publish_lifecycle", new_callable=AsyncMock):
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
-                        with patch.object(wrapper, "_fix_venv_shebangs"):
+                        with patch.object(wrapper, "_fix_venv_paths"):
                             with patch.object(wrapper, "_collect_and_archive"):
                                 msg = MagicMock()
                                 msg.message_id = "msg-crash"
@@ -208,7 +208,7 @@ class TestWatchdog:
                         with patch.object(
                             wrapper, "_check_workspace_ready", return_value=(True, "ok")
                         ):
-                            with patch.object(wrapper, "_fix_venv_shebangs"):
+                            with patch.object(wrapper, "_fix_venv_paths"):
                                 with patch.object(wrapper, "_collect_and_archive"):
                                     msg = MagicMock()
                                     msg.message_id = "msg-3"
@@ -234,7 +234,7 @@ class TestWatchdog:
             with patch.object(wrapper, "publish_lifecycle", new_callable=AsyncMock):
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
-                        with patch.object(wrapper, "_fix_venv_shebangs"):
+                        with patch.object(wrapper, "_fix_venv_paths"):
                             with patch.object(wrapper, "_collect_and_archive"):
                                 msg = MagicMock()
                                 msg.message_id = "msg-factory"
@@ -276,7 +276,7 @@ class TestWatchdog:
             with patch.object(wrapper, "publish_lifecycle", new_callable=AsyncMock):
                 with patch.object(wrapper, "_git_pull", new_callable=AsyncMock):
                     with patch.object(wrapper, "_check_workspace_ready", return_value=(True, "ok")):
-                        with patch.object(wrapper, "_fix_venv_shebangs"):
+                        with patch.object(wrapper, "_fix_venv_paths"):
                             with patch.object(wrapper, "_collect_and_archive"):
                                 msg = MagicMock()
                                 msg.message_id = "msg-5"
