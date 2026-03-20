@@ -430,6 +430,19 @@ services:
       - internal
     restart: unless-stopped
 
+  user-dashboard:
+    build:
+      context: services/user-dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3003:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:11.6.0
     environment:
