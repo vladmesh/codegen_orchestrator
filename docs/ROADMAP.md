@@ -501,10 +501,10 @@ Code quality improvements: splitting large files, reducing complexity, cleanup.
 
 - [x] #1031 Promtail on prod servers + expose Loki
 - [x] #1032 Add com.codegen.project_id label to deployed containers
-- [ ] #1033 Analytics aggregation: models, Loki client, scheduler job
-- [ ] #1034 ЛК API: auth (one-time token → JWT) + analytics endpoints
-- [ ] #1035 Telegram bot: dashboard button with one-time token
-- [ ] #1036 ЛК frontend SPA (project list + dashboard)
+- [x] #1033 Analytics aggregation: models, Loki client, scheduler job
+- [x] #1034 ЛК API: auth (one-time token → JWT) + analytics endpoints
+- [x] #1035 Telegram bot: dashboard button with one-time token
+- [x] #1036 ЛК frontend SPA (project list + dashboard)
 
 ## Human-in-the-loop
 

@@ -42,30 +42,6 @@
 - **Status**: backlog
 - **Brief**: ## Problem  Worker containers copy the entire orchestrator shared/ package into /app/shared. This conflicts with user projects that also have a shared/ directory (different package, same name). Workers hit ModuleNotFoundError or import the wrong module.  ## Current state  - worker-wrapper needs: ...
 
-### #1033 Analytics aggregation: models, Loki client, scheduler job
-- **Priority**: MEDIUM
-- **Plan**: yes (in work item)
-- **Status**: backlog
-- **Brief**: Core data pipeline for ЛК. Three parts:  **1. Models + migrations** (shared/models/): - `AnalyticsHourly`: project_id (FK), service_name, bucket (timestamptz), total_requests, error_count, unique_users, new_users, p50_ms, p95_ms, p99_ms, top_endpoints (jsonb). Indexes: (project_id, bucket), (proj...
-
-### #1034 ЛК API: auth (one-time token → JWT) + analytics endpoints
-- **Priority**: MEDIUM
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: API layer for the user dashboard. Two parts:  **1. Auth flow** (services/api/src/routers/lk_auth.py): - POST /api/lk/auth/token — accepts {token: "uuid"}, validates against Redis key `lk_token:{token}` (TTL 5min), returns JWT (TTL 24h) with user_id claim. Delete Redis key after use (one-time). - ...
-
-### #1035 Telegram bot: dashboard button with one-time token
-- **Priority**: MEDIUM
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Add "Мой дашборд" button to the Telegram bot for project owners.  Flow: 1. User taps button or sends /dashboard command 2. Bot generates UUID token, stores in Redis: `lk_token:{token} → user_id` with TTL=300s 3. Bot sends inline button with URL: `https://<LK_DOMAIN>/auth?token={token}`  Implement...
-
-### #1036 ЛК frontend SPA (project list + dashboard)
-- **Priority**: MEDIUM
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: New service: services/user-dashboard/. Separate SPA for non-technical founders.  **Stack**: React + Vite + Tailwind CSS + Recharts. Nginx in Docker (same pattern as admin-frontend).  **Screens**: 1. **Auth**: receives ?token= from URL, exchanges for JWT via POST /api/lk/auth/token, stores JWT in ...
-
 ### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - **Priority**: LOW
 - **Plan**: —
@@ -300,13 +276,13 @@
 
 ## Done (last 10)
 
+- #1036 ЛК frontend SPA (project list + dashboard) — 2026-03-20
+- #1035 Telegram bot: dashboard button with one-time token — 2026-03-20
+- #1034 ЛК API: auth (one-time token → JWT) + analytics endpoints — 2026-03-20
+- #1033 Analytics aggregation: models, Loki client, scheduler job — 2026-03-20
 - #1032 Add com.codegen.project_id label to deployed containers — 2026-03-20
 - #1031 Promtail on prod servers + expose Loki — 2026-03-20
 - Regression E2E: acceptance criteria on Repository + QA report in admin UI — 2026-03-19
 - #1030 Decouple QA consumer from story lifecycle — 2026-03-19
 - #1026 Admin UI: action buttons on entity pages — 2026-03-19
 - #1025 Admin UI: Settings page (config + prompt editor) — 2026-03-19
-- #1024 Thin API endpoints for admin actions (7 endpoints) — 2026-03-19
-- #1023 Queue contracts: Optional story_id + action field in DeployMessage/QAMessage — 2026-03-19
-- #1020 SystemConfig: model + API + ConfigStore + switch services to DB configs — 2026-03-19
-- Unify worker result API — single /result endpoint, stdout capture, auto-resume — 2026-03-19
