@@ -15,6 +15,15 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 
 <!-- entries below -->
 
+## [e2e-run] — 2026-03-20
+- **Type**: bug
+- **Problem**: QA fail → fix → redeploy cycle doesn't verify deployed SHA matches latest main HEAD. Deploy-worker can reuse a completed deploy workflow run, leaving the fix commit undeployed.
+- **Suggested fix**: After deploy completes in QA fix cycle, add SHA check: compare `deployed_sha` from service-deployment record vs latest main commit. If mismatch, re-trigger deploy.
+
+- **Type**: missing-info
+- **Problem**: Claude Code `--output-format json` wraps output in `{"type":"result",...,"result":"..."}` envelope. QA worker tries to parse the whole thing as the expected QA JSON, causing "Failed to parse QA output" error.
+- **Suggested fix**: This is a qa-worker code bug, not a skill issue. But the skill should mention it in "Common Gotchas" so E2E runners know this failure mode.
+
 ## [e2e-run] — 2026-03-19 (run 2)
 - **Type**: missing-info
 - **Quote**: "Step 0: Health check + pre-flight cleanup" — pre-flight cleanup section
