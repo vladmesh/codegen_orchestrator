@@ -247,8 +247,9 @@ class DeployerNode(FunctionalNode):
                     "errors": [f"No SSH key for server {server_handle}"],
                 }
 
-            # 1. Build and encode DOTENV
-            dotenv_content = build_dotenv(resolved_secrets)
+            # 1. Build and encode DOTENV (include project_id for Promtail label discovery)
+            all_env = {**resolved_secrets, "CODEGEN_PROJECT_ID": project_id}
+            dotenv_content = build_dotenv(all_env)
             dotenv_b64 = encode_dotenv(dotenv_content)
 
             # 2. Write deploy secrets to GitHub

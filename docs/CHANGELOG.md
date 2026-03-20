@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-03-20
+
+### Added
+- **Promtail on prod servers + expose Loki** (#1031): Expose Loki via Caddy `/loki/*` with Basic Auth for external Promtail push. New Promtail Ansible template scrapes Docker containers by `com.codegen.project_id` label and ships logs to orchestrator over HTTPS. Added Promtail service to monitoring role docker-compose. Pass `orchestrator_hostname` through AnsibleRunner extra-vars. New env vars: `LOKI_PUSH_USER`, `LOKI_PUSH_PASSWORD`, `LOKI_PUSH_PASSWORD_HASH`.
+
 ## 2026-03-19
 
 ### Added

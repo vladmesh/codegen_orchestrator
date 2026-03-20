@@ -136,6 +136,23 @@ class TestDeployerNodeHappyPath:
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
     @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_dotenv_contains_codegen_project_id(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        """DOTENV secret must include CODEGEN_PROJECT_ID so compose labels can reference it."""
+        import base64
+
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+
+        await deployer.run(base_state)
+
+        secrets_arg = gh.set_repository_secrets.call_args[0][2]
+        dotenv_decoded = base64.b64decode(secrets_arg["DOTENV"]).decode()
+        assert "CODEGEN_PROJECT_ID=proj-123" in dotenv_decoded
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
     async def test_triggers_workflow_dispatch(self, mock_api, mock_gh_cls, deployer, base_state):
         gh = _setup_happy_mocks(mock_api, mock_gh_cls)
 

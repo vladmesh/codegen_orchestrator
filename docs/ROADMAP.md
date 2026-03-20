@@ -499,7 +499,7 @@ Code quality improvements: splitting large files, reducing complexity, cleanup.
 
 ЛК для нетехнического фаундера — продуктовые метрики по его проектам. Юзеры (DAU/WAU, new, returning), активность (requests/day, top endpoints), здоровье (p95, error rate). Pipeline: Promtail (prod) → Loki → Aggregator → PostgreSQL → API → SPA. Auth через Telegram бота (one-time token → JWT). Разбивка per-application (backend, tg_bot). Brainstorm: docs/brainstorms/user-dashboard-lk.md
 
-- [ ] #1031 Promtail on prod servers + expose Loki
+- [x] #1031 Promtail on prod servers + expose Loki
 - [ ] #1032 Add com.codegen.project_id label to deployed containers
 - [ ] #1033 Analytics aggregation: models, Loki client, scheduler job
 - [ ] #1034 ЛК API: auth (one-time token → JWT) + analytics endpoints
