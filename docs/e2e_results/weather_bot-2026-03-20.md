@@ -24,8 +24,7 @@
 | 00:19 | Task 3 done (~1 min). All engineering complete — 13 min total |
 | 00:19 | Story → in_progress |
 | 00:20 | Story → pr_review, PR #1 created |
-| 00:20 | PR #1 merged (auto-merge). Webhook did NOT fire |
-| 00:21 | Manual deploy trigger (known webhook issue for new repos) |
+| 00:20 | PR #1 merged (auto-merge). E2E runner mistakenly triggered manual deploy (poller would have handled it) |
 | 00:23 | Deploy #1 complete (SHA 451e5a53) |
 | 00:24 | Story → testing, QA run #1 starts |
 | 00:27 | QA #1 result: 5/8 passed. /api/weather/{city} → 404, endpoint at /weather/{city} |
@@ -53,13 +52,17 @@ set up public access. Two messages: initial request + token. Clean interaction.
 
 ## Problems Found
 
-### Problem 1: Webhook not firing for newly scaffolded repos
-- **Type**: orchestrator
-- **Severity**: major
-- **Backlog**: known issue (documented in skill)
-- **Description**: After PR #1 merged, story stayed in pr_review. Webhook never arrived.
-- **Root cause**: GitHub App webhook may not be configured for repos created during the run.
-- **Suggested fix**: Verify webhook setup after repo creation in scaffolder, or poll for merge.
+### Problem 1: E2E skill still references webhooks (removed in b6b7310f)
+- **Type**: meta
+- **Severity**: minor
+- **Backlog**: —
+- **Description**: E2E skill instructions reference "webhook may not fire" and include a manual
+  deploy trigger recipe. Webhooks were replaced with `poll_merged_prs()` poller on 2026-03-18.
+  E2E runner (me) followed stale instructions and manually triggered deploy, potentially
+  interfering with the normal poller flow.
+- **Root cause**: Skill not updated after webhook→polling migration.
+- **Suggested fix**: Remove webhook references from e2e-run skill, remove manual deploy trigger
+  recipe, trust the poller.
 
 ### Problem 2: Deploy did not pick up fix commit
 - **Type**: orchestrator
@@ -85,11 +88,7 @@ set up public access. Two messages: initial request + token. Clean interaction.
 - **Suggested fix**: In QA runner, parse the outer JSON envelope first, extract `.result`,
   then parse that as the QA result JSON.
 
-### Problem 4: Endpoint path mismatch — /weather vs /api/weather
-- **Type**: template (or engineering agent)
-- **Severity**: minor
-- **Backlog**: —
-- **Description**: Task description said "GET /api/weather/{city}" but engineer implemented
-  as "/weather/{city}". Fix task correctly identified and fixed it, but fix wasn't deployed.
-- **Root cause**: Architect's acceptance criteria ambiguity or engineer interpretation.
-- **Suggested fix**: N/A — the fix was created and merged, just not deployed (see Problem 2).
+### ~~Problem 4~~: Endpoint path mismatch — NOT a problem
+- Removed: QA correctly caught /weather vs /api/weather mismatch, fix task was created and
+  completed. This is the pipeline working as designed. The only issue is that the fix didn't
+  get redeployed (see Problem 2).

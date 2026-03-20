@@ -111,6 +111,7 @@ async def poll_merged_prs(
             story_id=story_id,
             triggered_by=DeployTrigger.WEBHOOK,
             action=action,
+            head_sha=head_sha,
         )
         await redis_client.publish_message(DEPLOY_QUEUE, deploy_msg)
 

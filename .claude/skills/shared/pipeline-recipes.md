@@ -288,7 +288,7 @@ Key service names: `architect`, `scheduler`, `engineering-worker`, `deploy-worke
 8. **Stale queue messages** can clog architect for hours — check queues early
 9. **Project needs a Repository record** — scaffold_trigger won't fire without it
 10. **Cross-check sources** — compare API data with Docker/Redis. Desync is a finding
-11. **Webhook may not fire for new repos** — if story stays `pr_review` >60s after merge, trigger deploy manually
+11. **Deploy is triggered by `poll_merged_prs()` poller** (every 30s in scheduler) — do NOT manually trigger deploys, the poller handles it
 12. **Deploy Run record uses `type` field** (not `run_type`)
 13. **DeployMessage requires `task_id`** — this is actually the Run ID, not a task ID
 14. **QA phase** — story goes `deploying` → `testing` → `completed`. qa-worker SSHes to prod, runs Claude Code CLI

@@ -99,7 +99,12 @@ async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | st
 
 
 def _build_subgraph_input(
-    project_id: str, project: ProjectDTO, git_url: str, allocated_resources: dict, job_data: dict
+    project_id: str,
+    project: ProjectDTO,
+    git_url: str,
+    allocated_resources: dict,
+    job_data: dict,
+    head_sha: str = "",
 ) -> dict:
     """Build DevOps subgraph input from deploy job data."""
     return {
@@ -113,6 +118,7 @@ def _build_subgraph_input(
         },
         "allocated_resources": allocated_resources,
         "provided_secrets": job_data.get("provided_secrets", {}),
+        "head_sha": head_sha or None,
         "messages": [],
         "env_variables": [],
         "env_analysis": {},
@@ -311,7 +317,12 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
         # Run DevOps subgraph
         devops_subgraph = create_devops_subgraph()
         subgraph_input = _build_subgraph_input(
-            project_id, project, _git_url, allocated_resources, job_data
+            project_id,
+            project,
+            _git_url,
+            allocated_resources,
+            job_data,
+            head_sha=msg.head_sha,
         )
         result = await devops_subgraph.ainvoke(
             subgraph_input,

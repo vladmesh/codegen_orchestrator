@@ -108,7 +108,7 @@ async def complete_stories(
     3. Transition story to PR_REVIEW
     4. Cleanup worker container, trigger next story
 
-    Deploy is triggered later by the webhook handler when PR is merged to main.
+    Deploy is triggered later by poll_merged_prs() when PR is merged to main.
 
     Returns the number of stories transitioned.
     """
@@ -171,15 +171,18 @@ async def complete_stories(
             pr_merged = pr.get("merged_at") is not None
 
             if pr_merged:
-                # PR already merged — deploy was already triggered (or will be by
-                # pr_poller). Do NOT transition to pr_review again, as that creates
-                # a loop: in_progress → pr_review → pr_poller triggers deploy →
-                # deploy fails → in_progress → repeat.
+                # PR already merged (e.g. QA fix cycle — fix task pushed to
+                # story branch, PR auto-merged while story was in_progress).
+                # Transition to pr_review so poll_merged_prs() picks it up
+                # and triggers deploy.
                 log.info(
                     "story_pr_already_merged",
                     pr_number=pr_number,
                     branch=branch,
                 )
+                await api_client.transition_story(story_id, "pr_review")
+                await _cleanup_story_worker(redis_client, story_id)
+                completed += 1
                 continue
 
             log.info(
@@ -217,7 +220,7 @@ async def complete_stories(
             log.exception("story_pr_creation_failed", branch=branch)
             continue
 
-        # Transition story to pr_review (webhook handles deploy after merge)
+        # Transition story to pr_review (poll_merged_prs handles deploy after merge)
         await api_client.transition_story(story_id, "pr_review")
         log.info("story_pr_review", task_count=len(tasks), pr_number=pr_number)
 

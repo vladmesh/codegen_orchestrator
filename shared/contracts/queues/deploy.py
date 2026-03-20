@@ -42,6 +42,7 @@ class DeployMessage(BaseMessage):
     triggered_by: DeployTrigger = DeployTrigger.ENGINEERING
     action: DeployAction = DeployAction.CREATE
     deploy_fix_attempt: int = 0
+    head_sha: str = ""
 
 
 class DeployResult(BaseResult):

@@ -35,6 +35,9 @@ class DevOpsState(TypedDict):
     env_analysis: dict  # {var_name: "infra"|"computed"|"user"}
     resolved_secrets: dict  # generated/computed secrets
 
+    # Deploy target
+    head_sha: str | None  # exact commit SHA to deploy (from merged PR)
+
     # Output (returned to parent)
     missing_user_secrets: list[str]
     deployment_result: dict | None

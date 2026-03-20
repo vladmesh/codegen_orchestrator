@@ -495,10 +495,11 @@ HH:MM  task-xxx  CI passed → done
 ### Step 5: Monitor PR Review & Deploy
 
 When all tasks are done, the dispatcher creates a PR from `story/{story_id}` → `main`,
-enables auto-merge, and transitions the story to `pr_review`. Deploy is triggered later
-by the webhook when the PR is merged (after CI passes on the PR).
+enables auto-merge, and transitions the story to `pr_review`. Deploy is triggered by
+`poll_merged_prs()` in the scheduler (runs every 30s) — it detects merged PRs for
+stories in `pr_review` and publishes a deploy message.
 
-**Flow**: `in_progress` → `pr_review` → (PR merged via webhook) → `deploying` → `completed`
+**Flow**: `in_progress` → `pr_review` → (PR merged, poller detects) → `deploying` → `completed`
 
 **IMPORTANT**: The dispatcher's `complete_stories` only checks stories in `in_progress` status.
 If the story is stuck in `created` after all tasks are done (shouldn't happen in normal flow
@@ -514,58 +515,6 @@ curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
 ### Story API: Action-based endpoints
 
 > See "Story API — Action-Based Transitions" in `.claude/skills/shared/pipeline-recipes.md`.
-
-### Webhook failure & manual deploy trigger
-
-**Known issue**: For newly scaffolded repos, the GitHub webhook may not fire after PR merge.
-If story stays in `pr_review` for >60s after merge, the webhook didn't arrive.
-
-**Workaround — manual deploy trigger**:
-
-```bash
-import uuid
-RUN_ID="deploy-e2e-$(uuid.uuid4().hex[:8])"
-
-# 1. Create Run record (field is "type", NOT "run_type")
-curl -s -X POST "http://localhost:8000/api/runs/" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"id\": \"$RUN_ID\",
-    \"project_id\": \"$PROJECT_ID\",
-    \"story_id\": \"$STORY_ID\",
-    \"type\": \"deploy\",
-    \"status\": \"pending\"
-  }"
-
-# 2. Transition story to deploying
-curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/deploy" \
-  -H "Content-Type: application/json" \
-  -d '{"actor": "e2e-test"}'
-
-# 3. Publish deploy message to queue
-docker compose exec -T -e "PROJECT_ID=$PROJECT_ID" -e "STORY_ID=$STORY_ID" -e "RUN_ID=$RUN_ID" api python -c "
-import os, asyncio
-import redis.asyncio as redis
-from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
-from shared.queues import DEPLOY_QUEUE
-
-async def main():
-    r = redis.from_url('redis://redis:6379')
-    deploy_msg = DeployMessage(
-        task_id=os.environ['RUN_ID'],
-        project_id=os.environ['PROJECT_ID'],
-        user_id='',
-        story_id=os.environ['STORY_ID'],
-        triggered_by=DeployTrigger.WEBHOOK,
-        action='create',
-    )
-    mid = await r.xadd(DEPLOY_QUEUE, {'data': deploy_msg.model_dump_json()})
-    print(f'Published to deploy:queue: mid={mid}')
-    await r.aclose()
-
-asyncio.run(main())
-"
-```
 
 ### Monitoring deploy
 
@@ -1014,9 +963,8 @@ If the user asks to stop early:
 
 **E2E-specific additions:**
 - **Repo deletion in pre-flight**: uses `get_org_token()` + `httpx.delete()` directly (belt-and-suspenders, not just `GitHubAppClient.delete_repo()`)
-- **Webhook may not fire for new repos** — if story stays `pr_review` >60s after merge, use the manual deploy trigger recipe (see "Webhook failure" in Step 5)
+- **Do NOT manually trigger deploys** — `poll_merged_prs()` in scheduler handles deploy triggering automatically every 30s. Manual intervention breaks the flow
 - **Deploy Run record uses `type` field** (not `run_type`) — `POST /api/runs/` with `{"type": "deploy"}`
-- **DeployMessage requires `task_id`** — this is actually the Run ID (format `deploy-e2e-{hex}`), not a task ID
 
 ## Self-Feedback (Mandatory)
 

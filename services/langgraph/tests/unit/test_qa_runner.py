@@ -84,6 +84,35 @@ class TestParseQAResult:
         result = parse_qa_result("")
         assert result.passed is False
 
+    def test_output_format_json_wrapper(self):
+        """Claude Code --output-format json wraps result in envelope."""
+        import json
+
+        inner = json.dumps(
+            {
+                "pass": True,
+                "checks": [{"name": "health", "pass": True, "detail": "200"}],
+                "summary": "OK",
+            }
+        )
+        wrapper = json.dumps(
+            {"type": "result", "subtype": "success", "is_error": False, "result": inner}
+        )
+        result = parse_qa_result(wrapper)
+        assert result.passed is True
+        assert len(result.checks) == 1
+
+    def test_output_format_json_wrapper_non_json_result(self):
+        """When Claude Code returns non-JSON text in result field."""
+        import json
+
+        wrapper = json.dumps(
+            {"type": "result", "subtype": "success", "result": "No output produced"}
+        )
+        result = parse_qa_result(wrapper)
+        assert result.passed is False
+        assert "parse" in result.summary.lower() or "failed" in result.summary.lower()
+
 
 class TestRunQAOnServer:
     @pytest.fixture(autouse=True)

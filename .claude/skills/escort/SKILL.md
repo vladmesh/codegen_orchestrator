@@ -249,10 +249,11 @@ HH:MM  task-xxx  done
 ## Step 4: Monitor PR Review & Deploy Phase
 
 When all tasks are done, the dispatcher creates a PR from `story/{story_id}` → `main`,
-enables auto-merge, and transitions the story to `pr_review`. Deploy is triggered later
-by the webhook when the PR is merged (after CI passes).
+enables auto-merge, and transitions the story to `pr_review`. Deploy is triggered by
+`poll_merged_prs()` in the scheduler (runs every 30s) — it detects merged PRs for
+stories in `pr_review` and publishes a deploy message.
 
-**Flow**: `in_progress` → (all tasks done) → `pr_review` → (PR merged via webhook) → `deploying` → `testing` → `completed`
+**Flow**: `in_progress` → (all tasks done) → `pr_review` → (PR merged, poller detects) → `deploying` → `testing` → `completed`
 
 **IMPORTANT**: The dispatcher's `complete_stories` function only checks stories in
 `in_progress` status. If the story is still `created` (which happens when tasks were
@@ -277,8 +278,8 @@ curl -s -X POST "http://localhost:8000/api/stories/$STORY_ID/start" \
 - PR created on GitHub (check repo PR list)
 - CI running on the PR
 - Auto-merge enabled
-- If CI fails: webhook creates a fix task, story goes back to `in_progress`
-- If CI passes: auto-merge → webhook fires → story → `deploying`
+- If CI fails: `poll_ci_failures()` creates a fix task, story goes back to `in_progress`
+- If CI passes: auto-merge → `poll_merged_prs()` detects merge → story → `deploying`
 
 ```bash
 # Check if PR exists for the story branch

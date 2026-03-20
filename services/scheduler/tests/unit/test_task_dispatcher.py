@@ -632,11 +632,12 @@ class TestCompleteStories:
         api_client.transition_story.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_no_deploy_when_pr_already_merged(self, api_client, redis_client):
-        """PR already merged at creation time -> skip story entirely.
+    async def test_pr_already_merged_transitions_to_pr_review(self, api_client, redis_client):
+        """PR already merged (QA fix cycle) -> transition to pr_review for poller.
 
-        When a PR is already merged, complete_stories must NOT transition to pr_review
-        (that would create a loop with pr_poller). Deploy is handled by pr_poller.
+        When a PR is already merged (e.g. QA fix task pushed commits and PR
+        auto-merged while story was in_progress), complete_stories transitions
+        to pr_review so poll_merged_prs() can detect the merge and trigger deploy.
         """
         from unittest.mock import patch
 
@@ -655,7 +656,7 @@ class TestCompleteStories:
         )
 
         mock_github = AsyncMock()
-        # PR already merged (e.g., fast auto-merge)
+        # PR already merged (e.g., QA fix cycle)
         mock_github.create_pull_request.return_value = {
             "number": 42,
             "node_id": "PR_abc",
@@ -663,19 +664,11 @@ class TestCompleteStories:
         }
 
         with patch("src.tasks.story_completion.GitHubAppClient", return_value=mock_github):
-            await complete_stories(api_client, redis_client)
+            result = await complete_stories(api_client, redis_client)
 
-        # Must NOT transition story — skip entirely to avoid pr_poller loop
-        api_client.transition_story.assert_not_called()
-
-        # Must NOT publish deploy message
-        deploy_calls = [
-            c for c in redis_client.publish_message.call_args_list if "deploy" in str(c).lower()
-        ]
-        assert len(deploy_calls) == 0
-
-        # Must NOT create a Run record
-        api_client.create_run.assert_not_called()
+        # Must transition to pr_review so poller picks up the merge
+        api_client.transition_story.assert_called_once_with("story-1", "pr_review")
+        assert result == 1
 
 
 class TestSuperviseFailedTasks:
