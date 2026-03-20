@@ -170,6 +170,9 @@ async def complete_stories(
             pr_node_id = pr.get("node_id", "")
             pr_merged = pr.get("merged_at") is not None
 
+            # Store PR number so poll_merged_prs can look up this exact PR
+            await api_client.update_story(story_id, {"pr_number": pr_number})
+
             if pr_merged:
                 # PR already merged (e.g. QA fix cycle — fix task pushed to
                 # story branch, PR auto-merged while story was in_progress).

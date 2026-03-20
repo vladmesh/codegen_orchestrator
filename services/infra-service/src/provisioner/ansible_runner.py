@@ -29,6 +29,7 @@ class AnsibleRunner:
         root_password: str | None = None,
         ssh_public_key: str | None = None,
         orchestrator_ip: str | None = None,
+        orchestrator_hostname: str | None = None,
         timeout: int = 600,
     ) -> tuple[bool, str]:
         """Run an Ansible playbook.
@@ -40,6 +41,7 @@ class AnsibleRunner:
             root_password: Optional root password (if None, uses SSH key auth)
             ssh_public_key: Optional SSH public key to inject
             orchestrator_ip: Optional orchestrator public IP for UFW rules
+            orchestrator_hostname: Optional orchestrator hostname for Loki push URL
             timeout: Execution timeout in seconds
 
         Returns:
@@ -77,6 +79,9 @@ class AnsibleRunner:
 
         if orchestrator_ip:
             extra_vars += f" orchestrator_ip={orchestrator_ip}"
+
+        if orchestrator_hostname:
+            extra_vars += f" orchestrator_hostname={orchestrator_hostname}"
 
         # Construct ansible-playbook command
         cmd = [

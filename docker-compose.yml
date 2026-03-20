@@ -129,6 +129,7 @@ services:
     volumes:
       - ./services/langgraph/src:/app/src:delegated
       - ./shared:/app/shared:delegated
+      - ~/.claude/.credentials.json:/secrets/claude-credentials.json:ro
     depends_on:
       - api
       - redis
@@ -355,9 +356,12 @@ services:
       ORCHESTRATOR_HOSTNAME: ${ORCHESTRATOR_HOSTNAME}
       REGISTRY_USER: ${REGISTRY_USER}
       REGISTRY_PASSWORD_HASH: ${REGISTRY_PASSWORD_HASH}
+      LOKI_PUSH_USER: ${LOKI_PUSH_USER}
+      LOKI_PUSH_PASSWORD_HASH: ${LOKI_PUSH_PASSWORD_HASH}
     depends_on:
       - api
       - registry
+      - loki
     networks:
       - internal
     restart: unless-stopped

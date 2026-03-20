@@ -167,6 +167,11 @@ class SchedulerAPIClient:
         )
         return StoryDTO.model_validate(resp.json())
 
+    async def update_story(self, story_id: str, data: dict) -> StoryDTO:
+        """Patch story fields (e.g. pr_number)."""
+        resp = await self._request("PATCH", f"stories/{story_id}", json=data)
+        return StoryDTO.model_validate(resp.json())
+
     # --- Tasks ---
 
     async def get_tasks_by_status(self, status: str) -> list[TaskDTO]:

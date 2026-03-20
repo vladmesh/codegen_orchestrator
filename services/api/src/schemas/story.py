@@ -38,6 +38,7 @@ class StoryRead(TimestampedDTO):
     blocked_by_story_id: str | None
     created_by: str
     user_report: str | None
+    pr_number: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -52,6 +53,7 @@ class StoryUpdate(BaseModel):
     type: Literal[StoryType.PRODUCT, StoryType.TECHNICAL] | None = None
     priority: int | None = None
     blocked_by_story_id: str | None = None
+    pr_number: int | None = None
 
 
 class StoryReopen(BaseModel):

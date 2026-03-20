@@ -75,6 +75,7 @@ async def reinstall_and_provision(
     ansible_runner: AnsibleRunner,
     ssh_public_key: str | None = None,
     orchestrator_ip: str | None = None,
+    orchestrator_hostname: str | None = None,
 ) -> tuple[bool, str]:
     """Reinstall OS and provision server.
 
@@ -91,6 +92,7 @@ async def reinstall_and_provision(
         ansible_runner: Ansible Runner instance
         ssh_public_key: Optional SSH public key
         orchestrator_ip: Optional orchestrator public IP for UFW rules
+        orchestrator_hostname: Optional orchestrator hostname for Loki push URL
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -145,6 +147,7 @@ async def reinstall_and_provision(
             root_password=password,
             ssh_public_key=ssh_public_key,
             orchestrator_ip=orchestrator_ip,
+            orchestrator_hostname=orchestrator_hostname,
             timeout=Timeouts.ACCESS_PHASE,
         )
 
@@ -169,6 +172,7 @@ async def reinstall_and_provision(
             playbook_name="provision_software.yml",
             root_password=None,  # Use keys now
             orchestrator_ip=orchestrator_ip,
+            orchestrator_hostname=orchestrator_hostname,
             timeout=Timeouts.PROVISIONING,
         )
 

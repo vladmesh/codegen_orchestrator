@@ -6,6 +6,7 @@ The prompt is built from the acceptance criteria and deployment URL.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import json
 import re
@@ -20,9 +21,11 @@ logger = structlog.get_logger(__name__)
 QA_TIMEOUT = 1200  # 20 minutes
 SERVICE_BASE_DIR = "/opt/services"
 CREDENTIALS_PATH = "/root/.claude/.credentials.json"
+LOCAL_CREDENTIALS_PATH = "/secrets/claude-credentials.json"  # mounted from host
 OAUTH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 OAUTH_REFRESH_BUFFER_S = 300  # refresh if expires within 5 minutes
+CREDENTIAL_REFRESH_INTERVAL = 4 * 3600  # 4 hours
 
 
 @dataclass
@@ -194,10 +197,20 @@ def parse_qa_result(raw: str) -> QAResult:
 
 
 async def _ensure_claude_credentials(conn: asyncssh.SSHClientConnection) -> None:
-    """Check Claude Code OAuth credentials on server, refresh if expired."""
+    """Check Claude Code OAuth credentials on server, refresh if expired.
+
+    Strategy:
+    1. Read credentials from server
+    2. If still valid — return
+    3. Try OAuth refresh_token grant
+    4. If refresh fails (400/401 = token revoked/expired) — fallback to local credentials
+    """
     result = await conn.run(f"cat {CREDENTIALS_PATH} 2>/dev/null", check=False)
     if result.exit_status != 0 or not result.stdout:
-        raise RuntimeError(f"No Claude credentials at {CREDENTIALS_PATH} on server")
+        # No credentials on server at all — try pushing local
+        logger.warning("claude_credentials_missing_on_server")
+        await _push_local_credentials(conn)
+        return
 
     creds = json.loads(result.stdout)
     oauth = creds["claudeAiOauth"]
@@ -210,6 +223,28 @@ async def _ensure_claude_credentials(conn: asyncssh.SSHClientConnection) -> None
 
     logger.info("claude_credentials_expired", expired_ago_s=int(now - expires_at))
 
+    # Try OAuth refresh
+    try:
+        await _refresh_oauth_token(conn, oauth)
+        return
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code in (400, 401):
+            logger.warning(
+                "claude_refresh_token_invalid",
+                status=e.response.status_code,
+                body=e.response.text[:200],
+            )
+            # Refresh token is dead — fallback to local credentials
+            await _push_local_credentials(conn)
+        else:
+            raise
+
+
+async def _refresh_oauth_token(
+    conn: asyncssh.SSHClientConnection,
+    oauth: dict,
+) -> None:
+    """Refresh OAuth token and write updated credentials to server."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             OAUTH_ENDPOINT,
@@ -222,6 +257,7 @@ async def _ensure_claude_credentials(conn: asyncssh.SSHClientConnection) -> None
         resp.raise_for_status()
         token_data = resp.json()
 
+    now = time.time()
     new_creds = {
         "claudeAiOauth": {
             "accessToken": token_data["access_token"],
@@ -232,15 +268,51 @@ async def _ensure_claude_credentials(conn: asyncssh.SSHClientConnection) -> None
             "rateLimitTier": oauth.get("rateLimitTier", ""),
         }
     }
-    new_creds_json = json.dumps(new_creds, indent=2)
+    await _write_credentials(conn, new_creds)
+    logger.info("claude_credentials_refreshed", expires_in=token_data["expires_in"])
 
-    await conn.run(
-        f"cat > {CREDENTIALS_PATH} << 'CREDS_EOF'\n{new_creds_json}\nCREDS_EOF",
-        check=True,
-    )
+
+async def _push_local_credentials(conn: asyncssh.SSHClientConnection) -> None:
+    """Push local credentials file to server as fallback.
+
+    Reads from LOCAL_CREDENTIALS_PATH (mounted from host) and writes to server.
+    """
+    try:
+        with open(LOCAL_CREDENTIALS_PATH) as f:
+            local_creds = json.load(f)
+    except FileNotFoundError as err:
+        raise RuntimeError(
+            f"Refresh token expired and no local credentials at {LOCAL_CREDENTIALS_PATH}. "
+            "Mount ~/.claude/.credentials.json into the container."
+        ) from err
+
+    local_oauth = local_creds["claudeAiOauth"]
+    local_expires = local_oauth["expiresAt"] / 1000
+    now = time.time()
+
+    if now >= local_expires:
+        raise RuntimeError(
+            f"Local credentials are also expired "
+            f"(expired {int(now - local_expires)}s ago). "
+            "Run 'claude login' on the host machine."
+        )
+
+    await _write_credentials(conn, local_creds)
     logger.info(
-        "claude_credentials_refreshed",
-        expires_in=token_data["expires_in"],
+        "claude_credentials_pushed_from_local",
+        ttl_s=int(local_expires - now),
+    )
+
+
+async def _write_credentials(
+    conn: asyncssh.SSHClientConnection,
+    creds: dict,
+) -> None:
+    """Write credentials JSON to server."""
+    creds_json = json.dumps(creds, indent=2)
+    await conn.run(
+        f"cat > {CREDENTIALS_PATH} << 'CREDS_EOF'\n{creds_json}\nCREDS_EOF",
+        check=True,
     )
 
 
@@ -359,3 +431,47 @@ async def _collect_qa_report(
 def _shell_quote(s: str) -> str:
     """Quote a string for safe use in shell commands using $'...' syntax."""
     return "'" + s.replace("'", "'\\''") + "'"
+
+
+async def credential_refresh_loop() -> None:
+    """Periodically refresh Claude Code credentials on all managed servers.
+
+    Runs every CREDENTIAL_REFRESH_INTERVAL (4h). Connects to each server
+    via SSH and calls _ensure_claude_credentials to keep tokens fresh.
+    This prevents refresh tokens from expiring between QA runs.
+    """
+    from ..clients.api import api_client
+
+    logger.info("credential_refresh_loop_started", interval_s=CREDENTIAL_REFRESH_INTERVAL)
+
+    while True:
+        try:
+            servers = await api_client.list_servers(is_managed=True)
+            for server in servers:
+                if not server.public_ip:
+                    continue
+                ssh_key = await api_client.get_server_ssh_key(server.handle)
+                if not ssh_key:
+                    continue
+                try:
+                    key = asyncssh.import_private_key(ssh_key)
+                    async with asyncssh.connect(
+                        server.public_ip,
+                        username="root",
+                        known_hosts=None,
+                        client_keys=[key],
+                    ) as conn:
+                        await _ensure_claude_credentials(conn)
+                        logger.info(
+                            "credential_refresh_ok",
+                            server_ip=server.public_ip,
+                        )
+                except Exception:
+                    logger.exception(
+                        "credential_refresh_server_error",
+                        server_ip=server.public_ip,
+                    )
+        except Exception:
+            logger.exception("credential_refresh_cycle_error")
+
+        await asyncio.sleep(CREDENTIAL_REFRESH_INTERVAL)

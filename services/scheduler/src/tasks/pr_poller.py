@@ -57,21 +57,23 @@ async def poll_merged_prs(
 
         git_url = repo.git_url or ""
         owner, repo_name = _parse_owner_repo(git_url)
-        branch = f"story/{story_id}"
+
+        # complete_stories stores the exact PR number — use it for precise lookup.
+        # This prevents picking up stale merged PRs from previous QA fix cycles.
+        if not story.pr_number:
+            log.warning("poll_merged_no_pr_number")
+            continue
 
         try:
-            prs = await github.list_pull_requests(
-                owner, repo_name, head=branch, base="main", state="closed"
-            )
+            pr_data = await github.get_pull_request(owner, repo_name, story.pr_number)
         except Exception:
-            log.exception("poll_merged_github_error")
+            log.exception("poll_merged_github_error", pr_number=story.pr_number)
             continue
 
-        # Find a merged PR for this story branch
-        merged_pr = next((pr for pr in prs if pr.get("merged_at")), None)
-        if not merged_pr:
+        if not pr_data.get("merged_at"):
             continue
 
+        merged_pr = pr_data
         head_sha = merged_pr.get("head", {}).get("sha", "")
         log.info(
             "poll_merged_pr_found",

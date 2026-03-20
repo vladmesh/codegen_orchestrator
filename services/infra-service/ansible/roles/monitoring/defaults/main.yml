@@ -2,3 +2,8 @@
 monitoring_enabled: true
 node_exporter_port: 9100
 cadvisor_port: 8080
+
+# Loki push settings — override in group_vars or host_vars
+# loki_push_url: "https://orch.example.com/loki"
+# loki_push_user: "loki"
+# loki_push_password: "secret"  # Use ansible-vault in production

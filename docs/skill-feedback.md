@@ -15,6 +15,11 @@ Processed by `/optimize` — obvious fixes applied automatically (with diff revi
 
 <!-- entries below -->
 
+## [e2e-run] — 2026-03-20 (run 2)
+- **Type**: bug
+- **Problem**: Worker report collection uses `.data.report` path but actual API returns `.details.report`. The skill's Step 7a recipe (`jq -r '.[0].data.report'`) silently produces empty output.
+- **Suggested fix**: Fix the recipe to use `.details.report` instead of `.data.report`.
+
 ## [e2e-run] — 2026-03-20
 - **Type**: bug
 - **Problem**: QA fail → fix → redeploy cycle doesn't verify deployed SHA matches latest main HEAD. Deploy-worker can reuse a completed deploy workflow run, leaving the fix commit undeployed.

@@ -21,6 +21,9 @@ class TestMonitoringRoleStructure:
     def test_handlers_main_exists(self):
         assert (MONITORING_DIR / "handlers" / "main.yml").is_file()
 
+    def test_promtail_template_exists(self):
+        assert (MONITORING_DIR / "templates" / "promtail.yml.j2").is_file()
+
 
 class TestMonitoringDefaults:
     """Verify defaults/main.yml has expected variables."""
@@ -100,6 +103,68 @@ class TestMonitoringTasksYaml:
             assert "node-exporter" in content, (
                 "Docker compose content missing node-exporter service"
             )
+
+    def test_docker_compose_has_promtail(self):
+        """The docker-compose content must include promtail service."""
+        compose_tasks = [
+            t for t in self.tasks if "compose" in t.get("name", "").lower() and "copy" in t
+        ]
+        assert len(compose_tasks) > 0, "No compose file copy task found"
+        for task in compose_tasks:
+            content = task["copy"].get("content", "")
+            assert "promtail" in content, "Docker compose content missing promtail service"
+
+    def test_promtail_config_template_task_exists(self):
+        """A task must deploy the Promtail configuration template."""
+        task_names = " ".join(t["name"].lower() for t in self.tasks)
+        assert "promtail" in task_names, "No Promtail-related task found"
+        template_tasks = [
+            t for t in self.tasks if "promtail" in t.get("name", "").lower() and "template" in t
+        ]
+        assert len(template_tasks) > 0, "No template task for Promtail config found"
+
+    def test_promtail_mounts_docker_socket(self):
+        """Promtail service must mount Docker socket for container log scraping."""
+        compose_tasks = [
+            t for t in self.tasks if "compose" in t.get("name", "").lower() and "copy" in t
+        ]
+        for task in compose_tasks:
+            content = task["copy"].get("content", "")
+            assert "/var/run/docker.sock" in content, "Promtail must mount Docker socket"
+
+
+class TestPromtailTemplate:
+    """Verify promtail.yml.j2 template structure."""
+
+    def setup_method(self):
+        self.template_path = MONITORING_DIR / "templates" / "promtail.yml.j2"
+        self.content = self.template_path.read_text()
+
+    def test_pushes_to_loki_push_url_var(self):
+        """Template must use loki_push_url Ansible variable."""
+        assert "loki_push_url" in self.content
+
+    def test_basic_auth_configured(self):
+        """Template must include basic_auth for Loki push."""
+        assert "basic_auth" in self.content
+        assert "loki_push_user" in self.content
+        assert "loki_push_password" in self.content
+
+    def test_scrapes_project_id_label(self):
+        """Template must filter containers by com.codegen.project_id label."""
+        assert "com.codegen.project_id" in self.content
+
+    def test_extracts_project_id_relabel(self):
+        """Template must extract project_id from container label."""
+        assert "project_id" in self.content
+
+    def test_includes_server_label(self):
+        """Template must add server hostname label for multi-server disambiguation."""
+        assert "inventory_hostname" in self.content
+
+    def test_docker_pipeline_stages(self):
+        """Template must parse Docker JSON log format."""
+        assert "docker: {}" in self.content
 
 
 class TestProvisionSoftwareIncludesMonitoring:

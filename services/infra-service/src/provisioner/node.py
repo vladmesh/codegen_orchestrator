@@ -59,6 +59,7 @@ class ProvisionerNode(FunctionalNode):
         self.ssh_manager = ssh_manager or SSHManager()
         self.ansible_runner = ansible_runner or AnsibleRunner()
         self.orchestrator_ip = os.getenv("ORCHESTRATOR_PUBLIC_IP")
+        self.orchestrator_hostname = os.getenv("ORCHESTRATOR_HOSTNAME")
 
     async def _get_and_validate_server_info(
         self,
@@ -216,6 +217,7 @@ class ProvisionerNode(FunctionalNode):
             ansible_runner=self.ansible_runner,
             ssh_public_key=ssh_public_key,
             orchestrator_ip=self.orchestrator_ip,
+            orchestrator_hostname=self.orchestrator_hostname,
         )
 
         if success:
@@ -259,6 +261,7 @@ class ProvisionerNode(FunctionalNode):
             root_password=None,
             ssh_public_key=self.ssh_manager.get_public_key(),
             orchestrator_ip=self.orchestrator_ip,
+            orchestrator_hostname=self.orchestrator_hostname,
             timeout=Timeouts.ACCESS_PHASE,
         )
 
@@ -283,6 +286,7 @@ class ProvisionerNode(FunctionalNode):
             playbook_name="provision_software.yml",
             root_password=None,
             orchestrator_ip=self.orchestrator_ip,
+            orchestrator_hostname=self.orchestrator_hostname,
             timeout=Timeouts.PROVISIONING,
         )
 

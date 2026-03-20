@@ -46,3 +46,34 @@ class TestAnsibleRunnerOrchestratorIp:
         extra_vars_idx = cmd.index("--extra-vars")
         extra_vars = cmd[extra_vars_idx + 1]
         assert "orchestrator_ip" not in extra_vars
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_orchestrator_hostname_in_extra_vars(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+
+        self.runner.run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+            orchestrator_hostname="orch.example.com",
+        )
+
+        cmd = mock_run.call_args[0][0]
+        extra_vars_idx = cmd.index("--extra-vars")
+        extra_vars = cmd[extra_vars_idx + 1]
+        assert "orchestrator_hostname=orch.example.com" in extra_vars
+
+    @patch("src.provisioner.ansible_runner.subprocess.run")
+    def test_no_orchestrator_hostname_when_not_provided(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+
+        self.runner.run_playbook(
+            server_ip="1.2.3.4",
+            server_handle="vps-test",
+            playbook_name="provision_software.yml",
+        )
+
+        cmd = mock_run.call_args[0][0]
+        extra_vars_idx = cmd.index("--extra-vars")
+        extra_vars = cmd[extra_vars_idx + 1]
+        assert "orchestrator_hostname" not in extra_vars

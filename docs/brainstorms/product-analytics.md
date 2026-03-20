@@ -3,7 +3,7 @@
 > **Дата**: 2026-03-17
 > **Контекст**: Пользователи генерят проекты, но не видят аналитику (юзеры, ошибки, нагрузка). Нужен ЛК + стандартизация логов в service-template.
 > **Связано с**: [server-health-monitoring.md](server-health-monitoring.md) — инфра-мониторинг (отдельный brainstorm)
-> **Status**: draft
+> **Status**: done (prerequisites delivered, ЛК продолжен в [user-dashboard-lk.md](user-dashboard-lk.md))
 
 ---
 

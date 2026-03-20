@@ -12,4 +12,12 @@
         reverse_proxy registry:5000
     }
 
+    handle /loki/* {
+        basic_auth {
+            {$LOKI_PUSH_USER} {$LOKI_PUSH_PASSWORD_HASH}
+        }
+        uri strip_prefix /loki
+        reverse_proxy loki:3100
+    }
+
 }

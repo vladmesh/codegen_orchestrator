@@ -49,6 +49,13 @@ backup_schedule: "0 3 * * *"  # Daily at 3 AM
 monitoring_enabled: true
 node_exporter_port: 9100
 
+# Loki log shipping — Promtail on prod servers pushes to orchestrator Loki
+# orchestrator_hostname must match ORCHESTRATOR_HOSTNAME in orchestrator .env
+loki_push_url: "https://{{ orchestrator_hostname }}/loki"
+loki_push_user: "loki"
+# Encrypt with: ansible-vault encrypt_string 'your_password' --name 'loki_push_password'
+loki_push_password: "change_me_in_production"
+
 # GitHub settings for service deployment
 # Generate PAT at https://github.com/settings/tokens with 'repo' and 'read:packages' scopes
 # Encrypt with: ansible-vault encrypt_string 'ghp_xxx' --name 'github_token'

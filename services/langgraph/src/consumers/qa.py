@@ -17,8 +17,8 @@ from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
-from ._base import start_worker
-from ._qa_runner import QAResult, run_qa_on_server
+from ._base import run_queue_worker
+from ._qa_runner import QAResult, credential_refresh_loop, run_qa_on_server
 
 logger = structlog.get_logger(__name__)
 
@@ -261,13 +261,39 @@ async def _update_run(
 
 
 def main():
-    """Entry point for running as module."""
-    start_worker(
-        service_name="qa-worker",
-        queue=QA_QUEUE,
-        process_fn=process_qa_job,
-        group=QA_GROUP,
-    )
+    """Entry point for running as module.
+
+    Runs the queue consumer and credential refresh loop concurrently.
+    The refresh loop keeps OAuth tokens fresh on all managed servers,
+    preventing token expiry between QA runs.
+    """
+    import asyncio
+    import signal
+
+    from ._base import _handle_shutdown
+
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
+
+    async def _run():
+        refresh_task = asyncio.create_task(
+            credential_refresh_loop(),
+            name="credential_refresh",
+        )
+        worker_task = asyncio.create_task(
+            run_queue_worker("qa-worker", QA_QUEUE, process_qa_job, group=QA_GROUP),
+            name="qa_consumer",
+        )
+        done, pending = await asyncio.wait(
+            [refresh_task, worker_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        for task in done:
+            task.result()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

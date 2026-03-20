@@ -770,7 +770,7 @@ class TestPollMergedPRs:
         from src.tasks.task_dispatcher import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
-            _story(id="story-1", project_id=PROJ_ID, status="pr_review")
+            _story(id="story-1", project_id=PROJ_ID, status="pr_review", pr_number=42)
         ]
         api_client.get_primary_repository.return_value = _repo(
             id="repo-1",
@@ -779,19 +779,17 @@ class TestPollMergedPRs:
         )
         # No completed stories — first deploy
         api_client.get_stories_by_project.return_value = [
-            _story(id="story-1", project_id=PROJ_ID, status="pr_review"),
+            _story(id="story-1", project_id=PROJ_ID, status="pr_review", pr_number=42),
         ]
         api_client.transition_story.return_value = {}
         api_client.create_run.return_value = {}
 
         mock_github = AsyncMock()
-        mock_github.list_pull_requests.return_value = [
-            {
-                "number": 42,
-                "merged_at": "2026-03-16T12:00:00Z",
-                "head": {"sha": "abc123"},
-            }
-        ]
+        mock_github.get_pull_request.return_value = {
+            "number": 42,
+            "merged_at": "2026-03-16T12:00:00Z",
+            "head": {"sha": "abc123"},
+        }
 
         with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
             result = await poll_merged_prs(api_client, redis_client)
@@ -815,7 +813,7 @@ class TestPollMergedPRs:
         from src.tasks.task_dispatcher import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
-            _story(id="story-2", project_id=PROJ_ID, status="pr_review")
+            _story(id="story-2", project_id=PROJ_ID, status="pr_review", pr_number=43)
         ]
         api_client.get_primary_repository.return_value = _repo(
             id="repo-1",
@@ -825,19 +823,17 @@ class TestPollMergedPRs:
         # Has a previously completed story
         api_client.get_stories_by_project.return_value = [
             _story(id="story-1", project_id=PROJ_ID, status="completed"),
-            _story(id="story-2", project_id=PROJ_ID, status="pr_review"),
+            _story(id="story-2", project_id=PROJ_ID, status="pr_review", pr_number=43),
         ]
         api_client.transition_story.return_value = {}
         api_client.create_run.return_value = {}
 
         mock_github = AsyncMock()
-        mock_github.list_pull_requests.return_value = [
-            {
-                "number": 43,
-                "merged_at": "2026-03-16T13:00:00Z",
-                "head": {"sha": "def456"},
-            }
-        ]
+        mock_github.get_pull_request.return_value = {
+            "number": 43,
+            "merged_at": "2026-03-16T13:00:00Z",
+            "head": {"sha": "def456"},
+        }
 
         with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
             result = await poll_merged_prs(api_client, redis_client)
@@ -848,13 +844,13 @@ class TestPollMergedPRs:
 
     @pytest.mark.asyncio
     async def test_no_action_when_pr_not_merged(self, api_client, redis_client):
-        """Story in pr_review with closed but not merged PR -> no action."""
+        """Story in pr_review with open (not merged) PR -> no action."""
         from unittest.mock import patch
 
         from src.tasks.task_dispatcher import poll_merged_prs
 
         api_client.get_stories_by_status.return_value = [
-            _story(id="story-1", project_id=PROJ_ID, status="pr_review")
+            _story(id="story-1", project_id=PROJ_ID, status="pr_review", pr_number=42)
         ]
         api_client.get_primary_repository.return_value = _repo(
             id="repo-1",
@@ -863,9 +859,11 @@ class TestPollMergedPRs:
         )
 
         mock_github = AsyncMock()
-        mock_github.list_pull_requests.return_value = [
-            {"number": 42, "merged_at": None, "head": {"sha": "abc123"}}
-        ]
+        mock_github.get_pull_request.return_value = {
+            "number": 42,
+            "merged_at": None,
+            "head": {"sha": "abc123"},
+        }
 
         with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):
             result = await poll_merged_prs(api_client, redis_client)
@@ -893,8 +891,8 @@ class TestPollMergedPRs:
 
         proj2_id = "00000000-0000-0000-0000-000000000002"
         api_client.get_stories_by_status.return_value = [
-            _story(id="story-1", project_id=PROJ_ID, status="pr_review"),
-            _story(id="story-2", project_id=proj2_id, status="pr_review"),
+            _story(id="story-1", project_id=PROJ_ID, status="pr_review", pr_number=9),
+            _story(id="story-2", project_id=proj2_id, status="pr_review", pr_number=10),
         ]
         api_client.get_primary_repository.side_effect = [
             _repo(
@@ -910,15 +908,15 @@ class TestPollMergedPRs:
         ]
         # First story for this project → action=create
         api_client.get_stories_by_project.return_value = [
-            _story(id="story-2", project_id=proj2_id, status="pr_review"),
+            _story(id="story-2", project_id=proj2_id, status="pr_review", pr_number=10),
         ]
         api_client.transition_story.return_value = {}
         api_client.create_run.return_value = {}
 
         mock_github = AsyncMock()
-        mock_github.list_pull_requests.side_effect = [
+        mock_github.get_pull_request.side_effect = [
             Exception("GitHub API error"),
-            [{"number": 10, "merged_at": "2026-03-16T12:00:00Z", "head": {"sha": "def456"}}],
+            {"number": 10, "merged_at": "2026-03-16T12:00:00Z", "head": {"sha": "def456"}},
         ]
 
         with patch("src.tasks.pr_poller.GitHubAppClient", return_value=mock_github):

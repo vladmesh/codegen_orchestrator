@@ -84,6 +84,7 @@ class StoryDTO(TimestampedDTO):
     blocked_by_story_id: str | None = None
     created_by: str
     user_report: str | None = None
+    pr_number: int | None = None
 
 
 # --- Request DTOs ---

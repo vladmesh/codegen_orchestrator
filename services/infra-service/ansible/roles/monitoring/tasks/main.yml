@@ -22,7 +22,15 @@
     proto: tcp
   when: monitoring_enabled and orchestrator_ip is defined
 
-- name: Create node_exporter and cadvisor docker-compose file
+- name: Deploy Promtail configuration
+  template:
+    src: promtail.yml.j2
+    dest: /opt/monitoring/promtail.yml
+    mode: '0644'
+  when: monitoring_enabled and loki_push_url is defined
+  notify: restart monitoring
+
+- name: Create monitoring docker-compose file
   copy:
     dest: /opt/monitoring/docker-compose.yml
     content: |
@@ -57,6 +65,16 @@
             - /sys:/sys:ro
             - /var/lib/docker/:/var/lib/docker:ro
             - /dev/disk/:/dev/disk:ro
+
+        promtail:
+          image: grafana/promtail:3.4
+          container_name: promtail
+          restart: unless-stopped
+          command: -config.file=/etc/promtail/promtail.yml -log.format=json
+          volumes:
+            - /opt/monitoring/promtail.yml:/etc/promtail/promtail.yml:ro
+            - /var/lib/docker/containers:/var/lib/docker/containers:ro
+            - /var/run/docker.sock:/var/run/docker.sock:ro
     mode: '0644'
   when: monitoring_enabled
   notify: restart monitoring

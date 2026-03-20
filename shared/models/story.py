@@ -33,3 +33,4 @@ class Story(Base):
     )
     created_by: Mapped[str] = mapped_column(String(50), default="system")
     user_report: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)

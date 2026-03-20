@@ -1,0 +1,54 @@
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: {{ loki_push_url }}/loki/api/v1/push
+    basic_auth:
+      username: {{ loki_push_user }}
+      password: {{ loki_push_password }}
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      # Project containers deployed by orchestrator
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+        filters:
+          - name: label
+            values: ["com.codegen.project_id"]
+
+    relabel_configs:
+      - replacement: docker
+        target_label: job
+      # Project ID — primary grouping label
+      - source_labels: ['__meta_docker_container_label_com_codegen_project_id']
+        target_label: project_id
+      # Compose service name
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: compose_service
+      # Server hostname for multi-server disambiguation
+      - replacement: {{ inventory_hostname }}
+        target_label: server
+
+    pipeline_stages:
+      # Parse Docker JSON log wrapper
+      - docker: {}
+
+      # Extract structured fields from JSON logs
+      - json:
+          expressions:
+            service: service
+            level: level
+
+      # Normalize "warn" → "warning"
+      - replace:
+          expression: '(^warn$)'
+          source: level
+          replace: warning
+
+      - labels:
+          service:
+          level:
