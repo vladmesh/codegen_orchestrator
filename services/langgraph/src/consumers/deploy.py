@@ -11,6 +11,7 @@ from __future__ import annotations
 import structlog
 
 from shared.config_store import ConfigStore
+from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployOutcome
@@ -153,6 +154,20 @@ async def _handle_lifecycle_action(
     if lifecycle_result.get("error"):
         run_patch["error_message"] = lifecycle_result["error"]
     await api_client.patch(f"runs/{task_id}", json=run_patch)
+
+    # Update application status on success
+    if lifecycle_result["status"] == "success":
+        app_id = next(iter(allocated_resources.values()))["application_id"]
+        target_status = (
+            ApplicationStatus.NOT_DEPLOYED
+            if msg.action == DeployAction.UNDEPLOY
+            else ApplicationStatus.STOPPED
+        )
+        await api_client.patch(
+            f"applications/{app_id}",
+            json={"status": target_status.value},
+        )
+
     return lifecycle_result
 
 

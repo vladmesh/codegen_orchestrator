@@ -50,11 +50,17 @@ async def process_lifecycle_action(
         }
 
     service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
+    compose_cmd = (
+        f"cd {service_dir}/infra && "
+        f"docker compose --env-file ../.env -f compose.base.yml -f compose.prod.yml"
+    )
 
     if action == DeployAction.STOP:
-        cmd = f"cd {service_dir} && docker compose stop"
+        cmd = f"{compose_cmd} stop"
     elif action == DeployAction.UNDEPLOY:
-        cmd = f"cd {service_dir} && docker compose down -v && cd / && rm -rf {service_dir}"
+        # compose down first, rm -rf only if down succeeds.
+        # If down fails — keep directory so retry can work.
+        cmd = f"{compose_cmd} down -v && rm -rf {service_dir}"
     else:
         raise ValueError(f"Unexpected lifecycle action: {action}")
 

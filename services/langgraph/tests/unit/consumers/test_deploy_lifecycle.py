@@ -68,6 +68,7 @@ class TestDeployLifecycleStop:
                         "server_ip": "1.2.3.4",
                         "server_handle": "vps-1",
                         "port": 8080,
+                        "application_id": 1,
                     }
                 },
             ):
@@ -81,9 +82,13 @@ class TestDeployLifecycleStop:
                 result = await process_deploy_job(_make_job_data(action="stop"), mock_redis)
 
             assert result["status"] == "success"
-            # Verify SSH command includes docker compose stop
+            # Verify SSH command runs compose from infra/ with correct flags
             ssh_cmd = mock_conn.run.call_args[0][0]
-            assert "docker compose stop" in ssh_cmd
+            assert "/infra" in ssh_cmd
+            assert "--env-file ../.env" in ssh_cmd
+            assert "compose.base.yml" in ssh_cmd
+            assert "compose.prod.yml" in ssh_cmd
+            assert "stop" in ssh_cmd
 
     @pytest.mark.asyncio
     async def test_stop_does_not_run_devops_subgraph(self, mock_redis):
@@ -106,6 +111,7 @@ class TestDeployLifecycleStop:
                         "server_ip": "1.2.3.4",
                         "server_handle": "vps-1",
                         "port": 8080,
+                        "application_id": 1,
                     }
                 },
             ),
@@ -150,6 +156,7 @@ class TestDeployLifecycleUndeploy:
                         "server_ip": "1.2.3.4",
                         "server_handle": "vps-1",
                         "port": 8080,
+                        "application_id": 1,
                     }
                 },
             ),
@@ -172,7 +179,12 @@ class TestDeployLifecycleUndeploy:
 
         assert result["status"] == "success"
         ssh_cmd = mock_conn.run.call_args[0][0]
-        assert "docker compose down" in ssh_cmd
+        assert "/infra" in ssh_cmd
+        assert "--env-file ../.env" in ssh_cmd
+        assert "compose.base.yml" in ssh_cmd
+        assert "compose.prod.yml" in ssh_cmd
+        assert "down -v" in ssh_cmd
+        assert "rm -rf /opt/services/" in ssh_cmd
 
 
 class TestDeployLifecycleSSHFailure:
@@ -193,6 +205,7 @@ class TestDeployLifecycleSSHFailure:
                         "server_ip": "1.2.3.4",
                         "server_handle": "vps-1",
                         "port": 8080,
+                        "application_id": 1,
                     }
                 },
             ),
