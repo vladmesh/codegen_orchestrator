@@ -5,6 +5,7 @@
 ## 2026-03-20
 
 ### Added
+- **Add com.codegen.project_id label to deployed containers** (#1032): Deployer injects `CODEGEN_PROJECT_ID` into the deployed `.env`. service-template `compose.prod.yml` adds `com.codegen.project_id` Docker label to all prod services. Promtail on prod servers (from #1031) discovers containers by this label and extracts `project_id` as a Loki label for per-project log filtering.
 - **Promtail on prod servers + expose Loki** (#1031): Expose Loki via Caddy `/loki/*` with Basic Auth for external Promtail push. New Promtail Ansible template scrapes Docker containers by `com.codegen.project_id` label and ships logs to orchestrator over HTTPS. Added Promtail service to monitoring role docker-compose. Pass `orchestrator_hostname` through AnsibleRunner extra-vars. New env vars: `LOKI_PUSH_USER`, `LOKI_PUSH_PASSWORD`, `LOKI_PUSH_PASSWORD_HASH`.
 
 ## 2026-03-19

@@ -5,6 +5,7 @@ Imports are lazy to avoid triggering Settings validation at import time
 """
 
 __all__ = [
+    "analytics_aggregator_worker",
     "sync_projects_worker",
     "sync_servers_worker",
     "health_check_worker",
@@ -17,6 +18,7 @@ __all__ = [
 
 def __getattr__(name: str):
     _imports = {
+        "analytics_aggregator_worker": ".analytics_aggregator",
         "sync_projects_worker": ".github_sync",
         "health_check_worker": ".health_checker",
         "process_provisioner_result": ".provisioner_result_listener",

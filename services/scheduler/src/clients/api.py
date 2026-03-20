@@ -363,6 +363,69 @@ class SchedulerAPIClient:
                 return None
             raise
 
+    # --- Analytics ---
+
+    async def upsert_analytics_hourly(self, data: dict) -> dict:
+        """Upsert an hourly analytics row."""
+        resp = await self._request("POST", "analytics/hourly", json=data)
+        return resp.json()
+
+    async def upsert_analytics_daily(self, data: dict) -> dict:
+        """Upsert a daily analytics row."""
+        resp = await self._request("POST", "analytics/daily", json=data)
+        return resp.json()
+
+    async def upsert_known_users(self, project_id: str, users: list[dict]) -> dict:
+        """Batch upsert known users for a project."""
+        resp = await self._request(
+            "POST",
+            "analytics/known-users",
+            json={"project_id": project_id, "users": users},
+        )
+        return resp.json()
+
+    async def get_known_users(self, project_id: str) -> list[dict]:
+        """Get known users for a project."""
+        resp = await self._request(
+            "GET",
+            "analytics/known-users",
+            params={"project_id": project_id},
+        )
+        return resp.json()
+
+    async def get_analytics_hourly(
+        self,
+        project_id: str,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> list[dict]:
+        """Get hourly analytics for a project."""
+        params: dict[str, str] = {"project_id": project_id}
+        if start:
+            params["start"] = start
+        if end:
+            params["end"] = end
+        resp = await self._request("GET", "analytics/hourly", params=params)
+        return resp.json()
+
+    async def delete_old_hourly(self, days: int) -> dict:
+        """Delete hourly analytics older than N days."""
+        resp = await self._request(
+            "DELETE",
+            "analytics/hourly",
+            params={"older_than_days": days},
+        )
+        return resp.json()
+
+    async def delete_old_daily(self, days: int) -> dict:
+        """Delete daily analytics older than N days."""
+        resp = await self._request(
+            "DELETE",
+            "analytics/daily",
+            params={"older_than_days": days},
+        )
+        return resp.json()
+
     async def close(self) -> None:
         if self._client is not None:
             await self._client.aclose()

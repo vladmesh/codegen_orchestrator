@@ -1,6 +1,9 @@
 """Database models package."""
 
 from .agent_config import AgentConfig
+from .analytics_daily import AnalyticsDaily
+from .analytics_hourly import AnalyticsHourly
+from .analytics_known_users import AnalyticsKnownUsers
 from .api_key import APIKey
 from .application import Application
 from .application_health_history import ApplicationHealthHistory
@@ -27,6 +30,9 @@ from .user import User
 
 __all__ = [
     "AgentConfig",
+    "AnalyticsDaily",
+    "AnalyticsHourly",
+    "AnalyticsKnownUsers",
     "Application",
     "ApplicationHealthHistory",
     "Base",

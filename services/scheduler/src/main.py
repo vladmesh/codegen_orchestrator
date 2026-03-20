@@ -18,6 +18,7 @@ from shared.log_config import setup_logging
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from shared.redis_client import RedisStreamClient
 
+from .tasks.analytics_aggregator import analytics_aggregator_worker
 from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker
 from .tasks.provisioner_result_listener import process_provisioner_result
@@ -102,6 +103,7 @@ async def main():
             "rag_summarizer",
             "provisioner_results",
             "task_dispatcher",
+            "analytics_aggregator",
         ],
     )
 
@@ -113,6 +115,7 @@ async def main():
         asyncio.create_task(rag_summarizer_worker(), name="rag_summarizer"),
         asyncio.create_task(provisioner_results_worker(), name="provisioner_results"),
         asyncio.create_task(task_dispatcher_loop(), name="task_dispatcher"),
+        asyncio.create_task(analytics_aggregator_worker(), name="analytics_aggregator"),
     ]
 
     try:
