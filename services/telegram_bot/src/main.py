@@ -14,7 +14,7 @@ import uuid
 import httpx
 import redis.asyncio as redis_lib
 import structlog
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -50,6 +50,14 @@ logger = structlog.get_logger()
 _provisioner_notifier_task: asyncio.Task | None = None
 _proactive_listener_task: asyncio.Task | None = None
 _stream_client: RedisStreamClient | None = None
+
+
+def get_stream_client() -> RedisStreamClient:
+    """Get the global Redis stream client. Raises if not initialized."""
+    if _stream_client is None:
+        raise RuntimeError("Redis client not initialized")
+    return _stream_client
+
 
 # PO response settings
 PO_RESPONSE_TIMEOUT_S = 60
@@ -90,6 +98,46 @@ async def menu(update: Update, context) -> None:
     await update.message.reply_text(
         "🏠 <b>Главное меню</b>\n\nВыберите действие:",
         reply_markup=main_menu_keyboard(is_admin=user_is_admin),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def _generate_dashboard_url(telegram_id: int) -> str | None:
+    """Generate one-time dashboard token and return URL.
+
+    Returns None if user has no projects.
+    """
+    global _stream_client
+
+    if _stream_client is None:
+        raise RuntimeError("Redis client not initialized")
+
+    # Check user has projects
+    projects = await api_client.get_json("/projects", headers={"X-Telegram-ID": str(telegram_id)})
+    if not projects:
+        return None
+
+    # Generate token, store in Redis with 5min TTL
+    token = str(uuid.uuid4())
+    await _stream_client.redis.set(f"lk_token:{token}", str(telegram_id), ex=300)
+
+    settings = get_settings()
+    return f"{settings.lk_domain}/auth?token={token}"
+
+
+async def dashboard(update: Update, context) -> None:
+    """Handle /dashboard command — generate one-time token and send dashboard URL."""
+    telegram_id = update.effective_user.id
+
+    url = await _generate_dashboard_url(telegram_id)
+    if url is None:
+        await update.message.reply_text("У вас пока нет проектов.")
+        return
+
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📊 Открыть дашборд", url=url)]])
+    await update.message.reply_text(
+        "Нажмите кнопку, чтобы открыть дашборд.\nСсылка действительна 5 минут.",
+        reply_markup=keyboard,
         parse_mode=ParseMode.HTML,
     )
 
@@ -463,6 +511,7 @@ def main() -> None:
     # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CommandHandler("dashboard", dashboard))
 
     # Global Auth Middleware (runs first for everything else)
     app.add_handler(MessageHandler(filters.ALL, lambda u, c: auth_middleware(u, c)), group=-1)

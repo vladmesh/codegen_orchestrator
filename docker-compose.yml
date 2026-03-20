@@ -234,6 +234,7 @@ services:
       PYTHONPYCACHEPREFIX: /tmp/pycache
       REDIS_URL: redis://redis:6379
       DEFAULT_AGENT_TYPE: ${DEFAULT_AGENT_TYPE:-claude}
+      LK_DOMAIN: ${LK_DOMAIN}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: telegram-bot
     volumes:

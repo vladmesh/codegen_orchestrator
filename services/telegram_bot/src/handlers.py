@@ -5,13 +5,15 @@ Handles direct API calls without going through LangGraph/LLM.
 
 from http import HTTPStatus
 import re
+import uuid
 
 import httpx
 import structlog
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from .clients.api import api_client
+from .config import get_settings
 from .keyboards import (
     ACTION_ADD_USER,
     ACTION_BACK,
@@ -21,6 +23,7 @@ from .keyboards import (
     ACTION_MAINTENANCE,
     ACTION_NEW,
     PREFIX_ADMIN,
+    PREFIX_DASHBOARD,
     PREFIX_MENU,
     PREFIX_PROJECT,
     PREFIX_PROJECTS,
@@ -36,7 +39,11 @@ from .middleware import is_admin
 logger = structlog.get_logger()
 
 
-# ... imports ...
+def _get_stream_client():
+    """Get Redis stream client from main module (lazy import to avoid circular)."""
+    from .main import get_stream_client
+
+    return get_stream_client()
 
 
 def escape_markdown(text: str) -> str:
@@ -133,7 +140,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     logger.info("callback_received", data=data, prefix=prefix, is_admin=user_is_admin)
 
     try:
-        if prefix == PREFIX_MENU:
+        if prefix == PREFIX_DASHBOARD:
+            await _handle_dashboard(query)
+        elif prefix == PREFIX_MENU:
             await _handle_menu(query, parts, user_is_admin)
         elif prefix == PREFIX_PROJECTS:
             await _handle_projects(query, parts)
@@ -152,6 +161,41 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=back_to_menu_keyboard(),
             parse_mode="MarkdownV2",
         )
+
+
+async def _handle_dashboard(query) -> None:
+    """Handle dashboard callback — generate token and send URL."""
+    telegram_id = query.from_user.id
+
+    # Check user has projects
+    projects = await _api_get("/projects", telegram_id=telegram_id)
+    if not projects:
+        await query.edit_message_text(
+            "📊 У вас пока нет проектов\\.",
+            reply_markup=back_to_menu_keyboard(),
+            parse_mode="MarkdownV2",
+        )
+        return
+
+    # Generate token, store in Redis
+    client = _get_stream_client()
+    token = str(uuid.uuid4())
+    await client.redis.set(f"lk_token:{token}", str(telegram_id), ex=300)
+
+    settings = get_settings()
+    url = f"{settings.lk_domain}/auth?token={token}"
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📊 Открыть дашборд", url=url)],
+            [InlineKeyboardButton("← Главное меню", callback_data=f"{PREFIX_MENU}:{ACTION_BACK}")],
+        ]
+    )
+    await query.edit_message_text(
+        "Нажмите кнопку, чтобы открыть дашборд\\.\nСсылка действительна 5 минут\\.",
+        reply_markup=keyboard,
+        parse_mode="MarkdownV2",
+    )
 
 
 async def _handle_menu(query, parts: list[str], user_is_admin: bool = False) -> None:

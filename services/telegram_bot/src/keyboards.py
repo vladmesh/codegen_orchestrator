@@ -17,6 +17,9 @@ ACTION_DEPLOY = "deploy"
 ACTION_MAINTENANCE = "maintenance"
 ACTION_ADD_USER = "add_user"
 
+# Dashboard (all users)
+PREFIX_DASHBOARD = "dashboard"
+
 # Admin prefix
 PREFIX_ADMIN = "admin"
 
@@ -34,6 +37,7 @@ def main_menu_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
             )
         ],
         [InlineKeyboardButton("➕ Новый проект", callback_data=f"{PREFIX_PROJECTS}:{ACTION_NEW}")],
+        [InlineKeyboardButton("📊 Мой дашборд", callback_data=PREFIX_DASHBOARD)],
     ]
 
     # Admin-only buttons

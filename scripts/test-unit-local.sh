@@ -39,6 +39,7 @@ CLEAN_ENV=(
     REGISTRY_USER="test"
     REGISTRY_PASSWORD="test"
     WORKER_MANAGER_URL="http://localhost:8001"
+    LK_DOMAIN="https://lk.test.example.com"
 )
 
 # --- Serial mode (original behavior, verbose) ---

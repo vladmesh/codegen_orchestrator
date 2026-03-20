@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # Worker configuration
     default_agent_type: str = default_agent_type_field()
 
+    # LK (dashboard)
+    lk_domain: str = Field(alias="LK_DOMAIN")
+
     # Access Control
     admin_telegram_ids: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
 
