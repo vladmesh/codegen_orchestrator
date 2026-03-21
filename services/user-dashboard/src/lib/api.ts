@@ -1,6 +1,8 @@
 import { getToken, clearToken } from './auth'
 
-const BASE_URL = '/api'
+// In prod behind Caddy: /lk/api → Caddy strips /lk → nginx sees /api → proxies to API
+// In dev (localhost:3003): /api → nginx proxies directly to API
+const BASE_URL = `${import.meta.env.BASE_URL}api`
 
 class ApiError extends Error {
   status: number
@@ -27,7 +29,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
   if (response.status === 401) {
     clearToken()
-    window.location.href = '/auth'
+    window.location.href = `${import.meta.env.BASE_URL}auth`
     throw new ApiError(401, 'Unauthorized')
   }
 

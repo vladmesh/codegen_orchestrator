@@ -20,4 +20,13 @@
         reverse_proxy loki:3100
     }
 
+    handle /lk/* {
+        uri strip_prefix /lk
+        reverse_proxy user-dashboard:80
+    }
+
+    handle /lk {
+        redir /lk/ permanent
+    }
+
 }

@@ -364,6 +364,7 @@ services:
       - api
       - registry
       - loki
+      - user-dashboard
     networks:
       - internal
     restart: unless-stopped

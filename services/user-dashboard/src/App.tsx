@@ -7,7 +7,7 @@ import Layout from '@/components/Layout'
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/lk">
       <Routes>
         <Route path="/auth" element={<AuthPage />} />
         <Route element={<ProtectedRoute />}>

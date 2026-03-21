@@ -22,7 +22,7 @@ export default function AuthPage() {
       return
     }
 
-    fetch('/api/lk/auth/token', {
+    fetch(`${import.meta.env.BASE_URL}api/lk/auth/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
