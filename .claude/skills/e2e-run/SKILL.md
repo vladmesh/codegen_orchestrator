@@ -7,6 +7,9 @@ argument-hint: "<test> [--feature] [--no-cleanup] [--no-nuke]"
 
 # E2E Engineering Test Runner
 
+> **⚠️ Requires running orchestrator.** This skill tests the live pipeline and needs all services up.
+> Before starting, verify: `curl -sf http://localhost:8000/api/projects/ > /dev/null && echo "API OK" || echo "API NOT RUNNING — run 'make up' first"`
+
 Run one or more E2E tests end-to-end: create project via the full pipeline
 (scaffold → architect → engineering → deploy), monitor progress, verify results,
 collect reports, cleanup.

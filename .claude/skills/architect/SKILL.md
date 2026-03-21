@@ -7,6 +7,9 @@ argument-hint: "[story-ID]"
 
 # Architect — Story Decomposition into Tasks
 
+> **⚠️ Requires running orchestrator.** This skill reads stories and creates tasks via the API.
+> Before starting, verify: `curl -sf http://localhost:8000/api/projects/ > /dev/null && echo "API OK" || echo "API NOT RUNNING — run 'make up' first"`
+
 Takes a Story and decomposes it into actionable Tasks via the API.
 
 ## Key References

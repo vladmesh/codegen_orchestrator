@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Decompose a backlog task into a step-by-step plan. Writes plan to task via API.
+description: Decompose a backlog task into a step-by-step plan. Writes plan to docs/plans/.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "[#ID]"
 ---
@@ -10,63 +10,31 @@ argument-hint: "[#ID]"
 Decompose a task into actionable steps. Each step has clear Input, Output, and Test.
 
 ## Key References
-- [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — task lifecycle, API workflow, status transitions
-- [docs/CONTRACTS.md](docs/CONTRACTS.md) — shared DTOs and enums (understand available contracts when planning)
+- [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — task lifecycle
+- [docs/CONTRACTS.md](docs/CONTRACTS.md) — shared DTOs and enums
 
 ## Input
 
-- `#ID` — backlog tag to plan. If omitted, uses current in_dev task from API.
+- `#ID` — backlog tag to plan. If omitted, picks the first task from `docs/backlog.md` Queue.
 
 ## Steps
 
-### 0. Sync docs
-
-```bash
-make sync
-```
-
 ### 1. Load task
 
-Look up the task:
-- If `#ID` given: `curl -sf http://localhost:8000/api/tasks/by-tag/<ID>`
-- If no ID: `curl -sf "http://localhost:8000/api/tasks/?status=in_dev&limit=1"` and take first
-- If nothing found, try `status=backlog&limit=1`
-- If still nothing: STOP — "No current task. Create one via triage or API."
+Find the task in `docs/backlog.md`:
+- If `#ID` given: search for `### #<ID>` section
+- If no ID: take the first `### #` entry under `## Queue`
+- If nothing found: STOP — "No tasks in backlog."
+
+Extract: tag, title, priority, brief/description.
 
 ### 2. Load context
 
-Pull all available context for the task:
+**Source brainstorm**: search `docs/brainstorms/` for files related to this task. Check if the task's Brief mentions a brainstorm file or topic. Read any matching brainstorm for full context.
 
-**Description & plan**: read from the task response fields.
+**Related tasks**: scan `docs/backlog.md` for tasks with similar keywords or from the same brainstorm.
 
-**Source brainstorm**: check the `source_brainstorm_id` field in the task response.
-If it is not null, fetch the brainstorm:
-```bash
-BS_ID=$(echo "$WI" | jq -r '.source_brainstorm_id')
-if [ "$BS_ID" != "null" ]; then
-  curl -sf "http://localhost:8000/api/brainstorms/$BS_ID"
-fi
-```
-Read the brainstorm's `content` field — it contains the full thinking session with context, decisions, and action items.
-
-**Related code**: read all files mentioned in the description, plan, and brainstorm content.
-
-**Event history** (important for reopened tasks — understand what didn't work):
-```bash
-WI_ID=$(echo "$WI" | jq -r '.id')
-EVENTS=$(curl -sf "http://localhost:8000/api/tasks/$WI_ID/events" || echo "[]")
-EVENT_COUNT=$(echo "$EVENTS" | jq 'length')
-```
-If events exist, review them for: previous implementation attempts, CI failures, deviations, and reasons for reopen.
-
-**Sibling tasks** (if `source_brainstorm_id` is set — know context of related steps):
-```bash
-BS_ID=$(echo "$WI" | jq -r '.source_brainstorm_id')
-if [ "$BS_ID" != "null" ]; then
-  curl -sf "http://localhost:8000/api/tasks/?source_brainstorm_id=$BS_ID" \
-    | jq -r '.[] | select(.id != "'$WI_ID'") | "\(.title) [\(.status)] — \(.last_event // "no events")"'
-fi
-```
+**Related code**: read all files mentioned in the description and brainstorm content.
 
 ### 3. Research
 
@@ -76,9 +44,11 @@ Before writing the plan:
 
 ### 4. Write plan
 
-Write the plan as a text block in this format:
+Write the plan to `docs/plans/<tag>-<slug>.md`:
 
-```
+```markdown
+# #<tag> <Title>
+
 ## Context
 
 <Why this task exists. Link to brainstorms if relevant.>
@@ -108,33 +78,25 @@ Write the plan as a text block in this format:
 - Last step should be cleanup/documentation if needed
 - If a step requires changing `shared/contracts/` or DB schema — mark it explicitly: `⚠️ needs-approval`
 
-### 6. Save plan to API
+### 6. Update backlog
 
-Write the plan text to the task:
-
-```bash
-WI_ID="<task_id from step 1>"
-echo "$PLAN" | jq -Rs '{plan: .}' | curl -sf -X PATCH "http://localhost:8000/api/tasks/$WI_ID" \
-  -H "Content-Type: application/json" \
-  -d @- | jq '{id, title, status}'
+Update the task's entry in `docs/backlog.md` to note it has a plan:
+```
+- **Plan**: [docs/plans/<tag>-<slug>.md](docs/plans/<tag>-<slug>.md)
 ```
 
-### 7. Sync docs
-
-Run `make sync` to regenerate all read-only docs from API.
-
-### 8. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
+### 7. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
-git add docs/backlog.md
+git add docs/plans/<tag>-<slug>.md docs/backlog.md
 git commit -m "plan: #<ID> — <title>"
 ```
 
-### 9. Report
+### 8. Report
 
 > **STOP. Before writing the summary, complete the Skill Feedback step below. Do NOT skip it.**
 
-**9a. Skill Feedback** — review the session for problems with THIS skill:
+**8a. Skill Feedback** — review the session for problems with THIS skill:
 
 Did you hit any of these during this task?
 - A command or path in this skill was **wrong or outdated**
@@ -154,7 +116,7 @@ If yes — append an entry to `docs/skill-feedback.md` **right now**, before pro
 
 If nothing went wrong — skip the file write, but you must still explicitly confirm: "Skill feedback: none."
 
-**9b. Print summary**:
+**8b. Print summary**:
 - Task: #ID — Title
 - Steps: N total
 - Estimated scope: files to touch, tests to write

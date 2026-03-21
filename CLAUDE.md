@@ -9,7 +9,7 @@ Multi-agent orchestrator using LangGraph for automated code generation and deplo
 **Philosophy**: Autonomous operation (human checks in periodically), agents as graph nodes, non-linear agent calls, spec-first code generation.
 
 > [!IMPORTANT]
-> **READ FIRST**: [docs/DEV_PIPELINE.md](docs/DEV_PIPELINE.md) describes the data-driven task lifecycle. It is mandatory reading for understanding how to pick up and process tasks via the DB/API.
+> **Local-first development**: Task management is file-based. `docs/backlog.md` is the editable source of truth for tasks. Plans live in `docs/plans/`. Brainstorms in `docs/brainstorms/`. No API needed for `/brainstorm`, `/triage`, `/plan`, `/implement`, `/checkpoint`. Pipeline-testing skills (`/e2e-run`, `/escort`, `/architect`) still require `make up`.
 
 ## Commands
 
@@ -20,7 +20,7 @@ make down                  # Stop services
 make build                 # Build all Docker images
 make migrate               # Run database migrations
 make makemigrations MSG='description'  # Create new migration
-make backlog               # Generate backlog.md from Tasks API
+make backlog               # Generate backlog.md from Tasks API (only when API is running)
 make seed                  # Seed database with API keys
 make nuke                  # Full reset (volumes, rebuild, migrate, seed)
 make lock-deps             # Regenerate all requirements.lock files
@@ -116,7 +116,7 @@ When naming containers, variables, queues, or writing docs — check the glossar
 3. **Structured logging**: Use `structlog` everywhere, never `print()`.
 4. **Run tests before committing**: `make test-unit` at minimum.
 5. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the full flow (`/plan` → `/implement`).
-6. **Do not edit docs/backlog.md manually**: It is an auto-generated read-only view of the database. Use API or commands to manage tasks.
+6. **`docs/backlog.md` is the source of truth for tasks**: Edit it directly. Skills read/write it. No API needed.
 
 ### Testing Philosophy
 
@@ -209,8 +209,9 @@ def deploy_to_server(server_handle: str):
 - [GLOSSARY.md](docs/GLOSSARY.md) — project terminology
 - [playbooks/line2-engineering.md](docs/playbooks/line2-engineering.md) — manual test matrix
 
-### Auto-generated (do not edit manually)
-- [backlog.md](docs/backlog.md), [ROADMAP.md](docs/ROADMAP.md), [STATUS.md](docs/STATUS.md) — mirrors from DB via `make backlog`
+### Task management (editable)
+- [backlog.md](docs/backlog.md) — source of truth for tasks (Queue + Done sections)
+- [ROADMAP.md](docs/ROADMAP.md) — story milestones and progress
 - [CHANGELOG.md](docs/CHANGELOG.md) — release history
 
 ### Working files

@@ -21,25 +21,8 @@ Before writing:
 - Read relevant code, docs, and existing brainstorms
 - Check `docs/backlog.md` for related tasks
 - Check `docs/brainstorms/` for prior work on the topic
-- Check existing brainstorms via API: `curl -sf "http://localhost:8000/api/brainstorms/"`
 
-### 2. Create brainstorm in DB
-
-Resolve project UUID and register the brainstorm via API:
-```bash
-API="http://localhost:8000"
-PROJECT_ID=$(curl -sf "$API/api/projects/" | jq -r '.[0].id')
-BS=$(curl -sf -X POST "$API/api/brainstorms/" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "project_id": "'"$PROJECT_ID"'",
-    "title": "<Topic>",
-    "created_by": "claude"
-  }')
-BS_ID=$(echo "$BS" | jq -r '.id')
-```
-
-### 3. Create brainstorm document
+### 2. Create brainstorm document
 
 Write to `docs/brainstorms/<topic-slug>.md`:
 
@@ -78,17 +61,7 @@ Write to `docs/brainstorms/<topic-slug>.md`:
 - → backlog #XX (if task already exists)
 ```
 
-### 4. Sync content to DB
-
-After writing the document, update the brainstorm content in the DB:
-```bash
-CONTENT=$(cat docs/brainstorms/<topic-slug>.md | jq -Rs .)
-curl -sf -X PATCH "$API/api/brainstorms/$BS_ID" \
-  -H "Content-Type: application/json" \
-  -d "{\"content\": $CONTENT}"
-```
-
-### 5. Interactive discussion
+### 3. Interactive discussion
 
 **Your role is opponent, not cheerleader.** The user needs someone to stress-test their reasoning, not confirm it.
 
@@ -101,20 +74,19 @@ curl -sf -X PATCH "$API/api/brainstorms/$BS_ID" \
 
 After writing the initial document, present the key findings **and your honest critique** to the user.
 
-If the user wants to continue discussing — update the document with new insights (and sync to DB via PATCH).
+If the user wants to continue discussing — update the document with new insights.
 
 When the discussion is complete:
 1. Set `Status: done` in the markdown header
-2. Mark done in DB: `curl -sf -X POST "$API/api/brainstorms/$BS_ID/done" -H "Content-Type: application/json" -d '{"actor": "claude"}'`
 
-### 6. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
+### 4. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/brainstorms/<topic-slug>.md
 git commit -m "brainstorm: <topic>"
 ```
 
-### 7. Important
+### 5. Important
 
 - Brainstorms are for **thinking**, not deciding. The user makes final decisions.
 - Always end with concrete Action Items — a brainstorm without action items is wasted work.
@@ -124,7 +96,7 @@ git commit -m "brainstorm: <topic>"
 ### Memory Review (Mandatory)
 
 **Before generating your final response, review your memory for feedback:**
-Did you have to fix any unexpected errors, correct wrong commands, or guess missing information during this task? 
+Did you have to fix any unexpected errors, correct wrong commands, or guess missing information during this task?
 If yes, you **MUST** append an entry to `docs/skill-feedback.md` right now, following the format described in the **Self-Feedback** section below.
 
 ## Self-Feedback

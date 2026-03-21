@@ -3,6 +3,18 @@
 Entries are added by skills during execution when they encounter issues caused by the skill prompt itself.
 Processed by `/optimize` — obvious fixes applied automatically (with diff review), non-obvious items brought to user.
 
+## [implement] — 2026-03-21
+- **Type**: bug
+- **Quote**: "Step 0: git reset --hard origin/main (when ff-only fails)"
+- **Problem**: The protocol says to reset when ff-only fails, but this also nukes legitimate unpushed work from previous /implement sessions (doc commits + possibly feature commits that were never pushed as PRs). In this session, 8 commits from #1034 and #1035 were lost (recovered via reflog). The root cause: previous /implement runs committed features directly to main without creating PRs.
+- **Suggested fix**: Before `git reset --hard origin/main`, check if any of the ahead commits contain non-doc changes (i.e., not just `docs:` prefix). If so, warn the user and list the commits instead of auto-resetting. Also consider: the protocol should enforce that feature commits ALWAYS go through PR branches, never directly on main.
+
+## [implement] — 2026-03-21
+- **Type**: missing-info
+- **Quote**: "docker-compose.yml entry: user-dashboard service, port 3002"
+- **Problem**: Port 3002 is already used by Langfuse. The plan specified port 3002 but didn't check for conflicts. Had to change to 3003 at runtime.
+- **Suggested fix**: Plans for new docker-compose services should check existing port allocations in docker-compose.yml before specifying a port.
+
 ## [test-maintenance] — 2026-03-19
 - **Type**: infrastructure
 - **Problem**: First-run review of all tests + all code is extremely context-heavy. The skill says "if first run, review all test files" but doesn't suggest parallelizing by suite or prioritizing by staleness signals from git blame.

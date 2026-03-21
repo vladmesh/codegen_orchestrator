@@ -1,13 +1,8 @@
 # Backlog
 
-> [!WARNING]
-> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
-
-> **Updated**: 2026-03-20
-
 ## Queue (ordered by priority, first = next)
 
-### Fix noqa suppressions that mask real complexity
+### #1019 Fix noqa suppressions that mask real complexity
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
@@ -19,24 +14,24 @@
 - **Status**: backlog
 - **Brief**: Currently tg_bot uses PYTHONPATH=/app:/app/services/tg_bot/src (allowing relative imports) while backend and notifications_worker use PYTHONPATH=/app (requiring fully qualified imports like services.backend.src.module). This inconsistency causes coding agents to guess wrong import patterns, leadi...
 
-### debug test
+### #1020 debug test
 - **Priority**: CRITICAL
 - **Plan**: —
 - **Status**: backlog
 
-### Add TTL/cleanup for stale Redis queue messages
+### #1021 Add TTL/cleanup for stale Redis queue messages
 - **Priority**: CRITICAL
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Queue messages from failed/completed stories accumulate in architect:queue (and potentially other queues) with no expiry or cleanup mechanism. During the 2026-03-13 escort, 75 stale messages were found blocking a real story for hours.  Required: 1. Add periodic cleanup in scheduler: scan queue me...
 
-### API authorization: scope worker access, protect destructive endpoints
+### #1022 API authorization: scope worker access, protect destructive endpoints
 - **Priority**: CRITICAL
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
-### Refactor shared: eliminate orchestrator code from worker containers
+### #1023 Refactor shared: eliminate orchestrator code from worker containers
 - **Priority**: CRITICAL
 - **Plan**: —
 - **Status**: backlog
@@ -66,27 +61,27 @@
 - **Status**: backlog
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
 
-### Integrate Repository into production flows (webhook, scheduler, worker)
+### #1024 Integrate Repository into production flows (webhook, scheduler, worker)
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Подключить Repository модель в production pipeline. Сейчас webhook/scheduler/worker используют Project.repository_url и Project.github_repo_id напрямую.  1. webhooks.py: lookup через Repository.provider_repo_id вместо Project.github_repo_id 2. github_sync.py: создаёт Repository записи вместо обно...
 
-### Fix eager import chains in scaffolded projects
+### #1025 Fix eager import chains in scaffolded projects
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: __init__.py eagerly imports app/create_app, which triggers full import chain. Any broken import crashes everything including alembic. Fix: lazy imports or direct model import in env.py.
 
-### Auto-generate routers from domain specs
+### #1026 Auto-generate routers from domain specs
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Framework generates protocols and controller stubs but routers are manual. Router pattern is formulaic — generate stubs to reduce boilerplate and prevent spec drift.
 
-### Add predefined module to existing project (make add-module)
+### #1027 Add predefined module to existing project (make add-module)
 
 - **Priority**: LOW
 - **Plan**: —
@@ -111,21 +106,21 @@
 - **Status**: backlog
 - **Brief**: Применить SecretsCipher (Fernet) к API key values и SSH keys. TODO-комменты в `api_keys.py:36,72` и `servers.py:66`.
 
-### Unified handlers: error handling strategy
+### #1028 Unified handlers: error handling strategy
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Define error handling for event handlers: DLQ, error events, or retries with exponential backoff.
 
-### Auto-update __init__.py re-exports after generation
+### #1029 Auto-update __init__.py re-exports after generation
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: After adding new models, schemas/__init__.py etc must be manually updated. Generate these files or remove re-export pattern.
 
-### Context packer for agents (make context service=backend)
+### #1030 Context packer for agents (make context service=backend)
 
 - **Priority**: LOW
 - **Plan**: —
@@ -150,35 +145,35 @@
 - **Status**: backlog
 - **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task`...
 
-### Auto-fuzzing and contract testing (schemathesis)
+### #1031 Auto-fuzzing and contract testing (schemathesis)
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Integrate schemathesis into CI. Reads openapi.json, fuzzes running service with valid/invalid inputs. Auto-detect 500 errors without manual tests.
 
-### Extract type mappings into language-agnostic config
+### #1032 Extract type mappings into language-agnostic config
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Partially done: type_spec_to_python() centralized in spec/types.py. Remaining: unify all mappings (Python, TypeScript, OpenAPI) via single table/config. Extract to YAML/TOML for adding new languages without code.
 
-### Enum types in model field definitions
+### #1033 Enum types in model field definitions
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Support enum types in YAML specs. Generated Pydantic models would use Literal or Enum instead of plain strings.
 
-### CLI wrappers (my-framework init/sync/update)
+### #1034 CLI wrappers (my-framework init/sync/update)
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Wrap make commands into standalone CLI tool. Simplify usage for humans and agents.
 
-### Celery worker support
+### #1035 Celery worker support
 
 - **Priority**: LOW
 - **Plan**: —
@@ -191,70 +186,70 @@
 - **Status**: backlog
 - **Brief**: Пакет `duckduckgo_search` переименован в `ddgs`. Runtime warning в логах: `This package has been renamed to ddgs! Use pip install ddgs instead.` Заменить зависимость в `services/langgraph/pyproject.toml`, обновить импорт в `services/langgraph/src/po/tools.py`, перегенерировать lock-файл (`make lo...
 
-### Audit scaffold templates for best practices
+### #1036 Audit scaffold templates for best practices
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Review templates in .framework/framework/templates/scaffold/services/ to ensure they use latest patterns adopted by main services.
 
-### Unified handlers: transactional outbox pattern
+### #1037 Unified handlers: transactional outbox pattern
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Events published directly after DB writes. Consider transactional outbox to avoid dual write problem.
 
-### High-level architecture spec (connectivity graph)
+### #1038 High-level architecture spec (connectivity graph)
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Define service relationships in services.yml: access, exposes, consumes. Generate typed clients and network policies.
 
-### Spec-first observability (auto OpenTelemetry)
+### #1039 Spec-first observability (auto OpenTelemetry)
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Auto-embed traces and metrics into generated endpoints. Zero-config observability from spec definitions.
 
-### Make YAML specs fully language-agnostic
+### #1040 Make YAML specs fully language-agnostic
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Partially done: abstract types used. Remaining: replace list[string] shorthand with JSON Schema array+items for full language-agnosticity.
 
-### Spec-only module storage (long-term)
+### #1041 Spec-only module storage (long-term)
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Store only specs and minimal scaffolds, generate all business logic on project creation. Zero distinction between built-in and custom services.
 
-### Rust PoC: backend service on Axum
+### #1042 Rust PoC: backend service on Axum
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Proof of concept — Axum + SeaORM 2.0 + utoipa. Same API, same Docker, same compose as Python backend. Test how well AI agent handles Axum code generation.
 
-### Rust PoC: Telegram bot on teloxide
+### #1043 Rust PoC: Telegram bot on teloxide
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: PoC Telegram bot on teloxide as alternative to python-telegram-bot. Compare developer and agent experience.
 
-### Research Tera as Jinja2 replacement for codegen
+### #1044 Research Tera as Jinja2 replacement for codegen
 
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Tera is Rust Jinja2 analog with near-identical syntax. Evaluate how many current templates can be reused. If 90%+ compatible, migration cost is low.
 
-### Add Rust service type to services.yml
+### #1045 Add Rust service type to services.yml
 
 - **Priority**: LOW
 - **Plan**: —
@@ -267,7 +262,7 @@
 - **Status**: backlog
 - **Brief**: Create integration test compose (scheduler + langgraph + Redis) that verifies the cross-service story worker flow: dispatcher sends story_id in EngineeringMessage -> consumer reads it, spawns worker, stores in registry -> dispatcher cleanup on story complete removes worker.
 
-### Allocate ports only for modules that need host exposure
+### #1046 Allocate ports only for modules that need host exposure
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog

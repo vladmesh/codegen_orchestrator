@@ -11,6 +11,9 @@ description: >
 
 # Escort: User Accompaniment Through the Pipeline
 
+> **⚠️ Requires running orchestrator.** This skill monitors the live pipeline and needs all services up.
+> Before starting, verify: `curl -sf http://localhost:8000/api/projects/ > /dev/null && echo "API OK" || echo "API NOT RUNNING — run 'make up' first"`
+
 You are accompanying a real user's request through the entire orchestrator pipeline.
 Your job is to make sure they get their result — a deployed project or a working feature —
 and to document everything that happens along the way, good and bad.

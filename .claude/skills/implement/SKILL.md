@@ -1,6 +1,6 @@
 ---
 name: implement
-description: Implement the current task using TDD. Reads plan from API, creates git branch, updates CHANGELOG on completion. Main development skill.
+description: Implement the current task using TDD. Reads plan from docs/plans/, creates git branch, updates CHANGELOG on completion. Main development skill.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Agent, Skill
 argument-hint: "[#ID]"
 ---
@@ -15,12 +15,12 @@ The main development skill. Implements the current task (or a specific one) usin
 
 ## Input
 
-- No arguments: continue working on the current in_dev task, or try to unblock a blocked task, or auto-pick the highest-priority backlog task
-- `#ID` (e.g. `#8`): start that task (calls /start if needed)
+- No arguments: pick the first task from `docs/backlog.md` Queue (highest priority)
+- `#ID` (e.g. `#8`): start that specific task
 
 ## Protocol
 
-### 0. Sync git + docs
+### 0. Sync git
 
 Ensure local repo is fully synchronized with remote before starting any work:
 
@@ -40,133 +40,43 @@ git reset --hard origin/main
 
 After this step, `git status` should show clean working tree on main, up to date with origin.
 
-```bash
-make sync
-```
-
 ### 1. Load context
 
-Find the task to implement:
+Find the task in `docs/backlog.md`:
 
-**If `#ID` given:**
-```bash
-WI=$(curl -sf "http://localhost:8000/api/tasks/by-tag/<ID>")
-WI_ID=$(echo "$WI" | jq -r '.id')
-```
+**If `#ID` given:** search for `### #<ID>` in `docs/backlog.md`. Extract title, priority, brief.
 
-If task is not in_dev, start it:
-```bash
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/start" \
-  -H "Content-Type: application/json" \
-  -d '{"actor": "claude"}' || true
-```
+**If no argument:** take the first `### #` entry under `## Queue`.
 
-**If no argument — priority chain:**
+If nothing found — STOP: "No tasks in backlog. Create one via /brainstorm + /triage."
 
-**Step A: Check for in_dev task**
-```bash
-WI=$(curl -sf "http://localhost:8000/api/tasks/?status=in_dev&limit=1" | jq '.[0]')
-```
-
-**Step B: If no in_dev — check blocked tasks**
-```bash
-BLOCKED=$(curl -sf "http://localhost:8000/api/tasks/?status=blocked&limit=10" \
-  | jq 'sort_by(.priority)')
-```
-
-For each blocked task, check if its blocker is resolved:
-```bash
-for row in $(echo "$BLOCKED" | jq -c '.[]'); do
-  BLOCKER_ID=$(echo "$row" | jq -r '.blocked_by_task_id')
-  if [ "$BLOCKER_ID" != "null" ]; then
-    BLOCKER_STATUS=$(curl -sf "http://localhost:8000/api/tasks/$BLOCKER_ID" | jq -r '.status')
-    if [ "$BLOCKER_STATUS" = "done" ]; then
-      # Auto-unblock: transition blocked → in_dev, clear blocked_by_task_id
-      TASK_ID=$(echo "$row" | jq -r '.id')
-      curl -sf -X POST "http://localhost:8000/api/tasks/$TASK_ID/transition?to_status=in_dev" \
-        -H "Content-Type: application/json" \
-        -d '{"actor": "claude", "details": {"action": "auto_unblock", "blocker": "'"$BLOCKER_ID"'"}}'
-      curl -sf -X PATCH "http://localhost:8000/api/tasks/$TASK_ID" \
-        -H "Content-Type: application/json" \
-        -d '{"blocked_by_task_id": null}'
-      WI=$(curl -sf "http://localhost:8000/api/tasks/$TASK_ID")
-      break
-    fi
-  fi
-done
-```
-Print: "Auto-unblocked: **$TITLE** (blocker $BLOCKER_ID is done)"
-
-If no blocked tasks can be unblocked, proceed to Step C.
-
-**Step C: Auto-pick highest-priority backlog task**
-```bash
-WI=$(curl -sf "http://localhost:8000/api/tasks/?status=backlog&limit=50" \
-  | jq 'sort_by(.priority) | .[0]')
-```
-
-If still nothing — STOP: "No tasks in backlog. Create one via /triage or API."
-
-Start the picked task:
-```bash
-WI_ID=$(echo "$WI" | jq -r '.id')
-TITLE=$(echo "$WI" | jq -r '.title')
-```
-Print: "Auto-picked: **$TITLE** (priority $(echo "$WI" | jq -r '.priority'))"
-```bash
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/start" \
-  -H "Content-Type: application/json" \
-  -d '{"actor": "claude"}'
-```
-
-Save `WI_ID` from the response for use in event calls.
-
-**Load event history** (for resume/reopen context):
-```bash
-EVENTS=$(curl -sf "http://localhost:8000/api/tasks/$WI_ID/events" || echo "[]")
-EVENT_COUNT=$(echo "$EVENTS" | jq 'length')
-```
-If `EVENT_COUNT > 0`, print a summary of previous work:
-- Status transitions, completed steps, CI fixes, deviations
-- This helps understand where a previous session left off
-
-**Load sibling tasks** (if task came from a brainstorm):
-```bash
-BS_ID=$(echo "$WI" | jq -r '.source_brainstorm_id')
-if [ "$BS_ID" != "null" ]; then
-  SIBLINGS=$(curl -sf "http://localhost:8000/api/tasks/?source_brainstorm_id=$BS_ID")
-  echo "$SIBLINGS" | jq -r '.[] | select(.id != "'$WI_ID'") | "\(.title) — \(.last_event // "no events")"'
-fi
-```
+Update the task's status in `docs/backlog.md` to `in_dev`.
 
 ### 2. Assess complexity & ensure plan
 
-Check whether the task has a plan:
+Check if a plan file exists in `docs/plans/` matching the task tag:
 ```bash
-HAS_PLAN=$(echo "$WI" | jq -r 'if .plan and .plan != "" then "yes" else "no" end')
+ls docs/plans/<tag>-*.md 2>/dev/null
 ```
 
-**If plan exists** — proceed to step 3.
+**If plan exists** — read it. Proceed to step 3.
 
-**If no plan** — assess complexity from the description (and brainstorm if available):
+**If no plan** — assess complexity from the description:
 - **Simple task** (single file change, clear fix, < 3 files affected): proceed without a plan, use description as guide.
-- **Complex task** (multi-file, new feature, schema changes, unclear scope): auto-generate a plan by invoking /plan as a subagent:
+- **Complex task** (multi-file, new feature, schema changes, unclear scope): auto-generate a plan by invoking /plan:
 
 ```
-Use the Agent tool to run: "Run /plan for task $WI_ID. The task: <title>. Description: <description>"
+Use the Agent tool to run: "Run /plan for task #<tag>. The task: <title>. Description: <description>"
 ```
 
-After the subagent completes, re-fetch the task to get the saved plan:
-```bash
-WI=$(curl -sf "http://localhost:8000/api/tasks/$WI_ID")
-```
+After the subagent completes, read the plan file from `docs/plans/`.
 
 ### 3. Create git branch
 
 Create and switch to a working branch:
 ```bash
-TAG=$(echo "$WI" | jq -r '.title' | grep -oP '^\#\K\d+')
-SLUG=$(echo "$WI" | jq -r '.title' | sed 's/#[0-9]* //' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | head -c 40)
+TAG=<tag from step 1>
+SLUG=<slugified title>
 BRANCH="wi/${TAG}-${SLUG}"
 git checkout -b "$BRANCH" 2>/dev/null || git checkout "$BRANCH"
 ```
@@ -175,39 +85,18 @@ If already on a `wi/` branch for this task, stay on it.
 
 ### 4. Understand the task
 
-Read the task's `description` and `plan` fields from the API response.
+Read the plan file and task description.
 
-**Source brainstorm**: check the `source_brainstorm_id` field. If not null, fetch the brainstorm for additional context:
-```bash
-BS_ID=$(echo "$WI" | jq -r '.source_brainstorm_id')
-if [ "$BS_ID" != "null" ]; then
-  curl -sf "http://localhost:8000/api/brainstorms/$BS_ID" | jq -r '.content'
-fi
-```
-The brainstorm `content` contains the thinking session with decisions and context that informed this task.
+**Source brainstorm**: if the description or plan mentions a brainstorm, read it from `docs/brainstorms/` for additional context.
 
-**Plan**: if the `plan` field exists, parse the steps to get:
+**Plan steps**: parse the steps to get:
 - **Input**: what files/systems to read
 - **Output**: what should change
 - **Test**: what to test
 
-If no plan exists (simple task) — use the description (and brainstorm if available) and your judgment.
+If no plan exists (simple task) — use the description and your judgment.
 
 ### 5. TDD cycle (per step)
-
-**Before starting** — emit note event (best-effort):
-```bash
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
-  -H "Content-Type: application/json" \
-  -d '{"event_type": "note", "details": {"action": "step_start", "step": N, "title": "Step title"}, "actor": "claude"}' || true
-```
-
-**If deviating from the plan** (skipping a step, changing approach, adding unplanned work) — emit a deviation event:
-```bash
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
-  -H "Content-Type: application/json" \
-  -d '{"event_type": "comment", "details": {"action": "plan_deviation", "step": N, "reason": "<why>"}, "actor": "claude"}' || true
-```
 
 Follow Red -> Green -> Refactor. **Test behavior, not implementation** (see CLAUDE.md "Testing Philosophy"):
 
@@ -219,14 +108,6 @@ Follow Red -> Green -> Refactor. **Test behavior, not implementation** (see CLAU
 2. **Green**: Write minimal code to make tests pass. Run the test.
 3. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
 4. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
-
-**After the commit** — emit note event with commit SHA:
-```bash
-SHA=$(git rev-parse --short HEAD)
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
-  -H "Content-Type: application/json" \
-  -d "{\"event_type\": \"note\", \"details\": {\"action\": \"step_done\", \"step\": N, \"title\": \"Step title\", \"commit_sha\": \"$SHA\"}, \"actor\": \"claude\"}" || true
-```
 
 ### 6. Push + PR + CI
 
@@ -244,65 +125,36 @@ git push -u origin "$BRANCH"
 gh pr create --title "#$TAG — $TITLE" --body "Implements #$TAG"
 ```
 
-3. **Transition to in_ci**:
-```bash
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/transition?to_status=in_ci" \
-  -H "Content-Type: application/json" \
-  -d '{"actor": "claude"}' || true
-```
-
-4. **Poll CI on the PR** — every 60s, up to 15 min:
+3. **Poll CI on the PR** — every 60s, up to 15 min:
 ```bash
 gh run list --branch "$BRANCH" --limit 1 --json status,conclusion
 ```
 
-5. **CI red** — read logs via `gh run view --log-failed`:
-   - Fix the issue, commit, push, re-poll. Do NOT touch docs. After fixing, emit a CI-fix event:
-     ```bash
-     curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
-       -H "Content-Type: application/json" \
-       -d "{\"event_type\": \"note\", \"details\": {\"action\": \"ci_fix\", \"error\": \"<brief error>\", \"fix\": \"<what was fixed>\"}, \"actor\": \"claude\"}" || true
-     ```
+4. **CI red** — read logs via `gh run view --log-failed`:
+   - Fix the issue, commit, push, re-poll.
 
-6. **CI green** — proceed to step 7.
+5. **CI green** — proceed to step 7.
 
-While CI is running or red: NO changes to CHANGELOG.md or backlog generation.
+While CI is running or red: NO changes to CHANGELOG.md or backlog.
 
 ### 7. Testing (smoke or E2E)
 
-**Gate**: only enter when CI is green (or pre-existing failure documented).
+**Gate**: only enter when CI is green.
 
-1. **Transition to testing**:
-```bash
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/transition?to_status=testing" \
-  -H "Content-Type: application/json" \
-  -d '{"actor": "claude"}' || true
-```
-
-2. **Rebuild and restart services** (MANDATORY before any testing):
+1. **Rebuild and restart services** (MANDATORY before any testing):
 ```bash
 make rebuild
 ```
-This rebuilds images and restarts containers in one step (faster than `make build` + `make up` separately, better cache usage).
 
-3. **Check need_e2e flag**:
-```bash
-NEED_E2E=$(echo "$WI" | jq -r '.need_e2e')
-```
-
-**Simple tasks (need_e2e=false) — Smoke test:**
+2. **Smoke test**:
 - `make up` if stack is not running
 - Curl API endpoints affected by the change, verify responses
-- Check Redis streams if relevant (`docker compose exec redis redis-cli XLEN <stream>`)
+- Check Redis streams if relevant
 - Review structlog output: `docker compose logs --tail=50 <service>` — look for errors
 - Confirm no crashes, no unhandled exceptions
 
-**Complex tasks (need_e2e=true) — Full E2E:**
-- Run Agent tool with `/e2e-run <test> --no-nuke` in background
-- Wait for result
-
-4. **Test red** — fix, commit, push, re-poll CI (step 6.4), re-test.
-5. **Test green** — proceed to step 8.
+3. **Test red** — fix, commit, push, re-poll CI (step 6.3), re-test.
+4. **Test green** — proceed to step 8.
 
 ### 8. Merge + Complete
 
@@ -318,24 +170,16 @@ gh pr merge --squash --delete-branch
 git checkout main && git pull
 ```
 
-3. **Complete task via API**:
-```bash
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/complete" \
-  -H "Content-Type: application/json" \
-  -d '{"actor": "claude"}' || true
-```
+3. **Update task status** in `docs/backlog.md`:
+   - Remove the task's `### #<tag>` section from `## Queue`
+   - Add a line to `## Done` section: `- #<tag> <title> — <today's date>`
 
 4. **Update `docs/CHANGELOG.md`**:
 - Add entry under today's date
 - Use correct section: Added / Changed / Fixed / Removed
 - Reference backlog item ID
 
-5. **Sync docs**:
-```bash
-make sync
-```
-
-6. **Commit** doc updates on main (DO NOT push — doc-only commits stay local to avoid wasting CI minutes):
+5. **Commit** doc updates on main (DO NOT push — doc-only commits stay local to avoid wasting CI minutes):
 ```bash
 git add docs/CHANGELOG.md docs/backlog.md
 git commit -m "docs: complete #<ID> — <title>"
@@ -365,19 +209,12 @@ If yes — append an entry to `docs/skill-feedback.md` **right now**, before pro
 
 If nothing went wrong — skip the file write, but you must still explicitly confirm: "Skill feedback: none."
 
-**9b. Emit summary event**:
-```bash
-curl -sf -X POST "http://localhost:8000/api/tasks/$WI_ID/events" \
-  -H "Content-Type: application/json" \
-  -d '{"event_type": "comment", "details": {"action": "implementation_summary", "steps_completed": N, "total_steps": N, "deviations": [], "notes": "<brief summary>"}, "actor": "claude"}' || true
-```
-
-**9c. Print summary**:
+**9b. Print summary**:
 - Task: #ID — Title
 - Steps completed: N/N
 - Tests: X passed, Y added
 - Files changed: list
-- Next: suggest running `/e2e-run` if core pipeline was touched, or `/implement` to pick next task
+- Next: suggest running `/implement` to pick next task
 
 ## Important
 
