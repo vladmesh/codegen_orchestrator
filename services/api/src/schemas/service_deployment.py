@@ -43,6 +43,7 @@ class DeploymentRead(DeploymentBase, TimestampedDTO):
     result: str
     deployed_sha: str | None = None
     deployed_at: datetime
+    server_ip: str
 
 
 # Backward compat aliases

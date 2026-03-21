@@ -5,7 +5,7 @@ from enum import StrEnum
 import uuid
 
 from sqlalchemy import JSON, ForeignKey, Uuid
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from shared.contracts.dto.deployment import DeploymentResult
 
@@ -44,6 +44,9 @@ class Deployment(Base):
     )
     port: Mapped[int]
 
+    # Relationship for eager-loading server_ip
+    server: Mapped["Server"] = relationship(lazy="raise")  # noqa: F821
+
     # Deployment result — replaces old 'status' field
     result: Mapped[str] = mapped_column(default=DeploymentResult.PENDING.value, index=True)
 
@@ -55,6 +58,11 @@ class Deployment(Base):
 
     # Git SHA of the deployed commit
     deployed_sha: Mapped[str | None] = mapped_column(nullable=True)
+
+    @property
+    def server_ip(self) -> str:
+        """Resolve server IP from the loaded Server relationship."""
+        return self.server.public_ip
 
     def __repr__(self) -> str:
         return (

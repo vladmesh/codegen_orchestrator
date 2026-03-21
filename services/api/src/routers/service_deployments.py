@@ -5,6 +5,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from shared.models import Deployment
 
@@ -32,7 +33,7 @@ async def create_deployment(
     )
     db.add(deployment)
     await db.commit()
-    await db.refresh(deployment)
+    await db.refresh(deployment, attribute_names=["server"])
     return deployment
 
 
@@ -45,7 +46,7 @@ async def list_deployments(
     db: AsyncSession = Depends(get_async_session),
 ) -> list[Deployment]:
     """List all deployments with optional filtering."""
-    query = select(Deployment)
+    query = select(Deployment).options(joinedload(Deployment.server))
 
     if server_handle is not None:
         query = query.where(Deployment.server_handle == server_handle)
@@ -58,7 +59,7 @@ async def list_deployments(
 
     query = query.order_by(Deployment.deployed_at.desc())
     result_set = await db.execute(query)
-    return result_set.scalars().all()
+    return result_set.scalars().unique().all()
 
 
 @router.get("/{deployment_id}", response_model=DeploymentRead)
@@ -67,7 +68,13 @@ async def get_deployment(
     db: AsyncSession = Depends(get_async_session),
 ) -> Deployment:
     """Get deployment by ID."""
-    deployment = await db.get(Deployment, deployment_id)
+    query = (
+        select(Deployment)
+        .options(joinedload(Deployment.server))
+        .where(Deployment.id == deployment_id)
+    )
+    result = await db.execute(query)
+    deployment = result.scalar_one_or_none()
     if not deployment:
         raise HTTPException(status_code=404, detail="Deployment not found")
     return deployment
@@ -80,7 +87,13 @@ async def update_deployment(
     db: AsyncSession = Depends(get_async_session),
 ) -> Deployment:
     """Update deployment result and info."""
-    deployment = await db.get(Deployment, deployment_id)
+    query = (
+        select(Deployment)
+        .options(joinedload(Deployment.server))
+        .where(Deployment.id == deployment_id)
+    )
+    result = await db.execute(query)
+    deployment = result.scalar_one_or_none()
     if not deployment:
         raise HTTPException(status_code=404, detail="Deployment not found")
 
@@ -92,7 +105,7 @@ async def update_deployment(
         deployment.deployed_sha = deployment_update.deployed_sha
 
     await db.commit()
-    await db.refresh(deployment)
+    await db.refresh(deployment, attribute_names=["server"])
     return deployment
 
 
