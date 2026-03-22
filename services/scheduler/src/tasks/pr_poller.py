@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-_COMPLETED_STATUSES = {StoryStatus.COMPLETED.value, "completed"}
+_COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
 
 
 async def poll_merged_prs(

@@ -7,12 +7,12 @@
 - Dead code: 1 issue
 - Code smells: 8 issues
 - Security: 0 issues
-- Contract violations: 12 issues
+- Contract violations: 12 issues (6 fixed)
 - Missing DTOs & schema gaps: 14 issues
 - Convention violations: 9 issues
 - Test gaps: 0 issues
 
-**Total: 44 issues**
+**Total: 44 issues (6 fixed)**
 
 ## CI Health
 
@@ -45,15 +45,15 @@ No hardcoded secrets, tokens, or passwords found. `subprocess` calls in `infra-s
 
 | File:Line | Violation | Should be | Severity |
 |-----------|-----------|-----------|----------|
-| `services/langgraph/src/consumers/story_context.py:51` | `status == "done"` hardcoded | `TaskStatus.DONE` (or `.value`) | high |
+| ~~`services/langgraph/src/consumers/story_context.py:51`~~ | ~~`status == "done"` hardcoded~~ | ~~`TaskStatus.DONE`~~ | ✅ fixed |
 | `services/langgraph/src/clients/worker_spawner.py:315` | `status in ("success", "completed")` multi-guess | Single enum value from worker output contract | high |
 | `services/langgraph/src/clients/worker_spawner.py:443` | `status in ("success", "completed")` multi-guess | Same as above — duplicated pattern | high |
-| `services/scheduler/src/tasks/supervisor.py:633` | `"status": "todo"` hardcoded in raw dict | `TaskStatus.TODO.value` + use DTO | high |
-| `services/scheduler/src/tasks/health_checker.py:57` | `{"active", "in_use", "ready"}` hardcoded strings | `{ServerStatus.ACTIVE, ServerStatus.IN_USE, ServerStatus.READY}` | medium |
-| `services/langgraph/src/tools/allocator.py:153` | `s.status in ("active", "ready", "in_use")` | Use `ServerStatus` enum values | medium |
-| `services/langgraph/src/tools/servers.py:43` | `s.status in ("ready", "in_use")` | Use `ServerStatus` enum values | medium |
+| ~~`services/scheduler/src/tasks/supervisor.py:633`~~ | ~~`"status": "todo"` hardcoded~~ | ~~`TaskStatus.TODO.value`~~ | ✅ fixed |
+| ~~`services/scheduler/src/tasks/health_checker.py:57`~~ | ~~`{"active", "in_use", "ready"}` hardcoded~~ | ~~`ServerStatus` enums~~ | ✅ fixed |
+| ~~`services/langgraph/src/tools/allocator.py:153`~~ | ~~`s.status in ("active", "ready", "in_use")`~~ | ~~`ServerStatus` enums~~ | ✅ fixed |
+| ~~`services/langgraph/src/tools/servers.py:43`~~ | ~~`s.status in ("ready", "in_use")`~~ | ~~`ServerStatus` enums~~ | ✅ fixed |
 | `services/scheduler/src/tasks/provisioner_result_listener.py:35` | `result.status in ("failed", "error")` | `BaseResult.status` is `Literal["success","failed","error","timeout"]` — ok but use enum or match the Literal | low |
-| `services/scheduler/src/tasks/pr_poller.py:24` | `{StoryStatus.COMPLETED.value, "completed"}` redundant | Just `{StoryStatus.COMPLETED.value}` — `.value` IS `"completed"` | low |
+| ~~`services/scheduler/src/tasks/pr_poller.py:24`~~ | ~~`{StoryStatus.COMPLETED.value, "completed"}` redundant~~ | ~~Just `{StoryStatus.COMPLETED.value}`~~ | ✅ fixed |
 | `services/infra-service/src/main.py:70` | `provisioning_result.get("status", "unknown")` | Use typed result, not raw dict `.get()` | medium |
 | `services/langgraph/src/redis_publisher.py:38` | Direct `client.xadd(stream, {"data": data})` | Use `RedisStreamClient.publish_message()` | medium |
 | `services/worker-manager/src/events.py:148` | Direct `self.redis.xadd(output_stream, {"data": ...})` | Use `RedisStreamClient` | medium |

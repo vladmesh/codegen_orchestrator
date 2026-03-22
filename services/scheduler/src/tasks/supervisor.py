@@ -630,7 +630,7 @@ async def _handle_qa_failed(
             "story_id": story_id,
             "title": f"QA fix: {summary[:80]}",
             "type": "fix",
-            "status": "todo",
+            "status": TaskStatus.TODO.value,
             "description": fix_description,
         }
     )

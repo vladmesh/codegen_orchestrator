@@ -4,6 +4,8 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
+from shared.contracts.dto.server import ServerStatus
+
 from ..schemas.tools import ApplicationInfo, ServerInfo, ServerSearchResult
 from .base import api_client
 
@@ -40,7 +42,7 @@ async def find_suitable_server(
     servers = await api_client.list_servers(is_managed=True)
 
     # Filter to only ready/in_use servers (active for deployment)
-    servers = [s for s in servers if s.status in ("ready", "in_use")]
+    servers = [s for s in servers if s.status in (ServerStatus.READY, ServerStatus.IN_USE)]
 
     # Filter by available resources
     suitable = []

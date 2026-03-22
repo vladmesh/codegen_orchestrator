@@ -10,7 +10,7 @@ Used by:
 
 import structlog
 
-from shared.contracts.dto.server import ServerDTO
+from shared.contracts.dto.server import ServerDTO, ServerStatus
 
 from ..clients.api import api_client
 from ..schemas.api_types import AllocationInfo
@@ -150,7 +150,8 @@ async def _find_suitable_server(min_ram_mb: int, min_disk_mb: int) -> ServerDTO 
     servers = await api_client.list_servers(is_managed=True)
 
     # Filter to only active/ready/in_use servers
-    servers = [s for s in servers if s.status in ("active", "ready", "in_use")]
+    active_statuses = (ServerStatus.ACTIVE, ServerStatus.READY, ServerStatus.IN_USE)
+    servers = [s for s in servers if s.status in active_statuses]
 
     # Filter by total capacity (not used - that's system RAM, not allocations)
     suitable = []

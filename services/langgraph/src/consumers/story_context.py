@@ -48,7 +48,7 @@ async def build_story_context(story_id: str, current_task_id: str | None = None)
         if tid == current_task_id:
             continue
 
-        if status == "done":
+        if status == TaskStatus.DONE:
             lines.append(f"- ~~{title}~~ — done (see .story/old_tasks/)")
         elif status in pending_statuses:
             lines.append(f"- {title} [{status}] — do NOT implement")

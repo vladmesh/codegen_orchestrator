@@ -12,7 +12,7 @@ import time
 import httpx
 import structlog
 
-from shared.contracts.dto.server import ServerUpdate
+from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from shared.models.incident import IncidentType
 from shared.notifications import notify_admins
 from src.clients.api import api_client
@@ -54,7 +54,7 @@ def _retention_hours() -> int:
 
 
 # Statuses that indicate a server should be health-checked
-_CHECKABLE_STATUSES = {"active", "in_use", "ready"}
+_CHECKABLE_STATUSES = {ServerStatus.ACTIVE, ServerStatus.IN_USE, ServerStatus.READY}
 
 
 def _get_http_client() -> httpx.AsyncClient:
