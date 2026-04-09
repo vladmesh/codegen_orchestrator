@@ -58,7 +58,7 @@ Invariant → Category mapping:
 2. All statuses are enums → Contract violations (hardcoded status strings)
 3. Queue messages are Pydantic DTOs → Contract violations (raw dicts)
 4. Fail-fast, no fallbacks → Convention violations (.get defaults, or fallback)
-5. Worker terminology → Glossary violations
+5. Worker terminology → Glossary violations (+ check ALL glossary terms, not just "worker")
 6. Secrets never reach LLM → Security
 7. shared/ = contracts only → Convention violations (cross-service imports)
 8. structlog only → Convention violations (print())
@@ -110,8 +110,12 @@ Check each category:
 - `json.dumps(model.model_dump())` instead of `model.model_dump_json()` — redundant serialization
 
 **Glossary violations** (see [docs/GLOSSARY.md](docs/GLOSSARY.md)):
-- Container/variable/log names using "worker" for non-Worker entities (Worker = ephemeral Docker container with CLI agent only)
-- Confusing Consumer (queue listener role) with Service (long-lived process) or Worker
+- "worker" used for non-Worker entities (Worker = ephemeral Docker container with CLI agent ONLY)
+- "consumer" used as a service name (Consumer = role, not a service — `langgraph` is a consumer of `engineering:queue`)
+- "task" vs "run" confusion (Task = planning unit for developer, Run = async execution record in DB)
+- "engineering" used for a single developer (Engineering = subgraph abstraction, Developer = concrete node/worker)
+- "service agent" vs "CLI agent" confusion (Service Agent = LangGraph ReactAgent in langgraph process, CLI Agent = AI in ephemeral worker container)
+- Container/variable/log names that contradict glossary definitions
 
 **Test gaps:**
 - Source files in `services/*/src/` without corresponding test in `tests/unit/`
