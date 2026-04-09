@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from tests.unit.factories import make_project, make_repository
 
+from src.consumers.engineering import EngineeringSuccessParams
+
 
 @pytest.fixture
 def mock_redis():
@@ -65,14 +67,16 @@ class TestLevel1CascadeFailure:
         from src.consumers.engineering import _handle_engineering_success
 
         out = await _handle_engineering_success(
-            result={"engineering_status": "done", "commit_sha": None},
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result={"engineering_status": "done", "commit_sha": None},
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         # Pipeline stopped
@@ -94,14 +98,16 @@ class TestLevel1CascadeFailure:
         from src.consumers.engineering import _handle_engineering_success
 
         out = await _handle_engineering_success(
-            result={"engineering_status": "done", "commit_sha": ""},
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result={"engineering_status": "done", "commit_sha": ""},
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         assert out["status"] == "failed"
@@ -116,14 +122,16 @@ class TestLevel2NotificationDecoupling:
         from src.consumers.engineering import _handle_engineering_success
 
         out = await _handle_engineering_success(
-            result={"engineering_status": "done", "commit_sha": "abc123"},
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result={"engineering_status": "done", "commit_sha": "abc123"},
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         assert out["status"] == "success"
@@ -145,14 +153,16 @@ class TestLevel2NotificationDecoupling:
         from src.consumers.engineering import _handle_engineering_success
 
         out = await _handle_engineering_success(
-            result={"engineering_status": "done", "commit_sha": "abc123"},
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=True,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result={"engineering_status": "done", "commit_sha": "abc123"},
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=True,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         assert out["status"] == "success"
@@ -169,14 +179,16 @@ class TestLevel2NotificationDecoupling:
         from src.consumers.engineering import _handle_engineering_success
 
         await _handle_engineering_success(
-            result={"engineering_status": "done", "commit_sha": "abc123"},
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result={"engineering_status": "done", "commit_sha": "abc123"},
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         events = _get_callback_events(mock_redis)

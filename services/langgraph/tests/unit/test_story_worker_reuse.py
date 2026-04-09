@@ -11,6 +11,7 @@ import pytest
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.repository import RepositoryDTO
 from src.clients.worker_spawner import SpawnResult
+from src.consumers.engineering import EngineeringSuccessParams
 
 _PROJECT_ID = uuid.uuid4()
 
@@ -246,9 +247,9 @@ class TestEngineeringConsumerStoryWorker:
         assert result["status"] == "success"
         # Should look up worker for story
         mock_get_worker.assert_called_once_with(redis_mock.redis, "story-1")
-        # story_id should be passed to _handle_engineering_success
-        call_kwargs = mock_handle_success.call_args.kwargs
-        assert call_kwargs["story_id"] == "story-1"
+        # story_id should be passed to _handle_engineering_success via params
+        params = mock_handle_success.call_args[0][0]
+        assert params.story_id == "story-1"
 
     @pytest.mark.asyncio
     @patch("src.consumers.engineering.get_story_worker", new_callable=AsyncMock)
@@ -365,9 +366,9 @@ class TestEngineeringConsumerStoryWorker:
 
         # No story → no worker lookup
         mock_get_worker.assert_not_called()
-        # story_id should be None in handle_success
-        call_kwargs = mock_handle_success.call_args.kwargs
-        assert call_kwargs["story_id"] is None
+        # story_id should be None in handle_success via params
+        params = mock_handle_success.call_args[0][0]
+        assert params.story_id is None
 
 
 class TestHandleSuccessWorkerLifecycle:
@@ -396,16 +397,18 @@ class TestHandleSuccessWorkerLifecycle:
         redis_mock.redis.xadd = AsyncMock()
 
         await _handle_engineering_success(
-            result={"engineering_status": "done", "commit_sha": "abc", "worker_id": "dev-abc"},
-            task_id="eng-1",
-            project=_project_dto(),
-            callback_stream="cb:1",
-            redis=redis_mock,
-            skip_deploy=True,
-            developer_started_at=datetime.now(UTC),
-            user_id="u-1",
-            planning_task_id="task-1",
-            story_id="story-1",
+            EngineeringSuccessParams(
+                result={"engineering_status": "done", "commit_sha": "abc", "worker_id": "dev-abc"},
+                task_id="eng-1",
+                project=_project_dto(),
+                callback_stream="cb:1",
+                redis=redis_mock,
+                skip_deploy=True,
+                developer_started_at=datetime.now(UTC),
+                user_id="u-1",
+                planning_task_id="task-1",
+                story_id="story-1",
+            )
         )
 
         mock_set_worker.assert_called_once_with(redis_mock.redis, "story-1", "dev-abc")
@@ -434,14 +437,16 @@ class TestHandleSuccessWorkerLifecycle:
         redis_mock.redis.xadd = AsyncMock()
 
         await _handle_engineering_success(
-            result={"engineering_status": "done", "commit_sha": "abc", "worker_id": "dev-abc"},
-            task_id="eng-1",
-            project=_project_dto(),
-            callback_stream="cb:1",
-            redis=redis_mock,
-            skip_deploy=True,
-            developer_started_at=datetime.now(UTC),
-            user_id="u-1",
+            EngineeringSuccessParams(
+                result={"engineering_status": "done", "commit_sha": "abc", "worker_id": "dev-abc"},
+                task_id="eng-1",
+                project=_project_dto(),
+                callback_stream="cb:1",
+                redis=redis_mock,
+                skip_deploy=True,
+                developer_started_at=datetime.now(UTC),
+                user_id="u-1",
+            )
         )
 
         mock_delete.assert_called_once_with("dev-abc", reason="completed")

@@ -15,6 +15,8 @@ from ..config import get_settings
 router = APIRouter(tags=["debug"])
 logger = structlog.get_logger(__name__)
 
+HIGH_PENDING_THRESHOLD = 100
+
 
 @router.get("/debug/queues")
 async def debug_queues() -> dict:
@@ -62,15 +64,18 @@ async def debug_queues() -> dict:
                         "pending": pending,
                         "last_delivered_id": g.get("last-delivered-id", "0-0"),
                     }
-                    if pending > 100:  # noqa: PLR2004
+                    if pending > HIGH_PENDING_THRESHOLD:
                         issues.append(
                             f"High pending ({pending}) on {binding.stream}/{binding.group}"
                         )
                 else:
                     issues.append(f"Group missing: {binding.group} on {binding.stream}")
-            except Exception:  # noqa: S110
-                # Stream doesn't exist → group can't exist either (already flagged above)
-                pass
+            except aioredis.ResponseError:
+                logger.warning(
+                    "queue_group_check_failed",
+                    stream=binding.stream,
+                    group=binding.group,
+                )
 
             bindings.append(entry)
     finally:

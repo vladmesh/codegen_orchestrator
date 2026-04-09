@@ -129,8 +129,8 @@ class TestTwoTaskStoryLifecycle:
         # Subgraph got no worker_id
         invoke_args_1 = mock_graph.ainvoke.call_args[0][0]
         assert invoke_args_1.get("worker_id") is None
-        # story_id passed to handle_success
-        assert mock_handle_success.call_args.kwargs["story_id"] == "story-1"
+        # story_id passed to handle_success via params
+        assert mock_handle_success.call_args[0][0].story_id == "story-1"
 
         # --- Task 2: Existing worker ---
         mock_get_worker.reset_mock()
@@ -168,7 +168,7 @@ class TestTwoTaskStoryLifecycle:
         # Subgraph got worker_id from registry
         invoke_args_2 = mock_graph_2.ainvoke.call_args[0][0]
         assert invoke_args_2["worker_id"] == "dev-story1-abc"
-        # story_id passed to handle_success
-        assert mock_handle_success.call_args.kwargs["story_id"] == "story-1"
+        # story_id passed to handle_success via params
+        assert mock_handle_success.call_args[0][0].story_id == "story-1"
         # Worker never deleted (kept alive for story)
         mock_delete.assert_not_called()

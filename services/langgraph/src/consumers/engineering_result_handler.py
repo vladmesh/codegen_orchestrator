@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import structlog
@@ -21,6 +22,24 @@ from ..clients.worker_spawner import delete_worker
 from ._events import publish_callback_event, publish_story_event
 
 logger = structlog.get_logger(__name__)
+
+
+@dataclass
+class EngineeringSuccessParams:
+    """Parameters for handle_engineering_success."""
+
+    result: dict
+    task_id: str
+    project: ProjectDTO
+    callback_stream: str | None
+    redis: RedisStreamClient
+    skip_deploy: bool
+    developer_started_at: datetime | None = None
+    user_id: str = ""
+    action: str = "create"
+    planning_task_id: str | None = None
+    story_id: str | None = None
+    deploy_fix_attempt: int = 0
 
 
 async def _update_task_status(
@@ -186,22 +205,19 @@ async def handle_worker_gave_up(
     }
 
 
-async def handle_engineering_success(  # noqa: PLR0913
-    result: dict,
-    task_id: str,
-    project: ProjectDTO,
-    callback_stream: str | None,
-    redis: RedisStreamClient,
-    skip_deploy: bool,
-    developer_started_at: datetime | None = None,
-    *,
-    user_id: str = "",
-    action: str = "create",
-    planning_task_id: str | None = None,
-    story_id: str | None = None,
-    deploy_fix_attempt: int = 0,
-) -> dict:
+async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
     """Handle successful engineering result: CI gate and auto-deploy."""
+    result = params.result
+    task_id = params.task_id
+    project = params.project
+    callback_stream = params.callback_stream
+    redis = params.redis
+    skip_deploy = params.skip_deploy
+    user_id = params.user_id
+    action = params.action
+    planning_task_id = params.planning_task_id
+    story_id = params.story_id
+    deploy_fix_attempt = params.deploy_fix_attempt
     project_id = str(project.id)
 
     if not result.get("commit_sha"):

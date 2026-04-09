@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from tests.unit.factories import make_project, make_repository
 
+from src.consumers.engineering import EngineeringSuccessParams
+
 
 @pytest.fixture
 def mock_redis():
@@ -52,14 +54,16 @@ class TestHandleEngineeringSuccess:
         }
 
         out = await _handle_engineering_success(
-            result=result_data,
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result=result_data,
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         assert out["status"] == "failed"
@@ -92,14 +96,16 @@ class TestHandleEngineeringSuccess:
         }
 
         out = await _handle_engineering_success(
-            result=result_data,
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result=result_data,
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         assert out["status"] == "success"
@@ -113,14 +119,16 @@ class TestHandleEngineeringSuccess:
         result_data = {"engineering_status": "done", "commit_sha": "abc123"}
 
         await _handle_engineering_success(
-            result=result_data,
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="625038902",
+            EngineeringSuccessParams(
+                result=result_data,
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="625038902",
+            )
         )
 
         # Find the deploy queue publish_message call
@@ -144,15 +152,17 @@ class TestHandleEngineeringSuccess:
         result_data = {"engineering_status": "done", "commit_sha": "abc123"}
 
         await _handle_engineering_success(
-            result=result_data,
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
-            action="feature",
+            EngineeringSuccessParams(
+                result=result_data,
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+                action="feature",
+            )
         )
 
         from shared.queues import DEPLOY_QUEUE
@@ -179,14 +189,16 @@ class TestNotificationDecoupling:
         }
 
         await _handle_engineering_success(
-            result=result_data,
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result=result_data,
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         # Find callback events on the callback stream (via publish_flat)
@@ -212,14 +224,16 @@ class TestNotificationDecoupling:
         }
 
         await _handle_engineering_success(
-            result=result_data,
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=True,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result=result_data,
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=True,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         # Find callback events on the callback stream (via publish_flat)
@@ -244,14 +258,16 @@ class TestNotificationDecoupling:
         }
 
         await _handle_engineering_success(
-            result=result_data,
-            task_id="eng-1",
-            project=_project(),
-            callback_stream="po:response:abc",
-            redis=mock_redis,
-            skip_deploy=False,
-            developer_started_at=datetime.now(UTC),
-            user_id="u1",
+            EngineeringSuccessParams(
+                result=result_data,
+                task_id="eng-1",
+                project=_project(),
+                callback_stream="po:response:abc",
+                redis=mock_redis,
+                skip_deploy=False,
+                developer_started_at=datetime.now(UTC),
+                user_id="u1",
+            )
         )
 
         # Find callback events on the callback stream (via publish_flat)
