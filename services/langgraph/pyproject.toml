@@ -35,7 +35,7 @@ dependencies = [
     "telethon>=1.36.0",
 
     # Web search for PO agent (DuckDuckGo, no API key needed)
-    "duckduckgo-search>=7.0.0",
+    "ddgs>=7.0.0",
 
     # SSH for deploy pre-checks (server directory validation)
     "asyncssh>=2.14.0",

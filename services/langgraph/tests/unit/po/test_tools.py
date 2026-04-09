@@ -637,7 +637,7 @@ class TestWebSearch:
         mock_ddgs = MagicMock()
         mock_ddgs.text.return_value = mock_results
 
-        with patch("duckduckgo_search.DDGS", return_value=mock_ddgs):
+        with patch("ddgs.DDGS", return_value=mock_ddgs):
             result = await web_search.ainvoke(
                 {"query": "weather API documentation"},
                 config=_make_config("user-1"),
@@ -653,7 +653,7 @@ class TestWebSearch:
         mock_ddgs = MagicMock()
         mock_ddgs.text.return_value = []
 
-        with patch("duckduckgo_search.DDGS", return_value=mock_ddgs):
+        with patch("ddgs.DDGS", return_value=mock_ddgs):
             await web_search.ainvoke(
                 {"query": "test", "max_results": 3},
                 config=_make_config("user-1"),
@@ -666,7 +666,7 @@ class TestWebSearch:
         mock_ddgs = MagicMock()
         mock_ddgs.text.return_value = []
 
-        with patch("duckduckgo_search.DDGS", return_value=mock_ddgs):
+        with patch("ddgs.DDGS", return_value=mock_ddgs):
             result = await web_search.ainvoke(
                 {"query": "nonexistent thing xyz"},
                 config=_make_config("user-1"),
@@ -679,7 +679,7 @@ class TestWebSearch:
         mock_ddgs = MagicMock()
         mock_ddgs.text.side_effect = Exception("rate limited")
 
-        with patch("duckduckgo_search.DDGS", return_value=mock_ddgs):
+        with patch("ddgs.DDGS", return_value=mock_ddgs):
             result = await web_search.ainvoke(
                 {"query": "test"},
                 config=_make_config("user-1"),
