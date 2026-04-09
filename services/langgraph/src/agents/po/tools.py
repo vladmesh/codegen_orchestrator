@@ -121,7 +121,7 @@ def web_search(query: str, max_results: int = 5) -> str:
         query: Search query (e.g. "OpenWeatherMap API documentation").
         max_results: Maximum number of results to return (default 5).
     """
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 
     try:
         results = DDGS().text(query, max_results=max_results)
