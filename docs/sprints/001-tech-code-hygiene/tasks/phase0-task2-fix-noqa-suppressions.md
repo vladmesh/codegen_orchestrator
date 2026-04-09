@@ -26,16 +26,20 @@ Four noqa comments in production code suppress real issues instead of fixing the
 - `make lint` passes (no noqa needed on these 4 lines)
 
 ## Acceptance Criteria
-- [ ] All 4 `# noqa` comments removed from the listed files
-- [ ] `EngineeringSuccessParams` dataclass exists, `handle_engineering_success` takes it
-- [ ] `_compute_secret` uses lookup table, no if/elif chain
-- [ ] Magic number 100 replaced with named constant
-- [ ] Bare except replaced with specific exception + structlog warning
-- [ ] `make lint` passes
-- [ ] `make test-langgraph-unit` passes
-- [ ] `make test-api-unit` passes
+- [x] All 4 `# noqa` comments removed from the listed files
+- [x] `EngineeringSuccessParams` dataclass exists, `handle_engineering_success` takes it
+- [x] `_compute_secret` uses lookup table, no if/elif chain
+- [x] Magic number 100 replaced with named constant
+- [x] Bare except replaced with specific exception + structlog warning
+- [x] `make lint` passes
+- [x] `make test-langgraph-unit` passes
+- [x] `make test-api-unit` passes
 
-## Status: pending
+## Status: done
 
 ## Developer Notes
-_To be filled during implementation._
+All 4 fixes applied:
+1. `EngineeringSuccessParams` dataclass in `engineering_result_handler.py` — all 17 test call sites updated
+2. `_compute_secret` refactored: `_STATIC_SECRETS` dict + `_PORT_SERVICE_MAP` + `_resolve_port`/`_resolve_docker_image` helpers
+3. `HIGH_PENDING_THRESHOLD = 100` module constant in `debug.py`
+4. `aioredis.ResponseError` with structlog warning replaces bare `except: pass`
