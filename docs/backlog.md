@@ -14,23 +14,13 @@
 - **Status**: backlog
 - **Brief**: Currently tg_bot uses PYTHONPATH=/app:/app/services/tg_bot/src (allowing relative imports) while backend and notifications_worker use PYTHONPATH=/app (requiring fully qualified imports like services.backend.src.module). This inconsistency causes coding agents to guess wrong import patterns, leadi...
 
-### #1020 debug test
-- **Priority**: CRITICAL
-- **Plan**: —
-- **Status**: backlog
-
-
 ### #1022 API authorization: scope worker access, protect destructive endpoints
-- **Priority**: CRITICAL
+- **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
+- **Brainstorm**: [api-visibility-scoping.md](brainstorms/api-visibility-scoping.md)
 - **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
-### #1023 Refactor shared: eliminate orchestrator code from worker containers
-- **Priority**: CRITICAL
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: ## Problem  Worker containers copy the entire orchestrator shared/ package into /app/shared. This conflicts with user projects that also have a shared/ directory (different package, same name). Workers hit ModuleNotFoundError or import the wrong module.  ## Current state  - worker-wrapper needs: ...
 
 ### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
 - **Priority**: LOW
@@ -266,6 +256,7 @@
 
 ## Done (last 10)
 
+- #1023 Refactor shared: eliminate orchestrator code from worker containers — 2026-04-09
 - #1021 Add TTL/cleanup for stale Redis queue messages — 2026-04-09
 - #1036 ЛК frontend SPA (project list + dashboard) — 2026-03-20
 - #1035 Telegram bot: dashboard button with one-time token — 2026-03-20
