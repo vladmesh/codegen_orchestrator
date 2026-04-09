@@ -2,6 +2,9 @@
 
 Provides common boilerplate shared by engineering_worker and deploy_worker:
 signal handling, consumer group setup, message reading, ACKing, and shutdown.
+
+Includes a staleness guard: before processing, checks if the referenced run/story
+is already terminal (COMPLETED/FAILED/CANCELLED/ARCHIVED). If so, ACKs and skips.
 """
 
 from __future__ import annotations
@@ -13,6 +16,8 @@ import signal
 
 import structlog
 
+from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.story import StoryStatus
 from shared.log_config import setup_logging
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import WORKER_GROUP
@@ -28,12 +33,65 @@ ProcessFn = Callable[[dict, RedisStreamClient], Awaitable[dict]]
 # Module-level shutdown flag (set by signal handler)
 _shutdown = False
 
+# Terminal statuses — messages referencing these are stale
+_TERMINAL_RUN_STATUSES = {
+    RunStatus.COMPLETED.value,
+    RunStatus.FAILED.value,
+    RunStatus.CANCELLED.value,
+}
+_TERMINAL_STORY_STATUSES = {
+    StoryStatus.COMPLETED.value,
+    StoryStatus.FAILED.value,
+    StoryStatus.ARCHIVED.value,
+}
+
 
 def _handle_shutdown(signum, _frame):
     """Handle shutdown signals gracefully."""
     global _shutdown
     logger.info("shutdown_signal_received", signal=signum)
     _shutdown = True
+
+
+async def _check_message_staleness(job_data: dict) -> bool:
+    """Check if a queue message references a terminal run or story.
+
+    Returns True if the message is stale and should be skipped.
+    On API errors, returns False (proceed with processing).
+    """
+    task_id = job_data.get("task_id")
+    if task_id:
+        try:
+            run_data = await api_client.get(f"runs/{task_id}")
+            if run_data["status"] in _TERMINAL_RUN_STATUSES:
+                logger.info(
+                    "stale_message_skipped",
+                    task_id=task_id,
+                    run_status=run_data["status"],
+                    reason="run_terminal",
+                )
+                return True
+        except Exception:
+            logger.debug("staleness_guard_api_error", task_id=task_id, exc_info=True)
+        return False
+
+    story_id = job_data.get("story_id")
+    if story_id:
+        try:
+            story = await api_client.get_story(story_id)
+            if story.status in _TERMINAL_STORY_STATUSES:
+                logger.info(
+                    "stale_message_skipped",
+                    story_id=story_id,
+                    story_status=story.status,
+                    reason="story_terminal",
+                )
+                return True
+        except Exception:
+            logger.debug("staleness_guard_api_error", story_id=story_id, exc_info=True)
+        return False
+
+    return False
 
 
 async def run_queue_worker(
@@ -76,6 +134,13 @@ async def run_queue_worker(
                 continue
             try:
                 bind_message_context(msg.data)
+
+                # Staleness guard: skip messages for terminal runs/stories
+                if await _check_message_staleness(msg.data):
+                    await redis.ack(queue, group, msg.message_id)
+                    logger.debug("stale_job_acked", entry_id=msg.message_id, worker=service_name)
+                    continue
+
                 result = await process_fn(msg.data, redis)
                 msg.data.update(result)
                 await redis.ack(queue, group, msg.message_id)
