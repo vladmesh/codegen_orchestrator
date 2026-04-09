@@ -5,8 +5,8 @@
 > **Started**: 2026-04-10
 
 ## Phase 0: Quick fixes
-- #46 Rename duckduckgo_search → ddgs (deprecated package rename, import update, lock regen)
-- #1019 Fix noqa suppressions that mask real complexity (extract dataclass, simplify returns, named constants)
+- Task 1: Rename duckduckgo_search → ddgs → `tasks/phase0-task1-rename-ddgs.md`
+- Task 2: Fix noqa suppressions (extract dataclass, lookup table, named constant, specific except) → `tasks/phase0-task2-fix-noqa-suppressions.md`
 
 ## Phase 1: Refactoring
 - #19 Split github.py client (986 LOC) into submodules by domain (repos, actions, secrets, workflows), facade delegates
