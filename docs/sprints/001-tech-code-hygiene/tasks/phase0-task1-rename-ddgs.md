@@ -14,12 +14,12 @@ Package `duckduckgo_search` has been renamed to `ddgs`. Runtime warning in logs.
 - `make test-langgraph-unit` passes
 
 ## Acceptance Criteria
-- [ ] No `duckduckgo_search` or `duckduckgo-search` references remain in code (docs/backlog excluded)
-- [ ] `make lock-deps` succeeds and lock file reflects `ddgs`
-- [ ] `make test-langgraph-unit` passes
-- [ ] `make lint` passes
+- [x] No `duckduckgo_search` or `duckduckgo-search` references remain in code (docs/backlog excluded)
+- [x] `make lock-deps` succeeds and lock file reflects `ddgs`
+- [x] `make test-langgraph-unit` passes
+- [x] `make lint` passes
 
-## Status: pending
+## Status: done
 
 ## Developer Notes
-_To be filled during implementation._
+Straightforward rename. The `ddgs` package is a drop-in replacement — same `DDGS` class, same API. Lock file regenerated cleanly; `primp` added as new transitive dep.
