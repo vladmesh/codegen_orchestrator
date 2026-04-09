@@ -1,6 +1,6 @@
 ---
 name: brainstorm
-description: Structured thinking session on a topic. Creates docs/brainstorms/<topic>.md with Status tracking and Action Items for later triage.
+description: Structured thinking session on a topic. Creates docs/brainstorms/<topic>.md with Status tracking and Action Items. User routes results manually (new sprint, backlog, VISION update, hotfix).
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob
 argument-hint: "<topic>"
 ---
@@ -57,8 +57,9 @@ Write to `docs/brainstorms/<topic-slug>.md`:
 
 ## Action Items
 - → idea: "<one-liner>" (if not ready for backlog)
-- → new task: "<title>" (if ready for backlog, will be processed by /triage)
+- → new task: "<title>" (user routes manually: new sprint, backlog item, hotfix, or VISION update)
 - → backlog #XX (if task already exists)
+- → vision: "<change>" (if it affects product direction — user updates VISION.md)
 ```
 
 ### 3. Interactive discussion
@@ -90,7 +91,7 @@ git commit -m "brainstorm: <topic>"
 
 - Brainstorms are for **thinking**, not deciding. The user makes final decisions.
 - Always end with concrete Action Items — a brainstorm without action items is wasted work.
-- Don't create backlog tasks directly. That's `/triage`'s job. Just write Action Items.
+- Don't create backlog tasks directly. Just write Action Items. The user decides where each goes (backlog, new sprint, VISION.md, hotfix).
 - If the brainstorm reveals the topic is simple enough to just do — say so. Not everything needs a brainstorm.
 
 ### Memory Review (Mandatory)

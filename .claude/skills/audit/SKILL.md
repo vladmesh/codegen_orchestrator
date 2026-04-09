@@ -10,6 +10,7 @@ argument-hint: "[--scope <path>]"
 Scan the codebase for issues and create actionable tasks.
 
 ## Key References
+- [docs/VISION.md](docs/VISION.md) — architectural invariants (audit MUST check each one)
 - [docs/CONTRACTS.md](docs/CONTRACTS.md) — queue registry, shared DTOs (source of truth for contract violations)
 - [docs/ERROR_HANDLING.md](docs/ERROR_HANDLING.md) — error categories, retry policies
 - [docs/LOGGING.md](docs/LOGGING.md) — structlog patterns to check against
@@ -37,7 +38,32 @@ If the latest run **failed or is not successful**:
 
 If the latest run **passed** — add `## CI Health` with "✅ Last CI run passed (<date>)".
 
-### 1. Scan
+### 1. Load VISION.md
+
+Read `docs/VISION.md` fully. It contains two things the audit checks:
+
+**A. Product direction** — the top part describes what the product is, what it should do, and what it explicitly does NOT do ("Что НЕ делаем"). If the sprint introduced code that directly contradicts a non-goal or moves the product in an explicitly rejected direction — flag it in the report under `## Vision Alignment`.
+
+Examples of violations:
+- Adding a generic CI/CD feature when VISION says "not a general-purpose CI/CD platform"
+- Adding a third programming language when VISION says "Python + Rust only"
+- Building a self-hosted installer when VISION says "not self-hosted (пока)"
+
+This is a judgment call, not a grep pattern. Only flag clear contradictions, not edge cases.
+
+**B. Architectural invariants** — the numbered list at the bottom. Each maps to scan categories below. The audit report must explicitly confirm or flag each invariant.
+
+Invariant → Category mapping:
+1. No cross-service imports → Convention violations
+2. All statuses are enums → Contract violations (hardcoded status strings)
+3. Queue messages are Pydantic DTOs → Contract violations (raw dicts)
+4. Fail-fast, no fallbacks → Convention violations (.get defaults, or fallback)
+5. Worker terminology → Glossary violations
+6. Secrets never reach LLM → Security
+7. shared/ = contracts only → Convention violations (cross-service imports)
+8. structlog only → Convention violations (print())
+
+### 2. Scan
 
 Check each category:
 
@@ -91,7 +117,7 @@ Check each category:
 - Source files in `services/*/src/` without corresponding test in `tests/unit/`
 - Test files that are skipped (`@pytest.mark.skip`)
 
-### 2. Write report
+### 3. Write report
 
 Write/overwrite `docs/audit.md`:
 
@@ -100,6 +126,17 @@ Write/overwrite `docs/audit.md`:
 
 > **Date**: <today>
 > **Scope**: <full | path>
+
+## Vision Alignment
+- Product direction: OK / CONCERN — <details if concern>
+- Non-goals respected: OK / VIOLATION — <details if violation>
+
+## Invariants (from VISION.md)
+| # | Invariant | Status | Violations |
+|---|-----------|--------|------------|
+| 1 | No cross-service imports | OK / VIOLATION | N |
+| 2 | Statuses are enums | OK / VIOLATION | N |
+| ... | ... | ... | ... |
 
 ## Summary
 - Dead code: N issues
@@ -146,14 +183,14 @@ Write/overwrite `docs/audit.md`:
 ...
 ```
 
-### 3. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
+### 4. Commit (DO NOT push — doc-only commits stay local to avoid wasting CI minutes)
 
 ```bash
 git add docs/audit.md
 git commit -m "audit: <scope> — <N> issues found"
 ```
 
-### 4. Report
+### 5. Report
 
 Print summary to console:
 - Total issues found: N

@@ -1,6 +1,9 @@
-# Backlog
+# Backlog (Deferred Pool)
 
-## Queue (ordered by priority, first = next)
+> This is NOT a work queue. Active work lives in sprint task files (`docs/sprints/`).
+> Backlog holds deferred items: tech debt, ideas, future work. Processed during tech sprints (every 5th sprint or when >30 items).
+
+## Queue
 
 ### #1019 Fix noqa suppressions that mask real complexity
 - **Priority**: LOW

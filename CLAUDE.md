@@ -9,7 +9,7 @@ Multi-agent orchestrator using LangGraph for automated code generation and deplo
 **Philosophy**: Autonomous operation (human checks in periodically), agents as graph nodes, non-linear agent calls, spec-first code generation.
 
 > [!IMPORTANT]
-> **Local-first development**: Task management is file-based. `docs/backlog.md` is the editable source of truth for tasks. Plans live in `docs/plans/`. Brainstorms in `docs/brainstorms/`. No API needed for `/brainstorm`, `/triage`, `/plan`, `/implement`, `/checkpoint`. Pipeline-testing skills (`/e2e-run`, `/escort`, `/architect`) still require `make up`.
+> **Sprint-based development**: Work is organized in sprints (`docs/sprints/`). `docs/STATUS.md` tracks current sprint state. `/go` is the main entry point — it reads STATUS.md and invokes the right skill. `docs/backlog.md` is a deferred pool for tech debt and ideas, processed during tech sprints. Pipeline-testing skills (`/e2e-run`, `/escort`, `/architect`) still require `make up`.
 
 ## Commands
 
@@ -115,8 +115,8 @@ When naming containers, variables, queues, or writing docs — check the glossar
 2. **Review Trigger**: If a change requires modifying `shared/contracts/` or DB schema not described in the plan — STOP and ask.
 3. **Structured logging**: Use `structlog` everywhere, never `print()`.
 4. **Run tests before committing**: `make test-unit` at minimum.
-5. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the full flow (`/plan` → `/implement`).
-6. **`docs/backlog.md` is the source of truth for tasks**: Edit it directly. Skills read/write it. No API needed.
+5. **Code outside flow**: Small fixes (< 3 files) are OK with `[hotfix]` commit prefix + CHANGELOG entry. Larger changes — use the sprint flow (`/go` → `/new-sprint` → `/plan-phase` → `/implement` → `/close-phase` → `/close-sprint`).
+6. **`docs/STATUS.md` is the sprint state**: `/go` reads it to decide next action. Sprint task files live in `docs/sprints/`. `docs/backlog.md` is the deferred pool.
 
 ### Testing Philosophy
 
@@ -192,7 +192,7 @@ def deploy_to_server(server_handle: str):
 ## Documentation Map
 
 ### Architecture (read when working with code)
-- [DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — **mandatory**: data-driven task lifecycle, DB/API workflow
+- [DEV_PIPELINE.md](docs/DEV_PIPELINE.md) — **mandatory**: sprint-based dev workflow, skill reference
 - [PIPELINE_V2.md](docs/PIPELINE_V2.md) — target 7-phase pipeline architecture
 - [NODES.md](docs/NODES.md) — agent nodes, tools, Redis Streams communication
 - [CONTRACTS.md](docs/CONTRACTS.md) — queue registry, DTOs, correlation IDs
@@ -209,8 +209,11 @@ def deploy_to_server(server_handle: str):
 - [GLOSSARY.md](docs/GLOSSARY.md) — project terminology
 - [playbooks/line2-engineering.md](docs/playbooks/line2-engineering.md) — manual test matrix
 
-### Task management (editable)
-- [backlog.md](docs/backlog.md) — source of truth for tasks (Queue + Done sections)
+### Sprint & task management
+- [VISION.md](docs/VISION.md) — architectural invariants (audit checks these)
+- [STATUS.md](docs/STATUS.md) — current sprint state (`/go` reads this)
+- [sprints/](docs/sprints/) — sprint directories with task files
+- [backlog.md](docs/backlog.md) — deferred pool (tech debt, ideas, future work)
 - [ROADMAP.md](docs/ROADMAP.md) — story milestones and progress
 - [CHANGELOG.md](docs/CHANGELOG.md) — release history
 

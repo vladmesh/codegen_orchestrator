@@ -2,7 +2,7 @@
 
 > **Дата**: 2026-04-09
 > **Контекст**: Переход от плоского backlog к sprint-based workflow с встроенным управлением техдолгом
-> **Status**: done
+> **Status**: triaged
 
 ---
 

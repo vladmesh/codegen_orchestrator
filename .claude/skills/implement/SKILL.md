@@ -1,13 +1,13 @@
 ---
 name: implement
-description: Implement the current task using TDD. Reads plan from docs/plans/, creates git branch, updates CHANGELOG on completion. Main development skill.
+description: Implement the current sprint task using TDD. Reads task from sprint directory, creates git branch, updates task status on completion. Main development skill.
 allowed-tools: Bash, Read, Write, Edit, Grep, Glob, Agent, Skill
-argument-hint: "[#ID]"
+argument-hint: "[task-file-path]"
 ---
 
 # Implement Task
 
-The main development skill. Implements the current task (or a specific one) using TDD workflow.
+The main development skill. Implements the current sprint task (or a specific one) using TDD workflow.
 
 ## Key References
 - [docs/TESTING.md](docs/TESTING.md) — test layers, service vs integration tests, compose files
@@ -15,8 +15,8 @@ The main development skill. Implements the current task (or a specific one) usin
 
 ## Input
 
-- No arguments: pick the first task from `docs/backlog.md` Queue (highest priority)
-- `#ID` (e.g. `#8`): start that specific task
+- No arguments: pick the first pending task from the current sprint phase (reads `docs/STATUS.md`)
+- `<path>`: implement the specific task file (e.g. `docs/sprints/001-foo/tasks/phase0-task1-bar.md`)
 
 ## Protocol
 
@@ -40,80 +40,67 @@ git reset --hard origin/main
 
 After this step, `git status` should show clean working tree on main, up to date with origin.
 
-### 1. Load context
+### 1. Load task
 
-Find the task in `docs/backlog.md`:
+**If task file path given:** read that file directly.
 
-**If `#ID` given:** search for `### #<ID>` in `docs/backlog.md`. Extract title, priority, brief.
+**If no argument:** read `docs/STATUS.md` to get current sprint and phase. Then find the first pending task:
 
-**If no argument:** take the first `### #` entry under `## Queue`.
-
-If nothing found — STOP: "No tasks in backlog. Create one via /brainstorm + /triage."
-
-Update the task's status in `docs/backlog.md` to `in_dev`.
-
-### 2. Assess complexity & ensure plan
-
-Check if a plan file exists in `docs/plans/` matching the task tag:
 ```bash
-ls docs/plans/<tag>-*.md 2>/dev/null
+SPRINT_DIR="docs/sprints/<sprint-slug>"
+PHASE_NUM=<current phase number>
+grep -l "Status: pending" "$SPRINT_DIR/tasks/phase${PHASE_NUM}-"*.md | head -1
 ```
 
-**If plan exists** — read it. Proceed to step 3.
+If no pending tasks — STOP: "All tasks in current phase are done. Run `/go` to close the phase."
 
-**If no plan** — assess complexity from the description:
-- **Simple task** (single file change, clear fix, < 3 files affected): proceed without a plan, use description as guide.
-- **Complex task** (multi-file, new feature, schema changes, unclear scope): auto-generate a plan by invoking /plan:
+Read the task file. Extract: title, description, tests, acceptance criteria.
 
-```
-Use the Agent tool to run: "Run /plan for task #<tag>. The task: <title>. Description: <description>"
-```
+Update the task file status to `in_progress`.
 
-After the subagent completes, read the plan file from `docs/plans/`.
+### 2. Assess complexity
+
+Read the task description and acceptance criteria. Check if the task is:
+- **Simple** (single file change, clear fix, < 3 files affected): proceed directly
+- **Complex** (multi-file, new feature, unclear scope): read related code first, build a mental plan
+
+For complex tasks, also read:
+- Sprint's `sprint.md` for overall context
+- Related brainstorms if referenced
+- The code areas mentioned in the description
 
 ### 3. Create git branch
 
 Create and switch to a working branch:
 ```bash
-TAG=<tag from step 1>
-SLUG=<slugified title>
-BRANCH="wi/${TAG}-${SLUG}"
+SPRINT_NUM=<sprint number>
+PHASE_NUM=<phase number>
+TASK_NUM=<task number>
+SLUG=<slugified task title>
+BRANCH="wi/s${SPRINT_NUM}-p${PHASE_NUM}-t${TASK_NUM}-${SLUG}"
 git checkout -b "$BRANCH" 2>/dev/null || git checkout "$BRANCH"
 ```
 
 If already on a `wi/` branch for this task, stay on it.
 
-### 4. Understand the task
-
-Read the plan file and task description.
-
-**Source brainstorm**: if the description or plan mentions a brainstorm, read it from `docs/brainstorms/` for additional context.
-
-**Plan steps**: parse the steps to get:
-- **Input**: what files/systems to read
-- **Output**: what should change
-- **Test**: what to test
-
-If no plan exists (simple task) — use the description and your judgment.
-
-### 5. TDD cycle (per step)
+### 4. TDD cycle
 
 Follow Red -> Green -> Refactor. **Test behavior, not implementation** (see CLAUDE.md "Testing Philosophy"):
 
-1. **Red**: Write failing test(s) based on the step's Test spec. **Choose the right test level:**
+1. **Red**: Write failing test(s) based on the task's "Tests First" section. **Choose the right test level:**
    - Touches DB/Redis → service test (`services/{name}/tests/service/`)
    - Crosses service boundaries → integration test (`tests/integration/{suite}/`)
    - Pure logic only (parsers, validators) → unit test (`tests/unit/`)
    Run the test to confirm it fails.
 2. **Green**: Write minimal code to make tests pass. Run the test.
 3. **Refactor**: Clean up if needed. Run `make lint` and fix issues.
-4. **Commit**: meaningful commit message referencing the backlog item (e.g. `fix(worker): isolate network (#22)`).
+4. **Commit**: meaningful commit message (e.g. `feat(worker): isolate network`).
 
-### 6. Push + PR + CI
+### 5. Push + PR + CI
 
-**MANDATORY — this is a HARD GATE. Do NOT touch docs (CHANGELOG, backlog) until CI is green.**
+**MANDATORY — this is a HARD GATE. Do NOT update task status to done until CI is green.**
 
-After the last step is committed:
+After the last commit:
 
 1. **Push branch**:
 ```bash
@@ -122,7 +109,7 @@ git push -u origin "$BRANCH"
 
 2. **Create PR** targeting main:
 ```bash
-gh pr create --title "#$TAG — $TITLE" --body "Implements #$TAG"
+gh pr create --title "<task title>" --body "Sprint: <sprint-slug>, Phase: <N>, Task: <M>"
 ```
 
 3. **Poll CI on the PR** — every 60s, up to 15 min:
@@ -133,11 +120,9 @@ gh run list --branch "$BRANCH" --limit 1 --json status,conclusion
 4. **CI red** — read logs via `gh run view --log-failed`:
    - Fix the issue, commit, push, re-poll.
 
-5. **CI green** — proceed to step 7.
+5. **CI green** — proceed to step 6.
 
-While CI is running or red: NO changes to CHANGELOG.md or backlog.
-
-### 7. Testing (smoke or E2E)
+### 6. Testing (smoke)
 
 **Gate**: only enter when CI is green.
 
@@ -153,10 +138,10 @@ make rebuild
 - Review structlog output: `docker compose logs --tail=50 <service>` — look for errors
 - Confirm no crashes, no unhandled exceptions
 
-3. **Test red** — fix, commit, push, re-poll CI (step 6.3), re-test.
-4. **Test green** — proceed to step 8.
+3. **Test red** — fix, commit, push, re-poll CI (step 5.3), re-test.
+4. **Test green** — proceed to step 7.
 
-### 8. Merge + Complete
+### 7. Merge + Complete
 
 **Gate**: only enter when both CI and testing are green.
 
@@ -170,26 +155,23 @@ gh pr merge --squash --delete-branch
 git checkout main && git pull
 ```
 
-3. **Update task status** in `docs/backlog.md`:
-   - Remove the task's `### #<tag>` section from `## Queue`
-   - Add a line to `## Done` section: `- #<tag> <title> — <today's date>`
+3. **Update task file status** to `done`. Fill in Developer Notes with decisions, gotchas, what changed.
 
-4. **Update `docs/CHANGELOG.md`**:
-- Add entry under today's date
-- Use correct section: Added / Changed / Fixed / Removed
-- Reference backlog item ID
+4. **Check acceptance criteria** — mark each criterion as checked `[x]` in the task file.
 
-5. **Commit** doc updates on main (DO NOT push — doc-only commits stay local to avoid wasting CI minutes):
+5. **Commit** task status update on main:
 ```bash
-git add docs/CHANGELOG.md docs/backlog.md
-git commit -m "docs: complete #<ID> — <title>"
+git add "docs/sprints/<sprint>/tasks/<task-file>"
+git commit -m "done: <task title>"
 ```
 
-### 9. Report
+Do NOT push — doc-only commits stay local.
+
+### 8. Report
 
 > **STOP. Before writing the summary, complete the Skill Feedback step below. Do NOT skip it.**
 
-**9a. Skill Feedback** — review the session for problems with THIS skill:
+**8a. Skill Feedback** — review the session for problems with THIS skill:
 
 Did you hit any of these during this task?
 - A command or path in this skill was **wrong or outdated**
@@ -209,17 +191,16 @@ If yes — append an entry to `docs/skill-feedback.md` **right now**, before pro
 
 If nothing went wrong — skip the file write, but you must still explicitly confirm: "Skill feedback: none."
 
-**9b. Print summary**:
-- Task: #ID — Title
-- Steps completed: N/N
+**8b. Print summary**:
+- Task: Phase N Task M — Title
 - Tests: X passed, Y added
 - Files changed: list
-- Next: suggest running `/implement` to pick next task
+- Next: run `/go` to continue
 
 ## Important
 
-- If you need to change `shared/contracts/` or DB schema that wasn't in the plan — STOP and ask the user.
-- Don't skip tests. Every step should have at least one test unless it's pure documentation.
+- If you need to change `shared/contracts/` or DB schema that wasn't in the task description — STOP and ask the user.
+- Don't skip tests. Every task should have at least one test unless it's pure documentation.
 - Run `make lint` before every commit.
 
 ### Code discipline (see CLAUDE.md "Critical Anti-Patterns" for full details)
@@ -237,7 +218,7 @@ If nothing went wrong — skip the file write, but you must still explicitly con
 
 ### Live test policy (service tests & integration tests)
 
-If the plan includes a live/integration test step — **it is mandatory, do not skip it.** "Unit tests already cover it" is not a valid argument — unit tests mock dependencies, live tests verify real wiring. They complement each other but do NOT substitute.
+If the task includes a live/integration test step — **it is mandatory, do not skip it.** "Unit tests already cover it" is not a valid argument — unit tests mock dependencies, live tests verify real wiring. They complement each other but do NOT substitute.
 
 Unit tests = all external services mocked. Can only **supplement** a live test, never **replace** it.
 

@@ -1,28 +1,14 @@
-# STATUS
+# Sprint Status
 
-> [!WARNING]
-> Этот файл автогенерируется командой `make sync`. Не редактируйте вручную — изменения будут перезаписаны.
+## Current Sprint
 
-> **Updated**: 2026-03-20
+No active sprint. Run `/new-sprint` to begin.
 
-## Current Task
+## Phase Progress
 
-_(no task in progress)_
+_No sprint active._
 
-## Stats
+## Sprint History
 
-| backlog: 41 | todo: 2 | in_dev: 0 | in_ci: 0 | testing: 0 | done: 134 |
-
-## Recently Completed
-
-- #1036 ЛК frontend SPA (project list + dashboard) — 2026-03-20
-- #1035 Telegram bot: dashboard button with one-time token — 2026-03-20
-- #1034 ЛК API: auth (one-time token → JWT) + analytics endpoints — 2026-03-20
-- #1033 Analytics aggregation: models, Loki client, scheduler job — 2026-03-20
-- #1032 Add com.codegen.project_id label to deployed containers — 2026-03-20
-
-## Quick Links
-
-- [Backlog](backlog.md)
-- [Roadmap](ROADMAP.md)
-- [Changelog](CHANGELOG.md)
+| # | Goal | Type | Dates | Phases |
+|---|------|------|-------|--------|

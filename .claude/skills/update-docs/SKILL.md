@@ -102,14 +102,13 @@ Each group bundles logically related docs. The "Code signals" column tells incre
 | Doc | Code signals |
 |-----|-------------|
 | `docs/DEV_PIPELINE.md` | skills, API routes for tasks/stories, scheduler, consumer changes |
-| `docs/USER_STORIES.md` | supported module combinations, service-template changes |
 
 ### Not managed by this skill
 
 - `docs/CHANGELOG.md` — updated by `/implement`, not by doc sync
-- `docs/backlog.md`, `docs/STATUS.md`, `docs/ROADMAP.md`, `docs/audit.md` — auto-generated
+- `docs/backlog.md`, `docs/STATUS.md`, `docs/ROADMAP.md`, `docs/audit.md` — managed by sprint skills
+- `docs/sprints/*` — managed by sprint skills (`/plan-phase`, `/implement`, `/close-phase`, `/close-sprint`)
 - `docs/e2e_results/*`, `docs/brainstorms/*` — historical records
-- `docs/plans/*` — managed by `/plan`
 - `docs/skill-feedback.md` — append-only log
 - `.claude/skills/*/SKILL.md` — managed by `/skill-creator`
 - `CLAUDE.md`, `AGENTS.md` — meta-config, edited manually

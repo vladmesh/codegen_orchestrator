@@ -1,69 +1,165 @@
-# Пайплайн разработки оркестратора
+# Dev Pipeline
 
-Этот документ описывает жизненный цикл и процесс внесения изменений в разработку проекта (`codegen_orchestrator` и связанные репозитории).
+Sprint-based development workflow. All state is local (markdown files). Entry point: `/go`.
 
-Мы используем Data-Driven подход: бэклог, результаты брейнштормов и статусы живут **в базе данных**, а не в статичных markdown-файлах.
+## Pipeline Flow
 
-## Жизненный цикл фичи (DEV Pipeline)
+```
+/brainstorm (свободный формат, вне спринта)
+     ↓ (user routes action items manually)
+     ├── → VISION.md (product direction changes)
+     ├── → backlog.md (deferred pool)
+     ├── → /new-sprint (scope for next sprint)
+     └── → hotfix (< 3 files, [hotfix] prefix)
 
-### 1. Идея и Обсуждение (Brainstorm & Triage)
-- Любая неочевидная идея или архитектурная проблема начинается с записи в таблице `brainstorms` (вызывается через скилл агента `/brainstorm`).
-- В рамках brainstorm идёт обсуждение. Агент в процессе формирует Action Items.
-- По достижении результата статус переходит в `done`.
-- Если автоматика не справляется (Spike Task), подключается **человек (Админ)** для ручного обсуждения архитектуры с LLM (в чате). Результат вносится обратно в БД для разморозки пайплайна.
-- Скилл `/triage` забирает Action Items и создаёт задачи в БД (таблица `tasks`).
-
-### 2. Приоритизация и Планирование (Stories & Tasks)
-- Пользовательские Stories (product/technical) хранятся в БД таблице `stories`. На их основе автоматически генерируется `docs/ROADMAP.md`.
-- Конкретные задачи (Tasks) имеют статусы: `backlog`, `todo`, `in_dev`, `in_ci`, `testing`, `done`, `failed`, `cancelled`.
-- Разработчик или агент берёт задачу через `/implement` (auto-pick) или `POST /api/tasks/{id}/start`. Статус переходит в `in_dev`.
-- Быстрое добавление задачи наверх бэклога: `make task TITLE="..."` или `POST /api/tasks/push` (auto-priority = min - 1).
-- Для предварительного технического планирования конкретной задачи до начала кодинга агент использует скилл `/plan`.
-
-### 3. Исполнение и Итерации
-- Через скилл `/implement` агент выполняет написанный план по TDD-циклу.
-- События (TaskEvent) пишутся в таблицу `task_events`:
-  - `iteration_start` / `iteration_end` — прогресс по итерациям
-  - `comment` — обсуждение задачи (Jira-style), ci_fix, plan_deviation и т.д.
-  - `note` — внутренние заметки (implementation_summary и т.д.)
-- При возобновлении работы (resume/reopen) `/implement` и `/plan` читают историю events для контекста.
-- Sibling tasks (задачи из одного brainstorm) доступны через `source_brainstorm_id` фильтр.
-
-### 4. Верификация и QA
-- В конце разработки проводится тестирование (smoke или E2E через скилл `/e2e-run`).
-- Результаты E2E прогонов в случае падения могут опять попасть в `/triage` для создания bugfix-задач или reopen через `POST /api/tasks/{id}/reopen`.
-- Полностью завершённая задача закрывается (статус `done`), статистика подбивается через скилл `/checkpoint`.
-
----
-
-## Синхронизация docs из БД (`make sync`)
-
-Все данные живут в БД (source of truth). Локальные docs-файлы — **read-only зеркала** для удобства чтения в IDE и автоматического подхвата контекста агентами.
-
-```bash
-make sync       # Запустить все генераторы
-make backlog    # docs/backlog.md — очередь задач
-make roadmap    # docs/ROADMAP.md — вехи и прогресс
-make status     # docs/STATUS.md — дашборд (текущая задача, events, stats)
-make recent-artifacts  # docs/plans/ + docs/brainstorms/ — окно последних задач
-make task TITLE="..."  # Создать задачу наверху бэклога (POST /api/tasks/push)
+/go (dispatcher — reads STATUS.md, first match wins)
+ │
+ ├─ No sprint ──────────────── /new-sprint
+ │   reads: VISION.md, ROADMAP.md, backlog.md
+ │   creates: docs/sprints/NNN-slug/, STATUS.md
+ │
+ ├─ Phase has no tasks ─────── /plan-phase
+ │   reads: sprint.md, code
+ │   architectural gate: STOP if foundation is bad
+ │   creates: task files in sprints/NNN/tasks/
+ │
+ ├─ Tasks pending/in_progress ─ /implement (per task)
+ │   TDD: Red → Green → Refactor
+ │   push + PR + CI gate + smoke test
+ │   merge + update task status
+ │
+ ├─ All tasks done ──────────── /close-phase
+ │   run integration tests
+ │   write missing tests, fix stale tests
+ │   advance to next phase
+ │
+ ├─ All phases done ─────────── Sprint Endgame:
+ │   ├── /audit (code scan + VISION.md check)
+ │   ├── /e2e-run (pipeline test)
+ │   ├── Fix phase (triage: quick-fix / sprint-relevant / backlog)
+ │   ├── /update-docs
+ │   └── /close-sprint (push, CHANGELOG, ROADMAP, STATUS history)
+ │
+ └─ Blockers ────────────────── Report, wait for human
 ```
 
-### Политика хранения артефактов
-- `docs/plans/` и `docs/brainstorms/` содержат файлы только для **текущей in_dev задачи + 3 последних done**.
-- Старые файлы автоматически удаляются при `make sync`.
-- Данные не теряются — они хранятся в БД и доступны через API.
+## Key Files
 
-### Интеграция в скиллы
-`make sync` вызывается в начале скиллов `/implement`, `/plan`, `/triage`, `/checkpoint`.
+| File | Role | Updated by |
+|------|------|------------|
+| `docs/VISION.md` | Product direction + architectural invariants | User manually, `/brainstorm` action items |
+| `docs/STATUS.md` | Current sprint state (phase, progress) | Sprint skills (`/go` reads this) |
+| `docs/sprints/NNN-slug/` | Sprint directory (sprint.md + task files) | Sprint skills |
+| `docs/backlog.md` | Deferred pool (tech debt, ideas) | User manually, `/close-sprint` deferred items |
+| `docs/ROADMAP.md` | Story-level milestones | `/close-sprint` marks completed |
+| `docs/CHANGELOG.md` | Release history | `/close-sprint` |
+| `docs/audit.md` | Latest audit results | `/audit` |
 
-**Не редактируйте docs/backlog.md, docs/STATUS.md, docs/ROADMAP.md вручную** — они перезаписываются при каждом sync.
+## Skills
 
----
+### Sprint lifecycle
+| Skill | What it does |
+|-------|-------------|
+| `/go` | Dispatcher: reads STATUS.md, invokes the right skill |
+| `/new-sprint` | Create sprint from VISION + ROADMAP + backlog |
+| `/plan-phase` | Generate task files for current phase (with arch gate) |
+| `/implement` | TDD cycle for one task, PR + CI + merge |
+| `/close-phase` | Integration tests + advance to next phase |
+| `/close-sprint` | Final gate: push, CHANGELOG, ROADMAP, STATUS history |
 
-## Связь с продуктовыми задачами (User Stories)
+### Quality & testing
+| Skill | What it does |
+|-------|-------------|
+| `/audit` | Code scan + VISION.md invariant check |
+| `/e2e-run` | Full pipeline test (requires `make up`) |
+| `/test-maintenance` | Run/fix integration tests locally |
 
-Оркестратор работает на нескольких уровнях абстракции, и этот же алгоритм (dogfooding) применяется для разработки самого оркестратора:
-- **Story (Пользовательская история)**: Одно или несколько высокоуровневых бизнес-требований.
-- **Architect (Decomposition)**: В целевом процессе `/architect` *(скилл в разработке)* разбивает крупные Story или сложные Brainstorm-отчёты напрямую в набор технических Tasks, присваивая им `repository_id` (мультирепо подход). Этот скилл работает на макроуровне (Story → Tasks), в отличие от `/plan` (микроуровень реализации одной Task).
-- **Repository Link**: Каждая задача привязана к конкретному репозиторию (через `repository_id`). CLI агенты переключают рабочий `git`-контекст в зависимости от этого поля.
+### Thinking & docs
+| Skill | What it does |
+|-------|-------------|
+| `/brainstorm` | Structured adversarial discussion on a topic |
+| `/update-docs` | Sync living docs with codebase (incremental or full) |
+| `/optimize` | Process skill feedback entries |
+
+### Pipeline testing (require running services)
+| Skill | What it does |
+|-------|-------------|
+| `/escort` | Accompany real user through full pipeline |
+| `/architect` | Decompose story into tasks (API-based) |
+
+## Sprint Structure
+
+```
+docs/sprints/NNN-slug/
+├── sprint.md              — goal, phases, decisions, deferred, endgame status, results
+├── tasks/
+│   ├── phase0-task1-*.md  — description, tests, acceptance criteria, status
+│   ├── phase0-task2-*.md
+│   ├── phase1-task1-*.md
+│   └── fix-task1-*.md     — fix phase tasks (from audit + e2e findings)
+└── e2e/
+    └── (e2e reports if applicable)
+```
+
+## Task File Format
+
+```markdown
+# Phase N Task M: <Title>
+
+## Description
+<what needs to change and why>
+
+## Tests First
+- <test 1 — what to assert, which test file>
+
+## Acceptance Criteria
+- [ ] <criterion>
+
+## Status: pending | in_progress | done
+
+## Developer Notes
+_Filled during implementation._
+```
+
+## Sprint Endgame
+
+After all feature phases complete:
+
+1. **Audit + E2E** run in parallel (find different problem classes)
+2. **Triage findings** into three buckets:
+   - Quick-fix (<5 min) → fix phase task
+   - Sprint-relevant (in changed code) → fix phase task
+   - Backlog (unrelated tech debt) → `backlog.md`
+3. **Fix phase** — implement quick-fixes and sprint-relevant issues
+4. **Update docs** — `/update-docs` syncs living documentation
+5. **Close sprint** — push all commits, update CHANGELOG/ROADMAP/STATUS
+
+## Tech Sprints
+
+Every 5th sprint (or earlier if backlog >30 items):
+- `/new-sprint` checks cadence and proposes tech sprint
+- Scope formed from backlog, prioritized: security → code smells → infra → nice-to-have
+- Same lifecycle: phases, tasks, endgame
+
+## Outside Sprint Flow
+
+Small fixes (< 3 files) bypass the sprint:
+- `[hotfix]` commit prefix + CHANGELOG entry
+- No PR needed for doc-only changes
+
+`/brainstorm` runs anytime, outside sprint rhythm. Results routed manually by user.
+
+## Testing Strategy
+
+**Per task** (in `/implement`):
+- TDD: Red → Green → Refactor
+- Test level matches code: DB/Redis → service test, cross-service → integration, pure logic → unit
+
+**Per phase** (in `/close-phase`):
+- Run existing integration tests
+- Write missing integration tests for new code paths
+- Fix stale tests (API contract changes, DTO changes)
+
+**Per sprint** (endgame):
+- `/audit` — static analysis, invariant check
+- `/e2e-run` — runtime pipeline test
