@@ -53,23 +53,21 @@ class TestProcessArchitectJob:
         assert result["status"] == "skipped"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "status",
-        [StoryStatus.COMPLETED, StoryStatus.ARCHIVED, StoryStatus.FAILED, StoryStatus.DEPLOYING],
-    )
-    async def test_skips_finished_story(
-        self, mock_redis, valid_job_data, _mock_api_get_project, status
-    ):
-        """Architect skips stories that are already completed/archived/failed/deploying."""
+    async def test_skips_deploying_story(self, mock_redis, valid_job_data, _mock_api_get_project):
+        """Architect skips stories that are already deploying.
+
+        NOTE: COMPLETED/ARCHIVED/FAILED are now caught by the centralized
+        staleness guard in _base.py and never reach process_architect_job.
+        """
         _mock_api_get_project.get_story = AsyncMock(
-            return_value=make_story(id="story-abc", status=status)
+            return_value=make_story(id="story-abc", status=StoryStatus.DEPLOYING)
         )
         from src.consumers.architect import process_architect_job
 
         result = await process_architect_job(valid_job_data, mock_redis)
 
         assert result["status"] == "skipped"
-        assert status in result["reason"]
+        assert StoryStatus.DEPLOYING in result["reason"]
 
     @pytest.mark.asyncio
     async def test_skips_when_story_not_found(

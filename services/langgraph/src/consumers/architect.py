@@ -80,7 +80,10 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
     log = logger.bind(story_id=msg.story_id, project_id=msg.project_id)
     log.info("architect_job_started")
 
-    # Guard: skip stories that are already done or no longer exist
+    # Guard: skip stories that are already past architect stage.
+    # NOTE: terminal statuses (COMPLETED, FAILED, ARCHIVED) are already filtered
+    # by the centralized staleness guard in _base.py. This checks non-terminal
+    # statuses that are still wrong for architect (e.g. DEPLOYING).
     try:
         story = await api_client.get_story(msg.story_id)
     except Exception:
@@ -88,14 +91,8 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
         return {"status": "skipped", "error": "story not found"}
 
     story_status = story.status
-    skip_statuses = {
-        StoryStatus.COMPLETED,
-        StoryStatus.ARCHIVED,
-        StoryStatus.FAILED,
-        StoryStatus.DEPLOYING,
-    }
-    if story_status in skip_statuses:
-        log.info("architect_skipping_finished_story", status=story_status)
+    if story_status == StoryStatus.DEPLOYING:
+        log.info("architect_skipping_deploying_story", status=story_status)
         return {"status": "skipped", "reason": f"story already {story_status}"}
 
     # Skip if already in_progress with tasks (duplicate message from supervisor retry)

@@ -23,6 +23,7 @@ from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker
 from .tasks.provisioner_result_listener import process_provisioner_result
 from .tasks.provisioner_trigger import retry_pending_servers
+from .tasks.queue_cleanup import queue_cleanup_worker
 from .tasks.rag_summarizer import rag_summarizer_worker
 from .tasks.server_sync import sync_servers_worker
 from .tasks.task_dispatcher import task_dispatcher_loop
@@ -104,6 +105,7 @@ async def main():
             "provisioner_results",
             "task_dispatcher",
             "analytics_aggregator",
+            "queue_cleanup",
         ],
     )
 
@@ -116,6 +118,7 @@ async def main():
         asyncio.create_task(provisioner_results_worker(), name="provisioner_results"),
         asyncio.create_task(task_dispatcher_loop(), name="task_dispatcher"),
         asyncio.create_task(analytics_aggregator_worker(), name="analytics_aggregator"),
+        asyncio.create_task(queue_cleanup_worker(), name="queue_cleanup"),
     ]
 
     try:
