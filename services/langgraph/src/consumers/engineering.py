@@ -23,6 +23,7 @@ from ._base import start_worker
 from ._events import publish_callback_event
 from ._repo_setup import _create_repo_and_set_secrets
 from .engineering_result_handler import (
+    EngineeringSuccessParams,
     _update_task_status,
     _write_task_event,
     fail_job as _fail_job,
@@ -225,18 +226,20 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
                 commit_sha=result.get("commit_sha"),
             )
             return await _handle_engineering_success(
-                result=result,
-                task_id=task_id,
-                project=project,
-                callback_stream=callback_stream,
-                redis=redis,
-                skip_deploy=skip_deploy,
-                developer_started_at=developer_started_at,
-                user_id=user_id,
-                action=action,
-                planning_task_id=planning_task_id,
-                story_id=story_id,
-                deploy_fix_attempt=deploy_fix_attempt,
+                EngineeringSuccessParams(
+                    result=result,
+                    task_id=task_id,
+                    project=project,
+                    callback_stream=callback_stream,
+                    redis=redis,
+                    skip_deploy=skip_deploy,
+                    developer_started_at=developer_started_at,
+                    user_id=user_id,
+                    action=action,
+                    planning_task_id=planning_task_id,
+                    story_id=story_id,
+                    deploy_fix_attempt=deploy_fix_attempt,
+                )
             )
 
         elif eng_status == EngineeringStatus.GAVE_UP:

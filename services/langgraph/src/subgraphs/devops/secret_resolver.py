@@ -132,69 +132,71 @@ class SecretResolverNode(FunctionalNode):
         # Default random for unknown infra
         return secrets_module.token_urlsafe(32)
 
-    def _compute_secret(self, key: str, project_spec: dict, state: DevOpsState) -> str:  # noqa: PLR0911
+    # Static key → value mappings for computed secrets
+    _STATIC_SECRETS: dict[str, str] = {
+        "APP_ENV": "production",
+        "ENVIRONMENT": "production",
+        "DEBUG": "false",
+        "POSTGRES_HOST": "db",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_REQUIRE_SSL": "false",
+        "BACKEND_API_URL": "http://backend:8000",
+        "API_URL": "http://backend:8000",
+        "API_BASE_URL": "http://backend:8000",
+        "BACKEND_URL": "http://backend:8000",
+    }
+
+    # Port keys → allocator service names
+    _PORT_SERVICE_MAP: dict[str, str] = {
+        "BACKEND_PORT": "backend",
+        "FRONTEND_PORT": "frontend",
+        "TG_BOT_PORT": "tg_bot",
+    }
+
+    def _compute_secret(self, key: str, project_spec: dict, state: DevOpsState) -> str:
         """Compute context-based secret value."""
         key_upper = key.upper()
+
+        if key_upper in self._STATIC_SECRETS:
+            return self._STATIC_SECRETS[key_upper]
 
         if key_upper == "APP_NAME":
             return project_spec.get("name", "app").replace(" ", "_").lower()
 
-        elif key_upper in {"APP_ENV", "ENVIRONMENT"}:
-            return "production"
-
-        elif key_upper == "DEBUG":
-            return "false"
-
-        elif key_upper == "PROJECT_NAME":
+        if key_upper == "PROJECT_NAME":
             return project_spec.get("name", "project")
 
-        elif key_upper == "POSTGRES_HOST":
-            return "db"  # Docker service name
+        if key_upper in self._PORT_SERVICE_MAP:
+            return self._resolve_port(key_upper, state)
 
-        elif key_upper == "POSTGRES_PORT":
-            return "5432"
-
-        elif key_upper == "POSTGRES_REQUIRE_SSL":
-            return "false"
-
-        elif key_upper in {"BACKEND_PORT", "FRONTEND_PORT", "TG_BOT_PORT"}:
-            # Map VAR_PORT -> service name in allocator
-            service_map = {
-                "BACKEND_PORT": "backend",
-                "FRONTEND_PORT": "frontend",
-                "TG_BOT_PORT": "tg_bot",
-            }
-            service = service_map.get(key_upper, "backend")
-            alloc = self._find_allocation(state, service)
-            if alloc:
-                return str(alloc[1])
-            return "8000"
-
-        elif key_upper in {"BACKEND_API_URL", "API_URL", "API_BASE_URL", "BACKEND_URL"}:
-            # Inter-service URL: use docker service name, not external IP
-            return "http://backend:8000"
-
-        # Docker images from self-hosted registry
-        elif key_upper.endswith("_IMAGE"):
-            registry_host = os.getenv("ORCHESTRATOR_HOSTNAME")
-            if not registry_host:
-                raise RuntimeError("ORCHESTRATOR_HOSTNAME is not set")
-            repo_info = state.get("repo_info") or {}
-            repo_url = repo_info.get("html_url", "")
-            if repo_url:
-                # Parse: https://github.com/org/repo -> org/repo
-                parts = repo_url.rstrip("/").split("/")
-                owner = parts[-2] if len(parts) > 1 else "unknown"
-                repo = parts[-1] if parts else "unknown"
-
-                # Derive service name: BACKEND_IMAGE -> backend, TG_BOT_IMAGE -> tg-bot
-                service = key_upper.replace("_IMAGE", "").lower().replace("_", "-")
-
-                return f"{registry_host}/{owner}/{repo}-{service}:latest"
-            return f"{registry_host}/unknown/unknown-service:latest"
+        if key_upper.endswith("_IMAGE"):
+            return self._resolve_docker_image(key_upper, state)
 
         # Default: project name
         return project_spec.get("name", "value")
+
+    def _resolve_port(self, key_upper: str, state: DevOpsState) -> str:
+        """Resolve port from resource allocator."""
+        service = self._PORT_SERVICE_MAP[key_upper]
+        alloc = self._find_allocation(state, service)
+        if alloc:
+            return str(alloc[1])
+        return "8000"
+
+    def _resolve_docker_image(self, key_upper: str, state: DevOpsState) -> str:
+        """Build Docker image URL from self-hosted registry."""
+        registry_host = os.getenv("ORCHESTRATOR_HOSTNAME")
+        if not registry_host:
+            raise RuntimeError("ORCHESTRATOR_HOSTNAME is not set")
+        repo_info = state.get("repo_info") or {}
+        repo_url = repo_info.get("html_url", "")
+        if repo_url:
+            parts = repo_url.rstrip("/").split("/")
+            owner = parts[-2] if len(parts) > 1 else "unknown"
+            repo = parts[-1] if parts else "unknown"
+            service = key_upper.replace("_IMAGE", "").lower().replace("_", "-")
+            return f"{registry_host}/{owner}/{repo}-{service}:latest"
+        return f"{registry_host}/unknown/unknown-service:latest"
 
     async def _save_secrets_to_project(self, project_id: str, secrets: dict) -> None:
         """Save newly generated secrets to project config for reuse on redeploy.

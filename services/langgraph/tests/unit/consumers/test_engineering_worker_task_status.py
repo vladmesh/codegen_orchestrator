@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from tests.unit.factories import make_project, make_repository
 
+from src.consumers.engineering import EngineeringSuccessParams
+
 
 @pytest.fixture
 def mock_redis():
@@ -54,15 +56,17 @@ class TestTaskStatusUpdates:
         }
 
         await _handle_engineering_success(
-            result=result,
-            task_id="eng-1",
-            project=make_project(name="test", config={}),
-            callback_stream=None,
-            redis=mock_redis,
-            skip_deploy=False,
-            user_id="u-1",
-            action="feature",
-            planning_task_id="task-42",
+            EngineeringSuccessParams(
+                result=result,
+                task_id="eng-1",
+                project=make_project(name="test", config={}),
+                callback_stream=None,
+                redis=mock_redis,
+                skip_deploy=False,
+                user_id="u-1",
+                action="feature",
+                planning_task_id="task-42",
+            )
         )
 
         # Should transition task through in_ci → testing → done
@@ -94,15 +98,17 @@ class TestTaskStatusUpdates:
         }
 
         await _handle_engineering_success(
-            result=result,
-            task_id="eng-1",
-            project=make_project(name="test", config={}),
-            callback_stream=None,
-            redis=mock_redis,
-            skip_deploy=False,
-            user_id="u-1",
-            action="feature",
-            planning_task_id="task-42",
+            EngineeringSuccessParams(
+                result=result,
+                task_id="eng-1",
+                project=make_project(name="test", config={}),
+                callback_stream=None,
+                redis=mock_redis,
+                skip_deploy=False,
+                user_id="u-1",
+                action="feature",
+                planning_task_id="task-42",
+            )
         )
 
         # Should NOT publish to deploy queue
@@ -124,15 +130,17 @@ class TestTaskStatusUpdates:
         }
 
         await _handle_engineering_success(
-            result=result,
-            task_id="eng-1",
-            project=make_project(name="test", config={}),
-            callback_stream=None,
-            redis=mock_redis,
-            skip_deploy=False,
-            user_id="u-1",
-            action="feature",
-            # No planning_task_id
+            EngineeringSuccessParams(
+                result=result,
+                task_id="eng-1",
+                project=make_project(name="test", config={}),
+                callback_stream=None,
+                redis=mock_redis,
+                skip_deploy=False,
+                user_id="u-1",
+                action="feature",
+                # No planning_task_id
+            )
         )
 
         # Should publish to deploy queue (old behavior)
