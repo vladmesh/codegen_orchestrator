@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-04-09
+
+### Added
+- **Stale queue message cleanup** (#1021): Centralized staleness guard in `_base.py` — before processing, consumers check if the referenced run/story is terminal (COMPLETED/FAILED/CANCELLED/ARCHIVED). Stale messages are ACKed and skipped instantly, preventing the 75-message flood that blocked the 2026-03-13 escort for hours. New `queue_cleanup_worker` in scheduler runs every 10 minutes: cleans orphan `po:response:*` and `worker:*:input/output` streams idle >10min, trims entries >7 days from all task queues via XTRIM MINID. Architect's duplicate guard simplified to DEPLOYING only. 20 unit tests.
+
 ## 2026-03-21
 
 ### Added

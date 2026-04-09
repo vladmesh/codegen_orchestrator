@@ -19,11 +19,6 @@
 - **Plan**: —
 - **Status**: backlog
 
-### #1021 Add TTL/cleanup for stale Redis queue messages
-- **Priority**: CRITICAL
-- **Plan**: [docs/plans/1021-stale-queue-cleanup.md](docs/plans/1021-stale-queue-cleanup.md)
-- **Status**: backlog
-- **Brief**: Queue messages from failed/completed stories accumulate in architect:queue (and potentially other queues) with no expiry or cleanup mechanism. During the 2026-03-13 escort, 75 stale messages were found blocking a real story for hours.  Required: 1. Add periodic cleanup in scheduler: scan queue me...
 
 ### #1022 API authorization: scope worker access, protect destructive endpoints
 - **Priority**: CRITICAL
@@ -271,6 +266,7 @@
 
 ## Done (last 10)
 
+- #1021 Add TTL/cleanup for stale Redis queue messages — 2026-04-09
 - #1036 ЛК frontend SPA (project list + dashboard) — 2026-03-20
 - #1035 Telegram bot: dashboard button with one-time token — 2026-03-20
 - #1034 ЛК API: auth (one-time token → JWT) + analytics endpoints — 2026-03-20
