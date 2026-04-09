@@ -21,7 +21,7 @@
 
 ### #1021 Add TTL/cleanup for stale Redis queue messages
 - **Priority**: CRITICAL
-- **Plan**: —
+- **Plan**: [docs/plans/1021-stale-queue-cleanup.md](docs/plans/1021-stale-queue-cleanup.md)
 - **Status**: backlog
 - **Brief**: Queue messages from failed/completed stories accumulate in architect:queue (and potentially other queues) with no expiry or cleanup mechanism. During the 2026-03-13 escort, 75 stale messages were found blocking a real story for hours.  Required: 1. Add periodic cleanup in scheduler: scan queue me...
 
