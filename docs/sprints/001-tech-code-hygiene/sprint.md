@@ -9,7 +9,8 @@
 - Task 2: Fix noqa suppressions (extract dataclass, lookup table, named constant, specific except) → `tasks/phase0-task2-fix-noqa-suppressions.md`
 
 ## Phase 1: Refactoring
-- #19 Split github.py client (986 LOC) into submodules by domain (repos, actions, secrets, workflows), facade delegates
+- Task 1: Extract domain modules from github.py (mixin classes + facade) → `tasks/phase1-task1-extract-domain-modules.md`
+- Task 2: Split github test file to match domain modules → `tasks/phase1-task2-split-github-tests.md`
 
 ## Phase 2: Infra hygiene
 - #1046 Allocate ports only for modules that need host exposure (tg_bot doesn't listen → skip)
