@@ -39,7 +39,7 @@ This preserves the single-class API — every caller still does `GitHubAppClient
 - [ ] Each domain module is under 400 LOC
 - [ ] `shared/clients/__init__.py` import still works
 
-## Status: pending
+## Status: in_progress
 
 ## Developer Notes
 _To be filled during implementation._
