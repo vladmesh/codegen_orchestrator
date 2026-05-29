@@ -8,7 +8,10 @@ __pycache__/
 .venv/
 venv/
 ENV/
-uv.lock
+
+# Root uv.lock IS committed (single source of truth for all requirements.lock files).
+# The shared/ sub-project lock is not used by Docker builds, so keep it ignored.
+shared/uv.lock
 
 # IDE
 .idea/

@@ -6,18 +6,47 @@ requires-python = ">=3.12"
 # No runtime dependencies - each service has its own
 
 [dependency-groups]
-dev = [
+# Pinned test/runner toolchain — single source of truth for everything installed in
+# test images (service Dockerfile.test + the standalone integration/e2e runners).
+# Exported to requirements-test.lock by `make lock-deps`, resolved together with the
+# whole workspace so versions are identical to the per-service requirements.lock files.
+test = [
+    # Test framework
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.0.0",
-    "ruff>=0.15.5",
-    "mypy>=1.13.0",
+    # HTTP / mocking / fixture helpers
     "httpx",
     "respx>=0.21.1",
     "fakeredis>=2.34.1",
     "makefun",
+    "faker",
+    "docker",
+    "rich",
+    "typer",
+    # Scaffolding template runner
     "copier>=9.4.0",
+    "pyyaml>=6.0",
+    # Runtime client libs imported by the standalone integration/e2e runners.
+    # The runners import services via PYTHONPATH (not pip), so these must be declared
+    # here to land in requirements-test.lock at the same versions as the services.
+    "redis[hiredis]>=8.0.0",
+    "sqlalchemy>=2.0.0",
+    "asyncpg>=0.29.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "tenacity",
+    "structlog>=25.1.0",
+    "langchain-core",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pyjwt[crypto]>=2.8.0",
+]
+dev = [
+    { include-group = "test" },
+    "ruff>=0.15.5",
+    "mypy>=1.13.0",
     # shared/ is COPY'd in Docker (not pip-installed), but tests need it
     "shared",
     # Workspace members (all services + packages)
@@ -28,6 +57,10 @@ dev = [
     "worker-manager",
     "infra-service",
     "worker-wrapper",
+    # NB: scaffolder is a workspace member (locked in uv.lock, exported to its
+    # requirements.lock) but is intentionally NOT installed into the dev venv.
+    # Its tests/__init__.py would otherwise shadow other services' namespace
+    # `tests` packages on sys.path and break `make test-unit`.
 ]
 
 [tool.uv.workspace]
@@ -38,6 +71,7 @@ members = [
     "services/scheduler",
     "services/worker-manager",
     "services/infra-service",
+    "services/scaffolder",
     "packages/worker-wrapper",
 ]
 
@@ -52,6 +86,7 @@ telegram-bot = { workspace = true }
 scheduler = { workspace = true }
 worker-manager = { workspace = true }
 infra-service = { workspace = true }
+scaffolder = { workspace = true }
 worker-wrapper = { workspace = true }
 
 # No build-system — this is a virtual workspace root (not a distributable package)

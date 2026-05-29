@@ -3,16 +3,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies from lock file + test deps first (change rarely)
-COPY services/telegram_bot/requirements.lock ./
+# Install pinned runtime (matches prod) + pinned test toolchain (change rarely)
+COPY services/telegram_bot/requirements.lock requirements-test.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.lock && \
-    pip install pytest pytest-asyncio pytest-cov httpx respx
+    pip install -r requirements.lock -r requirements-test.lock
 
-# Install shared module (changes more often, but lightweight)
+# Install shared module as a package WITHOUT touching the pinned deps
+# (shared's runtime deps are already covered by requirements.lock)
 COPY shared /app/shared
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install /app/shared
+    pip install --no-deps /app/shared
 
 # Copy source
 COPY services/telegram_bot/src ./src

@@ -14,21 +14,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # === Test Dependencies Stage ===
 FROM base AS test-deps
 
-# Copy only dependency files first (for caching)
-COPY services/worker-manager/pyproject.toml ./
+# Copy lock files first (for caching) — same pins as prod + pinned test toolchain
+COPY services/worker-manager/requirements.lock requirements-test.lock ./
 
-# Install service + test dependencies (shared is installed later in test stage)
+# Install pinned runtime (matches prod) + pinned test toolchain
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install . && \
-    pip install pytest pytest-asyncio pytest-cov httpx docker "fakeredis>=2.34.1"
+    pip install -r requirements.lock -r requirements-test.lock
 
 # === Test Stage ===
 FROM test-deps AS test
 
-# Copy and install shared module (changes more often than deps)
+# Copy shared module and install it as a package WITHOUT touching the pinned deps
+# (shared's runtime deps are already covered by requirements.lock)
 COPY shared /app/shared
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install ./shared
+    pip install --no-deps ./shared
 
 # Copy source code
 COPY services/worker-manager/src ./src
