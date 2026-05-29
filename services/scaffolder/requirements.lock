@@ -44,7 +44,7 @@ python-dotenv==1.2.2
     # via pydantic-settings
 pyyaml==6.0.3
     # via scaffolder (services/scaffolder/pyproject.toml)
-redis==7.3.0
+redis==8.0.0
     # via scaffolder (services/scaffolder/pyproject.toml)
 structlog==25.5.0
     # via scaffolder (services/scaffolder/pyproject.toml)

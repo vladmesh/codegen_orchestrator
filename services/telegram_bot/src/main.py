@@ -31,6 +31,7 @@ from shared.contracts.queues.po import (
     to_flat_fields,
 )
 from shared.queues import PO_INPUT_QUEUE, PO_PROACTIVE_GROUP, PO_PROACTIVE_QUEUE
+from shared.redis import decode_redis_fields
 from shared.redis_client import RedisStreamClient
 
 # Add shared to path
@@ -229,7 +230,7 @@ async def _read_po_response(
         for _stream_name, stream_messages in messages:
             if stream_messages:
                 _msg_id, data = stream_messages[0]
-                return data
+                return decode_redis_fields(data)
 
     return None
 

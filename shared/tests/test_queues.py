@@ -28,6 +28,7 @@ from shared.queues import (
     ensure_all_groups,
     ensure_consumer_groups,
 )
+from shared.redis.client import decode_redis_value
 
 
 class TestQueueBinding:
@@ -92,7 +93,8 @@ class TestEnsureAllGroups:
         # Verify each binding was created
         for binding in QUEUE_TOPOLOGY:
             groups = await fake_redis.xinfo_groups(binding.stream)
-            group_names = [g["name"] for g in groups]
+            # redis-py 8 returns bytes XINFO GROUPS values — decode before compare.
+            group_names = [decode_redis_value(g["name"]) for g in groups]
             assert binding.group in group_names, (
                 f"Group {binding.group} missing on {binding.stream}"
             )

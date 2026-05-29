@@ -14,7 +14,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     
     # Redis (for pub/sub)
-    "redis[hiredis]>=5.0.0",
+    "redis[hiredis]>=8.0.0",
     
     # Utils
     "structlog>=25.1.0",

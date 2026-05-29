@@ -5,6 +5,7 @@
 ## 2026-05-29
 
 ### Changed
+- **Upgrade redis-py to 8.0.0 + make the consumer layer compatible**: bumped `redis[hiredis]` to `>=8.0.0` across all services and pinned `redis==8.0.0` in the `requirements.lock` files. redis-py 8 stopped applying `decode_responses=True` to the field maps returned by `XREADGROUP` / `XREAD` / `XAUTOCLAIM` and `XINFO GROUPS`, and to `HGETALL` (they now come back as `bytes`), while `XRANGE` / `HGET` / `SMEMBERS` etc. still decode. Added `decode_redis_value` / `decode_redis_fields` helpers in `shared/redis` and normalized every affected read: `RedisStreamClient.consume`/`_recover_pending`, PO consumer (`po.py`), telegram-bot `XREAD`, API debug router (`XINFO GROUPS`), and worker-manager `HGETALL` sites (`manager.py`, `introspect.py`, `garbage_collector.py`). Also hardened `consume()` to cede the event loop on empty reads (fakeredis ignores the block timeout, which would otherwise busy-spin and starve the loop). Without this the entire consumer layer silently broke on redis 8 (messages dropped on validation, JSON never unwrapped). Tests updated to read through the decode boundary; added a `_parse_fields` bytes-decoding regression test.
 - **QA tester prompt moved into `prompts/` package**: extracted `build_qa_prompt` from `services/langgraph/src/consumers/_qa_runner.py` into a dedicated `services/langgraph/src/prompts/qa/__init__.py`, consistent with the `architect`/`po`/`developer_worker` prompts. `_qa_runner.py` now imports the builder. No behavior change (prompt text preserved verbatim).
 
 ## 2026-04-09

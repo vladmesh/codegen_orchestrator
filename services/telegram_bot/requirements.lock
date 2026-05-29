@@ -42,7 +42,7 @@ python-telegram-bot==22.5
     # via telegram-bot (services/telegram_bot/pyproject.toml)
 pyyaml==6.0.3
     # via telegram-bot (services/telegram_bot/pyproject.toml)
-redis==7.1.0
+redis==8.0.0
     # via telegram-bot (services/telegram_bot/pyproject.toml)
 structlog==25.5.0
     # via telegram-bot (services/telegram_bot/pyproject.toml)

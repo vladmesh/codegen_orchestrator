@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -44,30 +45,33 @@ async def test_reminder_fires_and_reaches_po_input(redis, raw_redis):
     )
     await raw_redis.zadd(PO_REMINDERS_KEY, {reminder: time.time() - 10})
 
-    # 2. Create consumer group on po:input
-    try:
-        await raw_redis.xgroup_create(PO_INPUT_QUEUE, "test-group", id="0", mkstream=True)
-    except Exception:  # noqa: S110
-        pass
-
-    # 3. Run one poll cycle
+    # 2. Run one poll cycle
     fired = await _poll_once(redis)
 
-    # 4. Verify reminder appeared in po:input
-    entries = await raw_redis.xreadgroup("test-group", "t1", {PO_INPUT_QUEUE: ">"}, count=10)
-    assert len(entries) == 1
-    _, messages = entries[0]
-    assert len(messages) == 1
-    _, data = messages[0]
+    # 3. Verify reminder appeared in po:input — read through the client so the
+    #    decode boundary is exercised (redis-py 8 returns bytes field maps from
+    #    XREADGROUP even with decode_responses=True; consume() normalizes them).
+    received: list[dict] = []
+
+    async def _drain():
+        async for msg in redis.consume(PO_INPUT_QUEUE, "test-group", "t1", block_ms=1, count=10):
+            if msg is None:
+                break
+            received.append(msg.data)
+
+    await asyncio.wait_for(_drain(), timeout=5)
+
+    assert len(received) == 1
+    data = received[0]
     assert data["type"] == "reminder"
     assert data["user_id"] == "user-42"
     assert data["text"] == "check task eng-abc123"
 
-    # 5. Verify reminder removed from ZSET
+    # 4. Verify reminder removed from ZSET
     remaining = await raw_redis.zcard(PO_REMINDERS_KEY)
     assert remaining == 0
 
-    # 6. Verify fired count
+    # 5. Verify fired count
     assert fired == 1
 
 

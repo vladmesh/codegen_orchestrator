@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Shared Redis Streams client"
 requires-python = ">=3.11"
 dependencies = [
-    "redis>=5.0.0",
+    "redis>=8.0.0",
     "structlog>=24.1.0",
     "codegen-orchestrator-shared-contracts",
 ]

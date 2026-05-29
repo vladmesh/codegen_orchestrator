@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 import structlog
 
 from shared.queues import QUEUE_TOPOLOGY
+from shared.redis import decode_redis_fields
 
 from ..config import get_settings
 
@@ -54,7 +55,9 @@ async def debug_queues() -> dict:
 
             # Group info
             try:
-                groups = await r.xinfo_groups(binding.stream)
+                # redis-py 8 returns bytes values from XINFO GROUPS even with
+                # decode_responses=True — normalize so name/id comparisons work.
+                groups = [decode_redis_fields(g) for g in await r.xinfo_groups(binding.stream)]
                 matched = [g for g in groups if g.get("name") == binding.group]
                 if matched:
                     g = matched[0]
