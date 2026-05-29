@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-05-29
+
+### Changed
+- **QA tester prompt moved into `prompts/` package**: extracted `build_qa_prompt` from `services/langgraph/src/consumers/_qa_runner.py` into a dedicated `services/langgraph/src/prompts/qa/__init__.py`, consistent with the `architect`/`po`/`developer_worker` prompts. `_qa_runner.py` now imports the builder. No behavior change (prompt text preserved verbatim).
+
 ## 2026-04-09
 
 ### Added

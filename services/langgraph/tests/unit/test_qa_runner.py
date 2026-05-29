@@ -6,11 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.consumers._qa_runner import (
-    build_qa_prompt,
-    parse_qa_result,
-    run_qa_on_server,
-)
+from src.consumers._qa_runner import parse_qa_result, run_qa_on_server
+from src.prompts.qa import build_qa_prompt
 
 
 class TestBuildQAPrompt:
