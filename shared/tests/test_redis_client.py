@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 
 from shared.contracts.base import BaseMessage
-from shared.redis.client import RedisStreamClient, StreamMessage
+from shared.redis.client import RedisStreamClient, StreamMessage, decode_redis_value
 
 
 class SampleMessage(BaseMessage):
@@ -102,7 +102,9 @@ class TestConsumerGroup:
     async def test_creates_group(self, client, fake_redis):
         await client.ensure_consumer_group("test:stream", "test-group")
         info = await fake_redis.xinfo_groups("test:stream")
-        assert any(g["name"] == "test-group" for g in info)
+        # redis-py 8 returns bytes values from XINFO GROUPS even with
+        # decode_responses=True — decode before comparing.
+        assert any(decode_redis_value(g["name"]) == "test-group" for g in info)
 
     async def test_duplicate_group_does_not_raise(self, client):
         await client.ensure_consumer_group("test:stream", "test-group")
@@ -146,6 +148,24 @@ class TestConsume:
             break
         assert len(received) == 1
         assert received[0].data == {"data": "{invalid"}
+
+
+class TestParseFieldsDecoding:
+    """redis-py 8 stopped applying decode_responses=True to XREADGROUP/XREAD
+    field maps (keys and values arrive as bytes). _parse_fields must normalize
+    them to str so consumers keep getting str-keyed dicts on any redis-py.
+    """
+
+    def test_flat_bytes_fields_decoded(self):
+        data = RedisStreamClient._parse_fields({b"type": b"reminder", b"user_id": b"u1"})
+        assert data == {"type": "reminder", "user_id": "u1"}
+
+    def test_wrapped_bytes_data_decoded_and_parsed(self):
+        raw = {b"data": b'{"event": "completed", "task_id": "t1"}'}
+        assert RedisStreamClient._parse_fields(raw) == {"event": "completed", "task_id": "t1"}
+
+    def test_str_fields_pass_through(self):
+        assert RedisStreamClient._parse_fields({"type": "reminder"}) == {"type": "reminder"}
 
 
 class TestAck:

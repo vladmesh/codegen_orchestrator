@@ -228,7 +228,7 @@ pyyaml==6.0.3
     # via
     #   langgraph-orchestrator (services/langgraph/pyproject.toml)
     #   langchain-core
-redis==7.1.0
+redis==8.0.0
     # via langgraph-orchestrator (services/langgraph/pyproject.toml)
 regex==2025.11.3
     # via tiktoken

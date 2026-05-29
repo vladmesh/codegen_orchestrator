@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.redis import decode_redis_fields
 
 from ..config import settings
 from ._shared import FileTreeEntry, read_file, walk_workspace
@@ -61,7 +62,7 @@ class FileContentResponse(BaseModel):
 
 async def _check_worker_exists(redis, worker_id: str) -> dict:
     """Check worker exists in Redis, raise 404 if not."""
-    status_data = await redis.hgetall(f"worker:status:{worker_id}")
+    status_data = decode_redis_fields(await redis.hgetall(f"worker:status:{worker_id}"))
     if not status_data:
         raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Worker not found")
     return status_data
@@ -73,7 +74,7 @@ async def _get_workspace_path(redis, worker_id: str, request: Request | None = N
     Resolves via repo_id from Redis metadata → SCAFFOLDED_WORKSPACE_PATH/{repo_id}/.
     Falls back to workspace_path from Redis metadata for legacy workers.
     """
-    meta = await redis.hgetall(f"worker:meta:{worker_id}")
+    meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
     repo_id = meta.get("repo_id")
 
     if repo_id and request:
@@ -112,8 +113,8 @@ async def list_workers(request: Request):
     workers = []
     for key in keys:
         worker_id = key.split(":", 2)[2]
-        status_data = await redis.hgetall(f"worker:status:{worker_id}")
-        meta = await redis.hgetall(f"worker:meta:{worker_id}")
+        status_data = decode_redis_fields(await redis.hgetall(f"worker:status:{worker_id}"))
+        meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
         last_activity = await redis.get(f"worker:last_activity:{worker_id}")
         error = await redis.get(f"worker:error:{worker_id}")
 
@@ -149,7 +150,7 @@ async def get_worker(worker_id: str, request: Request):
     docker = request.app.state.docker
 
     status_data = await _check_worker_exists(redis, worker_id)
-    meta = await redis.hgetall(f"worker:meta:{worker_id}")
+    meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
     last_activity = await redis.get(f"worker:last_activity:{worker_id}")
     error = await redis.get(f"worker:error:{worker_id}")
 

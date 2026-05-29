@@ -1,5 +1,3 @@
-import json
-
 import pytest
 import pytest_asyncio
 from unittest.mock import MagicMock, AsyncMock
@@ -79,8 +77,8 @@ async def test_consume_create_worker_command(redis_client, stream_client, mock_w
     _stream, messages = resp[0]
     message_id, raw_data = messages[0]
 
-    # Parse like _parse_fields does
-    data = json.loads(raw_data["data"])
+    # Parse via the real client helper (decodes bytes + unwraps JSON)
+    data = RedisStreamClient._parse_fields(raw_data)
 
     # Process
     await consumer.process_message(message_id, data)
@@ -94,7 +92,7 @@ async def test_consume_create_worker_command(redis_client, stream_client, mock_w
     _, msgs = response_messages[0]
     _msg_id, msg_data = msgs[0]
 
-    response = CreateWorkerResponse.model_validate_json(msg_data["data"])
+    response = CreateWorkerResponse.model_validate(RedisStreamClient._parse_fields(msg_data))
     assert response.request_id == "req-123"
     assert response.success is True
     assert response.worker_id == "test-worker"
@@ -117,7 +115,7 @@ async def test_consume_delete_worker_command(redis_client, stream_client, mock_w
         count=1,
     )
     message_id, raw_data = resp[0][1][0]
-    data = json.loads(raw_data["data"])
+    data = RedisStreamClient._parse_fields(raw_data)
 
     await consumer.process_message(message_id, data)
 
@@ -143,7 +141,7 @@ async def test_consume_status_worker_command(redis_client, stream_client, mock_w
         count=1,
     )
     msg_id, raw_data = resp[0][1][0]
-    data = json.loads(raw_data["data"])
+    data = RedisStreamClient._parse_fields(raw_data)
 
     await consumer.process_message(msg_id, data)
 

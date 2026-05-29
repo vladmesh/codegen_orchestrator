@@ -5,6 +5,7 @@ import uuid
 from fakeredis import aioredis
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.redis import decode_redis_fields
 from src.manager import WorkerManager
 
 
@@ -126,7 +127,7 @@ async def test_create_worker_creates_workspace_dir():
         workspace_path="/tmp/codegen/workspaces/worker-ws-test/workspace",
     )
 
-    meta = await redis.hgetall(f"worker:meta:{worker_id}")
+    meta = decode_redis_fields(await redis.hgetall(f"worker:meta:{worker_id}"))
     assert meta["workspace_path"] == "/tmp/codegen/workspaces/worker-ws-test/workspace"
     assert meta["dev_network"] == f"dev_proj_{worker_id}"
 

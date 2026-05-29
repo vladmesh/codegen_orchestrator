@@ -8,6 +8,7 @@ import structlog
 from redis.asyncio import Redis
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.redis import decode_redis_fields
 
 from .config import settings
 from .docker_ops import DockerClientWrapper
@@ -129,7 +130,7 @@ class WorkerManager:
         container_name = f"{settings.WORKER_IMAGE_PREFIX}-{worker_id}"
         logger.info("deleting_worker", worker_id=worker_id)
 
-        meta = await self.redis.hgetall(f"worker:meta:{worker_id}")
+        meta = decode_redis_fields(await self.redis.hgetall(f"worker:meta:{worker_id}"))
         dev_network = meta.get("dev_network") if meta else None
         stored_workspace = meta.get("workspace_path") if meta else None
 
@@ -307,7 +308,7 @@ class WorkerManager:
         if not await self.redis.sismember("workspace:active_projects", project_id):
             return None
         async for key in self.redis.scan_iter(match="worker:meta:*"):
-            meta = await self.redis.hgetall(key)
+            meta = decode_redis_fields(await self.redis.hgetall(key))
             if meta.get("project_id") == project_id:
                 worker_id = key.split(":")[-1]
                 status = await self.redis.hget(f"worker:status:{worker_id}", "status")

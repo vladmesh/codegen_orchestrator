@@ -103,7 +103,7 @@ pyyaml==6.0.3
     # via
     #   api (services/api/pyproject.toml)
     #   uvicorn
-redis==7.1.0
+redis==8.0.0
     # via api (services/api/pyproject.toml)
 regex==2025.11.3
     # via tiktoken

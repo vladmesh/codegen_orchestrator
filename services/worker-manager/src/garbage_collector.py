@@ -10,6 +10,7 @@ import structlog
 from redis.asyncio import Redis
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.redis import decode_redis_fields
 
 from .config import settings
 from .docker_ops import DockerClientWrapper
@@ -110,7 +111,7 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
     for project_id in active_projects:
         has_worker = False
         async for key in redis.scan_iter(match="worker:meta:*"):
-            meta = await redis.hgetall(key)
+            meta = decode_redis_fields(await redis.hgetall(key))
             if meta.get("project_id") == project_id:
                 has_worker = True
                 break

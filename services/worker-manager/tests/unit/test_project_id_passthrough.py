@@ -15,6 +15,7 @@ from shared.contracts.queues.worker import (
     WorkerCapability,
     WorkerConfig,
 )
+from shared.redis import decode_redis_fields
 
 from src.config import settings
 from src.consumer import WorkerCommandConsumer
@@ -256,7 +257,7 @@ class TestRepoIdRedisMeta:
                 repo_id="repo-1",
             )
 
-        meta = await redis.hgetall("worker:meta:w-5")
+        meta = decode_redis_fields(await redis.hgetall("worker:meta:w-5"))
         assert meta.get("repo_id") == "repo-1"
 
     @pytest.mark.asyncio
@@ -277,7 +278,7 @@ class TestRepoIdRedisMeta:
                 repo_id="repo-1",
             )
 
-        meta = await redis.hgetall("worker:meta:w-5b")
+        meta = decode_redis_fields(await redis.hgetall("worker:meta:w-5b"))
         assert meta.get("project_id") == "proj-1"
 
     @pytest.mark.asyncio

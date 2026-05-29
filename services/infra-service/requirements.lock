@@ -80,7 +80,7 @@ pyyaml==6.0.3
     # via
     #   infra-service (services/infra-service/pyproject.toml)
     #   ansible-core
-redis==7.1.0
+redis==8.0.0
     # via infra-service (services/infra-service/pyproject.toml)
 resolvelib==1.2.1
     # via ansible-core

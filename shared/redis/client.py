@@ -17,6 +17,22 @@ from shared.contracts.base import BaseMessage
 logger = structlog.get_logger(__name__)
 
 
+def decode_redis_value(value: Any) -> Any:
+    """Normalize a Redis response value to str.
+
+    redis-py 8 stopped applying ``decode_responses=True`` to the field maps and
+    entry IDs returned by XREADGROUP / XREAD / XAUTOCLAIM (they arrive as bytes),
+    even though XRANGE and most other commands still decode. We normalize at the
+    boundary so callers always receive str regardless of the redis-py version.
+    """
+    return value.decode() if isinstance(value, bytes) else value
+
+
+def decode_redis_fields(fields: dict) -> dict[str, str]:
+    """Decode a stream entry's field map to str keys and values."""
+    return {decode_redis_value(k): decode_redis_value(v) for k, v in fields.items()}
+
+
 @dataclass
 class StreamMessage:
     """A message from a Redis Stream."""
@@ -122,6 +138,7 @@ class RedisStreamClient:
         - Wrapped: {"data": "<JSON string>"} → parsed JSON dict
         - Flat: {"key1": "val1", "key2": "val2"} → fields as-is
         """
+        fields = decode_redis_fields(fields)
         if "data" in fields:
             try:
                 parsed = json.loads(fields["data"])
@@ -151,11 +168,12 @@ class RedisStreamClient:
                 start_id=cursor,
                 count=count,
             )
-            new_cursor = result[0]
+            new_cursor = decode_redis_value(result[0])
             claimed = result[1]
             for message_id, fields in claimed:
                 if fields is None:
                     continue
+                message_id = decode_redis_value(message_id)
                 data = self._parse_fields(fields)
                 yield StreamMessage(message_id=message_id, data=data)
                 if auto_ack:
@@ -208,11 +226,18 @@ class RedisStreamClient:
                 )
 
                 if not messages:
+                    # Cede control to the event loop. The XREADGROUP block above
+                    # normally suspends, but some backends (e.g. fakeredis in
+                    # tests) ignore the block timeout and return immediately —
+                    # without this yield the loop would busy-spin and starve
+                    # other tasks on the same loop.
+                    await asyncio.sleep(0)
                     yield None  # type: ignore[misc]
                     continue
 
                 for _stream_name, stream_messages in messages:
                     for message_id, fields in stream_messages:
+                        message_id = decode_redis_value(message_id)
                         data = self._parse_fields(fields)
                         yield StreamMessage(message_id=message_id, data=data)
                         if auto_ack:

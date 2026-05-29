@@ -79,7 +79,7 @@ python-dotenv==1.2.1
     # via pydantic-settings
 pyyaml==6.0.3
     # via scheduler (services/scheduler/pyproject.toml)
-redis==7.1.0
+redis==8.0.0
     # via scheduler (services/scheduler/pyproject.toml)
 regex==2025.11.3
     # via tiktoken

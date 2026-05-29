@@ -26,6 +26,7 @@ from shared.contracts.queues.po import (
 )
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import PO_CONSUMER_GROUP, PO_INPUT_QUEUE, PO_PROACTIVE_QUEUE
+from shared.redis import decode_redis_fields, decode_redis_value
 from shared.redis_client import RedisStreamClient
 
 from ..agents.po.graph import create_po_graph
@@ -55,13 +56,22 @@ async def _recover_pending(client: RedisStreamClient, sem, user_locks, graph) ->
             start_id=cursor,
             count=10,
         )
-        new_cursor = result[0]
+        new_cursor = decode_redis_value(result[0])
         claimed = result[1]
         for msg_id, fields in claimed:
             if fields is None:
                 continue
             recovered += 1
-            asyncio.create_task(_process_message(graph, client, sem, user_locks, msg_id, fields))
+            asyncio.create_task(
+                _process_message(
+                    graph,
+                    client,
+                    sem,
+                    user_locks,
+                    decode_redis_value(msg_id),
+                    decode_redis_fields(fields),
+                )
+            )
         if new_cursor == "0-0" or not claimed:
             break
         cursor = new_cursor
@@ -173,7 +183,14 @@ async def run_po_consumer() -> None:
             for _stream_name, messages in entries:
                 for msg_id, data in messages:
                     asyncio.create_task(
-                        _process_message(graph, client, sem, user_locks, msg_id, data)
+                        _process_message(
+                            graph,
+                            client,
+                            sem,
+                            user_locks,
+                            decode_redis_value(msg_id),
+                            decode_redis_fields(data),
+                        )
                     )
     finally:
         await api_client.aclose()
