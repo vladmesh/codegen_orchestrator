@@ -89,7 +89,7 @@ graph TD
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/project-factory-organization/codegen-orchestrator.git
+   git clone https://github.com/vladmesh/codegen_orchestrator.git
    cd codegen_orchestrator
    ```
 
