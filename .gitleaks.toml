@@ -1,0 +1,20 @@
+# gitleaks config. Keep the full default ruleset; allowlist only the
+# known-safe false positives so a scan stays signal instead of noise.
+# Every entry below was confirmed a non-secret during the 2026-06 audit:
+# a test fixture, a dependency-hash collision, or a public identifier.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Audited false positives: test fixtures, lockfile hashes, public IDs"
+paths = [
+  '''uv\.lock$''',                    # PyPI wheel sha256 hashes collide with the square-access-token regex
+  '''docker/test/''',                 # dummy Fernet SECRETS_ENCRYPTION_KEY used only when ENVIRONMENT=test
+  '''scripts/test-unit-local\.sh$''', # same dummy test encryption key
+]
+regexes = [
+  '''9d1c250a-e61b-44d9-88ed-5944d1962f5e''', # public Claude Code OAuth client_id, not a secret
+]
+stopwords = [
+  "fake", # fake PEM/SSH keys in unit tests (test_qa_runner, test_infra_client, test_server_ssh_key)
+]
