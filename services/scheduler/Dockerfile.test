@@ -13,13 +13,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # === Test Dependencies Stage ===
 FROM base AS test-deps
 
-# Copy only dependency files first (for caching)
-COPY services/scheduler/pyproject.toml ./
+# Copy lock files first (for caching) — same pins as prod + pinned test toolchain
+COPY services/scheduler/requirements.lock requirements-test.lock ./
 
-# Install runtime + test dependencies
+# Install pinned runtime (matches prod) + pinned test toolchain
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install . && \
-    pip install pytest pytest-asyncio pytest-cov respx
+    pip install -r requirements.lock -r requirements-test.lock
 
 # === Test Stage ===
 FROM test-deps AS test

@@ -80,7 +80,14 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies
-        run: uv sync
+        # --locked: fail if uv.lock is out of sync with pyproject.toml instead of
+        # silently re-resolving. Keeps CI/dev pinned to the committed lockfile.
+        run: uv sync --locked
+
+      - name: Verify requirements.lock files match uv.lock
+        # Guards against the prod/test desync: every requirements.lock must be a
+        # faithful export of uv.lock. Fails if deps changed without `make lock-deps`.
+        run: make lock-check
 
       - name: Check formatting with Ruff
         run: uv run ruff format --check .

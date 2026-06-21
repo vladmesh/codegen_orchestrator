@@ -16,9 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
-# Install test dependencies
-COPY docker/test/e2e/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install pinned test toolchain (derived from uv.lock — same versions as the services)
+COPY requirements-test.lock .
+RUN pip install --no-cache-dir -r requirements-test.lock
 
 # Copy shared and packages
 COPY shared ./shared

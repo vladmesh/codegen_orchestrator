@@ -1,6 +1,6 @@
 .PHONY: lint format test-unit test-integration test-e2e-scaffold test-live test-live-clean test-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations init-langfuse-db \
-	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
+	setup-hooks lock-deps lock-check _export-locks cleanup-agents backlog roadmap status recent-artifacts sync task \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
 	check-worker-images .nuke-common .nuke-hard-prune pull-worker-reports
 
@@ -66,17 +66,37 @@ help:
 	@echo "  make rebuild-worker-images-hard - Rebuild with --no-cache (when cache is stale)"
 
 # === Dependency Lock Files ===
+# Single source of truth: uv.lock (workspace-wide resolution).
+# Every requirements.lock is *derived* from it via `uv export`, so the versions
+# installed in prod images, test images and the integration/e2e runners are
+# guaranteed identical to what dev/CI resolves. Never edit a .lock file by hand.
 
+# Internal: re-export every requirements.lock from the current uv.lock.
+_export-locks:
+	uv export --package api               --no-emit-workspace --no-default-groups --no-hashes -o services/api/requirements.lock
+	uv export --package langgraph-orchestrator --no-emit-workspace --no-default-groups --no-hashes -o services/langgraph/requirements.lock
+	uv export --package scheduler         --no-emit-workspace --no-default-groups --no-hashes -o services/scheduler/requirements.lock
+	uv export --package telegram-bot      --no-emit-workspace --no-default-groups --no-hashes -o services/telegram_bot/requirements.lock
+	uv export --package worker-manager    --no-emit-workspace --no-default-groups --no-hashes -o services/worker-manager/requirements.lock
+	uv export --package infra-service     --no-emit-workspace --no-default-groups --no-hashes -o services/infra-service/requirements.lock
+	uv export --package scaffolder        --no-emit-workspace --no-default-groups --no-hashes -o services/scaffolder/requirements.lock
+	uv export --only-group test           --no-emit-workspace --no-hashes -o requirements-test.lock
+
+# Regenerate uv.lock from pyproject.toml, then re-derive all requirements.lock files.
 lock-deps:
-	@echo "🔒 Generating requirements.lock files with uv..."
-	uv pip compile services/langgraph/pyproject.toml -o services/langgraph/requirements.lock
-	uv pip compile services/api/pyproject.toml -o services/api/requirements.lock
-	uv pip compile services/scheduler/pyproject.toml -o services/scheduler/requirements.lock
-	uv pip compile services/telegram_bot/pyproject.toml -o services/telegram_bot/requirements.lock
-	uv pip compile services/worker-manager/pyproject.toml -o services/worker-manager/requirements.lock
-	uv pip compile services/infra-service/pyproject.toml -o services/infra-service/requirements.lock
-	uv pip compile services/scaffolder/pyproject.toml -o services/scaffolder/requirements.lock
+	@echo "🔒 Regenerating uv.lock + all requirements.lock files..."
+	uv lock
+	$(MAKE) _export-locks
 	@echo "✅ All lock files updated!"
+
+# CI gate: fail if the committed requirements.lock files drift from uv.lock.
+# (uv.lock-vs-pyproject drift is caught separately by `uv sync --locked`.)
+lock-check:
+	@echo "🔍 Checking requirements.lock files are in sync with uv.lock..."
+	$(MAKE) _export-locks
+	@git diff --exit-code -- services/*/requirements.lock requirements-test.lock \
+		|| { echo "❌ Lock files out of date — run 'make lock-deps' and commit the result."; exit 1; }
+	@echo "✅ Lock files in sync with uv.lock."
 
 # === Docker ===
 

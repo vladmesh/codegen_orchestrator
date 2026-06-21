@@ -7,9 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install test dependencies
-COPY docker/test/integration/requirements.template.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Install pinned test toolchain (derived from uv.lock — includes pytest + copier + pyyaml)
+COPY requirements-test.lock .
+RUN pip install --no-cache-dir -r requirements-test.lock
 
 # Copy tests (usually mounted, but good for caching)
 COPY tests/integration/template /app/tests/integration/template

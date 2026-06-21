@@ -10,15 +10,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy shared as plain files (deps are in service pyproject.toml)
-COPY shared /app/shared
-
-# Install service dependencies + Ansible collections
-COPY services/infra-service/pyproject.toml .
+# Install service dependencies from the lock file (pinned) + Ansible collections.
+# ansible-galaxy comes from ansible-core, which is pinned in requirements.lock.
+COPY services/infra-service/requirements.lock .
 COPY services/infra-service/ansible/requirements.yml /app/ansible/requirements.yml
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install . && \
+    pip install -r requirements.lock && \
     ansible-galaxy collection install -r /app/ansible/requirements.yml
+
+# Copy shared as plain files (its runtime deps are included in requirements.lock)
+COPY shared /app/shared
 
 # Copy source code
 COPY services/infra-service/src /app/src
