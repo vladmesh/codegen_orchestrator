@@ -1,0 +1,14 @@
+# Orca workspace hooks: run when Orca creates a new worktree from this repo.
+# Recognized keys: scripts.setup, scripts.archive, issueCommand, defaultTabs.
+# Injected env: $ORCA_ROOT_PATH (main checkout), $ORCA_WORKTREE_PATH (new worktree),
+# $ORCA_WORKSPACE_NAME.
+scripts:
+  setup: |
+    # Bring real env into the fresh worktree. Fill real values once in
+    # $ORCA_ROOT_PATH/.env (gitignored); every new workspace inherits them.
+    # Falls back to the committed template so the file always exists.
+    if [ -f "$ORCA_ROOT_PATH/.env" ]; then
+      cp "$ORCA_ROOT_PATH/.env" "$ORCA_WORKTREE_PATH/.env"
+    elif [ -f "$ORCA_WORKTREE_PATH/.env.example" ]; then
+      cp "$ORCA_WORKTREE_PATH/.env.example" "$ORCA_WORKTREE_PATH/.env"
+    fi
