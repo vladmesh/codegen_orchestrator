@@ -92,7 +92,7 @@ All of these are instances of the same root cause as B6/B7. Fix the contracts on
 Beyond the blockers (B2/B3/B4), the swallow-and-continue pattern recurs:
 
 - **`api/routers/rag_ingest.py:128-164`** — `generate_chunk_embeddings` catches all exceptions, returns `[]`, then `upsert_document` stores chunks with `embedding=None` and reports success. RAG search silently misses those docs. **Data corruption.** Let it propagate.
-- **`api` fail-open auth** — `projects.py:43-44`, `runs.py:38-39`, `servers.py:29-56`: a missing `X-Telegram-ID` header means "allow". This exposes `GET /servers/{handle}/ssh-key` (decrypted SSH private key, `servers.py:125-140`) and all server mutations to any caller that omits the header. **Security.** Make internal access an explicit positive signal (service token), not absence of a header; consolidate into `dependencies.py` (the unused `require_admin`/`get_current_user` already live there).
+- ~~**`api` fail-open auth** — `projects.py:43-44`, `runs.py:38-39`, `servers.py:29-56`: a missing `X-Telegram-ID` header means "allow". This exposes `GET /servers/{handle}/ssh-key` (decrypted SSH private key, `servers.py:125-140`) and all server mutations to any caller that omits the header. **Security.** Make internal access an explicit positive signal (service token), not absence of a header; consolidate into `dependencies.py` (the unused `require_admin`/`get_current_user` already live there).~~ ✅ fixed — `INTERNAL_API_KEY` / `X-Internal-Key` header; all 4 internal service clients updated; `require_internal_or_admin` + `is_internal_service` deps in `dependencies.py`.
 - **`worker-wrapper/wrapper.py:529-547`** — `_write_task_md`/`_write_story_md` catch `OSError` and warn. The agent then runs against the *previous* `TASK.md`, doing the wrong work and burning credits silently. Let correctness-gating writes propagate.
 - **`langgraph/agents/po/tools_projects.py:79-84`** + `tools_stories.py:103-120` — repository-record create and spec-persist wrapped in `try/except → warning`; the repo record is what `scaffold_trigger` keys on, so the project silently never scaffolds while the tool reports success.
 - **`langgraph/agents/architect/tools.py:203-211`** — detects "already in state" via `if "422" in str(e)` over a stringified exception. Catch `httpx.HTTPStatusError`, branch on `e.response.status_code`.
@@ -108,8 +108,8 @@ Beyond the blockers (B2/B3/B4), the swallow-and-continue pattern recurs:
 
 The security-relevant items, gathered for triage:
 1. **B1** scaffolder shell-injection (incomplete fix) — highest.
-2. **B2** crypto returns ciphertext + logs secret prefix.
-3. **api fail-open auth** exposes decrypted SSH private keys (above).
+2. ~~**B2** crypto returns ciphertext + logs secret prefix.~~ ✅ fixed (9c060007)
+3. ~~**api fail-open auth** exposes decrypted SSH private keys (above).~~ ✅ fixed (see below)
 4. **`scaffolder/src/scaffold.py:96,99,256`** — GitHub token embedded in clone URL (`https://x-access-token:{token}@...`); on a failed git op the credentialed URL lands in `result.error`, gets logged, and is persisted to the project's DB config as `scaffold_error` (`consumer.py:170-171,230-231`), later shown to users. Use `GIT_ASKPASS`/`http.extraHeader`; redact git stderr before storing.
 
 ---
