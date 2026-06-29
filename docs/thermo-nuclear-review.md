@@ -28,10 +28,10 @@ These either cause silent incorrectness, ship a known security hole, or carry a 
 - The recent fix (PR #20) validates only `project_name` and `modules`, but `run_scaffold` also interpolates `template_repo` and the `repository_id`-derived `workspace` path straight into `create_subprocess_shell` strings. By the fix's own threat model (ScaffoldMessage fields forwarded straight through the queue), `repository_id="x; rm -rf /"` or a `template_repo` containing `$(...)`/backticks still injects.
 - **Remedy:** Convert `_run_cmd` to `asyncio.create_subprocess_exec` with argument lists (split the `&&` git chains into sequential exec calls). This deletes the entire shell-metacharacter class and demotes `validation.py` to defense-in-depth instead of the only barrier.
 
-### B2. `SecretsCipher.decrypt` swallows `InvalidToken`, returns ciphertext, and logs a secret prefix
+### ~~B2. `SecretsCipher.decrypt` swallows `InvalidToken`, returns ciphertext, and logs a secret prefix~~ ✅ fixed (9c060007)
 - **`shared/crypto.py:44-55`**
-- On decryption failure it logs `value_prefix=ciphertext[:10]` and returns the input unchanged ("gracefully handles plaintext values"). Three problems in one: a fail-fast violation, a backward-compat shim for un-migrated plaintext (forbidden in this prototype), and a log that leaks the first 10 chars of a value that may itself be a plaintext secret. Callers then treat still-encrypted bytes as "decrypted".
-- **Remedy:** Let `InvalidToken` propagate; delete the plaintext fallback and the `value_prefix` log field.
+- ~~On decryption failure it logs `value_prefix=ciphertext[:10]` and returns the input unchanged ("gracefully handles plaintext values"). Three problems in one: a fail-fast violation, a backward-compat shim for un-migrated plaintext (forbidden in this prototype), and a log that leaks the first 10 chars of a value that may itself be a plaintext secret. Callers then treat still-encrypted bytes as "decrypted".~~
+- ~~**Remedy:** Let `InvalidToken` propagate; delete the plaintext fallback and the `value_prefix` log field.~~
 
 ### B3. infra-service incident subsystem is silently dead
 - **`services/infra-service/src/provisioner/incidents.py:29,66,77`** call `api_client.create_incident`/`list_incidents`/`update_incident`; **`services/infra-service/src/clients/api.py:19-77`** defines none of them.
