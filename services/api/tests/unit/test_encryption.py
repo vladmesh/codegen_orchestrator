@@ -135,8 +135,10 @@ async def test_get_api_key_decrypts_value():
 
 
 @pytest.mark.asyncio
-async def test_get_api_key_handles_legacy_plaintext():
-    """GET /api-keys/{service} gracefully handles unencrypted (legacy) values."""
+async def test_get_api_key_rejects_plaintext_value():
+    """GET /api-keys/{service} raises InvalidToken on a non-Fernet (plaintext) stored value."""
+    from cryptography.fernet import InvalidToken
+
     api_key = MagicMock()
     api_key.key_enc = "plain-text-legacy-key"  # Not a Fernet token
     api_key.service = "openai"
@@ -147,12 +149,9 @@ async def test_get_api_key_handles_legacy_plaintext():
     _override_session(session)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/api-keys/openai")
-
-    assert resp.status_code == 200  # noqa: PLR2004
-    # Graceful fallback: returns plaintext as-is
-    assert resp.json()["value"] == "plain-text-legacy-key"
+    with pytest.raises(InvalidToken):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.get("/api/api-keys/openai")
 
 
 # --- Server SSH Key Encryption Tests ---
