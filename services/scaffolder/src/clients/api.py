@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 import structlog
 
@@ -28,6 +30,7 @@ class ScaffolderAPIClient:
     def __init__(self) -> None:
         settings = get_settings()
         self.base_url = settings.api_base_url.rstrip("/")
+        self._internal_api_key = os.environ["INTERNAL_API_KEY"]
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -41,11 +44,12 @@ class ScaffolderAPIClient:
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         client = await self._get_client()
+        headers = kwargs.pop("headers", None) or {}
+        headers["X-Internal-Key"] = self._internal_api_key
         correlation_id = get_correlation_id()
         if correlation_id:
-            headers = kwargs.pop("headers", None) or {}
             headers.setdefault("X-Correlation-ID", correlation_id)
-            kwargs["headers"] = headers
+        kwargs["headers"] = headers
         resp = await client.request(method, f"/api/{path.lstrip('/')}", **kwargs)
         resp.raise_for_status()
         return resp

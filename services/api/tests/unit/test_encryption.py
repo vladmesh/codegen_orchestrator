@@ -167,6 +167,7 @@ async def test_create_server_encrypts_ssh_key():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/servers/",
+            headers={"X-Internal-Key": "test-internal-key"},
             json={
                 "handle": "srv-1",
                 "host": "srv-1.example.com",
@@ -190,6 +191,7 @@ async def test_create_server_without_ssh_key():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/servers/",
+            headers={"X-Internal-Key": "test-internal-key"},
             json={
                 "handle": "srv-2",
                 "host": "srv-2.example.com",

@@ -146,3 +146,12 @@ def default_agent_type_field():
         alias="DEFAULT_AGENT_TYPE",
         description="Default AI agent to use (claude or factory)",
     )
+
+
+def internal_api_key_field():
+    """Shared service token for internal API calls (X-Internal-Key header)."""
+    return Field(
+        ...,
+        alias="INTERNAL_API_KEY",
+        description="Secret token internal services use to authenticate against the API",
+    )

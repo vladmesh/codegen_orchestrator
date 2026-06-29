@@ -9,6 +9,7 @@ from functools import lru_cache
 from shared.config import (
     BaseSettings,
     database_url_field,
+    internal_api_key_field,
     redis_url_field,
     telegram_token_field,
 )
@@ -26,6 +27,9 @@ class Settings(BaseSettings):
 
     # LK (user dashboard) JWT auth — required, no default
     lk_jwt_secret: str
+
+    # Internal service token — sent by workers, scheduler, langgraph as X-Internal-Key
+    internal_api_key: str = internal_api_key_field()
 
 
 @lru_cache

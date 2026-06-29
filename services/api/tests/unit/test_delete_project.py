@@ -94,7 +94,10 @@ async def test_delete_project_success():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.delete(f"/api/projects/{PROJECT_UUID}")
+        resp = await client.delete(
+            f"/api/projects/{PROJECT_UUID}",
+            headers={"X-Internal-Key": "test-internal-key"},
+        )
 
     assert resp.status_code == 204  # noqa: PLR2004
 
@@ -150,8 +153,8 @@ async def test_delete_project_admin_can_delete():
 
 
 @pytest.mark.asyncio
-async def test_delete_project_no_auth_header():
-    """DELETE without X-Telegram-ID succeeds (backward compat for internal calls)."""
+async def test_delete_project_no_auth_header_returns_401():
+    """DELETE without any auth header returns 401."""
     project = _make_project()
     session = _mock_session(project=project)
 
@@ -164,4 +167,4 @@ async def test_delete_project_no_auth_header():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.delete(f"/api/projects/{PROJECT_UUID}")
 
-    assert resp.status_code == 204  # noqa: PLR2004
+    assert resp.status_code == 401  # noqa: PLR2004

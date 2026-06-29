@@ -12,6 +12,7 @@ from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server, User
 
 from ..database import get_async_session
+from ..dependencies import require_internal_or_admin
 from ..schemas import (
     AllocateNextPortRequest,
     ApplicationRead,
@@ -26,41 +27,11 @@ from ..schemas import (
 router = APIRouter(prefix="/servers", tags=["servers"])
 
 
-async def _require_admin_if_user(
-    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
-    db: AsyncSession = Depends(get_async_session),
-) -> None:
-    """Require admin if X-Telegram-ID header is provided.
-
-    Internal services (without header) are allowed through.
-    External users (with header) must be admins.
-    """
-    if x_telegram_id is None:
-        # Internal service call - allow
-        return
-
-    query = select(User).where(User.telegram_id == x_telegram_id)
-    result = await db.execute(query)
-    user = result.scalar_one_or_none()
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User with telegram_id {x_telegram_id} not found",
-        )
-
-    if not user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required for server management",
-        )
-
-
 @router.post("/", response_model=ServerRead, status_code=status.HTTP_201_CREATED)
 async def create_server(
     server_in: ServerCreate,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> Server:
     """Create a new server (admin only)."""
     if await db.get(Server, server_in.handle):
@@ -94,7 +65,7 @@ async def list_servers(
     is_managed: bool | None = None,
     status: str | None = None,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> list[Server]:
     """List all servers with optional filtering (admin only)."""
     query = select(Server)
@@ -113,7 +84,7 @@ async def list_servers(
 async def get_server(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> Server:
     """Get a server by handle (admin only)."""
     server = await db.get(Server, handle)
@@ -126,7 +97,7 @@ async def get_server(
 async def get_server_ssh_key(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> dict:
     """Get decrypted SSH private key for a server (admin/internal only)."""
     server = await db.get(Server, handle)
@@ -144,7 +115,7 @@ async def get_server_ssh_key(
 async def list_server_ports(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> list[PortAllocation]:
     """List all port allocations for a server (admin only)."""
     if not await db.get(Server, handle):
@@ -160,7 +131,7 @@ async def allocate_port(
     handle: str,
     allocation_in: PortAllocationCreate,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> PortAllocation:
     """Allocate a port on a server (admin only)."""
     # Check server exists
@@ -193,7 +164,7 @@ async def allocate_next_port(
     handle: str,
     req: AllocateNextPortRequest,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> PortAllocation:
     """Atomically find and allocate the next available port.
 
@@ -247,7 +218,7 @@ async def update_server(
     handle: str,
     updates: dict,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> Server:
     """Update server fields (admin only)."""
     from datetime import datetime
@@ -311,7 +282,7 @@ async def update_server(
 async def force_rebuild_server(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> Server:
     """Trigger FORCE_REBUILD for a server (admin only)."""
 
@@ -329,7 +300,7 @@ async def force_rebuild_server(
 async def get_server_incidents(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> list:
     """Get incident history for a server (admin only)."""
     from shared.models import Incident
@@ -366,7 +337,7 @@ async def get_server_incidents(
 async def provision_server(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> dict:
     """Manual provisioning trigger (admin only)."""
 
@@ -391,7 +362,7 @@ async def provision_server(
 async def get_server_applications(
     handle: str,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> list[Application]:
     """Get all applications on a specific server (admin only)."""
     if not await db.get(Server, handle):
@@ -415,7 +386,7 @@ async def get_metrics_history(
     handle: str,
     hours: int = 24,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> list:
     """Get metrics history for a server (admin only)."""
     from datetime import datetime, timedelta
@@ -443,7 +414,7 @@ async def get_metrics_history(
 async def delete_old_metrics_history(
     retention_hours: int = 168,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> dict:
     """Delete metrics history older than retention_hours (default 7 days)."""
     from datetime import datetime, timedelta
@@ -468,7 +439,7 @@ async def create_metrics_history(
     handle: str,
     snapshot: MetricsHistoryCreate,
     db: AsyncSession = Depends(get_async_session),
-    _: None = Depends(_require_admin_if_user),
+    _: None = Depends(require_internal_or_admin),
 ) -> object:
     """Append a metrics history snapshot for a server (internal use)."""
     from shared.models import ServerMetricsHistory

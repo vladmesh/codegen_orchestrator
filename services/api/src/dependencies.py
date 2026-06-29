@@ -1,6 +1,7 @@
 """FastAPI dependencies for authorization and shared resources."""
 
 import datetime as dt
+import secrets
 
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -42,6 +43,37 @@ def get_redis_client() -> RedisStreamClient:
     if _redis_client is None:
         raise RuntimeError("Redis client not initialized. Call init_redis() during app startup.")
     return _redis_client
+
+
+async def is_internal_service(
+    x_internal_key: str | None = Header(None, alias="X-Internal-Key"),
+) -> bool:
+    """Return True when the request carries a valid internal service token."""
+    if x_internal_key is None:
+        return False
+    return secrets.compare_digest(x_internal_key, get_settings().internal_api_key)
+
+
+async def require_internal_or_admin(
+    _is_internal: bool = Depends(is_internal_service),
+    x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    db: AsyncSession = Depends(get_async_session),
+) -> None:
+    """Allow internal services (X-Internal-Key) or admin users (X-Telegram-ID). Raises 401/403 otherwise."""
+    if _is_internal:
+        return
+    if x_telegram_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    query = select(User).where(User.telegram_id == x_telegram_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with telegram_id {x_telegram_id} not found",
+        )
+    if not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
 
 async def get_current_user(

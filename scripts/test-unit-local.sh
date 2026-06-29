@@ -40,6 +40,9 @@ CLEAN_ENV=(
     REGISTRY_PASSWORD="test"
     WORKER_MANAGER_URL="http://localhost:8001"
     LK_DOMAIN="https://lk.test.example.com"
+    INTERNAL_API_KEY="test-internal-key"
+    LK_JWT_SECRET="test-lk-jwt-secret"
+    DATABASE_URL="postgresql+asyncpg://test:test@localhost:5432/test"
 )
 
 # --- Serial mode (original behavior, verbose) ---

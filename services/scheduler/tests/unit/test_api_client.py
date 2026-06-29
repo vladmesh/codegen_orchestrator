@@ -7,9 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+_INTERNAL_KEY = "test-internal-key"
+_INTERNAL_HEADERS = {"X-Internal-Key": _INTERNAL_KEY}
+
+
 @pytest.fixture
 def api_client():
-    with patch("src.config.get_settings") as mock_settings:
+    with patch("src.config.get_settings") as mock_settings, patch.dict(
+        "os.environ", {"INTERNAL_API_KEY": _INTERNAL_KEY}
+    ):
         settings = MagicMock()
         settings.api_base_url = "http://localhost:8000"
         mock_settings.return_value = settings
@@ -112,6 +118,7 @@ class TestUpdateTask:
         mock.request.assert_called_once_with(
             "PATCH",
             "/api/tasks/task-1",
+            headers=_INTERNAL_HEADERS,
             json={"current_iteration": 2},
         )
         assert result.current_iteration == 2
@@ -129,6 +136,7 @@ class TestFailStory:
         mock.request.assert_called_once_with(
             "POST",
             "/api/stories/story-1/fail",
+            headers=_INTERNAL_HEADERS,
             json={"actor": "supervisor"},
         )
         assert result.status == "failed"
@@ -151,6 +159,7 @@ class TestCreateIncident:
         mock.request.assert_called_once_with(
             "POST",
             "/api/incidents/",
+            headers=_INTERNAL_HEADERS,
             json={
                 "server_handle": "vps-123",
                 "incident_type": "server_unreachable",
@@ -192,6 +201,7 @@ class TestGetActiveIncidents:
         mock.request.assert_called_once_with(
             "GET",
             "/api/incidents/",
+            headers=_INTERNAL_HEADERS,
             params={
                 "server_handle": "vps-123",
                 "incident_type": "server_unreachable",
@@ -242,6 +252,7 @@ class TestCreateMetricsHistory:
         mock.request.assert_called_once_with(
             "POST",
             "/api/servers/vps-123/metrics-history",
+            headers=_INTERNAL_HEADERS,
             json={"metrics": {"cpu": 50.0}},
         )
         assert result["server_handle"] == "vps-123"
@@ -260,6 +271,7 @@ class TestDeleteOldMetricsHistory:
         mock.request.assert_called_once_with(
             "DELETE",
             "/api/servers/metrics-history",
+            headers=_INTERNAL_HEADERS,
             params={"retention_hours": 168},
         )
         assert result["deleted"] == 42
@@ -278,6 +290,7 @@ class TestGetApplications:
         mock.request.assert_called_once_with(
             "GET",
             "/api/applications/",
+            headers=_INTERNAL_HEADERS,
             params={},
         )
         assert len(result) == 1
@@ -294,6 +307,7 @@ class TestGetApplications:
         mock.request.assert_called_once_with(
             "GET",
             "/api/applications/",
+            headers=_INTERNAL_HEADERS,
             params={"server_handle": "vps-1", "status": "running"},
         )
 
@@ -311,6 +325,7 @@ class TestUpdateApplication:
         mock.request.assert_called_once_with(
             "PATCH",
             "/api/applications/1",
+            headers=_INTERNAL_HEADERS,
             json={"response_time_ms": 45},
         )
         assert result.response_time_ms == 45
@@ -329,6 +344,7 @@ class TestCreateAppHealthHistory:
         mock.request.assert_called_once_with(
             "POST",
             "/api/applications/5/health-history",
+            headers=_INTERNAL_HEADERS,
             json={"metrics": {"healthy": True}},
         )
         assert result["application_id"] == 5
@@ -347,6 +363,7 @@ class TestDeleteOldAppHealthHistory:
         mock.request.assert_called_once_with(
             "DELETE",
             "/api/applications/health-history",
+            headers=_INTERNAL_HEADERS,
             params={"retention_hours": 168},
         )
         assert result["deleted"] == 15

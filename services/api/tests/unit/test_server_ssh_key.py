@@ -72,7 +72,10 @@ class TestGetServerSSHKey:
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.get("/api/servers/srv-1/ssh-key")
+                resp = await client.get(
+                    "/api/servers/srv-1/ssh-key",
+                    headers={"X-Internal-Key": "test-internal-key"},
+                )
 
             assert resp.status_code == 200  # noqa: PLR2004
             data = resp.json()
@@ -92,7 +95,10 @@ class TestGetServerSSHKey:
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.get("/api/servers/srv-1/ssh-key")
+                resp = await client.get(
+                    "/api/servers/srv-1/ssh-key",
+                    headers={"X-Internal-Key": "test-internal-key"},
+                )
 
             assert resp.status_code == 404  # noqa: PLR2004
             assert "No SSH key" in resp.json()["detail"]
@@ -110,7 +116,10 @@ class TestGetServerSSHKey:
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.get("/api/servers/nonexistent/ssh-key")
+                resp = await client.get(
+                    "/api/servers/nonexistent/ssh-key",
+                    headers={"X-Internal-Key": "test-internal-key"},
+                )
 
             assert resp.status_code == 404  # noqa: PLR2004
         finally:
@@ -134,6 +143,7 @@ class TestPatchServerSSHKey:
             ) as client:
                 resp = await client.patch(
                     "/api/servers/srv-1",
+                    headers={"X-Internal-Key": "test-internal-key"},
                     json={"ssh_key": "my-secret-key"},
                 )
 

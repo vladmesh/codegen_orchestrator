@@ -203,6 +203,7 @@ async def test_merge_secrets_overwrites_existing_key(mock_decrypt, mock_encrypt)
         resp = await client.post(
             f"/api/projects/{PROJECT_UUID}/config/secrets",
             json={"secrets": {"KEY_A": "new-val"}},
+            headers={"X-Internal-Key": "test-internal-key"},
         )
 
     assert resp.status_code == 200  # noqa: PLR2004

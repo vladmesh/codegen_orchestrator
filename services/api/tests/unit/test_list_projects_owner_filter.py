@@ -61,7 +61,11 @@ async def test_list_projects_with_owner_id_filter():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/projects/", params={"owner_id": 1})
+        resp = await client.get(
+            "/api/projects/",
+            params={"owner_id": 1},
+            headers={"X-Internal-Key": "test-internal-key"},
+        )
 
     assert resp.status_code == HTTPStatus.OK
     data = resp.json()
@@ -93,7 +97,10 @@ async def test_list_projects_without_owner_id_returns_all():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/projects/")
+        resp = await client.get(
+            "/api/projects/",
+            headers={"X-Internal-Key": "test-internal-key"},
+        )
 
     assert resp.status_code == HTTPStatus.OK
     data = resp.json()
