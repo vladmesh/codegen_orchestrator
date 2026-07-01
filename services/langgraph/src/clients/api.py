@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from http import HTTPStatus
 from typing import Any
 
@@ -26,6 +27,7 @@ class LanggraphAPIClient:
         self.base_url = settings.api_base_url.rstrip("/")
         if self.base_url.endswith("/api"):
             raise RuntimeError("API_BASE_URL must not include /api")
+        self._internal_api_key = os.environ["INTERNAL_API_KEY"]
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -45,11 +47,12 @@ class LanggraphAPIClient:
 
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         client = await self._get_client()
+        headers = kwargs.pop("headers", None) or {}
+        headers["X-Internal-Key"] = self._internal_api_key
         correlation_id = get_correlation_id()
         if correlation_id:
-            headers = kwargs.pop("headers", None) or {}
             headers.setdefault("X-Correlation-ID", correlation_id)
-            kwargs["headers"] = headers
+        kwargs["headers"] = headers
         resp = await client.request(method, self._api_path(path), **kwargs)
         resp.raise_for_status()
         return resp

@@ -51,12 +51,13 @@ class TestSecretsCipher:
             with pytest.raises(RuntimeError, match="SECRETS_ENCRYPTION_KEY"):
                 SecretsCipher()
 
-    def test_decrypt_plaintext_value_returns_as_is(self):
-        """Graceful degradation: non-Fernet values are returned as-is."""
+    def test_decrypt_invalid_token_raises(self):
+        import pytest
+        from cryptography.fernet import InvalidToken
+
         cipher = self._make_cipher()
-        plaintext = "just-a-plain-string"
-        result = cipher.decrypt(plaintext)
-        assert result == plaintext
+        with pytest.raises(InvalidToken):
+            cipher.decrypt("just-a-plain-string")
 
     def test_decrypt_empty_string(self):
         cipher = self._make_cipher()
@@ -90,18 +91,11 @@ class TestEncryptDecryptDict:
             result = encrypt_dict({})
         assert result == {}
 
-    def test_decrypt_dict_mixed_plaintext_and_encrypted(self):
-        """Migration scenario: some values are encrypted, some are plaintext."""
-        from shared.crypto import decrypt_dict, encrypt_dict
+    def test_decrypt_dict_plaintext_value_raises(self):
+        import pytest
+        from cryptography.fernet import InvalidToken
+        from shared.crypto import decrypt_dict
 
         with patch.dict("os.environ", {"SECRETS_ENCRYPTION_KEY": self.test_key}):
-            encrypted_val = encrypt_dict({"KEY": "encrypted-secret"})["KEY"]
-
-            mixed = {
-                "OLD_PLAIN": "legacy-plaintext-value",
-                "NEW_ENC": encrypted_val,
-            }
-            decrypted = decrypt_dict(mixed)
-
-        assert decrypted["OLD_PLAIN"] == "legacy-plaintext-value"
-        assert decrypted["NEW_ENC"] == "encrypted-secret"
+            with pytest.raises(InvalidToken):
+                decrypt_dict({"KEY": "legacy-plaintext-value"})

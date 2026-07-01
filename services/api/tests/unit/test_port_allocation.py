@@ -132,6 +132,7 @@ class TestAllocateNextPort:
             ) as client:
                 resp = await client.post(
                     "/api/servers/srv-1/ports/allocate-next",
+                    headers={"X-Internal-Key": "test-internal-key"},
                     json={
                         "service_name": "backend",
                         "application_id": APPLICATION_ID,
@@ -165,6 +166,7 @@ class TestAllocateNextPort:
             ) as client:
                 resp = await client.post(
                     "/api/servers/srv-1/ports/allocate-next",
+                    headers={"X-Internal-Key": "test-internal-key"},
                     json={
                         "service_name": "backend",
                         "application_id": APPLICATION_ID,
@@ -190,6 +192,7 @@ class TestAllocateNextPort:
             ) as client:
                 resp = await client.post(
                     "/api/servers/nonexistent/ports/allocate-next",
+                    headers={"X-Internal-Key": "test-internal-key"},
                     json={
                         "service_name": "backend",
                         "application_id": APPLICATION_ID,

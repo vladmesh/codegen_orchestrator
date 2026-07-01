@@ -10,6 +10,7 @@ import structlog
 from shared.models import Run, User
 
 from ..database import get_async_session
+from ..dependencies import is_internal_service
 from ..schemas import RunCreate, RunRead, RunUpdate
 
 logger = structlog.get_logger()
@@ -33,10 +34,17 @@ async def _check_run_access(
     run: Run,
     telegram_id: int | None,
     db: AsyncSession,
+    *,
+    is_internal: bool = False,
 ) -> None:
-    """Check if user has access to run. Raises 403 if denied."""
+    """Check if user has access to run. Raises 401/403 if denied."""
+    if is_internal:
+        return
     if telegram_id is None:
-        return  # No auth header - allow (backward compat for internal calls)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
 
     user = await _resolve_user(telegram_id, db)
 
@@ -95,6 +103,7 @@ async def get_run(
     run_id: str,
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> Run:
     """Get run by ID."""
     query = select(Run).where(Run.id == run_id)
@@ -107,7 +116,7 @@ async def get_run(
             detail=f"Run {run_id} not found",
         )
 
-    await _check_run_access(run, x_telegram_id, db)
+    await _check_run_access(run, x_telegram_id, db, is_internal=_is_internal)
 
     return run
 
@@ -121,8 +130,12 @@ async def list_runs(
     status: str | None = None,
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> list[Run]:
     """List runs with optional filters."""
+    if not _is_internal and x_telegram_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
     query = select(Run)
 
     # Apply filters
@@ -158,6 +171,7 @@ async def update_run(
     run_update: RunUpdate,
     db: AsyncSession = Depends(get_async_session),
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> Run:
     """Update run status and result."""
     query = select(Run).where(Run.id == run_id)
@@ -170,11 +184,15 @@ async def update_run(
             detail=f"Run {run_id} not found",
         )
 
-    # Only system (no telegram_id) or admins can update runs
-    # Workers update run status, regular users cannot
-    if x_telegram_id:
+    # Only internal services or admins can update runs
+    if not _is_internal:
+        if x_telegram_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
         user = await _resolve_user(x_telegram_id, db)
-        if user and not user.is_admin:
+        if not user or not user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only system and admins can update runs",

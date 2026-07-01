@@ -15,6 +15,7 @@ from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAF
 
 from ..config import get_settings
 from ..database import get_async_session
+from ..dependencies import is_internal_service
 from ..schemas import MergeSecretsRequest, ProjectCreate, ProjectRead, ProjectUpdate
 
 logger = structlog.get_logger()
@@ -38,10 +39,17 @@ async def _check_project_access(
     project: Project,
     telegram_id: int | None,
     db: AsyncSession,
+    *,
+    is_internal: bool = False,
 ) -> None:
-    """Check if user has access to project. Raises 403 if denied."""
+    """Check if user has access to project. Raises 401/403 if denied."""
+    if is_internal:
+        return
     if telegram_id is None:
-        return  # No auth header - allow (backward compat for internal calls)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
 
     user = await _resolve_user(telegram_id, db)
 
@@ -148,13 +156,14 @@ async def get_project(
     project_id: uuid.UUID,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> Project:
     """Get project by ID."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db)
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
     return project
 
 
@@ -165,8 +174,12 @@ async def list_projects(
     owner_only: bool = False,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> list[Project]:
     """List projects, optionally filtered by status or owner_id."""
+    if not _is_internal and x_telegram_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
     query = select(Project)
 
     # Direct owner_id filter (from admin panel)
@@ -182,7 +195,7 @@ async def list_projects(
                 detail=f"User with telegram_id {x_telegram_id} not found",
             )
         if not user.is_admin or owner_only:
-            # Regular user or explict owner_only request: only their projects
+            # Regular user or explicit owner_only request: only their projects
             query = query.where(Project.owner_id == user.id)
 
     if status:
@@ -198,13 +211,14 @@ async def update_project(
     project_in: ProjectUpdate,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> Project:
     """Update project."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db)
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
     if project_in.name is not None:
         project.name = project_in.name
@@ -227,13 +241,14 @@ async def patch_project(
     project_in: ProjectUpdate,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> Project:
     """Partial update of project (PATCH method)."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db)
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
     if project_in.name is not None:
         project.name = project_in.name
@@ -255,13 +270,14 @@ async def list_secret_keys(
     project_id: uuid.UUID,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> dict:
     """List secret key names for a project (no values exposed)."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db)
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
     config = dict(project.config or {})
     existing_secrets = config.get("secrets") or {}
@@ -276,6 +292,7 @@ async def merge_secrets(
     body: MergeSecretsRequest,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> dict:
     """Atomically merge secrets into project config.
 
@@ -295,7 +312,7 @@ async def merge_secrets(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db)
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
     config = dict(project.config or {})
     existing_secrets = config.get("secrets") or {}
@@ -327,6 +344,7 @@ async def delete_secret(
     key: str,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
 ) -> dict:
     """Delete a single secret from project config.
 
@@ -338,7 +356,7 @@ async def delete_secret(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db)
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
     config = dict(project.config or {})
     existing_secrets = config.get("secrets") or {}
@@ -397,13 +415,14 @@ async def delete_project(
     project_id: uuid.UUID,
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
+    _is_internal: bool = Depends(is_internal_service),
 ):
     """Delete a project and its related records (tasks, port allocations)."""
     project = await db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await _check_project_access(project, x_telegram_id, db)
+    await _check_project_access(project, x_telegram_id, db, is_internal=_is_internal)
 
     # Delete FK-constrained related records
     await db.execute(delete(Run).where(Run.project_id == project_id))

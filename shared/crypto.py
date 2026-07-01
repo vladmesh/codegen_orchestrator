@@ -15,10 +15,8 @@ Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.genera
 
 import os
 
-from cryptography.fernet import Fernet, InvalidToken
-import structlog
+from cryptography.fernet import Fernet
 
-logger = structlog.get_logger()
 
 
 class SecretsCipher:
@@ -44,15 +42,7 @@ class SecretsCipher:
     def decrypt(self, ciphertext: str) -> str:
         if not ciphertext:
             return ciphertext
-        try:
-            return self._fernet.decrypt(ciphertext.encode()).decode()
-        except InvalidToken:
-            logger.warning(
-                "secret_decrypt_fallback",
-                error_type="InvalidToken",
-                value_prefix=ciphertext[:10],
-            )
-            return ciphertext
+        return self._fernet.decrypt(ciphertext.encode()).decode()
 
 
 def encrypt_dict(d: dict[str, str]) -> dict[str, str]:
@@ -64,7 +54,7 @@ def encrypt_dict(d: dict[str, str]) -> dict[str, str]:
 
 
 def decrypt_dict(d: dict[str, str]) -> dict[str, str]:
-    """Decrypt all values in a dict. Gracefully handles plaintext values."""
+    """Decrypt all values in a dict. Raises InvalidToken if any value is not valid ciphertext."""
     if not d:
         return d
     cipher = SecretsCipher()
