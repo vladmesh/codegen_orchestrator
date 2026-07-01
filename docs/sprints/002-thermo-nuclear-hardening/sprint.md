@@ -12,6 +12,7 @@
 - api fail-open auth: `X-Internal-Key`/`INTERNAL_API_KEY`, `require_internal_or_admin`, 4 internal-клиента обновлены — thermo §"api fail-open auth"
 
 ## Phase 1: Остаток security-блокеров
+- **[P0, первым] Разблокировать CI.** `main` красный на `ruff format --check`: 5 файлов из #24 (audit_fixes) влиты неотформатированными — `services/api/src/dependencies.py`, `routers/projects.py`, `routers/runs.py`, `services/scheduler/tests/unit/test_api_client.py`, `shared/crypto.py`. Фикс: `uv run ruff format . && git commit`. Пока main красный, остальное сливать вслепую.
 - B1 scaffolder exec: добить неполный фикс (#20 закрыл только project_name/modules) — `create_subprocess_exec` с arg-list, `template_repo`/`repository_id` больше не через shell — thermo §B1
 - scaffolder token-in-URL: `GIT_ASKPASS`/`http.extraHeader`, редакция git stderr перед сохранением в `scaffold_error` — thermo §Security п.4
 

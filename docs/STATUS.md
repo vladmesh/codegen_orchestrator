@@ -11,7 +11,7 @@
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Security quick-wins (B2 crypto, fail-open auth) | COMPLETE |
-| 1 | Остаток security-блокеров (B1 scaffolder exec, token-in-URL) | Current |
+| 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | Current |
 | 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | Pending |
 | 3 | Типизированный consume + мёртвый код (B5, B6) | Pending |
 | 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Pending |
