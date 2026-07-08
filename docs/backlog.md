@@ -5,24 +5,18 @@
 
 ## Queue
 
-### #1019 Fix noqa suppressions that mask real complexity
-- **Priority**: LOW
+### #1022 API authorization: scope worker access, protect destructive endpoints
+- **Priority**: HIGH (multi-tenant hardening arc)
 - **Plan**: —
 - **Status**: backlog
-- **Brief**: Audit found noqa comments that should be fixed instead of suppressed: PLR0913 in engineering.py:682 (too many args — extract params dataclass), PLR0911 in devops/nodes.py:144 (too many returns — extract lookup table), PLR2004 in debug.py:65 (use named constant), S110 in debug.py:71 (bare except —...
+- **Brainstorm**: [api-visibility-scoping.md](brainstorms/api-visibility-scoping.md)
+- **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
 ### #1005 Standardize PYTHONPATH and import patterns across service-template services
 - **Priority**: LOW
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Currently tg_bot uses PYTHONPATH=/app:/app/services/tg_bot/src (allowing relative imports) while backend and notifications_worker use PYTHONPATH=/app (requiring fully qualified imports like services.backend.src.module). This inconsistency causes coding agents to guess wrong import patterns, leadi...
-
-### #1022 API authorization: scope worker access, protect destructive endpoints
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brainstorm**: [api-visibility-scoping.md](brainstorms/api-visibility-scoping.md)
-- **Brief**: The API is almost entirely open — no auth on tasks, stories, projects endpoints. Servers/allocations have optional admin check that skips if no header sent. Currently safe only because API listens on localhost and Caddy only proxies /webhooks/* and /v2/*. But inside the Docker network any contain...
 
 
 ### #1017 Container drift detection via cadvisor (orphans/ghosts in health_checker)
@@ -44,7 +38,7 @@
 - **Brief**: Очистка зависших контейнеров/образов после деплоев (`docker image prune`). SSH hardening уже done в ansible. Priority adjusted by triage (roadmap phase change).
 
 ### #10 Worker Lifecycle (Pause/Unpause)
-- **Priority**: LOW
+- **Priority**: HIGH (multi-tenant hardening arc: изоляция и лимиты ресурсов)
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: `docker pause` при бездействии. CPU/RAM лимиты на контейнеры.
@@ -81,12 +75,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: TaskAssessor, Watchdog & Recovery (DockerEventsListener, DLQ consumer), shared session memory ("предсмертная записка" агента). Brainstorm: `docs/brainstorms/agent-hierarchy.md`. Priority adjusted by triage (roadmap phase change). NB: Watchdog/DLQ scope уменьшится — WorkItemEvent (#55) покрывает a...
-
-### #19 Split github.py Client (986 LOC)
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Разбить на submodules по domain: repos, actions, secrets, workflows. Фасад делегирует в sub-clients.
 
 ### #20 API Key & SSH Key Encryption
 - **Priority**: LOW
@@ -128,7 +116,7 @@
 - **Brief**: Сейчас `shared/notifications.py` шлёт в Telegram API напрямую — scheduler, infra-service держат `TELEGRAM_BOT_TOKEN`. Нужно: сервисы публикуют в Redis stream `notifications:queue`, telegram_bot потребляет и отправляет. Убирает `TELEGRAM_BOT_TOKEN` из всех сервисов кроме telegram_bot, упрощает тес...
 
 ### #41 Parallel Server Provisioning
-- **Priority**: LOW
+- **Priority**: HIGH (multi-tenant hardening arc)
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: infra-service обрабатывает `provisioner:queue` последовательно — один consumer loop с `await` на каждый job (`services/infra-service/src/main.py:127-148`). При 3+ серваках в `PENDING_SETUP` каждый Ansible прогон (~15 мин) блокирует очередь. LangGraph-сторона уже параллельна (`asyncio.create_task`...
@@ -167,12 +155,6 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Add celery-worker service type. Pre-configured Redis/RabbitMQ in docker-compose, auto-generated celery_app and task decorators.
-
-### #46 Rename duckduckgo_search → ddgs
-- **Priority**: LOW
-- **Plan**: —
-- **Status**: backlog
-- **Brief**: Пакет `duckduckgo_search` переименован в `ddgs`. Runtime warning в логах: `This package has been renamed to ddgs! Use pip install ddgs instead.` Заменить зависимость в `services/langgraph/pyproject.toml`, обновить импорт в `services/langgraph/src/po/tools.py`, перегенерировать lock-файл (`make lo...
 
 ### #1036 Audit scaffold templates for best practices
 
@@ -255,19 +237,3 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Currently ensure_project_allocations allocates a port for every module in the list (e.g. backend + tg_bot). But tg_bot does not listen on a host port — it connects outbound to Telegram API. Allocating a port for it wastes the resource and clutters the admin UI.  Fix: modules should declare whethe...
-
-
-## Done (last 10)
-
-- #1023 Refactor shared: eliminate orchestrator code from worker containers — 2026-04-09
-- #1021 Add TTL/cleanup for stale Redis queue messages — 2026-04-09
-- #1036 ЛК frontend SPA (project list + dashboard) — 2026-03-20
-- #1035 Telegram bot: dashboard button with one-time token — 2026-03-20
-- #1034 ЛК API: auth (one-time token → JWT) + analytics endpoints — 2026-03-20
-- #1033 Analytics aggregation: models, Loki client, scheduler job — 2026-03-20
-- #1032 Add com.codegen.project_id label to deployed containers — 2026-03-20
-- #1031 Promtail on prod servers + expose Loki — 2026-03-20
-- Regression E2E: acceptance criteria on Repository + QA report in admin UI — 2026-03-19
-- #1030 Decouple QA consumer from story lifecycle — 2026-03-19
-- #1026 Admin UI: action buttons on entity pages — 2026-03-19
-- #1025 Admin UI: Settings page (config + prompt editor) — 2026-03-19

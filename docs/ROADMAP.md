@@ -76,6 +76,27 @@
 - [x] Spec-first async messaging (Redis Streams + FastStream)
 
 
+## Autonomy: smart steward
+
+Пайплайн чинит себя сам, человек — последняя ступень эскалации, а не первая. Пререквизит: fail-fast и типизированные границы (фазы 2–4 спринта 002), иначе автономные решения строятся на мусорных данных.
+
+- [ ] Sprint 002 phases 2–4: типизированный consume, enum-статусы в response DTO, снос мёртвого кода
+- [ ] Починить incident-подсистему infra-service (реализовать client-методы, убрать swallow-обёртки)
+- [ ] Secret resolver: убрать фейковые fallback-значения, fail при отсутствии allocation/repo/name
+- [ ] Worker events: типизированный контракт результата (WorkerCompleted/WorkerFailed) вместо raw dict
+- [ ] Память фейлов: дистилляция транскриптов ранов (какие паттерны падают, какие фиксы срабатывают) в базу знаний для architect и fix-тасков
+- [ ] Triage-агент: ступень эскалации перед WAITING_HUMAN_REVIEW — смотрит историю попыток карточки, решает нестандартный ход
+- [ ] Активная доска: события доски как шина, агенты подписываются, треды на карточках вместо чистого поллинга супервизора
+
+## Multi-tenant hardening
+
+Реальная изоляция юзеров и проектов до того, как появятся чужие клиенты.
+
+- [ ] #1022 API auth + enforcement owner_id на эндпоинтах
+- [ ] #10 Сетевая изоляция и CPU/RAM-лимиты проектов на общих VPS
+- [ ] #41 Parallel Server Provisioning
+- [ ] Метеринг стоимости per-user (LLM-токены, серверные ресурсы)
+
 ## Create LessWrong random article bot — COMPLETE
 
 _Создать Telegram бота, который показывает случайные статьи с LessWrong.com.
@@ -505,10 +526,6 @@ Code quality improvements: splitting large files, reducing complexity, cleanup.
 - [x] #1035 Telegram bot: dashboard button with one-time token
 - [x] #1036 ЛК frontend SPA (project list + dashboard)
 
-## Human-in-the-loop
-
-Тарифная модель: базовая подписка (AI only) → дорогая (подключаются живые разработчики). Оркестратор как прокладка к студии/аутсорсу. Механизм эскалации задач от AI к человеку и обратно.
-
 ## Worker swarm
 
 Параллельные воркеры, оптимизация скорости генерации. Умное распределение задач, переиспользование контейнеров. Есть brainstorm в проекте.
@@ -553,6 +570,15 @@ Feature-стенды, полноценный CI перед деплоем. Previ
 
 # Technical Initiatives
 
+## Unlinked Tasks
+
+- [ ] #1005 Standardize PYTHONPATH and import patterns across service-template services
+- [ ] #1003 Integration test: scheduler-langgraph story worker lifecycle
+
+# Deferred (после product-market fit)
+
+Низкий приоритет, вернёмся когда дойдут руки.
+
 ## Rust migration
 
 Rewrite service-template codegen and generated services from Python to Rust. Axum + SeaORM for services, Tera for templates. Goal: stricter feedback loop for agent-driven development, faster builds, fewer runtime bugs.
@@ -567,14 +593,6 @@ Rewrite service-template codegen and generated services from Python to Rust. Axu
 
 - [ ] Add Rust service type to services.yml
 
+## Human-in-the-loop
 
-## Unlinked Tasks
-
-- [ ] Fix noqa suppressions that mask real complexity
-- [ ] #1005 Standardize PYTHONPATH and import patterns across service-template services
-- [ ] debug test
-- [ ] Add TTL/cleanup for stale Redis queue messages
-- [ ] API authorization: scope worker access, protect destructive endpoints
-- [x] Refactor shared: eliminate orchestrator code from worker containers
-- [ ] #1003 Integration test: scheduler-langgraph story worker lifecycle
-- [ ] Allocate ports only for modules that need host exposure
+Тарифная модель: базовая подписка (AI only) → дорогая (подключаются живые разработчики). Оркестратор как прокладка к студии/аутсорсу. Механизм эскалации задач от AI к человеку и обратно.
