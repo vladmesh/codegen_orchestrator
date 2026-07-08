@@ -1,0 +1,21 @@
+# Workspace manifest for task-pipeline provisioning.
+
+[workspace]
+project = "codegen_orchestrator"
+base_branch = "main"
+
+[secrets]
+copy = []
+
+[github]
+token = "dev-shared"
+
+[skills]
+install = []
+
+[setup]
+commands = []
+
+[smoke]
+command = "uv run python -m compileall -q shared services/api/src services/infra-service/src services/langgraph/src services/scaffolder/src services/scheduler/src services/telegram_bot/src services/worker-manager/src packages/worker-wrapper/src scripts"
+timeout_seconds = 300
