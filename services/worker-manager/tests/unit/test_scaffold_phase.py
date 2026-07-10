@@ -110,6 +110,7 @@ class TestScaffoldPhase:
         script = _extract_scaffold_script(mock_docker)
         assert "--data-file" in script
         assert '--data "task_description=' not in script
+        assert "--trust" not in script
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

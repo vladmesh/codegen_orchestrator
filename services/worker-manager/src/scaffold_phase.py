@@ -66,7 +66,7 @@ copier copy {scaffold_config.template_repo} /workspace \
     --data "project_name={scaffold_config.project_name}" \
     --data "modules={scaffold_config.modules}" \
     --data-file /tmp/copier-data.yml \
-    --trust --defaults --overwrite --vcs-ref=HEAD
+    --defaults --overwrite --vcs-ref=HEAD
 
 # Setup project (install deps, generate code)
 cd /workspace

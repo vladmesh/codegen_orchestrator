@@ -125,7 +125,7 @@ async def run_scaffold(
         f'--data "project_name={project_name}" '
         f'--data "modules={modules}" '
         f"--data-file {data_file} "
-        f"--trust --defaults --overwrite --vcs-ref=HEAD",
+        f"--defaults --overwrite --vcs-ref=HEAD",
         cwd=workspace,
     )
     result.commands_log.append(f"copier copy: rc={rc}")

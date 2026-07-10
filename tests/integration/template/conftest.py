@@ -62,7 +62,6 @@ def run_copier(
     cmd = [
         "copier",
         "copy",
-        "--trust",  # Skip confirmation prompts
         "--defaults",  # Use defaults for unspecified values
         "--vcs-ref=HEAD",  # Ensure we use the latest HEAD of the template
     ]

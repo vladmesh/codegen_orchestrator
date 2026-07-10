@@ -78,7 +78,6 @@ def run_copier(
     cmd = [
         "copier",
         "copy",
-        "--trust",
         "--defaults",
         "--overwrite",  # Overwrite existing files (e.g., README.md from GitHub auto_init)
         "--vcs-ref=HEAD",
