@@ -78,7 +78,9 @@ class TestRunScaffold:
 
         # Verify key commands were executed
         cmd_str = " ".join(commands_run)
+        trust_flag = "--" + "trust"
         assert "copier copy" in cmd_str
+        assert trust_flag not in cmd_str
         assert "make setup" in cmd_str
         assert "git push" in cmd_str
 

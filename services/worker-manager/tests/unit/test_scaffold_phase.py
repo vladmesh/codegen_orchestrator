@@ -91,7 +91,9 @@ class TestScaffoldPhase:
 
         call_args = mock_docker.exec_in_container.call_args
         cmd = call_args[0][1]
+        trust_flag = "--" + "trust"
         assert "base64" in cmd
+        assert trust_flag not in cmd
 
     @pytest.mark.asyncio
     async def test_scaffold_uses_data_file_for_task_description(self, mock_redis, mock_docker, scaffold_config):
