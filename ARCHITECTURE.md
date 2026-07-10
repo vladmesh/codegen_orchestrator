@@ -174,7 +174,7 @@ CI failure on story branch (PR poller) → fix task created → story back to in
 
 | Репозиторий | Использование |
 |-------------|---------------|
-| [service-template](https://github.com/project-factory-organization/service-template) | Copier шаблон для генерации проектов |
+| [service-template](https://github.com/vladmesh/service-template) | Copier шаблон для генерации проектов |
 
 ## Документация
 

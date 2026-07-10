@@ -9,7 +9,7 @@ import tempfile
 import pytest
 
 # Default to GitHub URL - copier will clone it
-DEFAULT_TEMPLATE_PATH = "gh:project-factory-organization/service-template"
+DEFAULT_TEMPLATE_PATH = "gh:vladmesh/service-template"
 TEMPLATE_PATH = os.getenv("SERVICE_TEMPLATE_PATH", DEFAULT_TEMPLATE_PATH)
 
 
