@@ -10,6 +10,7 @@ services:
       - ANTHROPIC_API_KEY=test
       - OPENAI_API_KEY=test
       - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-key
     depends_on:
       redis:
         condition: service_healthy
@@ -40,6 +41,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-key
     depends_on:
       redis:
         condition: service_healthy
