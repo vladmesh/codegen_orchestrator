@@ -18,11 +18,17 @@ TASK_TEST_PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
 @pytest.fixture(scope="module")
 async def client():
+    import os
+
     from src.dependencies import close_redis, init_redis
     from src.main import app
 
     await init_redis()
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-Internal-Key": os.environ["INTERNAL_API_KEY"]},
+    ) as c:
         yield c
     await close_redis()
 

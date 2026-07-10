@@ -178,7 +178,10 @@ async def list_projects(
 ) -> list[Project]:
     """List projects, optionally filtered by status or owner_id."""
     if not _is_internal and x_telegram_id is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
 
     query = select(Project)
 

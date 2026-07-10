@@ -33,6 +33,7 @@ services:
       - ENVIRONMENT=test
       - SECRETS_ENCRYPTION_KEY=GkH0NqyqjG599M0K9fVwU34b_2i1-m_i_M80-82d2X0=
       - LK_JWT_SECRET=test-lk-jwt-secret
+      - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
     depends_on:
       db:
         condition: service_healthy
@@ -57,6 +58,7 @@ services:
       - GITHUB_ORG_NAME=test-org
       - TIME4VPS_USERNAME=test
       - TIME4VPS_PASSWORD=test
+      - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
       - PYTHONPATH=/app:/app/src
     depends_on:
       api:

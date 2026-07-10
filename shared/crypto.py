@@ -18,7 +18,6 @@ import os
 from cryptography.fernet import Fernet
 
 
-
 class SecretsCipher:
     """Encrypt/decrypt individual secret values using Fernet.
 

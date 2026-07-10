@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-07-10
+
+### Fixed
+- **API service tests after internal auth hardening**: service-test compose now provides `INTERNAL_API_KEY` to both the API container and test runner, and API service test clients send `X-Internal-Key` by default. This keeps server/project/run test setup aligned with the fail-closed internal auth contract. `make test-service SERVICE=api` now also checks compose container exit codes before cleanup, so dependency startup failures cannot be reported as a green test run.
+
 ## 2026-05-29
 
 ### Changed

@@ -215,6 +215,11 @@ test-service:
 	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml down --remove-orphans 2>/dev/null || true
 	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml up --build --abort-on-container-exit --exit-code-from $(SERVICE)-test-runner; \
 	EXIT_CODE=$$?; \
+	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml ps -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 {print}'); \
+	if [ -n "$$FAILED_CONTAINERS" ]; then \
+		echo "$$FAILED_CONTAINERS"; \
+		EXIT_CODE=1; \
+	fi; \
 	docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml down --remove-orphans; \
 	exit $$EXIT_CODE
 

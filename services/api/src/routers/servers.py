@@ -2,14 +2,14 @@
 
 from datetime import UTC
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.server import ServerStatus
 from shared.crypto import SecretsCipher
-from shared.models import Application, PortAllocation, Server, User
+from shared.models import Application, PortAllocation, Server
 
 from ..database import get_async_session
 from ..dependencies import require_internal_or_admin
