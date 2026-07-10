@@ -6,15 +6,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 _INTERNAL_KEY = "test-internal-key"
 _INTERNAL_HEADERS = {"X-Internal-Key": _INTERNAL_KEY}
 
 
 @pytest.fixture
 def api_client():
-    with patch("src.config.get_settings") as mock_settings, patch.dict(
-        "os.environ", {"INTERNAL_API_KEY": _INTERNAL_KEY}
+    with (
+        patch("src.config.get_settings") as mock_settings,
+        patch.dict("os.environ", {"INTERNAL_API_KEY": _INTERNAL_KEY}),
     ):
         settings = MagicMock()
         settings.api_base_url = "http://localhost:8000"
