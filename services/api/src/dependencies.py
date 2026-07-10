@@ -59,11 +59,14 @@ async def require_internal_or_admin(
     x_telegram_id: int | None = Header(None, alias="X-Telegram-ID"),
     db: AsyncSession = Depends(get_async_session),
 ) -> None:
-    """Allow internal services (X-Internal-Key) or admin users (X-Telegram-ID). Raises 401/403 otherwise."""
+    """Allow internal services or admin users."""
     if _is_internal:
         return
     if x_telegram_id is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
     query = select(User).where(User.telegram_id == x_telegram_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()

@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 _INTERNAL_KEY = "test-internal-key"
 _INTERNAL_HEADERS = {"X-Internal-Key": _INTERNAL_KEY}
 

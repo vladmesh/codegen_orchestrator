@@ -11,6 +11,7 @@ services:
       - ENVIRONMENT=test
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=test-lk-jwt-secret-for-service-tests
+      - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
     depends_on:
       db:
         condition: service_healthy
@@ -56,6 +57,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=test-lk-jwt-secret-for-service-tests
+      - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
     depends_on:
       api:
         condition: service_healthy

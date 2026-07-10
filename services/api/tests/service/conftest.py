@@ -41,7 +41,11 @@ async def redis_client() -> AsyncGenerator[Redis, None]:
 async def async_client() -> AsyncGenerator[AsyncClient, None]:
     from src.main import app
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-Internal-Key": os.environ["INTERNAL_API_KEY"]},
+    ) as client:
         yield client
 
 
@@ -54,7 +58,11 @@ async def _tasks_project():
     """Create a user + project once per test session for task tests."""
     from src.main import app
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-Internal-Key": os.environ["INTERNAL_API_KEY"]},
+    ) as client:
         # Ensure user exists
         resp = await client.get(f"/api/users/by-telegram/{TASK_TEST_TELEGRAM_ID}")
         if resp.status_code == 404:

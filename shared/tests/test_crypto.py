@@ -52,8 +52,8 @@ class TestSecretsCipher:
                 SecretsCipher()
 
     def test_decrypt_invalid_token_raises(self):
-        import pytest
         from cryptography.fernet import InvalidToken
+        import pytest
 
         cipher = self._make_cipher()
         with pytest.raises(InvalidToken):
@@ -92,8 +92,9 @@ class TestEncryptDecryptDict:
         assert result == {}
 
     def test_decrypt_dict_plaintext_value_raises(self):
-        import pytest
         from cryptography.fernet import InvalidToken
+        import pytest
+
         from shared.crypto import decrypt_dict
 
         with patch.dict("os.environ", {"SECRETS_ENCRYPTION_KEY": self.test_key}):
