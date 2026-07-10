@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 # Default template for new projects
-DEFAULT_TEMPLATE_REPO = "gh:project-factory-organization/service-template"
+DEFAULT_TEMPLATE_REPO = "gh:vladmesh/service-template"
 
 # Redis key for tracking in-flight scaffold jobs (dedup)
 SCAFFOLD_INFLIGHT_KEY = "scaffold:inflight"

@@ -13,7 +13,7 @@ class TestScaffoldConfig:
     def test_roundtrip_serialization(self):
         """ScaffoldConfig survives JSON round-trip through CreateWorkerCommand."""
         scaffold = ScaffoldConfig(
-            template_repo="gh:project-factory-organization/service-template",
+            template_repo="gh:vladmesh/service-template",
             project_name="my-project",
             modules="backend,tg_bot",
             task_description="Build a telegram bot",
@@ -37,10 +37,7 @@ class TestScaffoldConfig:
         restored = CreateWorkerCommand.model_validate_json(json_str)
 
         assert restored.config.scaffold_config is not None
-        assert (
-            restored.config.scaffold_config.template_repo
-            == "gh:project-factory-organization/service-template"
-        )
+        assert restored.config.scaffold_config.template_repo == "gh:vladmesh/service-template"
         assert restored.config.scaffold_config.project_name == "my-project"
         assert restored.config.scaffold_config.modules == "backend,tg_bot"
         assert restored.config.scaffold_config.task_description == "Build a telegram bot"
@@ -60,7 +57,7 @@ class TestScaffoldConfig:
     def test_scaffold_config_defaults(self):
         """ScaffoldConfig task_description defaults to empty string."""
         scaffold = ScaffoldConfig(
-            template_repo="gh:project-factory-organization/service-template",
+            template_repo="gh:vladmesh/service-template",
             project_name="test",
             modules="backend",
         )

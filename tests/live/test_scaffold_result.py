@@ -23,7 +23,7 @@ from shared.contracts.dto.project import ProjectStatus
 from shared.queues import SCAFFOLD_QUEUE
 
 GITHUB_ORG = "project-factory-organization"
-TEMPLATE_REPO = "gh:project-factory-organization/service-template"
+TEMPLATE_REPO = "gh:vladmesh/service-template"
 
 SCAFFOLD_TIMEOUT = 120  # seconds
 

@@ -14,7 +14,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       # Use GitHub URL - copier will clone it
-      - SERVICE_TEMPLATE_PATH=gh:project-factory-organization/service-template
+      - SERVICE_TEMPLATE_PATH=gh:vladmesh/service-template
     volumes:
       - ../../../tests:/app/tests
     networks:

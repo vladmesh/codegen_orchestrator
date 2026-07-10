@@ -800,7 +800,7 @@ class ScaffoldMessage(BaseMessage):
     project_id: str
     repository_id: str
     user_id: str
-    template_repo: str    # e.g. "gh:project-factory-organization/service-template"
+    template_repo: str    # e.g. "gh:vladmesh/service-template"
     project_name: str     # sanitized name for copier
     modules: str          # comma-separated, e.g. "backend,tg_bot"
     task_description: str = ""

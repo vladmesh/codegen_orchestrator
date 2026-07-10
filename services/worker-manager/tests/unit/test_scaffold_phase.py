@@ -13,7 +13,7 @@ from shared.contracts.queues.worker import ScaffoldConfig
 @pytest.fixture
 def scaffold_config():
     return ScaffoldConfig(
-        template_repo="gh:project-factory-organization/service-template",
+        template_repo="gh:vladmesh/service-template",
         project_name="my-project",
         modules="backend,tg_bot",
         task_description="Build a bot",
@@ -110,6 +110,7 @@ class TestScaffoldPhase:
         script = _extract_scaffold_script(mock_docker)
         assert "--data-file" in script
         assert '--data "task_description=' not in script
+        assert "--trust" not in script
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -140,7 +141,7 @@ class TestScaffoldPhase:
         from src.scaffold_phase import run_scaffold_phase
 
         config = ScaffoldConfig(
-            template_repo="gh:project-factory-organization/service-template",
+            template_repo="gh:vladmesh/service-template",
             project_name="my-project",
             modules="backend",
             task_description=dangerous_desc,

@@ -132,7 +132,7 @@ async def main():
     worker_name = f"dev-scaffold-e2e-{request_id[:8]}"
 
     scaffold_config = ScaffoldConfig(
-        template_repo="gh:project-factory-organization/service-template",
+        template_repo="gh:vladmesh/service-template",
         project_name="scaffold-e2e-test",
         modules="backend",
         task_description="Simple REST API for managing TODO items",

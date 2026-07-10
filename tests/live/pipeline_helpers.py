@@ -25,7 +25,7 @@ TEST_TELEGRAM_ID = 999_000_001
 AUTH_HEADERS = {"X-Telegram-ID": str(TEST_TELEGRAM_ID)}
 
 GITHUB_ORG = "project-factory-organization"
-TEMPLATE_REPO = "gh:project-factory-organization/service-template"
+TEMPLATE_REPO = "gh:vladmesh/service-template"
 ORCHESTRATOR_ROOT = "/home/vlad/projects/codegen_orchestrator"
 
 # Timeouts (seconds)
