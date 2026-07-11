@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-07-11
+
+### Changed
+- **Normalize CI merge gate**: added stable `Required CI Gate` job, mandatory CI contract check, unconditional format/lint/unit checks, expanded service and integration routing for shared/test/dependency/workflow changes, and explicit assertions that required matrix test commands actually ran before a matrix job can pass.
+
 ## 2026-07-10
 
 ### Fixed

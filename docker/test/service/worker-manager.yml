@@ -4,6 +4,7 @@ services:
     build: 
       context: ../../..
       dockerfile: services/worker-manager/Dockerfile
+    user: root
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       - REDIS_URL=redis://redis:6379/0

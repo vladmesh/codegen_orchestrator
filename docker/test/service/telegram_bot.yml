@@ -13,18 +13,21 @@ services:
     build: 
         context: ../../..
         dockerfile: services/telegram_bot/Dockerfile
+    command: ["sh", "-c", "trap 'exit 0' TERM INT; python -c 'import src.main'; sleep infinity & wait"]
     environment:
       TELEGRAM_BOT_TOKEN: "123:test"
       REDIS_URL: redis://redis:6379/0
       API_BASE_URL: http://api:8000
+      LK_DOMAIN: https://lk.test.example.com
     depends_on:
       - redis
     volumes:
       - ../../../services/telegram_bot:/app
+      - ../../../shared:/app/shared
     networks:
       - test-net
 
-  test-runner:
+  telegram_bot-test-runner:
     build: 
         context: ../../..
         dockerfile: services/telegram_bot/Dockerfile.test
@@ -32,6 +35,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       TELEGRAM_BOT_TOKEN: "123:test"
       API_BASE_URL: http://api:8000
+      LK_DOMAIN: https://lk.test.example.com
       PYTHONPATH: /app
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

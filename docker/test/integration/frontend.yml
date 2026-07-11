@@ -8,6 +8,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/postgres
       - REDIS_URL=redis://redis:6379/0
       - LK_JWT_SECRET=test-lk-jwt-secret
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
       db:
         condition: service_healthy
@@ -23,10 +24,13 @@ services:
     build:
       context: ../../..
       dockerfile: services/telegram_bot/Dockerfile
+    command: ["sh", "-c", "trap 'exit 0' TERM INT; python -c 'import src.main'; sleep infinity & wait"]
     environment:
       - API_BASE_URL=http://api:8000
       - REDIS_URL=redis://redis:6379/0
       - TELEGRAM_BOT_TOKEN=test_token
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
+      - LK_DOMAIN=https://lk.test
     depends_on:
       api:
         condition: service_healthy
@@ -65,6 +69,7 @@ services:
       - API_URL=http://api:8000
       - REDIS_URL=redis://redis:6379/0
       - TELEGRAM_BOT_URL=http://telegram-bot:8000 # If we add metrics/health to bot
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
       api:
         condition: service_healthy

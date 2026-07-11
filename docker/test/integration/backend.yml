@@ -20,6 +20,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - API_URL=http://api:8000
       - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
       redis:
         condition: service_healthy
@@ -36,6 +37,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
       # GitHub/registry env vars intentionally absent — tests verify
       # the flow fails at the external boundary
     depends_on:
@@ -54,6 +56,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
       redis:
         condition: service_healthy
@@ -122,6 +125,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - SECRETS_ENCRYPTION_KEY=wHhIQWmPfLt60oHdxzbQhY1ZKnUon12e5_SuZ33xDxc=
       - LK_JWT_SECRET=test-lk-jwt-secret
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on: [db, redis]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -182,5 +186,6 @@ services:
       - FACTORY_API_KEY=${FACTORY_API_KEY}
       - CLAUDE_SESSION_DIR=${HOST_CLAUDE_DIR}
       - HOST_CLAUDE_DIR=${HOST_CLAUDE_DIR}
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     networks:
       - backend-test

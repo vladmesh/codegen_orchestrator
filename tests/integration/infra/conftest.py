@@ -10,6 +10,7 @@ pytest_plugins = ("pytest_asyncio",)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 API_BASE_URL = os.getenv("API_BASE_URL", "http://api:8000")
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
 
 
 @pytest.fixture
@@ -23,5 +24,6 @@ async def redis_client():
 @pytest.fixture
 async def api_client():
     """HTTP client for API operations."""
-    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=30.0) as client:
+    headers = {"X-Internal-Key": INTERNAL_API_KEY} if INTERNAL_API_KEY else {}
+    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=30.0, headers=headers) as client:
         yield client

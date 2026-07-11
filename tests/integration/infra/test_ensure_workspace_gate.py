@@ -10,6 +10,7 @@ import asyncio
 import json
 import uuid
 
+import httpx
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
@@ -78,6 +79,18 @@ async def _create_task(api_client, project_id, *, status="todo"):
     )
     assert resp.status_code == 201, f"Failed to create task: {resp.text}"
     return resp.json()
+
+
+async def _get_with_retries(api_client, path: str, *, attempts: int = 5):
+    last_error = None
+    for _attempt in range(attempts):
+        try:
+            return await api_client.get(path)
+        except httpx.TransportError as exc:
+            last_error = exc
+            await asyncio.sleep(1)
+    message = f"API request failed after {attempts} attempts: {last_error}"
+    raise AssertionError(message) from last_error
 
 
 @pytest.mark.asyncio
@@ -152,7 +165,7 @@ async def test_task_dispatcher_skips_when_workspace_not_ready(api_client, redis_
     await asyncio.sleep(35)
 
     # Task should still be TODO (not picked up because workspace_ready is not set)
-    resp = await api_client.get(f"/api/tasks/{task['id']}")
+    resp = await _get_with_retries(api_client, f"/api/tasks/{task['id']}")
     assert resp.status_code == 200
     assert resp.json()["status"] == TaskStatus.TODO
 
