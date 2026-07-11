@@ -1,4 +1,4 @@
-.PHONY: lint format test-unit test-integration test-e2e-scaffold test-live test-live-clean test-clean \
+.PHONY: lint format ci-contract test-unit test-integration test-e2e-scaffold test-live test-live-clean test-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations init-langfuse-db \
 	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -170,6 +170,9 @@ lint:
 format:
 	@uv run ruff format $(if $(FILES),$(FILES),.) && uv run ruff check --fix $(if $(FILES),$(FILES),.)
 
+ci-contract:
+	@uv run python scripts/check-ci-gate.py
+
 # === Git Hooks ===
 
 setup-hooks:
@@ -192,6 +195,11 @@ test-integration-%:
 	@docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down --remove-orphans 2>/dev/null || true
 	@docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
 	EXIT_CODE=$$?; \
+	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
+	if [ -n "$$FAILED_CONTAINERS" ]; then \
+		echo "$$FAILED_CONTAINERS"; \
+		EXIT_CODE=1; \
+	fi; \
 	docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down --remove-orphans; \
 	exit $$EXIT_CODE
 
@@ -215,7 +223,7 @@ test-service:
 	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml down --remove-orphans 2>/dev/null || true
 	@docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml up --build --abort-on-container-exit --exit-code-from $(SERVICE)-test-runner; \
 	EXIT_CODE=$$?; \
-	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml ps -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 {print}'); \
+	FAILED_CONTAINERS=$$(docker compose -p $(TEST_PROJECT)_service_$(SERVICE) -f docker/test/service/$(SERVICE).yml ps --all -q | xargs -r docker inspect --format '{{.Name}} {{.State.ExitCode}}' | awk '$$2 != 0 && $$2 != 137 && $$2 != 143 {print}'); \
 	if [ -n "$$FAILED_CONTAINERS" ]; then \
 		echo "$$FAILED_CONTAINERS"; \
 		EXIT_CODE=1; \

@@ -42,6 +42,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
       - LK_JWT_SECRET=test-lk-jwt-secret
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
       db:
         condition: service_healthy
@@ -56,6 +57,27 @@ services:
       - infra-test
 
   # Scheduler Service (with consumer loop)
+  system-config-seed:
+    build:
+      context: ../../..
+      dockerfile: docker/test/integration/Dockerfile
+    command:
+      [
+        "sh",
+        "-c",
+        "python /app/scripts/seed_system_configs.py --api-base-url http://api:8000 --configs-path /app/scripts/system_configs.yaml && touch /tmp/system-config-seeded && trap 'exit 0' TERM INT; sleep infinity & wait",
+      ]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/system-config-seeded"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+    networks:
+      - infra-test
+
   scheduler:
     build:
       context: ../../..
@@ -67,8 +89,9 @@ services:
       - TIME4VPS_USERNAME=test
       - TIME4VPS_PASSWORD=test
       - HEALTH_CHECK_INTERVAL=300
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
-      api:
+      system-config-seed:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -85,6 +108,7 @@ services:
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://redis:6379/0
       - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-integration-tests
     depends_on:
       scheduler:
         condition: service_started

@@ -4,9 +4,12 @@ services:
     build:
       context: ../../..
       dockerfile: services/infra-service/Dockerfile
+    command: ["sh", "-c", "trap 'exit 0' TERM INT; python -c 'import src.main'; sleep infinity & wait"]
     environment:
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=test
+      - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
     depends_on:
       redis:
         condition: service_healthy
@@ -25,9 +28,11 @@ services:
     build:
       context: ../../..
       dockerfile: services/infra-service/Dockerfile.test
-    command: ["pytest", "services/infra-service/tests", "-v"]
+    command: ["pytest", "services/infra-service/tests/service", "-v"]
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - API_BASE_URL=http://api:8000
+      - INTERNAL_API_KEY=test-internal-api-key-for-service-tests
     depends_on:
       infra-service:
         condition: service_started

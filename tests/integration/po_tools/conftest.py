@@ -25,6 +25,7 @@ from src.agents.po.tools import init_po_clients  # noqa: E402
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY")
 
 TEST_TELEGRAM_ID = 777000777
 
@@ -32,7 +33,8 @@ TEST_TELEGRAM_ID = 777000777
 @pytest.fixture
 async def api_client():
     """httpx.AsyncClient pointed at the real API."""
-    async with httpx.AsyncClient(base_url=API_URL, timeout=10) as client:
+    headers = {"X-Internal-Key": INTERNAL_API_KEY} if INTERNAL_API_KEY else {}
+    async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=headers) as client:
         yield client
 
 
