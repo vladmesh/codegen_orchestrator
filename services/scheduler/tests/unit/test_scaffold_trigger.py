@@ -8,7 +8,7 @@ import pytest
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus, ServiceModule
 from shared.contracts.dto.repository import RepositoryDTO
-from src.tasks.scaffold_trigger import trigger_scaffolds
+from src.tasks.scaffold_trigger import _template_config, trigger_scaffolds
 
 # Stable UUIDs for tests
 PROJ_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -59,7 +59,7 @@ def template_config(monkeypatch):
         "scheduler.service_template_source": "gh:vladmesh/service-template",
         "scheduler.service_template_ref": "0.3.0",
     }[key]
-    monkeypatch.setattr("src.tasks.scaffold_trigger._config", config)
+    monkeypatch.setattr("src.tasks.scaffold_trigger.startup.config", config)
 
 
 @pytest.fixture
@@ -70,6 +70,9 @@ def mock_redis():
 
 
 class TestTriggerScaffolds:
+    def test_template_config_reads_initialized_startup_store(self, template_config):
+        assert _template_config() == ("gh:vladmesh/service-template", "0.3.0")
+
     @pytest.mark.asyncio
     async def test_draft_project_with_stories_publishes_full(self, mock_api, mock_redis):
         project = _make_project(ProjectStatus.DRAFT.value, ["backend", "tg_bot"])

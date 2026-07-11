@@ -21,7 +21,7 @@ from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.scaffold import ScaffoldMessage
 from shared.queues import SCAFFOLD_QUEUE
 
-from ..startup import config as _config
+from .. import startup
 
 if TYPE_CHECKING:
     from shared.redis_client import RedisStreamClient
@@ -35,15 +35,15 @@ SCAFFOLD_INFLIGHT_KEY = "scaffold:inflight"
 
 
 def _scaffold_inflight_ttl() -> int:
-    return _config.get_int("scheduler.scaffold_inflight_ttl") if _config else 600
+    return startup.config.get_int("scheduler.scaffold_inflight_ttl") if startup.config else 600
 
 
 def _template_config() -> tuple[str, str]:
-    if _config is None:
+    if startup.config is None:
         raise RuntimeError("Scheduler config is not initialized")
     return (
-        _config.get("scheduler.service_template_source"),
-        _config.get("scheduler.service_template_ref"),
+        startup.config.get("scheduler.service_template_source"),
+        startup.config.get("scheduler.service_template_ref"),
     )
 
 
