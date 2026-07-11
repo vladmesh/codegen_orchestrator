@@ -1,6 +1,6 @@
 """Scaffolder service configuration.
 
-Requires: REDIS_URL, API_BASE_URL, WORKSPACE_BASE_PATH, SERVICE_TEMPLATE_PATH
+Requires: REDIS_URL, API_BASE_URL, WORKSPACE_BASE_PATH
 """
 
 from functools import lru_cache
@@ -18,10 +18,6 @@ class Settings(BaseSettings):
     workspace_base_path: str = Field(
         ...,
         description="Base path for project workspaces (e.g. /data/workspaces)",
-    )
-    service_template_path: str = Field(
-        ...,
-        description="Path to service-template repo on disk (for copier)",
     )
 
 

@@ -317,6 +317,17 @@ Sequenced; each has clear boundaries and a checkable result. No umbrella refacto
 
 2. **Pin the template version (codegen).** Replace the `--vcs-ref=HEAD` default with a configurable, explicit tag (e.g. `SERVICE_TEMPLATE_REF` env, default to the latest released tag), and resolve the `gh:` vs mounted-`/data/service-template` source ambiguity (pick one). Record the resolved ref in `.copier-answers.yml`/the scaffold log. *Result:* two consecutive scaffolds of the same project produce the same template commit; a test asserts the ref is passed through. Depends on the §6.2 source decision (one open question to close first).
 
+### 6.3 Adopt a service-template release
+
+Production scaffolding uses `scheduler.service_template_source = gh:vladmesh/service-template` and the
+explicit `scheduler.service_template_ref` system config. The baseline is tag `0.3.0`. The local
+`/data/service-template` mount is not part of the production path.
+
+To adopt a release, change `scheduler.service_template_ref` in `scripts/system_configs.yaml`, seed the
+config, run the template contract/integration suite and a GitHub scaffold smoke, then merge the config
+change. Do not point the config at `HEAD`, `main`, or another floating branch. Each scaffold records the
+requested ref and Copier's resolved `_commit` in the project config under `service_template`.
+
 3. **Introduce a shared compose-contract constant (codegen) + close the template nit.** Replace the duplicated string literals `infra/compose.base.yml` / `infra/compose.dev.yml` (`compose_runner.py:21`) with one named constant, and file a one-line template fix removing the dangling `infra/compose.frontend.yml` reference. *Result:* one place defines the compose-file contract in codegen; grep shows no stray literal; template reference no longer dangles. Independent of 1 and 2.
 
 4. **Verify and document the cross-UID uv-cache and mark iteration 4 done (both repos).** Add a smoke assertion that a worker `make setup` reuses the shared `uv-cache` (cache hit, and no permission error across the root/uid-1000 boundary); update `plan-tooling-removal.md` iteration 4 to DONE with the codegen commits. If cross-UID sharing errors, split the caches. *Result:* a reproducible check of the cache benefit, and the plan matches reality. Depends on 3 only for sequencing convenience.

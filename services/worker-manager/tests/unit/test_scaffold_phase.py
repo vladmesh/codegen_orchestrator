@@ -14,6 +14,7 @@ from shared.contracts.queues.worker import ScaffoldConfig
 def scaffold_config():
     return ScaffoldConfig(
         template_repo="gh:vladmesh/service-template",
+        template_ref="0.3.0",
         project_name="my-project",
         modules="backend,tg_bot",
         task_description="Build a bot",
@@ -23,7 +24,7 @@ def scaffold_config():
 @pytest.fixture
 def mock_docker():
     docker = AsyncMock()
-    docker.exec_in_container = AsyncMock(return_value=(0, "OK"))
+    docker.exec_in_container = AsyncMock(return_value=(0, "service_template_commit=27c76cef"))
     docker.image_exists = AsyncMock(return_value=True)
     docker.run_container = AsyncMock(return_value=MagicMock(id="container-123"))
     docker.connect_network = AsyncMock()
@@ -111,6 +112,8 @@ class TestScaffoldPhase:
         assert "--data-file" in script
         assert '--data "task_description=' not in script
         assert "--trust" not in script
+        assert "--vcs-ref=0.3.0" in script
+        assert "--vcs-ref=HEAD" not in script
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -142,6 +145,7 @@ class TestScaffoldPhase:
 
         config = ScaffoldConfig(
             template_repo="gh:vladmesh/service-template",
+            template_ref="0.3.0",
             project_name="my-project",
             modules="backend",
             task_description=dangerous_desc,

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
+import yaml
 
 from src.validation import ScaffoldInputError, validate_modules, validate_project_name
 
@@ -26,6 +27,7 @@ class ScaffoldResult:
     tree: str = ""
     error: str | None = None
     commands_log: list[str] = field(default_factory=list)
+    template_commit: str | None = None
 
 
 async def _run_cmd(cmd: str, cwd: Path | None = None, timeout: int = 600) -> tuple[int, str, str]:
@@ -45,6 +47,7 @@ async def run_scaffold(
     project_id: str,
     repository_id: str,
     template_repo: str,
+    template_ref: str,
     project_name: str,
     modules: str,
     task_description: str,
@@ -64,7 +67,8 @@ async def run_scaffold(
     Args:
         project_id: Project ID for logging
         repository_id: Repository ID (used as workspace directory name)
-        template_repo: Path to service-template on disk
+        template_repo: GitHub service-template source
+        template_ref: Immutable release tag or commit
         project_name: Sanitized project name for copier
         modules: Comma-separated module list
         task_description: Description passed to copier as data
@@ -119,13 +123,15 @@ async def run_scaffold(
     data_file.write_text(f"task_description: |\n{indented}\n")
 
     # Step 3: Run copier
-    log.info("scaffold_copier_start", template=template_repo, modules=modules)
+    log.info(
+        "scaffold_copier_start", template=template_repo, template_ref=template_ref, modules=modules
+    )
     rc, out, err = await _run_cmd(
         f"copier copy {template_repo} {workspace} "
         f'--data "project_name={project_name}" '
         f'--data "modules={modules}" '
         f"--data-file {data_file} "
-        f"--defaults --overwrite --vcs-ref=HEAD",
+        f"--defaults --overwrite --vcs-ref={template_ref}",
         cwd=workspace,
     )
     result.commands_log.append(f"copier copy: rc={rc}")
@@ -133,6 +139,21 @@ async def run_scaffold(
         result.error = f"Copier failed: {err or out}"
         log.error("scaffold_copier_failed", error=err, stdout=out)
         return result
+
+    answers_path = workspace / ".copier-answers.yml"
+    try:
+        answers = yaml.safe_load(answers_path.read_text()) or {}
+        result.template_commit = str(answers["_commit"])
+    except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
+        result.error = f"Copier did not record resolved template commit: {exc}"
+        log.error("scaffold_template_commit_missing", error=str(exc))
+        return result
+    log.info(
+        "scaffold_template_resolved",
+        template=template_repo,
+        requested_ref=template_ref,
+        template_commit=result.template_commit,
+    )
 
     # Clean up data file
     data_file.unlink(missing_ok=True)

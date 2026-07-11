@@ -127,6 +127,7 @@ async def _process_full_mode(msg, repo_full_name, github, github_token, api, set
         project_id=msg.project_id,
         repository_id=msg.repository_id,
         template_repo=msg.template_repo,
+        template_ref=msg.template_ref,
         project_name=msg.project_name,
         modules=msg.modules,
         task_description=msg.task_description,
@@ -242,6 +243,12 @@ async def _update_project_on_success(msg, result, api, settings, log) -> None:
     config = dict(project.config) if project.config else {}
     config["tree"] = result.tree
     config["workspace_ready"] = True
+    if result.template_commit:
+        config["service_template"] = {
+            "source": msg.template_repo,
+            "requested_ref": msg.template_ref,
+            "commit": result.template_commit,
+        }
     config.pop("scaffold_error", None)
     specs_summary = extract_specs_summary(workspace)
     if specs_summary:

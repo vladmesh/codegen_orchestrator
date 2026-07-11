@@ -6,6 +6,7 @@
 
 ### Fixed
 - **Worker-mode compose proxy targets**: worker-wrapper now overrides service-template's portless `worker-start` and `worker-stop` targets instead of local-mode `dev-start` and `dev-stop`. Start preserves service filtering and sends `up -d --build --wait`; stop remains project-scoped and does not remove volumes.
+- **Pinned production scaffolding**: both scaffold paths now use the typed GitHub source `gh:vladmesh/service-template` and an explicit system-config ref, baseline `0.3.0`. Removed the unused local template mount, reject floating refs, and record Copier's resolved commit for reproduction.
 
 ## 2026-07-11
 

@@ -1,6 +1,7 @@
 from typing import Literal
 
 from shared.contracts.base import BaseMessage
+from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
 
 
 class ScaffoldMessage(BaseMessage):
@@ -17,7 +18,8 @@ class ScaffoldMessage(BaseMessage):
     project_id: str
     repository_id: str
     user_id: str
-    template_repo: str  # e.g. "gh:vladmesh/service-template"
+    template_repo: ServiceTemplateSource
+    template_ref: ServiceTemplateRef
     project_name: str  # sanitized name for copier
     modules: str  # comma-separated, e.g. "backend,tg_bot"
     task_description: str = ""

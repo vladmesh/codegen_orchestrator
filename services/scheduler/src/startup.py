@@ -21,6 +21,8 @@ REQUIRED_KEYS = [
     "scheduler.provisioning_stuck_timeout_seconds",
     "scheduler.provisioning_trigger_cooldown_seconds",
     "scheduler.scaffold_inflight_ttl",
+    "scheduler.service_template_source",
+    "scheduler.service_template_ref",
     "scheduler.ssl_check_timeout",
     "scheduler.rag_summarizer_poll_interval",
     "supervisor.story_stuck_threshold_minutes",

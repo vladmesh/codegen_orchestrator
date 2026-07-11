@@ -42,6 +42,16 @@
   category: scheduler
   description: "TTL for in-flight scaffold job markers in seconds (10 min)"
 
+- key: scheduler.service_template_source
+  value: "gh:vladmesh/service-template"
+  category: scheduler
+  description: "Production Copier template source"
+
+- key: scheduler.service_template_ref
+  value: "0.3.0"
+  category: scheduler
+  description: "Pinned service-template release tag or commit"
+
 - key: scheduler.ssl_check_timeout
   value: 5
   category: scheduler

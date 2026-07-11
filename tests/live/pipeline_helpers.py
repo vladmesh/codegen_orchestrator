@@ -26,6 +26,7 @@ AUTH_HEADERS = {"X-Telegram-ID": str(TEST_TELEGRAM_ID)}
 
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:vladmesh/service-template"
+TEMPLATE_REF = "0.3.0"
 ORCHESTRATOR_ROOT = "/home/vlad/projects/codegen_orchestrator"
 
 # Timeouts (seconds)
@@ -147,6 +148,7 @@ def trigger_scaffold(ctx: dict) -> None:
         "repository_id": ctx["repo_id"],
         "user_id": "live-test",
         "template_repo": TEMPLATE_REPO,
+        "template_ref": TEMPLATE_REF,
         "project_name": ctx["project_name"],
         "modules": "backend",
         "task_description": "Pipeline E2E test project",
