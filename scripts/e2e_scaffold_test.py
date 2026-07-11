@@ -133,6 +133,7 @@ async def main():
 
     scaffold_config = ScaffoldConfig(
         template_repo="gh:vladmesh/service-template",
+        template_ref="0.3.0",
         project_name="scaffold-e2e-test",
         modules="backend",
         task_description="Simple REST API for managing TODO items",

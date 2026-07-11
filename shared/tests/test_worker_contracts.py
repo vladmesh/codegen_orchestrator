@@ -14,6 +14,7 @@ class TestScaffoldConfig:
         """ScaffoldConfig survives JSON round-trip through CreateWorkerCommand."""
         scaffold = ScaffoldConfig(
             template_repo="gh:vladmesh/service-template",
+            template_ref="0.3.0",
             project_name="my-project",
             modules="backend,tg_bot",
             task_description="Build a telegram bot",
@@ -58,6 +59,7 @@ class TestScaffoldConfig:
         """ScaffoldConfig task_description defaults to empty string."""
         scaffold = ScaffoldConfig(
             template_repo="gh:vladmesh/service-template",
+            template_ref="0.3.0",
             project_name="test",
             modules="backend",
         )

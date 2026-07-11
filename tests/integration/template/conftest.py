@@ -10,7 +10,9 @@ import pytest
 
 # Default to GitHub URL - copier will clone it
 DEFAULT_TEMPLATE_PATH = "gh:vladmesh/service-template"
-TEMPLATE_PATH = os.getenv("SERVICE_TEMPLATE_PATH", DEFAULT_TEMPLATE_PATH)
+DEFAULT_TEMPLATE_REF = "0.3.0"
+TEMPLATE_PATH = os.getenv("SERVICE_TEMPLATE_TEST_PATH", DEFAULT_TEMPLATE_PATH)
+TEMPLATE_REF = os.getenv("SERVICE_TEMPLATE_TEST_REF", DEFAULT_TEMPLATE_REF)
 
 
 @pytest.fixture
@@ -63,7 +65,7 @@ def run_copier(
         "copier",
         "copy",
         "--defaults",  # Use defaults for unspecified values
-        "--vcs-ref=HEAD",  # Ensure we use the latest HEAD of the template
+        f"--vcs-ref={TEMPLATE_REF}",
     ]
 
     # Add data arguments

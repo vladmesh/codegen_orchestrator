@@ -32,6 +32,7 @@ async def run_scaffold_phase(
         "scaffold_phase_start",
         worker_id=worker_id,
         template=scaffold_config.template_repo,
+        template_ref=scaffold_config.template_ref,
         project_name=scaffold_config.project_name,
         modules=scaffold_config.modules,
     )
@@ -66,7 +67,11 @@ copier copy {scaffold_config.template_repo} /workspace \
     --data "project_name={scaffold_config.project_name}" \
     --data "modules={scaffold_config.modules}" \
     --data-file /tmp/copier-data.yml \
-    --defaults --overwrite --vcs-ref=HEAD
+    --defaults --overwrite --vcs-ref={scaffold_config.template_ref}
+
+TEMPLATE_COMMIT=$(sed -n 's/^_commit: *//p' /workspace/.copier-answers.yml | tr -d '\"' | head -n 1)
+test -n "$TEMPLATE_COMMIT"
+echo "service_template_commit=$TEMPLATE_COMMIT"
 
 # Setup project (install deps, generate code)
 cd /workspace
@@ -99,5 +104,20 @@ git config core.hooksPath .githooks
         )
         return False
 
-    logger.info("scaffold_phase_complete", worker_id=worker_id, repo=repo)
+    commit_marker = "service_template_commit="
+    template_commit = next(
+        (line.removeprefix(commit_marker) for line in output.splitlines() if line.startswith(commit_marker)),
+        None,
+    )
+    if not template_commit:
+        logger.error("scaffold_phase_commit_missing", worker_id=worker_id)
+        return False
+    logger.info(
+        "scaffold_phase_complete",
+        worker_id=worker_id,
+        repo=repo,
+        template=scaffold_config.template_repo,
+        requested_ref=scaffold_config.template_ref,
+        template_commit=template_commit,
+    )
     return True

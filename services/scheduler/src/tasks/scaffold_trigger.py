@@ -30,15 +30,21 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Default template for new projects
-DEFAULT_TEMPLATE_REPO = "gh:vladmesh/service-template"
-
 # Redis key for tracking in-flight scaffold jobs (dedup)
 SCAFFOLD_INFLIGHT_KEY = "scaffold:inflight"
 
 
 def _scaffold_inflight_ttl() -> int:
     return _config.get_int("scheduler.scaffold_inflight_ttl") if _config else 600
+
+
+def _template_config() -> tuple[str, str]:
+    if _config is None:
+        raise RuntimeError("Scheduler config is not initialized")
+    return (
+        _config.get("scheduler.service_template_source"),
+        _config.get("scheduler.service_template_ref"),
+    )
 
 
 async def _mark_inflight(redis_client: RedisStreamClient, project_id: str) -> bool:
@@ -160,11 +166,13 @@ def _build_scaffold_message(project, repo_id: str, mode: str) -> ScaffoldMessage
     config = project.config or {}
     config_modules = config.get("modules", ["backend"])
     modules = ",".join(config_modules) if config_modules else "backend"
+    template_repo, template_ref = _template_config()
     return ScaffoldMessage(
         project_id=str(project.id),
         repository_id=repo_id,
         user_id=str(project.owner_id),
-        template_repo=DEFAULT_TEMPLATE_REPO,
+        template_repo=template_repo,
+        template_ref=template_ref,
         project_name=project.name,
         modules=modules,
         task_description=config.get("description", project.description or ""),

@@ -1,14 +1,14 @@
 """Tests for scaffold trigger in scheduler."""
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 import pytest
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus, ServiceModule
 from shared.contracts.dto.repository import RepositoryDTO
-from src.tasks.scaffold_trigger import DEFAULT_TEMPLATE_REPO, trigger_scaffolds
+from src.tasks.scaffold_trigger import trigger_scaffolds
 
 # Stable UUIDs for tests
 PROJ_UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -52,6 +52,16 @@ def mock_api():
     return api
 
 
+@pytest.fixture(autouse=True)
+def template_config(monkeypatch):
+    config = MagicMock()
+    config.get.side_effect = lambda key: {
+        "scheduler.service_template_source": "gh:vladmesh/service-template",
+        "scheduler.service_template_ref": "0.3.0",
+    }[key]
+    monkeypatch.setattr("src.tasks.scaffold_trigger._config", config)
+
+
 @pytest.fixture
 def mock_redis():
     redis = AsyncMock()
@@ -73,8 +83,8 @@ class TestTriggerScaffolds:
         mock_redis.publish_message.assert_called_once()
         msg = mock_redis.publish_message.call_args[0][1]
         assert msg.mode == "full"
-        assert msg.template_repo == DEFAULT_TEMPLATE_REPO
         assert msg.template_repo == "gh:vladmesh/service-template"
+        assert msg.template_ref == "0.3.0"
 
     @pytest.mark.asyncio
     async def test_active_project_with_todo_tasks_publishes_ensure(

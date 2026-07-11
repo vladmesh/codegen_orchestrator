@@ -45,7 +45,8 @@ SKIP_REASON = "GitHub App credentials not configured (GITHUB_APP_ID, GITHUB_APP_
 GITHUB_CONFIGURED = GITHUB_APP_ID and (GITHUB_APP_KEY_PATH or GITHUB_APP_KEY_CONTENT)
 
 # Template for scaffolding
-SERVICE_TEMPLATE = os.getenv("SERVICE_TEMPLATE_PATH", "gh:vladmesh/service-template")
+SERVICE_TEMPLATE = os.getenv("SERVICE_TEMPLATE_TEST_PATH", "gh:vladmesh/service-template")
+SERVICE_TEMPLATE_REF = os.getenv("SERVICE_TEMPLATE_TEST_REF", "0.3.0")
 
 
 def run_copier(
@@ -78,7 +79,7 @@ def run_copier(
         "copy",
         "--defaults",
         "--overwrite",  # Overwrite existing files (e.g., README.md from GitHub auto_init)
-        "--vcs-ref=HEAD",
+        f"--vcs-ref={SERVICE_TEMPLATE_REF}",
     ]
 
     for key, value in data.items():

@@ -321,7 +321,6 @@ services:
       REDIS_URL: redis://redis:6379
       PYTHONPATH: /app
       WORKSPACE_BASE_PATH: /data/workspaces
-      SERVICE_TEMPLATE_PATH: /data/service-template
       GITHUB_ORG: ${GITHUB_ORG}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       SERVICE_NAME: scaffolder
@@ -330,7 +329,6 @@ services:
       - ./shared:/app/shared:delegated
       - ${GITHUB_APP_PEM_PATH:-./secrets/github_app.pem}:/app/keys/github_app.pem:ro
       - ${WORKSPACE_HOST_PATH:-/data/workspaces}:/data/workspaces
-      - ${SERVICE_TEMPLATE_PATH:-../service-template}:/data/service-template:ro
       - uv-cache:/root/.cache/uv
     depends_on:
       api:
