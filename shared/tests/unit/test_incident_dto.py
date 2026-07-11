@@ -112,6 +112,10 @@ class TestIncidentCreate:
         data = create.model_dump(mode="json")
         assert data["affected_services"] == ["api"]
 
+    def test_rejects_unknown_incident_type(self):
+        with pytest.raises(ValidationError):
+            IncidentCreate(server_handle="srv-1", incident_type="disk_full")
+
 
 class TestIncidentUpdate:
     def test_exclude_unset(self):
@@ -127,3 +131,7 @@ class TestIncidentUpdate:
         update = IncidentUpdate()
         data = update.model_dump(exclude_unset=True)
         assert data == {}
+
+    def test_rejects_unknown_status(self):
+        with pytest.raises(ValidationError):
+            IncidentUpdate(status="acknowledged")

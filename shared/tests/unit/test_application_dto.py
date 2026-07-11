@@ -94,6 +94,15 @@ class TestApplicationCreate:
         data = create.model_dump(mode="json")
         assert data["status"] == "running"
 
+    def test_rejects_unknown_status(self):
+        with pytest.raises(ValidationError):
+            ApplicationCreate(
+                repo_id="repo-1",
+                server_handle="srv-1",
+                service_name="api",
+                status="crashed",
+            )
+
 
 class TestApplicationUpdate:
     def test_exclude_unset(self):
