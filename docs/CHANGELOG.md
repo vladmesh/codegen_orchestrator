@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-07-12
+
+### Fixed
+- **Worker-mode compose proxy targets**: worker-wrapper now overrides service-template's portless `worker-start` and `worker-stop` targets instead of local-mode `dev-start` and `dev-stop`. Start preserves service filtering and sends `up -d --build --wait`; stop remains project-scoped and does not remove volumes.
+
 ## 2026-07-11
 
 ### Changed
