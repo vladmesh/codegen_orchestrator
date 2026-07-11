@@ -40,42 +40,59 @@ class TestInjectMakefileOverrides:
     def test_override_injected_with_correct_curl(self, wrapper, tmp_path):
         """Override targets use curl to localhost:9090/infra/compose."""
         makefile = tmp_path / "Makefile"
-        makefile.write_text("dev-start:\n\tdocker compose up -d $(svc)\n")
+        makefile.write_text("worker-start:\n\tdocker compose up -d --build --wait $(svc)\n")
 
         wrapper._inject_makefile_overrides()
 
         content = makefile.read_text()
         assert "# --- orchestrator overrides ---" in content
         assert "http://localhost:9090/infra/compose" in content
-        assert "dev-start:" in content
-        assert "dev-stop:" in content
+        assert "worker-start:" in content
+        assert "worker-stop:" in content
 
-    def test_dev_start_passes_svc_variable(self, wrapper, tmp_path):
-        """dev-start override passes $(svc) in the compose args."""
+    def test_worker_start_passes_svc_variable_and_build_flags(self, wrapper, tmp_path):
+        """worker-start preserves service selection and the template's start flags."""
         makefile = tmp_path / "Makefile"
-        makefile.write_text("dev-start:\n\tdocker compose up -d $(svc)\n")
+        makefile.write_text("worker-start:\n\tdocker compose up -d --build --wait $(svc)\n")
 
         wrapper._inject_makefile_overrides()
 
         content = makefile.read_text()
-        # The curl payload should include $(svc) for service selection
-        assert "$(svc)" in content
-        assert '"up", "-d", "--wait"' in content
+        override = content.split("# --- orchestrator overrides ---", 1)[1]
+        assert '"args": ["up", "-d", "--build", "--wait", "$(svc)"]' in override
+        assert '"cwd": "."' in override
 
-    def test_dev_stop_override(self, wrapper, tmp_path):
-        """dev-stop override sends down --remove-orphans."""
+    def test_worker_stop_override_is_project_scoped(self, wrapper, tmp_path):
+        """worker-stop only sends project-scoped down without volume cleanup."""
         makefile = tmp_path / "Makefile"
-        makefile.write_text("dev-start:\n\tdocker compose up -d\n")
+        makefile.write_text("worker-start:\n\tdocker compose up -d --build --wait\n")
+
+        wrapper._inject_makefile_overrides()
+
+        override = makefile.read_text().split("# --- orchestrator overrides ---", 1)[1]
+        assert '"args": ["down", "--remove-orphans"]' in override
+        assert "--volumes" not in override
+        assert "network" not in override
+
+    def test_local_mode_targets_are_not_overridden(self, wrapper, tmp_path):
+        """dev targets keep their template recipes and are not worker-mode aliases."""
+        makefile = tmp_path / "Makefile"
+        original = "dev-start:\n\tdocker compose -f infra/compose.local.yml up -d\n"
+        makefile.write_text(original)
 
         wrapper._inject_makefile_overrides()
 
         content = makefile.read_text()
-        assert '"down", "--remove-orphans"' in content
+        override = content.split("# --- orchestrator overrides ---", 1)[1]
+        assert original in content
+        assert "dev-start:" not in override
+        assert "dev-stop:" not in override
+        assert "docker" not in override
 
     def test_idempotent_no_duplicate(self, wrapper, tmp_path):
         """Second call does not duplicate the override block."""
         makefile = tmp_path / "Makefile"
-        makefile.write_text("dev-start:\n\tdocker compose up -d $(svc)\n")
+        makefile.write_text("worker-start:\n\tdocker compose up -d --build --wait $(svc)\n")
 
         wrapper._inject_makefile_overrides()
         content_after_first = makefile.read_text()

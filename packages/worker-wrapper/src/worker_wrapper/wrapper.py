@@ -472,13 +472,13 @@ class WorkerWrapper:
             pass
 
     def _inject_makefile_overrides(self):
-        """Inject Makefile overrides so `make dev-start` uses the compose proxy.
+        """Inject Makefile overrides so worker-mode targets use the compose proxy.
 
         Workers don't have Docker socket access. The wrapper's HTTP server
         proxies /infra/compose to worker-manager. This override replaces
-        the template's `dev-start` (which calls `docker compose` directly)
-        with a `curl` to localhost:9090/infra/compose, so that
-        `make dev-start svc=db`, `make migrate`, etc. work transparently.
+        the template's portless `worker-start` and `worker-stop` recipes with
+        calls to localhost:9090/infra/compose. Local-mode `dev-start` and
+        `dev-stop` keep their published-port semantics and are not aliases.
         """
         makefile = os.path.join(WORKSPACE_DIR, "Makefile")
         if not os.path.isfile(makefile):
@@ -492,13 +492,13 @@ class WorkerWrapper:
 
             override = (
                 f"\n{override_marker}\n"
-                "dev-start:\n"
+                "worker-start:\n"
                 "\t@curl -sf -X POST http://localhost:9090/infra/compose "
                 """-H 'Content-Type: application/json' """
-                """-d '{"args": ["up", "-d", "--wait", "$(svc)"], "cwd": "."}' """
+                """-d '{"args": ["up", "-d", "--build", "--wait", "$(svc)"], "cwd": "."}' """
                 "| jq -r .stderr || echo 'compose proxy failed'\n"
                 "\n"
-                "dev-stop:\n"
+                "worker-stop:\n"
                 "\t@curl -sf -X POST http://localhost:9090/infra/compose "
                 """-H 'Content-Type: application/json' """
                 """-d '{"args": ["down", "--remove-orphans"], "cwd": "."}' """
