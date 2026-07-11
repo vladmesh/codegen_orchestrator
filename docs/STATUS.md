@@ -21,14 +21,15 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 - `codegen_orchestrator-432` is the latest contract-correction layer in this baseline:
   production scaffolding uses GitHub `gh:vladmesh/service-template` with explicit tag `0.3.0`
   in PR #33.
-- Current worker card: `codegen_orchestrator-434`, document the stabilization sequence and status.
+- Current worker card: `codegen_orchestrator-435`, type B7 response-DTO lifecycle fields to their `StrEnum`
+  (task/story/server/application/incident/service-deployment). This is a slice of Phase 2, not the whole phase.
 
 ## Phase Progress
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Security quick-wins (B2 crypto, fail-open auth) | COMPLETE |
 | 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
-| 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | Pending |
+| 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | In progress — B7 response-DTO enums done (`codegen_orchestrator-435`); словари и RunResult pending |
 | 3 | Типизированный consume + мёртвый код (B5, B6) | Pending |
 | 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Pending |
 
@@ -40,7 +41,8 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | service-template contract audit | COMPLETE | PR #31, [contract audit](reports/codegen-service-template-contract.md) |
 | worker-mode proxy target drift (`codegen_orchestrator-398`) | COMPLETE | PR #32, [CHANGELOG 2026-07-12](CHANGELOG.md#2026-07-12) |
 | service-template production pin (`codegen_orchestrator-432`) | COMPLETE in current baseline | PR #33, `scheduler.service_template_ref=0.3.0` |
-| Stabilization sequence (`codegen_orchestrator-434`) | Current | [stabilization plan v1](plans/codegen-stabilization-v1.md) |
+| Stabilization sequence (`codegen_orchestrator-434`) | COMPLETE | [stabilization plan v1](plans/codegen-stabilization-v1.md) |
+| B7 response-DTO enums (`codegen_orchestrator-435`) | COMPLETE | lifecycle fields on task/story/server/application/incident/service-deployment DTOs now use their `StrEnum`; slice of Phase 2 only |
 
 ## Sprint History
 

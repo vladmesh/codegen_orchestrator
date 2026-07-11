@@ -32,7 +32,7 @@ class ApplicationDTO(TimestampedDTO):
     repo_id: str
     server_handle: str
     service_name: str
-    status: str
+    status: ApplicationStatus
     last_health_check: datetime | None = None
     response_time_ms: int | None = None
     ssl_expires_at: datetime | None = None
@@ -49,13 +49,13 @@ class ApplicationCreate(BaseModel):
     repo_id: str
     server_handle: str
     service_name: str
-    status: str = ApplicationStatus.NOT_DEPLOYED.value
+    status: ApplicationStatus = ApplicationStatus.NOT_DEPLOYED
 
 
 class ApplicationUpdate(BaseModel):
     """Update application request."""
 
-    status: str | None = None
+    status: ApplicationStatus | None = None
     last_health_check: datetime | None = None
     response_time_ms: int | None = None
     ssl_expires_at: datetime | None = None

@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.deployment import DeploymentResult
 
 
 class ServiceDeploymentDTO(TimestampedDTO):
@@ -11,6 +12,6 @@ class ServiceDeploymentDTO(TimestampedDTO):
     server_id: int
     service_name: str
     port: int
-    status: str
+    status: DeploymentResult
     url: str | None = None
     deployed_at: datetime

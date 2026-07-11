@@ -4,9 +4,13 @@ from datetime import UTC, datetime
 from typing import Any
 import uuid
 
+from pydantic import ValidationError
+import pytest
+
 from shared.contracts.dto.story import (
     StoryCreate,
     StoryDTO,
+    StoryStatus,
     StoryType,
     StoryUpdate,
 )
@@ -77,6 +81,21 @@ class TestStoryDTO:
         data = dto.model_dump(mode="json")
         dto2 = StoryDTO.model_validate(data)
         assert dto2.id == dto.id
+
+    def test_status_and_type_are_typed_enums(self):
+        dto = StoryDTO.model_validate(self.SAMPLE_RESPONSE)
+        assert dto.status is StoryStatus.IN_PROGRESS
+        assert dto.type is StoryType.PRODUCT
+
+    def test_rejects_unknown_status(self):
+        bad = {**self.SAMPLE_RESPONSE, "status": "review"}
+        with pytest.raises(ValidationError):
+            StoryDTO.model_validate(bad)
+
+    def test_rejects_unknown_type(self):
+        bad = {**self.SAMPLE_RESPONSE, "type": "epic"}
+        with pytest.raises(ValidationError):
+            StoryDTO.model_validate(bad)
 
 
 class TestStoryCreate:

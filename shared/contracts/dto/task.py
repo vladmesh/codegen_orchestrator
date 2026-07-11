@@ -82,11 +82,11 @@ class TaskDTO(TimestampedDTO):
 
     id: str
     project_id: uuid.UUID
-    type: str
+    type: TaskType
     title: str
     description: str | None = None
     plan: str | None = None
-    status: str
+    status: TaskStatus
     priority: int
     acceptance_criteria: str | None = None
     current_iteration: int
@@ -107,9 +107,9 @@ class TaskEventDTO(TimestampedDTO):
 
     id: int
     task_id: str
-    event_type: str
-    from_status: str | None = None
-    to_status: str | None = None
+    event_type: TaskEventType
+    from_status: TaskStatus | None = None
+    to_status: TaskStatus | None = None
     iteration: int | None = None
     details: dict[str, Any] = {}
     actor: str

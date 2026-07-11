@@ -3,6 +3,9 @@
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError
+import pytest
+
 from shared.contracts.dto.incident import (
     IncidentCreate,
     IncidentDTO,
@@ -70,6 +73,21 @@ class TestIncidentDTO:
         data = dto.model_dump(mode="json")
         dto2 = IncidentDTO.model_validate(data)
         assert dto2.id == dto.id
+
+    def test_status_and_type_are_typed_enums(self):
+        dto = IncidentDTO.model_validate(self.SAMPLE_RESPONSE)
+        assert dto.status is IncidentStatus.DETECTED
+        assert dto.incident_type is IncidentType.SERVER_UNREACHABLE
+
+    def test_rejects_unknown_status(self):
+        bad = {**self.SAMPLE_RESPONSE, "status": "acknowledged"}
+        with pytest.raises(ValidationError):
+            IncidentDTO.model_validate(bad)
+
+    def test_rejects_unknown_incident_type(self):
+        bad = {**self.SAMPLE_RESPONSE, "incident_type": "disk_full"}
+        with pytest.raises(ValidationError):
+            IncidentDTO.model_validate(bad)
 
 
 class TestIncidentCreate:

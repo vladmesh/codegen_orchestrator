@@ -4,6 +4,9 @@
 
 ## 2026-07-12
 
+### Changed
+- **Typed response-DTO lifecycle fields (B7 slice of Sprint 002 Phase 2)**: lifecycle fields on the read-side DTOs now declare their existing `StrEnum` instead of bare `str`, so Pydantic rejects unknown values at the read boundary. `TaskDTO.status/type` and `TaskEventDTO.event_type/from_status/to_status`, `StoryDTO.status/type`, `ServerDTO.status` (+ `ServerCreate.status`), `ApplicationDTO/Create/Update.status`, `IncidentDTO.incident_type/status` (+ `IncidentCreate.incident_type`, `IncidentUpdate.status`), and `ServiceDeploymentDTO.status` (`DeploymentResult`). Dropped the "use str for flexibility" comments. Added accept-valid / reject-unknown unit tests per DTO. Only the B7 response-DTO slice; the duplicated vocabularies and `Run.result` typing from Phase 2 remain open.
+
 ### Fixed
 - **Worker-mode compose proxy targets**: worker-wrapper now overrides service-template's portless `worker-start` and `worker-stop` targets instead of local-mode `dev-start` and `dev-stop`. Start preserves service filtering and sends `up -d --build --wait`; stop remains project-scoped and does not remove volumes.
 - **Pinned production scaffolding**: both scaffold paths now use the typed GitHub source `gh:vladmesh/service-template` and an explicit system-config ref, baseline `0.3.0`. Removed the unused local template mount, reject floating refs, and record Copier's resolved commit for reproduction.

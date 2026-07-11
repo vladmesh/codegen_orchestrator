@@ -4,6 +4,9 @@ from datetime import UTC, datetime
 from typing import Any
 import uuid
 
+from pydantic import ValidationError
+import pytest
+
 from shared.contracts.dto.task import (
     TaskCreate,
     TaskDTO,
@@ -100,6 +103,21 @@ class TestTaskDTO:
         assert dto2.id == dto.id
         assert dto2.project_id == dto.project_id
 
+    def test_status_and_type_are_typed_enums(self):
+        dto = TaskDTO.model_validate(self.SAMPLE_RESPONSE)
+        assert dto.status is TaskStatus.IN_DEV
+        assert dto.type is TaskType.FEATURE
+
+    def test_rejects_unknown_status(self):
+        bad = {**self.SAMPLE_RESPONSE, "status": "in_review"}
+        with pytest.raises(ValidationError):
+            TaskDTO.model_validate(bad)
+
+    def test_rejects_unknown_type(self):
+        bad = {**self.SAMPLE_RESPONSE, "type": "chore"}
+        with pytest.raises(ValidationError):
+            TaskDTO.model_validate(bad)
+
 
 class TestTaskCreate:
     """TaskCreate should serialize for API requests."""
@@ -190,6 +208,22 @@ class TestTaskEventDTO:
         dto = TaskEventDTO.model_validate(event)
         assert dto.iteration == 2
         assert dto.details == {"run_id": "eng-123"}
+
+    def test_event_fields_are_typed_enums(self):
+        dto = TaskEventDTO.model_validate(self.SAMPLE_EVENT)
+        assert dto.event_type is TaskEventType.STATUS_CHANGE
+        assert dto.from_status is TaskStatus.BACKLOG
+        assert dto.to_status is TaskStatus.TODO
+
+    def test_rejects_unknown_event_type(self):
+        bad = {**self.SAMPLE_EVENT, "event_type": "reopened"}
+        with pytest.raises(ValidationError):
+            TaskEventDTO.model_validate(bad)
+
+    def test_rejects_unknown_transition_status(self):
+        bad = {**self.SAMPLE_EVENT, "to_status": "in_review"}
+        with pytest.raises(ValidationError):
+            TaskEventDTO.model_validate(bad)
 
 
 class TestTaskEventCreate:
