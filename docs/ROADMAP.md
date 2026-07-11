@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Updated**: 2026-04-10
+> **Updated**: 2026-07-12
 >
 > Story-level milestones. Updated by `/close-sprint`. Individual tasks tracked in sprint directories.
 
@@ -9,6 +9,8 @@
 ## Stabilize core pipeline
 
 Довести генерацию Telegram-ботов до стабильного E2E. Юзер приходит в Telegram → общается с PO → получает работающего бота за 20-30 минут. Потом просит доработки через диалог → получает обновлённого бота. Включает: фикс известных багов, стабилизацию worker lifecycle, надёжный CI/CD pipeline.
+
+Current sequencing map: [codegen stabilization plan v1](plans/codegen-stabilization-v1.md).
 
 - [x] Smart CI failure triage: worker reject signal + CI-fix task template
 - [x] #51 SQLAlchemy JSON Mutation Tracking — Secrets Lost on Save
