@@ -3,6 +3,9 @@
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError
+import pytest
+
 from shared.contracts.dto.application import (
     ApplicationCreate,
     ApplicationDTO,
@@ -61,6 +64,15 @@ class TestApplicationDTO:
         dto2 = ApplicationDTO.model_validate(data)
         assert dto2.id == dto.id
 
+    def test_status_is_typed_enum(self):
+        dto = ApplicationDTO.model_validate(self.SAMPLE_RESPONSE)
+        assert dto.status is ApplicationStatus.RUNNING
+
+    def test_rejects_unknown_status(self):
+        bad = {**self.SAMPLE_RESPONSE, "status": "crashed"}
+        with pytest.raises(ValidationError):
+            ApplicationDTO.model_validate(bad)
+
 
 class TestApplicationCreate:
     def test_minimal(self):
@@ -82,6 +94,15 @@ class TestApplicationCreate:
         data = create.model_dump(mode="json")
         assert data["status"] == "running"
 
+    def test_rejects_unknown_status(self):
+        with pytest.raises(ValidationError):
+            ApplicationCreate(
+                repo_id="repo-1",
+                server_handle="srv-1",
+                service_name="api",
+                status="crashed",
+            )
+
 
 class TestApplicationUpdate:
     def test_exclude_unset(self):
@@ -93,3 +114,7 @@ class TestApplicationUpdate:
         update = ApplicationUpdate()
         data = update.model_dump(exclude_unset=True)
         assert data == {}
+
+    def test_rejects_unknown_status(self):
+        with pytest.raises(ValidationError):
+            ApplicationUpdate(status="crashed")

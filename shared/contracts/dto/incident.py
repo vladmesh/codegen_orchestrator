@@ -35,8 +35,8 @@ class IncidentDTO(TimestampedDTO):
 
     id: int
     server_handle: str
-    incident_type: str
-    status: str
+    incident_type: IncidentType
+    status: IncidentStatus
     detected_at: datetime
     resolved_at: datetime | None = None
     details: dict = {}
@@ -51,7 +51,7 @@ class IncidentCreate(BaseModel):
     """Create incident request."""
 
     server_handle: str
-    incident_type: str
+    incident_type: IncidentType
     details: dict = {}
     affected_services: list = []
 
@@ -59,7 +59,7 @@ class IncidentCreate(BaseModel):
 class IncidentUpdate(BaseModel):
     """Update incident request."""
 
-    status: str | None = None
+    status: IncidentStatus | None = None
     resolved_at: datetime | None = None
     details: dict | None = None
     recovery_attempts: int | None = None

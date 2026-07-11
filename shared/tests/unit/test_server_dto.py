@@ -2,7 +2,16 @@
 
 from datetime import UTC, datetime
 
-from shared.contracts.dto.server import ServerDTO, ServerMetricsHistoryDTO, ServerUpdate
+from pydantic import ValidationError
+import pytest
+
+from shared.contracts.dto.server import (
+    ServerCreate,
+    ServerDTO,
+    ServerMetricsHistoryDTO,
+    ServerStatus,
+    ServerUpdate,
+)
 
 _NOW = datetime(2026, 3, 17, tzinfo=UTC)
 _BASE_FIELDS = {
@@ -45,6 +54,30 @@ class TestServerDTOHealthFields:
         )
         assert dto.cpu_usage_pct == 42.5
         assert dto.container_count_running == 5
+
+
+class TestServerDTOStatus:
+    """ServerDTO.status should validate against ServerStatus."""
+
+    def test_valid_status_is_typed_enum(self):
+        dto = ServerDTO(**_BASE_FIELDS)
+        assert dto.status is ServerStatus.ACTIVE
+
+    def test_rejects_unknown_status(self):
+        with pytest.raises(ValidationError):
+            ServerDTO(**{**_BASE_FIELDS, "status": "reserved_ghost"})
+
+
+class TestServerCreateStatus:
+    """ServerCreate.status should validate against ServerStatus."""
+
+    def test_default_status(self):
+        create = ServerCreate(handle="srv-1", host="host", public_ip="1.2.3.4")
+        assert create.status is ServerStatus.DISCOVERED
+
+    def test_rejects_unknown_status(self):
+        with pytest.raises(ValidationError):
+            ServerCreate(handle="srv-1", host="host", public_ip="1.2.3.4", status="bogus")
 
 
 class TestServerUpdateHealthFields:

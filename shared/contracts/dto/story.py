@@ -78,8 +78,8 @@ class StoryDTO(TimestampedDTO):
     title: str
     description: str | None = None
     acceptance_criteria: str | None = None
-    type: str
-    status: str
+    type: StoryType
+    status: StoryStatus
     priority: int
     blocked_by_story_id: str | None = None
     created_by: str

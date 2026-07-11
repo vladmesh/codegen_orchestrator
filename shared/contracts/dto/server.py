@@ -43,7 +43,7 @@ class ServerCreate(BaseModel):
     ssh_user: str = "root"
     ssh_key: str | None = None
     is_managed: bool = True
-    status: str = "discovered"  # Use str for flexibility
+    status: ServerStatus = ServerStatus.DISCOVERED
     labels: dict = {}
 
 
@@ -85,7 +85,7 @@ class ServerDTO(TimestampedDTO):
     handle: str
     host: str
     public_ip: str
-    status: str  # Use str to accept any status value
+    status: ServerStatus
     provider_id: str | None = None  # Computed from labels
     is_managed: bool
     labels: dict = {}
