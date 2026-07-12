@@ -28,6 +28,7 @@ from shared.contracts.queues.worker_result import (
 )
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
+from shared.redis.client import decode_redis_value
 
 from ..config.constants import Timeouts
 from ..config.settings import get_settings
@@ -56,6 +57,41 @@ class SpawnResult:
     worker_report: str | None = None
 
 
+class WorkerOutputDecodeError(Exception):
+    """A worker output stream entry could not be JSON-decoded.
+
+    Raised from ``_wait_for_response`` on the output-read path so an undecodable
+    poison payload surfaces as an explicit invalid result instead of masquerading
+    as a transient timeout.
+    """
+
+
+def _invalid_worker_result(request_id: str, worker_id: str | None) -> SpawnResult:
+    """Explicit failed result for a poison/invalid worker output payload."""
+    return SpawnResult(
+        request_id=request_id,
+        success=False,
+        exit_code=1,
+        output="",
+        error_message="invalid_worker_result",
+        worker_id=worker_id,
+    )
+
+
+def _safe_validation_errors(exc: ValidationError) -> list[dict]:
+    """Structured validation errors with every field value stripped.
+
+    ``e.errors()`` keeps ``msg`` and ``ctx`` even with input excluded, and for a
+    discriminated-union tag mismatch both echo the offending ``status`` value —
+    which may be a secret. Log only ``type`` and ``loc`` so nothing from the
+    payload reaches the logs.
+    """
+    return [
+        {"type": err["type"], "loc": list(err["loc"])}
+        for err in exc.errors(include_url=False, include_input=False)
+    ]
+
+
 def spawn_result_from_output(
     output_resp: dict, request_id: str, worker_id: str | None
 ) -> SpawnResult:
@@ -65,9 +101,8 @@ def spawn_result_from_output(
     validated against :data:`WorkerResult` before any interpretation, so status
     and content are never guessed from synonym keys. An invalid payload is
     surfaced as an explicit failed result — never a silent fallback to a made-up
-    status or empty output. Validation errors are logged structurally with the
-    input elided: worker payloads can carry secrets, and ``str(e)`` / raw data
-    both echo field values.
+    status or empty output. Validation errors are logged with every field value
+    stripped: worker payloads can carry secrets.
     """
     try:
         result = WorkerResultAdapter.validate_python(output_resp)
@@ -76,16 +111,9 @@ def spawn_result_from_output(
             "worker_result_invalid",
             worker_id=worker_id,
             request_id=request_id,
-            errors=e.errors(include_url=False, include_input=False),
+            errors=_safe_validation_errors(e),
         )
-        return SpawnResult(
-            request_id=request_id,
-            success=False,
-            exit_code=1,
-            output="",
-            error_message="invalid_worker_result",
-            worker_id=worker_id,
-        )
+        return _invalid_worker_result(request_id, worker_id)
     return _map_worker_result(result, request_id, worker_id)
 
 
@@ -186,6 +214,17 @@ async def _check_worker_alive(redis_client: redis.Redis, worker_id: str) -> bool
     return True
 
 
+def _observe_poison_entry(stream: str, msg_id, request_id: str | None, error: str) -> None:
+    """Log an undecodable stream entry loudly, without echoing its payload."""
+    logger.error(
+        "worker_response_decode_failed",
+        stream=stream,
+        entry_id=decode_redis_value(msg_id),
+        request_id=request_id,
+        error=error,
+    )
+
+
 async def _wait_for_response(
     redis_client: redis.Redis,
     group_name: str,
@@ -242,23 +281,36 @@ async def _wait_for_response(
         if messages:
             for _, stream_msgs in messages:
                 for msg_id, msg_data in stream_msgs:
-                    # Skip messages without 'data' field (wrong format)
+                    # Missing 'data' field — poison entry, ACK terminally.
                     if b"data" not in msg_data and "data" not in msg_data:
                         await redis_client.xack(stream, group_name, msg_id)
+                        _observe_poison_entry(stream, msg_id, request_id, "missing_data")
+                        if request_id is None:
+                            raise WorkerOutputDecodeError(stream)
                         continue
 
                     data_str = msg_data[b"data"] if b"data" in msg_data else msg_data["data"]
                     try:
                         resp = json.loads(data_str)
-                        # If no request_id filter, return any message
-                        if request_id is None or resp.get("request_id") == request_id:
-                            await redis_client.xack(stream, group_name, msg_id)
-                            return resp
-                        # ACK non-matching messages so they don't pile up
+                    except json.JSONDecodeError as e:
+                        # Undecodable JSON can never succeed on retry, so ACK it
+                        # terminally. str(JSONDecodeError) is positional only
+                        # ("Expecting value: line 1 column 1"), so it carries no
+                        # payload — but never log data_str, it may hold secrets.
                         await redis_client.xack(stream, group_name, msg_id)
-                    except json.JSONDecodeError:
-                        await redis_client.xack(stream, group_name, msg_id)
+                        _observe_poison_entry(stream, msg_id, request_id, str(e))
+                        if request_id is None:
+                            # Output-read path: surface poison explicitly rather
+                            # than letting the caller see a transient timeout.
+                            raise WorkerOutputDecodeError(stream) from e
                         continue
+
+                    # If no request_id filter, return any message
+                    if request_id is None or resp.get("request_id") == request_id:
+                        await redis_client.xack(stream, group_name, msg_id)
+                        return resp
+                    # ACK non-matching messages so they don't pile up
+                    await redis_client.xack(stream, group_name, msg_id)
     return None
 
 
@@ -376,15 +428,19 @@ async def request_spawn(
         logger.info("task_sent_to_worker", request_id=request_id, worker_id=worker_id)
 
         # Wait for output (worker output doesn't have request_id, so pass None)
-        output_resp = await _wait_for_response(
-            redis_client,
-            group_name,
-            consumer_id,
-            None,
-            float(timeout_seconds),
-            output_stream,
-            worker_id=worker_id,
-        )
+        try:
+            output_resp = await _wait_for_response(
+                redis_client,
+                group_name,
+                consumer_id,
+                None,
+                float(timeout_seconds),
+                output_stream,
+                worker_id=worker_id,
+            )
+        except WorkerOutputDecodeError:
+            # Undecodable worker output — explicit invalid result, not a timeout.
+            return _invalid_worker_result(request_id, worker_id)
 
         if output_resp:
             return spawn_result_from_output(output_resp, request_id, worker_id)
@@ -485,15 +541,19 @@ async def send_task_to_worker(
         )
 
         # 3. Wait for output
-        output_resp = await _wait_for_response(
-            redis_client,
-            group_name,
-            consumer_id,
-            None,
-            float(timeout_seconds),
-            output_stream,
-            worker_id=worker_id,
-        )
+        try:
+            output_resp = await _wait_for_response(
+                redis_client,
+                group_name,
+                consumer_id,
+                None,
+                float(timeout_seconds),
+                output_stream,
+                worker_id=worker_id,
+            )
+        except WorkerOutputDecodeError:
+            # Undecodable worker output — explicit invalid result, not a timeout.
+            return _invalid_worker_result(request_id, worker_id)
 
         if output_resp:
             return spawn_result_from_output(output_resp, request_id, worker_id)
