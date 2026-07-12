@@ -5,6 +5,7 @@ import json
 import os
 from typing import Any
 
+from pydantic import TypeAdapter, ValidationError
 import structlog
 
 try:
@@ -41,6 +42,19 @@ class StreamMessage:
     data: dict[str, Any]
 
     # Helper to parse known DTOs if needed, but 'data' is raw dict
+
+
+@dataclass
+class TypedMessage[T]:
+    """A schema-validated message from a Redis Stream.
+
+    ``value`` is a validated Pydantic model, so consumers never touch the raw
+    dict. Decode and validation failures are handled terminally inside
+    ``consume_typed`` and never surface as a TypedMessage.
+    """
+
+    message_id: str
+    value: T
 
 
 DEFAULT_STREAM_MAXLEN = 1000
@@ -148,40 +162,94 @@ class RedisStreamClient:
                 pass
         return dict(fields)
 
-    async def _recover_pending(
+    @staticmethod
+    def _decode_entry(fields: dict[str, str]) -> Any:
+        """Strict decode for the typed consume path.
+
+        Unlike ``_parse_fields`` (which silently falls back to the flat field
+        map when the wrapped ``data`` payload is malformed), this raises
+        ``json.JSONDecodeError`` so ``consume_typed`` can surface a broken
+        payload as a terminal error instead of swallowing it.
+        """
+        fields = decode_redis_fields(fields)
+        if "data" in fields:
+            return json.loads(fields["data"])
+        return dict(fields)
+
+    async def _iter_entries(
         self,
         stream: str,
         group: str,
         consumer: str,
-        pending_timeout_ms: int,
+        block_ms: int,
         count: int,
-        auto_ack: bool,
-    ) -> AsyncIterator[StreamMessage]:
-        """Recover pending messages via XAUTOCLAIM before reading new ones."""
-        cursor = "0-0"
+        claim_pending: bool,
+        pending_timeout_ms: int,
+    ) -> AsyncIterator[tuple[str, dict[str, str]] | None]:
+        """Yield raw ``(message_id, fields)`` entries from a stream.
+
+        Shared read plumbing for ``consume`` and ``consume_typed``: ensures the
+        group exists, optionally recovers the PEL via XAUTOCLAIM, then blocks on
+        XREADGROUP. Never acks — the caller owns ack semantics. Yields ``None``
+        when a blocking read returns empty so callers can cede the event loop.
+        """
+        await self.ensure_consumer_group(stream, group)
+
+        if claim_pending:
+            cursor = "0-0"
+            while True:
+                result = await self.redis.xautoclaim(
+                    stream,
+                    group,
+                    consumer,
+                    min_idle_time=pending_timeout_ms,
+                    start_id=cursor,
+                    count=count,
+                )
+                new_cursor = decode_redis_value(result[0])
+                claimed = result[1]
+                for message_id, fields in claimed:
+                    if fields is None:
+                        continue
+                    yield decode_redis_value(message_id), fields
+                if new_cursor == "0-0" or not claimed:
+                    break
+                cursor = new_cursor
+
         while True:
-            result = await self.redis.xautoclaim(
-                stream,
-                group,
-                consumer,
-                min_idle_time=pending_timeout_ms,
-                start_id=cursor,
-                count=count,
-            )
-            new_cursor = decode_redis_value(result[0])
-            claimed = result[1]
-            for message_id, fields in claimed:
-                if fields is None:
+            try:
+                messages = await self.redis.xreadgroup(
+                    groupname=group,
+                    consumername=consumer,
+                    streams={stream: ">"},
+                    count=count,
+                    block=block_ms,
+                )
+
+                if not messages:
+                    # Cede control to the event loop. The XREADGROUP block above
+                    # normally suspends, but some backends (e.g. fakeredis in
+                    # tests) ignore the block timeout and return immediately —
+                    # without this yield the loop would busy-spin and starve
+                    # other tasks on the same loop.
+                    await asyncio.sleep(0)
+                    yield None
                     continue
-                message_id = decode_redis_value(message_id)
-                data = self._parse_fields(fields)
-                yield StreamMessage(message_id=message_id, data=data)
-                if auto_ack:
-                    await self.redis.xack(stream, group, message_id)
-                    logger.debug("message_acked", message_id=message_id)
-            if new_cursor == "0-0" or not claimed:
+
+                for _stream_name, stream_messages in messages:
+                    for message_id, fields in stream_messages:
+                        yield decode_redis_value(message_id), fields
+
+            except asyncio.CancelledError:
+                logger.info("consumer_cancelled", consumer=consumer)
                 break
-            cursor = new_cursor
+            except Exception as e:
+                if "NOGROUP" in str(e):
+                    logger.warning("consumer_nogroup_recovering", stream=stream, group=group)
+                    await self.ensure_consumer_group(stream, group)
+                else:
+                    logger.error("consume_error", stream=stream, error=str(e))
+                await asyncio.sleep(1)
 
     async def consume(
         self,
@@ -207,50 +275,82 @@ class RedisStreamClient:
             claim_pending: If True, recover pending messages (PEL) before reading new ones.
             pending_timeout_ms: Min idle time (ms) for XAUTOCLAIM to claim pending messages.
         """
-        await self.ensure_consumer_group(stream, group)
+        async for entry in self._iter_entries(
+            stream, group, consumer, block_ms, count, claim_pending, pending_timeout_ms
+        ):
+            if entry is None:
+                yield None  # type: ignore[misc]
+                continue
+            message_id, fields = entry
+            data = self._parse_fields(fields)
+            yield StreamMessage(message_id=message_id, data=data)
+            if auto_ack:
+                await self.redis.xack(stream, group, message_id)
+                logger.debug("message_acked", message_id=message_id)
 
-        if claim_pending:
-            async for msg in self._recover_pending(
-                stream, group, consumer, pending_timeout_ms, count, auto_ack
-            ):
-                yield msg
+    async def consume_typed[T](
+        self,
+        stream: str,
+        group: str,
+        consumer: str,
+        message_type: type[T] | TypeAdapter,
+        *,
+        block_ms: int = 5000,
+        count: int = 1,
+        claim_pending: bool = True,
+        pending_timeout_ms: int = 60_000,
+    ) -> AsyncIterator["TypedMessage[T] | None"]:
+        """Consume and validate messages against a Pydantic type.
 
-        while True:
+        Yields ``TypedMessage`` holding a validated model. Never auto-acks: the
+        caller acks after successful processing, so a transient handler failure
+        leaves the entry in the PEL for reclaim.
+
+        Decode and validation errors are terminal. A message that cannot be JSON
+        decoded or fails schema validation can never succeed on retry, so leaving
+        it unacked would poison the reclaim loop forever. Instead it is logged
+        loudly (the human signal) and ACKed away, and never yielded to the caller.
+
+        Args:
+            message_type: A Pydantic model type, a union of models, or a prebuilt
+                ``TypeAdapter``. Used to validate each message.
+        """
+        adapter = (
+            message_type if isinstance(message_type, TypeAdapter) else TypeAdapter(message_type)
+        )
+
+        async for entry in self._iter_entries(
+            stream, group, consumer, block_ms, count, claim_pending, pending_timeout_ms
+        ):
+            if entry is None:
+                yield None
+                continue
+            message_id, fields = entry
+
             try:
-                messages = await self.redis.xreadgroup(
-                    groupname=group,
-                    consumername=consumer,
-                    streams={stream: ">"},
-                    count=count,
-                    block=block_ms,
+                data = self._decode_entry(fields)
+            except json.JSONDecodeError as e:
+                logger.error(
+                    "typed_consume_decode_failed",
+                    stream=stream,
+                    entry_id=message_id,
+                    fields=decode_redis_fields(fields),
+                    error=str(e),
                 )
+                await self.redis.xack(stream, group, message_id)
+                continue
 
-                if not messages:
-                    # Cede control to the event loop. The XREADGROUP block above
-                    # normally suspends, but some backends (e.g. fakeredis in
-                    # tests) ignore the block timeout and return immediately —
-                    # without this yield the loop would busy-spin and starve
-                    # other tasks on the same loop.
-                    await asyncio.sleep(0)
-                    yield None  # type: ignore[misc]
-                    continue
+            try:
+                value = adapter.validate_python(data)
+            except ValidationError as e:
+                logger.error(
+                    "typed_consume_validation_failed",
+                    stream=stream,
+                    entry_id=message_id,
+                    data=data,
+                    error=str(e),
+                )
+                await self.redis.xack(stream, group, message_id)
+                continue
 
-                for _stream_name, stream_messages in messages:
-                    for message_id, fields in stream_messages:
-                        message_id = decode_redis_value(message_id)
-                        data = self._parse_fields(fields)
-                        yield StreamMessage(message_id=message_id, data=data)
-                        if auto_ack:
-                            await self.redis.xack(stream, group, message_id)
-                            logger.debug("message_acked", message_id=message_id)
-
-            except asyncio.CancelledError:
-                logger.info("consumer_cancelled", consumer=consumer)
-                break
-            except Exception as e:
-                if "NOGROUP" in str(e):
-                    logger.warning("consumer_nogroup_recovering", stream=stream, group=group)
-                    await self.ensure_consumer_group(stream, group)
-                else:
-                    logger.error("consume_error", stream=stream, error=str(e))
-                await asyncio.sleep(1)
+            yield TypedMessage(message_id=message_id, value=value)

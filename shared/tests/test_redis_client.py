@@ -8,13 +8,24 @@ import pytest
 import pytest_asyncio
 
 from shared.contracts.base import BaseMessage
-from shared.redis.client import RedisStreamClient, StreamMessage, decode_redis_value
+from shared.redis.client import (
+    RedisStreamClient,
+    StreamMessage,
+    TypedMessage,
+    decode_redis_value,
+)
 
 
 class SampleMessage(BaseMessage):
     """Minimal BaseMessage subclass for testing."""
 
     content: str = "test"
+
+
+class TypedSample(BaseMessage):
+    """BaseMessage subclass with a required field, for consume_typed tests."""
+
+    name: str
 
 
 @pytest_asyncio.fixture
@@ -329,6 +340,63 @@ class TestConsumeFlatFields:
             if msg is not None:
                 assert msg.data == {"data": "plain-text", "other": "field"}
                 break
+
+
+async def _drain_typed(client, message_type, **kwargs):
+    """Consume typed messages until the stream goes idle (first None)."""
+    received = []
+    async for msg in client.consume_typed(
+        "s", "g", "c1", message_type, block_ms=100, **kwargs
+    ):
+        if msg is None:
+            break
+        received.append(msg)
+    return received
+
+
+class TestConsumeTyped:
+    async def test_valid_message_yields_validated_model(self, client):
+        await client.publish("s", {"name": "hello"})
+        received = await _drain_typed(client, TypedSample)
+        assert len(received) == 1
+        assert isinstance(received[0], TypedMessage)
+        assert isinstance(received[0].value, TypedSample)
+        assert received[0].value.name == "hello"
+
+    async def test_broken_json_is_terminally_acked(self, client, fake_redis):
+        """A malformed 'data' payload is logged and ACKed, never yielded."""
+        await fake_redis.xadd("s", {"data": "{not valid json"})
+        received = await _drain_typed(client, TypedSample)
+        assert received == []
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 0  # terminal ACK, no poison loop
+
+    async def test_schema_invalid_payload_is_terminally_acked(self, client, fake_redis):
+        """Valid JSON that fails validation is discarded terminally."""
+        await client.publish("s", {"wrong_field": "x"})  # missing required 'name'
+        received = await _drain_typed(client, TypedSample)
+        assert received == []
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 0
+
+    async def test_valid_message_left_unacked_stays_pending(self, client, fake_redis):
+        """consume_typed never auto-acks: a transient failure keeps the entry
+        in the PEL for reclaim (caller only acks after success)."""
+        await client.publish("s", {"name": "keep"})
+        async for msg in client.consume_typed("s", "g", "c1", TypedSample, block_ms=100):
+            if msg is not None:
+                break  # simulate handler starting, not yet acked
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 1
+
+    async def test_valid_message_acked_after_processing(self, client, fake_redis):
+        await client.publish("s", {"name": "done"})
+        async for msg in client.consume_typed("s", "g", "c1", TypedSample, block_ms=100):
+            if msg is not None:
+                await client.ack("s", "g", msg.message_id)
+                break
+        pending = await fake_redis.xpending("s", "g")
+        assert pending["pending"] == 0
 
 
 class TestPublishFlat:
