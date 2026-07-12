@@ -1,6 +1,7 @@
 from .client import (
     RedisStreamClient,
     StreamMessage,
+    TypedMessage,
     decode_redis_fields,
     decode_redis_value,
 )
@@ -8,6 +9,7 @@ from .client import (
 __all__ = [
     "RedisStreamClient",
     "StreamMessage",
+    "TypedMessage",
     "decode_redis_fields",
     "decode_redis_value",
 ]

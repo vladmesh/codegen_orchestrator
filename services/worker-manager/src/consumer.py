@@ -1,7 +1,6 @@
 import asyncio
 
 import structlog
-from pydantic import TypeAdapter, ValidationError
 
 from shared.contracts.queues.worker import (
     WorkerCommand,
@@ -15,7 +14,7 @@ from shared.contracts.queues.worker import (
 )
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
-from shared.redis_client import RedisStreamClient
+from shared.redis_client import RedisStreamClient, TypedMessage
 
 from .manager import WorkerManager
 
@@ -31,51 +30,51 @@ class WorkerCommandConsumer:
         self.consumer_name = "worker_manager_1"  # In prod, use hostname/podname
 
     async def run(self):
-        """Run consumer loop."""
+        """Run consumer loop.
+
+        ``consume_typed`` validates each entry against the WorkerCommand union.
+        Invalid payloads (bad JSON, schema mismatch) are logged and ACKed away
+        inside the client — they never reach here. A valid command is dispatched
+        and ACKed on success; a transient processing failure propagates unacked
+        so the entry stays in the PEL and gets reclaimed.
+        """
         logger.info("worker_consumer_started")
 
-        async for msg in self.client.consume(
+        async for msg in self.client.consume_typed(
             self.stream_name,
             self.group_name,
             self.consumer_name,
+            WorkerCommand,
             count=10,
-            auto_ack=False,
             claim_pending=True,
         ):
             if msg is None:
                 continue
             try:
-                bind_message_context(msg.data)
-                await self.process_message(msg.message_id, msg.data)
-                await self.client.ack(self.stream_name, self.group_name, msg.message_id)
+                await self.process_entry(msg)
             except asyncio.CancelledError:
                 logger.info("worker_consumer_stopping")
                 break
             except Exception as e:
+                # Transient processing error — leave unacked so it gets retried.
                 logger.error(
                     "worker_consumer_message_error",
                     message_id=msg.message_id,
                     error=str(e),
                 )
-            finally:
-                unbind_message_context()
 
-    async def process_message(self, message_id: str, data: dict):
-        """Process a single message."""
-        logger.info("processing_message", message_id=message_id)
-
+    async def process_entry(self, msg: TypedMessage[WorkerCommand]) -> None:
+        """Dispatch one validated command and ACK it on success."""
+        command = msg.value
+        logger.info("processing_message", message_id=msg.message_id)
         try:
-            adapter = TypeAdapter(WorkerCommand)
-            command = adapter.validate_python(data)
-
+            bind_message_context(command.model_dump(mode="json"))
             response = await self.handle_command(command)
             if response:
                 await self.publish_response(command, response)
-
-        except ValidationError as e:
-            logger.error("invalid_command_format", error=str(e), message_id=message_id)
-        except Exception as e:
-            logger.error("command_processing_failed", error=str(e), message_id=message_id)
+        finally:
+            unbind_message_context()
+        await self.client.ack(self.stream_name, self.group_name, msg.message_id)
 
     async def handle_command(self, command: WorkerCommand) -> WorkerResponse | None:
         """Dispatch command to manager."""

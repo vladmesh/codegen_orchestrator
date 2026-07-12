@@ -1,7 +1,10 @@
+import json
+
 import pytest
 import pytest_asyncio
 from unittest.mock import MagicMock, AsyncMock
 from fakeredis import aioredis
+from structlog.testing import capture_logs
 
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
@@ -12,7 +15,9 @@ from shared.contracts.queues.worker import (
     AgentType,
     WorkerCapability,
     CreateWorkerResponse,
+    WorkerCommand,
 )
+from shared.queues import WORKER_COMMANDS, WORKER_MANAGER_GROUP, WORKER_RESPONSES
 from shared.redis_client import RedisStreamClient
 
 from src.consumer import WorkerCommandConsumer
@@ -43,12 +48,31 @@ async def stream_client(redis_client):
     return client
 
 
-@pytest.mark.asyncio
-async def test_consume_create_worker_command(redis_client, stream_client, mock_worker_manager):
-    """Test that CreateWorkerCommand is consumed, manager called, and response published."""
-    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+async def _drain_once(consumer):
+    """Drive the run() envelope until the command stream goes idle (first None).
 
-    command = CreateWorkerCommand(
+    Mirrors WorkerCommandConsumer.run(): validation is terminal inside the
+    client, and a transient processing error is logged and left unacked.
+    """
+    async for msg in consumer.client.consume_typed(
+        consumer.stream_name,
+        consumer.group_name,
+        consumer.consumer_name,
+        WorkerCommand,
+        block_ms=100,
+        count=10,
+        claim_pending=True,
+    ):
+        if msg is None:
+            break
+        try:
+            await consumer.process_entry(msg)
+        except Exception:
+            pass  # run() logs and leaves the entry unacked for reclaim
+
+
+def _create_command() -> CreateWorkerCommand:
+    return CreateWorkerCommand(
         request_id="req-123",
         config=WorkerConfig(
             name="test-worker",
@@ -60,69 +84,45 @@ async def test_consume_create_worker_command(redis_client, stream_client, mock_w
         ),
     )
 
-    # Push command via publish (JSON "data" wrapper)
-    await stream_client.publish("worker:commands", command.model_dump(mode="json"))
 
-    # Ensure consumer group exists
-    await stream_client.ensure_consumer_group("worker:commands", "worker_manager")
+@pytest.mark.asyncio
+async def test_consume_create_worker_command(redis_client, stream_client, mock_worker_manager):
+    """A valid create command is validated, dispatched, answered, and ACKed."""
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
 
-    # Read and parse (simulating what consume() does internally)
-    resp = await redis_client.xreadgroup(
-        groupname="worker_manager",
-        consumername="worker_manager_1",
-        streams={"worker:commands": ">"},
-        count=1,
-    )
-    assert resp, "Should have read the message we just pushed"
-    _stream, messages = resp[0]
-    message_id, raw_data = messages[0]
+    await stream_client.publish(WORKER_COMMANDS, _create_command().model_dump(mode="json"))
 
-    # Parse via the real client helper (decodes bytes + unwraps JSON)
-    data = RedisStreamClient._parse_fields(raw_data)
+    await _drain_once(consumer)
 
-    # Process
-    await consumer.process_message(message_id, data)
-
-    # Verify Manager Call
     mock_worker_manager.create_worker_with_capabilities.assert_called_once()
 
-    # Verify Response
-    response_messages = await redis_client.xread(streams={"worker:responses:developer": "0-0"}, count=1)
+    response_messages = await redis_client.xread(streams={WORKER_RESPONSES: "0-0"}, count=1)
     assert response_messages, "Should have published response"
     _, msgs = response_messages[0]
     _msg_id, msg_data = msgs[0]
-
     response = CreateWorkerResponse.model_validate(RedisStreamClient._parse_fields(msg_data))
     assert response.request_id == "req-123"
     assert response.success is True
     assert response.worker_id == "test-worker"
 
+    pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
+    assert pending["pending"] == 0  # acked after successful processing
+
 
 @pytest.mark.asyncio
 async def test_consume_delete_worker_command(redis_client, stream_client, mock_worker_manager):
-    """Test DeleteWorkerCommand consumption."""
+    """A valid delete command is dispatched and answered without wire changes."""
     consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
 
     command = DeleteWorkerCommand(request_id="del-123", worker_id="worker-to-del")
+    await stream_client.publish(WORKER_COMMANDS, command.model_dump(mode="json"))
 
-    await stream_client.publish("worker:commands", command.model_dump(mode="json"))
-    await stream_client.ensure_consumer_group("worker:commands", "worker_manager")
-
-    resp = await redis_client.xreadgroup(
-        groupname="worker_manager",
-        consumername="worker_manager_1",
-        streams={"worker:commands": ">"},
-        count=1,
-    )
-    message_id, raw_data = resp[0][1][0]
-    data = RedisStreamClient._parse_fields(raw_data)
-
-    await consumer.process_message(message_id, data)
+    await _drain_once(consumer)
 
     mock_worker_manager.delete_worker.assert_called_with("worker-to-del", reason=None)
-
-    r1 = await redis_client.xlen("worker:responses:developer")
-    assert r1 > 0, "Should publish response"
+    assert await redis_client.xlen(WORKER_RESPONSES) > 0
+    pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
+    assert pending["pending"] == 0
 
 
 @pytest.mark.asyncio
@@ -130,19 +130,81 @@ async def test_consume_status_worker_command(redis_client, stream_client, mock_w
     consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
 
     command = StatusWorkerCommand(request_id="stat-123", worker_id="some-worker")
+    await stream_client.publish(WORKER_COMMANDS, command.model_dump(mode="json"))
 
-    await stream_client.publish("worker:commands", command.model_dump(mode="json"))
-    await stream_client.ensure_consumer_group("worker:commands", "worker_manager")
-
-    resp = await redis_client.xreadgroup(
-        groupname="worker_manager",
-        consumername="c1",
-        streams={"worker:commands": ">"},
-        count=1,
-    )
-    msg_id, raw_data = resp[0][1][0]
-    data = RedisStreamClient._parse_fields(raw_data)
-
-    await consumer.process_message(msg_id, data)
+    await _drain_once(consumer)
 
     mock_worker_manager.get_worker_status.assert_called_with("some-worker")
+
+
+@pytest.mark.asyncio
+async def test_broken_json_is_discarded_terminally(redis_client, stream_client, mock_worker_manager):
+    """A malformed payload never reaches the manager and is ACKed away."""
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+
+    await redis_client.xadd(WORKER_COMMANDS, {"data": "{not valid json"})
+
+    await _drain_once(consumer)
+
+    mock_worker_manager.create_worker_with_capabilities.assert_not_called()
+    mock_worker_manager.delete_worker.assert_not_called()
+    pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
+    assert pending["pending"] == 0  # terminal, no poison loop
+
+
+@pytest.mark.asyncio
+async def test_schema_invalid_payload_is_discarded_terminally(redis_client, stream_client, mock_worker_manager):
+    """Valid JSON that matches no command type is discarded, not dispatched."""
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+
+    await stream_client.publish(WORKER_COMMANDS, {"command": "nonsense", "request_id": "x"})
+
+    await _drain_once(consumer)
+
+    mock_worker_manager.create_worker_with_capabilities.assert_not_called()
+    mock_worker_manager.delete_worker.assert_not_called()
+    mock_worker_manager.get_worker_status.assert_not_called()
+    pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
+    assert pending["pending"] == 0
+
+
+@pytest.mark.asyncio
+async def test_transient_processing_error_leaves_message_unacked(
+    redis_client, stream_client, mock_worker_manager, monkeypatch
+):
+    """A transient handler failure propagates and the entry stays in the PEL."""
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+
+    async def _boom(command):
+        raise RuntimeError("downstream unavailable")
+
+    monkeypatch.setattr(consumer, "handle_command", _boom)
+
+    await stream_client.publish(WORKER_COMMANDS, _create_command().model_dump(mode="json"))
+
+    await _drain_once(consumer)
+
+    pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
+    assert pending["pending"] == 1  # unacked → will be reclaimed and retried
+
+
+@pytest.mark.asyncio
+async def test_invalid_command_does_not_leak_secrets_in_logs(redis_client, stream_client, mock_worker_manager):
+    """A schema-invalid create command carrying secrets must not log them."""
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+
+    payload = _create_command().model_dump(mode="json")
+    payload["config"]["capabilities"] = ["not-a-real-capability"]  # forces ValidationError
+    payload["config"]["api_key"] = "ghp_secret_api_key"
+    payload["config"]["env_vars"] = {"GITHUB_TOKEN": "ghp_secret_env_token"}
+    await stream_client.publish(WORKER_COMMANDS, payload)
+
+    with capture_logs() as logs:
+        await _drain_once(consumer)
+
+    blob = json.dumps(logs, default=str)
+    assert "ghp_secret_api_key" not in blob
+    assert "ghp_secret_env_token" not in blob
+    mock_worker_manager.create_worker_with_capabilities.assert_not_called()
+    pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
+    assert pending["pending"] == 0  # discarded terminally
