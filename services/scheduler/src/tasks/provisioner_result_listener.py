@@ -5,14 +5,42 @@ Notifies admins on provisioning failures.
 """
 
 import httpx
+from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from shared.contracts.queues.provisioner import ProvisionerResult
+from shared.contracts.vocab import ResultStatus
 from shared.notifications import notify_admins
+from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from src.clients.api import api_client
 
 logger = structlog.get_logger(__name__)
+
+
+async def handle_provisioner_entry(client, msg) -> None:
+    """Validate, process, and ACK a single provisioner:results entry.
+
+    A message that fails schema validation can never succeed on retry. Since the
+    consumer reclaims pending (unacked) entries, leaving it unacked would poison
+    the loop forever. So a validation failure is terminal: log it loudly as the
+    human signal and ACK it away. Processing errors (e.g. a transient API call)
+    propagate unacked so the entry stays in the PEL and gets retried.
+    """
+    try:
+        result = ProvisionerResult.model_validate(msg.data)
+    except ValidationError as e:
+        logger.error(
+            "provisioner_result_invalid_discarded",
+            entry_id=msg.message_id,
+            data=msg.data,
+            error=str(e),
+        )
+        await client.ack(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, msg.message_id)
+        return
+
+    await process_provisioner_result(result)
+    await client.ack(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, msg.message_id)
 
 
 async def process_provisioner_result(result: ProvisionerResult) -> None:
@@ -30,9 +58,9 @@ async def process_provisioner_result(result: ProvisionerResult) -> None:
 
     log.info("processing_provisioner_result")
 
-    if result.status == "success":
+    if result.status == ResultStatus.SUCCESS:
         await _handle_success(result, log)
-    elif result.status in ("failed", "error"):
+    elif result.status == ResultStatus.FAILED:
         await _handle_failure(result, log)
     else:
         log.warning("unknown_provisioner_status", received_status=result.status)

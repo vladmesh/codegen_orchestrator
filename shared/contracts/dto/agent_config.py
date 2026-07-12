@@ -1,6 +1,5 @@
-from typing import Literal
-
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.vocab import AgentType
 
 
 class AgentConfigDTO(TimestampedDTO):
@@ -8,7 +7,7 @@ class AgentConfigDTO(TimestampedDTO):
 
     id: int
     name: str
-    type: Literal["claude", "factory"]
+    type: AgentType
     model: str
     system_prompt: str
     is_active: bool = True

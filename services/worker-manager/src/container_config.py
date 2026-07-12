@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 
+from shared.contracts.vocab import AgentType
+
 
 @dataclass
 class WorkerContainerConfig:
@@ -8,7 +10,7 @@ class WorkerContainerConfig:
 
     worker_id: str
     worker_type: str
-    agent_type: str
+    agent_type: AgentType
     capabilities: List[str]
     auth_mode: str = "host_session"  # "host_session" or "api_key"
     host_claude_dir: Optional[str] = None
@@ -45,7 +47,7 @@ class WorkerContainerConfig:
         }
 
         if self.auth_mode == "api_key" and self.api_key:
-            if self.agent_type == "factory":
+            if self.agent_type == AgentType.FACTORY:
                 env["FACTORY_API_KEY"] = self.api_key
             else:
                 env["ANTHROPIC_API_KEY"] = self.api_key

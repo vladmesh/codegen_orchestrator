@@ -9,6 +9,41 @@
 3. **Logical Actors** — указываем роль (PO ReactAgent, Developer-Worker, langgraph), не техническую прослойку
 4. **Traceable** — `correlation_id` для сквозной трассировки
 
+### Canonical vocabularies (`shared/contracts/vocab.py`)
+
+One `StrEnum` per cross-service concept. Producers and consumers import these
+instead of restating a `Literal[...]` or a local enum:
+
+| Enum | Values | Used by |
+|------|--------|---------|
+| `AgentType` | `claude`, `factory`, `noop` | `WorkerConfig.agent_type`, `AgentConfigDTO.type`, worker-manager/worker-wrapper agent branching (re-exported from `queues.worker`) |
+| `ActionType` | `create`, `feature`, `fix` | `EngineeringMessage.action` |
+| `ResultStatus` | `success`, `failed`, `timeout` | `BaseResult.status` (and its subclasses) |
+| `LifecycleEvent` | `started`, `progress`, `completed`, `failed`, `stopped` (canonical member set) | via the field-specific subsets below |
+
+`LifecycleEvent` is the canonical member set, but each wire accepts only the
+slice its producers emit — the subsets are `Literal[...]` over the enum members,
+kept explicit so the historical per-field vocabularies are not merged:
+
+- `TaskProgressKind` (`started`/`progress`/`completed`/`failed`, no `stopped`) —
+  `ProgressEvent.type`, `WorkerEvent.event_type`.
+- `WorkerLifecycleKind` (`started`/`completed`/`failed`/`stopped`, no `progress`) —
+  `WorkerLifecycleEvent.event`.
+
+Other vocabularies stay deliberately separate — they carry values the canonical
+enums do not, so merging them would broaden a field past what the wire supports:
+
+- `DeployAction` (`create`/`feature`/`fix` **plus** `stop`/`undeploy`) — deploy
+  operations, a superset of `ActionType`. `TaskType` (**plus** `refactor`) — the
+  planning-layer task kind.
+- `WorkerCliKind` (`droid`/`claude_code`/`codex`) — the CLI's self-reported wire
+  identity on `worker:events`, which does **not** map onto `AgentType`.
+
+`ResultStatus` dropped the old `error` failure synonym: a failed result is
+`failed`, never `error`. The `provisioner:results` consumer treats a message
+that fails validation as terminal (logs it and ACKs) so a stale/invalid entry
+cannot poison-loop the reclaim.
+
 ---
 
 ## Queue Registry
@@ -667,7 +702,8 @@ class TimestampedDTO(BaseDTO):
 # shared/contracts/dto/agent_config.py
 
 from pydantic import BaseModel, ConfigDict
-from typing import Literal
+
+from shared.contracts.vocab import AgentType
 
 class AgentConfigDTO(BaseModel):
     """Agent configuration response."""
@@ -675,7 +711,7 @@ class AgentConfigDTO(BaseModel):
     
     id: int
     name: str
-    type: Literal["claude", "factory"]
+    type: AgentType
     model: str
     system_prompt: str
     is_active: bool = True
@@ -772,7 +808,7 @@ class BaseMessage(QueueMeta):
 class BaseResult(BaseModel):
     """Base result for async operations."""
     request_id: str
-    status: Literal["success", "failed", "error", "timeout"]
+    status: ResultStatus  # shared.contracts.vocab
     error: str | None = None
     duration_ms: int | None = None
 ```
@@ -851,7 +887,7 @@ class EngineeringMessage(BaseMessage):
     task_id: str
     project_id: str
     user_id: str
-    action: Literal["create", "feature", "fix"] = "create"
+    action: ActionType = ActionType.CREATE  # shared.contracts.vocab
     description: str | None = None
     skip_deploy: bool = False
     planning_task_id: str | None = None  # planning-layer Task ID for status updates
@@ -1046,10 +1082,8 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 ```python
 # shared/contracts/queues/worker.py
 
-class AgentType(StrEnum):
-    CLAUDE = "claude"          # Claude Code
-    FACTORY = "factory"        # Factory.ai Droid
-    NOOP = "noop"              # No-op runner for E2E testing
+# AgentType is the canonical enum (shared/contracts/vocab.py), re-exported here.
+from shared.contracts.vocab import AgentType  # claude / factory / noop
 
 
 class WorkerCapability(StrEnum):
@@ -1197,7 +1231,7 @@ Used by Developer node and Engineering consumer. Replaces former bare strings (`
 class WorkerLifecycleEvent(BaseModel):
     """Worker state change notification from wrapper."""
     worker_id: str
-    event: Literal["started", "completed", "failed", "stopped"]
+    event: WorkerLifecycleKind  # LifecycleEvent slice: started/completed/failed/stopped
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     result: dict | None = None        # Agent output on success
     error: str | None = None          # Error message on failure
@@ -1324,7 +1358,7 @@ class ProvisionerResult(BaseResult):
 
 class ProgressEvent(BaseModel):
     """Task progress notification."""
-    type: Literal["started", "progress", "completed", "failed"]
+    type: TaskProgressKind  # LifecycleEvent slice: started/progress/completed/failed
     request_id: str
     task_id: str | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)

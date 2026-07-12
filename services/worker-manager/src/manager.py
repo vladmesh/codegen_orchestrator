@@ -8,6 +8,7 @@ import structlog
 from redis.asyncio import Redis
 
 from shared.contracts.dto.worker import WorkerStatus
+from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
 
 from .config import settings
@@ -252,7 +253,7 @@ class WorkerManager:
         capabilities: List[str],
         base_image: str,
         prefix: str,
-        agent_type: str = "claude",
+        agent_type: AgentType = AgentType.CLAUDE,
     ) -> str:
         """
         Ensure image with given capabilities exists, building if necessary.
@@ -288,11 +289,11 @@ class WorkerManager:
 
         return image_tag
 
-    def _get_agent(self, agent_type: str):
+    def _get_agent(self, agent_type: AgentType):
         """Get agent instance by type."""
         from .agents import ClaudeCodeAgent, FactoryDroidAgent
 
-        if agent_type == "factory":
+        if agent_type == AgentType.FACTORY:
             return FactoryDroidAgent()
         return ClaudeCodeAgent()
 
@@ -335,7 +336,7 @@ class WorkerManager:
         worker_id: str,
         capabilities: List[str],
         base_image: str,
-        agent_type: str = "claude",
+        agent_type: AgentType = AgentType.CLAUDE,
         prefix: str | None = None,
         instructions: str | None = None,
         task_content: str | None = None,

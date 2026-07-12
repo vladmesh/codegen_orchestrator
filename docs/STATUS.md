@@ -21,15 +21,19 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 - `codegen_orchestrator-432` is the latest contract-correction layer in this baseline:
   production scaffolding uses GitHub `gh:vladmesh/service-template` with explicit tag `0.3.0`
   in PR #33.
-- Current worker card: `codegen_orchestrator-435`, type B7 response-DTO lifecycle fields to their `StrEnum`
-  (task/story/server/application/incident/service-deployment). This is a slice of Phase 2, not the whole phase.
+- `codegen_orchestrator-435` is complete: B7 response-DTO lifecycle fields typed to their `StrEnum`
+  (task/story/server/application/incident/service-deployment). Slice of Phase 2.
+- Current worker card: `codegen_orchestrator-436`, unify duplicated contract vocabularies into canonical
+  `StrEnum`s in `shared/contracts/vocab.py` (`AgentType`, `ActionType`, `ResultStatus`, `LifecycleEvent`;
+  `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct on purpose). Closes the "duplicated vocabularies"
+  slice of Phase 2; `Run.result` union still open.
 
 ## Phase Progress
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Security quick-wins (B2 crypto, fail-open auth) | COMPLETE |
 | 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
-| 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | In progress — B7 response-DTO enums done (`codegen_orchestrator-435`); словари и RunResult pending |
+| 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | In progress — B7 enums (`codegen_orchestrator-435`) and duplicated vocabularies (`codegen_orchestrator-436`) done; `Run.result` union pending |
 | 3 | Типизированный consume + мёртвый код (B5, B6) | Pending |
 | 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Pending |
 
@@ -43,6 +47,7 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | service-template production pin (`codegen_orchestrator-432`) | COMPLETE in current baseline | PR #33, `scheduler.service_template_ref=0.3.0` |
 | Stabilization sequence (`codegen_orchestrator-434`) | COMPLETE | [stabilization plan v1](plans/codegen-stabilization-v1.md) |
 | B7 response-DTO enums (`codegen_orchestrator-435`) | COMPLETE | lifecycle fields on task/story/server/application/incident/service-deployment DTOs now use their `StrEnum`; slice of Phase 2 only |
+| Unified contract vocabularies (`codegen_orchestrator-436`) | COMPLETE | `shared/contracts/vocab.py` canonical `AgentType`/`ActionType`/`ResultStatus`/`LifecycleEvent`; inline `Literal` sets removed, `error` synonym dropped; `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct; tests in `shared/tests/unit/test_vocab.py` |
 
 ## Sprint History
 

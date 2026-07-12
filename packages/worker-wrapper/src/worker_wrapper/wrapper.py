@@ -6,6 +6,7 @@ from typing import Any
 
 import structlog
 
+from shared.contracts.vocab import AgentType
 from shared.redis.client import RedisStreamClient
 
 from .config import WorkerWrapperConfig
@@ -193,7 +194,7 @@ class WorkerWrapper:
 
         # Watchdog: agent exited without reporting via HTTP
         # Attempt one auto-resume for Claude agents before failing
-        if self.config.agent_type == "claude":
+        if self.config.agent_type == AgentType.CLAUDE:
             resumed = await self._attempt_auto_resume(data)
             if resumed and self._result_event.is_set() and self._buffered_result is not None:
                 logger.info("result_received_after_resume", worker_id=self.config.consumer_name)
@@ -579,7 +580,7 @@ class WorkerWrapper:
             redis=self.redis.redis, worker_id=self.config.consumer_name
         )
 
-        create_new_session = self.config.agent_type != "claude"
+        create_new_session = self.config.agent_type != AgentType.CLAUDE
         session_id = await session_manager.get_or_create_session(create_new=create_new_session)
 
         # Select Runner
@@ -587,11 +588,11 @@ class WorkerWrapper:
         from .runners.factory import FactoryRunner
         from .runners.noop import NoopRunner
 
-        if self.config.agent_type == "claude":
+        if self.config.agent_type == AgentType.CLAUDE:
             runner = ClaudeRunner(session_id=session_id)
-        elif self.config.agent_type == "factory":
+        elif self.config.agent_type == AgentType.FACTORY:
             runner = FactoryRunner()
-        elif self.config.agent_type == "noop":
+        elif self.config.agent_type == AgentType.NOOP:
             runner = NoopRunner()
         else:
             raise ValueError(f"Unknown agent type: {self.config.agent_type}")
@@ -657,7 +658,7 @@ class WorkerWrapper:
             raise RuntimeError(f"Agent process failed with code {proc.returncode}: {stderr}")
 
         # Capture session_id from Claude CLI JSON output
-        if self.config.agent_type == "claude" and not session_id:
+        if self.config.agent_type == AgentType.CLAUDE and not session_id:
             captured_session_id = self._extract_session_id_from_output(stdout)
             if captured_session_id:
                 logger.info("captured_claude_session_from_output", session_id=captured_session_id)
@@ -755,7 +756,7 @@ class WorkerWrapper:
         if not raw:
             raise ValueError("Task data missing 'content' or 'prompt'")
 
-        if self.config.agent_type == "claude":
+        if self.config.agent_type == AgentType.CLAUDE:
             return "Read TASK.md and AGENTS.md, then complete the task described in TASK.md."
         return raw
 
