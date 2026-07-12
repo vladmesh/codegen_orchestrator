@@ -16,10 +16,10 @@
 - B1 scaffolder exec: добить неполный фикс (#20 закрыл только project_name/modules) — `create_subprocess_exec` с arg-list, `template_repo`/`repository_id` больше не через shell — thermo §B1
 - scaffolder token-in-URL: `GIT_ASKPASS`/`http.extraHeader`, редакция git stderr перед сохранением в `scaffold_error` — thermo §Security п.4
 
-## Phase 2: Затянуть контракты shared/ (keystone)
+## Phase 2: Затянуть контракты shared/ (keystone) ✓ (COMPLETE)
 - [x] B7: response-DTO на enums вместо `str` (task/story/server/application/incident/service_deployment) — PR #35, `codegen_orchestrator-435`, thermo §B7
 - [x] Дублирующиеся словари: единые `AgentType` / `ActionType` / `ResultStatus`+`LifecycleEvent` — PR #36, `codegen_orchestrator-436`, thermo §"Duplicated vocabularies"
-- [ ] **Next:** типизированный `RunResult` (discriminated union по `RunType`) вместо `run.result: dict | None` — thermo §P1 `run.py:39`
+- [x] Типизированный `RunResult` (per-`RunType` union, привязан к `type`) вместо `run.result: dict | None` — PR #38, `codegen_orchestrator-440`, thermo §P1 `run.py:39`
 
 ## Phase 3: Типизированный consume + удаление мёртвых слоёв
 - `consume_typed` в redis-клиенте; приватизировать raw `publish`; `JSONDecodeError` не глотать — thermo §P1 `client.py`
