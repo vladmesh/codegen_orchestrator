@@ -120,7 +120,7 @@ class WorkerCommandConsumer:
                 worker_id=worker_id,
                 capabilities=caps,
                 base_image=settings.WORKER_BASE_IMAGE,
-                agent_type=cmd.config.agent_type.value,
+                agent_type=cmd.config.agent_type,
                 instructions=cmd.config.instructions,
                 task_content=cmd.config.task_content,
                 env_vars=env_vars,

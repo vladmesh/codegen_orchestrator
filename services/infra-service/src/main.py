@@ -12,6 +12,7 @@ import signal
 import structlog
 
 from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisionerResult
+from shared.contracts.vocab import ResultStatus
 from shared.log_config import setup_logging
 from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -78,7 +79,7 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
             )
             return ProvisionerResult(
                 request_id=job_id,
-                status="success",
+                status=ResultStatus.SUCCESS,
                 server_handle=server_handle,
                 server_ip=provisioning_result.get("server_ip"),
                 services_redeployed=provisioning_result.get("services_redeployed", 0),
@@ -93,7 +94,7 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
             )
             return ProvisionerResult(
                 request_id=job_id,
-                status="failed",
+                status=ResultStatus.FAILED,
                 server_handle=server_handle,
                 errors=errors,
             )
@@ -108,7 +109,7 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
         )
         return ProvisionerResult(
             request_id=job_id,
-            status="failed",
+            status=ResultStatus.FAILED,
             server_handle=server_handle,
             error=str(e),
         )

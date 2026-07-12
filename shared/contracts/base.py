@@ -4,6 +4,8 @@ import uuid
 
 from pydantic import BaseModel, Field
 
+from shared.contracts.vocab import ResultStatus
+
 
 class QueueMeta(BaseModel):
     """Metadata for all queue messages."""
@@ -24,6 +26,6 @@ class BaseResult(BaseModel):
     """Base result for async operations."""
 
     request_id: str
-    status: Literal["success", "failed", "error", "timeout"]
+    status: ResultStatus
     error: str | None = None
     duration_ms: int | None = None

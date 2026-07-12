@@ -5,12 +5,23 @@ from pydantic import BaseModel
 
 from shared.contracts.base import QueueMeta
 from shared.contracts.template import ServiceTemplateRef, ServiceTemplateSource
+from shared.contracts.vocab import AgentType
 
-
-class AgentType(StrEnum):
-    CLAUDE = "claude"  # Claude Code
-    FACTORY = "factory"  # Factory.ai Droid
-    NOOP = "noop"  # No-op runner for E2E testing (empty commit + push)
+__all__ = [
+    "AgentType",
+    "WorkerCapability",
+    "WorkerChannels",
+    "ScaffoldConfig",
+    "WorkerConfig",
+    "CreateWorkerCommand",
+    "DeleteWorkerCommand",
+    "StatusWorkerCommand",
+    "WorkerCommand",
+    "CreateWorkerResponse",
+    "DeleteWorkerResponse",
+    "StatusWorkerResponse",
+    "WorkerResponse",
+]
 
 
 class WorkerCapability(StrEnum):

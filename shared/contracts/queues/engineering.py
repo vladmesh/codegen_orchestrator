@@ -1,6 +1,5 @@
-from typing import Literal
-
 from shared.contracts.base import BaseMessage, BaseResult
+from shared.contracts.vocab import ActionType
 
 
 class EngineeringMessage(BaseMessage):
@@ -18,7 +17,7 @@ class EngineeringMessage(BaseMessage):
     task_id: str
     project_id: str
     user_id: str
-    action: Literal["create", "feature", "fix"] = "create"
+    action: ActionType = ActionType.CREATE
     description: str | None = None
     skip_deploy: bool = False
     planning_task_id: str | None = None  # planning-layer Task ID for status updates

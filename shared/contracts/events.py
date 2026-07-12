@@ -1,13 +1,14 @@
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from shared.contracts.vocab import LifecycleEvent
 
 
 class ProgressEvent(BaseModel):
     """Task progress notification."""
 
-    type: Literal["started", "progress", "completed", "failed"]
+    type: LifecycleEvent
     request_id: str
     task_id: str | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)

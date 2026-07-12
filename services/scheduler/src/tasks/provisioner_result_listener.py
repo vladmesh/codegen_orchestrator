@@ -9,6 +9,7 @@ import structlog
 
 from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from shared.contracts.queues.provisioner import ProvisionerResult
+from shared.contracts.vocab import ResultStatus
 from shared.notifications import notify_admins
 from src.clients.api import api_client
 
@@ -30,9 +31,9 @@ async def process_provisioner_result(result: ProvisionerResult) -> None:
 
     log.info("processing_provisioner_result")
 
-    if result.status == "success":
+    if result.status == ResultStatus.SUCCESS:
         await _handle_success(result, log)
-    elif result.status in ("failed", "error"):
+    elif result.status == ResultStatus.FAILED:
         await _handle_failure(result, log)
     else:
         log.warning("unknown_provisioner_status", received_status=result.status)
