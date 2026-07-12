@@ -26,6 +26,33 @@ Production scaffolding uses GitHub as the only `service-template` source:
 another floating ref for production scaffolds. Bump the tag only after a contract/integration run
 against the new template release.
 
+## Swarm-readiness follow-ups (2026-07-12 grilling)
+
+Decisions from the worker-swarm grilling live in the revision section of
+[worker-db-network-isolation](../brainstorms/worker-db-network-isolation.md#ревизия-2026-07-12-гриллинг-роя).
+Target model in one line: a worker stays an ephemeral Docker container; capacity scales by adding
+hosts, each running a worker-manager replica that consumes the shared `worker:commands` stream. The
+central `DOCKER_HOST=ssh://` control plane from the original brainstorm is dropped. Git is the
+source of truth for workspaces; host workspace directories are caches.
+
+Items that must not get lost:
+
+- Hotfix candidate, before any second user: scaffolder swallows GitHub 422 on repo creation
+  (`services/scaffolder/src/consumer.py:87-91`), so a project-name collision silently reuses and
+  pushes into another project's repo. Fix: unique repo names (short project-id suffix) plus an
+  ownership check when 422 still occurs. Tracked as backlog #1047.
+- Stage 4 ride-along: `services/worker-manager/src/scaffold_phase.py` is an unreferenced legacy
+  scaffold path; remove it with the planned dead-code slice.
+- Deferred with triggers, recorded in the local [backlog](../backlog.md): event-driven task
+  dispatcher (#1048), async deploy workflow wait (#1049), microVM worker runtime (#1050), elastic
+  cloud-VM worker hosts (#1051).
+- HIGH, backlog #1052: remove the internal dogfooding machinery entirely — the orchestrator is no
+  longer managed through itself, its tasks come from the external pipeline. Kill the Makefile
+  targets `backlog`/`roadmap`/`status`/`recent-artifacts`/`sync`/`task` and their generator
+  scripts; they read the now-empty local Tasks DB and would wipe the hand-maintained
+  `docs/backlog.md` and `docs/STATUS.md` if run. Update CLAUDE.md, DEV_PIPELINE.md and related
+  workflow docs. The Tasks/Stories API itself stays — it serves client projects.
+
 ## Stages
 
 | Stage | Goal | Entry gate | Done when | References |
@@ -38,3 +65,5 @@ against the new template release.
 | 6. codegen + service-template matrix | Catch cross-repo drift before either side ships a breaking release. | Mock smoke is deterministic and the template tag bump process is documented. | Matrix runs current codegen against the pinned template tag and candidate template release, then records the resolved template commit. | [contract audit §4](../reports/codegen-service-template-contract.md#4-minimal-target-contract-v1), `scripts/system_configs.yaml`, `scheduler.service_template_ref` |
 | 7. Live services | Validate provisioning, worker lifecycle, deploy and QA against real infrastructure after mock confidence. | Mock and matrix checks are green. | Live non-LLM services pass health, deploy and cleanup checks; failures produce typed outcomes rather than swallowed errors. | [DEV_PIPELINE](../DEV_PIPELINE.md), `make test-live`, `tests/live/` |
 | 8. Telegram end-to-end | Put the user-facing Telegram path on top of the stabilized backend and live-service layers. | Live services are stable and Sprint 002 fail-fast work is complete. | Telegram request to deployed bot is verified last, with PO, scaffold, engineering, deploy and QA already covered underneath. | [CONTRACTS engineering flow](../CONTRACTS.md#engineering-flow), [ROADMAP stabilize core pipeline](../ROADMAP.md#stabilize-core-pipeline) |
+| 9. Worker isolation hardening | Remove platform credentials from worker containers so an agent inside a worker cannot read other tenants' data or push to other repos. | Telegram end-to-end is stable. Must land before onboarding external users. | Worker env no longer contains `REDIS_URL` or `SECRETS_ENCRYPTION_KEY`; the GitHub token is scoped per repo instead of org-wide; all worker egress goes through worker-manager proxy endpoints. | [swarm revision](../brainstorms/worker-db-network-isolation.md#ревизия-2026-07-12-гриллинг-роя), `services/worker-manager/src/manager.py:422-438` |
+| 10. Swarm seams | Make worker capacity horizontal: adding a worker host becomes configuration, not a rewrite. | Worker isolation hardening is complete. Trigger: a second worker host or sustained parallel load. | Per-instance worker slot semaphore; hostname-based consumer name plus host field in worker status; ensure-workspace owned by worker-manager with `workspace_ready` meaning "scaffold pushed to git"; per-user concurrent slot cap; scaffolder no longer writes to the worker workspace path. | [swarm revision](../brainstorms/worker-db-network-isolation.md#ревизия-2026-07-12-гриллинг-роя), [scaling-15](../brainstorms/scaling-15-clients.md) |
