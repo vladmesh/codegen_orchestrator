@@ -9,6 +9,7 @@ import structlog
 from telegram import Bot
 
 from shared.contracts.queues.provisioner import ProvisionerResult
+from shared.contracts.vocab import ResultStatus
 from shared.queues import PROVISIONER_RESULTS, TELEGRAM_BOT_GROUP
 from shared.redis_client import RedisStreamClient
 
@@ -90,7 +91,7 @@ class ProvisionerNotifier:
 
     def _format_result(self, result: ProvisionerResult) -> str:
         """Format provisioner result for Telegram message."""
-        if result.status == "success":
+        if result.status == ResultStatus.SUCCESS:
             lines = [
                 "✅ Provisioning завершён",
                 f"Сервер: {result.server_handle}",

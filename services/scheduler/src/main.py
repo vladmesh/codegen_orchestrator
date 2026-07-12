@@ -13,7 +13,6 @@ import os
 
 import structlog
 
-from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.log_config import setup_logging
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from shared.redis_client import RedisStreamClient
@@ -21,7 +20,7 @@ from shared.redis_client import RedisStreamClient
 from .tasks.analytics_aggregator import analytics_aggregator_worker
 from .tasks.github_sync import sync_projects_worker
 from .tasks.health_checker import health_check_worker
-from .tasks.provisioner_result_listener import process_provisioner_result
+from .tasks.provisioner_result_listener import handle_provisioner_entry
 from .tasks.provisioner_trigger import retry_pending_servers
 from .tasks.queue_cleanup import queue_cleanup_worker
 from .tasks.rag_summarizer import rag_summarizer_worker
@@ -67,10 +66,9 @@ async def provisioner_results_worker():
             if msg is None:
                 continue
             try:
-                result = ProvisionerResult.model_validate(msg.data)
-                await process_provisioner_result(result)
-                await client.ack(PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP, msg.message_id)
+                await handle_provisioner_entry(client, msg)
             except Exception as e:
+                # Transient processing error — leave unacked so it gets retried.
                 logger.error(
                     "provisioner_result_processing_error",
                     entry_id=msg.message_id,

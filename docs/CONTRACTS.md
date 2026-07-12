@@ -19,9 +19,18 @@ instead of restating a `Literal[...]` or a local enum:
 | `AgentType` | `claude`, `factory`, `noop` | `WorkerConfig.agent_type`, `AgentConfigDTO.type`, worker-manager/worker-wrapper agent branching (re-exported from `queues.worker`) |
 | `ActionType` | `create`, `feature`, `fix` | `EngineeringMessage.action` |
 | `ResultStatus` | `success`, `failed`, `timeout` | `BaseResult.status` (and its subclasses) |
-| `LifecycleEvent` | `started`, `progress`, `completed`, `failed`, `stopped` | `ProgressEvent.type`, `WorkerLifecycleEvent.event`, `WorkerEvent.event_type` |
+| `LifecycleEvent` | `started`, `progress`, `completed`, `failed`, `stopped` (canonical member set) | via the field-specific subsets below |
 
-Two vocabularies stay deliberately separate — they carry values the canonical
+`LifecycleEvent` is the canonical member set, but each wire accepts only the
+slice its producers emit — the subsets are `Literal[...]` over the enum members,
+kept explicit so the historical per-field vocabularies are not merged:
+
+- `TaskProgressKind` (`started`/`progress`/`completed`/`failed`, no `stopped`) —
+  `ProgressEvent.type`, `WorkerEvent.event_type`.
+- `WorkerLifecycleKind` (`started`/`completed`/`failed`/`stopped`, no `progress`) —
+  `WorkerLifecycleEvent.event`.
+
+Other vocabularies stay deliberately separate — they carry values the canonical
 enums do not, so merging them would broaden a field past what the wire supports:
 
 - `DeployAction` (`create`/`feature`/`fix` **plus** `stop`/`undeploy`) — deploy
@@ -31,7 +40,9 @@ enums do not, so merging them would broaden a field past what the wire supports:
   identity on `worker:events`, which does **not** map onto `AgentType`.
 
 `ResultStatus` dropped the old `error` failure synonym: a failed result is
-`failed`, never `error`.
+`failed`, never `error`. The `provisioner:results` consumer treats a message
+that fails validation as terminal (logs it and ACKs) so a stale/invalid entry
+cannot poison-loop the reclaim.
 
 ---
 
@@ -1220,7 +1231,7 @@ Used by Developer node and Engineering consumer. Replaces former bare strings (`
 class WorkerLifecycleEvent(BaseModel):
     """Worker state change notification from wrapper."""
     worker_id: str
-    event: LifecycleEvent  # shared.contracts.vocab
+    event: WorkerLifecycleKind  # LifecycleEvent slice: started/completed/failed/stopped
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     result: dict | None = None        # Agent output on success
     error: str | None = None          # Error message on failure
@@ -1347,7 +1358,7 @@ class ProvisionerResult(BaseResult):
 
 class ProgressEvent(BaseModel):
     """Task progress notification."""
-    type: LifecycleEvent  # shared.contracts.vocab
+    type: TaskProgressKind  # LifecycleEvent slice: started/progress/completed/failed
     request_id: str
     task_id: str | None = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)

@@ -106,20 +106,51 @@ class TestResultStatus:
 
 
 class TestLifecycleEvent:
-    def test_progress_event_accepts_valid(self):
-        assert ProgressEvent(type="progress", request_id="r").type is LifecycleEvent.PROGRESS
+    """Each lifecycle wire keeps its own supported slice of LifecycleEvent.
+
+    The full enum is the canonical member set, but the fields must NOT accept
+    the whole thing: a progress stream never emits `stopped`, and the worker
+    lifecycle stream never emits `progress`. These slices are the pre-PR wire
+    contracts, restored explicitly rather than merged.
+    """
+
+    def test_progress_event_accepts_its_slice(self):
+        for value in ("started", "progress", "completed", "failed"):
+            assert ProgressEvent(type=value, request_id="r").type == value
 
     def test_progress_event_rejects_unknown(self):
         with pytest.raises(ValidationError):
             ProgressEvent(type="dead", request_id="r")
 
-    def test_worker_lifecycle_event_accepts_stopped(self):
-        ev = WorkerLifecycleEvent(worker_id="w", event="stopped")
-        assert ev.event is LifecycleEvent.STOPPED
+    def test_progress_event_rejects_stopped(self):
+        # 'stopped' is a valid LifecycleEvent member but not a ProgressEvent value.
+        with pytest.raises(ValidationError):
+            ProgressEvent(type="stopped", request_id="r")
+
+    def test_worker_lifecycle_event_accepts_its_slice(self):
+        for value in ("started", "completed", "failed", "stopped"):
+            assert WorkerLifecycleEvent(worker_id="w", event=value).event == value
 
     def test_worker_lifecycle_event_rejects_unknown(self):
         with pytest.raises(ValidationError):
             WorkerLifecycleEvent(worker_id="w", event="progressing")
+
+    def test_worker_lifecycle_event_rejects_progress(self):
+        # 'progress' is a valid LifecycleEvent member but not a worker-lifecycle value.
+        with pytest.raises(ValidationError):
+            WorkerLifecycleEvent(worker_id="w", event="progress")
+
+    def test_worker_event_rejects_stopped(self):
+        # WorkerEvent is a progress-style stream: no 'stopped' variant exists.
+        with pytest.raises(ValidationError):
+            parse_worker_event(
+                {
+                    "request_id": "r",
+                    "event_type": "stopped",
+                    "timestamp": "2026-07-12T00:00:00Z",
+                    "worker_type": "claude_code",
+                }
+            )
 
 
 class TestWorkerCliKind:

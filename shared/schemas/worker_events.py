@@ -7,14 +7,14 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from shared.contracts.vocab import LifecycleEvent, WorkerCliKind
+from shared.contracts.vocab import LifecycleEvent, TaskProgressKind, WorkerCliKind
 
 
 class WorkerEvent(BaseModel):
     """Base event for worker lifecycle updates."""
 
     request_id: str
-    event_type: LifecycleEvent
+    event_type: TaskProgressKind
     timestamp: datetime
     worker_type: WorkerCliKind
 

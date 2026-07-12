@@ -6,6 +6,7 @@ from here instead of restating a `Literal[...]` or a local enum.
 """
 
 from enum import StrEnum
+from typing import Literal
 
 
 class AgentType(StrEnum):
@@ -53,10 +54,36 @@ class ResultStatus(StrEnum):
 
 
 class LifecycleEvent(StrEnum):
-    """Progress/lifecycle event kind emitted while long-running work runs."""
+    """Progress/lifecycle event kind emitted while long-running work runs.
+
+    The enum is the canonical *member set*. Individual wires accept only the
+    slice their producers actually emit — see the field-specific `Literal`
+    subsets below. The slices deliberately differ (progress streams never emit
+    `stopped`; the worker-lifecycle stream never emits `progress`), so they are
+    kept explicit rather than collapsed into one merged set.
+    """
 
     STARTED = "started"
     PROGRESS = "progress"
     COMPLETED = "completed"
     FAILED = "failed"
     STOPPED = "stopped"
+
+
+# Progress-style streams: task start → incremental progress → terminal outcome.
+# Used by ProgressEvent.type and WorkerEvent.event_type. No `stopped`.
+TaskProgressKind = Literal[
+    LifecycleEvent.STARTED,
+    LifecycleEvent.PROGRESS,
+    LifecycleEvent.COMPLETED,
+    LifecycleEvent.FAILED,
+]
+
+# Worker container lifecycle: start → terminal outcome → explicit stop.
+# Used by WorkerLifecycleEvent.event. No `progress`.
+WorkerLifecycleKind = Literal[
+    LifecycleEvent.STARTED,
+    LifecycleEvent.COMPLETED,
+    LifecycleEvent.FAILED,
+    LifecycleEvent.STOPPED,
+]
