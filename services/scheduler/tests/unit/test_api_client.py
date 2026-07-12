@@ -367,3 +367,58 @@ class TestDeleteOldAppHealthHistory:
             params={"retention_hours": 168},
         )
         assert result["deleted"] == 15
+
+
+def _run_data(**overrides) -> dict:
+    """Build a minimal valid deploy-run API response."""
+    base = {
+        "id": "deploy-1",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "type": "deploy",
+        "status": "completed",
+        "story_id": "story-1",
+        "result": {"deploy_outcome": "success", "deployed_url": "https://x.example.com"},
+        "created_at": "2026-03-17T00:00:00Z",
+        "updated_at": "2026-03-17T00:00:00Z",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestGetLatestRunByStory:
+    @pytest.mark.asyncio
+    async def test_returns_latest_validated(self, api_client):
+        """The newest run is parsed into a typed RunDTO."""
+        from shared.contracts.queues.deploy import DeployOutcome
+
+        api_client._client = _mock_http([_run_data()])
+
+        run = await api_client.get_latest_run_by_story("story-1", run_type="deploy")
+
+        assert run is not None
+        assert run.result.deploy_outcome is DeployOutcome.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_older_invalid_run_does_not_break_valid_latest(self, api_client):
+        """A legacy/corrupt older run must not fail a story with a valid latest run."""
+        from shared.contracts.queues.deploy import DeployOutcome
+
+        latest = _run_data(id="deploy-2")
+        older_corrupt = _run_data(id="deploy-1", result={"unknown_legacy_field": 1})
+        # API returns runs newest-first
+        api_client._client = _mock_http([latest, older_corrupt])
+
+        run = await api_client.get_latest_run_by_story("story-1", run_type="deploy")
+
+        assert run is not None
+        assert run.id == "deploy-2"
+        assert run.result.deploy_outcome is DeployOutcome.SUCCESS
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_none(self, api_client):
+        """No runs for the story → None (not an error)."""
+        api_client._client = _mock_http([])
+
+        run = await api_client.get_latest_run_by_story("story-1", run_type="deploy")
+
+        assert run is None

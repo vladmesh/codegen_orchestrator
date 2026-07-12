@@ -12,6 +12,7 @@ from __future__ import annotations
 import structlog
 
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run_result import QAFailedCheck, QARunResult
 from shared.contracts.queues.qa import QAMessage, QAOutcome, QAServerInfo
 from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -99,6 +100,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 "qa_server_resolve_failed",
                 application_id=msg.application_id,
             )
+            await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
             return {"status": "error", "error": error}
 
         # Fail-fast: if project has tg_bot module, bot_username is required
@@ -200,7 +202,11 @@ async def _handle_qa_fail(
     qa_result: QAResult,
 ) -> dict:
     """Handle QA fail — store FAILED or EXHAUSTED outcome in run."""
-    failed_checks = [c for c in qa_result.checks if not c.get("pass", True)]
+    failed_checks = [
+        QAFailedCheck(name=c.get("name", ""), detail=c.get("detail", ""))
+        for c in qa_result.checks
+        if not c.get("pass", True)
+    ]
 
     if qa_attempt >= MAX_QA_LOOPS:
         logger.warning(
@@ -248,14 +254,12 @@ async def _update_run(
     if not run_id:
         logger.warning("qa_no_run_id_skip_update")
         return
+    run_result = QARunResult(qa_outcome=qa_outcome, **extra_result)
     await api_client.patch(
         f"runs/{run_id}",
         json={
             "status": status.value,
-            "result": {
-                "qa_outcome": qa_outcome.value,
-                **extra_result,
-            },
+            "result": run_result.model_dump(mode="json"),
         },
     )
 

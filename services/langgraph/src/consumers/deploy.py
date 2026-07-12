@@ -14,6 +14,7 @@ from shared.config_store import ConfigStore
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.queues.deploy import DeployAction, DeployMessage, DeployOutcome
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
@@ -150,12 +151,13 @@ async def _handle_lifecycle_action(
     run_status = (
         RunStatus.COMPLETED if lifecycle_result["status"] == "success" else RunStatus.FAILED
     )
+    run_result = DeployRunResult(
+        deploy_outcome=lifecycle_result["deploy_outcome"],
+        action=msg.action,
+    )
     run_patch: dict = {
         "status": run_status.value,
-        "result": {
-            "deploy_outcome": lifecycle_result["deploy_outcome"],
-            "action": msg.action.value,
-        },
+        "result": run_result.model_dump(mode="json"),
     }
     if lifecycle_result.get("error"):
         run_patch["error_message"] = lifecycle_result["error"]
@@ -240,7 +242,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 json={
                     "status": RunStatus.FAILED.value,
                     "error_message": error_msg,
-                    "result": {"deploy_outcome": DeployOutcome.GIVE_UP.value},
+                    "result": DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP).model_dump(
+                        mode="json"
+                    ),
                 },
             )
             return {"status": "failed", "error": error_msg}
@@ -253,7 +257,9 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 json={
                     "status": RunStatus.FAILED.value,
                     "error_message": alloc_result,
-                    "result": {"deploy_outcome": DeployOutcome.GIVE_UP.value},
+                    "result": DeployRunResult(deploy_outcome=DeployOutcome.GIVE_UP).model_dump(
+                        mode="json"
+                    ),
                 },
             )
             return {"status": "failed", "error": alloc_result}

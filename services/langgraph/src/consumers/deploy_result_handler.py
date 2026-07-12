@@ -12,12 +12,13 @@ import structlog
 
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
 from ._events import publish_callback_event
-from .deploy_failure_handler import _classify_deploy_failure
+from .deploy_failure_handler import _classification_to_outcome, _classify_deploy_failure
 
 logger = structlog.get_logger(__name__)
 
@@ -55,25 +56,22 @@ async def _handle_smoke_failure(
 
     # Classify failure for dispatcher routing
     classification = await _classify_deploy_failure(smoke_details)
-    deploy_outcome = {
-        "CODE_FIX": DeployOutcome.CODE_FIX,
-        "RETRY": DeployOutcome.RETRY,
-        "GIVE_UP": DeployOutcome.GIVE_UP,
-    }.get(classification, DeployOutcome.RETRY)
+    deploy_outcome = _classification_to_outcome(classification)
 
+    run_result = DeployRunResult(
+        deploy_outcome=deploy_outcome,
+        deployed_url=result["deployed_url"],
+        deployment_result=result.get("deployment_result"),
+        smoke_result=smoke_result,
+        error_details=smoke_details,
+        deploy_fix_attempt=msg.deploy_fix_attempt,
+    )
     await api_client.patch(
         f"runs/{task_id}",
         json={
             "status": RunStatus.FAILED.value,
             "error_message": error_msg,
-            "result": {
-                "deploy_outcome": deploy_outcome.value,
-                "deployed_url": result["deployed_url"],
-                "deployment_result": result.get("deployment_result"),
-                "smoke_result": smoke_result,
-                "error_details": smoke_details,
-                "deploy_fix_attempt": msg.deploy_fix_attempt,
-            },
+            "result": run_result.model_dump(mode="json"),
         },
     )
 
@@ -118,18 +116,19 @@ async def _handle_deploy_success(
         task_id=task_id,
         deployed_url=result["deployed_url"],
     )
+    run_result = DeployRunResult(
+        deploy_outcome=DeployOutcome.SUCCESS,
+        deployed_url=result["deployed_url"],
+        deployment_result=result.get("deployment_result"),
+        smoke_result=smoke_result,
+        application_id=application_id,
+        bot_username=result.get("bot_username"),
+    )
     await api_client.patch(
         f"runs/{task_id}",
         json={
             "status": RunStatus.COMPLETED.value,
-            "result": {
-                "deploy_outcome": DeployOutcome.SUCCESS.value,
-                "deployed_url": result["deployed_url"],
-                "deployment_result": result.get("deployment_result"),
-                "smoke_result": smoke_result,
-                "application_id": application_id,
-                "bot_username": result.get("bot_username"),
-            },
+            "result": run_result.model_dump(mode="json"),
         },
     )
 
