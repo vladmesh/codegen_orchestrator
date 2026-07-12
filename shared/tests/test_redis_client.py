@@ -1,11 +1,13 @@
 """Unit tests for shared.redis.client.RedisStreamClient."""
 
 import json
-from unittest.mock import patch
+from typing import Literal
+from unittest.mock import AsyncMock, patch
 
 from fakeredis import aioredis
 import pytest
 import pytest_asyncio
+from structlog.testing import capture_logs
 
 from shared.contracts.base import BaseMessage
 from shared.redis.client import (
@@ -26,6 +28,13 @@ class TypedSample(BaseMessage):
     """BaseMessage subclass with a required field, for consume_typed tests."""
 
     name: str
+
+
+class SecretSample(BaseMessage):
+    """Carries a secret-like field plus a strict field that can fail validation."""
+
+    api_key: str | None = None
+    capability: Literal["git", "curl"]
 
 
 @pytest_asyncio.fixture
@@ -395,6 +404,36 @@ class TestConsumeTyped:
                 break
         pending = await fake_redis.xpending("s", "g")
         assert pending["pending"] == 0
+
+    async def test_validation_error_does_not_log_raw_payload(self, client):
+        """A schema-invalid payload with a secret must not leak it into logs."""
+        leaked = "ghp_super_secret_token"
+        await client.publish("s", {"api_key": leaked, "capability": "not-a-cap"})
+        with capture_logs() as logs:
+            await _drain_typed(client, SecretSample)
+        assert logs, "validation failure should be logged"
+        blob = json.dumps(logs, default=str)
+        assert leaked not in blob
+        assert "not-a-cap" not in blob  # invalid input value must not leak either
+        assert any(entry["event"] == "typed_consume_validation_failed" for entry in logs)
+
+    async def test_decode_error_does_not_log_raw_fields(self, client, fake_redis):
+        """A malformed 'data' payload with a secret must not leak it into logs."""
+        leaked = "ghp_super_secret_token"
+        await fake_redis.xadd("s", {"data": f'{{"api_key": "{leaked}", bad json'})
+        with capture_logs() as logs:
+            await _drain_typed(client, SecretSample)
+        blob = json.dumps(logs, default=str)
+        assert leaked not in blob
+        assert any(entry["event"] == "typed_consume_decode_failed" for entry in logs)
+
+    async def test_terminal_ack_failure_keeps_consumer_alive(self, client, fake_redis):
+        """If XACK of a poison entry fails, the consumer keeps serving valid ones."""
+        fake_redis.xack = AsyncMock(side_effect=RuntimeError("redis down"))
+        await client.publish("s", {"capability": "bad"})  # schema-invalid → terminal ack
+        await client.publish("s", {"capability": "git"})  # valid, delivered after
+        received = await _drain_typed(client, SecretSample)
+        assert [m.value.capability for m in received] == ["git"]
 
 
 class TestPublishFlat:

@@ -1,7 +1,10 @@
+import json
+
 import pytest
 import pytest_asyncio
 from unittest.mock import MagicMock, AsyncMock
 from fakeredis import aioredis
+from structlog.testing import capture_logs
 
 from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.queues.worker import (
@@ -183,3 +186,25 @@ async def test_transient_processing_error_leaves_message_unacked(
 
     pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
     assert pending["pending"] == 1  # unacked → will be reclaimed and retried
+
+
+@pytest.mark.asyncio
+async def test_invalid_command_does_not_leak_secrets_in_logs(redis_client, stream_client, mock_worker_manager):
+    """A schema-invalid create command carrying secrets must not log them."""
+    consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
+
+    payload = _create_command().model_dump(mode="json")
+    payload["config"]["capabilities"] = ["not-a-real-capability"]  # forces ValidationError
+    payload["config"]["api_key"] = "ghp_secret_api_key"
+    payload["config"]["env_vars"] = {"GITHUB_TOKEN": "ghp_secret_env_token"}
+    await stream_client.publish(WORKER_COMMANDS, payload)
+
+    with capture_logs() as logs:
+        await _drain_once(consumer)
+
+    blob = json.dumps(logs, default=str)
+    assert "ghp_secret_api_key" not in blob
+    assert "ghp_secret_env_token" not in blob
+    mock_worker_manager.create_worker_with_capabilities.assert_not_called()
+    pending = await redis_client.xpending(WORKER_COMMANDS, WORKER_MANAGER_GROUP)
+    assert pending["pending"] == 0  # discarded terminally

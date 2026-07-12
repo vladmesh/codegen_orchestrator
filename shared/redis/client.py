@@ -288,6 +288,26 @@ class RedisStreamClient:
                 await self.redis.xack(stream, group, message_id)
                 logger.debug("message_acked", message_id=message_id)
 
+    async def _terminal_ack(self, stream: str, group: str, message_id: str) -> None:
+        """ACK a poison entry, tolerating a failing XACK.
+
+        The terminal ACK for an invalid message runs inside the ``consume_typed``
+        generator, outside the consumer's own try/except. If XACK hit a transient
+        Redis error and propagated, it would kill the consumer generator and
+        silently stop the stream from being consumed. So a failed ACK is logged
+        and swallowed: the entry stays in the PEL, gets reclaimed, re-validated
+        (fails again) and re-ACKed, while the loop keeps serving valid messages.
+        """
+        try:
+            await self.redis.xack(stream, group, message_id)
+        except Exception as e:
+            logger.error(
+                "typed_consume_terminal_ack_failed",
+                stream=stream,
+                entry_id=message_id,
+                error=str(e),
+            )
+
     async def consume_typed[T](
         self,
         stream: str,
@@ -330,27 +350,31 @@ class RedisStreamClient:
             try:
                 data = self._decode_entry(fields)
             except json.JSONDecodeError as e:
+                # str(JSONDecodeError) is positional only ("Expecting value:
+                # line 1 column 1"), so it carries no payload. Never log the raw
+                # fields — the payload may hold secrets (tokens in env_vars, api_key).
                 logger.error(
                     "typed_consume_decode_failed",
                     stream=stream,
                     entry_id=message_id,
-                    fields=decode_redis_fields(fields),
                     error=str(e),
                 )
-                await self.redis.xack(stream, group, message_id)
+                await self._terminal_ack(stream, group, message_id)
                 continue
 
             try:
                 value = adapter.validate_python(data)
             except ValidationError as e:
+                # Log structured errors with input elided. str(e) and the raw
+                # data both echo field values, which may include secrets, so
+                # they must never reach the logs.
                 logger.error(
                     "typed_consume_validation_failed",
                     stream=stream,
                     entry_id=message_id,
-                    data=data,
-                    error=str(e),
+                    errors=e.errors(include_url=False, include_input=False),
                 )
-                await self.redis.xack(stream, group, message_id)
+                await self._terminal_ack(stream, group, message_id)
                 continue
 
             yield TypedMessage(message_id=message_id, value=value)
