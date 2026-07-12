@@ -1,13 +1,16 @@
 """Pydantic models for the worker HTTP result server.
 
-These models define the request body for POST /result endpoint.
-The `to_redis_output` function converts a validated request into
-the dict format expected by the worker:{id}:output Redis stream consumer.
+`ResultRequest` is the external contract for the agent's POST /result call.
+`to_worker_result` converts a validated request into the typed
+:data:`WorkerResult` contract published on the ``worker:{id}:output`` stream.
 """
 
-from typing import Any
-
 from pydantic import BaseModel, field_validator, model_validator
+
+from shared.contracts.queues.worker_result import (
+    WorkerBlockedResult,
+    WorkerCompletedResult,
+)
 
 
 class ResultRequest(BaseModel):
@@ -41,20 +44,14 @@ class ResultRequest(BaseModel):
         return self
 
 
-def to_redis_output(request: ResultRequest) -> dict[str, Any]:
-    """Convert a validated HTTP request into a Redis output stream dict.
+def to_worker_result(
+    request: ResultRequest,
+) -> WorkerCompletedResult | WorkerBlockedResult:
+    """Build the typed worker result from a validated HTTP request.
 
-    The output format must match what worker_spawner.py expects:
-    - success=true  → {"status": "completed", "commit_sha": ..., "content": ...}
-    - success=false → {"status": "blocked", "block_reason": ...}
+    - success=true  → completed (commit_sha + content)
+    - success=false → blocked (block_reason)
     """
     if request.success:
-        return {
-            "status": "completed",
-            "commit_sha": request.commit,
-            "content": request.summary,
-        }
-    return {
-        "status": "blocked",
-        "block_reason": request.reason,
-    }
+        return WorkerCompletedResult(commit_sha=request.commit, content=request.summary)
+    return WorkerBlockedResult(block_reason=request.reason)

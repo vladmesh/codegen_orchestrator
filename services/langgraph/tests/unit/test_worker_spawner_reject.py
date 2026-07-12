@@ -49,11 +49,10 @@ class TestSendTaskGaveUpPropagation:
         # Mock xadd (sending task to worker)
         mock_client.xadd = AsyncMock()
 
-        # Mock worker output: rejected (reject_reason from Redis maps to gave_up_reason)
+        # Mock worker output: rejected (block_reason maps to gave_up_reason)
         worker_output = {
             "status": "rejected",
-            "content": "Analysis complete",
-            "reject_reason": "REGISTRY_PASSWORD secret is empty",
+            "block_reason": "REGISTRY_PASSWORD secret is empty",
         }
 
         # _wait_for_response returns the worker output
@@ -89,7 +88,6 @@ class TestSendTaskGaveUpPropagation:
 
         worker_output = {
             "status": "blocked",
-            "content": "Cannot proceed",
             "block_reason": "Missing API credentials for Stripe",
         }
 
@@ -122,7 +120,7 @@ class TestSendTaskGaveUpPropagation:
         mock_client.xadd = AsyncMock()
 
         worker_output = {
-            "status": "success",
+            "status": "completed",
             "content": "Fixed the issue",
             "commit_sha": "abc123",
         }

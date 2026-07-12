@@ -6,6 +6,7 @@ from typing import Any
 
 import structlog
 
+from shared.contracts.queues.worker_result import WorkerFailedResult, WorkerResult
 from shared.contracts.vocab import AgentType
 from shared.redis.client import RedisStreamClient
 
@@ -113,9 +114,9 @@ class WorkerWrapper:
             )
             error = f"Workspace pre-flight failed: {workspace_detail}"
             status = "failed"
-            await self.redis.publish(
+            await self.redis.publish_message(
                 self.config.output_stream,
-                {"status": "failed", "error": error},
+                WorkerFailedResult(error=error),
             )
             await self.publish_lifecycle(status, msg_id, error=error)
             return
@@ -129,10 +130,10 @@ class WorkerWrapper:
 
         # 4. Start HTTP result server + execute agent
         self._result_event = asyncio.Event()
-        self._buffered_result: dict | None = None
+        self._buffered_result: WorkerResult | None = None
 
-        async def _buffer_http_result(redis_data: dict) -> None:
-            self._buffered_result = redis_data
+        async def _buffer_http_result(result: WorkerResult) -> None:
+            self._buffered_result = result
 
         self._http_server = ResultHttpServer(
             worker_id=self.config.consumer_name,
@@ -178,18 +179,13 @@ class WorkerWrapper:
 
         if self._result_event.is_set() and self._buffered_result is not None:
             logger.info("result_received_via_http", worker_id=self.config.consumer_name)
-            if report:
-                self._buffered_result["worker_report"] = report
-            if stdout_tail:
-                self._buffered_result["agent_stdout_tail"] = stdout_tail
-            await self.redis.publish(self.config.output_stream, self._buffered_result)
+            result = self._attach_metadata(self._buffered_result, report, stdout_tail)
+            await self.redis.publish_message(self.config.output_stream, result)
             return status, error
 
         if error:
-            result_data: dict[str, Any] = {"status": "failed", "error": error}
-            if stdout_tail:
-                result_data["agent_stdout_tail"] = stdout_tail
-            await self.redis.publish(self.config.output_stream, result_data)
+            result = WorkerFailedResult(error=error, agent_stdout_tail=stdout_tail)
+            await self.redis.publish_message(self.config.output_stream, result)
             return status, error
 
         # Watchdog: agent exited without reporting via HTTP
@@ -199,22 +195,29 @@ class WorkerWrapper:
             if resumed and self._result_event.is_set() and self._buffered_result is not None:
                 logger.info("result_received_after_resume", worker_id=self.config.consumer_name)
                 stdout_tail = self._agent_stdout_tail
-                if report:
-                    self._buffered_result["worker_report"] = report
-                if stdout_tail:
-                    self._buffered_result["agent_stdout_tail"] = stdout_tail
-                await self.redis.publish(self.config.output_stream, self._buffered_result)
+                result = self._attach_metadata(self._buffered_result, report, stdout_tail)
+                await self.redis.publish_message(self.config.output_stream, result)
                 return status, error
 
         logger.warning("agent_exited_without_result", worker_id=self.config.consumer_name)
         error = "Agent exited without reporting result"
         status = "failed"
         stdout_tail = self._agent_stdout_tail
-        result_data = {"status": "failed", "error": error}
-        if stdout_tail:
-            result_data["agent_stdout_tail"] = stdout_tail
-        await self.redis.publish(self.config.output_stream, result_data)
+        result = WorkerFailedResult(error=error, agent_stdout_tail=stdout_tail)
+        await self.redis.publish_message(self.config.output_stream, result)
         return status, error
+
+    @staticmethod
+    def _attach_metadata(
+        result: WorkerResult, report: str | None, stdout_tail: str | None
+    ) -> WorkerResult:
+        """Attach worker report and stdout tail to a result without mutating it."""
+        updates: dict[str, str] = {}
+        if report:
+            updates["worker_report"] = report
+        if stdout_tail:
+            updates["agent_stdout_tail"] = stdout_tail
+        return result.model_copy(update=updates) if updates else result
 
     async def _prepare_workspace(self, data: dict) -> None:
         """Pre-turn setup: pull, update TASK.md/STORY.md, clear session."""

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import json
 import uuid
 
+from pydantic import ValidationError
 import redis.asyncio as redis
 
 from shared.contracts.dto.worker import WorkerStatus
@@ -18,6 +19,12 @@ from shared.contracts.queues.worker import (
     DeleteWorkerCommand,
     WorkerCapability,
     WorkerConfig,
+)
+from shared.contracts.queues.worker_result import (
+    WorkerBlockedResult,
+    WorkerCompletedResult,
+    WorkerResult,
+    WorkerResultAdapter,
 )
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
@@ -47,6 +54,76 @@ class SpawnResult:
     worker_id: str | None = None
     gave_up_reason: str | None = None
     worker_report: str | None = None
+
+
+def spawn_result_from_output(
+    output_resp: dict, request_id: str, worker_id: str | None
+) -> SpawnResult:
+    """Validate a raw worker-output payload against the contract and map it.
+
+    Shared by ``request_spawn`` and ``send_task_to_worker``. The payload is
+    validated against :data:`WorkerResult` before any interpretation, so status
+    and content are never guessed from synonym keys. An invalid payload is
+    surfaced as an explicit failed result — never a silent fallback to a made-up
+    status or empty output. Validation errors are logged structurally with the
+    input elided: worker payloads can carry secrets, and ``str(e)`` / raw data
+    both echo field values.
+    """
+    try:
+        result = WorkerResultAdapter.validate_python(output_resp)
+    except ValidationError as e:
+        logger.error(
+            "worker_result_invalid",
+            worker_id=worker_id,
+            request_id=request_id,
+            errors=e.errors(include_url=False, include_input=False),
+        )
+        return SpawnResult(
+            request_id=request_id,
+            success=False,
+            exit_code=1,
+            output="",
+            error_message="invalid_worker_result",
+            worker_id=worker_id,
+        )
+    return _map_worker_result(result, request_id, worker_id)
+
+
+def _map_worker_result(result: WorkerResult, request_id: str, worker_id: str | None) -> SpawnResult:
+    """Map a validated worker result onto a SpawnResult."""
+    if isinstance(result, WorkerCompletedResult):
+        return SpawnResult(
+            request_id=request_id,
+            success=True,
+            exit_code=0,
+            output=result.content,
+            commit_sha=result.commit_sha,
+            worker_id=worker_id,
+            worker_report=result.worker_report,
+            logs_tail=result.agent_stdout_tail,
+        )
+    if isinstance(result, WorkerBlockedResult):
+        return SpawnResult(
+            request_id=request_id,
+            success=False,
+            exit_code=1,
+            output="",
+            worker_id=worker_id,
+            gave_up_reason=result.block_reason,
+            worker_report=result.worker_report,
+            logs_tail=result.agent_stdout_tail,
+        )
+    # WorkerFailedResult
+    return SpawnResult(
+        request_id=request_id,
+        success=False,
+        exit_code=1,
+        output="",
+        error_message=result.error,
+        worker_id=worker_id,
+        worker_report=result.worker_report,
+        logs_tail=result.agent_stdout_tail,
+    )
 
 
 LIVENESS_CHECK_INTERVAL_S = 30  # Check worker liveness every 30 seconds
@@ -310,27 +387,7 @@ async def request_spawn(
         )
 
         if output_resp:
-            # Worker outputs: {"content": "...", "status": "success|failed|rejected|blocked"}
-            status = output_resp.get("status", "")
-            is_success = status in ("success", "completed") or output_resp.get("success", False)
-            content = output_resp.get(
-                "content", output_resp.get("response", output_resp.get("output", ""))
-            )
-            return SpawnResult(
-                request_id=request_id,
-                success=is_success,
-                exit_code=0 if is_success else 1,
-                output=content,
-                commit_sha=output_resp.get("commit_sha"),
-                branch=output_resp.get("branch"),
-                files_changed=output_resp.get("files_changed"),
-                error_message=output_resp.get("error"),
-                worker_id=worker_id,
-                gave_up_reason=(
-                    output_resp.get("block_reason") or output_resp.get("reject_reason")
-                ),
-                worker_report=output_resp.get("worker_report"),
-            )
+            return spawn_result_from_output(output_resp, request_id, worker_id)
         else:
             # Timeout - cleanup the zombie container
             if worker_id:
@@ -439,26 +496,7 @@ async def send_task_to_worker(
         )
 
         if output_resp:
-            status = output_resp.get("status", "")
-            is_success = status in ("success", "completed") or output_resp.get("success", False)
-            content = output_resp.get(
-                "content", output_resp.get("response", output_resp.get("output", ""))
-            )
-            return SpawnResult(
-                request_id=request_id,
-                success=is_success,
-                exit_code=0 if is_success else 1,
-                output=content,
-                commit_sha=output_resp.get("commit_sha"),
-                branch=output_resp.get("branch"),
-                files_changed=output_resp.get("files_changed"),
-                error_message=output_resp.get("error"),
-                worker_id=worker_id,
-                gave_up_reason=(
-                    output_resp.get("block_reason") or output_resp.get("reject_reason")
-                ),
-                worker_report=output_resp.get("worker_report"),
-            )
+            return spawn_result_from_output(output_resp, request_id, worker_id)
         else:
             return SpawnResult(
                 request_id=request_id,

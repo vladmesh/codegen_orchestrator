@@ -4,7 +4,13 @@ from pydantic import ValidationError
 import pytest
 from worker_wrapper.http_models import (
     ResultRequest,
-    to_redis_output,
+    to_worker_result,
+)
+
+from shared.contracts.queues.worker_result import (
+    WorkerBlockedResult,
+    WorkerCompletedResult,
+    WorkerResultStatus,
 )
 
 
@@ -57,20 +63,18 @@ class TestResultRequestFailure:
             ResultRequest(success=False, reason="   ")
 
 
-class TestToRedisOutput:
+class TestToWorkerResult:
     def test_success_result(self):
         req = ResultRequest(success=True, commit="abc123def", summary="Added login endpoint")
-        result = to_redis_output(req)
-        assert result == {
-            "status": "completed",
-            "commit_sha": "abc123def",
-            "content": "Added login endpoint",
-        }
+        result = to_worker_result(req)
+        assert isinstance(result, WorkerCompletedResult)
+        assert result.status == WorkerResultStatus.COMPLETED
+        assert result.commit_sha == "abc123def"
+        assert result.content == "Added login endpoint"
 
     def test_failure_result(self):
         req = ResultRequest(success=False, reason="Need API key for external service")
-        result = to_redis_output(req)
-        assert result == {
-            "status": "blocked",
-            "block_reason": "Need API key for external service",
-        }
+        result = to_worker_result(req)
+        assert isinstance(result, WorkerBlockedResult)
+        assert result.status == WorkerResultStatus.BLOCKED
+        assert result.block_reason == "Need API key for external service"

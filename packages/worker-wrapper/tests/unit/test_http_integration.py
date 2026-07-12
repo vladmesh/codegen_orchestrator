@@ -13,6 +13,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
 
+from shared.contracts.queues.worker_result import (
+    WorkerCompletedResult,
+    WorkerResultStatus,
+)
+
 
 def _make_config(**overrides) -> WorkerWrapperConfig:
     defaults = {
@@ -34,6 +39,7 @@ def _make_redis_mock():
     redis_mock.connect = AsyncMock()
     redis_mock.close = AsyncMock()
     redis_mock.publish = AsyncMock()
+    redis_mock.publish_message = AsyncMock()
     redis_mock.redis = MagicMock()
     redis_mock.redis.hset = AsyncMock()
     return redis_mock
@@ -79,9 +85,9 @@ class TestHttpServerLifecycle:
                                 msg.data = {"prompt": "do stuff"}
                                 await wrapper.process_message(msg)
 
-        redis_mock.publish.assert_any_call(
+        redis_mock.publish_message.assert_any_call(
             "worker:test-w1:output",
-            {"status": "completed", "commit_sha": "abc123", "content": "Done"},
+            WorkerCompletedResult(commit_sha="abc123", content="Done"),
         )
 
     async def test_http_server_stops_after_agent(self):
@@ -150,12 +156,12 @@ class TestStdoutCapture:
                                 msg.data = {"prompt": "do stuff"}
                                 await wrapper.process_message(msg)
 
-        publish_calls = redis_mock.publish.call_args_list
+        publish_calls = redis_mock.publish_message.call_args_list
         output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
         assert len(output_calls) == 1
         result = output_calls[0][0][1]
-        assert result["agent_stdout_tail"] == "Agent thinking about task..."
-        assert result["commit_sha"] == "abc123"
+        assert result.agent_stdout_tail == "Agent thinking about task..."
+        assert result.commit_sha == "abc123"
 
     async def test_stdout_tail_attached_to_error_result(self):
         """When agent crashes, stdout tail is still attached to failed result."""
@@ -178,12 +184,12 @@ class TestStdoutCapture:
                                 msg.data = {"prompt": "do stuff"}
                                 await wrapper.process_message(msg)
 
-        publish_calls = redis_mock.publish.call_args_list
+        publish_calls = redis_mock.publish_message.call_args_list
         output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
         assert len(output_calls) == 1
         result = output_calls[0][0][1]
-        assert result["status"] == "failed"
-        assert result["agent_stdout_tail"] == "Partial output before crash"
+        assert result.status == WorkerResultStatus.FAILED
+        assert result.agent_stdout_tail == "Partial output before crash"
 
 
 class TestWatchdog:
@@ -215,11 +221,11 @@ class TestWatchdog:
                                     msg.data = {"prompt": "do stuff"}
                                     await wrapper.process_message(msg)
 
-        publish_calls = redis_mock.publish.call_args_list
+        publish_calls = redis_mock.publish_message.call_args_list
         output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
         assert len(output_calls) == 1
-        assert output_calls[0][0][1]["status"] == "failed"
-        assert "without reporting result" in output_calls[0][0][1]["error"]
+        assert output_calls[0][0][1].status == WorkerResultStatus.FAILED
+        assert "without reporting result" in output_calls[0][0][1].error
 
     async def test_watchdog_skips_resume_for_non_claude(self):
         """Non-claude agents don't support resume — go straight to fail."""
@@ -241,10 +247,10 @@ class TestWatchdog:
                                 msg.data = {"prompt": "do stuff"}
                                 await wrapper.process_message(msg)
 
-        publish_calls = redis_mock.publish.call_args_list
+        publish_calls = redis_mock.publish_message.call_args_list
         output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
         assert len(output_calls) == 1
-        assert output_calls[0][0][1]["status"] == "failed"
+        assert output_calls[0][0][1].status == WorkerResultStatus.FAILED
 
     async def test_http_result_prevents_watchdog(self):
         """If HTTP result received, watchdog does not publish failed."""
@@ -284,7 +290,7 @@ class TestWatchdog:
                                 await wrapper.process_message(msg)
 
         # HTTP result published by callback, no additional failed publish
-        publish_calls = redis_mock.publish.call_args_list
+        publish_calls = redis_mock.publish_message.call_args_list
         output_calls = [c for c in publish_calls if c[0][0] == "worker:test-w1:output"]
         assert len(output_calls) == 1
-        assert output_calls[0][0][1]["commit_sha"] == "http-sha"
+        assert output_calls[0][0][1].commit_sha == "http-sha"
