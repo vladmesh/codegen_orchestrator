@@ -12,6 +12,7 @@ import structlog
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -73,7 +74,14 @@ async def _resolve_allocations(task_id: str, project_id: str, project: ProjectDT
         error_msg = "; ".join(result["errors"])
         logger.error("resource_allocation_failed", task_id=task_id, errors=result["errors"])
         await api_client.patch(
-            f"runs/{task_id}", json={"status": "failed", "error_message": error_msg}
+            f"runs/{task_id}",
+            json={
+                "status": RunStatus.FAILED.value,
+                "error_message": error_msg,
+                "result": EngineeringRunResult(
+                    engineering_status=EngineeringStatus.FAILED
+                ).model_dump(mode="json"),
+            },
         )
         return None
 

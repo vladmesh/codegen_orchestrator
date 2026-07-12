@@ -78,9 +78,10 @@ class TestValidPayloads:
         assert run.result.failed_checks == [QAFailedCheck(name="weather", detail="404")]
 
     @pytest.mark.parametrize("run_type", list(RunType))
-    def test_result_none_allowed(self, run_type):
-        """None means 'no result yet' — valid for any type/status."""
-        run = _run(run_type, None, status=RunStatus.RUNNING)
+    @pytest.mark.parametrize("status", [RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.CANCELLED])
+    def test_result_none_allowed_before_terminal(self, run_type, status):
+        """None is valid while no outcome exists yet, and for superseded (CANCELLED) runs."""
+        run = _run(run_type, None, status=status)
         assert run.result is None
 
 
@@ -111,6 +112,13 @@ class TestRejection:
     def test_qa_missing_outcome_rejected(self):
         with pytest.raises(ValidationError):
             _run(RunType.QA, {"summary": "no outcome"})
+
+    @pytest.mark.parametrize("run_type", list(RunType))
+    @pytest.mark.parametrize("status", [RunStatus.COMPLETED, RunStatus.FAILED])
+    def test_terminal_status_without_result_rejected(self, run_type, status):
+        """A COMPLETED/FAILED run that lost its result is rejected, not silently accepted."""
+        with pytest.raises(ValidationError):
+            _run(run_type, None, status=status)
 
 
 class TestOptionalFieldPreservation:

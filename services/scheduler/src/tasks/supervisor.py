@@ -277,25 +277,24 @@ async def supervise_deploying_stories(
 
         # Find latest deploy run for this story
         try:
-            runs = await api_client.get_runs_by_story(story_id, run_type="deploy")
+            run = await api_client.get_latest_run_by_story(story_id, run_type="deploy")
         except ValidationError as exc:
             await _fail_story_on_invalid_result(
                 api_client, story_id, project_id, "deploy", exc, log
             )
             failed += 1
             continue
-        if not runs:
+        if run is None:
             continue
-
-        # Runs are returned newest-first
-        run = runs[0]
 
         # Skip runs still in progress
         if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
             continue
 
+        # Only a superseded (CANCELLED) run reaches here without a result; a
+        # terminal run that lost its outcome would have failed validation above.
         if run.result is None:
-            log.warning("deploy_run_no_result", run_id=run.id, run_status=run.status.value)
+            log.info("deploy_run_superseded_skip", run_id=run.id, run_status=run.status.value)
             continue
 
         outcome = run.result.deploy_outcome
@@ -582,22 +581,22 @@ async def supervise_testing_stories(
 
         # Find latest QA run for this story
         try:
-            runs = await api_client.get_runs_by_story(story_id, run_type="qa")
+            run = await api_client.get_latest_run_by_story(story_id, run_type="qa")
         except ValidationError as exc:
             await _fail_story_on_invalid_result(api_client, story_id, project_id, "qa", exc, log)
             failed += 1
             continue
-        if not runs:
+        if run is None:
             continue
-
-        run = runs[0]
 
         # Skip runs still in progress
         if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
             continue
 
+        # A terminal QA run always carries a result (validation enforces it);
+        # None here only means a superseded/non-terminal run — skip it.
         if run.result is None:
-            log.warning("qa_run_no_result", run_id=run.id, run_status=run.status.value)
+            log.info("qa_run_superseded_skip", run_id=run.id, run_status=run.status.value)
             continue
 
         outcome = run.result.qa_outcome

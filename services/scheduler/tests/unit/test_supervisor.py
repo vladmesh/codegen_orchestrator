@@ -139,6 +139,24 @@ def _invalid_result_error(run_type: str) -> ValidationError:
     raise AssertionError("expected ValidationError")
 
 
+def _terminal_no_result_error(run_type: str) -> ValidationError:
+    """A real ValidationError from a terminal run that lost its result."""
+    try:
+        RunDTO.model_validate(
+            {
+                "id": "no-result-run",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "type": run_type,
+                "status": "completed",
+                "result": None,
+                "created_at": _NOW.isoformat(),
+            }
+        )
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("expected ValidationError")
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -612,15 +630,13 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(
-                result={
-                    "deploy_outcome": DeployOutcome.SUCCESS.value,
-                    "deployed_url": "https://example.com",
-                    "application_id": 42,
-                },
-            )
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            result={
+                "deploy_outcome": DeployOutcome.SUCCESS.value,
+                "deployed_url": "https://example.com",
+                "application_id": 42,
+            },
+        )
         api_client.transition_story.return_value = {}
 
         api_client.create_run.return_value = {"id": "qa-run-1"}
@@ -654,15 +670,13 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(
-                status=RunStatus.FAILED,
-                result={
-                    "deploy_outcome": DeployOutcome.GIVE_UP.value,
-                    "error_details": "port already allocated",
-                },
-            )
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={
+                "deploy_outcome": DeployOutcome.GIVE_UP.value,
+                "error_details": "port already allocated",
+            },
+        )
         api_client.fail_story.return_value = {}
 
         with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
@@ -680,16 +694,14 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(
-                status=RunStatus.FAILED,
-                result={
-                    "deploy_outcome": DeployOutcome.CODE_FIX.value,
-                    "error_details": "ImportError: no module",
-                    "deploy_fix_attempt": 0,
-                },
-            )
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={
+                "deploy_outcome": DeployOutcome.CODE_FIX.value,
+                "error_details": "ImportError: no module",
+                "deploy_fix_attempt": 0,
+            },
+        )
         api_client.transition_story.return_value = {}
         api_client.create_run.return_value = {}
 
@@ -713,12 +725,10 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(
-                status=RunStatus.FAILED,
-                result={"deploy_outcome": DeployOutcome.RETRY.value},
-            )
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={"deploy_outcome": DeployOutcome.RETRY.value},
+        )
         api_client.create_run.return_value = {}
         # First retry
         redis_client._redis.incr.return_value = 1
@@ -741,12 +751,10 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(
-                status=RunStatus.FAILED,
-                result={"deploy_outcome": DeployOutcome.RETRY.value},
-            )
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.FAILED,
+            result={"deploy_outcome": DeployOutcome.RETRY.value},
+        )
         api_client.fail_story.return_value = {}
         # Max retries hit
         redis_client._redis.incr.return_value = 3  # default max is 3
@@ -765,9 +773,9 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(status=RunStatus.RUNNING, result=None)
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.RUNNING, result=None
+        )
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -782,7 +790,7 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_runs_by_story.return_value = []
+        api_client.get_latest_run_by_story.return_value = None
 
         result = await supervise_deploying_stories(api_client, redis_client)
 
@@ -796,7 +804,7 @@ class TestSuperviseDeployingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="deploying")
         ]
-        api_client.get_runs_by_story.side_effect = _invalid_result_error("deploy")
+        api_client.get_latest_run_by_story.side_effect = _invalid_result_error("deploy")
         api_client.fail_story.return_value = {}
 
         with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
@@ -805,6 +813,42 @@ class TestSuperviseDeployingStories:
         assert result["failed"] == 1
         api_client.fail_story.assert_called_once_with("story-1")
         mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_terminal_deploy_without_result_fails_story(self, api_client, redis_client):
+        """A terminal deploy run that lost its result routes to a visible failure, not a skip."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.side_effect = _terminal_no_result_error("deploy")
+        api_client.fail_story.return_value = {}
+
+        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+        mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_deploy_is_skipped(self, api_client, redis_client):
+        """A CANCELLED (superseded) deploy run has no result → skip, don't fail the story."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            status=RunStatus.CANCELLED, result=None
+        )
+
+        result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result == {"tested": 0, "retried": 0, "redispatched": 0, "failed": 0}
+        api_client.fail_story.assert_not_called()
+        api_client.transition_story.assert_not_called()
 
 
 class TestSuperviseTestingStories:
@@ -818,16 +862,14 @@ class TestSuperviseTestingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="testing")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(
-                id="qa-1",
-                type=RunType.QA,
-                result={
-                    "qa_outcome": QAOutcome.PASSED.value,
-                    "deployed_url": "https://example.com",
-                },
-            )
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.PASSED.value,
+                "deployed_url": "https://example.com",
+            },
+        )
         api_client.transition_story.return_value = {}
 
         result = await supervise_testing_stories(api_client, redis_client)
@@ -843,18 +885,16 @@ class TestSuperviseTestingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="testing")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(
-                id="qa-1",
-                type=RunType.QA,
-                result={
-                    "qa_outcome": QAOutcome.FAILED.value,
-                    "summary": "Weather endpoint broken",
-                    "failed_checks": [{"name": "weather", "detail": "404"}],
-                    "qa_attempt": 0,
-                },
-            )
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.FAILED.value,
+                "summary": "Weather endpoint broken",
+                "failed_checks": [{"name": "weather", "detail": "404"}],
+                "qa_attempt": 0,
+            },
+        )
         api_client.transition_story.return_value = {}
         api_client.create_task.return_value = {"id": "task-fix-1"}
 
@@ -876,17 +916,15 @@ class TestSuperviseTestingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="testing")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(
-                id="qa-1",
-                type=RunType.QA,
-                result={
-                    "qa_outcome": QAOutcome.EXHAUSTED.value,
-                    "summary": "Still broken after 2 attempts",
-                    "qa_attempt": 2,
-                },
-            )
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.EXHAUSTED.value,
+                "summary": "Still broken after 2 attempts",
+                "qa_attempt": 2,
+            },
+        )
 
         result = await supervise_testing_stories(api_client, redis_client)
 
@@ -901,16 +939,14 @@ class TestSuperviseTestingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="testing")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(
-                id="qa-1",
-                type=RunType.QA,
-                result={
-                    "qa_outcome": QAOutcome.ERROR.value,
-                    "error": "bot_username missing",
-                },
-            )
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1",
+            type=RunType.QA,
+            result={
+                "qa_outcome": QAOutcome.ERROR.value,
+                "error": "bot_username missing",
+            },
+        )
 
         result = await supervise_testing_stories(api_client, redis_client)
 
@@ -925,9 +961,9 @@ class TestSuperviseTestingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="testing")
         ]
-        api_client.get_runs_by_story.return_value = [
-            _make_run(id="qa-1", type=RunType.QA, status=RunStatus.RUNNING, result=None)
-        ]
+        api_client.get_latest_run_by_story.return_value = _make_run(
+            id="qa-1", type=RunType.QA, status=RunStatus.RUNNING, result=None
+        )
 
         result = await supervise_testing_stories(api_client, redis_client)
 
@@ -952,7 +988,7 @@ class TestSuperviseTestingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="testing")
         ]
-        api_client.get_runs_by_story.return_value = []
+        api_client.get_latest_run_by_story.return_value = None
 
         result = await supervise_testing_stories(api_client, redis_client)
 
@@ -966,7 +1002,25 @@ class TestSuperviseTestingStories:
         api_client.get_stories_by_status.return_value = [
             _make_story(id="story-1", status="testing")
         ]
-        api_client.get_runs_by_story.side_effect = _invalid_result_error("qa")
+        api_client.get_latest_run_by_story.side_effect = _invalid_result_error("qa")
+        api_client.fail_story.return_value = {}
+
+        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+            result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+        mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_terminal_qa_without_result_fails_story(self, api_client, redis_client):
+        """A terminal QA run that lost its result routes to a visible failure, not a skip."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_latest_run_by_story.side_effect = _terminal_no_result_error("qa")
         api_client.fail_story.return_value = {}
 
         with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:

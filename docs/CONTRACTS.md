@@ -539,8 +539,13 @@ Rules (all enforced by validation, tested in `shared/tests/unit/test_run_result.
 - The models use `extra="forbid"`, so an **unknown field** or a payload belonging to
   **another run type** (e.g. a QA payload on a deploy run) is rejected. Unknown enum
   values (an outcome string the code doesn't know) fail the same way.
-- `result=None` means no result yet (queued/running) or a failure that produced no
-  structured result. It is never fabricated into an empty object.
+- `result=None` is allowed only while no outcome exists yet — `QUEUED`/`RUNNING`, or a
+  `CANCELLED` (superseded) run such as a deploy that lost the project lock. A
+  `COMPLETED` or `FAILED` run **must** carry a result; a terminal run without one is
+  rejected, so it surfaces loudly instead of being silently skipped forever. Every
+  producer failure path that reaches a terminal status writes a typed result (deploy
+  outcomes, `QAOutcome.ERROR` on QA setup failures, `EngineeringStatus.FAILED`/`GAVE_UP`
+  on engineering failures).
 - Producers (langgraph deploy/QA/engineering handlers) construct the typed model and
   send `model_dump(mode="json")`, so there is one wire form. Consumers (scheduler
   supervisor) read outcomes through typed attributes — no `.get()` guessing, no
@@ -549,9 +554,13 @@ Rules (all enforced by validation, tested in `shared/tests/unit/test_run_result.
   schema stays dict-typed (dumb passthrough). No DB migration is required — in-flight
   runs are written by the typed producers, so they parse by construction; historical
   runs are never re-validated on the API read path.
-- Legacy/corrupt result recovery: if the scheduler ever meets a latest run whose result
-  fails validation, it fails that story once (loud log + admin notification) instead of
-  looping — see `supervisor._fail_story_on_invalid_result`.
+- The scheduler validates only the **latest** run per story
+  (`SchedulerAPIClient.get_latest_run_by_story` parses `rows[0]` alone), so an older
+  legacy/corrupt run in the story's history can never fail a story whose current run is
+  valid. If that latest run fails validation (wrong-type/corrupt result, or a terminal
+  run with no result), the supervisor fails the story once with a loud log and admin
+  notification (`supervisor._fail_story_on_invalid_result`) — no infinite retry, no
+  silent skip.
 
 ## UserDTO
 

@@ -100,6 +100,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 "qa_server_resolve_failed",
                 application_id=msg.application_id,
             )
+            await _update_run(run_id, RunStatus.FAILED, QAOutcome.ERROR, error=error)
             return {"status": "error", "error": error}
 
         # Fail-fast: if project has tg_bot module, bot_username is required

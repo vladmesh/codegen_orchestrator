@@ -165,6 +165,27 @@ class TestResolveServerInfo:
         assert await _resolve_server_info(1) is None
 
 
+class TestProcessQAJobServerResolveFailure:
+    @pytest.mark.asyncio
+    async def test_server_resolve_failure_writes_terminal_error_result(
+        self, mock_api_client, mock_redis, qa_message_data
+    ):
+        """If the server can't be resolved, the run is failed with a typed ERROR result.
+
+        Otherwise the run would stay QUEUED and the story would sit in TESTING forever.
+        """
+        with patch("src.consumers.qa._resolve_server_info", new_callable=AsyncMock) as mock_resolve:
+            mock_resolve.return_value = None
+            result = await process_qa_job(qa_message_data, mock_redis)
+
+        assert result["status"] == "error"
+        # The run must be patched to FAILED with a typed QA ERROR result.
+        patch_call = mock_api_client.patch.call_args
+        run_data = patch_call[1]["json"]
+        assert run_data["status"] == RunStatus.FAILED.value
+        assert run_data["result"]["qa_outcome"] == QAOutcome.ERROR.value
+
+
 class TestProcessQAJobPass:
     @pytest.mark.asyncio
     async def test_qa_pass_stores_outcome_in_run(

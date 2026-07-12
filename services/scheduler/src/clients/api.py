@@ -138,12 +138,23 @@ class SchedulerAPIClient:
         resp = await self._request("GET", f"runs/{run_id}")
         return RunDTO.model_validate(resp.json())
 
-    async def get_runs_by_story(self, story_id: str, run_type: str | None = None) -> list[RunDTO]:
+    async def get_latest_run_by_story(
+        self, story_id: str, run_type: str | None = None
+    ) -> RunDTO | None:
+        """Return the newest run for a story, validating only that run.
+
+        The runs endpoint returns the story's runs newest-first. Routing only
+        cares about the latest one, so we validate `rows[0]` alone — an older,
+        legacy/corrupt run must not fail a story whose current run is valid.
+        """
         params: dict[str, str] = {"story_id": story_id}
         if run_type:
             params["run_type"] = run_type
         resp = await self._request("GET", "runs/", params=params)
-        return [RunDTO.model_validate(r) for r in resp.json()]
+        rows = resp.json()
+        if not rows:
+            return None
+        return RunDTO.model_validate(rows[0])
 
     # --- Stories ---
 

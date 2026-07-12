@@ -31,6 +31,13 @@ _RESULT_MODEL_BY_TYPE: dict[RunType, type] = {
     RunType.QA: QARunResult,
 }
 
+# A run that reached COMPLETED or FAILED has produced its outcome, so it must
+# carry a typed result. CANCELLED (e.g. a deploy superseded by a lock holder)
+# and the in-flight states (QUEUED/RUNNING) legitimately have no result yet.
+_TERMINAL_STATUSES_REQUIRING_RESULT: frozenset[RunStatus] = frozenset(
+    {RunStatus.COMPLETED, RunStatus.FAILED}
+)
+
 
 class RunCreate(BaseModel):
     """Create run request."""
@@ -44,10 +51,14 @@ class RunDTO(TimestampedDTO):
     """Run response.
 
     `result` is typed per `type`: a deploy run carries a `DeployRunResult`, a QA
-    run a `QARunResult`, an engineering run an `EngineeringRunResult`. `None`
-    means no result yet (queued/running) or a failure that produced no structured
-    result. A payload of the wrong type is rejected, so consumers read outcomes
-    through typed attributes instead of guessing dict keys.
+    run a `QARunResult`, an engineering run an `EngineeringRunResult`. A payload
+    of the wrong type is rejected, so consumers read outcomes through typed
+    attributes instead of guessing dict keys.
+
+    `result=None` is allowed only while the outcome has not appeared —
+    QUEUED/RUNNING, or a CANCELLED (superseded) run. A COMPLETED or FAILED run
+    without a result is rejected, so a terminal run that lost its outcome
+    surfaces loudly instead of being silently skipped forever.
     """
 
     id: str
@@ -59,8 +70,10 @@ class RunDTO(TimestampedDTO):
     result: RunResult | None = None
 
     @model_validator(mode="after")
-    def _check_result_matches_type(self) -> "RunDTO":
+    def _check_result(self) -> "RunDTO":
         if self.result is None:
+            if self.status in _TERMINAL_STATUSES_REQUIRING_RESULT:
+                raise ValueError(f"run.result is required when status is {self.status.value}")
             return self
         expected = _RESULT_MODEL_BY_TYPE[self.type]
         if not isinstance(self.result, expected):
