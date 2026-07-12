@@ -561,6 +561,12 @@ Rules (all enforced by validation, tested in `shared/tests/unit/test_run_result.
   run with no result), the supervisor fails the story once with a loud log and admin
   notification (`supervisor._fail_story_on_invalid_result`) — no infinite retry, no
   silent skip.
+- `deployed_url` and `application_id` are optional on `DeployRunResult` (a standalone
+  deploy, or a success where the app record couldn't be resolved, legitimately lacks
+  `application_id`). But a story's QA handoff needs both, so the supervisor checks them
+  in `_handle_deploy_success_story` **before** transitioning the story or creating a QA
+  run: a `SUCCESS` result missing either is routed to a visible failure (fail story +
+  notify admins), never a half-applied handoff that crashes the tick.
 
 ## UserDTO
 

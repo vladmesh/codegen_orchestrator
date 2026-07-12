@@ -300,10 +300,13 @@ async def supervise_deploying_stories(
         outcome = run.result.deploy_outcome
 
         if outcome == DeployOutcome.SUCCESS:
-            await _handle_deploy_success_story(
+            handed_off = await _handle_deploy_success_story(
                 api_client, redis_client, story_id, project_id, run.result, log
             )
-            tested += 1
+            if handed_off:
+                tested += 1
+            else:
+                failed += 1
 
         elif outcome in (DeployOutcome.CODE_FIX, DeployOutcome.SMOKE_FAILURE):
             dispatched = await _handle_deploy_code_fix(
@@ -342,13 +345,35 @@ async def _handle_deploy_success_story(
     project_id: str,
     result: DeployRunResult,
     log: structlog.stdlib.BoundLogger,
-) -> None:
-    """Deploy succeeded — transition story to TESTING, create QA run, publish QA message."""
-    await api_client.transition_story(story_id, "test")
+) -> bool:
+    """Deploy succeeded — transition story to TESTING, create QA run, publish QA message.
 
+    Returns True if the story was handed off to QA, False if the success result
+    lacked the fields QA needs (handled as a visible failure).
+    """
     deployed_url = result.deployed_url
     application_id = result.application_id
     bot_username = result.bot_username
+
+    # A QA handoff needs both the deployed URL and the application id. `application_id`
+    # is legitimately optional on a DeployRunResult (a standalone deploy, or one where
+    # the app record couldn't be resolved), so validate the precondition here — before
+    # mutating story/run state — and route a success that can't reach QA to a visible
+    # failure instead of crashing the tick mid-handoff.
+    if deployed_url is None or application_id is None:
+        missing = ", ".join(
+            name
+            for name, value in (("deployed_url", deployed_url), ("application_id", application_id))
+            if value is None
+        )
+        log.error("deploy_success_missing_handoff_fields", missing=missing)
+        await api_client.fail_story(story_id)
+        await _notify_admin_failure(
+            story_id, project_id, f"deploy reported success but missing {missing} — cannot run QA"
+        )
+        return False
+
+    await api_client.transition_story(story_id, "test")
 
     # Create QA run so the consumer can store its outcome
     qa_run_id = f"qa-{uuid.uuid4().hex[:8]}"
@@ -375,6 +400,7 @@ async def _handle_deploy_success_story(
         ),
     )
     log.info("deploy_supervisor_qa_handoff", deployed_url=deployed_url, qa_run_id=qa_run_id)
+    return True
 
 
 async def _handle_deploy_code_fix(
