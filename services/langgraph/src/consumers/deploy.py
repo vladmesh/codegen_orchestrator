@@ -74,7 +74,7 @@ def _deploy_lock_ttl() -> int:
 
 async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | str:
     """Get or create allocations. Returns dict of resources or error string."""
-    from ..tools.allocator import AllocationError, ensure_project_allocations
+    from ..allocations import AllocationError, ensure_project_allocations
 
     try:
         config = project.config or {}

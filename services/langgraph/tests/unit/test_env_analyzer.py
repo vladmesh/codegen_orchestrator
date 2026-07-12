@@ -252,10 +252,10 @@ class TestClassifyVariablesWithLlm:
         mock_config = {"model": "test"}
 
         with (
-            patch("src.subgraphs.devops.env_analyzer.agent_config_cache") as mock_cache,
+            patch("src.subgraphs.devops.env_analyzer.get_agent_config") as mock_cache,
             patch("src.subgraphs.devops.env_analyzer.LLMFactory") as mock_factory,
         ):
-            mock_cache.get = AsyncMock(return_value=mock_config)
+            mock_cache.return_value = mock_config
             mock_factory.create_llm.return_value = mock_llm
 
             comments = {
@@ -287,10 +287,10 @@ class TestClassifyVariablesWithLlm:
         mock_config = {"model": "test"}
 
         with (
-            patch("src.subgraphs.devops.env_analyzer.agent_config_cache") as mock_cache,
+            patch("src.subgraphs.devops.env_analyzer.get_agent_config") as mock_cache,
             patch("src.subgraphs.devops.env_analyzer.LLMFactory") as mock_factory,
         ):
-            mock_cache.get = AsyncMock(return_value=mock_config)
+            mock_cache.return_value = mock_config
             mock_factory.create_llm.return_value = mock_llm
 
             project_context = """
@@ -323,10 +323,10 @@ Service 'backend' uses: CUSTOM_VAR, DATABASE_URL
         mock_config = {"model": "test"}
 
         with (
-            patch("src.subgraphs.devops.env_analyzer.agent_config_cache") as mock_cache,
+            patch("src.subgraphs.devops.env_analyzer.get_agent_config") as mock_cache,
             patch("src.subgraphs.devops.env_analyzer.LLMFactory") as mock_factory,
         ):
-            mock_cache.get = AsyncMock(return_value=mock_config)
+            mock_cache.return_value = mock_config
             mock_factory.create_llm.return_value = mock_llm
 
             result, response = await _classify_variables_with_llm(

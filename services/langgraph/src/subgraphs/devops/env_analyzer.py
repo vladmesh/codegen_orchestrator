@@ -14,7 +14,7 @@ from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.project import ProjectDTO
 
 from ...clients.api import api_client
-from ...config.agent_config_cache import agent_config_cache
+from ...config.agent_config import get_agent_config
 from ...llm.factory import LLMFactory
 from .state import DevOpsState
 
@@ -321,7 +321,7 @@ async def _classify_variables_with_llm(
 
     # Step 3: Try LLM for unknown variables
     try:
-        config = await agent_config_cache.get("devops")
+        config = await get_agent_config("devops")
         llm = LLMFactory.create_llm(config)
 
         comments = comments or {}

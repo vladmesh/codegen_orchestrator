@@ -6,13 +6,18 @@ Run standalone: python -m src.consumers.engineering
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from http import HTTPStatus
 
+import httpx
+from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.vocab import ActionType
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -56,6 +61,52 @@ def _parse_telegram_id(user_id: str) -> dict:
     return {}
 
 
+def _safe_validation_errors(exc: ValidationError) -> list[dict]:
+    """Validation errors stripped to type+loc — never the raw payload.
+
+    A `str(ValidationError)` / `e.errors()` echoes `input_value`, and an engineering
+    job carries user-facing text (`description`) and ids. Log only `type` and `loc`.
+    """
+    return [
+        {"type": err["type"], "loc": list(err["loc"])}
+        for err in exc.errors(include_url=False, include_input=False)
+    ]
+
+
+async def _handle_invalid_engineering_message(job_data: dict, exc: ValidationError) -> dict:
+    """Terminal handling for a malformed job: log only safe error fields, fail the run so the
+    outcome is durable, and return so the queue loop ACKs the poison entry.
+
+    The entry is ACKed only once a terminal outcome is durably written. If failing the run
+    hits a transient API error (5xx or a transport error) the outcome is lost, so re-raise —
+    the loop then leaves the entry unacked and `claim_pending` retries after the API recovers.
+    Only a non-retryable client error (e.g. 404 — no such run to fail) is ACKed, to avoid an
+    eternal poison-loop on a run that will never accept the write.
+    """
+    raw_task_id = job_data.get("task_id")
+    logger.error(
+        "engineering_job_invalid_message",
+        task_id=raw_task_id,
+        errors=_safe_validation_errors(exc),
+    )
+    if not (isinstance(raw_task_id, str) and raw_task_id):
+        # No identifiable run — nothing durable to lose; ACK so it does not reclaim forever.
+        return {"status": "failed", "error": "invalid_engineering_message"}
+
+    try:
+        return await _fail_job(raw_task_id, "invalid engineering message", None)
+    except httpx.HTTPStatusError as fail_exc:
+        if fail_exc.response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR:
+            logger.warning(
+                "engineering_invalid_message_run_unwritable",
+                task_id=raw_task_id,
+                status_code=fail_exc.response.status_code,
+            )
+            return {"status": "failed", "error": "invalid_engineering_message"}
+        # Transient server error — terminal outcome not written; do not ACK.
+        raise
+
+
 logger = structlog.get_logger(__name__)
 
 
@@ -94,16 +145,23 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     """Process a single engineering job by running Engineering Subgraph."""
     from ..subgraphs.engineering import create_engineering_subgraph
 
-    task_id = job_data.get("task_id", "unknown")
-    project_id = job_data.get("project_id")
-    callback_stream = job_data.get("callback_stream")
-    action = job_data.get("action", "create")
-    description = job_data.get("description")
-    skip_deploy = job_data.get("skip_deploy", False)
-    user_id = job_data.get("user_id", "")
-    planning_task_id = job_data.get("planning_task_id")
-    story_id = job_data.get("story_id")
-    deploy_fix_attempt = job_data.get("deploy_fix_attempt", 0)
+    # Typed boundary: validate before business logic. A malformed job is terminal (ACKed),
+    # not a poison message that reclaims forever.
+    try:
+        msg = EngineeringMessage.model_validate(job_data)
+    except ValidationError as exc:
+        return await _handle_invalid_engineering_message(job_data, exc)
+
+    task_id = msg.task_id
+    project_id = msg.project_id
+    callback_stream = msg.callback_stream
+    action = msg.action
+    description = msg.description
+    skip_deploy = msg.skip_deploy
+    user_id = msg.user_id
+    planning_task_id = msg.planning_task_id
+    story_id = msg.story_id
+    deploy_fix_attempt = msg.deploy_fix_attempt
 
     logger.info(
         "engineering_job_started",
@@ -136,9 +194,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             description = (project.config or {}).get("description", "")
 
         project_status = project.status
-        if project_status == ProjectStatus.DRAFT and action == "create":
+        if project_status == ProjectStatus.DRAFT and action == ActionType.CREATE:
             await _create_repo_and_set_secrets(project)
-        elif project_status == ProjectStatus.DRAFT and action != "create":
+        elif project_status == ProjectStatus.DRAFT and action != ActionType.CREATE:
             logger.warning(
                 "feature_fix_on_draft_project",
                 task_id=task_id,

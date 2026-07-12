@@ -58,11 +58,10 @@
 2. **Infrastructure Error (Transient):** CLI делает ретрай (до 3 раз). Если не вышло — показать "System unavailable, try again later".
 
 ### B. Worker Errors (Async)
-1. **Crash/OOM:** `worker-manager` ловит exit code != 0.
-   - Публикует events в `worker:lifecycle`: `status="failed"`.
+1. **Crash/OOM:** `worker-manager` ловит exit code != 0 (через Docker events).
    - Публикует результат в output queue: `status="failed", error="Process crashed"`.
 2. **Logic Error (in container):** Агент ловит exception.
-   - Публикует результат: `status="error", error="Exception message"`.
+   - Публикует результат: `status="failed", error="Exception message"`.
 
 ### C. Consumer Errors (Redis)
 

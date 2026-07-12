@@ -35,7 +35,6 @@ class WorkerChannels(StrEnum):
 
     # Global streams
     COMMANDS = "worker:commands"
-    LIFECYCLE = "worker:lifecycle"
 
     # Patterns
     INPUT_PATTERN = "worker:{worker_id}:input"

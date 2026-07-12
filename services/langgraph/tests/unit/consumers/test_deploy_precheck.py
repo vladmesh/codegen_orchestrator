@@ -177,7 +177,7 @@ class TestDeployPreCheckIntegration:
 
     @pytest.mark.asyncio
     @patch("src.consumers.deploy.create_devops_subgraph")
-    @patch("src.tools.allocator.ensure_project_allocations", new_callable=AsyncMock)
+    @patch("src.allocations.ensure_project_allocations", new_callable=AsyncMock)
     @patch("src.consumers.deploy_precheck._pre_check_server", new_callable=AsyncMock)
     async def test_precheck_failure_aborts_deploy(
         self, mock_precheck, mock_alloc, mock_devops, mock_redis, mock_api
@@ -210,7 +210,7 @@ class TestDeployPreCheckIntegration:
 
     @pytest.mark.asyncio
     @patch("src.consumers.deploy.create_devops_subgraph")
-    @patch("src.tools.allocator.ensure_project_allocations", new_callable=AsyncMock)
+    @patch("src.allocations.ensure_project_allocations", new_callable=AsyncMock)
     @patch("src.consumers.deploy_precheck._pre_check_server", new_callable=AsyncMock)
     async def test_precheck_ok_proceeds_to_deploy(
         self, mock_precheck, mock_alloc, mock_devops, mock_redis, mock_api

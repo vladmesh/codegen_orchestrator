@@ -27,8 +27,6 @@ kept explicit so the historical per-field vocabularies are not merged:
 
 - `TaskProgressKind` (`started`/`progress`/`completed`/`failed`, no `stopped`) —
   `ProgressEvent.type`, `WorkerEvent.event_type`.
-- `WorkerLifecycleKind` (`started`/`completed`/`failed`/`stopped`, no `progress`) —
-  `WorkerLifecycleEvent.event`.
 
 Other vocabularies stay deliberately separate — they carry values the canonical
 enums do not, so merging them would broaden a field past what the wire supports:
@@ -84,7 +82,6 @@ cannot poison-loop the reclaim.
 |-------|-------|-----|-----------|----------|---------|
 | `worker:commands` | `worker_manager` | WorkerCommand | langgraph | worker-manager | Create/Delete worker containers |
 | `worker:responses:developer` | — | WorkerResponse | worker-manager | langgraph | Developer worker command responses |
-| `worker:lifecycle` | — | WorkerLifecycleEvent | worker-wrapper | worker-manager | Container lifecycle events |
 
 ---
 
@@ -1093,13 +1090,13 @@ The Orchestrator (LangGraph) listens to **one** stream for all worker results:
 | Stream | Initiator | Consumer | Purpose |
 |--------|-----------|----------|---------|
 | `worker:developer:output` | worker-wrapper, worker-manager | LangGraph | All results: success, logical errors, AND crash failures. |
-| `worker:lifecycle` | worker-wrapper | worker-manager | System events: Container Started/Ready/Failed. NOT consumed by LangGraph. |
 
 > **Why Single-Listener?**
 > - Simpler architecture: LangGraph has one entry point for all outcomes
-> - `worker-manager` handles crashes and publishes failure results to `output`:
+> - `worker-manager` handles crashes (detected via Docker events) and publishes
+>   failure results to `output`:
 >   ```python
->   # When worker-manager detects crash via lifecycle event:
+>   # When worker-manager detects a container crash via Docker events:
 >   DeveloperWorkerOutput(
 >       status="failed",
 >       error="Worker crashed: OOM killed",
@@ -1140,7 +1137,6 @@ class WorkerCapability(StrEnum):
 class WorkerChannels(StrEnum):
     """Redis stream channels and patterns."""
     COMMANDS = "worker:commands"
-    LIFECYCLE = "worker:lifecycle"
     INPUT_PATTERN = "worker:{worker_id}:input"
     OUTPUT_PATTERN = "worker:{worker_id}:output"
 
@@ -1260,28 +1256,6 @@ class EngineeringStatus(StrEnum):
 Used by Developer node and Engineering consumer. Replaces former bare strings (`"done"`, `"developer_blocked"`, `"developer_rejected"`, etc.). The `GAVE_UP` status covers both former "blocked" (worker hit a blocker) and "rejected" (infra issue) paths — in both cases a human needs to intervene.
 
 
-
----
-
-## WorkerLifecycleEvent
-
-
-**Stream:** `worker:lifecycle`  
-**Initiator:** worker-wrapper  
-**Consumer:** worker-manager
-
-```python
-# shared/contracts/queues/worker_lifecycle.py
-
-class WorkerLifecycleEvent(BaseModel):
-    """Worker state change notification from wrapper."""
-    worker_id: str
-    event: WorkerLifecycleKind  # LifecycleEvent slice: started/completed/failed/stopped
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    result: dict | None = None        # Agent output on success
-    error: str | None = None          # Error message on failure
-    exit_code: int | None = None
-```
 
 ---
 

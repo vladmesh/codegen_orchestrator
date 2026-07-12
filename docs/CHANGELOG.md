@@ -2,6 +2,19 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-07-13
+
+### Changed
+- **Typed engineering consume (Sprint 002 Phase 3, `codegen_orchestrator-457`)**: `process_engineering_job` now validates its input with `EngineeringMessage.model_validate(job_data)` before any business logic, mirroring the deploy/qa/architect consumers. Removed the hand-unpacking of 11 fields via `job_data.get(...)` and the fallback defaults for required message data (`task_id`/`user_id`/`action`/`skip_deploy`/`deploy_fix_attempt`), so a malformed job no longer runs with `"unknown"`/`""`/`"create"` placeholders. A `ValidationError` is handled as a terminal poison entry, not a raise: `_handle_invalid_engineering_message` logs only `type`+`loc` (never the raw payload — it carries the user's `description` and ids) and fails the run when `task_id` is present. The entry is ACKed only once that terminal outcome is durably written: if `_fail_job` hits a transient API error (5xx or a transport error) the handler re-raises so the `auto_ack=False`/`claim_pending` loop leaves the entry unacked and retries after the API recovers; only a non-retryable client error (e.g. 404 — no such run) is ACKed, to avoid an eternal poison-loop. `action` comparisons use `ActionType.CREATE`. Tests: `services/langgraph/tests/unit/consumers/test_engineering_validation.py`.
+
+### Removed
+- **Dead `langgraph/src/tools/` layer (B5, `codegen_orchestrator-457`)**: deleted `tools/{projects,servers,github,specs}.py`, `tools/__init__.py`, `tools/base.py`, and the dead result models in `schemas/tools.py` (~800 lines that shadowed the live agent tools and eager-imported `ddgs`/`yaml`/github deps). The only live piece, `allocator.py`, moved to `services/langgraph/src/allocations.py`; `nodes/resource_allocator.py` and `consumers/deploy.py` import from there, and `schemas/__init__.py` no longer re-exports the tool models. Guard test: `services/langgraph/tests/unit/test_dead_layer_removed.py`.
+- **`worker:lifecycle` stream + contract (`codegen_orchestrator-457`)**: no consumer existed. Removed `WorkerWrapper.publish_lifecycle` and its 3 call sites, the `WorkerLifecycleEvent` contract (`shared/contracts/queues/worker_lifecycle.py`), the `WorkerChannels.LIFECYCLE` member, and the now-unused `WorkerLifecycleKind` vocab slice.
+- **Second `agent_config_cache` (`codegen_orchestrator-457`)**: deleted `services/langgraph/src/config/agent_config_cache.py`, a redundant TTL cache stacked on `agent_config.get_agent_config` (which already caches). `nodes/base.py` and `subgraphs/devops/env_analyzer.py` call `get_agent_config` directly.
+- **Unreferenced `worker-manager/src/scaffold_phase.py` (`codegen_orchestrator-457`)**: legacy scaffold path with no production callers; removed with its unit test.
+- **`shared` compat-shims (`codegen_orchestrator-457`)**: removed the `shared/__init__.py` `try/except → RedisStreamClient = None` swallow (now a direct fail-fast import), the `ServiceDeployment`/`DeploymentStatus` aliases and the legacy `DeploymentStatus` enum in `shared/models`, and the `ensure_consumer_groups` alias in `shared/queues.py`. Guard test: `shared/tests/unit/test_phase3_shims_removed.py`.
+- Note: raw `publish`/`publish_flat` on `RedisStreamClient` stay public — ~13 live production producers still call them; the raw API was not extended and per-consumer migration to `publish_message` continues in Phase 3/4.
+
 ## 2026-07-12
 
 ### Changed

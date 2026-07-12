@@ -256,7 +256,6 @@ async def cleanup_redis_streams(redis_client):
     # Only clean response/output streams, NOT worker:commands (has consumer group)
     streams_to_clean = [
         "worker:responses:developer",
-        "worker:lifecycle",
         "worker:developer:input",
         "worker:developer:output",
     ]

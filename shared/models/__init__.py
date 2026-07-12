@@ -9,11 +9,7 @@ from .application import Application
 from .application_health_history import ApplicationHealthHistory
 from .base import Base
 from .brainstorm import Brainstorm
-from .deployment import (
-    Deployment,
-    Deployment as ServiceDeployment,  # backward compat alias
-    DeploymentStatus,  # backward compat
-)
+from .deployment import Deployment
 from .incident import Incident, IncidentStatus, IncidentType
 from .port_allocation import PortAllocation
 from .project import Project
@@ -58,8 +54,6 @@ __all__ = [
     "IncidentStatus",
     "IncidentType",
     "Deployment",
-    "DeploymentStatus",
-    "ServiceDeployment",
     "Story",
     "SystemConfig",
 ]

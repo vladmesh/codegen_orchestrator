@@ -12,8 +12,8 @@ import structlog
 
 from shared.contracts.dto.server import ServerDTO, ServerStatus
 
-from ..clients.api import api_client
-from ..schemas.api_types import AllocationInfo
+from .clients.api import api_client
+from .schemas.api_types import AllocationInfo
 
 logger = structlog.get_logger(__name__)
 

@@ -26,7 +26,6 @@ from shared.queues import (
     WORKER_MANAGER_GROUP,
     QueueBinding,
     ensure_all_groups,
-    ensure_consumer_groups,
 )
 from shared.redis.client import decode_redis_value
 
@@ -104,10 +103,3 @@ class TestEnsureAllGroups:
         """Calling twice should not raise."""
         await ensure_all_groups(fake_redis)
         await ensure_all_groups(fake_redis)
-
-    @pytest.mark.asyncio
-    async def test_backward_compat_alias(self, fake_redis):
-        """ensure_consumer_groups is an alias for ensure_all_groups."""
-        assert ensure_consumer_groups is ensure_all_groups
-        # Also works when called
-        await ensure_consumer_groups(fake_redis)

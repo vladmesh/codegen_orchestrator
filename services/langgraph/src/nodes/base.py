@@ -16,7 +16,7 @@ from typing import Any, TypeVar
 from langchain_core.tools import BaseTool
 import structlog
 
-from ..config.agent_config_cache import agent_config_cache
+from ..config.agent_config import get_agent_config
 from ..llm.factory import LLMFactory
 from .tool_executor import ToolExecutor
 
@@ -67,7 +67,7 @@ class LLMNode(BaseNode):
         Raises:
             AgentConfigError: If config cannot be fetched
         """
-        return await agent_config_cache.get(self.agent_id)
+        return await get_agent_config(self.agent_id)
 
     async def get_llm(self):
         """Get LLM instance configured from API."""
