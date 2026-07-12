@@ -520,8 +520,38 @@ class RunDTO(TimestampedDTO):
     status: RunStatus
     story_id: str | None = None
     spec: str | None = None
-    result: dict | None = None
+    result: RunResult | None = None   # typed per `type`, see below
 ```
+
+### Typed `Run.result` (`shared/contracts/dto/run_result.py`)
+
+`Run.result` is not a free-form dict. Each `RunType` has exactly one result shape,
+bound to `type` by `RunDTO`:
+
+| `RunType` | result model | required field | fields the scheduler routes on |
+|---|---|---|---|
+| `engineering` | `EngineeringRunResult` | `engineering_status` | (write-only; not routed) |
+| `deploy` | `DeployRunResult` | `deploy_outcome` | `deploy_outcome`, `deployed_url`, `application_id`, `bot_username`, `deploy_fix_attempt`, `error_details` |
+| `qa` | `QARunResult` | `qa_outcome` | `qa_outcome`, `summary`, `failed_checks` (`QAFailedCheck.name`/`.detail`) |
+
+Rules (all enforced by validation, tested in `shared/tests/unit/test_run_result.py`):
+
+- The models use `extra="forbid"`, so an **unknown field** or a payload belonging to
+  **another run type** (e.g. a QA payload on a deploy run) is rejected. Unknown enum
+  values (an outcome string the code doesn't know) fail the same way.
+- `result=None` means no result yet (queued/running) or a failure that produced no
+  structured result. It is never fabricated into an empty object.
+- Producers (langgraph deploy/QA/engineering handlers) construct the typed model and
+  send `model_dump(mode="json")`, so there is one wire form. Consumers (scheduler
+  supervisor) read outcomes through typed attributes — no `.get()` guessing, no
+  re-parsing outcome strings.
+- Storage is unchanged: the API keeps `Run.result` as a JSON column and its `RunRead`
+  schema stays dict-typed (dumb passthrough). No DB migration is required — in-flight
+  runs are written by the typed producers, so they parse by construction; historical
+  runs are never re-validated on the API read path.
+- Legacy/corrupt result recovery: if the scheduler ever meets a latest run whose result
+  fails validation, it fails that story once (loud log + admin notification) instead of
+  looping — see `supervisor._fail_story_on_invalid_result`.
 
 ## UserDTO
 

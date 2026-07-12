@@ -6,9 +6,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 import uuid
 
+from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import DeployRunResult, QARunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.architect import ArchitectMessage
@@ -274,7 +276,14 @@ async def supervise_deploying_stories(
         log = logger.bind(story_id=story_id, project_id=project_id)
 
         # Find latest deploy run for this story
-        runs = await api_client.get_runs_by_story(story_id, run_type="deploy")
+        try:
+            runs = await api_client.get_runs_by_story(story_id, run_type="deploy")
+        except ValidationError as exc:
+            await _fail_story_on_invalid_result(
+                api_client, story_id, project_id, "deploy", exc, log
+            )
+            failed += 1
+            continue
         if not runs:
             continue
 
@@ -285,24 +294,21 @@ async def supervise_deploying_stories(
         if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
             continue
 
-        result = run.result or {}
-        outcome_str = result.get("deploy_outcome", "")
-
-        try:
-            outcome = DeployOutcome(outcome_str)
-        except ValueError:
-            log.warning("deploy_outcome_unknown", outcome=outcome_str, run_id=run.id)
+        if run.result is None:
+            log.warning("deploy_run_no_result", run_id=run.id, run_status=run.status.value)
             continue
+
+        outcome = run.result.deploy_outcome
 
         if outcome == DeployOutcome.SUCCESS:
             await _handle_deploy_success_story(
-                api_client, redis_client, story_id, project_id, result, log
+                api_client, redis_client, story_id, project_id, run.result, log
             )
             tested += 1
 
         elif outcome in (DeployOutcome.CODE_FIX, DeployOutcome.SMOKE_FAILURE):
             dispatched = await _handle_deploy_code_fix(
-                api_client, redis_client, story_id, project_id, run, result, log
+                api_client, redis_client, story_id, project_id, run, run.result, log
             )
             if dispatched:
                 redispatched += 1
@@ -335,15 +341,15 @@ async def _handle_deploy_success_story(
     redis_client: RedisStreamClient,
     story_id: str,
     project_id: str,
-    result: dict,
+    result: DeployRunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> None:
     """Deploy succeeded — transition story to TESTING, create QA run, publish QA message."""
     await api_client.transition_story(story_id, "test")
 
-    deployed_url = result["deployed_url"]
-    application_id = result.get("application_id")
-    bot_username = result.get("bot_username")
+    deployed_url = result.deployed_url
+    application_id = result.application_id
+    bot_username = result.bot_username
 
     # Create QA run so the consumer can store its outcome
     qa_run_id = f"qa-{uuid.uuid4().hex[:8]}"
@@ -378,14 +384,14 @@ async def _handle_deploy_code_fix(
     story_id: str,
     project_id: str,
     run,
-    result: dict,
+    result: DeployRunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
     """Deploy failed with CODE_FIX — redispatch to engineering if retries remain.
 
     Returns True if redispatched, False if retries exhausted.
     """
-    attempt = result.get("deploy_fix_attempt", 0)
+    attempt = result.deploy_fix_attempt
     if attempt >= _max_deploy_fix_attempts():
         log.warning(
             "deploy_fix_retries_exhausted",
@@ -399,7 +405,7 @@ async def _handle_deploy_code_fix(
     # Transition story back to IN_PROGRESS
     await api_client.transition_story(story_id, "start")
 
-    error_details = result.get("error_details", "unknown deploy error")
+    error_details = result.error_details or "unknown deploy error"
     fix_task_id = f"eng-deploy-fix-{run.id}-{attempt + 1}"
 
     # Create a run record for the fix task
@@ -506,8 +512,27 @@ async def _handle_deploy_give_up(
     """Deploy failed with GIVE_UP — terminal failure, admin notified."""
     log.warning("deploy_supervisor_give_up", run_id=run.id)
     await api_client.fail_story(story_id)
-    error_msg = (run.result or {}).get("error_details", "unknown error")
+    error_msg = (run.result.error_details if run.result else None) or "unknown error"
     await _notify_admin_failure(run.id, project_id, error_msg)
+
+
+async def _fail_story_on_invalid_result(
+    api_client: SchedulerAPIClient,
+    story_id: str,
+    project_id: str,
+    run_type: str,
+    exc: ValidationError,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Route a story whose latest run has an unparseable result to a terminal, visible state.
+
+    A legacy or corrupt `run.result` would otherwise fail validation on every poll and
+    wedge the story forever. Fail it once, loudly, and notify admins — no silent skip,
+    no infinite retry.
+    """
+    log.error("run_result_invalid", run_type=run_type, error=str(exc))
+    await api_client.fail_story(story_id)
+    await _notify_admin_failure(story_id, project_id, f"invalid {run_type} run result: {exc}")
 
 
 async def _notify_admin_failure(run_id: str, project_id: str, error: str) -> None:
@@ -556,7 +581,12 @@ async def supervise_testing_stories(
         log = logger.bind(story_id=story_id, project_id=project_id)
 
         # Find latest QA run for this story
-        runs = await api_client.get_runs_by_story(story_id, run_type="qa")
+        try:
+            runs = await api_client.get_runs_by_story(story_id, run_type="qa")
+        except ValidationError as exc:
+            await _fail_story_on_invalid_result(api_client, story_id, project_id, "qa", exc, log)
+            failed += 1
+            continue
         if not runs:
             continue
 
@@ -566,14 +596,11 @@ async def supervise_testing_stories(
         if run.status in (RunStatus.QUEUED, RunStatus.RUNNING):
             continue
 
-        result = run.result or {}
-        outcome_str = result.get("qa_outcome", "")
-
-        try:
-            outcome = QAOutcome(outcome_str)
-        except ValueError:
-            log.warning("qa_outcome_unknown", outcome=outcome_str, run_id=run.id)
+        if run.result is None:
+            log.warning("qa_run_no_result", run_id=run.id, run_status=run.status.value)
             continue
+
+        outcome = run.result.qa_outcome
 
         if outcome == QAOutcome.PASSED:
             await api_client.transition_story(story_id, "complete")
@@ -582,7 +609,7 @@ async def supervise_testing_stories(
 
         elif outcome == QAOutcome.FAILED:
             dispatched = await _handle_qa_failed(
-                api_client, redis_client, story_id, project_id, result, log
+                api_client, redis_client, story_id, project_id, run.result, log
             )
             if dispatched:
                 redispatched += 1
@@ -602,19 +629,17 @@ async def _handle_qa_failed(
     redis_client: RedisStreamClient,
     story_id: str,
     project_id: str,
-    result: dict,
+    result: QARunResult,
     log: structlog.stdlib.BoundLogger,
 ) -> bool:
     """QA failed — create fix task and redispatch to engineering.
 
     Returns True if redispatched, False if something went wrong.
     """
-    summary = result.get("summary", "QA testing failed")
-    failed_checks = result.get("failed_checks", [])
+    summary = result.summary or "QA testing failed"
+    failed_checks = result.failed_checks
 
-    issues_text = "\n".join(
-        f"- {c.get('name', 'unknown')}: {c.get('detail', 'failed')}" for c in failed_checks
-    )
+    issues_text = "\n".join(f"- {c.name}: {c.detail}" for c in failed_checks)
     if not issues_text:
         issues_text = summary
 

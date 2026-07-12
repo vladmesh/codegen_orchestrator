@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
+from pydantic import ValidationError
 import pytest
 
 from shared.contracts.dto.repository import RepositoryDTO
@@ -117,6 +118,25 @@ def _make_run(
         created_at=created_at or _NOW,
         updated_at=updated_at,
     )
+
+
+def _invalid_result_error(run_type: str) -> ValidationError:
+    """A real ValidationError from a run whose result belongs to another type."""
+    other = "qa_outcome" if run_type == "deploy" else "deploy_outcome"
+    try:
+        RunDTO.model_validate(
+            {
+                "id": "bad-run",
+                "project_id": "00000000-0000-0000-0000-000000000001",
+                "type": run_type,
+                "status": "failed",
+                "result": {other: "passed"},
+                "created_at": _NOW.isoformat(),
+            }
+        )
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("expected ValidationError")
 
 
 # ---------------------------------------------------------------------------
@@ -768,6 +788,24 @@ class TestSuperviseDeployingStories:
 
         assert result == {"tested": 0, "retried": 0, "redispatched": 0, "failed": 0}
 
+    @pytest.mark.asyncio
+    async def test_invalid_deploy_result_fails_story(self, api_client, redis_client):
+        """Unparseable deploy result → story failed once, admin notified, no loop."""
+        from src.tasks.supervisor import supervise_deploying_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="deploying")
+        ]
+        api_client.get_runs_by_story.side_effect = _invalid_result_error("deploy")
+        api_client.fail_story.return_value = {}
+
+        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+            result = await supervise_deploying_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+        mock_notify.assert_called_once()
+
 
 class TestSuperviseTestingStories:
     """Poll TESTING stories and route based on QA run outcome."""
@@ -919,3 +957,21 @@ class TestSuperviseTestingStories:
         result = await supervise_testing_stories(api_client, redis_client)
 
         assert result == {"completed": 0, "redispatched": 0, "failed": 0}
+
+    @pytest.mark.asyncio
+    async def test_invalid_qa_result_fails_story(self, api_client, redis_client):
+        """Unparseable QA result → story failed once, admin notified, no loop."""
+        from src.tasks.supervisor import supervise_testing_stories
+
+        api_client.get_stories_by_status.return_value = [
+            _make_story(id="story-1", status="testing")
+        ]
+        api_client.get_runs_by_story.side_effect = _invalid_result_error("qa")
+        api_client.fail_story.return_value = {}
+
+        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+            result = await supervise_testing_stories(api_client, redis_client)
+
+        assert result["failed"] == 1
+        api_client.fail_story.assert_called_once_with("story-1")
+        mock_notify.assert_called_once()

@@ -14,6 +14,7 @@ import structlog
 
 from shared.config_store import ConfigStore
 from shared.contracts.dto.run import RunStatus
+from shared.contracts.dto.run_result import DeployRunResult
 from shared.contracts.queues.deploy import DeployOutcome
 from shared.redis_client import RedisStreamClient
 
@@ -119,16 +120,17 @@ async def _handle_deploy_failure(
     Stores deploy_outcome and error_details in run.result for
     the dispatcher to read and route story lifecycle.
     """
+    run_result = DeployRunResult(
+        deploy_outcome=deploy_outcome,
+        error_details=error_msg,
+        deploy_fix_attempt=deploy_fix_attempt,
+    )
     await api_client.patch(
         f"runs/{task_id}",
         json={
             "status": RunStatus.FAILED.value,
             "error_message": error_msg,
-            "result": {
-                "deploy_outcome": deploy_outcome.value,
-                "error_details": error_msg,
-                "deploy_fix_attempt": deploy_fix_attempt,
-            },
+            "result": run_result.model_dump(mode="json"),
         },
     )
 

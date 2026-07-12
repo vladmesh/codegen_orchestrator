@@ -7,8 +7,8 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
 - **Type**: tech
 - **Started**: 2026-07-01
-- **Current Phase**: Stabilization planning after completed CI and service-template contract work.
-  Sprint 002 phases 2-4 remain pending until code changes prove otherwise.
+- **Current Phase**: Sprint 002 Phase 2 (shared contract tightening) is complete. Next is Phase 3
+  (typed Redis consume + dead-code removal).
 
 ## Current Facts
 
@@ -23,18 +23,22 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
   in PR #33.
 - `codegen_orchestrator-435` is complete: B7 response-DTO lifecycle fields typed to their `StrEnum`
   (task/story/server/application/incident/service-deployment). Slice of Phase 2.
-- Current worker card: `codegen_orchestrator-436`, unify duplicated contract vocabularies into canonical
+- `codegen_orchestrator-436` is complete: unified duplicated contract vocabularies into canonical
   `StrEnum`s in `shared/contracts/vocab.py` (`AgentType`, `ActionType`, `ResultStatus`, `LifecycleEvent`;
-  `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct on purpose). Closes the "duplicated vocabularies"
-  slice of Phase 2; `Run.result` union still open.
+  `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct on purpose).
+- Current worker card: `codegen_orchestrator-440`, typed `Run.result`. `RunDTO.result` is now a
+  per-`RunType` union (`EngineeringRunResult`/`DeployRunResult`/`QARunResult` in
+  `shared/contracts/dto/run_result.py`) bound to `type`, not `dict | None`. Producers emit the typed
+  model, the scheduler reads typed attributes, invalid results route to a visible terminal state.
+  Closes the final slice of Phase 2.
 
 ## Phase Progress
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Security quick-wins (B2 crypto, fail-open auth) | COMPLETE |
 | 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
-| 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | In progress — B7 enums (`codegen_orchestrator-435`) and duplicated vocabularies (`codegen_orchestrator-436`) done; `Run.result` union pending |
-| 3 | Типизированный consume + мёртвый код (B5, B6) | Pending |
+| 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | COMPLETE — B7 enums (`codegen_orchestrator-435`), duplicated vocabularies (`codegen_orchestrator-436`), typed `Run.result` union (`codegen_orchestrator-440`) |
+| 3 | Типизированный consume + мёртвый код (B5, B6) | Pending — next |
 | 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Pending |
 
 ## Recent Stabilization Work
@@ -48,6 +52,7 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | Stabilization sequence (`codegen_orchestrator-434`) | COMPLETE | [stabilization plan v1](plans/codegen-stabilization-v1.md) |
 | B7 response-DTO enums (`codegen_orchestrator-435`) | COMPLETE | lifecycle fields on task/story/server/application/incident/service-deployment DTOs now use their `StrEnum`; slice of Phase 2 only |
 | Unified contract vocabularies (`codegen_orchestrator-436`) | COMPLETE | `shared/contracts/vocab.py` canonical `AgentType`/`ActionType`/`ResultStatus`/`LifecycleEvent`; inline `Literal` sets removed, `error` synonym dropped; `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct; tests in `shared/tests/unit/test_vocab.py` |
+| Typed `Run.result` union (`codegen_orchestrator-440`) | COMPLETE | `shared/contracts/dto/run_result.py` per-`RunType` models bound to `type`; producers emit typed models, scheduler reads typed attributes; invalid result → visible terminal state; tests in `shared/tests/unit/test_run_result.py` + `test_supervisor.py`. Closes Sprint 002 Phase 2 |
 
 ## Sprint History
 

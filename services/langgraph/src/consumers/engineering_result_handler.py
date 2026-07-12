@@ -9,6 +9,7 @@ import structlog
 
 from shared.contracts.dto.project import ProjectDTO
 from shared.contracts.dto.run import RunStatus, RunType
+from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
@@ -265,16 +266,17 @@ async def handle_engineering_success(params: EngineeringSuccessParams) -> dict:
             except Exception as e:
                 logger.warning("worker_delete_failed", worker_id=worker_id, error=str(e))
 
+    run_result = EngineeringRunResult(
+        engineering_status=result["engineering_status"],
+        commit_sha=result.get("commit_sha"),
+        selected_modules=result.get("selected_modules"),
+        test_results=result.get("test_results"),
+    )
     await api_client.patch(
         f"runs/{task_id}",
         json={
-            "status": "completed",
-            "result": {
-                "engineering_status": result["engineering_status"],
-                "commit_sha": result.get("commit_sha"),
-                "selected_modules": result.get("selected_modules"),
-                "test_results": result.get("test_results"),
-            },
+            "status": RunStatus.COMPLETED.value,
+            "result": run_result.model_dump(mode="json"),
         },
     )
 
