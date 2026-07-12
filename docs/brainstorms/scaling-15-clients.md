@@ -2,6 +2,24 @@
 
 Отчет о потенциальных узких местах (bottlenecks) и состояниях гонки (race conditions) при одновременной работе 10-15 клиентов без учета лимитов LLM-провайдеров.
 
+## Статус 2026-07-12 (после гриллинга роя)
+
+Решено с момента написания:
+- **PO Consumer** конкурентный: `asyncio.create_task` + семафор + per-user locks
+  (`services/langgraph/src/consumers/po.py`).
+- **Порты** аллоцируются атомарно: `SELECT FOR UPDATE` с ретраем
+  (`services/api/src/routers/servers.py:169`).
+- **GitHub API**: rate-limit ожидание + экспоненциальный backoff (`shared/clients/github/_base.py`).
+
+Открыто и куда ушло:
+- **Лимит параллельных воркеров** → Stage 10 в [codegen-stabilization-v1](../plans/codegen-stabilization-v1.md)
+  (семафор K слотов на инстанс worker-manager).
+- **Конфликт имён репозиториев** — хуже, чем описано ниже: scaffolder глотает 422 при создании
+  репо (`services/scaffolder/src/consumer.py:87-91`), коллизия имён тихо переиспользует чужой
+  репозиторий. Hotfix-кандидат, backlog #1047.
+- **Поллинг Task Dispatcher** → backlog #1048 (event-driven), **синхронное ожидание деплоя** →
+  backlog #1049. Оба с триггером «при первых признаках нагрузки».
+
 ## 1. Конфликты (Conflicts & Race Conditions)
 
 *   **GitHub Repository Names Conflict**:

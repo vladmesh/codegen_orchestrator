@@ -2,6 +2,9 @@
 
 > This is NOT a work queue. Active work lives in sprint task files (`docs/sprints/`).
 > Backlog holds deferred items: tech debt, ideas, future work. Processed during tech sprints (every 5th sprint or when >30 items).
+> Purely local file since 2026-07: the internal Tasks pipeline is inactive, orchestrator tasks go
+> through the external pipeline. Do not run `make backlog` — it would regenerate this file from an
+> empty local DB and wipe it (see #1052).
 
 ## Queue
 
@@ -237,3 +240,44 @@
 - **Plan**: —
 - **Status**: backlog
 - **Brief**: Currently ensure_project_allocations allocates a port for every module in the list (e.g. backend + tg_bot). But tg_bot does not listen on a host port — it connects outbound to Telegram API. Allocating a port for it wastes the resource and clutters the admin UI.  Fix: modules should declare whethe...
+
+### #1047 [hotfix candidate] Repo creation: stop swallowing GitHub 422, ensure unique repo names
+- **Priority**: HIGH (silent cross-project data corruption; trigger: before any second user)
+- **Plan**: —
+- **Status**: backlog
+- **Brainstorm**: [scaling-15-clients.md](brainstorms/scaling-15-clients.md)
+- **Brief**: scaffolder ignores 422 "repository already exists" on create_repo (services/scaffolder/src/consumer.py:87-91). Meant as idempotent retry, but a project-name collision between two projects silently reuses and pushes into the other project's repo. Fix: suffix repo names with a short project-id hash + after a 422 verify the repo belongs to this project, else fail fast.
+
+### #1048 Event-driven task dispatcher (replace 30s polling)
+- **Priority**: LOW (trigger: first signs of parallel load)
+- **Plan**: —
+- **Status**: backlog
+- **Brainstorm**: [scaling-15-clients.md](brainstorms/scaling-15-clients.md)
+- **Brief**: Task dispatcher polls the DB every scheduler.dispatch_interval_seconds. Under load this turns the pipeline into batch sessions. React to task/story status events instead of polling, or shorten the interval as a stopgap.
+
+### #1049 Async wait for deploy workflow completion
+- **Priority**: LOW (trigger: parallel deploys)
+- **Plan**: —
+- **Status**: backlog
+- **Brainstorm**: [scaling-15-clients.md](brainstorms/scaling-15-clients.md)
+- **Brief**: Deployer waits for deploy.yml via API polling with a 600s timeout. Parallel deploys hold worker slots for the whole wait. Make the wait non-blocking (poll task queue / webhook) so a deploy in progress does not occupy a slot.
+
+### #1050 MicroVM worker runtime (Kata Containers / Firecracker)
+- **Priority**: LOW (trigger: untrusted external users need hard isolation)
+- **Plan**: —
+- **Status**: backlog
+- **Brainstorm**: [worker-db-network-isolation.md](brainstorms/worker-db-network-isolation.md)
+- **Brief**: Worker stays a container from worker-manager's point of view; Kata runtime transparently turns docker run into a microVM (kernel-level isolation, boot <125ms). Per-host opt-in, no model change. Requires bare-metal/KVM hosts. Complements stabilization Stage 9 (credential scoping), does not replace it.
+
+### #1051 Elastic worker hosts (cloud VMs on-demand)
+- **Priority**: LOW (trigger: worker farm saturation; decide on real load data)
+- **Plan**: —
+- **Status**: backlog
+- **Brainstorm**: [worker-db-network-isolation.md](brainstorms/worker-db-network-isolation.md)
+- **Brief**: With per-host worker-manager replicas (stabilization Stage 10), an elastic host is just a cloud VM that boots, starts a worker-manager replica pointed at the shared Redis, drains the queue and dies. Hetzner Cloud API + cloud-init, optional pre-warm pool. Costed in the brainstorm at ~€1-3/day for 10 workers.
+
+### #1052 Remove internal dogfooding machinery: orchestrator is no longer managed through itself
+- **Priority**: HIGH (stale generators actively destroy hand-maintained docs: make backlog / make status against the empty local DB would wipe backlog.md / STATUS.md)
+- **Plan**: —
+- **Status**: backlog
+- **Brief**: Orchestrator tasks are created through the external pipeline; the internal Tasks-API-based self-management is abandoned entirely. Remove: Makefile targets backlog/roadmap/status/recent-artifacts/sync/task and scripts generate_backlog.py, generate_roadmap.py, generate_status.py, sync_recent_artifacts.py, enrich_tasks.py. Verify pull_worker_reports.py separately — it pulls e2e worker reports, may still serve pipeline testing. Update CLAUDE.md, DEV_PIPELINE.md and related workflow docs to describe the external-pipeline flow. Tasks/Stories API itself stays — it serves client projects.
