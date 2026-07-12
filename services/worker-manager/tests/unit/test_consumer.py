@@ -150,9 +150,7 @@ async def test_broken_json_is_discarded_terminally(redis_client, stream_client, 
 
 
 @pytest.mark.asyncio
-async def test_schema_invalid_payload_is_discarded_terminally(
-    redis_client, stream_client, mock_worker_manager
-):
+async def test_schema_invalid_payload_is_discarded_terminally(redis_client, stream_client, mock_worker_manager):
     """Valid JSON that matches no command type is discarded, not dispatched."""
     consumer = WorkerCommandConsumer(client=stream_client, manager=mock_worker_manager)
 

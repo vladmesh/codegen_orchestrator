@@ -345,9 +345,7 @@ class TestConsumeFlatFields:
 async def _drain_typed(client, message_type, **kwargs):
     """Consume typed messages until the stream goes idle (first None)."""
     received = []
-    async for msg in client.consume_typed(
-        "s", "g", "c1", message_type, block_ms=100, **kwargs
-    ):
+    async for msg in client.consume_typed("s", "g", "c1", message_type, block_ms=100, **kwargs):
         if msg is None:
             break
         received.append(msg)
