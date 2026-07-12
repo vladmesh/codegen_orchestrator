@@ -8,6 +8,11 @@ from unittest.mock import AsyncMock
 import pytest
 from worker_wrapper.http_server import ResultHttpServer
 
+from shared.contracts.queues.worker_result import (
+    WorkerBlockedResult,
+    WorkerCompletedResult,
+)
+
 
 @pytest.fixture
 def publish_callback():
@@ -78,11 +83,7 @@ class TestResultEndpointSuccess:
         assert status == HTTPStatus.OK
         assert body["ok"] is True
         publish_callback.assert_awaited_once_with(
-            {
-                "status": "completed",
-                "commit_sha": "abc123",
-                "content": "Added login endpoint",
-            }
+            WorkerCompletedResult(commit_sha="abc123", content="Added login endpoint")
         )
         assert result_event.is_set()
 
@@ -109,10 +110,7 @@ class TestResultEndpointFailure:
         )
         assert status == HTTPStatus.OK
         publish_callback.assert_awaited_once_with(
-            {
-                "status": "blocked",
-                "block_reason": "Tests don't pass",
-            }
+            WorkerBlockedResult(block_reason="Tests don't pass")
         )
         assert result_event.is_set()
 

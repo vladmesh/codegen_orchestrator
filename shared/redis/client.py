@@ -5,15 +5,13 @@ import json
 import os
 from typing import Any
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 import structlog
 
 try:
     import redis.asyncio as redis
 except ImportError:
     redis = None  # type: ignore
-
-from shared.contracts.base import BaseMessage
 
 logger = structlog.get_logger(__name__)
 
@@ -119,8 +117,8 @@ class RedisStreamClient:
         logger.debug("message_published_flat", stream=stream, message_id=message_id)
         return message_id
 
-    async def publish_message(self, stream: str, message: BaseMessage) -> str:
-        """Publish a Pydantic DTO to a Redis Stream."""
+    async def publish_message(self, stream: str, message: BaseModel) -> str:
+        """Publish a Pydantic model to a Redis Stream."""
         data = message.model_dump(mode="json")
         return await self.publish(stream, data)
 

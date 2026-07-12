@@ -5,6 +5,8 @@ import pytest
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
 
+from shared.contracts.queues.worker_result import WorkerFailedResult
+
 
 @pytest.fixture(autouse=True)
 def _no_workspace_check():
@@ -134,7 +136,7 @@ async def test_wrapper_publishes_error_to_output_stream_on_failure(fake_redis):
     await wrapper.run()
 
     # Error should be published to output stream
-    mock_redis_client.publish.assert_called_once_with(
+    mock_redis_client.publish_message.assert_called_once_with(
         "worker:developer:output",
-        {"status": "failed", "error": "Agent process timed out after 600 seconds"},
+        WorkerFailedResult(error="Agent process timed out after 600 seconds"),
     )

@@ -12,6 +12,11 @@ from unittest.mock import AsyncMock
 import pytest
 from worker_wrapper.http_server import ResultHttpServer
 
+from shared.contracts.queues.worker_result import (
+    WorkerBlockedResult,
+    WorkerCompletedResult,
+)
+
 
 async def _post(port: int, path: str, body: dict) -> tuple[int, dict]:
     """POST JSON to the server, return (status_code, response_body)."""
@@ -62,11 +67,7 @@ class TestHttpToRedisFlow:
             assert status == 200
             assert body["ok"] is True
             publish.assert_awaited_once_with(
-                {
-                    "status": "completed",
-                    "commit_sha": "a1b2c3d",
-                    "content": "Implemented auth flow",
-                }
+                WorkerCompletedResult(commit_sha="a1b2c3d", content="Implemented auth flow")
             )
             assert event.is_set()
         finally:
@@ -92,10 +93,7 @@ class TestHttpToRedisFlow:
             )
             assert status == 200
             publish.assert_awaited_once_with(
-                {
-                    "status": "blocked",
-                    "block_reason": "Tests fail after 3 retries",
-                }
+                WorkerBlockedResult(block_reason="Tests fail after 3 retries")
             )
         finally:
             await server.stop()

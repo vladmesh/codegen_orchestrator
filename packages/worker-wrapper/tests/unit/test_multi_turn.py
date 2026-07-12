@@ -7,6 +7,8 @@ import pytest
 from worker_wrapper.config import WorkerWrapperConfig
 from worker_wrapper.wrapper import WorkerWrapper
 
+from shared.contracts.queues.worker_result import WorkerResultStatus
+
 
 @pytest.fixture(autouse=True)
 def _no_workspace_check():
@@ -91,10 +93,10 @@ class TestMultiTurnConsumeLoop:
 
         outputs = []
 
-        async def track_publish(stream, data):
-            outputs.append(data)
+        async def track_publish(stream, message):
+            outputs.append(message)
 
-        mock_redis_client.publish = AsyncMock(side_effect=track_publish)
+        mock_redis_client.publish_message = AsyncMock(side_effect=track_publish)
 
         async def mock_consume(**kwargs):
             yield msg1
@@ -113,8 +115,8 @@ class TestMultiTurnConsumeLoop:
 
         # Watchdog publishes failed for each message (no HTTP result)
         assert len(outputs) == 2  # noqa: PLR2004
-        assert outputs[0]["status"] == "failed"
-        assert outputs[1]["status"] == "failed"
+        assert outputs[0].status == WorkerResultStatus.FAILED
+        assert outputs[1].status == WorkerResultStatus.FAILED
 
 
 # ---------- 1.2: git pull before each turn ----------

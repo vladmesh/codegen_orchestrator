@@ -12,16 +12,17 @@ from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 import json
 import os
-from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from pydantic import ValidationError
 import structlog
 
+from shared.contracts.queues.worker_result import WorkerResult
+
 from .http_models import (
     ResultRequest,
-    to_redis_output,
+    to_worker_result,
 )
 
 logger = structlog.get_logger(__name__)
@@ -41,7 +42,7 @@ class ResultHttpServer:
     def __init__(
         self,
         worker_id: str,
-        publish_callback: Callable[[dict[str, Any]], Awaitable[None]],
+        publish_callback: Callable[[WorkerResult], Awaitable[None]],
         result_event: asyncio.Event,
         host: str = "127.0.0.1",
         port: int = 9090,
@@ -151,17 +152,17 @@ class ResultHttpServer:
             errors = e.errors()
             return HTTPStatus.BAD_REQUEST, {"error": str(errors)}
 
-        # Convert to Redis format and publish
-        redis_data = to_redis_output(request)
+        # Build the typed worker result and publish
+        result = to_worker_result(request)
 
         logger.info(
             "http_result_received",
             worker_id=self.worker_id,
             success=request.success,
-            status=redis_data.get("status"),
+            status=result.status,
         )
 
-        await self._publish(redis_data)
+        await self._publish(result)
         self._result_event.set()
 
         return HTTPStatus.OK, {"ok": True}

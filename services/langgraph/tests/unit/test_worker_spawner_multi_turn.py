@@ -129,7 +129,7 @@ class TestSendTaskToWorker:
                             {
                                 b"data": json.dumps(
                                     {
-                                        "status": "success",
+                                        "status": "completed",
                                         "content": "Fixed the test",
                                         "commit_sha": "abc123",
                                     }
@@ -356,7 +356,7 @@ class TestSpawnResultWorkerId:
                                 {
                                     b"data": json.dumps(
                                         {
-                                            "status": "success",
+                                            "status": "completed",
                                             "content": "done",
                                             "commit_sha": "def456",
                                         }

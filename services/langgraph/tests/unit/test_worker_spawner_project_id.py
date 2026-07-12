@@ -70,7 +70,7 @@ async def test_request_spawn_includes_project_id_in_command(
                             {
                                 b"data": json.dumps(
                                     {
-                                        "status": "success",
+                                        "status": "completed",
                                         "content": "done",
                                         "commit_sha": "abc123",
                                     }
@@ -157,7 +157,7 @@ async def test_request_spawn_project_id_defaults_to_none(
                             b"2-0",
                             {
                                 b"data": json.dumps(
-                                    {"status": "success", "content": "done", "commit_sha": "abc"}
+                                    {"status": "completed", "content": "done", "commit_sha": "abc"}
                                 ).encode()
                             },
                         )
