@@ -7,8 +7,8 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
 - **Type**: tech
 - **Started**: 2026-07-01
-- **Current Phase**: Stabilization planning after completed CI and service-template contract work.
-  Sprint 002 phases 2-4 remain pending until code changes prove otherwise.
+- **Current Phase**: Sprint 002 Phase 2 contract hardening. B7 response DTOs and canonical
+  vocabularies are complete; typed `RunResult` is the next slice.
 
 ## Current Facts
 
@@ -21,19 +21,20 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 - `codegen_orchestrator-432` is the latest contract-correction layer in this baseline:
   production scaffolding uses GitHub `gh:vladmesh/service-template` with explicit tag `0.3.0`
   in PR #33.
-- `codegen_orchestrator-435` is complete: B7 response-DTO lifecycle fields typed to their `StrEnum`
-  (task/story/server/application/incident/service-deployment). Slice of Phase 2.
-- Current worker card: `codegen_orchestrator-436`, unify duplicated contract vocabularies into canonical
-  `StrEnum`s in `shared/contracts/vocab.py` (`AgentType`, `ActionType`, `ResultStatus`, `LifecycleEvent`;
-  `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct on purpose). Closes the "duplicated vocabularies"
-  slice of Phase 2; `Run.result` union still open.
+- `codegen_orchestrator-435` is complete in PR #35: B7 response-DTO lifecycle fields use their
+  `StrEnum` and reject unknown values at the read boundary.
+- `codegen_orchestrator-436` is complete in PR #36: cross-service vocabularies are canonical,
+  field-specific lifecycle wire subsets remain strict, and invalid provisioner results no longer
+  poison-loop in the pending queue.
+- Next: type `Run.result` as a union keyed by `RunType`, migrate its scheduler/langgraph readers to
+  validated result models, and keep typed Redis consume for Phase 3.
 
 ## Phase Progress
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Security quick-wins (B2 crypto, fail-open auth) | COMPLETE |
 | 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
-| 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | In progress — B7 enums (`codegen_orchestrator-435`) and duplicated vocabularies (`codegen_orchestrator-436`) done; `Run.result` union pending |
+| 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | In progress — PR #35 and #36 complete; typed `RunResult` is the only remaining slice |
 | 3 | Типизированный consume + мёртвый код (B5, B6) | Pending |
 | 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Pending |
 
