@@ -16,7 +16,7 @@ Stages 1-3 are complete. Stage 4 is active at Sprint 002 Phase 4:
   queue entries instead of reclaiming them forever.
 - Typed `RunResult` is complete in PR #38 (`codegen_orchestrator-440`), closing Phase 2.
 - Phase 3 is complete: `consume_typed` (PR #40), typed worker result (PR #41), engineering consumer
-  on `EngineeringMessage.model_validate` and dead-layer removal (`codegen_orchestrator-457`). Raw
+  on `EngineeringMessage.model_validate` and dead-layer removal (`codegen_orchestrator-457`, PR #42). Raw
   `publish`/`publish_flat` stay public — ~13 live producers still call them; they migrate to
   `publish_message` per consumer over Phase 3/4 and the raw API was not extended.
 - Phase 4 (next) converts the remaining silent failures to fail-fast behavior (B3 infra incidents,
