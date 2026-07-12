@@ -21,12 +21,12 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 - `codegen_orchestrator-432` is the latest contract-correction layer in this baseline:
   production scaffolding uses GitHub `gh:vladmesh/service-template` with explicit tag `0.3.0`
   in PR #33.
-- `codegen_orchestrator-435` is complete: B7 response-DTO lifecycle fields typed to their `StrEnum`
-  (task/story/server/application/incident/service-deployment). Slice of Phase 2.
-- `codegen_orchestrator-436` is complete: unified duplicated contract vocabularies into canonical
-  `StrEnum`s in `shared/contracts/vocab.py` (`AgentType`, `ActionType`, `ResultStatus`, `LifecycleEvent`;
-  `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct on purpose).
-- Current worker card: `codegen_orchestrator-440`, typed `Run.result`. `RunDTO.result` is now a
+- `codegen_orchestrator-435` is complete in PR #35: B7 response-DTO lifecycle fields use their
+  `StrEnum` and reject unknown values at the read boundary.
+- `codegen_orchestrator-436` is complete in PR #36: cross-service vocabularies are canonical,
+  field-specific lifecycle wire subsets remain strict, and invalid provisioner results no longer
+  poison-loop in the pending queue.
+- `codegen_orchestrator-440` is complete in PR #38: `RunDTO.result` is now a
   per-`RunType` union (`EngineeringRunResult`/`DeployRunResult`/`QARunResult` in
   `shared/contracts/dto/run_result.py`) bound to `type`, not `dict | None`. Producers emit the typed
   model, the scheduler reads typed attributes, invalid results route to a visible terminal state.
