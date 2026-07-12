@@ -6,7 +6,9 @@ Run standalone: python -m src.consumers.engineering
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from http import HTTPStatus
 
+import httpx
 from pydantic import ValidationError
 import structlog
 
@@ -72,25 +74,37 @@ def _safe_validation_errors(exc: ValidationError) -> list[dict]:
 
 
 async def _handle_invalid_engineering_message(job_data: dict, exc: ValidationError) -> dict:
-    """Terminal handling for a malformed job: log only safe error fields, fail the run if
-    it is identifiable, and return a result so the queue loop ACKs the poison entry instead
-    of reclaiming it forever."""
+    """Terminal handling for a malformed job: log only safe error fields, fail the run so the
+    outcome is durable, and return so the queue loop ACKs the poison entry.
+
+    The entry is ACKed only once a terminal outcome is durably written. If failing the run
+    hits a transient API error (5xx or a transport error) the outcome is lost, so re-raise —
+    the loop then leaves the entry unacked and `claim_pending` retries after the API recovers.
+    Only a non-retryable client error (e.g. 404 — no such run to fail) is ACKed, to avoid an
+    eternal poison-loop on a run that will never accept the write.
+    """
     raw_task_id = job_data.get("task_id")
     logger.error(
         "engineering_job_invalid_message",
         task_id=raw_task_id,
         errors=_safe_validation_errors(exc),
     )
-    if isinstance(raw_task_id, str) and raw_task_id:
-        try:
-            return await _fail_job(raw_task_id, "invalid engineering message", None)
-        except Exception:
+    if not (isinstance(raw_task_id, str) and raw_task_id):
+        # No identifiable run — nothing durable to lose; ACK so it does not reclaim forever.
+        return {"status": "failed", "error": "invalid_engineering_message"}
+
+    try:
+        return await _fail_job(raw_task_id, "invalid engineering message", None)
+    except httpx.HTTPStatusError as fail_exc:
+        if fail_exc.response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR:
             logger.warning(
-                "engineering_invalid_message_fail_job_failed",
+                "engineering_invalid_message_run_unwritable",
                 task_id=raw_task_id,
-                exc_info=True,
+                status_code=fail_exc.response.status_code,
             )
-    return {"status": "failed", "error": "invalid_engineering_message"}
+            return {"status": "failed", "error": "invalid_engineering_message"}
+        # Transient server error — terminal outcome not written; do not ACK.
+        raise
 
 
 logger = structlog.get_logger(__name__)
