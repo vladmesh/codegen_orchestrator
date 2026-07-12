@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.engineering import EngineeringStatus
@@ -58,6 +59,40 @@ def _parse_telegram_id(user_id: str) -> dict:
     return {}
 
 
+def _safe_validation_errors(exc: ValidationError) -> list[dict]:
+    """Validation errors stripped to type+loc — never the raw payload.
+
+    A `str(ValidationError)` / `e.errors()` echoes `input_value`, and an engineering
+    job carries user-facing text (`description`) and ids. Log only `type` and `loc`.
+    """
+    return [
+        {"type": err["type"], "loc": list(err["loc"])}
+        for err in exc.errors(include_url=False, include_input=False)
+    ]
+
+
+async def _handle_invalid_engineering_message(job_data: dict, exc: ValidationError) -> dict:
+    """Terminal handling for a malformed job: log only safe error fields, fail the run if
+    it is identifiable, and return a result so the queue loop ACKs the poison entry instead
+    of reclaiming it forever."""
+    raw_task_id = job_data.get("task_id")
+    logger.error(
+        "engineering_job_invalid_message",
+        task_id=raw_task_id,
+        errors=_safe_validation_errors(exc),
+    )
+    if isinstance(raw_task_id, str) and raw_task_id:
+        try:
+            return await _fail_job(raw_task_id, "invalid engineering message", None)
+        except Exception:
+            logger.warning(
+                "engineering_invalid_message_fail_job_failed",
+                task_id=raw_task_id,
+                exc_info=True,
+            )
+    return {"status": "failed", "error": "invalid_engineering_message"}
+
+
 logger = structlog.get_logger(__name__)
 
 
@@ -96,7 +131,13 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     """Process a single engineering job by running Engineering Subgraph."""
     from ..subgraphs.engineering import create_engineering_subgraph
 
-    msg = EngineeringMessage.model_validate(job_data)
+    # Typed boundary: validate before business logic. A malformed job is terminal (ACKed),
+    # not a poison message that reclaims forever.
+    try:
+        msg = EngineeringMessage.model_validate(job_data)
+    except ValidationError as exc:
+        return await _handle_invalid_engineering_message(job_data, exc)
+
     task_id = msg.task_id
     project_id = msg.project_id
     callback_stream = msg.callback_stream

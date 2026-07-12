@@ -10,6 +10,7 @@ from shared.contracts.queues.worker import (
     WorkerChannels,
     WorkerConfig,
 )
+from shared.contracts.queues.worker_result import WorkerResultStatus
 
 from .conftest import (
     REDIS_STREAM_COMMANDS,
@@ -220,23 +221,11 @@ class TestWorkerExecution:
         task_data = {"content": "Hello World"}
         await redis_client.xadd(input_stream, {"data": json.dumps(task_data)})
 
-        # 5. Wait for Output
-        # Even if it fails, it should write SOMETHING to output
-        # or publish lifecycle event 'failed'.
-
-        lifecycle_msg = await wait_for_stream_message(redis_client, "worker:lifecycle", timeout=30)
-        # We expect 'started' first for the task
-        lifecycle_data = json.loads(lifecycle_msg["data"])
-        assert lifecycle_data["worker_id"] == worker_id
-        assert lifecycle_data["event"] == "started"
-
-        # Then 'completed' or 'failed'
-        last_msg_id = lifecycle_msg["_msg_id"]
-        lifecycle_msg_2 = await wait_for_stream_message(
-            redis_client, "worker:lifecycle", timeout=30, last_id=last_msg_id
-        )
-        lifecycle_data_2 = json.loads(lifecycle_msg_2["data"])
-        if lifecycle_data_2["worker_id"] != worker_id:
-            pass
-
-        assert lifecycle_data_2["event"] in ["completed", "failed"]
+        # 5. Wait for the typed worker result on the output stream.
+        # The worker publishes a WorkerResult (completed/failed/blocked/rejected) — even a
+        # failed execution writes a terminal result here. This is the worker output
+        # contract; the old `worker:lifecycle` stream was removed.
+        output_stream = WorkerChannels.OUTPUT_PATTERN.value.format(worker_id=worker_id)
+        output_msg = await wait_for_stream_message(redis_client, output_stream, timeout=60)
+        output_data = json.loads(output_msg["data"])
+        assert output_data["status"] in {s.value for s in WorkerResultStatus}
