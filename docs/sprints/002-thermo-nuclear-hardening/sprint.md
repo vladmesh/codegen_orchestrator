@@ -21,12 +21,13 @@
 - [x] Дублирующиеся словари: единые `AgentType` / `ActionType` / `ResultStatus`+`LifecycleEvent` — PR #36, `codegen_orchestrator-436`, thermo §"Duplicated vocabularies"
 - [x] Типизированный `RunResult` (per-`RunType` union, привязан к `type`) вместо `run.result: dict | None` — PR #38, `codegen_orchestrator-440`, thermo §P1 `run.py:39`
 
-## Phase 3: Типизированный consume + удаление мёртвых слоёв
-- `consume_typed` в redis-клиенте; приватизировать raw `publish`; `JSONDecodeError` не глотать — thermo §P1 `client.py`
-- B6 worker result: контракт `WorkerResult`, `publish_message`, `_to_spawn_result` вместо ручных dict'ов в 3 местах — thermo §B6
-- engineering consumer + scheduler `run.result` на `model_validate` — thermo §P1
-- B5: удалить мёртвый `langgraph/src/tools/` (~800 строк, шадовит живые тулы) — thermo §B5
-- `worker:lifecycle` стрим, `agent_config_cache`, `shared` compat-shims — удалить — thermo §"Dead code"
+## Phase 3: Типизированный consume + удаление мёртвых слоёв ✓ (COMPLETE)
+- [x] `consume_typed` в redis-клиенте; `JSONDecodeError` не глотать — PR #40, thermo §P1 `client.py`
+- [x] B6 worker result: контракт `WorkerResult`, `publish_message`, `_to_spawn_result` вместо ручных dict'ов в 3 местах — PR #41, thermo §B6
+- [x] engineering consumer через `EngineeringMessage.model_validate` + scheduler `run.result` на типизированные атрибуты — `codegen_orchestrator-457` (engineering) / PR #38, #40 (scheduler), thermo §P1
+- [x] B5: удалён мёртвый `langgraph/src/tools/` (projects/servers/github/specs + dead result models в `schemas/tools.py`); живой `allocator` перенесён в `langgraph/src/allocations.py` без eager-import мёртвых модулей — `codegen_orchestrator-457`, thermo §B5
+- [x] `worker:lifecycle` стрим+контракт, второй `agent_config_cache`, `scaffold_phase.py`, `shared` compat-shims (RedisStreamClient try/except, ServiceDeployment/DeploymentStatus алиасы, legacy DeploymentStatus enum, ensure_consumer_groups) удалены — `codegen_orchestrator-457`, thermo §"Dead code"
+- Приватизация raw `publish`/`publish_flat` НЕ входит в срез: методы держат ~13 живых production call sites (callback-события, PO input/proactive, provisioner/worker responses) — миграция на `publish_message` идёт по consumer'ам в Phase 3/4, raw API не расширялся.
 
 ## Phase 4: Тихие ошибки → fail-fast
 - B3 infra incidents: реализовать 3 метода клиента или удалить подсистему; убрать `try/except → False` обёртки — thermo §B3

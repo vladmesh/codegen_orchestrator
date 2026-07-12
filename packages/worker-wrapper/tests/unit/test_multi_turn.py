@@ -76,7 +76,6 @@ class TestMultiTurnConsumeLoop:
 
         wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
         wrapper.execute_agent = AsyncMock(return_value=None)
-        wrapper.publish_lifecycle = AsyncMock()
         wrapper._git_pull = AsyncMock()
         wrapper._write_task_md = MagicMock()
 
@@ -107,7 +106,6 @@ class TestMultiTurnConsumeLoop:
         wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
         # execute_agent returns None — no HTTP result → watchdog fires
         wrapper.execute_agent = AsyncMock(return_value=None)
-        wrapper.publish_lifecycle = AsyncMock()
         wrapper._git_pull = AsyncMock()
         wrapper._write_task_md = MagicMock()
 
@@ -134,7 +132,6 @@ class TestGitPullBeforeTurn:
         mock_redis_client.consume = mock_consume
 
         wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
-        wrapper.publish_lifecycle = AsyncMock()
         wrapper._write_task_md = MagicMock()
 
         call_order = []
@@ -165,7 +162,6 @@ class TestGitPullBeforeTurn:
         mock_redis_client.consume = mock_consume
 
         wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
-        wrapper.publish_lifecycle = AsyncMock()
         wrapper._write_task_md = MagicMock()
 
         call_order = []
@@ -234,7 +230,6 @@ class TestTaskMdUpdate:
         mock_redis_client.consume = mock_consume
 
         wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
-        wrapper.publish_lifecycle = AsyncMock()
         wrapper._git_pull = AsyncMock()
 
         call_order = []
@@ -268,7 +263,6 @@ class TestTaskMdUpdate:
         mock_redis_client.consume = mock_consume
 
         wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
-        wrapper.publish_lifecycle = AsyncMock()
         wrapper._git_pull = AsyncMock()
 
         prompts_written = []
@@ -305,7 +299,6 @@ class TestTaskMdUpdate:
         mock_redis_client.consume = mock_consume
 
         wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
-        wrapper.publish_lifecycle = AsyncMock()
         wrapper._git_pull = AsyncMock()
         wrapper._write_task_md = MagicMock()
         wrapper.execute_agent = AsyncMock(return_value=None)

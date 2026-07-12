@@ -97,10 +97,7 @@ class WorkerWrapper:
                 f"worker:status:{self.config.consumer_name}", mapping=context_update
             )
 
-        # 1. Lifecycle: Started
-        await self.publish_lifecycle("started", msg_id)
-
-        # 2. Pre-turn setup
+        # 1. Pre-turn setup
         await self._prepare_workspace(data)
 
         # 3. Pre-flight: verify workspace has project files (not just README)
@@ -113,12 +110,10 @@ class WorkerWrapper:
                 "Refusing to launch agent to avoid wasting credits.",
             )
             error = f"Workspace pre-flight failed: {workspace_detail}"
-            status = "failed"
             await self.redis.publish_message(
                 self.config.output_stream,
                 WorkerFailedResult(error=error),
             )
-            await self.publish_lifecycle(status, msg_id, error=error)
             return
         logger.info("workspace_preflight_passed", detail=workspace_detail)
 
@@ -160,13 +155,10 @@ class WorkerWrapper:
             self._archive_task(data, report)
 
             # 6. Publish result
-            status, error = await self._publish_result(data, error, status, report)
+            await self._publish_result(data, error, status, report)
         finally:
             await self._http_server.stop()
             self._http_server = None
-
-        # 7. Lifecycle: Completed/Failed
-        await self.publish_lifecycle(status, msg_id, error=error)
 
     async def _publish_result(
         self, data: dict, error: str | None, status: str, report: str | None
@@ -883,15 +875,3 @@ class WorkerWrapper:
             logger.warning("failed_to_extract_session_id", error=str(e))
 
         return None
-
-    async def publish_lifecycle(self, status: str, ref_msg_id: str, error: str = None):
-        """Publish lifecycle event."""
-        from shared.contracts.queues.worker_lifecycle import WorkerLifecycleEvent
-
-        event = WorkerLifecycleEvent(
-            worker_id=self.config.consumer_name,
-            event=status,
-            error=error,
-        )
-
-        await self.redis.publish_message("worker:lifecycle", event)

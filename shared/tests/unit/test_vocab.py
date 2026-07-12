@@ -15,7 +15,6 @@ from shared.contracts.events import ProgressEvent
 from shared.contracts.queues.deploy import DeployAction
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.worker import AgentType as AgentTypeReexport
-from shared.contracts.queues.worker_lifecycle import WorkerLifecycleEvent
 from shared.contracts.vocab import (
     ActionType,
     AgentType,
@@ -126,19 +125,6 @@ class TestLifecycleEvent:
         # 'stopped' is a valid LifecycleEvent member but not a ProgressEvent value.
         with pytest.raises(ValidationError):
             ProgressEvent(type="stopped", request_id="r")
-
-    def test_worker_lifecycle_event_accepts_its_slice(self):
-        for value in ("started", "completed", "failed", "stopped"):
-            assert WorkerLifecycleEvent(worker_id="w", event=value).event == value
-
-    def test_worker_lifecycle_event_rejects_unknown(self):
-        with pytest.raises(ValidationError):
-            WorkerLifecycleEvent(worker_id="w", event="progressing")
-
-    def test_worker_lifecycle_event_rejects_progress(self):
-        # 'progress' is a valid LifecycleEvent member but not a worker-lifecycle value.
-        with pytest.raises(ValidationError):
-            WorkerLifecycleEvent(worker_id="w", event="progress")
 
     def test_worker_event_rejects_stopped(self):
         # WorkerEvent is a progress-style stream: no 'stopped' variant exists.

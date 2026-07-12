@@ -121,7 +121,3 @@ async def ensure_all_groups(redis: Redis) -> None:
                     error=str(e),
                 )
                 raise
-
-
-# Backward-compatible alias
-ensure_consumer_groups = ensure_all_groups

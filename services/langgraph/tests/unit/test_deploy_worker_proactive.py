@@ -58,8 +58,8 @@ def mock_allocations():
     """Patch allocation lookup (lazy import inside process_deploy_job)."""
     mock_fn = AsyncMock(return_value={"server_ip": "1.2.3.4", "port": 8080})
     with (
-        patch("src.tools.allocator.ensure_project_allocations", mock_fn),
-        patch("src.tools.allocator.AllocationError", Exception),
+        patch("src.allocations.ensure_project_allocations", mock_fn),
+        patch("src.allocations.AllocationError", Exception),
     ):
         yield mock_fn
 

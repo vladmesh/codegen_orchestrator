@@ -13,6 +13,8 @@ from shared.contracts.dto.engineering import EngineeringStatus
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
 from shared.contracts.dto.run import RunStatus
 from shared.contracts.dto.run_result import EngineeringRunResult
+from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.vocab import ActionType
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -94,16 +96,17 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
     """Process a single engineering job by running Engineering Subgraph."""
     from ..subgraphs.engineering import create_engineering_subgraph
 
-    task_id = job_data.get("task_id", "unknown")
-    project_id = job_data.get("project_id")
-    callback_stream = job_data.get("callback_stream")
-    action = job_data.get("action", "create")
-    description = job_data.get("description")
-    skip_deploy = job_data.get("skip_deploy", False)
-    user_id = job_data.get("user_id", "")
-    planning_task_id = job_data.get("planning_task_id")
-    story_id = job_data.get("story_id")
-    deploy_fix_attempt = job_data.get("deploy_fix_attempt", 0)
+    msg = EngineeringMessage.model_validate(job_data)
+    task_id = msg.task_id
+    project_id = msg.project_id
+    callback_stream = msg.callback_stream
+    action = msg.action
+    description = msg.description
+    skip_deploy = msg.skip_deploy
+    user_id = msg.user_id
+    planning_task_id = msg.planning_task_id
+    story_id = msg.story_id
+    deploy_fix_attempt = msg.deploy_fix_attempt
 
     logger.info(
         "engineering_job_started",
@@ -136,9 +139,9 @@ async def process_engineering_job(job_data: dict, redis: RedisStreamClient) -> d
             description = (project.config or {}).get("description", "")
 
         project_status = project.status
-        if project_status == ProjectStatus.DRAFT and action == "create":
+        if project_status == ProjectStatus.DRAFT and action == ActionType.CREATE:
             await _create_repo_and_set_secrets(project)
-        elif project_status == ProjectStatus.DRAFT and action != "create":
+        elif project_status == ProjectStatus.DRAFT and action != ActionType.CREATE:
             logger.warning(
                 "feature_fix_on_draft_project",
                 task_id=task_id,

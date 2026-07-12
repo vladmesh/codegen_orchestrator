@@ -1,7 +1,6 @@
 """Deployment model — immutable log of deploy attempts."""
 
 from datetime import datetime
-from enum import StrEnum
 import uuid
 
 from sqlalchemy import JSON, ForeignKey, Uuid
@@ -10,18 +9,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from shared.contracts.dto.deployment import DeploymentResult
 
 from .base import Base
-
-
-class DeploymentStatus(StrEnum):
-    """Legacy enum — kept for backward compatibility during migration.
-
-    Use DeploymentResult from shared.contracts.dto.deployment instead.
-    """
-
-    RUNNING = "running"
-    STOPPED = "stopped"
-    FAILED = "failed"
-    PENDING = "pending"
 
 
 class Deployment(Base):

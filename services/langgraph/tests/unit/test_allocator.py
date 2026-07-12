@@ -36,8 +36,8 @@ class TestEnsureProjectAllocations:
             }
         )
 
-        with patch("src.tools.allocator.api_client", mock_client):
-            from src.tools.allocator import ensure_project_allocations
+        with patch("src.allocations.api_client", mock_client):
+            from src.allocations import ensure_project_allocations
 
             result = await ensure_project_allocations(
                 "proj-1", repo_id="repo-1", service_name="my-bot", modules=["backend"]
@@ -79,8 +79,8 @@ class TestEnsureProjectAllocations:
             ]
         )
 
-        with patch("src.tools.allocator.api_client", mock_client):
-            from src.tools.allocator import ensure_project_allocations
+        with patch("src.allocations.api_client", mock_client):
+            from src.allocations import ensure_project_allocations
 
             result = await ensure_project_allocations(
                 "proj-1", repo_id="repo-1", service_name="my-bot"
@@ -112,8 +112,8 @@ class TestEnsureProjectAllocations:
 
         mock_client.allocate_next_port = _allocate_next
 
-        with patch("src.tools.allocator.api_client", mock_client):
-            from src.tools.allocator import ensure_project_allocations
+        with patch("src.allocations.api_client", mock_client):
+            from src.allocations import ensure_project_allocations
 
             result = await ensure_project_allocations(
                 "proj-1",

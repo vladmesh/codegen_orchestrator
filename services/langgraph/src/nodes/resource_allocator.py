@@ -2,8 +2,8 @@
 
 import structlog
 
+from ..allocations import AllocationError, ensure_project_allocations
 from ..clients.api import api_client
-from ..tools.allocator import AllocationError, ensure_project_allocations
 from .base import FunctionalNode
 
 logger = structlog.get_logger()

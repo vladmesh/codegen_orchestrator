@@ -78,12 +78,3 @@ TaskProgressKind = Literal[
     LifecycleEvent.COMPLETED,
     LifecycleEvent.FAILED,
 ]
-
-# Worker container lifecycle: start → terminal outcome → explicit stop.
-# Used by WorkerLifecycleEvent.event. No `progress`.
-WorkerLifecycleKind = Literal[
-    LifecycleEvent.STARTED,
-    LifecycleEvent.COMPLETED,
-    LifecycleEvent.FAILED,
-    LifecycleEvent.STOPPED,
-]
