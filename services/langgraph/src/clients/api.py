@@ -285,13 +285,9 @@ class LanggraphAPIClient:
                 return None
             raise
 
-    async def release_allocation(self, allocation_id: int) -> bool:
+    async def release_allocation(self, allocation_id: int) -> None:
         """Release a port allocation."""
-        try:
-            await self.delete(f"allocations/{allocation_id}")
-            return True
-        except httpx.HTTPStatusError:
-            return False
+        await self.delete(f"allocations/{allocation_id}")
 
 
 api_client = LanggraphAPIClient()

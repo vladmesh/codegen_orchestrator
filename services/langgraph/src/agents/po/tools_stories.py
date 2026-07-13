@@ -71,6 +71,18 @@ async def create_story(
     story_id = resp.json()["id"]
     logger.info("po_story_created", story_id=story_id, project_id=project_id, title=title)
 
+    # The architect needs this spec when decomposing a newly created project.
+    # Persist it before any path can publish the story for downstream work.
+    if action == "create" and description:
+        current_config = proj_resp.json().get("config", {})
+        current_config["detailed_spec"] = description
+        patch_resp = await api.patch(
+            f"/api/projects/{project_id}",
+            json={"config": current_config},
+            headers=headers,
+        )
+        patch_resp.raise_for_status()
+
     # 2. Check if project already has an active story (sequential processing)
     user_id = config["configurable"].get("user_id", "unknown")
     active_stories_resp = await api.get(
@@ -98,26 +110,6 @@ async def create_story(
         user_id=user_id,
     )
     await _get_stream_client().publish_message(ARCHITECT_QUEUE, arch_msg)
-
-    # 3. Persist description to project config for action=create
-    if action == "create" and description:
-        try:
-            proj_resp = await api.get(f"/api/projects/{project_id}", headers=headers)
-            proj_resp.raise_for_status()
-            current_config = proj_resp.json().get("config", {})
-            current_config["detailed_spec"] = description
-            patch_resp = await api.patch(
-                f"/api/projects/{project_id}",
-                json={"config": current_config},
-                headers=headers,
-            )
-            patch_resp.raise_for_status()
-        except Exception:
-            logger.warning(
-                "failed_to_persist_detailed_spec",
-                project_id=project_id,
-                exc_info=True,
-            )
 
     logger.info("po_story_submitted_to_architect", story_id=story_id, action=action)
     return (

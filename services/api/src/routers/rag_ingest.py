@@ -125,43 +125,23 @@ def hash_text(text: str) -> str:
 # ------------------------------------------------------------------
 
 
-async def generate_chunk_embeddings(chunk_texts: list[str]) -> list[list[float] | None]:
-    """Generate embeddings for chunks via OpenRouter.
-
-    Returns list of embeddings or None for each chunk.
-    On failure, logs warning and returns empty list (graceful degradation).
-    """
+async def generate_chunk_embeddings(chunk_texts: list[str]) -> list[list[float]]:
+    """Generate embeddings for chunks via OpenRouter."""
     if not chunk_texts:
         return []
 
-    try:
-        result = await generate_embeddings(
-            chunk_texts,
-            model=EMBEDDING_MODEL,
-            dimensions=EMBEDDING_DIMENSIONS,
-        )
-        logger.info(
-            "embeddings_generated",
-            chunk_count=len(chunk_texts),
-            total_tokens=result.total_tokens,
-            model=result.model,
-        )
-        return result.embeddings
-    except ValueError as exc:
-        logger.warning(
-            "embedding_generation_skipped",
-            error=str(exc),
-            chunk_count=len(chunk_texts),
-        )
-        return []
-    except Exception as exc:
-        logger.warning(
-            "embedding_generation_failed",
-            error=str(exc),
-            error_type=type(exc).__name__,
-            chunk_count=len(chunk_texts),
-        )
-        return []
+    result = await generate_embeddings(
+        chunk_texts,
+        model=EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSIONS,
+    )
+    logger.info(
+        "embeddings_generated",
+        chunk_count=len(chunk_texts),
+        total_tokens=result.total_tokens,
+        model=result.model,
+    )
+    return result.embeddings
 
 
 # ------------------------------------------------------------------
@@ -192,9 +172,21 @@ async def upsert_document(
     incoming_hash = doc.content_hash or hash_text(doc.content)
     if document:
         same_hash = document.source_hash == incoming_hash
-        apply_document_fields(document, doc, scope, user_id, project_id, incoming_hash)
         if same_hash:
             return False
+
+    chunk_texts = chunk_document(doc.content, encoding)
+    embeddings: list[list[float]] = []
+    if chunk_texts:
+        doc_title = doc.title or doc.path or doc.source_id
+        metadata_prefix = f"Title: {doc_title}\nSource: {doc.source_id}\n\n"
+        embedding_texts = [metadata_prefix + chunk for chunk in chunk_texts]
+        embeddings = await generate_chunk_embeddings(embedding_texts)
+        if len(embeddings) != len(chunk_texts):
+            raise RuntimeError("Embedding backend returned an incomplete result")
+
+    if document:
+        apply_document_fields(document, doc, scope, user_id, project_id, incoming_hash)
     else:
         document = RAGDocument(
             user_id=user_id,
@@ -215,19 +207,9 @@ async def upsert_document(
 
     await db.execute(delete(RAGChunk).where(RAGChunk.document_id == document.id))
 
-    chunk_texts = chunk_document(doc.content, encoding)
-    if not chunk_texts:
-        return True
-
-    doc_title = doc.title or doc.path or doc.source_id
-    metadata_prefix = f"Title: {doc_title}\nSource: {doc.source_id}\n\n"
-    embedding_texts = [metadata_prefix + chunk for chunk in chunk_texts]
-
-    embeddings = await generate_chunk_embeddings(embedding_texts)
-
     chunks = []
     for idx, chunk_text in enumerate(chunk_texts):
-        embedding = embeddings[idx] if idx < len(embeddings) else None
+        embedding = embeddings[idx]
         chunks.append(
             RAGChunk(
                 document_id=document.id,
@@ -239,7 +221,7 @@ async def upsert_document(
                 chunk_hash=hash_text(chunk_text),
                 token_count=len(encoding.encode(chunk_text)),
                 embedding=embedding,
-                embedding_model=EMBEDDING_MODEL if embedding else None,
+                embedding_model=EMBEDDING_MODEL,
                 tsv=func.to_tsvector("simple", chunk_text),
             )
         )

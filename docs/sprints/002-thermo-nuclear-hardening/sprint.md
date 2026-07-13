@@ -35,7 +35,9 @@
   `READY` before journal closure; temporary closure failure remains observable and scheduler resolves
   only active `provisioning_failed` incidents for confirmed `READY` servers, without recovery work.
 - [x] B4 secret_resolver (`codegen_orchestrator-473`): обязательный project context, allocation и repository metadata валидируются до deploy; фейковые значения и `"unknown"` sentinel удалены, persistence failures идут в deploy error path.
-- Swallow-list: rag_ingest (embedding=None), worker-wrapper writes, po tools, architect `"422" in str(e)`, `_base` poison-loop, infra api_client, `release_allocation`, notifications — thermo §"fail-fast violations"
+- Swallow-list:
+  - [x] rag_ingest embeddings, worker-wrapper TASK.md/STORY.md writes, PO repository/spec writes and `release_allocation` (`codegen_orchestrator-476`)
+  - [ ] architect `"422" in str(e)`, `_base` poison-loop, infra api_client, notifications — thermo §"fail-fast violations"
 - Magic-number config fallbacks (supervisor/worker-manager/api_types) — thermo §там же
 
 ## Decisions
