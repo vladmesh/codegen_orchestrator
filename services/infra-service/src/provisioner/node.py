@@ -171,6 +171,7 @@ class ProvisionerNode(FunctionalNode):
         server_ip: str,
         os_template: str,
         provisioning_attempts: int,
+        provisioning_episode_id: str,
         is_recovery: bool,
         state: dict,
     ) -> dict:
@@ -195,6 +196,7 @@ class ProvisionerNode(FunctionalNode):
                 server_handle,
                 server_ip,
                 provisioning_attempts,
+                provisioning_episode_id,
                 is_recovery,
                 " (Reinstalled)",
                 ssh_manager=self.ssh_manager,
@@ -217,6 +219,7 @@ class ProvisionerNode(FunctionalNode):
         server_handle: str,
         server_ip: str,
         provisioning_attempts: int,
+        provisioning_episode_id: str,
         is_recovery: bool,
         state: dict,
     ) -> dict:
@@ -266,6 +269,7 @@ class ProvisionerNode(FunctionalNode):
                 server_handle,
                 server_ip,
                 provisioning_attempts,
+                provisioning_episode_id,
                 is_recovery,
                 " (Retried)",
                 ssh_manager=self.ssh_manager,
@@ -314,7 +318,7 @@ class ProvisionerNode(FunctionalNode):
         os_template = server_info.os_template or Provisioning.DEFAULT_OS_TEMPLATE
         # Step 2: Atomically reserve an attempt before any external provisioning work.
         try:
-            provisioning_attempts = await reserve_provisioning_attempt(
+            reservation = await reserve_provisioning_attempt(
                 server_handle, PROVISIONING_MAX_RETRIES
             )
         except Exception as exc:
@@ -332,7 +336,7 @@ class ProvisionerNode(FunctionalNode):
                 "provisioning_result": {"status": "failed", "reason": "attempt_reservation_failed"},
             }
 
-        if provisioning_attempts is None:
+        if reservation is None:
             await update_server_status(server_handle, "error")
             await create_incident(
                 server_handle,
@@ -351,6 +355,8 @@ class ProvisionerNode(FunctionalNode):
                 "errors": state.get("errors", []) + ["Max provisioning attempts exceeded"],
                 "provisioning_result": {"status": "failed", "reason": "max_attempts_exhausted"},
             }
+
+        provisioning_attempts, provisioning_episode_id = reservation
 
         # Step 3: Update status
         await update_server_status(server_handle, "provisioning")
@@ -381,6 +387,7 @@ class ProvisionerNode(FunctionalNode):
                 server_ip=server_ip,
                 os_template=os_template,
                 provisioning_attempts=provisioning_attempts,
+                provisioning_episode_id=provisioning_episode_id,
                 is_recovery=is_recovery,
                 state=state,
             )
@@ -389,6 +396,7 @@ class ProvisionerNode(FunctionalNode):
                 server_handle=server_handle,
                 server_ip=server_ip,
                 provisioning_attempts=provisioning_attempts,
+                provisioning_episode_id=provisioning_episode_id,
                 is_recovery=is_recovery,
                 state=state,
             )

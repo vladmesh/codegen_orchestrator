@@ -16,6 +16,7 @@ async def handle_provisioning_success(
     server_handle: str,
     server_ip: str,
     provisioning_attempts: int,
+    provisioning_episode_id: str,
     is_recovery: bool,
     method_suffix: str = "",
     ssh_manager: SSHManager | None = None,
@@ -33,7 +34,9 @@ async def handle_provisioning_success(
     Returns:
         State update dict
     """
-    reset = await reset_provisioning_attempts(server_handle, provisioning_attempts)
+    reset = await reset_provisioning_attempts(
+        server_handle, provisioning_attempts, provisioning_episode_id
+    )
     if not reset:
         logger.info(
             "provisioning_attempt_reset_skipped",

@@ -90,12 +90,14 @@ class ProvisioningAttemptReservationResult(BaseModel):
 
     reserved: bool
     provisioning_attempts: int
+    episode_id: str | None = None
 
 
 class ProvisioningAttemptReset(BaseModel):
     """Request to close an episode only when its attempt is still current."""
 
     attempt_number: int = Field(gt=0)
+    episode_id: str = Field(min_length=1)
 
 
 class ProvisioningAttemptResetResult(BaseModel):
@@ -103,6 +105,7 @@ class ProvisioningAttemptResetResult(BaseModel):
 
     reset: bool
     provisioning_attempts: int
+    episode_id: str | None = None
 
 
 class ServerDTO(TimestampedDTO):
@@ -137,6 +140,7 @@ class ServerDTO(TimestampedDTO):
     last_health_check: datetime | None = None
     provisioning_started_at: datetime | None = None
     provisioning_attempts: int = 0
+    provisioning_episode_id: str | None = None
 
 
 class ServerMetricsHistoryDTO(BaseModel):

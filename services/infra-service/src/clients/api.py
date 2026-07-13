@@ -88,13 +88,13 @@ class InfrastructureAPIClient:
         return ProvisioningAttemptReservationResult.model_validate(resp.json())
 
     async def reset_provisioning_attempts(
-        self, server_handle: str, attempt_number: int
+        self, server_handle: str, attempt_number: int, episode_id: str
     ) -> ProvisioningAttemptResetResult:
         """Close an episode only if another attempt has not started."""
         resp = await self._request(
             "POST",
             f"servers/{server_handle}/provisioning-attempts/reset",
-            json={"attempt_number": attempt_number},
+            json={"attempt_number": attempt_number, "episode_id": episode_id},
         )
         return ProvisioningAttemptResetResult.model_validate(resp.json())
 

@@ -38,7 +38,7 @@ async def test_exhausted_reservation_prevents_ansible_and_returns_terminal_resul
 async def test_first_reserved_attempt_is_passed_to_provisioning_path(monkeypatch):
     node = ProvisionerNode(ssh_manager=MagicMock(), ansible_runner=MagicMock())
     monkeypatch.setattr("src.provisioner.node.get_server_info", AsyncMock(return_value=_server()))
-    reserve_attempt = AsyncMock(return_value=1)
+    reserve_attempt = AsyncMock(return_value=(1, "episode-1"))
     monkeypatch.setattr("src.provisioner.node.reserve_provisioning_attempt", reserve_attempt)
     monkeypatch.setattr("src.provisioner.node.update_server_status", AsyncMock())
     monkeypatch.setattr(
@@ -55,6 +55,7 @@ async def test_first_reserved_attempt_is_passed_to_provisioning_path(monkeypatch
     assert result["provisioning_result"]["status"] == "success"
     reserve_attempt.assert_awaited_once_with("srv-1", 3)
     assert existing_path.await_args.kwargs["provisioning_attempts"] == 1
+    assert existing_path.await_args.kwargs["provisioning_episode_id"] == "episode-1"
 
 
 @pytest.mark.asyncio
@@ -83,8 +84,8 @@ async def test_success_resets_attempts_before_marking_server_ready(monkeypatch):
 
     calls = []
 
-    async def _reset(server_handle, attempt_number):
-        calls.append(("reset", server_handle, attempt_number))
+    async def _reset(server_handle, attempt_number, episode_id):
+        calls.append(("reset", server_handle, attempt_number, episode_id))
         return True
 
     async def _status(server_handle, status):
@@ -94,6 +95,6 @@ async def test_success_resets_attempts_before_marking_server_ready(monkeypatch):
     monkeypatch.setattr("src.provisioner.handlers.update_server_status", _status)
     monkeypatch.setattr("src.provisioner.handlers.notify_admins", AsyncMock())
 
-    await handle_provisioning_success("srv-1", "203.0.113.10", 1, False)
+    await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
 
-    assert calls == [("reset", "srv-1", 1), ("status", "srv-1", "ready")]
+    assert calls == [("reset", "srv-1", 1, "episode-1"), ("status", "srv-1", "ready")]

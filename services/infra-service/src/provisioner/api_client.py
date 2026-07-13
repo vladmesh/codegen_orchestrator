@@ -132,18 +132,25 @@ async def get_services_on_server(server_handle: str) -> list[dict]:
         return []
 
 
-async def reserve_provisioning_attempt(server_handle: str, max_attempts: int) -> int | None:
-    """Reserve an attempt and return its persisted number, or None at the limit."""
+async def reserve_provisioning_attempt(
+    server_handle: str, max_attempts: int
+) -> tuple[int, str] | None:
+    """Reserve an attempt and return its number and episode id, or None at the limit."""
     reservation = await api_client.reserve_provisioning_attempt(
         server_handle,
         max_attempts=max_attempts,
     )
     if not reservation.reserved:
         return None
-    return reservation.provisioning_attempts
+    episode_id = reservation.episode_id
+    if episode_id is None:
+        raise RuntimeError("Provisioning attempt reservation has no episode id")
+    return reservation.provisioning_attempts, episode_id
 
 
-async def reset_provisioning_attempts(server_handle: str, attempt_number: int) -> bool:
+async def reset_provisioning_attempts(
+    server_handle: str, attempt_number: int, episode_id: str
+) -> bool:
     """Clear attempts only when no newer attempt has been reserved."""
-    result = await api_client.reset_provisioning_attempts(server_handle, attempt_number)
+    result = await api_client.reset_provisioning_attempts(server_handle, attempt_number, episode_id)
     return result.reset
