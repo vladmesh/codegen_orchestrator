@@ -12,6 +12,19 @@ from .ssh_manager import SSHManager
 logger = structlog.get_logger()
 
 
+async def _notify_admins_best_effort(message: str, level: str, server_handle: str) -> None:
+    """Send a provisioning notification without changing its committed outcome."""
+    try:
+        await notify_admins(message, level=level)
+    except Exception as exc:
+        logger.error(
+            "provisioning_notification_failed",
+            server_handle=server_handle,
+            level=level,
+            error_type=type(exc).__name__,
+        )
+
+
 async def handle_provisioning_success(
     server_handle: str,
     server_ip: str,
@@ -78,10 +91,11 @@ async def handle_provisioning_success(
             error_type=type(exc).__name__,
             exc_info=True,
         )
-        await notify_admins(
+        await _notify_admins_best_effort(
             f"⚠️ Server *{server_handle}* is READY, but its provisioning incident journal "
             "could not be closed. Reconciliation will retry automatically.",
             level="warning",
+            server_handle=server_handle,
         )
 
     recovery_text = "recovered and " if is_recovery else ""
@@ -116,10 +130,11 @@ The server is now configured with:
         )
 
     # Send notification
-    await notify_admins(
+    await _notify_admins_best_effort(
         f"Server *{server_handle}* {recovery_text}provisioned successfully! "
         f"IP: {server_ip}. Server is now READY.",
         level="success",
+        server_handle=server_handle,
     )
 
     return {

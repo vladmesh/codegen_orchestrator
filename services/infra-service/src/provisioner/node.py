@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from shared.contracts.dto.incident import IncidentType
+from shared.contracts.dto.server import ServerDTO
 from shared.notifications import notify_admins
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ class ProvisionerNode(FunctionalNode):
         self,
         server_handle: str,
         state: dict,
-    ) -> tuple[dict | None, dict | None]:
+    ) -> tuple[ServerDTO | None, dict | None]:
         """Get server info and validate it has required fields.
 
         Returns:
@@ -75,11 +76,6 @@ class ProvisionerNode(FunctionalNode):
             return it from run() immediately.
         """
         server_info = await get_server_info(server_handle)
-        if not server_info:
-            return None, {
-                "messages": [{"message": f"❌ Failed to get server info for {server_handle}"}],
-                "errors": state.get("errors", []) + ["Server info fetch failed"],
-            }
 
         server_ip = server_info.public_ip or server_info.host
         if not server_ip:

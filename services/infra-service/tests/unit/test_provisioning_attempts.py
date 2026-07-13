@@ -128,6 +128,38 @@ async def test_success_keeps_server_ready_when_incident_journal_is_unavailable(m
 
 
 @pytest.mark.asyncio
+async def test_success_result_survives_notification_api_failure(monkeypatch):
+    """A best-effort notification cannot turn a READY server into a failed result."""
+    from src.provisioner.handlers import handle_provisioning_success
+
+    monkeypatch.setattr(
+        "src.provisioner.handlers.reset_provisioning_attempts", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr("src.provisioner.handlers.update_server_status", AsyncMock())
+    monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", AsyncMock())
+    monkeypatch.setattr(
+        "src.provisioner.handlers.notify_admins",
+        AsyncMock(side_effect=RuntimeError("users API down")),
+    )
+
+    result = await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
+
+    assert result["provisioning_result"]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_reinstall_progress_notification_is_best_effort(monkeypatch):
+    from src.provisioner.operations import _notify_admins_best_effort
+
+    monkeypatch.setattr(
+        "src.provisioner.operations.notify_admins",
+        AsyncMock(side_effect=RuntimeError("users API down")),
+    )
+
+    await _notify_admins_best_effort("reinstall started", "info", "srv-1")
+
+
+@pytest.mark.asyncio
 async def test_stale_success_skips_ready_status_and_all_success_side_effects(monkeypatch):
     from src.provisioner.handlers import handle_provisioning_success
 
