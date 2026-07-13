@@ -168,7 +168,11 @@ async def reset_provisioning_attempts(
             Server.provisioning_attempts == request.attempt_number,
             Server.provisioning_episode_id == request.episode_id,
         )
-        .values(provisioning_attempts=0, provisioning_episode_id=None)
+        .values(
+            provisioning_attempts=0,
+            provisioning_episode_id=None,
+            status=ServerStatus.READY.value,
+        )
         .returning(Server.provisioning_attempts, Server.provisioning_episode_id)
     )
     result = await db.execute(statement)

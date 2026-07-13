@@ -50,6 +50,7 @@ class InMemoryAttemptSession:
         self.server = SimpleNamespace(
             provisioning_attempts=attempts,
             provisioning_episode_id=None,
+            status="provisioning",
         )
         self.commits = 0
 
@@ -83,6 +84,7 @@ class InMemoryAttemptSession:
             if value is not None:
                 self.server.provisioning_attempts = value
                 self.server.provisioning_episode_id = None
+                self.server.status = "ready"
         result = MagicMock()
         result.one_or_none.return_value = (
             (value, self.server.provisioning_episode_id) if value is not None else None
@@ -112,6 +114,7 @@ async def test_successful_episode_resets_persisted_attempts_and_next_reservation
 
     assert reset.reset is True
     assert db.server.provisioning_attempts == 1
+    assert db.server.status == "ready"
     assert next_attempt.reserved is True
     assert next_attempt.provisioning_attempts == 1
     assert next_attempt.episode_id == "episode-2"
@@ -146,6 +149,7 @@ async def test_stale_success_cannot_reset_first_attempt_of_a_new_episode(monkeyp
     new_attempt = await reserve_provisioning_attempt(
         "srv-1", ProvisioningAttemptReservation(max_attempts=3), db, None
     )
+    db.server.status = "provisioning"
     stale_reset = await reset_provisioning_attempts(
         "srv-1",
         ProvisioningAttemptReset(attempt_number=1, episode_id=old_attempt.episode_id),
@@ -158,3 +162,4 @@ async def test_stale_success_cannot_reset_first_attempt_of_a_new_episode(monkeyp
     assert stale_reset.reset is False
     assert db.server.provisioning_attempts == 1
     assert db.server.provisioning_episode_id == "episode-new"
+    assert db.server.status == "provisioning"

@@ -88,13 +88,46 @@ async def test_success_resets_attempts_before_marking_server_ready(monkeypatch):
         calls.append(("reset", server_handle, attempt_number, episode_id))
         return True
 
-    async def _status(server_handle, status):
-        calls.append(("status", server_handle, status))
-
     monkeypatch.setattr("src.provisioner.handlers.reset_provisioning_attempts", _reset)
-    monkeypatch.setattr("src.provisioner.handlers.update_server_status", _status)
+    update_status = AsyncMock()
+    monkeypatch.setattr(
+        "src.provisioner.handlers.update_server_status", update_status, raising=False
+    )
     monkeypatch.setattr("src.provisioner.handlers.notify_admins", AsyncMock())
 
     await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
 
-    assert calls == [("reset", "srv-1", 1, "episode-1"), ("status", "srv-1", "ready")]
+    assert calls == [("reset", "srv-1", 1, "episode-1")]
+    update_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_success_skips_ready_status_and_all_success_side_effects(monkeypatch):
+    from src.provisioner.handlers import handle_provisioning_success
+
+    monkeypatch.setattr(
+        "src.provisioner.handlers.reset_provisioning_attempts", AsyncMock(return_value=False)
+    )
+    update_status = AsyncMock()
+    save_key = AsyncMock()
+    resolve_incidents = AsyncMock()
+    redeploy = AsyncMock()
+    notify = AsyncMock()
+    monkeypatch.setattr(
+        "src.provisioner.handlers.update_server_status", update_status, raising=False
+    )
+    monkeypatch.setattr("src.provisioner.handlers.save_server_ssh_key", save_key)
+    monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", resolve_incidents)
+    monkeypatch.setattr("src.provisioner.handlers.redeploy_all_services", redeploy)
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins", notify)
+
+    result = await handle_provisioning_success(
+        "srv-1", "203.0.113.10", 1, "episode-1", True, ssh_manager=MagicMock()
+    )
+
+    assert result["provisioning_result"]["status"] == "superseded"
+    update_status.assert_not_awaited()
+    save_key.assert_not_awaited()
+    resolve_incidents.assert_not_awaited()
+    redeploy.assert_not_awaited()
+    notify.assert_not_awaited()

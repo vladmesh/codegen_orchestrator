@@ -151,6 +151,6 @@ async def reserve_provisioning_attempt(
 async def reset_provisioning_attempts(
     server_handle: str, attempt_number: int, episode_id: str
 ) -> bool:
-    """Clear attempts only when no newer attempt has been reserved."""
+    """Atomically clear attempts and mark ready if this attempt is still current."""
     result = await api_client.reset_provisioning_attempts(server_handle, attempt_number, episode_id)
     return result.reset

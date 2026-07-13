@@ -4,7 +4,7 @@ import structlog
 
 from shared.notifications import notify_admins
 
-from .api_client import reset_provisioning_attempts, save_server_ssh_key, update_server_status
+from .api_client import reset_provisioning_attempts, save_server_ssh_key
 from .incidents import resolve_active_incidents
 from .recovery import redeploy_all_services
 from .ssh_manager import SSHManager
@@ -43,7 +43,21 @@ async def handle_provisioning_success(
             server_handle=server_handle,
             attempt=provisioning_attempts,
         )
-    await update_server_status(server_handle, "ready")
+        return {
+            "messages": [
+                {
+                    "message": (
+                        f"Provisioning success for {server_handle} superseded by a newer attempt"
+                    )
+                }
+            ],
+            "provisioning_result": {
+                "status": "superseded",
+                "server_handle": server_handle,
+                "server_ip": server_ip,
+            },
+            "current_agent": "provisioner",
+        }
 
     # Persist SSH key to DB for per-server key storage
     if ssh_manager:
