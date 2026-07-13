@@ -23,10 +23,10 @@ Fixing these two themes deletes real code (an estimated 1500+ lines of dead/dupl
 
 These either cause silent incorrectness, ship a known security hole, or carry a whole dead layer that shadows live code.
 
-### B1. Scaffolder shell-injection fix is incomplete — two of four exec inputs still unguarded
+### B1. Scaffolder shell-injection fix is complete (`codegen_orchestrator-492`)
 - **`services/scaffolder/src/scaffold.py:124,89,233`**, `_run_cmd:31-40`
-- The recent fix (PR #20) validates only `project_name` and `modules`, but `run_scaffold` also interpolates `template_repo` and the `repository_id`-derived `workspace` path straight into `create_subprocess_shell` strings. By the fix's own threat model (ScaffoldMessage fields forwarded straight through the queue), `repository_id="x; rm -rf /"` or a `template_repo` containing `$(...)`/backticks still injects.
-- **Remedy:** Convert `_run_cmd` to `asyncio.create_subprocess_exec` with argument lists (split the `&&` git chains into sequential exec calls). This deletes the entire shell-metacharacter class and demotes `validation.py` to defense-in-depth instead of the only barrier.
+- `scaffold.py` now uses `asyncio.create_subprocess_exec` with argument vectors, and runs the former shell chains as separate Git calls. Workspace traversal and symlink escapes reject before filesystem or Git side effects.
+- Git auth uses an HTTP extra header rather than a credentialed repository URL. Shared diagnostic redaction protects subprocess failure results and logs.
 
 ### ~~B2. `SecretsCipher.decrypt` swallows `InvalidToken`, returns ciphertext, and logs a secret prefix~~ ✅ fixed (9c060007)
 - **`shared/crypto.py:44-55`**
@@ -107,10 +107,10 @@ Beyond the blockers (B2/B3/B4), the swallow-and-continue pattern recurs:
 ## P1 — Security (consolidated)
 
 The security-relevant items, gathered for triage:
-1. **B1** scaffolder shell-injection (incomplete fix) — highest.
+1. ~~**B1** scaffolder shell-injection (incomplete fix).~~ Fixed by `codegen_orchestrator-492`.
 2. ~~**B2** crypto returns ciphertext + logs secret prefix.~~ ✅ fixed (9c060007)
 3. ~~**api fail-open auth** exposes decrypted SSH private keys (above).~~ ✅ fixed (see below)
-4. **`scaffolder/src/scaffold.py:96,99,256`** — GitHub token embedded in clone URL (`https://x-access-token:{token}@...`); on a failed git op the credentialed URL lands in `result.error`, gets logged, and is persisted to the project's DB config as `scaffold_error` (`consumer.py:170-171,230-231`), later shown to users. Use `GIT_ASKPASS`/`http.extraHeader`; redact git stderr before storing.
+4. ~~Scaffolder GitHub token in clone URL and persisted stderr.~~ Fixed by `codegen_orchestrator-492`: Git uses an HTTP extra header and diagnostics are redacted before they are logged or persisted.
 
 ---
 

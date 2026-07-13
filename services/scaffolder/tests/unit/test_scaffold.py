@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from structlog.testing import capture_logs
 
 from src.scaffold import ScaffoldResult, _workspace_has_files, run_ensure_workspace, run_scaffold
 
@@ -53,16 +54,16 @@ class TestRunScaffold:
         commands_run = []
 
         async def fake_subprocess(*args, **kwargs):
-            cmd = args[0] if args else kwargs.get("args", "")
+            cmd = args or tuple(kwargs.get("args", ()))
             commands_run.append(cmd)
-            if "copier copy" in cmd:
+            if cmd[:2] == ("copier", "copy"):
                 workspace.mkdir(parents=True, exist_ok=True)
                 (workspace / ".copier-answers.yml").write_text("_commit: 27c76cef\n")
-            if "tree" in cmd:
+            if cmd[0] == "tree":
                 return tree_process
             return mock_process
 
-        with patch("src.scaffold.asyncio.create_subprocess_shell", side_effect=fake_subprocess):
+        with patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_subprocess):
             result = await run_scaffold(
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
@@ -82,7 +83,7 @@ class TestRunScaffold:
         assert workspace.exists()
 
         # Verify key commands were executed
-        cmd_str = " ".join(commands_run)
+        cmd_str = " ".join(" ".join(command) for command in commands_run)
         assert "copier copy" in cmd_str
         assert "--trust" not in cmd_str
         assert "--vcs-ref=0.3.0" in cmd_str
@@ -101,7 +102,7 @@ class TestRunScaffold:
         async def fake_subprocess(*args, **kwargs):
             return fail_process
 
-        with patch("src.scaffold.asyncio.create_subprocess_shell", side_effect=fake_subprocess):
+        with patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_subprocess):
             result = await run_scaffold(
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
@@ -126,7 +127,7 @@ class TestRunScaffold:
         mock_process.communicate = AsyncMock(return_value=(b"tree output", b""))
         mock_process.returncode = 0
 
-        with patch("src.scaffold.asyncio.create_subprocess_shell", return_value=mock_process):
+        with patch("src.scaffold.asyncio.create_subprocess_exec", return_value=mock_process):
             await run_scaffold(
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
@@ -146,12 +147,123 @@ class TestRunScaffold:
 
 class TestScaffoldInjectionGuard:
     @pytest.mark.asyncio
+    async def test_queue_values_are_preserved_as_single_argv_entries(
+        self, scaffold_msg, settings, fake_token, tmp_path
+    ):
+        settings.workspace_base_path = str(tmp_path)
+        workspace = tmp_path / "repo with spaces"
+        commands: list[tuple[str, ...]] = []
+
+        success = AsyncMock()
+        success.communicate = AsyncMock(return_value=(b"", b""))
+        success.returncode = 0
+        tree = AsyncMock()
+        tree.communicate = AsyncMock(return_value=(b".", b""))
+        tree.returncode = 0
+
+        async def fake_exec(*args, **kwargs):
+            commands.append(args)
+            if args[:2] == ("copier", "copy"):
+                workspace.mkdir(exist_ok=True)
+                (workspace / ".copier-answers.yml").write_text("_commit: abcdef\n")
+            return tree if args[0] == "tree" else success
+
+        with patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await run_scaffold(
+                **(
+                    {key: value for key, value in scaffold_msg.items() if key != "user_id"}
+                    | {
+                        "repository_id": "repo with spaces",
+                        "template_repo": "template repo;$(id)",
+                        "template_ref": "tag;$(id)",
+                    }
+                ),
+                repo_full_name="org/repo;$(id)",
+                github_token=fake_token,
+                settings=settings,
+            )
+
+        assert result.success is True
+        copier = next(command for command in commands if command[:2] == ("copier", "copy"))
+        assert copier[2] == "template repo;$(id)"
+        assert copier[-1] == "--vcs-ref=tag;$(id)"
+        assert all(isinstance(command, tuple) for command in commands)
+
+    @pytest.mark.asyncio
+    async def test_workspace_traversal_and_symlink_escape_stop_before_exec(
+        self, scaffold_msg, settings, fake_token, tmp_path
+    ):
+        settings.workspace_base_path = str(tmp_path / "workspaces")
+        settings_path = tmp_path / "workspaces"
+        settings_path.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (settings_path / "linked").symlink_to(outside, target_is_directory=True)
+
+        with patch("src.scaffold.asyncio.create_subprocess_exec") as mock_exec:
+            traversal = await run_scaffold(
+                **(
+                    {key: value for key, value in scaffold_msg.items() if key != "user_id"}
+                    | {"repository_id": "../outside"}
+                ),
+                repo_full_name="org/project",
+                github_token=fake_token,
+                settings=settings,
+            )
+            symlink = await run_ensure_workspace(
+                repository_id="linked",
+                project_name="my-project",
+                repo_full_name="org/project",
+                github_token=fake_token,
+                settings=settings,
+                repo_exists_on_github=True,
+            )
+
+        assert traversal.success is False
+        assert symlink.success is False
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_subprocess_failure_redacts_credentials_from_result_and_logs(
+        self, scaffold_msg, settings, fake_token, tmp_path
+    ):
+        settings.workspace_base_path = str(tmp_path)
+        sentinel = "scaffold-secret-sentinel"
+        output = (
+            f"https://user:{sentinel}@example.test/repo Authorization: Bearer {sentinel} {sentinel}"
+        )
+        success = AsyncMock()
+        success.communicate = AsyncMock(return_value=(b"", b""))
+        success.returncode = 0
+        failed = AsyncMock()
+        failed.communicate = AsyncMock(return_value=(b"", output.encode()))
+        failed.returncode = 1
+
+        async def fake_exec(*args, **kwargs):
+            return failed if args[:2] == ("copier", "copy") else success
+
+        with (
+            capture_logs() as logs,
+            patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_exec),
+        ):
+            result = await run_scaffold(
+                **{key: value for key, value in scaffold_msg.items() if key != "user_id"},
+                repo_full_name="org/project",
+                github_token=sentinel,
+                settings=settings,
+            )
+
+        assert result.success is False
+        assert sentinel not in (result.error or "")
+        assert sentinel not in str(logs)
+
+    @pytest.mark.asyncio
     async def test_malicious_modules_never_reach_shell(
         self, scaffold_msg, settings, fake_token, tmp_path
     ):
         settings.workspace_base_path = str(tmp_path)
 
-        with patch("src.scaffold.asyncio.create_subprocess_shell") as mock_shell:
+        with patch("src.scaffold.asyncio.create_subprocess_exec") as mock_shell:
             result = await run_scaffold(
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
@@ -175,7 +287,7 @@ class TestScaffoldInjectionGuard:
     ):
         settings.workspace_base_path = str(tmp_path)
 
-        with patch("src.scaffold.asyncio.create_subprocess_shell") as mock_shell:
+        with patch("src.scaffold.asyncio.create_subprocess_exec") as mock_shell:
             result = await run_scaffold(
                 project_id=scaffold_msg["project_id"],
                 repository_id=scaffold_msg["repository_id"],
@@ -198,7 +310,7 @@ class TestScaffoldInjectionGuard:
     ):
         settings.workspace_base_path = str(tmp_path)
 
-        with patch("src.scaffold.asyncio.create_subprocess_shell") as mock_shell:
+        with patch("src.scaffold.asyncio.create_subprocess_exec") as mock_shell:
             result = await run_ensure_workspace(
                 repository_id="repo-456",
                 project_name="evil; rm -rf /",
@@ -244,7 +356,7 @@ class TestRunEnsureWorkspace:
         ws.mkdir()
         (ws / "Makefile").write_text("all:")
 
-        with patch("src.scaffold.asyncio.create_subprocess_shell") as mock_shell:
+        with patch("src.scaffold.asyncio.create_subprocess_exec") as mock_shell:
             result = await run_ensure_workspace(
                 repository_id="repo-456",
                 project_name="my-project",
@@ -274,13 +386,13 @@ class TestRunEnsureWorkspace:
         commands_run = []
 
         async def fake_subprocess(*args, **kwargs):
-            cmd = args[0] if args else kwargs.get("args", "")
+            cmd = args or tuple(kwargs.get("args", ()))
             commands_run.append(cmd)
-            if "tree" in cmd or "find" in cmd:
+            if cmd[0] in {"tree", "find"}:
                 return tree_process
             return mock_process
 
-        with patch("src.scaffold.asyncio.create_subprocess_shell", side_effect=fake_subprocess):
+        with patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_subprocess):
             result = await run_ensure_workspace(
                 repository_id="repo-456",
                 project_name="my-project",
@@ -292,7 +404,7 @@ class TestRunEnsureWorkspace:
 
         assert result.success is True
         assert result.skipped is False
-        cmd_str = " ".join(commands_run)
+        cmd_str = " ".join(" ".join(command) for command in commands_run)
         assert "git clone" in cmd_str
         assert "make setup" in cmd_str
         # Full scaffold commands should NOT be present
