@@ -81,6 +81,36 @@ async def test_processing_error_is_not_acked(monkeypatch):
     assert client.acked == []  # left in PEL for retry
 
 
+async def test_failure_notification_error_does_not_block_ack(monkeypatch):
+    """A best-effort admin notification cannot poison-loop a committed result."""
+    from shared import notifications
+    from src.tasks import provisioner_result_listener as listener
+
+    async def _update(server_id, server):
+        return None
+
+    async def _notify(*args, **kwargs):
+        raise RuntimeError("users API down")
+
+    monkeypatch.setattr(listener.api_client, "update_server", _update)
+    monkeypatch.setattr(notifications, "notify_admins", _notify)
+
+    client = FakeClient()
+    entry = _entry(
+        "13-0",
+        {
+            "request_id": "r",
+            "status": "failed",
+            "server_handle": "h",
+            "errors": ["provisioning failed"],
+        },
+    )
+
+    await handle_provisioner_entry(client, entry)
+
+    assert client.acked == ["13-0"]
+
+
 async def test_superseded_result_causes_no_mutation_or_notification(monkeypatch):
     """A SUPERSEDED result is a no-op: the newer attempt owns the server.
 
@@ -101,7 +131,7 @@ async def test_superseded_result_causes_no_mutation_or_notification(monkeypatch)
         notify_calls.append((args, kwargs))
 
     monkeypatch.setattr(listener.api_client, "update_server", _update)
-    monkeypatch.setattr(listener, "notify_admins", _notify)
+    monkeypatch.setattr(listener, "notify_admins_best_effort", _notify)
 
     result = ProvisionerResult(
         request_id="r", status=ResultStatus.SUPERSEDED, server_handle="srv-1"

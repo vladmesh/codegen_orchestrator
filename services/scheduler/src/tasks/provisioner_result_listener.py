@@ -11,7 +11,7 @@ import structlog
 from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from shared.contracts.queues.provisioner import ProvisionerResult
 from shared.contracts.vocab import ResultStatus
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 from shared.queues import PROVISIONER_RESULTS, SCHEDULER_CONSUMER_GROUP
 from src.clients.api import api_client
 
@@ -118,7 +118,11 @@ async def _handle_failure(result: ProvisionerResult, log) -> None:
                 error=str(e),
             )
 
-    # Notify admins about provisioning failure
     message = f"Provisioning failed for server `{result.server_handle}`\nErrors: {errors_str}"
-    await notify_admins(message, level="error")
-    log.info("admins_notified_about_failure")
+    await notify_admins_best_effort(
+        message,
+        level="error",
+        component="provisioner_result_listener",
+        server_handle=result.server_handle,
+        request_id=result.request_id,
+    )
