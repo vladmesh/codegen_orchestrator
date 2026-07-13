@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
+from structlog.testing import capture_logs
 
 from src.consumers.po import _handle_message, _process_message, _repair_orphan_tool_calls
 
@@ -323,6 +325,35 @@ class TestProcessMessage:
         assert len(xadd_calls) == 1
         assert xadd_calls[0][0][0] == "po:response:r1"
         assert xadd_calls[0][0][1]["error"] == "true"
+
+    @pytest.mark.asyncio
+    async def test_validation_failure_logs_only_safe_errors(self, mock_graph, mock_client):
+        sem = asyncio.Semaphore(10)
+        user_locks: dict[str, asyncio.Lock] = {}
+        sentinel = "unique-user-text-ghp_secret_token"
+        data = {
+            "type": "user_message",
+            "text": sentinel,
+            "user_id": "u1",
+            "api_token": sentinel,
+        }
+
+        with capture_logs() as logs:
+            await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", data)
+
+        mock_client.redis.xack.assert_called_once_with("po:input", "po-consumer", "msg-1")
+        mock_graph.ainvoke.assert_not_called()
+        mock_client.publish_flat.assert_not_called()
+
+        event = next(entry for entry in logs if entry["event"] == "po_input_validation_failed")
+        assert event["msg_id"] == "msg-1"
+        assert "data" not in event
+        assert event["errors"]
+        assert all(set(error) == {"type", "loc"} for error in event["errors"])
+
+        blob = json.dumps(logs, default=str)
+        assert sentinel not in blob
+        assert "input_value" not in blob
 
     @pytest.mark.asyncio
     async def test_per_user_serialization(self, mock_graph, mock_client):
