@@ -170,3 +170,36 @@ async def test_no_notification_when_no_admins(raw_redis, stream_client, mock_bot
         pass
 
     mock_bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_superseded_result_does_not_notify_admins(
+    raw_redis, stream_client, mock_bot, admin_ids
+):
+    """
+    Scenario: A stale provisioning success superseded by a newer attempt.
+
+    Expected: SUPERSEDED is a no-op, not a failure, so admins get no message.
+    """
+    notifier = ProvisionerNotifier(client=stream_client, admin_ids=admin_ids)
+
+    result = ProvisionerResult(
+        request_id="test-req-4",
+        status="superseded",
+        server_handle="srv-superseded",
+    )
+
+    task = await notifier.start(mock_bot)
+    await asyncio.sleep(0.2)
+
+    await stream_client.publish("provisioner:results", result.model_dump(mode="json"))
+    await asyncio.sleep(0.5)
+
+    await notifier.stop()
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    mock_bot.send_message.assert_not_called()

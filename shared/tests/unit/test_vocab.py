@@ -34,7 +34,14 @@ class TestCanonicalValues:
 
     def test_result_status_values(self):
         # 'error' is intentionally gone — collapsed into the single 'failed'.
-        assert {s.value for s in ResultStatus} == {"success", "failed", "timeout"}
+        # 'superseded' is a no-op terminal outcome for a stale operation whose
+        # completion lost to a newer attempt for the same target.
+        assert {s.value for s in ResultStatus} == {
+            "success",
+            "failed",
+            "timeout",
+            "superseded",
+        }
 
     def test_lifecycle_event_values(self):
         assert {e.value for e in LifecycleEvent} == {

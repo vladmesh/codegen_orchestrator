@@ -131,3 +131,43 @@ async def test_stale_success_skips_ready_status_and_all_success_side_effects(mon
     resolve_incidents.assert_not_awaited()
     redeploy.assert_not_awaited()
     notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_success_maps_to_superseded_result_not_failure(monkeypatch):
+    """Stale success must reach the result stream as first-class SUPERSEDED.
+
+    Chain: handle_provisioning_success (reset=False) -> node result ->
+    process_provisioner_job. A superseded completion must not be misread as a
+    failure, otherwise the scheduler would flip an actively-provisioning server
+    to UNREACHABLE and raise a false alarm.
+    """
+    from shared.contracts.queues.provisioner import ProvisionerResult
+    from shared.contracts.vocab import ResultStatus
+    from src.main import process_provisioner_job
+    from src.provisioner.handlers import handle_provisioning_success
+
+    # A newer episode already owns the server, so the conditional reset misses.
+    monkeypatch.setattr(
+        "src.provisioner.handlers.reset_provisioning_attempts", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr("src.provisioner.handlers.update_server_status", AsyncMock(), raising=False)
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins", AsyncMock())
+
+    stale_state = await handle_provisioning_success(
+        "srv-1", "203.0.113.10", 1, "episode-old", False
+    )
+
+    async def _run(self, state):
+        return stale_state
+
+    monkeypatch.setattr("src.main.ProvisionerNode.run", _run)
+
+    result = await process_provisioner_job({"job_id": "job-1", "server_handle": "srv-1"})
+
+    assert result.status == ResultStatus.SUPERSEDED
+    assert result.status != ResultStatus.FAILED
+    assert result.errors is None
+    # The published wire form round-trips as a valid contract for consumers.
+    wire = ProvisionerResult.model_validate(result.model_dump(mode="json"))
+    assert wire.status == ResultStatus.SUPERSEDED
