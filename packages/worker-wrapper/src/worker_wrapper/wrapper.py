@@ -524,23 +524,17 @@ class WorkerWrapper:
 
     def _write_task_md(self, prompt: str):
         """Write prompt to TASK.md so agent sees the updated task."""
-        try:
-            with open(TASK_MD_PATH, "w") as f:
-                f.write(prompt)
-            logger.info("task_md_updated", path=TASK_MD_PATH)
-        except OSError as e:
-            logger.warning("task_md_write_failed", error=str(e))
+        with open(TASK_MD_PATH, "w") as f:
+            f.write(prompt)
+        logger.info("task_md_updated", path=TASK_MD_PATH)
 
     def _write_story_md(self, content: str):
         """Write .story/STORY.md so the worker has story-level context."""
         story_md_path = os.path.join(STORY_DIR, "STORY.md")
-        try:
-            os.makedirs(STORY_DIR, exist_ok=True)
-            with open(story_md_path, "w") as f:
-                f.write(content)
-            logger.info("story_md_updated", path=story_md_path)
-        except OSError as e:
-            logger.warning("story_md_write_failed", error=str(e))
+        os.makedirs(STORY_DIR, exist_ok=True)
+        with open(story_md_path, "w") as f:
+            f.write(content)
+        logger.info("story_md_updated", path=story_md_path)
 
     def _get_git_branch(self) -> str | None:
         """Get current branch name in workspace. Returns None if detached HEAD or error."""

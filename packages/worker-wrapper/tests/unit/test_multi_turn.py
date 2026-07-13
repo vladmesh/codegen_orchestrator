@@ -289,6 +289,30 @@ class TestTaskMdUpdate:
         assert content == "Fix the broken tests\n\nCI logs: error in test_foo"
 
     @pytest.mark.asyncio
+    async def test_task_md_write_failure_stops_agent_launch(self, config, mock_redis_client):
+        wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+        wrapper._git_pull = AsyncMock()
+        wrapper._write_task_md = MagicMock(side_effect=OSError("disk full"))
+        wrapper.execute_agent = AsyncMock()
+
+        with pytest.raises(OSError, match="disk full"):
+            await wrapper.process_message(_make_message("1-0", {"prompt": "New task"}))
+
+        wrapper.execute_agent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_story_md_write_failure_stops_agent_launch(self, config, mock_redis_client):
+        wrapper = WorkerWrapper(config, redis_client=mock_redis_client)
+        wrapper._git_pull = AsyncMock()
+        wrapper._write_story_md = MagicMock(side_effect=OSError("disk full"))
+        wrapper.execute_agent = AsyncMock()
+
+        with pytest.raises(OSError, match="disk full"):
+            await wrapper.process_message(_make_message("1-0", {"story_md": "Fresh context"}))
+
+        wrapper.execute_agent.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_no_task_md_update_when_no_prompt(self, config, mock_redis_client):
         """If message has no prompt, _write_task_md should not be called."""
         msg = _make_message("1-0", {"content": "Some PO message"})

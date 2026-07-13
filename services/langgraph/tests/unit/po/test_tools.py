@@ -122,6 +122,21 @@ class TestCreateProject:
         assert "invalid_mod" in result
         mock_api_client.post.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_repository_failure_propagates(self, mock_api_client):
+        mock_api_client.post.side_effect = [
+            _make_response({"id": "abc123", "name": "my-bot"}),
+            httpx.HTTPStatusError(
+                "repository unavailable", request=MagicMock(), response=MagicMock()
+            ),
+        ]
+
+        with pytest.raises(httpx.HTTPStatusError, match="repository unavailable"):
+            await create_project.ainvoke(
+                {"name": "my-bot", "modules": "backend"},
+                config=_make_config(),
+            )
+
 
 class TestListProjects:
     @pytest.mark.asyncio
@@ -357,6 +372,30 @@ class TestCreateStory:
         assert patched_config["detailed_spec"] == "Build a recipe bot"
 
     @pytest.mark.asyncio
+    async def test_spec_persistence_failure_does_not_publish_to_architect(
+        self, mock_api_client, mock_stream_client
+    ):
+        mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.get.return_value = _make_response(
+            {"id": "abc", "status": "draft", "config": {}}
+        )
+        mock_api_client.patch.side_effect = httpx.HTTPStatusError(
+            "spec persistence unavailable", request=MagicMock(), response=MagicMock()
+        )
+
+        with pytest.raises(httpx.HTTPStatusError, match="spec persistence unavailable"):
+            await create_story.ainvoke(
+                {
+                    "project_id": "abc",
+                    "title": "Create new bot",
+                    "description": "Build a recipe bot",
+                },
+                config=_make_config(),
+            )
+
+        mock_stream_client.publish_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_no_patch_for_feature_on_active(self, mock_api_client, mock_stream_client):
         """For action=feature, should NOT persist description to project config."""
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
@@ -397,6 +436,7 @@ class TestCreateStory:
     @pytest.mark.asyncio
     async def test_passes_user_id_to_architect_message(self, mock_api_client, mock_stream_client):
         mock_api_client.post.return_value = _make_response({"id": "story-xxx"})
+        mock_api_client.patch.return_value = _make_response({"id": "abc"})
         mock_api_client.get.side_effect = [
             _make_response({"id": "abc", "status": "draft", "config": {}}),
             _make_response([]),  # no active stories

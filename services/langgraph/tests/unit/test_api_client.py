@@ -98,6 +98,26 @@ class TestGetServerSSHKey:
         assert result is None
 
 
+class TestReleaseAllocation:
+    @pytest.mark.asyncio
+    async def test_returns_after_confirmed_api_delete(self, api_client, mock_httpx_client):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = httpx.codes.NO_CONTENT
+        mock_httpx_client.request.return_value = response
+
+        assert await api_client.release_allocation(123) is None
+
+    @pytest.mark.asyncio
+    async def test_propagates_api_failure(self, api_client, mock_httpx_client):
+        response = MagicMock(spec=httpx.Response)
+        error = httpx.HTTPStatusError("service unavailable", request=MagicMock(), response=response)
+        mock_httpx_client.request.return_value = response
+        response.raise_for_status.side_effect = error
+
+        with pytest.raises(httpx.HTTPStatusError, match="service unavailable"):
+            await api_client.release_allocation(123)
+
+
 class TestListProjectsWithTelegramId:
     @pytest.mark.asyncio
     async def test_passes_telegram_id_header(self, api_client, mock_httpx_client):
