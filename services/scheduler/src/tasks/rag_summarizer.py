@@ -2,13 +2,13 @@ import asyncio
 
 import structlog
 
-from ..startup import config as _config
+from .. import startup
 
 logger = structlog.get_logger()
 
 
 def _poll_interval() -> int:
-    return _config.get_int("scheduler.rag_summarizer_poll_interval") if _config else 30
+    return startup.get_config().get_int("scheduler.rag_summarizer_poll_interval")
 
 
 async def rag_summarizer_worker() -> None:

@@ -11,7 +11,7 @@ from shared.contracts.dto.worker import WorkerStatus
 from shared.contracts.vocab import AgentType
 from shared.redis import decode_redis_fields
 
-from .config import settings
+from .config import settings, worker_urls
 from .docker_ops import DockerClientWrapper
 from .image_builder import ImageBuilder
 from .container_config import WorkerContainerConfig
@@ -419,8 +419,7 @@ class WorkerManager:
                 path=str(ws_path),
             )
 
-            worker_redis_url = settings.WORKER_REDIS_URL or "redis://redis:6379"
-            worker_api_url = settings.WORKER_API_URL or "http://api:8000"
+            worker_redis_url, worker_api_url = worker_urls(settings)
             container_env = config.to_env_vars(
                 redis_url=worker_redis_url,
                 api_url=worker_api_url,

@@ -24,7 +24,7 @@ from shared.redis_client import RedisStreamClient
 if TYPE_CHECKING:
     from ..clients.api import SchedulerAPIClient
 
-from ..startup import config as _config
+from .. import startup
 
 logger = structlog.get_logger(__name__)
 
@@ -33,31 +33,31 @@ DEPLOY_RETRY_KEY_PREFIX = "deploy:retries:"
 
 
 def _max_deploy_retries() -> int:
-    return _config.get_int("deploy.max_deploy_retries") if _config else 3
+    return startup.get_config().get_int("deploy.max_deploy_retries")
 
 
 def _max_deploy_fix_attempts() -> int:
-    return _config.get_int("deploy.max_deploy_fix_attempts") if _config else 2
+    return startup.get_config().get_int("deploy.max_deploy_fix_attempts")
 
 
 def _deploy_retry_ttl() -> int:
-    return _config.get_int("deploy.deploy_retry_ttl") if _config else 86400
+    return startup.get_config().get_int("deploy.deploy_retry_ttl")
 
 
 def _story_stuck_threshold() -> int:
-    return _config.get_int("supervisor.story_stuck_threshold_minutes") if _config else 5
+    return startup.get_config().get_int("supervisor.story_stuck_threshold_minutes")
 
 
 def _task_stuck_threshold() -> int:
-    return _config.get_int("supervisor.task_stuck_threshold_minutes") if _config else 30
+    return startup.get_config().get_int("supervisor.task_stuck_threshold_minutes")
 
 
 def _max_architect_retries() -> int:
-    return _config.get_int("supervisor.story_max_architect_retries") if _config else 3
+    return startup.get_config().get_int("supervisor.story_max_architect_retries")
 
 
 def _story_retry_ttl() -> int:
-    return _config.get_int("supervisor.story_retry_ttl") if _config else 3600
+    return startup.get_config().get_int("supervisor.story_retry_ttl")
 
 
 def _parse_datetime(value: str | datetime) -> datetime:

@@ -6,7 +6,7 @@ import structlog
 
 from shared.redis_client import RedisStreamClient
 
-from .config import settings
+from .config import settings, worker_urls
 from .manager import WorkerManager
 from .consumer import WorkerCommandConsumer
 from .events import DockerEventsListener
@@ -42,6 +42,7 @@ async def run_periodic_task(coro_func, interval: int, name: str):
 async def lifespan(app: FastAPI):
     # Startup
     global redis, worker_manager
+    worker_urls()
     redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     worker_manager = WorkerManager(redis)
 

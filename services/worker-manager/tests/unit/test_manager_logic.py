@@ -60,8 +60,8 @@ async def test_network_selection_uses_worker_network():
         mock_settings.INTERNAL_NETWORK = "codegen_internal"
         mock_settings.WORKER_NETWORK = "codegen_worker"
         mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
-        mock_settings.WORKER_REDIS_URL = ""
-        mock_settings.WORKER_API_URL = ""
+        mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
+        mock_settings.WORKER_API_URL = "http://worker-api:8000"
         mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
         mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
@@ -79,6 +79,9 @@ async def test_network_selection_uses_worker_network():
     # run_container should have been called with network="codegen_worker"
     run_call = wrapper.run_container.call_args
     assert run_call.kwargs.get("network") == "codegen_worker" or run_call[1].get("network") == "codegen_worker"
+    container_env = run_call.kwargs.get("environment") or run_call[1]["environment"]
+    assert container_env["WORKER_REDIS_URL"] == "redis://worker-redis:6379/0"
+    assert container_env["WORKER_API_URL"] == "http://worker-api:8000"
 
 
 @pytest.mark.asyncio
@@ -410,8 +413,8 @@ async def test_checkout_branch_called_when_branch_provided():
         mock_settings.DOCKER_NETWORK = ""
         mock_settings.WORKER_NETWORK = "codegen_worker"
         mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
-        mock_settings.WORKER_REDIS_URL = ""
-        mock_settings.WORKER_API_URL = ""
+        mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
+        mock_settings.WORKER_API_URL = "http://worker-api:8000"
         mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
         mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"
@@ -468,8 +471,8 @@ async def test_no_checkout_branch_when_branch_is_none():
         mock_settings.DOCKER_NETWORK = ""
         mock_settings.WORKER_NETWORK = "codegen_worker"
         mock_settings.SCAFFOLDED_WORKSPACE_PATH = "/data/ws"
-        mock_settings.WORKER_REDIS_URL = ""
-        mock_settings.WORKER_API_URL = ""
+        mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
+        mock_settings.WORKER_API_URL = "http://worker-api:8000"
         mock_settings.WORKER_SUBPROCESS_TIMEOUT_SECONDS = 300
         mock_settings.WORKER_MANAGER_URL = "http://worker-manager:8000"
         mock_settings.WORKER_IMAGE_PREFIX = "worker"

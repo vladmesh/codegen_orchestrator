@@ -38,7 +38,7 @@
 - Swallow-list:
   - [x] rag_ingest embeddings, worker-wrapper TASK.md/STORY.md writes, PO repository/spec writes and `release_allocation` (`codegen_orchestrator-476`)
   - [x] architect `"422" in str(e)`, `_base` poison-loop, infra api_client, notifications (`codegen_orchestrator-477`) — thermo §"fail-fast violations"
-- Magic-number config fallbacks (supervisor/worker-manager/api_types) — thermo §там же
+- [x] Magic-number config fallbacks (supervisor/worker-manager/api_types) — `codegen_orchestrator-489`, thermo §там же
 
 ## Decisions
 - **Sprint 001 припаркован.** Его Phase 0/1 (github split #19, ddgs-rename, noqa) сделаны; Phase 2
