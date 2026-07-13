@@ -7,9 +7,9 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
 - **Type**: tech
 - **Started**: 2026-07-01
-- **Current Phase**: Sprint 002 Phase 4 (silent failures → fail-fast), RED after the
-  [closeout audit](reports/sprint-002-closeout-audit.md). B3/B4 and the named swallow-list slices
-  landed, but Stage 4 remains active for the audited blocker boundaries.
+- **Current Phase**: Stage 5 next. Sprint 002 Phase 4 (silent failures → fail-fast) is complete
+  after the [closeout audit rerun](reports/sprint-002-closeout-audit-rerun.md): all five prior
+  blocker boundaries are closed on fetched `origin/main`; deterministic mock-smoke evidence is next.
 
 ## Current Facts
 
@@ -56,7 +56,7 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
 | 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | COMPLETE — B7 enums (`codegen_orchestrator-435`), duplicated vocabularies (`codegen_orchestrator-436`), typed `Run.result` union (`codegen_orchestrator-440`) |
 | 3 | Типизированный consume + мёртвый код (B5, B6) | COMPLETE — `consume_typed` (PR #40), B6 worker result (PR #41), engineering consumer typed + dead-layer removal (`codegen_orchestrator-457`, PR #42) |
-| 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Active. Worker compose, provisioner outage and notification caller-policy slices are closed; the remaining audit groups still block Stage 4. |
+| 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | COMPLETE — rerun audit on `b0463fb3` closes scaffolder/auth diagnostics, worker compose, provisioner outage and notification caller-policy boundaries. |
 
 ## Recent Stabilization Work
 
@@ -74,7 +74,7 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | B3 incident journal reconciliation (`codegen_orchestrator-466`) | COMPLETE | Successful provisioning writes `READY` before journal closure. An unavailable journal remains observable and gets one warning; scheduler retries only active `provisioning_failed` entries for `READY` servers, idempotently and without recovery actions or per-tick notifications. |
 | B4 secret resolver fail-fast (`codegen_orchestrator-473`) | COMPLETE | Resolver validates project context, allocations and repository metadata before deploy, rejects unknown computed values, and propagates secret-persistence failures through the deploy error path. The closeout audit tracks remaining Phase 4 boundaries separately. |
 | Worker compose and provisioner outage bounds (`codegen_orchestrator-493`) | COMPLETE | Worker recipes preserve curl, JSON and compose failures and required override installation fails the task. Incident-journal reclaim retries only the journal write, then publishes one bounded terminal failure before ACK. |
-| Sprint 002 closeout audit (`codegen_orchestrator-490`) | RED | [Audit report](reports/sprint-002-closeout-audit.md): Phases 2/3 are substantially real, but Stage 4 remains active until the five minimal blocker slices land. E2E/Fix/Docs remain pending. |
+| Sprint 002 closeout audit rerun (`codegen_orchestrator-495`) | COMPLETE, GREEN | [Original RED audit](reports/sprint-002-closeout-audit.md) is retained as historical evidence. The [rerun](reports/sprint-002-closeout-audit-rerun.md) verifies all five blocker slices on fetched `origin/main`; E2E remains pending and Stage 5 is next. |
 
 ## Sprint History
 

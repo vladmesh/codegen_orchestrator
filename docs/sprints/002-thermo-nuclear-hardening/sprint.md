@@ -29,7 +29,7 @@
 - [x] `worker:lifecycle` стрим+контракт, второй `agent_config_cache`, `scaffold_phase.py`, `shared` compat-shims (RedisStreamClient try/except, ServiceDeployment/DeploymentStatus алиасы, legacy DeploymentStatus enum, ensure_consumer_groups) удалены — `codegen_orchestrator-457`, thermo §"Dead code"
 - Приватизация raw `publish`/`publish_flat` НЕ входит в срез: методы держат ~13 живых production call sites (callback-события, PO input/proactive, provisioner/worker responses) — миграция на `publish_message` идёт по consumer'ам в Phase 3/4, raw API не расширялся.
 
-## Phase 4: Тихие ошибки → fail-fast
+## Phase 4: Тихие ошибки → fail-fast ✓ (COMPLETE)
 - [x] B3 infra incidents: атомарный лимит provisioning attempts (`codegen_orchestrator-464`) и
   incident journal reconciliation (`codegen_orchestrator-466`). Successful provisioning writes
   `READY` before journal closure; temporary closure failure remains observable and scheduler resolves
@@ -57,8 +57,9 @@
 - Lower-priority nits (thermo §"Lower-priority nits").
 
 ## Endgame
-- Audit: complete: [closeout audit](../../reports/sprint-002-closeout-audit.md),
-  **RED — Stage 4 remains active**
+- Audit: complete: [original RED audit](../../reports/sprint-002-closeout-audit.md) and
+  [rerun](../../reports/sprint-002-closeout-audit-rerun.md),
+  **GREEN — Stage 4 exit gate выполнен**
 - E2E: pending
-- Fix phase: pending
-- Docs: pending
+- Fix phase: complete
+- Docs: complete
