@@ -10,6 +10,7 @@ import pytest
 from shared.contracts.dto.repository import RepositoryDTO
 from shared.contracts.dto.story import StoryDTO
 from shared.contracts.dto.task import TaskDTO, TaskEventDTO
+from shared.contracts.vocab import ActionType
 
 # ---------------------------------------------------------------------------
 # Helper factories — build valid DTO instances with sensible defaults
@@ -176,6 +177,28 @@ class TestDispatchTodoTasks:
         redis_client.publish_message.assert_called_once()
 
         # Should transition task to in_dev
+        api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
+
+    @pytest.mark.asyncio
+    async def test_dispatches_refactor_task_as_feature_action(self, api_client, redis_client):
+        """Planning refactors use the engineering feature action."""
+        from src.tasks.task_dispatcher import dispatch_todo_tasks
+
+        api_client.get_tasks_by_status.return_value = [
+            _task(
+                type="refactor",
+                project_id=PROJ_ID,
+                story_id="story-1",
+            )
+        ]
+        api_client.get_task_events.return_value = []
+
+        dispatched = await dispatch_todo_tasks(api_client, redis_client)
+
+        assert dispatched == 1
+        api_client.create_run.assert_called_once()
+        eng_msg = redis_client.publish_message.call_args[0][1]
+        assert eng_msg.action is ActionType.FEATURE
         api_client.transition_task.assert_called_once_with("task-1", "in_dev", "dispatcher")
 
     @pytest.mark.asyncio

@@ -18,8 +18,9 @@ import uuid
 import structlog
 
 from shared.contracts.dto.project import ProjectStatus
-from shared.contracts.dto.task import TaskStatus
+from shared.contracts.dto.task import TaskStatus, TaskType
 from shared.contracts.queues.engineering import EngineeringMessage
+from shared.contracts.vocab import ActionType
 from shared.queues import ENGINEERING_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -181,11 +182,12 @@ async def dispatch_todo_tasks(
 
         # Publish EngineeringMessage
         branch = f"story/{story_id}" if story_id else None
+        action = ActionType.FEATURE if task.type is TaskType.REFACTOR else ActionType(task.type)
         eng_msg = EngineeringMessage(
             task_id=run_id,
             project_id=project_id,
             user_id=str(user_id),
-            action=task.type,
+            action=action,
             description=description,
             skip_deploy=True,  # Deploy handled at story level
             planning_task_id=task_id,
