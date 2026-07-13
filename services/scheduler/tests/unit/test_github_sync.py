@@ -20,7 +20,7 @@ def mock_api_client():
 
 @pytest.fixture
 def mock_notify_admins():
-    with patch("src.tasks.github_sync.notify_admins", new_callable=AsyncMock) as mock:
+    with patch("src.tasks.github_sync.notify_admins_best_effort", new_callable=AsyncMock) as mock:
         yield mock
 
 

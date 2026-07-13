@@ -11,7 +11,7 @@ import structlog
 from shared.clients.time4vps import Time4VPSClient
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerCreate, ServerStatus, ServerUpdate
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 from src.clients.api import api_client
 
 from .. import startup
@@ -243,10 +243,12 @@ async def _sync_server_list(client: Time4VPSClient) -> tuple[int, int, int]:
 
     # Send notifications for new managed servers
     for server in new_managed_servers:
-        await notify_admins(
+        await notify_admins_best_effort(
             f"New managed server discovered: *{server.handle}* ({server.public_ip}). "
             "Provisioning will be triggered automatically.",
             level="info",
+            component="server_sync",
+            server_handle=server.handle,
         )
     return discovered_count, updated_count, missing_count
 
@@ -359,9 +361,11 @@ async def _check_provisioning_triggers() -> int:
         triggers_published += 1
 
         # Notify admins
-        await notify_admins(
+        await notify_admins_best_effort(
             f"Force rebuild triggered for server *{server.handle}*. Provisioning started.",
             level="warning",
+            component="server_sync",
+            server_handle=server.handle,
         )
 
     # 2. PENDING_SETUP

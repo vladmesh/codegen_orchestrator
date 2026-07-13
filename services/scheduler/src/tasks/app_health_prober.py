@@ -14,7 +14,7 @@ import structlog
 from shared.clients.infra_client import check_http_health
 from shared.contracts.dto.application import ApplicationStatus
 from shared.models.incident import IncidentType
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 from src.clients.api import api_client
 from src.tasks.ssl_checker import check_ssl_expiry
 
@@ -83,10 +83,13 @@ async def check_application(
             )
             for incident in active:
                 await api_client.resolve_incident(incident.id)
-                await notify_admins(
+                await notify_admins_best_effort(
                     f"Application *{app.service_name}* on {server_ip} is back — "
                     "SERVICE_DOWN incident resolved.",
                     level="success",
+                    component="app_health_prober",
+                    application_id=app_id,
+                    server_handle=app.server_handle,
                 )
 
         log.debug("app_health_ok", response_time_ms=health.get("response_time_ms"))
@@ -118,10 +121,13 @@ async def check_application(
                     },
                     affected_services=[app.service_name],
                 )
-                await notify_admins(
+                await notify_admins_best_effort(
                     f"Application *{app.service_name}* on {server_ip} is DOWN — "
                     f"{consecutive_failures} consecutive failures.",
                     level="critical",
+                    component="app_health_prober",
+                    application_id=app_id,
+                    server_handle=app.server_handle,
                 )
 
         log.warning(
@@ -149,10 +155,13 @@ async def check_application(
                     },
                     affected_services=[app.service_name],
                 )
-                await notify_admins(
+                await notify_admins_best_effort(
                     f"SSL cert for *{app.service_name}* on {server_ip} "
                     f"expires in {days_until_expiry} days.",
                     level="warning",
+                    component="app_health_prober",
+                    application_id=app_id,
+                    server_handle=app.server_handle,
                 )
 
     # Append health history

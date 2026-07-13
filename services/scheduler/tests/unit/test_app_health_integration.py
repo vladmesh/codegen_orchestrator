@@ -129,7 +129,7 @@ class TestFullProbeFlow:
         with (
             patch.object(prober, "check_http_health", new_callable=AsyncMock) as mock_http,
             patch.object(prober, "check_ssl_expiry", new_callable=AsyncMock) as mock_ssl,
-            patch.object(prober, "notify_admins", new_callable=AsyncMock),
+            patch.object(prober, "notify_admins_best_effort", new_callable=AsyncMock),
         ):
             mock_ssl.return_value = None
 
@@ -181,7 +181,7 @@ class TestFullProbeFlow:
         with (
             patch.object(prober, "check_http_health", new_callable=AsyncMock) as mock_http,
             patch.object(prober, "check_ssl_expiry", new_callable=AsyncMock) as mock_ssl,
-            patch.object(prober, "notify_admins", new_callable=AsyncMock),
+            patch.object(prober, "notify_admins_best_effort", new_callable=AsyncMock),
         ):
             mock_http.return_value = health_result
             mock_ssl.return_value = expiry_soon

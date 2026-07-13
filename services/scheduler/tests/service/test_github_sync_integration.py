@@ -19,7 +19,9 @@ async def test_github_sync_notifies_admins_for_unknown_repo(mock_github, api_cli
 
     repo = await mock_github.create_repo(org=org_name, name=repo_name, private=True)
 
-    with patch("src.tasks.github_sync.notify_admins", new_callable=AsyncMock) as mock_notify:
+    with patch(
+        "src.tasks.github_sync.notify_admins_best_effort", new_callable=AsyncMock
+    ) as mock_notify:
         await github_sync._sync_single_repo(mock_github, repo, missing_counters={})
 
     # Repository should NOT be tracked

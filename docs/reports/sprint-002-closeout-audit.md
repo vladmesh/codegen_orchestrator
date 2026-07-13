@@ -31,7 +31,7 @@ the next active stage until the blocker slices below land and this audit is reru
 | Scaffolder process/auth boundary | Closed by `codegen_orchestrator-492`: `scaffold.py` runs argv vectors, rejects workspace traversal/symlink escapes, uses Git's HTTP extra header and redacts diagnostics before result/log persistence. | Targeted regression tests cover metacharacters, escaped workspaces and credential sentinels. | No remaining dependency for this slice. |
 | Worker compose proxy fail-fast | Closed by `codegen_orchestrator-493`: generated recipes preserve curl, JSON and compose-proxy failures and write safe proxy stderr; required override installation fails the worker task. | Executed fake-proxy recipe tests cover success, transport, invalid JSON, missing result and non-zero compose exit. | No remaining dependency for this slice. |
 | Provisioner outage terminal policy | Closed by `codegen_orchestrator-493`: a reclaimed journal outage retries only the required incident write, not Ansible or server creation. After the bounded budget it publishes one terminal failure and ACKs. | Unit tests cover bounded retry, recovered journal write, duplicate delivery after terminal publish and ACK behavior. | No remaining dependency for this slice. |
-| Notification caller policy | Scheduler periodic workers in `health_checker.py`, `server_sync.py`, `github_sync.py`, `app_health_prober.py` call fail-fast `notify_admins` for outcome-independent alerts. A users-API outage aborts the rest of the tick and a deduped incident may never alert later. | Route outcome-independent alerts through `notify_admins_best_effort` or an explicit local boundary; tests prove one failed notification does not skip remaining entities. Keep outcome-gating notifications fail-fast only where documented. | `codegen_orchestrator-486`, PR #49. |
+| Notification caller policy | Closed by `codegen_orchestrator-494`: periodic scheduler alerts, supervisor terminal alerts, langgraph worker-gave-up alerts, and provisioning/recovery alerts all use the shared best-effort boundary after their state mutation. `notify_admins` remains the raising primitive for a caller that explicitly needs delivery to gate its outcome; no live caller currently has that ownership. A users-API outage no longer aborts a sweep. | Candidate for the next closeout audit; this card does not declare Stage 4 green. | `codegen_orchestrator-494`. |
 | Diagnostic secret safety | Closed by `codegen_orchestrator-492`: Redis connect diagnostics omit the URL; worker/scaffolder validation errors use the shared type/loc sanitizer; scaffold failures redact URLs, authorization headers and known tokens. | Targeted regression tests capture credential sentinels from logs and persisted scaffold results. | No remaining dependency for this slice. |
 
 ## Verification record
@@ -74,7 +74,7 @@ still reproducible.
 | B4 secret resolver | real | `SecretResolverNode` rejects missing/unknown project context, allocation, repository metadata and persistence failure before deploy. | 34 resolver tests in targeted LangGraph run pass. Downstream deployer still contains unrelated raw-dict defaults. |
 | Required writes and swallow-list | partial | RAG embedding errors propagate; TASK/STORY writes propagate; PO repo/spec writes and `release_allocation` propagate. | Required Makefile override installation and compose recipe failures are fail-fast. Git refresh remains warning-only. |
 | Architect/consumer/infra API boundaries | real | Architect branches on HTTP status; `_base` distinguishes terminal validation; infra client methods raise; provisioning notifications are explicitly best-effort. | Targeted tests pass. The provisioner outage needs a bounded policy above the single-attempt boundary. |
-| Notifications | partial | `notify_admins` now validates/raises and provisioning callers use `notify_admins_best_effort`. | Shared notification tests pass. Eleven scheduler calls still use the raising function for outcome-independent alerts (`-486`). |
+| Notifications | real | `notify_admins` is the documented raising primitive; outcome-independent callers use `notify_admins_best_effort`, which logs one safe failure record and does not promise delivery. | Caller inventory and sweep-continuation tests in `codegen_orchestrator-494`; rerun the closeout audit before declaring Stage 4 green. |
 | Runtime config fallbacks | real | Scheduler tasks use initialized `startup.get_config`; worker-manager validates worker URLs; dead langgraph `server_ip or host` response types were removed. | Startup/worker URL tests pass. Domain-level `public_ip or host` in provisioning is a separate intentional server-address rule, not a config default. |
 
 ## Required system classes
@@ -199,7 +199,17 @@ still reproducible.
 | `codegen_orchestrator-447` | Stage 4 security blocker | Full Redis URL with password/token is logged. |
 | `codegen_orchestrator-460` | Stage 5+ reliability follow-up | Dispatcher create-run/publish/transition is non-atomic and can create orphan runs. Serious P2 orchestration debt; address before live-service stages. |
 | `codegen_orchestrator-472` | Stage 4 blocker | A correct transient single-attempt policy becomes an infinite reclaim loop during a persistent outage. |
-| `codegen_orchestrator-486` | Stage 4 blocker | PR #49 migrated only provisioning/recovery callers, so the sprint's notifications claim is partial. |
+| `codegen_orchestrator-486` | Closed by successor | `codegen_orchestrator-494` completes the scheduler and workflow caller-policy migration. |
+
+### Notification caller inventory (`codegen_orchestrator-494`)
+
+| Caller group | Policy | Reason |
+|---|---|---|
+| Scheduler `health_checker`, `server_sync`, `github_sync`, `app_health_prober` | outcome-independent, shared best-effort | The incident, status, repository, or provisioning trigger has already been persisted before alert delivery. |
+| Scheduler `supervisor`, `provisioner_result_listener` | outcome-independent, shared best-effort | The terminal story/server result is committed before the diagnostic alert. |
+| Langgraph `engineering_result_handler` | outcome-independent, shared best-effort | The task and story transition to human review precedes the admin alert. |
+| Infra provisioner handlers, operations, node, recovery | outcome-independent, shared best-effort | Provisioning/recovery state and journal ownership are independent of Telegram/users API delivery. |
+| `notify_admins` primitive | outcome-gating primitive, currently no live owner | It propagates users API/config/validation failures for a future caller whose outcome explicitly owns notification delivery. |
 | PR #49 | partial | Explicit architect/base/infra boundaries are real. Caller-policy split remains. `gh pr view` shows no retained GitHub comments/reviews. |
 | PR #50 | real | PO logs use safe validation sanitizer and delayed context binding; sentinel tests pass. Adjacent validation logs were out of slice. |
 | PR #51 | real for its slice | Scheduler config and worker URLs fail at startup; API types restored. It does not close domain or security blockers above. |

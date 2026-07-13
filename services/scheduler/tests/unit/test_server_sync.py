@@ -10,7 +10,7 @@ from src.tasks import server_sync
 
 @pytest.fixture
 def mock_notify_admins():
-    with patch("src.tasks.server_sync.notify_admins", new_callable=AsyncMock) as mock:
+    with patch("src.tasks.server_sync.notify_admins_best_effort", new_callable=AsyncMock) as mock:
         yield mock
 
 
@@ -137,6 +137,27 @@ async def test_check_provisioning_triggers_detects_force_rebuild(
         mock_trigger.assert_called_with("vps-1", is_incident_recovery=False)
         mock_api_client.update_server.assert_called()
         assert mock_api_client.update_server.call_args[0][1].status == ServerStatus.PROVISIONING
+
+
+@pytest.mark.asyncio
+async def test_force_rebuild_sweep_continues_after_first_notification_failure(mock_api_client):
+    first = _ready_server("first").model_copy(update={"status": ServerStatus.FORCE_REBUILD})
+    second = _ready_server("second").model_copy(update={"status": ServerStatus.FORCE_REBUILD})
+    mock_api_client.get_servers = AsyncMock(return_value=[first, second])
+    mock_api_client.update_server = AsyncMock()
+
+    with (
+        patch(
+            "src.tasks.server_sync.publish_provisioner_trigger", new_callable=AsyncMock
+        ) as trigger,
+        patch("shared.notifications.notify_admins", new_callable=AsyncMock) as notify,
+    ):
+        notify.side_effect = RuntimeError("users API unavailable")
+        published = await server_sync._check_provisioning_triggers()
+
+    assert published == 2
+    assert trigger.await_count == 2
+    assert mock_api_client.update_server.await_count == 2
 
 
 def _incident(incident_id: int, server_handle: str, incident_type: IncidentType) -> IncidentDTO:

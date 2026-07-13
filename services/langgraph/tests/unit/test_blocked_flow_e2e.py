@@ -63,7 +63,9 @@ class TestBlockedFlowEndToEnd:
         assert result["worker_id"] == "w-1"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     @patch("src.consumers.engineering_result_handler.api_client")
     async def test_handle_worker_gave_up_full_chain(self, mock_api, mock_po_event, mock_notify):

@@ -134,6 +134,40 @@ class TestNotifyAdmins:
             await notifications_mod.notify_admins("test")
 
 
+class TestBestEffortNotifications:
+    @pytest.mark.asyncio
+    async def test_zero_recipients_is_a_valid_best_effort_result(self):
+        with patch.object(notifications_mod, "notify_admins", new_callable=AsyncMock) as notify:
+            notify.return_value = 0
+            with patch.object(notifications_mod.logger, "error") as log_error:
+                assert (
+                    await notifications_mod.notify_admins_best_effort("test", component="test")
+                    is None
+                )
+
+        log_error.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failure_logs_once_with_safe_context_and_error_type(self):
+        with patch.object(notifications_mod, "notify_admins", new_callable=AsyncMock) as notify:
+            notify.side_effect = RuntimeError("response payload must stay private")
+            with patch.object(notifications_mod.logger, "error") as log_error:
+                assert (
+                    await notifications_mod.notify_admins_best_effort(
+                        "test", component="test", server_handle="server-1"
+                    )
+                    is None
+                )
+
+        log_error.assert_called_once_with(
+            "admin_notification_failed",
+            level="info",
+            error_type="RuntimeError",
+            component="test",
+            server_handle="server-1",
+        )
+
+
 class TestSendTelegramParseRetry:
     """send_telegram_message retries without parse_mode on entity parse errors."""
 

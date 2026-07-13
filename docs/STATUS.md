@@ -56,7 +56,7 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
 | 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | COMPLETE — B7 enums (`codegen_orchestrator-435`), duplicated vocabularies (`codegen_orchestrator-436`), typed `Run.result` union (`codegen_orchestrator-440`) |
 | 3 | Типизированный consume + мёртвый код (B5, B6) | COMPLETE — `consume_typed` (PR #40), B6 worker result (PR #41), engineering consumer typed + dead-layer removal (`codegen_orchestrator-457`, PR #42) |
-| 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Active. Worker compose and provisioner outage slices are closed; notification caller policy and the remaining audit groups still block Stage 4. |
+| 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Active. Worker compose, provisioner outage and notification caller-policy slices are closed; the remaining audit groups still block Stage 4. |
 
 ## Recent Stabilization Work
 
