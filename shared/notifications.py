@@ -12,7 +12,10 @@ from http import HTTPStatus
 import os
 
 import aiohttp
+from pydantic import TypeAdapter, ValidationError
 import structlog
+
+from shared.contracts.dto.user import UserDTO
 
 logger = structlog.get_logger(__name__)
 
@@ -172,20 +175,19 @@ async def notify_admins(message: str, level: str = "info") -> int:
                 f"{config['api_url']}/api/users", timeout=aiohttp.ClientTimeout(total=5)
             ) as resp:
                 if resp.status != HTTPStatus.OK:
-                    logger.error("fetch_users_failed", status=resp.status)
-                    return 0
+                    raise RuntimeError(f"users API returned HTTP {resp.status}")
 
-                users = await resp.json()
-    except Exception as e:
-        logger.error("fetch_users_error", error=str(e))
-        return 0
+                users = TypeAdapter(list[UserDTO]).validate_python(await resp.json())
+    except (aiohttp.ClientError, TimeoutError, ValidationError, RuntimeError) as exc:
+        logger.error("fetch_users_failed", error_type=type(exc).__name__, exc_info=True)
+        raise
 
     if not users:
         logger.warning("no_users_found", action="skip_notifications")
         return 0
 
     # Filter admin users
-    admin_users = [u for u in users if u.get("is_admin")]
+    admin_users = [user for user in users if user.is_admin]
 
     if not admin_users:
         logger.warning("no_admin_users_found", action="skip_notifications")
@@ -196,7 +198,7 @@ async def notify_admins(message: str, level: str = "info") -> int:
     formatted_message = f"{emoji} {message}"
 
     # Send to all admins in parallel
-    tasks = [send_telegram_message(user["telegram_id"], formatted_message) for user in admin_users]
+    tasks = [send_telegram_message(user.telegram_id, formatted_message) for user in admin_users]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 

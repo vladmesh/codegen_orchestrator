@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 import os
 import signal
 
+from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.run import RunStatus
@@ -44,6 +45,14 @@ _TERMINAL_STORY_STATUSES = {
     StoryStatus.FAILED.value,
     StoryStatus.ARCHIVED.value,
 }
+
+
+def _safe_validation_errors(exc: ValidationError) -> list[dict]:
+    """Return validation diagnostics without values from the Redis entry."""
+    return [
+        {"type": error["type"], "loc": list(error["loc"])}
+        for error in exc.errors(include_url=False, include_input=False)
+    ]
 
 
 def _handle_shutdown(signum, _frame):
@@ -145,12 +154,23 @@ async def run_queue_worker(
                 msg.data.update(result)
                 await redis.ack(queue, group, msg.message_id)
                 logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
-            except Exception as e:
+            except ValidationError as exc:
+                # A schema error cannot become valid when reclaimed from the PEL.
+                # ACK it after recording a payload-safe terminal diagnostic.
+                logger.error(
+                    "terminal_message_validation_failed",
+                    entry_id=msg.message_id,
+                    worker=service_name,
+                    errors=_safe_validation_errors(exc),
+                )
+                await redis.ack(queue, group, msg.message_id)
+            except Exception as exc:
                 logger.error(
                     "job_processing_error",
                     entry_id=msg.message_id,
-                    error=str(e),
+                    error_type=type(exc).__name__,
                     worker=service_name,
+                    exc_info=True,
                 )
             finally:
                 unbind_message_context()

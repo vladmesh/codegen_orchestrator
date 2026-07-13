@@ -65,8 +65,7 @@ async def handle_provisioning_success(
         if private_key:
             await save_server_ssh_key(server_handle, private_key)
 
-    if not await update_server_status(server_handle, "ready"):
-        raise RuntimeError(f"Failed to mark provisioned server {server_handle} as ready")
+    await update_server_status(server_handle, "ready")
 
     incident_journal_status = "resolved"
     try:

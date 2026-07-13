@@ -8,6 +8,7 @@ import structlog
 
 from shared.notifications import notify_admins
 
+from ..clients.api import DeploymentRecord
 from ..config.constants import Paths, Timeouts
 from .api_client import get_services_on_server
 
@@ -17,7 +18,7 @@ MAX_ERROR_PREVIEW = 5
 
 
 async def redeploy_service(
-    service: dict,
+    service: DeploymentRecord,
     server_ip: str,
     github_token: str,
 ) -> tuple[bool, str]:
@@ -31,9 +32,9 @@ async def redeploy_service(
     Returns:
         Tuple of (success: bool, message: str)
     """
-    service_name = service.get("service_name", "unknown")
-    repo_full_name = service.get("deployment_info", {}).get("repo_full_name")
-    port = service.get("port")
+    service_name = service.service_name
+    repo_full_name = service.deployment_info.get("repo_full_name")
+    port = service.port
 
     if not repo_full_name:
         return False, f"Service {service_name} has no repo_full_name in deployment_info"
@@ -161,8 +162,8 @@ async def redeploy_all_services(
     errors = []
 
     for service in services:
-        service_name = service.get("service_name", "unknown")
-        repo_full_name = service.get("deployment_info", {}).get("repo_full_name")
+        service_name = service.service_name
+        repo_full_name = service.deployment_info.get("repo_full_name")
 
         if not repo_full_name:
             errors.append(f"{service_name}: no repo info")
