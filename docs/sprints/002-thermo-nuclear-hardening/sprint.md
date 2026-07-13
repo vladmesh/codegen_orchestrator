@@ -57,7 +57,8 @@
 - Lower-priority nits (thermo §"Lower-priority nits").
 
 ## Endgame
-- Audit: pending
+- Audit: complete: [closeout audit](../../reports/sprint-002-closeout-audit.md),
+  **RED — Stage 4 remains active**
 - E2E: pending
 - Fix phase: pending
 - Docs: pending
