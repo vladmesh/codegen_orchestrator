@@ -92,6 +92,19 @@ class ProvisioningAttemptReservationResult(BaseModel):
     provisioning_attempts: int
 
 
+class ProvisioningAttemptReset(BaseModel):
+    """Request to close an episode only when its attempt is still current."""
+
+    attempt_number: int = Field(gt=0)
+
+
+class ProvisioningAttemptResetResult(BaseModel):
+    """Result of conditionally closing a provisioning attempt episode."""
+
+    reset: bool
+    provisioning_attempts: int
+
+
 class ServerDTO(TimestampedDTO):
     """Server response."""
 

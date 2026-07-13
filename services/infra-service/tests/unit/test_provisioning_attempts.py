@@ -83,8 +83,9 @@ async def test_success_resets_attempts_before_marking_server_ready(monkeypatch):
 
     calls = []
 
-    async def _reset(server_handle):
-        calls.append(("reset", server_handle))
+    async def _reset(server_handle, attempt_number):
+        calls.append(("reset", server_handle, attempt_number))
+        return True
 
     async def _status(server_handle, status):
         calls.append(("status", server_handle, status))
@@ -95,4 +96,4 @@ async def test_success_resets_attempts_before_marking_server_ready(monkeypatch):
 
     await handle_provisioning_success("srv-1", "203.0.113.10", 1, False)
 
-    assert calls == [("reset", "srv-1"), ("status", "srv-1", "ready")]
+    assert calls == [("reset", "srv-1", 1), ("status", "srv-1", "ready")]

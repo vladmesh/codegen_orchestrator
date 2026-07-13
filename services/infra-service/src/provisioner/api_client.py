@@ -143,6 +143,7 @@ async def reserve_provisioning_attempt(server_handle: str, max_attempts: int) ->
     return reservation.provisioning_attempts
 
 
-async def reset_provisioning_attempts(server_handle: str) -> None:
-    """Clear attempts after a successful provisioning episode."""
-    await api_client.reset_provisioning_attempts(server_handle)
+async def reset_provisioning_attempts(server_handle: str, attempt_number: int) -> bool:
+    """Clear attempts only when no newer attempt has been reserved."""
+    result = await api_client.reset_provisioning_attempts(server_handle, attempt_number)
+    return result.reset

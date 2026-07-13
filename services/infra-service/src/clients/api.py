@@ -12,6 +12,7 @@ import structlog
 
 from shared.contracts.dto.server import (
     ProvisioningAttemptReservationResult,
+    ProvisioningAttemptResetResult,
     ServerDTO,
 )
 from shared.log_config.correlation import get_correlation_id
@@ -86,10 +87,16 @@ class InfrastructureAPIClient:
         )
         return ProvisioningAttemptReservationResult.model_validate(resp.json())
 
-    async def reset_provisioning_attempts(self, server_handle: str) -> ServerDTO:
-        """Close the current successful provisioning episode."""
-        resp = await self._request("POST", f"servers/{server_handle}/provisioning-attempts/reset")
-        return ServerDTO.model_validate(resp.json())
+    async def reset_provisioning_attempts(
+        self, server_handle: str, attempt_number: int
+    ) -> ProvisioningAttemptResetResult:
+        """Close an episode only if another attempt has not started."""
+        resp = await self._request(
+            "POST",
+            f"servers/{server_handle}/provisioning-attempts/reset",
+            json={"attempt_number": attempt_number},
+        )
+        return ProvisioningAttemptResetResult.model_validate(resp.json())
 
     async def get_server_services(self, server_handle: str) -> list[dict]:
         """Get list of services deployed on a server."""

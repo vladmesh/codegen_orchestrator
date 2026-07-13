@@ -10,6 +10,8 @@ from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.server import (
     ProvisioningAttemptReservation,
     ProvisioningAttemptReservationResult,
+    ProvisioningAttemptReset,
+    ProvisioningAttemptResetResult,
     ServerStatus,
 )
 from shared.crypto import SecretsCipher
@@ -132,20 +134,39 @@ async def reserve_provisioning_attempt(
     )
 
 
-@router.post("/{handle}/provisioning-attempts/reset", response_model=ServerRead)
+@router.post(
+    "/{handle}/provisioning-attempts/reset",
+    response_model=ProvisioningAttemptResetResult,
+)
 async def reset_provisioning_attempts(
     handle: str,
+    request: ProvisioningAttemptReset,
     db: AsyncSession = Depends(get_async_session),
     _: None = Depends(require_internal_or_admin),
-) -> Server:
-    """Close a successful provisioning episode by clearing its attempts."""
+) -> ProvisioningAttemptResetResult:
+    """Close an episode without erasing a newer reserved attempt."""
+    statement = (
+        update(Server)
+        .where(
+            Server.handle == handle,
+            Server.provisioning_attempts == request.attempt_number,
+        )
+        .values(provisioning_attempts=0)
+        .returning(Server.provisioning_attempts)
+    )
+    result = await db.execute(statement)
+    attempts = result.scalar_one_or_none()
+    if attempts is not None:
+        await db.commit()
+        return ProvisioningAttemptResetResult(reset=True, provisioning_attempts=attempts)
+
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
-    server.provisioning_attempts = 0
-    await db.commit()
-    await db.refresh(server)
-    return server
+    return ProvisioningAttemptResetResult(
+        reset=False,
+        provisioning_attempts=server.provisioning_attempts,
+    )
 
 
 @router.get("/{handle}/ssh-key")

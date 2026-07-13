@@ -33,7 +33,13 @@ async def handle_provisioning_success(
     Returns:
         State update dict
     """
-    await reset_provisioning_attempts(server_handle)
+    reset = await reset_provisioning_attempts(server_handle, provisioning_attempts)
+    if not reset:
+        logger.info(
+            "provisioning_attempt_reset_skipped",
+            server_handle=server_handle,
+            attempt=provisioning_attempts,
+        )
     await update_server_status(server_handle, "ready")
 
     # Persist SSH key to DB for per-server key storage
