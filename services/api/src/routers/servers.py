@@ -3,11 +3,15 @@
 from datetime import UTC
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.application import ApplicationStatus
-from shared.contracts.dto.server import ServerStatus
+from shared.contracts.dto.server import (
+    ProvisioningAttemptReservation,
+    ProvisioningAttemptReservationResult,
+    ServerStatus,
+)
 from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server
 
@@ -90,6 +94,57 @@ async def get_server(
     server = await db.get(Server, handle)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
+    return server
+
+
+@router.post(
+    "/{handle}/provisioning-attempts/reserve",
+    response_model=ProvisioningAttemptReservationResult,
+)
+async def reserve_provisioning_attempt(
+    handle: str,
+    request: ProvisioningAttemptReservation,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> ProvisioningAttemptReservationResult:
+    """Atomically reserve an attempt if the current episode has capacity."""
+    statement = (
+        update(Server)
+        .where(
+            Server.handle == handle,
+            Server.provisioning_attempts < request.max_attempts,
+        )
+        .values(provisioning_attempts=Server.provisioning_attempts + 1)
+        .returning(Server.provisioning_attempts)
+    )
+    result = await db.execute(statement)
+    attempts = result.scalar_one_or_none()
+    if attempts is not None:
+        await db.commit()
+        return ProvisioningAttemptReservationResult(reserved=True, provisioning_attempts=attempts)
+
+    server = await db.get(Server, handle)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    return ProvisioningAttemptReservationResult(
+        reserved=False,
+        provisioning_attempts=server.provisioning_attempts,
+    )
+
+
+@router.post("/{handle}/provisioning-attempts/reset", response_model=ServerRead)
+async def reset_provisioning_attempts(
+    handle: str,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> Server:
+    """Close a successful provisioning episode by clearing its attempts."""
+    server = await db.get(Server, handle)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    server.provisioning_attempts = 0
+    await db.commit()
+    await db.refresh(server)
     return server
 
 

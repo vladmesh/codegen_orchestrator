@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -77,6 +77,19 @@ class ServerUpdate(BaseModel):
     container_count_total: int | None = None
     uptime_seconds: float | None = None
     last_health_check: datetime | None = None
+
+
+class ProvisioningAttemptReservation(BaseModel):
+    """Request to reserve one provisioning attempt atomically."""
+
+    max_attempts: int = Field(gt=0)
+
+
+class ProvisioningAttemptReservationResult(BaseModel):
+    """Result of reserving an attempt for the current provisioning episode."""
+
+    reserved: bool
+    provisioning_attempts: int
 
 
 class ServerDTO(TimestampedDTO):

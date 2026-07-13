@@ -25,6 +25,7 @@ from ..nodes import FunctionalNode, log_node_execution
 from .ansible_runner import AnsibleRunner
 from .api_client import (
     get_server_info,
+    reserve_provisioning_attempt,
     update_server_labels,
     update_server_status,
 )
@@ -88,37 +89,6 @@ class ProvisionerNode(FunctionalNode):
             }
 
         return server_info, None
-
-    async def _check_max_attempts(
-        self,
-        server_handle: str,
-        provisioning_attempts: int,
-        state: dict,
-    ) -> dict | None:
-        """Check if max provisioning attempts exceeded.
-
-        Returns:
-            Error response if max attempts exceeded, None otherwise.
-        """
-        if provisioning_attempts >= PROVISIONING_MAX_RETRIES:
-            await update_server_status(server_handle, "error")
-            await create_incident(
-                server_handle,
-                "provisioning_failed",
-                {"reason": f"Max retries ({PROVISIONING_MAX_RETRIES}) exceeded"},
-            )
-            return {
-                "messages": [
-                    {
-                        "message": (
-                            f"❌ Max provisioning attempts ({PROVISIONING_MAX_RETRIES}) "
-                            f"exceeded for {server_handle}"
-                        )
-                    }
-                ],
-                "errors": state.get("errors", []) + ["Max provisioning attempts exceeded"],
-            }
-        return None
 
     async def _init_time4vps_client(
         self,
@@ -342,12 +312,45 @@ class ProvisionerNode(FunctionalNode):
         server_ip = server_info.public_ip or server_info.host
         server_status = server_info.status or ""
         os_template = server_info.os_template or Provisioning.DEFAULT_OS_TEMPLATE
-        provisioning_attempts = server_info.provisioning_attempts
+        # Step 2: Atomically reserve an attempt before any external provisioning work.
+        try:
+            provisioning_attempts = await reserve_provisioning_attempt(
+                server_handle, PROVISIONING_MAX_RETRIES
+            )
+        except Exception as exc:
+            logger.error(
+                "provisioning_attempt_reservation_failed",
+                server_handle=server_handle,
+                error=str(exc),
+            )
+            await update_server_status(server_handle, "error")
+            return {
+                "messages": [
+                    {"message": f"❌ Failed to reserve provisioning attempt for {server_handle}"}
+                ],
+                "errors": state.get("errors", []) + ["Provisioning attempt reservation failed"],
+                "provisioning_result": {"status": "failed", "reason": "attempt_reservation_failed"},
+            }
 
-        # Step 2: Check max attempts
-        error = await self._check_max_attempts(server_handle, provisioning_attempts, state)
-        if error:
-            return error
+        if provisioning_attempts is None:
+            await update_server_status(server_handle, "error")
+            await create_incident(
+                server_handle,
+                "provisioning_failed",
+                {"reason": f"Max retries ({PROVISIONING_MAX_RETRIES}) exhausted"},
+            )
+            return {
+                "messages": [
+                    {
+                        "message": (
+                            f"❌ Max provisioning attempts ({PROVISIONING_MAX_RETRIES}) "
+                            f"exhausted for {server_handle}"
+                        )
+                    }
+                ],
+                "errors": state.get("errors", []) + ["Max provisioning attempts exceeded"],
+                "provisioning_result": {"status": "failed", "reason": "max_attempts_exhausted"},
+            }
 
         # Step 3: Update status
         await update_server_status(server_handle, "provisioning")
@@ -362,7 +365,7 @@ class ProvisionerNode(FunctionalNode):
         logger.info(
             "provisioning_start",
             server_handle=server_handle,
-            attempt=provisioning_attempts + 1,
+            attempt=provisioning_attempts,
         )
 
         # Step 5: Determine provisioning method and execute

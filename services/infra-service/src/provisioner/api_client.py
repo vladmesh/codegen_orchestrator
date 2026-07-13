@@ -132,27 +132,17 @@ async def get_services_on_server(server_handle: str) -> list[dict]:
         return []
 
 
-async def increment_provisioning_attempts(server_handle: str) -> bool:
-    """Increment provisioning attempts counter for a server.
+async def reserve_provisioning_attempt(server_handle: str, max_attempts: int) -> int | None:
+    """Reserve an attempt and return its persisted number, or None at the limit."""
+    reservation = await api_client.reserve_provisioning_attempt(
+        server_handle,
+        max_attempts=max_attempts,
+    )
+    if not reservation.reserved:
+        return None
+    return reservation.provisioning_attempts
 
-    Args:
-        server_handle: Server handle
 
-    Returns:
-        True if successful
-    """
-    try:
-        current = await api_client.get_server(server_handle)
-        attempts = current.provisioning_attempts
-        await api_client.update_server(
-            server_handle,
-            {"provisioning_attempts": attempts + 1},
-        )
-        return True
-    except Exception as e:
-        logger.error(
-            "api_provisioning_attempt_increment_failed",
-            server_handle=server_handle,
-            error=str(e),
-        )
-        return False
+async def reset_provisioning_attempts(server_handle: str) -> None:
+    """Clear attempts after a successful provisioning episode."""
+    await api_client.reset_provisioning_attempts(server_handle)

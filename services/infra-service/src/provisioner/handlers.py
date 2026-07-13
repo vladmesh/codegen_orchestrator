@@ -4,7 +4,7 @@ import structlog
 
 from shared.notifications import notify_admins
 
-from .api_client import save_server_ssh_key, update_server_status
+from .api_client import reset_provisioning_attempts, save_server_ssh_key, update_server_status
 from .incidents import resolve_active_incidents
 from .recovery import redeploy_all_services
 from .ssh_manager import SSHManager
@@ -33,6 +33,7 @@ async def handle_provisioning_success(
     Returns:
         State update dict
     """
+    await reset_provisioning_attempts(server_handle)
     await update_server_status(server_handle, "ready")
 
     # Persist SSH key to DB for per-server key storage
@@ -59,7 +60,7 @@ async def handle_provisioning_success(
 
 IP: {server_ip}
 Status: READY
-Provisioning attempt: {provisioning_attempts + 1}
+Provisioning attempt: {provisioning_attempts}
 
 The server is now configured with:
 - SSH key authentication

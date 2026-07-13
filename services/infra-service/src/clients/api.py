@@ -10,7 +10,10 @@ import os
 import httpx
 import structlog
 
-from shared.contracts.dto.server import ServerDTO
+from shared.contracts.dto.server import (
+    ProvisioningAttemptReservationResult,
+    ServerDTO,
+)
 from shared.log_config.correlation import get_correlation_id
 
 logger = structlog.get_logger(__name__)
@@ -71,6 +74,22 @@ class InfrastructureAPIClient:
         """Update server fields."""
         resp = await self._request("PATCH", f"servers/{server_handle}", json=payload)
         return resp.json()
+
+    async def reserve_provisioning_attempt(
+        self, server_handle: str, max_attempts: int
+    ) -> ProvisioningAttemptReservationResult:
+        """Reserve one attempt without a read-then-write race."""
+        resp = await self._request(
+            "POST",
+            f"servers/{server_handle}/provisioning-attempts/reserve",
+            json={"max_attempts": max_attempts},
+        )
+        return ProvisioningAttemptReservationResult.model_validate(resp.json())
+
+    async def reset_provisioning_attempts(self, server_handle: str) -> ServerDTO:
+        """Close the current successful provisioning episode."""
+        resp = await self._request("POST", f"servers/{server_handle}/provisioning-attempts/reset")
+        return ServerDTO.model_validate(resp.json())
 
     async def get_server_services(self, server_handle: str) -> list[dict]:
         """Get list of services deployed on a server."""
