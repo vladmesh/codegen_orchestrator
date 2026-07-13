@@ -85,8 +85,10 @@ async def _handle_incident_outage(
         server_handle=error.server_handle,
         errors=["Provisioning incident journal unavailable after bounded retries"],
     )
-    # Publish before ACK. A failed publish leaves the PEL entry retryable; once
-    # published, duplicate delivery only retries ACK and cannot emit a second outcome.
+    # Publish before ACK. A failed publish leaves the PEL entry retryable. A
+    # persisted marker prevents duplicate delivery after an ACK failure from
+    # publishing another outcome. A process crash between publish and marker is
+    # still an at-least-once delivery trade-off.
     await client.redis.set(f"deploy:result:{result.request_id}", result.model_dump_json(), ex=3600)
     await client.publish("provisioner:results", result.model_dump(mode="json"))
     await client.redis.hset(key, mapping={"terminal_published": "1"})

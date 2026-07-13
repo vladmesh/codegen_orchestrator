@@ -38,11 +38,19 @@ class FakeClient:
         self.redis = FakeRedis()
         self.published = []
         self.acked = []
+        self.fail_publish_once = False
+        self.fail_ack_once = False
 
     async def publish(self, stream, payload):
+        if self.fail_publish_once:
+            self.fail_publish_once = False
+            raise RuntimeError("redis publish unavailable")
         self.published.append((stream, payload))
 
     async def ack(self, stream, group, message_id):
+        if self.fail_ack_once:
+            self.fail_ack_once = False
+            raise RuntimeError("redis ack unavailable")
         self.acked.append(message_id)
 
 
@@ -65,6 +73,50 @@ async def test_outage_budget_emits_one_terminal_result_then_acks():
 
     await _handle_incident_outage(client, msg, job, error)
     assert len(client.published) == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_publish_failure_leaves_entry_unacked_for_a_single_retry():
+    client = FakeClient()
+    client.fail_publish_once = True
+    msg = SimpleNamespace(message_id="publish-failure")
+    job = ProvisionerMessage(request_id="request-publish", server_handle="srv-1")
+    error = IncidentPersistenceError("srv-1", {"step": "access"})
+
+    await _handle_incident_outage(client, msg, job, error)
+    await _handle_incident_outage(client, msg, job, error)
+    with pytest.raises(RuntimeError, match="publish unavailable"):
+        await _handle_incident_outage(client, msg, job, error)
+
+    assert client.published == []
+    assert client.acked == []
+
+    await _handle_incident_outage(client, msg, job, error)
+
+    assert len(client.published) == 1
+    assert client.acked == ["publish-failure"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_ack_failure_retries_ack_without_second_terminal_publish():
+    client = FakeClient()
+    client.fail_ack_once = True
+    msg = SimpleNamespace(message_id="ack-failure")
+    job = ProvisionerMessage(request_id="request-ack", server_handle="srv-1")
+    error = IncidentPersistenceError("srv-1", {"step": "access"})
+
+    await _handle_incident_outage(client, msg, job, error)
+    await _handle_incident_outage(client, msg, job, error)
+    with pytest.raises(RuntimeError, match="ack unavailable"):
+        await _handle_incident_outage(client, msg, job, error)
+
+    assert len(client.published) == 1
+    assert client.acked == []
+
+    await _handle_incident_outage(client, msg, job, error)
+
+    assert len(client.published) == 1
+    assert client.acked == ["ack-failure"]
 
 
 @pytest.mark.asyncio
