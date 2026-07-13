@@ -21,6 +21,11 @@ _SENSITIVE_KEYS = {"authorization", "credential", "password", "secret", "token",
 class IncidentPersistenceError(RuntimeError):
     """The required incident journal write could not be completed."""
 
+    def __init__(self, server_handle: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__("Failed to persist provisioning incident")
+        self.server_handle = server_handle
+        self.details = _safe_diagnostics(details or {})
+
 
 def _safe_diagnostics(value: Any, key: str | None = None) -> Any:
     """Keep incident diagnostics bounded and free of credential-like fields."""
@@ -62,7 +67,7 @@ async def create_incident(
             incident_type=incident_type.value,
             error_type=type(exc).__name__,
         )
-        raise IncidentPersistenceError("Failed to persist provisioning incident") from exc
+        raise IncidentPersistenceError(server_handle, details) from exc
     logger.info(
         "incident_journal_recorded",
         incident_id=recorded.id,

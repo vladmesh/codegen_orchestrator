@@ -6,18 +6,20 @@ Run standalone: python -m src.main
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 
 import structlog
 
+from shared.contracts.dto.incident import IncidentType
 from shared.contracts.queues.provisioner import ProvisionerMessage, ProvisionerResult
 from shared.contracts.vocab import ResultStatus
 from shared.log_config import setup_logging
 from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
 from shared.redis_client import RedisStreamClient
 
-from .provisioner.incidents import IncidentPersistenceError
+from .provisioner.incidents import IncidentPersistenceError, create_incident
 from .provisioner.node import ProvisionerNode
 
 logger = structlog.get_logger(__name__)
@@ -27,6 +29,95 @@ CONSUMER_NAME = f"infra-worker-{os.getpid()}"
 
 # Shutdown flag
 _shutdown = False
+INCIDENT_OUTAGE_RETRY_BUDGET = 3
+
+
+def _outage_key(message_id: str) -> str:
+    return f"provisioner:incident-outage:{message_id}"
+
+
+def _decode_hash(values: dict) -> dict[str, str]:
+    return {
+        (key.decode() if isinstance(key, bytes) else str(key)): (
+            value.decode() if isinstance(value, bytes) else str(value)
+        )
+        for key, value in values.items()
+    }
+
+
+async def _publish_and_ack(client, msg, result: ProvisionerResult) -> None:
+    result_key = f"deploy:result:{result.request_id}"
+    await client.redis.set(result_key, result.model_dump_json(), ex=3600)
+    await client.publish("provisioner:results", result.model_dump(mode="json"))
+    await client.ack(PROVISIONER_QUEUE, INFRA_GROUP, msg.message_id)
+
+
+async def _handle_incident_outage(
+    client, msg, job: ProvisionerMessage, error: IncidentPersistenceError
+) -> None:
+    """Retry only the journal write and escalate after a bounded outage budget."""
+    key = _outage_key(msg.message_id)
+    attempts = await client.redis.hincrby(key, "attempts", 1)
+    await client.redis.hset(
+        key,
+        mapping={
+            "server_handle": error.server_handle,
+            "details": json.dumps(error.details),
+            "request_id": job.request_id,
+        },
+    )
+    if attempts < INCIDENT_OUTAGE_RETRY_BUDGET:
+        logger.warning(
+            "provisioner_incident_journal_retry_pending",
+            entry_id=msg.message_id,
+            attempts=attempts,
+        )
+        return
+
+    state = _decode_hash(await client.redis.hgetall(key))
+    if state.get("terminal_published") == "1":
+        await client.ack(PROVISIONER_QUEUE, INFRA_GROUP, msg.message_id)
+        return
+
+    result = ProvisionerResult(
+        request_id=job.request_id,
+        status=ResultStatus.FAILED,
+        server_handle=error.server_handle,
+        errors=["Provisioning incident journal unavailable after bounded retries"],
+    )
+    # Publish before ACK. A failed publish leaves the PEL entry retryable; once
+    # published, duplicate delivery only retries ACK and cannot emit a second outcome.
+    await client.redis.set(f"deploy:result:{result.request_id}", result.model_dump_json(), ex=3600)
+    await client.publish("provisioner:results", result.model_dump(mode="json"))
+    await client.redis.hset(key, mapping={"terminal_published": "1"})
+    await client.ack(PROVISIONER_QUEUE, INFRA_GROUP, msg.message_id)
+
+
+async def _retry_saved_incident(
+    client, msg, job: ProvisionerMessage, state: dict[str, str]
+) -> bool:
+    """Return True when a reclaimed entry was handled without provisioning again."""
+    key = _outage_key(msg.message_id)
+    if state.get("terminal_published") == "1":
+        await client.ack(PROVISIONER_QUEUE, INFRA_GROUP, msg.message_id)
+        return True
+    try:
+        await create_incident(
+            state["server_handle"], IncidentType.PROVISIONING_FAILED, json.loads(state["details"])
+        )
+    except IncidentPersistenceError as error:
+        await _handle_incident_outage(client, msg, job, error)
+        return True
+
+    result = ProvisionerResult(
+        request_id=job.request_id,
+        status=ResultStatus.FAILED,
+        server_handle=state["server_handle"],
+        errors=["Provisioning failed; incident journal write recovered"],
+    )
+    await _publish_and_ack(client, msg, result)
+    await client.redis.delete(key)
+    return True
 
 
 def handle_shutdown(signum, frame):
@@ -162,15 +253,17 @@ async def run_worker():
                 continue
             try:
                 job = ProvisionerMessage.model_validate(msg.data)
+                state = _decode_hash(await client.redis.hgetall(_outage_key(msg.message_id)))
+                if state:
+                    await _retry_saved_incident(client, msg, job, state)
+                    continue
+
                 result = await process_provisioner_job(job.model_dump(mode="json"))
-
-                # Publish result
-                result_key = f"deploy:result:{result.request_id}"
-                await client.redis.set(result_key, result.model_dump_json(), ex=3600)
-                await client.publish("provisioner:results", result.model_dump(mode="json"))
-
-                await client.ack(PROVISIONER_QUEUE, INFRA_GROUP, msg.message_id)
+                await _publish_and_ack(client, msg, result)
                 logger.debug("job_acked", entry_id=msg.message_id)
+
+            except IncidentPersistenceError as error:
+                await _handle_incident_outage(client, msg, job, error)
 
             except Exception as e:
                 logger.error(

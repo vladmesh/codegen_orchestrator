@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
+## 2026-07-14
+
+### Fixed
+- **Bound worker compose and incident-journal failures (`codegen_orchestrator-493`)**: generated worker-mode compose recipes now preserve transport, JSON and compose exit failures, while required Makefile proxy installation fails the worker task. Provisioner journal outages retry only the journal write after external provisioning has run; a bounded retry budget publishes one terminal provisioning result before ACK, preventing both infinite PEL reclaim and repeated provisioning side effects.
+
 ## 2026-07-13
 
 ### Changed
