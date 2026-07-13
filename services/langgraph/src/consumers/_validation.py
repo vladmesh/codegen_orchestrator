@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
+from shared.diagnostics import safe_validation_errors
+
 
 def _safe_validation_errors(exc: ValidationError) -> list[dict]:
-    """Return validation diagnostics without values from the Redis entry."""
-    return [
-        {"type": error["type"], "loc": list(error["loc"])}
-        for error in exc.errors(include_url=False, include_input=False)
-    ]
+    """Compatibility import for consumers sharing canonical diagnostics."""
+    return safe_validation_errors(exc)

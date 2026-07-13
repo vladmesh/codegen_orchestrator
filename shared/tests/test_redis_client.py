@@ -88,6 +88,19 @@ class TestConnection:
             await c.connect()
         mock.assert_called_once()
 
+    async def test_connect_log_omits_credentialed_url(self):
+        sentinel = "redis-secret-sentinel"
+        c = RedisStreamClient(redis_url=f"redis://user:{sentinel}@redis.example:6379/0")
+        with (
+            patch(
+                "shared.redis.client.redis.from_url",
+                return_value=aioredis.FakeRedis(decode_responses=True),
+            ),
+            capture_logs() as logs,
+        ):
+            await c.connect()
+        assert sentinel not in str(logs)
+
     async def test_property_raises_before_connect(self):
         c = RedisStreamClient(redis_url="redis://fake:6379")
         with pytest.raises(RuntimeError, match="not connected"):

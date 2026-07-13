@@ -15,6 +15,7 @@ import structlog
 
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.queues.scaffold import ScaffoldMessage
+from shared.diagnostics import redact_diagnostic, safe_validation_errors
 from shared.log_config import setup_logging
 from shared.log_config.correlation import bind_message_context, unbind_message_context
 from shared.queues import SCAFFOLD_GROUP, SCAFFOLD_QUEUE
@@ -48,8 +49,8 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
     """
     try:
         msg = ScaffoldMessage.model_validate(job_data)
-    except ValidationError:
-        logger.warning("scaffold_invalid_message", data=job_data)
+    except ValidationError as exc:
+        logger.warning("scaffold_invalid_message", errors=safe_validation_errors(exc))
         return {"status": "skipped", "error": "invalid message"}
 
     log = logger.bind(project_id=msg.project_id, repository_id=msg.repository_id)
@@ -73,9 +74,10 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
             return await _process_ensure_mode(*args)
         return await _process_full_mode(*args)
 
-    except Exception as e:
-        log.error("scaffold_job_exception", error=str(e), exc_info=True)
-        return {"status": "failed", "error": str(e)}
+    except Exception as exc:
+        error = redact_diagnostic(exc)
+        log.error("scaffold_job_exception", error=error, exc_info=True)
+        return {"status": "failed", "error": error}
 
 
 async def _process_full_mode(msg, repo_full_name, github, github_token, api, settings, log) -> dict:

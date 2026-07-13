@@ -7,6 +7,7 @@ from pydantic import ValidationError
 import redis.asyncio as redis
 import structlog
 
+from shared.diagnostics import safe_validation_errors
 from shared.schemas.worker_events import parse_worker_event
 
 from .config.settings import get_settings
@@ -40,7 +41,7 @@ async def listen_worker_events() -> None:
             try:
                 event = parse_worker_event(data)
             except ValidationError as exc:
-                logger.warning("worker_event_validation_failed", errors=exc.errors())
+                logger.warning("worker_event_validation_failed", errors=safe_validation_errors(exc))
                 continue
 
             try:

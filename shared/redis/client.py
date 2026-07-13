@@ -8,6 +8,8 @@ from typing import Any
 from pydantic import BaseModel, TypeAdapter, ValidationError
 import structlog
 
+from shared.diagnostics import safe_validation_errors
+
 try:
     import redis.asyncio as redis
 except ImportError:
@@ -82,7 +84,7 @@ class RedisStreamClient:
             if redis is None:
                 raise ImportError("redis package is not installed.")
             self._redis = redis.from_url(self.redis_url, decode_responses=True)
-            logger.info("redis_connected", redis_url=self.redis_url)
+            logger.info("redis_connected")
 
     async def close(self) -> None:
         """Close Redis connection."""
@@ -370,7 +372,7 @@ class RedisStreamClient:
                     "typed_consume_validation_failed",
                     stream=stream,
                     entry_id=message_id,
-                    errors=e.errors(include_url=False, include_input=False),
+                    errors=safe_validation_errors(e),
                 )
                 await self._terminal_ack(stream, group, message_id)
                 continue

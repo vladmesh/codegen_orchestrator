@@ -26,6 +26,7 @@ from shared.contracts.queues.worker_result import (
     WorkerResult,
     WorkerResultAdapter,
 )
+from shared.diagnostics import safe_validation_errors
 from shared.log_config import get_logger
 from shared.queues import WORKER_COMMANDS, WORKER_RESPONSES
 from shared.redis.client import decode_redis_value
@@ -86,10 +87,7 @@ def _safe_validation_errors(exc: ValidationError) -> list[dict]:
     which may be a secret. Log only ``type`` and ``loc`` so nothing from the
     payload reaches the logs.
     """
-    return [
-        {"type": err["type"], "loc": list(err["loc"])}
-        for err in exc.errors(include_url=False, include_input=False)
-    ]
+    return safe_validation_errors(exc)
 
 
 def spawn_result_from_output(

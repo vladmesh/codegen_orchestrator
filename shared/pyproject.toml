@@ -37,5 +37,6 @@ exclude = ["redis"]
 "redis" = "shared/redis"
 "redis_client.py" = "shared/redis_client.py"
 "crypto.py" = "shared/crypto.py"
+"diagnostics.py" = "shared/diagnostics.py"
 "schemas" = "shared/schemas"
 "tests" = "shared/tests"
