@@ -154,17 +154,22 @@ async def send_telegram_message(
 
 
 async def notify_admins(message: str, level: str = "info") -> int:
-    """Notify all admin users via Telegram.
+    """Notify all administrators via Telegram and propagate boundary failures.
 
     Args:
         message: Message text (will be prefixed with emoji)
         level: Severity level (info, warning, error, critical, success)
 
     Returns:
-        Number of users successfully notified
+        Number of administrators whose Telegram delivery succeeded. A return of
+        zero is valid when the users API returns no administrators.
 
     Raises:
-        RuntimeError: If TELEGRAM_BOT_TOKEN or API_BASE_URL is not set
+        RuntimeError: If required configuration is missing or the users API
+            returns a non-200 response.
+        aiohttp.ClientError: If the users API request fails.
+        TimeoutError: If the users API request times out.
+        ValidationError: If the users API response is not a valid user list.
     """
     config = _ensure_config()
 
@@ -178,8 +183,7 @@ async def notify_admins(message: str, level: str = "info") -> int:
                     raise RuntimeError(f"users API returned HTTP {resp.status}")
 
                 users = TypeAdapter(list[UserDTO]).validate_python(await resp.json())
-    except (aiohttp.ClientError, TimeoutError, ValidationError, RuntimeError) as exc:
-        logger.error("fetch_users_failed", error_type=type(exc).__name__, exc_info=True)
+    except (aiohttp.ClientError, TimeoutError, ValidationError, RuntimeError):
         raise
 
     if not users:
@@ -220,7 +224,13 @@ async def notify_admins_best_effort(
     level: str = "info",
     **context: object,
 ) -> None:
-    """Send an admin notification without changing the caller's committed outcome."""
+    """Send an outcome-independent admin alert without raising.
+
+    This is the scheduler and workflow boundary for alerts emitted after state
+    has been committed. Delivery can be lost; this function logs one safe
+    failure record and returns ``None``. It does not provide retries, an outbox,
+    or guaranteed Telegram delivery.
+    """
     try:
         await notify_admins(message, level=level)
     except Exception as exc:

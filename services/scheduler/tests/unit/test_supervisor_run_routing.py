@@ -107,7 +107,9 @@ class TestSuperviseDeployingStories:
         )
         api_client.fail_story.return_value = {}
 
-        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -135,7 +137,9 @@ class TestSuperviseDeployingStories:
         )
         api_client.fail_story.return_value = {}
 
-        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -215,7 +219,7 @@ class TestSuperviseDeployingStories:
         # Max retries hit
         redis_client._redis.incr.return_value = 3  # default max is 3
 
-        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock):
+        with patch("src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock):
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -263,7 +267,9 @@ class TestSuperviseDeployingStories:
         api_client.get_latest_run_by_story.side_effect = _invalid_result_error("deploy")
         api_client.fail_story.return_value = {}
 
-        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -281,7 +287,9 @@ class TestSuperviseDeployingStories:
         api_client.get_latest_run_by_story.side_effect = _terminal_no_result_error("deploy")
         api_client.fail_story.return_value = {}
 
-        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
             result = await supervise_deploying_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -461,7 +469,9 @@ class TestSuperviseTestingStories:
         api_client.get_latest_run_by_story.side_effect = _invalid_result_error("qa")
         api_client.fail_story.return_value = {}
 
-        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
             result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["failed"] == 1
@@ -479,7 +489,9 @@ class TestSuperviseTestingStories:
         api_client.get_latest_run_by_story.side_effect = _terminal_no_result_error("qa")
         api_client.fail_story.return_value = {}
 
-        with patch("src.tasks.supervisor.notify_admins", new_callable=AsyncMock) as mock_notify:
+        with patch(
+            "src.tasks.supervisor.notify_admins_best_effort", new_callable=AsyncMock
+        ) as mock_notify:
             result = await supervise_testing_stories(api_client, redis_client)
 
         assert result["failed"] == 1

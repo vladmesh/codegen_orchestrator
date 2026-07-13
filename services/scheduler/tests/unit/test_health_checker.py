@@ -156,7 +156,9 @@ class TestCheckServer:
         with (
             patch("src.tasks.health_checker.api_client", mock_api_client),
             patch("src.tasks.health_checker._get_http_client", return_value=mock_http),
-            patch("src.tasks.health_checker.notify_admins", new_callable=AsyncMock) as mock_notify,
+            patch(
+                "src.tasks.health_checker.notify_admins_best_effort", new_callable=AsyncMock
+            ) as mock_notify,
         ):
             from src.tasks.health_checker import _check_server
 
@@ -186,7 +188,9 @@ class TestCheckServer:
         with (
             patch("src.tasks.health_checker.api_client", mock_api_client),
             patch("src.tasks.health_checker._get_http_client", return_value=mock_http),
-            patch("src.tasks.health_checker.notify_admins", new_callable=AsyncMock) as mock_notify,
+            patch(
+                "src.tasks.health_checker.notify_admins_best_effort", new_callable=AsyncMock
+            ) as mock_notify,
         ):
             from src.tasks.health_checker import _check_server
 
@@ -212,7 +216,9 @@ class TestCheckServer:
         with (
             patch("src.tasks.health_checker.api_client", mock_api_client),
             patch("src.tasks.health_checker._get_http_client", return_value=mock_http),
-            patch("src.tasks.health_checker.notify_admins", new_callable=AsyncMock) as mock_notify,
+            patch(
+                "src.tasks.health_checker.notify_admins_best_effort", new_callable=AsyncMock
+            ) as mock_notify,
         ):
             from src.tasks.health_checker import _check_server
 
@@ -250,7 +256,9 @@ node_load1 0.5
         with (
             patch("src.tasks.health_checker.api_client", mock_api_client),
             patch("src.tasks.health_checker._get_http_client", return_value=mock_http),
-            patch("src.tasks.health_checker.notify_admins", new_callable=AsyncMock) as mock_notify,
+            patch(
+                "src.tasks.health_checker.notify_admins_best_effort", new_callable=AsyncMock
+            ) as mock_notify,
         ):
             from src.tasks.health_checker import _check_server
 
@@ -288,7 +296,7 @@ node_load1 0.5
         with (
             patch("src.tasks.health_checker.api_client", mock_api_client),
             patch("src.tasks.health_checker._get_http_client", return_value=mock_http),
-            patch("src.tasks.health_checker.notify_admins", new_callable=AsyncMock),
+            patch("src.tasks.health_checker.notify_admins_best_effort", new_callable=AsyncMock),
         ):
             from src.tasks.health_checker import _check_server
 

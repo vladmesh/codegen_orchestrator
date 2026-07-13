@@ -14,7 +14,7 @@ import structlog
 
 from shared.contracts.dto.server import ServerStatus, ServerUpdate
 from shared.models.incident import IncidentType
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 from src.clients.api import api_client
 from src.metrics import parse_cadvisor, parse_node_exporter
 from src.tasks.app_health_prober import app_health_probe_cycle
@@ -187,10 +187,12 @@ async def _handle_unreachable(server) -> None:
         incident_type=IncidentType.SERVER_UNREACHABLE,
         details={"reason": "node_exporter HTTP fetch failed", "ip": server.public_ip},
     )
-    await notify_admins(
+    await notify_admins_best_effort(
         f"Server *{server.handle}* ({server.public_ip}) is unreachable — "
         "node_exporter HTTP check failed.",
         level="critical",
+        component="health_checker",
+        server_handle=server.handle,
     )
 
 
@@ -199,10 +201,12 @@ async def _resolve_unreachable_incidents(server) -> None:
     active = await api_client.get_active_incidents(server.handle, IncidentType.SERVER_UNREACHABLE)
     for incident in active:
         await api_client.resolve_incident(incident.id)
-        await notify_admins(
+        await notify_admins_best_effort(
             f"Server *{server.handle}* ({server.public_ip}) is back online — "
             "incident auto-resolved.",
             level="success",
+            component="health_checker",
+            server_handle=server.handle,
         )
 
 
@@ -245,11 +249,13 @@ async def _create_resource_incident(server, resource: str, usage_pct: float) -> 
             "ip": server.public_ip,
         },
     )
-    await notify_admins(
+    await notify_admins_best_effort(
         f"Server *{server.handle}* ({server.public_ip}): "
         f"{resource.upper()} at {usage_pct}% (threshold: "
         f"{_ram_threshold_pct() if resource == 'ram' else _disk_threshold_pct()}%).",
         level="warning",
+        component="health_checker",
+        server_handle=server.handle,
     )
 
 

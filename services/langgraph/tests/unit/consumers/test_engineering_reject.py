@@ -36,7 +36,9 @@ class TestRejectGaveUpHandling:
     """Tests for reject-originated gave_up handling."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_reject_calls_notify_admins(
         self, mock_po_event, mock_notify, mock_redis, mock_api
@@ -62,7 +64,9 @@ class TestRejectGaveUpHandling:
         assert call_args[1]["level"] == "warning"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_reject_transitions_story_to_whr(
         self, mock_po_event, mock_notify, mock_redis, mock_api

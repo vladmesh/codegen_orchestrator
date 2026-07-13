@@ -148,7 +148,7 @@ class TestCheckApplication:
             patch(
                 "src.tasks.app_health_prober.check_ssl_expiry", new_callable=AsyncMock
             ) as mock_ssl,
-            patch("src.tasks.app_health_prober.notify_admins", new_callable=AsyncMock),
+            patch("src.tasks.app_health_prober.notify_admins_best_effort", new_callable=AsyncMock),
         ):
             mock_http.return_value = health_result
             mock_ssl.return_value = None
@@ -181,7 +181,7 @@ class TestCheckApplication:
             patch(
                 "src.tasks.app_health_prober.check_ssl_expiry", new_callable=AsyncMock
             ) as mock_ssl,
-            patch("src.tasks.app_health_prober.notify_admins", new_callable=AsyncMock),
+            patch("src.tasks.app_health_prober.notify_admins_best_effort", new_callable=AsyncMock),
         ):
             mock_http.return_value = health_result
             mock_ssl.return_value = expiry_soon
@@ -213,7 +213,7 @@ class TestCheckApplication:
             patch(
                 "src.tasks.app_health_prober.check_ssl_expiry", new_callable=AsyncMock
             ) as mock_ssl,
-            patch("src.tasks.app_health_prober.notify_admins", new_callable=AsyncMock),
+            patch("src.tasks.app_health_prober.notify_admins_best_effort", new_callable=AsyncMock),
         ):
             mock_http.return_value = health_result
             mock_ssl.return_value = None

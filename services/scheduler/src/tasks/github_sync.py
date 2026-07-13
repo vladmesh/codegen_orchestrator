@@ -15,7 +15,7 @@ import yaml
 from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus, ProjectUpdate
 from shared.contracts.dto.repository import RepositoryStatus
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 from shared.schemas.github import GitHubRepository
 from shared.schemas.project_spec import ProjectSpecYAML
 from src.clients.api import api_client
@@ -157,11 +157,13 @@ async def _sync_project_docs(
             project_name=project.name,
             error=str(e),
         )
-        await notify_admins(
+        await notify_admins_best_effort(
             f"⚠️ Invalid Specification for *{project.name}*\n"
             f"The `.project-spec.yaml` file is invalid:\n"
             f"```\n{str(e)[:1000]}\n```",
             level="warning",
+            component="github_sync",
+            project_id=str(project.id),
         )
     except Exception as e:
         logger.debug(
@@ -223,11 +225,13 @@ async def _sync_single_repo(
             repo_name=repo_name,
             provider_repo_id=repo_id,
         )
-        await notify_admins(
+        await notify_admins_best_effort(
             f"⚠️ Repository *{repo_name}* (GitHub ID: {repo_id}) "
             "found in org but has no matching repository in DB. "
             "Create it manually if needed.",
             level="warning",
+            component="github_sync",
+            repository_id=repo_id,
         )
         return
 
@@ -305,10 +309,12 @@ async def _detect_missing_projects(
                     project_id=project_id_str,
                     attempts=count,
                 )
-                await notify_admins(
+                await notify_admins_best_effort(
                     f"🚨 Project *{proj.name}* is MISSING! "
                     f"Repository not found after {count} consecutive checks.",
                     level="critical",
+                    component="github_sync",
+                    project_id=project_id_str,
                 )
 
 

@@ -14,7 +14,7 @@ from shared.contracts.dto.run_result import EngineeringRunResult
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -187,14 +187,13 @@ async def handle_worker_gave_up(
         except Exception:
             logger.warning("story_whr_on_gave_up_failed", story_id=story_id, exc_info=True)
 
-    try:
-        await notify_admins(
-            f"Worker gave up on task {planning_task_id or task_id} "
-            f"(project {project_id}):\n{reason}",
-            level="warning",
-        )
-    except Exception:
-        logger.warning("admin_notify_on_gave_up_failed", task_id=task_id, exc_info=True)
+    await notify_admins_best_effort(
+        f"Worker gave up on task {planning_task_id or task_id} (project {project_id}):\n{reason}",
+        level="warning",
+        component="engineering_result_handler",
+        task_id=planning_task_id or task_id,
+        project_id=project_id,
+    )
 
     if user_id:
         try:

@@ -37,7 +37,9 @@ class TestGaveUpHandling:
     """Tests for handle_worker_gave_up (merged blocked + reject)."""
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_gave_up_returns_gave_up_status(
         self, mock_po_event, mock_notify, mock_redis, mock_api
@@ -61,7 +63,9 @@ class TestGaveUpHandling:
         assert "56/78" in result["reason"]
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_gave_up_transitions_task_to_whr(
         self, mock_po_event, mock_notify, mock_redis, mock_api
@@ -87,7 +91,9 @@ class TestGaveUpHandling:
         assert call_params.get("to_status") == "waiting_human_review"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_gave_up_transitions_story_to_whr(
         self, mock_po_event, mock_notify, mock_redis, mock_api
@@ -113,7 +119,9 @@ class TestGaveUpHandling:
         assert call_json.get("status") == "waiting_human_review"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_gave_up_notifies_admin(self, mock_po_event, mock_notify, mock_redis, mock_api):
         """Worker gave_up → admin notified with warning level."""
@@ -137,7 +145,9 @@ class TestGaveUpHandling:
         assert call_args[1]["level"] == "warning"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_gave_up_notifies_user_via_po(
         self, mock_po_event, mock_notify, mock_redis, mock_api
@@ -163,7 +173,9 @@ class TestGaveUpHandling:
         assert call_kwargs["user_id"] == "u1"
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_gave_up_sets_failure_metadata(
         self, mock_po_event, mock_notify, mock_redis, mock_api
@@ -193,7 +205,9 @@ class TestGaveUpHandling:
         assert "Contradictory" in metadata["reason"]
 
     @pytest.mark.asyncio
-    @patch("src.consumers.engineering_result_handler.notify_admins", new_callable=AsyncMock)
+    @patch(
+        "src.consumers.engineering_result_handler.notify_admins_best_effort", new_callable=AsyncMock
+    )
     @patch("src.consumers.engineering_result_handler.publish_story_event", new_callable=AsyncMock)
     async def test_gave_up_without_story_skips_story_transition(
         self, mock_po_event, mock_notify, mock_redis, mock_api

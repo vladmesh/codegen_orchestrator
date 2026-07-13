@@ -17,7 +17,7 @@ from shared.contracts.queues.architect import ArchitectMessage
 from shared.contracts.queues.deploy import DeployMessage, DeployOutcome, DeployTrigger
 from shared.contracts.queues.engineering import EngineeringMessage
 from shared.contracts.queues.qa import QAMessage, QAOutcome
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
@@ -561,14 +561,14 @@ async def _fail_story_on_invalid_result(
 
 
 async def _notify_admin_failure(run_id: str, project_id: str, error: str) -> None:
-    """Best-effort admin notification for deploy failures."""
-    try:
-        await notify_admins(
-            f"Deploy GIVE_UP for run {run_id} (project {project_id}):\n{error[:500]}",
-            level="error",
-        )
-    except Exception:
-        logger.warning("deploy_admin_notify_failed", run_id=run_id, exc_info=True)
+    """Notify after a terminal failure has already been committed."""
+    await notify_admins_best_effort(
+        f"Deploy GIVE_UP for run {run_id} (project {project_id}):\n{error[:500]}",
+        level="error",
+        component="supervisor",
+        run_id=run_id,
+        project_id=project_id,
+    )
 
 
 # ---------------------------------------------------------------------------
