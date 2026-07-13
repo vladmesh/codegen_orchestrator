@@ -500,7 +500,7 @@ class WorkerWrapper:
             override = (
                 f"\n{override_marker}\n"
                 "worker-start:\n"
-                "\t@response=\"$$(curl -sS -f -X POST http://localhost:9090/infra/compose "
+                '\t@response="$$(curl -sS -f -X POST http://localhost:9090/infra/compose '
                 """-H 'Content-Type: application/json' """
                 """-d '{"args": ["up", "-d", "--build", "--wait", "$(svc)"], "cwd": "."}')\"; """
                 """status=$$?; [ $$status -eq 0 ] || exit $$status; """
@@ -509,7 +509,7 @@ class WorkerWrapper:
                 """printf '%s' \"$$response\" | jq -e '.exit_code == 0' >/dev/null\n"""
                 "\n"
                 "worker-stop:\n"
-                "\t@response=\"$$(curl -sS -f -X POST http://localhost:9090/infra/compose "
+                '\t@response="$$(curl -sS -f -X POST http://localhost:9090/infra/compose '
                 """-H 'Content-Type: application/json' """
                 """-d '{"args": ["down", "--remove-orphans"], "cwd": "."}')\"; """
                 """status=$$?; [ $$status -eq 0 ] || exit $$status; """

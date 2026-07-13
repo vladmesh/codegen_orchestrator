@@ -143,7 +143,7 @@ class TestInjectMakefileOverrides:
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         curl = bin_dir / "curl"
-        curl.write_text("#!/bin/sh\nprintf '%s' \"$FAKE_CURL_BODY\"\nexit \"$FAKE_CURL_EXIT\"\n")
+        curl.write_text('#!/bin/sh\nprintf \'%s\' "$FAKE_CURL_BODY"\nexit "$FAKE_CURL_EXIT"\n')
         curl.chmod(0o755)
         env = os.environ | {
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
