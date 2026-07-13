@@ -42,6 +42,7 @@ class Server(Base):
     # Health & Provisioning tracking
     last_health_check: Mapped[datetime | None] = mapped_column(DateTime)
     provisioning_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    provisioning_episode_id: Mapped[str | None] = mapped_column(String(36))
     provisioning_started_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_incident: Mapped[datetime | None] = mapped_column(DateTime)
 

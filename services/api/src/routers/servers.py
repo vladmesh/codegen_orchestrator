@@ -1,13 +1,20 @@
 """Servers router."""
 
 from datetime import UTC
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.contracts.dto.application import ApplicationStatus
-from shared.contracts.dto.server import ServerStatus
+from shared.contracts.dto.server import (
+    ProvisioningAttemptReservation,
+    ProvisioningAttemptReservationResult,
+    ProvisioningAttemptReset,
+    ProvisioningAttemptResetResult,
+    ServerStatus,
+)
 from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server
 
@@ -91,6 +98,102 @@ async def get_server(
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     return server
+
+
+@router.post(
+    "/{handle}/provisioning-attempts/reserve",
+    response_model=ProvisioningAttemptReservationResult,
+)
+async def reserve_provisioning_attempt(
+    handle: str,
+    request: ProvisioningAttemptReservation,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> ProvisioningAttemptReservationResult:
+    """Atomically reserve an attempt if the current episode has capacity."""
+    new_episode_id = str(uuid4())
+    statement = (
+        update(Server)
+        .where(
+            Server.handle == handle,
+            Server.provisioning_attempts < request.max_attempts,
+        )
+        .values(
+            provisioning_attempts=Server.provisioning_attempts + 1,
+            provisioning_episode_id=case(
+                (Server.provisioning_attempts == 0, new_episode_id),
+                else_=Server.provisioning_episode_id,
+            ),
+        )
+        .returning(Server.provisioning_attempts, Server.provisioning_episode_id)
+    )
+    result = await db.execute(statement)
+    reservation = result.one_or_none()
+    if reservation is not None:
+        attempts, episode_id = reservation
+        if episode_id is None:
+            raise RuntimeError("Provisioning episode id is missing for a reserved attempt")
+        await db.commit()
+        return ProvisioningAttemptReservationResult(
+            reserved=True,
+            provisioning_attempts=attempts,
+            episode_id=episode_id,
+        )
+
+    server = await db.get(Server, handle)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    return ProvisioningAttemptReservationResult(
+        reserved=False,
+        provisioning_attempts=server.provisioning_attempts,
+        episode_id=server.provisioning_episode_id,
+    )
+
+
+@router.post(
+    "/{handle}/provisioning-attempts/reset",
+    response_model=ProvisioningAttemptResetResult,
+)
+async def reset_provisioning_attempts(
+    handle: str,
+    request: ProvisioningAttemptReset,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> ProvisioningAttemptResetResult:
+    """Close an episode without erasing a newer reserved attempt."""
+    statement = (
+        update(Server)
+        .where(
+            Server.handle == handle,
+            Server.provisioning_attempts == request.attempt_number,
+            Server.provisioning_episode_id == request.episode_id,
+        )
+        .values(
+            provisioning_attempts=0,
+            provisioning_episode_id=None,
+            status=ServerStatus.READY.value,
+        )
+        .returning(Server.provisioning_attempts, Server.provisioning_episode_id)
+    )
+    result = await db.execute(statement)
+    reset = result.one_or_none()
+    if reset is not None:
+        attempts, episode_id = reset
+        await db.commit()
+        return ProvisioningAttemptResetResult(
+            reset=True,
+            provisioning_attempts=attempts,
+            episode_id=episode_id,
+        )
+
+    server = await db.get(Server, handle)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+    return ProvisioningAttemptResetResult(
+        reset=False,
+        provisioning_attempts=server.provisioning_attempts,
+        episode_id=server.provisioning_episode_id,
+    )
 
 
 @router.get("/{handle}/ssh-key")

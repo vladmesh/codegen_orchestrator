@@ -70,7 +70,7 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
         provisioning_result = result.get("provisioning_result", {})
         status = provisioning_result.get("status", "unknown")
 
-        if status == "success":
+        if status == ResultStatus.SUCCESS.value:
             logger.info(
                 "provisioner_job_success",
                 job_id=job_id,
@@ -83,6 +83,22 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
                 server_handle=server_handle,
                 server_ip=provisioning_result.get("server_ip"),
                 services_redeployed=provisioning_result.get("services_redeployed", 0),
+            )
+        elif status == ResultStatus.SUPERSEDED.value:
+            # A newer attempt/episode owns this server now. This completion is a
+            # no-op: publish it as first-class SUPERSEDED so downstream consumers
+            # skip status mutation and failure notification instead of misreading
+            # a non-success status as a failure.
+            logger.info(
+                "provisioner_job_superseded",
+                job_id=job_id,
+                server_handle=server_handle,
+            )
+            return ProvisionerResult(
+                request_id=job_id,
+                status=ResultStatus.SUPERSEDED,
+                server_handle=server_handle,
+                server_ip=provisioning_result.get("server_ip"),
             )
         else:
             errors = result.get("errors", ["Unknown error"])

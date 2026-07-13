@@ -79,3 +79,34 @@ async def test_processing_error_is_not_acked(monkeypatch):
         await handle_provisioner_entry(client, entry)
 
     assert client.acked == []  # left in PEL for retry
+
+
+async def test_superseded_result_causes_no_mutation_or_notification(monkeypatch):
+    """A SUPERSEDED result is a no-op: the newer attempt owns the server.
+
+    The stale job must not mutate server status (no flip to UNREACHABLE) and must
+    not raise a failure notification.
+    """
+    from shared.contracts.queues.provisioner import ProvisionerResult
+    from shared.contracts.vocab import ResultStatus
+    from src.tasks import provisioner_result_listener as listener
+
+    update_calls: list = []
+    notify_calls: list = []
+
+    async def _update(server_id, server):
+        update_calls.append((server_id, server))
+
+    async def _notify(*args, **kwargs):
+        notify_calls.append((args, kwargs))
+
+    monkeypatch.setattr(listener.api_client, "update_server", _update)
+    monkeypatch.setattr(listener, "notify_admins", _notify)
+
+    result = ProvisionerResult(
+        request_id="r", status=ResultStatus.SUPERSEDED, server_handle="srv-1"
+    )
+    await listener.process_provisioner_result(result)
+
+    assert update_calls == []  # no status mutation
+    assert notify_calls == []  # no failure notification

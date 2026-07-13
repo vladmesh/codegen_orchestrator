@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -79,6 +79,35 @@ class ServerUpdate(BaseModel):
     last_health_check: datetime | None = None
 
 
+class ProvisioningAttemptReservation(BaseModel):
+    """Request to reserve one provisioning attempt atomically."""
+
+    max_attempts: int = Field(gt=0)
+
+
+class ProvisioningAttemptReservationResult(BaseModel):
+    """Result of reserving an attempt for the current provisioning episode."""
+
+    reserved: bool
+    provisioning_attempts: int
+    episode_id: str | None = None
+
+
+class ProvisioningAttemptReset(BaseModel):
+    """Request to close an episode only when its attempt is still current."""
+
+    attempt_number: int = Field(gt=0)
+    episode_id: str = Field(min_length=1)
+
+
+class ProvisioningAttemptResetResult(BaseModel):
+    """Result of conditionally closing a provisioning attempt episode."""
+
+    reset: bool
+    provisioning_attempts: int
+    episode_id: str | None = None
+
+
 class ServerDTO(TimestampedDTO):
     """Server response."""
 
@@ -111,6 +140,7 @@ class ServerDTO(TimestampedDTO):
     last_health_check: datetime | None = None
     provisioning_started_at: datetime | None = None
     provisioning_attempts: int = 0
+    provisioning_episode_id: str | None = None
 
 
 class ServerMetricsHistoryDTO(BaseModel):

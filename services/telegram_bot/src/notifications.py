@@ -73,6 +73,12 @@ class ProvisionerNotifier:
             status=result.status,
         )
 
+        if result.status == ResultStatus.SUPERSEDED:
+            # Stale completion superseded by a newer attempt for the same server.
+            # It is a no-op, not a failure, so do not notify admins.
+            logger.info("provisioner_result_superseded_ignored", server_handle=result.server_handle)
+            return
+
         if not self.admin_ids:
             logger.debug("no_admins_to_notify")
             return

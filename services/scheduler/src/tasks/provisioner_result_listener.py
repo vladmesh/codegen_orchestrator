@@ -62,6 +62,11 @@ async def process_provisioner_result(result: ProvisionerResult) -> None:
         await _handle_success(result, log)
     elif result.status == ResultStatus.FAILED:
         await _handle_failure(result, log)
+    elif result.status == ResultStatus.SUPERSEDED:
+        # A stale job whose completion was superseded by a newer attempt for the
+        # same server. The newer job owns the server state, so this is a no-op:
+        # no status mutation, no failure notification.
+        log.info("provisioner_result_superseded")
     else:
         log.warning("unknown_provisioner_status", received_status=result.status)
 

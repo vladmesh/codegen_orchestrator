@@ -51,6 +51,10 @@ class ResultStatus(StrEnum):
     SUCCESS = "success"
     FAILED = "failed"
     TIMEOUT = "timeout"
+    # A stale operation whose completion was superseded by a newer one for the
+    # same target. It is a no-op outcome: consumers must not treat it as a
+    # failure (no status mutation, no failure notification).
+    SUPERSEDED = "superseded"
 
 
 class LifecycleEvent(StrEnum):
