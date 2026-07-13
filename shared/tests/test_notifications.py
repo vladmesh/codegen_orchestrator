@@ -1,8 +1,9 @@
 """Tests for shared.notifications module — lazy config validation."""
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from pydantic import ValidationError
 import pytest
 
 import shared.notifications as notifications_mod
@@ -92,6 +93,45 @@ class TestNotificationConfig:
         # but _ensure_config is not called at import time
         assert hasattr(notifications_mod, "notify_admins")
         assert hasattr(notifications_mod, "send_telegram_message")
+
+
+class TestNotifyAdmins:
+    @staticmethod
+    def _session_with_users(users, status=200):
+        response = AsyncMock()
+        response.status = status
+        response.json = AsyncMock(return_value=users)
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=False)
+
+        session = AsyncMock()
+        session.get = MagicMock(return_value=response)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_empty_valid_user_list_returns_zero(self):
+        session = self._session_with_users([])
+        env = {"TELEGRAM_BOT_TOKEN": TEST_TOKEN, "API_BASE_URL": TEST_API_URL}
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("shared.notifications.aiohttp.ClientSession", return_value=session),
+        ):
+            assert await notifications_mod.notify_admins("test") == 0
+
+    @pytest.mark.asyncio
+    async def test_invalid_users_response_propagates_validation_error(self):
+        session = self._session_with_users([{"telegram_id": "not-an-int"}])
+        env = {"TELEGRAM_BOT_TOKEN": TEST_TOKEN, "API_BASE_URL": TEST_API_URL}
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("shared.notifications.aiohttp.ClientSession", return_value=session),
+            pytest.raises(ValidationError),
+        ):
+            await notifications_mod.notify_admins("test")
 
 
 class TestSendTelegramParseRetry:
