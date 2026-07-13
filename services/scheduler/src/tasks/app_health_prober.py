@@ -18,17 +18,17 @@ from shared.notifications import notify_admins
 from src.clients.api import api_client
 from src.tasks.ssl_checker import check_ssl_expiry
 
-from ..startup import config as _config
+from .. import startup
 
 logger = structlog.get_logger()
 
 
 def _consecutive_failure_threshold() -> int:
-    return _config.get_int("health.consecutive_failure_threshold") if _config else 3
+    return startup.get_config().get_int("health.consecutive_failure_threshold")
 
 
 def _ssl_expiry_warning_days() -> int:
-    return _config.get_int("health.ssl_expiry_warning_days") if _config else 7
+    return startup.get_config().get_int("health.ssl_expiry_warning_days")
 
 
 # In-memory state for consecutive failure tracking (reset on worker restart)

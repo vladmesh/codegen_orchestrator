@@ -25,6 +25,9 @@ REQUIRED_KEYS = [
     "scheduler.service_template_ref",
     "scheduler.ssl_check_timeout",
     "scheduler.rag_summarizer_poll_interval",
+    "deploy.max_deploy_retries",
+    "deploy.max_deploy_fix_attempts",
+    "deploy.deploy_retry_ttl",
     "supervisor.story_stuck_threshold_minutes",
     "supervisor.task_stuck_threshold_minutes",
     "supervisor.story_max_architect_retries",
@@ -37,6 +40,15 @@ REQUIRED_KEYS = [
     "health.metrics_cleanup_interval_seconds",
     "health.http_timeout",
 ]
+
+
+def get_config() -> ConfigStore:
+    """Return the initialized scheduler configuration store."""
+    if config is None:
+        raise RuntimeError(
+            "Scheduler config is not initialized; call init_config() before starting workers"
+        )
+    return config
 
 
 def init_config() -> ConfigStore:

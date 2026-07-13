@@ -562,7 +562,12 @@ class TestWorkspaceGC:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.garbage_collector.httpx.AsyncClient", return_value=mock_client):
+        with (
+            patch("src.garbage_collector.settings") as mock_settings,
+            patch("src.garbage_collector.httpx.AsyncClient", return_value=mock_client),
+        ):
+            mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
+            mock_settings.WORKER_API_URL = "http://worker-api:8000"
             await _notify_workspace_deleted("repo-xyz")
 
         mock_client.post.assert_awaited_once()
@@ -575,10 +580,15 @@ class TestWorkspaceGC:
         """_notify_workspace_deleted doesn't raise on API errors."""
         from src.garbage_collector import _notify_workspace_deleted
 
-        with patch(
-            "src.garbage_collector.httpx.AsyncClient",
-            side_effect=httpx.ConnectError("connection refused"),
+        with (
+            patch("src.garbage_collector.settings") as mock_settings,
+            patch(
+                "src.garbage_collector.httpx.AsyncClient",
+                side_effect=httpx.ConnectError("connection refused"),
+            ),
         ):
+            mock_settings.WORKER_REDIS_URL = "redis://worker-redis:6379/0"
+            mock_settings.WORKER_API_URL = "http://worker-api:8000"
             await _notify_workspace_deleted("repo-xyz")
 
 

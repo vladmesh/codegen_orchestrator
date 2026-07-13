@@ -19,7 +19,7 @@ from src.clients.api import api_client
 from src.metrics import parse_cadvisor, parse_node_exporter
 from src.tasks.app_health_prober import app_health_probe_cycle
 
-from ..startup import config as _config
+from .. import startup
 
 logger = structlog.get_logger()
 
@@ -34,23 +34,23 @@ CADVISOR_PORT = 8080
 
 
 def _http_timeout() -> float:
-    return _config.get_float("health.http_timeout") if _config else 10.0
+    return startup.get_config().get_float("health.http_timeout")
 
 
 def _ram_threshold_pct() -> float:
-    return _config.get_float("health.ram_threshold_pct") if _config else 90.0
+    return startup.get_config().get_float("health.ram_threshold_pct")
 
 
 def _disk_threshold_pct() -> float:
-    return _config.get_float("health.disk_threshold_pct") if _config else 90.0
+    return startup.get_config().get_float("health.disk_threshold_pct")
 
 
 def _cleanup_interval() -> int:
-    return _config.get_int("health.metrics_cleanup_interval_seconds") if _config else 86400
+    return startup.get_config().get_int("health.metrics_cleanup_interval_seconds")
 
 
 def _retention_hours() -> int:
-    return _config.get_int("health.metrics_retention_hours") if _config else 168
+    return startup.get_config().get_int("health.metrics_retention_hours")
 
 
 # Statuses that indicate a server should be health-checked

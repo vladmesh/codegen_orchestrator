@@ -8,6 +8,8 @@ services:
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - WORKER_REDIS_URL=redis://redis:6379/0
+      - WORKER_API_URL=http://api:8000
       - ENVIRONMENT=test
       - 'WORKER_DOCKER_LABELS={"com.codegen.environment": "test"}'
       - WORKER_IMAGE_PREFIX=worker-test

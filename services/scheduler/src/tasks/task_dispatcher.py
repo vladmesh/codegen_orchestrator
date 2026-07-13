@@ -64,13 +64,13 @@ __all__ = [
     "task_dispatcher_loop",
 ]
 
-from ..startup import config as _config
+from .. import startup
 
 logger = structlog.get_logger(__name__)
 
 
 def _dispatch_interval() -> int:
-    return _config.get_int("scheduler.dispatch_interval_seconds") if _config else 30
+    return startup.get_config().get_int("scheduler.dispatch_interval_seconds")
 
 
 def _build_cumulative_context(sibling_events: list) -> str:

@@ -256,6 +256,8 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       API_BASE_URL: http://api:8000
+      WORKER_REDIS_URL: redis://redis:6379/0
+      WORKER_API_URL: http://api:8000
       PYTHONPATH: /app
       SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY}
       LOG_FORMAT: ${LOG_FORMAT:-json}

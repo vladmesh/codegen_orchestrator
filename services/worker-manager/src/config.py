@@ -44,3 +44,14 @@ class WorkerManagerSettings(BaseSettings):
 
 
 settings = WorkerManagerSettings()
+
+
+def worker_urls(current_settings: WorkerManagerSettings | None = None) -> tuple[str, str]:
+    """Return required worker-visible Redis and API URLs."""
+    current_settings = current_settings or settings
+    redis_url = current_settings.WORKER_REDIS_URL.strip()
+    api_url = current_settings.WORKER_API_URL.strip()
+    missing = [name for name, value in (("WORKER_REDIS_URL", redis_url), ("WORKER_API_URL", api_url)) if not value]
+    if missing:
+        raise RuntimeError(f"Required worker URL configuration is missing: {', '.join(missing)}")
+    return redis_url, api_url

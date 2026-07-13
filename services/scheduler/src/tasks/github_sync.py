@@ -21,17 +21,17 @@ from shared.schemas.project_spec import ProjectSpecYAML
 from src.clients.api import api_client
 from src.config import get_settings
 
-from ..startup import config as _config
+from .. import startup
 
 logger = structlog.get_logger()
 
 
 def _sync_interval() -> int:
-    return _config.get_int("scheduler.github_sync_interval") if _config else 300
+    return startup.get_config().get_int("scheduler.github_sync_interval")
 
 
 def _missing_threshold() -> int:
-    return _config.get_int("scheduler.github_sync_missing_threshold") if _config else 3
+    return startup.get_config().get_int("scheduler.github_sync_missing_threshold")
 
 
 async def _ingest_to_rag(

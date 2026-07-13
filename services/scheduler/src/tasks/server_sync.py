@@ -14,7 +14,7 @@ from shared.contracts.dto.server import ServerCreate, ServerStatus, ServerUpdate
 from shared.notifications import notify_admins
 from src.clients.api import api_client
 
-from ..startup import config as _config
+from .. import startup
 from .provisioner_trigger import publish_provisioner_trigger
 
 logger = structlog.get_logger()
@@ -25,19 +25,19 @@ GHOST_SERVERS = [ip.strip() for ip in GHOST_SERVERS if ip.strip()]
 
 
 def _sync_interval() -> int:
-    return _config.get_int("scheduler.server_sync_interval") if _config else 60
+    return startup.get_config().get_int("scheduler.server_sync_interval")
 
 
 def _details_sync_interval() -> int:
-    return _config.get_int("scheduler.server_details_sync_interval") if _config else 300
+    return startup.get_config().get_int("scheduler.server_details_sync_interval")
 
 
 def _provisioning_stuck_timeout() -> int:
-    return _config.get_int("scheduler.provisioning_stuck_timeout_seconds") if _config else 1800
+    return startup.get_config().get_int("scheduler.provisioning_stuck_timeout_seconds")
 
 
 def _provisioning_cooldown() -> int:
-    return _config.get_int("scheduler.provisioning_trigger_cooldown_seconds") if _config else 120
+    return startup.get_config().get_int("scheduler.provisioning_trigger_cooldown_seconds")
 
 
 async def get_time4vps_client() -> Time4VPSClient | None:

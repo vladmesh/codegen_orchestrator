@@ -35,15 +35,14 @@ SCAFFOLD_INFLIGHT_KEY = "scaffold:inflight"
 
 
 def _scaffold_inflight_ttl() -> int:
-    return startup.config.get_int("scheduler.scaffold_inflight_ttl") if startup.config else 600
+    return startup.get_config().get_int("scheduler.scaffold_inflight_ttl")
 
 
 def _template_config() -> tuple[str, str]:
-    if startup.config is None:
-        raise RuntimeError("Scheduler config is not initialized")
+    config = startup.get_config()
     return (
-        startup.config.get("scheduler.service_template_source"),
-        startup.config.get("scheduler.service_template_ref"),
+        config.get("scheduler.service_template_source"),
+        config.get("scheduler.service_template_ref"),
     )
 
 

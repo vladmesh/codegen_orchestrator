@@ -12,7 +12,7 @@ from redis.asyncio import Redis
 from shared.contracts.dto.worker import WorkerStatus
 from shared.redis import decode_redis_fields
 
-from .config import settings
+from .config import settings, worker_urls
 from .docker_ops import DockerClientWrapper
 from . import workspace as workspace_mod
 
@@ -153,7 +153,7 @@ async def garbage_collect_workspaces(redis: Redis, *, max_age_hours: int = 35) -
 
 async def _notify_workspace_deleted(repo_id: str) -> None:
     """Notify API that a workspace was GC'd so workspace_ready is cleared."""
-    api_url = settings.WORKER_API_URL or "http://api:8000"
+    _, api_url = worker_urls(settings)
     url = f"{api_url}/api/repositories/{repo_id}/notify-workspace-deleted"
     try:
         async with httpx.AsyncClient(timeout=10) as client:

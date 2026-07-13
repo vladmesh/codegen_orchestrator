@@ -13,13 +13,13 @@ import ssl
 
 import structlog
 
-from ..startup import config as _config
+from .. import startup
 
 logger = structlog.get_logger()
 
 
 def _ssl_check_timeout() -> int:
-    return _config.get_int("scheduler.ssl_check_timeout") if _config else 5
+    return startup.get_config().get_int("scheduler.ssl_check_timeout")
 
 
 def _get_cert_expiry(host: str, port: int) -> datetime | None:
