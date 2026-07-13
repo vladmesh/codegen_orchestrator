@@ -288,6 +288,11 @@ class SchedulerAPIClient:
         )
         return IncidentDTO.model_validate(resp.json())
 
+    async def list_active_incidents(self) -> list[IncidentDTO]:
+        """Return detected and recovering incidents for journal reconciliation."""
+        resp = await self._request("GET", "incidents/active")
+        return [IncidentDTO.model_validate(incident) for incident in resp.json()]
+
     # --- Metrics History ---
 
     async def create_metrics_history(self, server_handle: str, metrics: dict) -> dict:

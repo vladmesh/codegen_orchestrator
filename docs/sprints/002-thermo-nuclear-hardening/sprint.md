@@ -30,8 +30,11 @@
 - Приватизация raw `publish`/`publish_flat` НЕ входит в срез: методы держат ~13 живых production call sites (callback-события, PO input/proactive, provisioner/worker responses) — миграция на `publish_message` идёт по consumer'ам в Phase 3/4, raw API не расширялся.
 
 ## Phase 4: Тихие ошибки → fail-fast
-- B3 infra incidents: этот срез закрывает атомарный лимит provisioning attempts (`codegen_orchestrator-464`); остаются 3 метода incident-клиента и удаление `try/except → False` обёрток — thermo §B3
-- B4 secret_resolver: `raise` вместо фейковых значений, убрать `"unknown"` sentinel — thermo §B4
+- [x] B3 infra incidents: атомарный лимит provisioning attempts (`codegen_orchestrator-464`) и
+  incident journal reconciliation (`codegen_orchestrator-466`). Successful provisioning writes
+  `READY` before journal closure; temporary closure failure remains observable and scheduler resolves
+  only active `provisioning_failed` incidents for confirmed `READY` servers, without recovery work.
+- B4 secret_resolver: `raise` вместо фейковых значений, убрать `"unknown"` sentinel. Следующий срез, thermo §B4.
 - Swallow-list: rag_ingest (embedding=None), worker-wrapper writes, po tools, architect `"422" in str(e)`, `_base` poison-loop, infra api_client, `release_allocation`, notifications — thermo §"fail-fast violations"
 - Magic-number config fallbacks (supervisor/worker-manager/api_types) — thermo §там же
 

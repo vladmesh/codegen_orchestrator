@@ -7,8 +7,8 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
 - **Type**: tech
 - **Started**: 2026-07-01
-- **Current Phase**: Sprint 002 Phase 3 (typed Redis consume + dead-code removal) is complete.
-  Next is Phase 4 (silent failures → fail-fast: B3 infra incidents, B4 secret_resolver, swallow-list).
+- **Current Phase**: Sprint 002 Phase 4 (silent failures → fail-fast).
+  B3 incident journal reconciliation is complete; B4 secret-resolver is next.
 
 ## Current Facts
 
@@ -43,6 +43,10 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
   `ensure_consumer_groups`). Raw `publish`/`publish_flat` were not privatized — ~13 live
   production producers still use them; that migration proceeds by consumer in Phase 3/4 and the raw
   API was not extended.
+- `codegen_orchestrator-466` is complete: successful provisioning writes `READY` before attempting
+  incident-journal closure. A temporary closure failure remains observable, sends one warning, and
+  scheduler reconciliation later resolves only active `PROVISIONING_FAILED` incidents for confirmed
+  `READY` servers without starting recovery work.
 
 ## Phase Progress
 | Phase | Name | Status |
@@ -51,7 +55,7 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
 | 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | COMPLETE — B7 enums (`codegen_orchestrator-435`), duplicated vocabularies (`codegen_orchestrator-436`), typed `Run.result` union (`codegen_orchestrator-440`) |
 | 3 | Типизированный consume + мёртвый код (B5, B6) | COMPLETE — `consume_typed` (PR #40), B6 worker result (PR #41), engineering consumer typed + dead-layer removal (`codegen_orchestrator-457`, PR #42) |
-| 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Pending — next |
+| 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Active: B3 incident journal complete; B4 secret-resolver next |
 
 ## Recent Stabilization Work
 
@@ -66,6 +70,7 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | Unified contract vocabularies (`codegen_orchestrator-436`) | COMPLETE | `shared/contracts/vocab.py` canonical `AgentType`/`ActionType`/`ResultStatus`/`LifecycleEvent`; inline `Literal` sets removed, `error` synonym dropped; `WorkerCliKind`/`DeployAction`/`TaskType` kept distinct; tests in `shared/tests/unit/test_vocab.py` |
 | Typed `Run.result` union (`codegen_orchestrator-440`) | COMPLETE | `shared/contracts/dto/run_result.py` per-`RunType` models bound to `type`; producers emit typed models, scheduler reads typed attributes; invalid result → visible terminal state; tests in `shared/tests/unit/test_run_result.py` + `test_supervisor.py`. Closes Sprint 002 Phase 2 |
 | Typed engineering consume + dead-layer removal (`codegen_orchestrator-457`) | COMPLETE | Engineering consumer on `EngineeringMessage.model_validate`; deleted `langgraph/src/tools/` (allocator → `allocations.py`), second `agent_config_cache`, `scaffold_phase.py`, `worker:lifecycle` stream+contract, shared compat-shims; tests in `test_engineering_validation.py`, `test_dead_layer_removed.py`, `test_phase3_shims_removed.py`. Closes Sprint 002 Phase 3. PR #42 |
+| B3 incident journal reconciliation (`codegen_orchestrator-466`) | COMPLETE | Successful provisioning writes `READY` before journal closure. An unavailable journal remains observable and gets one warning; scheduler retries only active `provisioning_failed` entries for `READY` servers, idempotently and without recovery actions or per-tick notifications. B4 secret-resolver is next. |
 
 ## Sprint History
 
