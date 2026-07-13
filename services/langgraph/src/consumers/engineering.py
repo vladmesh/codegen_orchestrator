@@ -28,6 +28,7 @@ from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
 from ._base import start_worker
 from ._events import publish_callback_event
 from ._repo_setup import _create_repo_and_set_secrets
+from ._validation import _safe_validation_errors
 from .engineering_result_handler import (
     EngineeringSuccessParams,
     _update_task_status,
@@ -59,18 +60,6 @@ def _parse_telegram_id(user_id: str) -> dict:
     if user_id and user_id.isdigit():
         return {"telegram_id": int(user_id)}
     return {}
-
-
-def _safe_validation_errors(exc: ValidationError) -> list[dict]:
-    """Validation errors stripped to type+loc — never the raw payload.
-
-    A `str(ValidationError)` / `e.errors()` echoes `input_value`, and an engineering
-    job carries user-facing text (`description`) and ids. Log only `type` and `loc`.
-    """
-    return [
-        {"type": err["type"], "loc": list(err["loc"])}
-        for err in exc.errors(include_url=False, include_input=False)
-    ]
 
 
 async def _handle_invalid_engineering_message(job_data: dict, exc: ValidationError) -> dict:

@@ -25,6 +25,7 @@ from shared.queues import WORKER_GROUP
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ._validation import _safe_validation_errors
 
 logger = structlog.get_logger(__name__)
 
@@ -54,14 +55,6 @@ _TERMINAL_STORY_STATUSES = {
     StoryStatus.FAILED.value,
     StoryStatus.ARCHIVED.value,
 }
-
-
-def _safe_validation_errors(exc: ValidationError) -> list[dict]:
-    """Return validation diagnostics without values from the Redis entry."""
-    return [
-        {"type": error["type"], "loc": list(error["loc"])}
-        for error in exc.errors(include_url=False, include_input=False)
-    ]
 
 
 def validate_queued_message(model, job_data: dict):

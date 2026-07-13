@@ -33,6 +33,7 @@ from ..agents.po.graph import create_po_graph
 from ..agents.po.tools import init_po_clients
 from ..config.settings import get_settings
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
+from ._validation import _safe_validation_errors
 
 logger = structlog.get_logger(__name__)
 
@@ -207,15 +208,19 @@ async def _process_message(
     data: dict,
 ) -> None:
     """Process a single message with concurrency control."""
-    bind_message_context(data)
     # Validate incoming message
     try:
         _po_input_adapter.validate_python(data)
-    except ValidationError:
-        logger.warning("po_input_validation_failed", msg_id=msg_id, data=data)
+    except ValidationError as exc:
+        logger.warning(
+            "po_input_validation_failed",
+            msg_id=msg_id,
+            errors=_safe_validation_errors(exc),
+        )
         await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
         return
 
+    bind_message_context(data)
     user_id = data.get("user_id", "unknown")
     lock = user_locks.setdefault(user_id, asyncio.Lock())
 
