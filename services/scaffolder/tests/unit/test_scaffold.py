@@ -242,8 +242,9 @@ class TestScaffoldInjectionGuard:
         async def fake_exec(*args, **kwargs):
             return failed if args[:2] == ("copier", "copy") else success
 
-        with capture_logs() as logs, patch(
-            "src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_exec
+        with (
+            capture_logs() as logs,
+            patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_exec),
         ):
             result = await run_scaffold(
                 **{key: value for key, value in scaffold_msg.items() if key != "user_id"},
