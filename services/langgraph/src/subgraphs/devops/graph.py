@@ -21,6 +21,7 @@ import structlog
 from ...nodes.resource_allocator import resource_allocator_node
 from .env_analyzer import env_analyzer_run
 from .nodes import deployer_node, readiness_check_node, secret_resolver_node
+from .secret_resolver import SecretResolutionError
 from .smoke import smoke_tester_node
 from .state import DevOpsState
 
@@ -36,7 +37,18 @@ def route_after_env_analyzer(state: DevOpsState) -> str:
 
 def route_after_secret_resolver(state: DevOpsState) -> str:
     """Route after secret resolution."""
+    if state.get("errors"):
+        return END
     return "readiness_check"
+
+
+async def resolve_secrets(state: DevOpsState) -> dict:
+    """Convert resolver validation errors into the deploy result error path."""
+    try:
+        return await secret_resolver_node.run(state)
+    except SecretResolutionError as error:
+        logger.error("secret_resolution_failed", error_type=type(error).__name__)
+        return {"errors": [str(error)]}
 
 
 def route_after_readiness_check(state: DevOpsState) -> str:
@@ -85,7 +97,7 @@ def create_devops_subgraph() -> Any:
     # Add nodes
     graph.add_node("resource_allocator", resource_allocator_node.run)
     graph.add_node("env_analyzer", env_analyzer_run)
-    graph.add_node("secret_resolver", secret_resolver_node.run)
+    graph.add_node("secret_resolver", resolve_secrets)
     graph.add_node("readiness_check", readiness_check_node.run)
     graph.add_node("deployer", deployer_node.run)
     graph.add_node("smoke_tester", smoke_tester_node.run)
@@ -108,6 +120,7 @@ def create_devops_subgraph() -> Any:
         route_after_secret_resolver,
         {
             "readiness_check": "readiness_check",
+            END: END,
         },
     )
 

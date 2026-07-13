@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, patch
 from langgraph.graph import END, START, StateGraph
 import pytest
 
-from src.subgraphs.devops.graph import create_devops_subgraph, route_after_deployer
+from src.subgraphs.devops.graph import (
+    create_devops_subgraph,
+    resolve_secrets,
+    route_after_deployer,
+    route_after_secret_resolver,
+)
 from src.subgraphs.devops.state import DevOpsState
 
 
@@ -51,6 +56,24 @@ class TestRouteAfterDeployer:
         """Should skip smoke_tester when no deployed_url."""
         state = {"deployed_url": None, "errors": []}
         assert route_after_deployer(state) == END
+
+
+class TestRouteAfterSecretResolver:
+    """Resolver errors must stop the graph before deployment side effects."""
+
+    def test_stops_before_deployer_on_resolution_error(self):
+        state = {"errors": ["project_id is required for secret resolution"]}
+
+        assert route_after_secret_resolver(state) == END
+
+    @pytest.mark.asyncio
+    async def test_typed_resolver_error_is_returned_to_deploy_result_path(self):
+        """A resolver failure remains visible without running downstream deployment."""
+        result = await resolve_secrets(
+            {"project_id": None, "project_spec": {"name": "test"}, "env_analysis": {}}
+        )
+
+        assert result == {"errors": ["project_id is required for secret resolution"]}
 
 
 class TestSmokeResultPropagation:

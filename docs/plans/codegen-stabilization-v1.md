@@ -21,8 +21,10 @@ Stages 1-3 are complete. Stage 4 is active at Sprint 002 Phase 4:
   `publish_message` per consumer over Phase 3/4 and the raw API was not extended.
 - Phase 4 is active. B3 infra incidents is complete in `codegen_orchestrator-466`: provisioning
   writes `READY` before incident-journal closure and scheduler reconciles only active provisioning
-  failures for confirmed READY servers. B4 `secret_resolver` is the next slice, then the swallow-list
-  and magic-number config fallbacks.
+  failures for confirmed READY servers. B4 `secret_resolver` is complete in
+  `codegen_orchestrator-473`: resolver inputs fail before deploy side effects and generated-secret
+  persistence failures reach the deploy error path. The swallow-list and magic-number config
+  fallbacks remain open.
 
 ## Production template rule
 
