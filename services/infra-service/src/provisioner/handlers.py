@@ -4,7 +4,7 @@ import structlog
 
 from shared.notifications import notify_admins
 
-from .api_client import reset_provisioning_attempts, save_server_ssh_key
+from .api_client import reset_provisioning_attempts, save_server_ssh_key, update_server_status
 from .incidents import resolve_active_incidents
 from .recovery import redeploy_all_services
 from .ssh_manager import SSHManager
@@ -65,14 +65,31 @@ async def handle_provisioning_success(
         if private_key:
             await save_server_ssh_key(server_handle, private_key)
 
+    if not await update_server_status(server_handle, "ready"):
+        raise RuntimeError(f"Failed to mark provisioned server {server_handle} as ready")
+
+    incident_journal_status = "resolved"
+    try:
+        await resolve_active_incidents(server_handle)
+    except Exception as exc:
+        incident_journal_status = "pending_reconciliation"
+        logger.error(
+            "provisioning_incident_resolution_failed",
+            server_handle=server_handle,
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+        await notify_admins(
+            f"⚠️ Server *{server_handle}* is READY, but its provisioning incident journal "
+            "could not be closed. Reconciliation will retry automatically.",
+            level="warning",
+        )
+
     recovery_text = "recovered and " if is_recovery else ""
     services_redeployed = 0
     services_failed = 0
 
     if is_recovery:
-        # Resolve incidents
-        await resolve_active_incidents(server_handle)
-
         # Redeploy services
         logger.info("service_redeployment_start", server_handle=server_handle)
         services_redeployed, services_failed, errors = await redeploy_all_services(
@@ -94,6 +111,10 @@ The server is now configured with:
 
     if is_recovery and (services_redeployed > 0 or services_failed > 0):
         message += f"\n📦 Services: {services_redeployed} redeployed, {services_failed} failed"
+    if incident_journal_status == "pending_reconciliation":
+        message += (
+            "\n⚠️ Provisioning incident journal could not be closed; reconciliation will retry."
+        )
 
     # Send notification
     await notify_admins(
@@ -110,6 +131,7 @@ The server is now configured with:
             "server_ip": server_ip,
             "services_redeployed": services_redeployed,
             "services_failed": services_failed,
+            "incident_journal_status": incident_journal_status,
         },
         "current_agent": "provisioner",
     }

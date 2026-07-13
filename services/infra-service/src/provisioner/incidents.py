@@ -72,11 +72,15 @@ async def create_incident(
 
 
 async def resolve_active_incidents(server_handle: str) -> None:
-    """Resolve active incidents after a successful recovery."""
+    """Resolve only active provisioning failures after successful provisioning."""
     incidents = []
     for incident_status in (IncidentStatus.DETECTED, IncidentStatus.RECOVERING):
         incidents.extend(
-            await api_client.list_incidents(server_handle=server_handle, status=incident_status)
+            await api_client.list_incidents(
+                server_handle=server_handle,
+                status=incident_status,
+                incident_type=IncidentType.PROVISIONING_FAILED,
+            )
         )
     resolved_at = datetime.now(UTC)
     for incident in incidents:

@@ -9,6 +9,7 @@ import time
 import structlog
 
 from shared.clients.time4vps import Time4VPSClient
+from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerCreate, ServerStatus, ServerUpdate
 from shared.notifications import notify_admins
 from src.clients.api import api_client
@@ -71,6 +72,7 @@ async def sync_servers_worker():
         servers_missing = 0
         details_updated = 0
         triggers_published = 0
+        incidents_resolved = 0
         try:
             client = await get_time4vps_client()
             if not client:
@@ -91,6 +93,7 @@ async def sync_servers_worker():
 
                 # Check for servers requiring provisioning
                 triggers_published = await _check_provisioning_triggers()
+                incidents_resolved = await _reconcile_provisioning_incidents()
 
         except Exception as e:
             logger.error(
@@ -108,6 +111,7 @@ async def sync_servers_worker():
                 servers_missing=servers_missing,
                 details_updated=details_updated,
                 triggers_published=triggers_published,
+                incidents_resolved=incidents_resolved,
                 duration_sec=round(duration, 2),
             )
 
@@ -417,3 +421,43 @@ async def _check_provisioning_triggers() -> int:
         triggers_published += 1
 
     return triggers_published
+
+
+async def _reconcile_provisioning_incidents() -> int:
+    """Close stale provisioning-failure journal entries for READY servers.
+
+    This only reconciles the journal. It never triggers provisioning or recovery.
+    A failed update is logged without notification because provisioning success has
+    already emitted one actionable warning; leaving the incident active retries it
+    on the next tick without a notification storm.
+    """
+    servers = await api_client.get_servers()
+    ready_handles = {server.handle for server in servers if server.status == ServerStatus.READY}
+    active_incidents = await api_client.list_active_incidents()
+    resolved_count = 0
+
+    for incident in active_incidents:
+        if (
+            incident.incident_type is not IncidentType.PROVISIONING_FAILED
+            or incident.server_handle not in ready_handles
+        ):
+            continue
+        try:
+            await api_client.resolve_incident(incident.id)
+        except Exception as exc:
+            logger.error(
+                "provisioning_incident_reconciliation_failed",
+                incident_id=incident.id,
+                server_handle=incident.server_handle,
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
+            continue
+        resolved_count += 1
+        logger.info(
+            "provisioning_incident_reconciled",
+            incident_id=incident.id,
+            server_handle=incident.server_handle,
+        )
+
+    return resolved_count

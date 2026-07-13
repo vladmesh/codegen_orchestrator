@@ -79,7 +79,7 @@ async def test_reservation_api_error_prevents_ansible_without_fallback(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_success_resets_attempts_before_marking_server_ready(monkeypatch):
+async def test_success_marks_server_ready_before_resolving_incident_journal(monkeypatch):
     from src.provisioner.handlers import handle_provisioning_success
 
     calls = []
@@ -89,16 +89,42 @@ async def test_success_resets_attempts_before_marking_server_ready(monkeypatch):
         return True
 
     monkeypatch.setattr("src.provisioner.handlers.reset_provisioning_attempts", _reset)
-    update_status = AsyncMock()
-    monkeypatch.setattr(
-        "src.provisioner.handlers.update_server_status", update_status, raising=False
-    )
+    update_status = AsyncMock(return_value=True)
+    resolve_incidents = AsyncMock()
+    monkeypatch.setattr("src.provisioner.handlers.update_server_status", update_status)
+    monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", resolve_incidents)
     monkeypatch.setattr("src.provisioner.handlers.notify_admins", AsyncMock())
 
     await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
 
     assert calls == [("reset", "srv-1", 1, "episode-1")]
-    update_status.assert_not_awaited()
+    update_status.assert_awaited_once_with("srv-1", "ready")
+    resolve_incidents.assert_awaited_once_with("srv-1")
+
+
+@pytest.mark.asyncio
+async def test_success_keeps_server_ready_when_incident_journal_is_unavailable(monkeypatch):
+    from src.provisioner.handlers import handle_provisioning_success
+
+    monkeypatch.setattr(
+        "src.provisioner.handlers.reset_provisioning_attempts", AsyncMock(return_value=True)
+    )
+    update_status = AsyncMock(return_value=True)
+    notify = AsyncMock()
+    monkeypatch.setattr("src.provisioner.handlers.update_server_status", update_status)
+    monkeypatch.setattr(
+        "src.provisioner.handlers.resolve_active_incidents",
+        AsyncMock(side_effect=RuntimeError("api unavailable")),
+    )
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins", notify)
+
+    result = await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
+
+    update_status.assert_awaited_once_with("srv-1", "ready")
+    assert result["provisioning_result"]["status"] == "success"
+    assert result["provisioning_result"]["incident_journal_status"] == "pending_reconciliation"
+    assert "incident journal could not be closed" in result["messages"][0]["message"]
+    assert notify.await_count == 2
 
 
 @pytest.mark.asyncio

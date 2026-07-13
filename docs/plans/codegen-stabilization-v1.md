@@ -19,8 +19,10 @@ Stages 1-3 are complete. Stage 4 is active at Sprint 002 Phase 4:
   on `EngineeringMessage.model_validate` and dead-layer removal (`codegen_orchestrator-457`, PR #42). Raw
   `publish`/`publish_flat` stay public — ~13 live producers still call them; they migrate to
   `publish_message` per consumer over Phase 3/4 and the raw API was not extended.
-- Phase 4 (next) converts the remaining silent failures to fail-fast behavior (B3 infra incidents,
-  B4 secret_resolver, the swallow-list, magic-number config fallbacks).
+- Phase 4 is active. B3 infra incidents is complete in `codegen_orchestrator-466`: provisioning
+  writes `READY` before incident-journal closure and scheduler reconciles only active provisioning
+  failures for confirmed READY servers. B4 `secret_resolver` is the next slice, then the swallow-list
+  and magic-number config fallbacks.
 
 ## Production template rule
 
