@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from pydantic import ValidationError
 import structlog
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
@@ -22,7 +21,7 @@ from ..agents.architect.tools import reset_task_chain
 from ..clients.api import api_client
 from ..config.settings import get_settings
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
-from ._base import start_worker
+from ._base import start_worker, validate_queued_message
 
 logger = structlog.get_logger(__name__)
 
@@ -71,11 +70,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
     Returns:
         Result dict with status and details.
     """
-    try:
-        msg = ArchitectMessage.model_validate(job_data)
-    except ValidationError:
-        logger.warning("architect_invalid_message", data=job_data)
-        return {"status": "skipped", "error": "invalid message"}
+    msg = validate_queued_message(ArchitectMessage, job_data)
 
     log = logger.bind(story_id=msg.story_id, project_id=msg.project_id)
     log.info("architect_job_started")

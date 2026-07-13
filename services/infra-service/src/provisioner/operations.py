@@ -5,7 +5,7 @@ import asyncio
 import structlog
 
 from shared.clients.time4vps import Time4VPSClient
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 
 from ..config.constants import Provisioning, Timeouts
 from .ansible_runner import AnsibleRunner
@@ -107,9 +107,10 @@ async def reinstall_and_provision(
 
         logger.info("reinstall_task_created", task_id=task_id)
 
-        await notify_admins(
+        await notify_admins_best_effort(
             f"⏳ Server *{server_handle}* OS reinstall started. This will take ~10-15 minutes.",
             level="info",
+            server_handle=server_handle,
         )
 
         # Step 2: Wait for reinstall to complete
@@ -158,10 +159,11 @@ async def reinstall_and_provision(
 
         await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
 
-        await notify_admins(
+        await notify_admins_best_effort(
             f"✅ Server *{server_handle}* connectivity established. "
             "Starting software installation...",
             level="info",
+            server_handle=server_handle,
         )
 
         # Step 5: Run Software Phase

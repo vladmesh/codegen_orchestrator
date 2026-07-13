@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING
 import structlog
 
 from shared.contracts.dto.incident import IncidentType
-from shared.notifications import notify_admins
+from shared.contracts.dto.server import ServerDTO
+from shared.notifications import notify_admins_best_effort
 
 if TYPE_CHECKING:
     from shared.clients.time4vps import Time4VPSClient
@@ -39,6 +40,7 @@ logger = structlog.get_logger()
 
 # Configuration from centralized constants
 PROVISIONING_MAX_RETRIES = Provisioning.MAX_RETRIES
+
 
 # Re-export extracted names for backward compatibility
 __all__ = [
@@ -67,7 +69,7 @@ class ProvisionerNode(FunctionalNode):
         self,
         server_handle: str,
         state: dict,
-    ) -> tuple[dict | None, dict | None]:
+    ) -> tuple[ServerDTO | None, dict | None]:
         """Get server info and validate it has required fields.
 
         Returns:
@@ -75,11 +77,6 @@ class ProvisionerNode(FunctionalNode):
             return it from run() immediately.
         """
         server_info = await get_server_info(server_handle)
-        if not server_info:
-            return None, {
-                "messages": [{"message": f"❌ Failed to get server info for {server_handle}"}],
-                "errors": state.get("errors", []) + ["Server info fetch failed"],
-            }
 
         server_ip = server_info.public_ip or server_info.host
         if not server_ip:
@@ -209,9 +206,10 @@ class ProvisionerNode(FunctionalNode):
             IncidentType.PROVISIONING_FAILED,
             {"step": "reinstall", "message": message},
         )
-        await notify_admins(
+        await notify_admins_best_effort(
             f"❌ Server *{server_handle}* reinstall FAILED: {message[:200]}",
             level="error",
+            server_handle=server_handle,
         )
         return {
             "messages": [{"message": f"❌ Reinstall failed: {message}"}],

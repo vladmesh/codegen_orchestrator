@@ -93,7 +93,7 @@ async def test_success_marks_server_ready_before_resolving_incident_journal(monk
     resolve_incidents = AsyncMock()
     monkeypatch.setattr("src.provisioner.handlers.update_server_status", update_status)
     monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", resolve_incidents)
-    monkeypatch.setattr("src.provisioner.handlers.notify_admins", AsyncMock())
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", AsyncMock())
 
     await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
 
@@ -116,7 +116,7 @@ async def test_success_keeps_server_ready_when_incident_journal_is_unavailable(m
         "src.provisioner.handlers.resolve_active_incidents",
         AsyncMock(side_effect=RuntimeError("api unavailable")),
     )
-    monkeypatch.setattr("src.provisioner.handlers.notify_admins", notify)
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", notify)
 
     result = await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
 
@@ -125,6 +125,50 @@ async def test_success_keeps_server_ready_when_incident_journal_is_unavailable(m
     assert result["provisioning_result"]["incident_journal_status"] == "pending_reconciliation"
     assert "incident journal could not be closed" in result["messages"][0]["message"]
     assert notify.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_success_result_survives_notification_api_failure(monkeypatch):
+    """A best-effort notification cannot turn a READY server into a failed result."""
+    from src.provisioner.handlers import handle_provisioning_success
+
+    monkeypatch.setattr(
+        "src.provisioner.handlers.reset_provisioning_attempts", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr("src.provisioner.handlers.update_server_status", AsyncMock())
+    monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", AsyncMock())
+    monkeypatch.setattr(
+        "shared.notifications.notify_admins",
+        AsyncMock(side_effect=RuntimeError("users API down")),
+    )
+
+    result = await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
+
+    assert result["provisioning_result"]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_reinstall_progress_notification_is_best_effort(monkeypatch):
+    from shared.notifications import notify_admins_best_effort
+
+    monkeypatch.setattr(
+        "shared.notifications.notify_admins",
+        AsyncMock(side_effect=RuntimeError("users API down")),
+    )
+
+    await notify_admins_best_effort("reinstall started", "info", server_handle="srv-1")
+
+
+@pytest.mark.asyncio
+async def test_recovery_notification_is_best_effort(monkeypatch):
+    from shared.notifications import notify_admins_best_effort
+
+    monkeypatch.setattr(
+        "shared.notifications.notify_admins",
+        AsyncMock(side_effect=RuntimeError("users API down")),
+    )
+
+    await notify_admins_best_effort("redeployment complete", "success", server_handle="srv-1")
 
 
 @pytest.mark.asyncio
@@ -145,7 +189,7 @@ async def test_stale_success_skips_ready_status_and_all_success_side_effects(mon
     monkeypatch.setattr("src.provisioner.handlers.save_server_ssh_key", save_key)
     monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", resolve_incidents)
     monkeypatch.setattr("src.provisioner.handlers.redeploy_all_services", redeploy)
-    monkeypatch.setattr("src.provisioner.handlers.notify_admins", notify)
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", notify)
 
     result = await handle_provisioning_success(
         "srv-1", "203.0.113.10", 1, "episode-1", True, ssh_manager=MagicMock()
@@ -178,7 +222,7 @@ async def test_stale_success_maps_to_superseded_result_not_failure(monkeypatch):
         "src.provisioner.handlers.reset_provisioning_attempts", AsyncMock(return_value=False)
     )
     monkeypatch.setattr("src.provisioner.handlers.update_server_status", AsyncMock(), raising=False)
-    monkeypatch.setattr("src.provisioner.handlers.notify_admins", AsyncMock())
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", AsyncMock())
 
     stale_state = await handle_provisioning_success(
         "srv-1", "203.0.113.10", 1, "episode-old", False

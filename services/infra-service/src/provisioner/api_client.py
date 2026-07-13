@@ -3,133 +3,56 @@
 from shared.contracts.dto.server import ServerDTO
 from shared.log_config import get_logger
 
-from ..clients.api import api_client
+from ..clients.api import DeploymentRecord, api_client
 
 logger = get_logger(__name__)
 
 
-async def get_server_info(server_handle: str) -> ServerDTO | None:
-    """Fetch server info from API.
-
-    Args:
-        server_handle: Server handle
-
-    Returns:
-        Server info dict or None on error
-    """
-    try:
-        return await api_client.get_server(server_handle)
-    except Exception as e:
-        logger.error(
-            "api_server_info_failed",
-            server_handle=server_handle,
-            error=str(e),
-        )
-        return None
+async def get_server_info(server_handle: str) -> ServerDTO:
+    """Fetch typed server information from the API."""
+    return await api_client.get_server(server_handle)
 
 
-async def update_server_status(server_handle: str, status: str) -> bool:
-    """Update server status in database via API.
-
-    Args:
-        server_handle: Server handle
-        status: New status
-
-    Returns:
-        True if successful
-    """
-    try:
-        await api_client.update_server(server_handle, {"status": status})
-        logger.info(
-            "api_server_status_updated",
-            server_handle=server_handle,
-            status=status,
-        )
-        return True
-    except Exception as e:
-        logger.error(
-            "api_server_status_update_failed",
-            server_handle=server_handle,
-            status=status,
-            error=str(e),
-        )
-        return False
+async def update_server_status(server_handle: str, status: str) -> None:
+    """Update server status or propagate the API error."""
+    await api_client.update_server(server_handle, {"status": status})
+    logger.info("api_server_status_updated", server_handle=server_handle, status=status)
 
 
-async def update_server_labels(server_handle: str, labels: dict) -> bool:
+async def update_server_labels(server_handle: str, labels: dict) -> None:
     """Update server labels in database via API.
 
     Args:
         server_handle: Server handle
         labels: New labels dict (will be merged with existing)
 
-    Returns:
-        True if successful
     """
-    try:
-        current = await api_client.get_server(server_handle)
-        current_labels = dict(current.labels or {})
-        current_labels.update(labels)
-        final_labels = current_labels
-
-        await api_client.update_server(server_handle, {"labels": final_labels})
-        logger.info(
-            "api_server_labels_updated",
-            server_handle=server_handle,
-            labels=final_labels,
-        )
-        return True
-    except Exception as e:
-        logger.error(
-            "api_server_labels_update_failed",
-            server_handle=server_handle,
-            labels=labels,
-            error=str(e),
-        )
-        return False
+    current = await api_client.get_server(server_handle)
+    final_labels = dict(current.labels or {}) | labels
+    await api_client.update_server(server_handle, {"labels": final_labels})
+    logger.info("api_server_labels_updated", server_handle=server_handle, labels=final_labels)
 
 
-async def save_server_ssh_key(server_handle: str, ssh_key: str) -> bool:
+async def save_server_ssh_key(server_handle: str, ssh_key: str) -> None:
     """Save SSH private key to server record via API (encrypted at rest).
 
     Args:
         server_handle: Server handle
         ssh_key: Raw SSH private key content
 
-    Returns:
-        True if successful
     """
-    try:
-        await api_client.update_server(server_handle, {"ssh_key": ssh_key})
-        logger.info("api_server_ssh_key_saved", server_handle=server_handle)
-        return True
-    except Exception as e:
-        logger.error(
-            "api_server_ssh_key_save_failed",
-            server_handle=server_handle,
-            error=str(e),
-        )
-        return False
+    await api_client.update_server(server_handle, {"ssh_key": ssh_key})
+    logger.info("api_server_ssh_key_saved", server_handle=server_handle)
 
 
-async def get_services_on_server(server_handle: str) -> list[dict]:
+async def get_services_on_server(server_handle: str) -> list[DeploymentRecord]:
     """Get services deployed on a server for redeployment.
 
     Args:
         server_handle: Server handle
 
-    Returns:
-        List of service deployment records
     """
-    try:
-        return await api_client.get_server_services(server_handle)
-    except Exception as e:
-        logger.error(
-            "api_server_services_fetch_failed",
-            server_handle=server_handle,
-            error=str(e),
-        )
-        return []
+    return await api_client.get_server_services(server_handle)
 
 
 async def reserve_provisioning_attempt(

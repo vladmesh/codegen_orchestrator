@@ -36,15 +36,14 @@ class TestSaveServerSSHKey:
 
             result = await save_server_ssh_key("srv-1", "my-private-key")
 
-            assert result is True
+            assert result is None
             mock_api.update_server.assert_called_once_with("srv-1", {"ssh_key": "my-private-key"})
 
     @pytest.mark.asyncio
-    async def test_returns_false_on_error(self):
-        """Returns False when API call fails."""
+    async def test_propagates_api_error(self):
+        """An API failure is not converted into a false success signal."""
         with patch("src.provisioner.api_client.api_client") as mock_api:
             mock_api.update_server = AsyncMock(side_effect=RuntimeError("API down"))
 
-            result = await save_server_ssh_key("srv-1", "my-private-key")
-
-            assert result is False
+            with pytest.raises(RuntimeError, match="API down"):
+                await save_server_ssh_key("srv-1", "my-private-key")

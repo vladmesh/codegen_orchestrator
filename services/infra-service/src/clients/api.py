@@ -5,11 +5,15 @@ Contains only methods needed for provisioning operations.
 
 from __future__ import annotations
 
+from datetime import datetime
 import os
+from typing import Any
 
 import httpx
+from pydantic import BaseModel
 import structlog
 
+from shared.contracts.dto.deployment import DeploymentResult
 from shared.contracts.dto.incident import (
     IncidentCreate,
     IncidentDTO,
@@ -25,6 +29,19 @@ from shared.contracts.dto.server import (
 from shared.log_config.correlation import get_correlation_id
 
 logger = structlog.get_logger(__name__)
+
+
+class DeploymentRecord(BaseModel):
+    """Deployment response needed by recovery, validated at the API boundary."""
+
+    id: int
+    project_id: str
+    server_handle: str
+    service_name: str
+    port: int
+    deployment_info: dict[str, Any]
+    result: DeploymentResult
+    deployed_at: datetime
 
 
 class InfrastructureAPIClient:
@@ -105,10 +122,12 @@ class InfrastructureAPIClient:
         )
         return ProvisioningAttemptResetResult.model_validate(resp.json())
 
-    async def get_server_services(self, server_handle: str) -> list[dict]:
-        """Get list of services deployed on a server."""
-        resp = await self._request("GET", f"servers/{server_handle}/services")
-        return resp.json()
+    async def get_server_services(self, server_handle: str) -> list[DeploymentRecord]:
+        """Get typed deployment records for a server."""
+        resp = await self._request(
+            "GET", "service-deployments/", params={"server_handle": server_handle}
+        )
+        return [DeploymentRecord.model_validate(item) for item in resp.json()]
 
     async def create_incident(self, incident: IncidentCreate) -> IncidentDTO:
         """Create an incident through the typed incident contract."""

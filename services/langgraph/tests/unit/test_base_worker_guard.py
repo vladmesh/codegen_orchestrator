@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from http import HTTPStatus
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+from pydantic import BaseModel
 import pytest
 
 from shared.contracts.dto.run import RunStatus
@@ -18,6 +20,7 @@ def mock_api_client():
     with patch("src.consumers._base.api_client") as mock:
         mock.get = AsyncMock()
         mock.get_story = AsyncMock()
+        mock.close = AsyncMock()
         yield mock
 
 
@@ -172,3 +175,59 @@ class TestCheckMessageStaleness:
         assert result is False
         mock_api_client.get.assert_called_once_with("runs/eng-123")
         mock_api_client.get_story.assert_not_called()
+
+
+class TestTerminalConsumerMessages:
+    @pytest.mark.asyncio()
+    async def test_validation_error_is_acked_with_safe_diagnostics(self, mock_api_client):
+        from src.consumers._base import run_queue_worker, validate_queued_message
+
+        class Job(BaseModel):
+            task_id: int
+
+        async def process(_data, _redis):
+            validate_queued_message(Job, {"task_id": "not-an-int"})
+            return {}
+
+        message = MagicMock(message_id="1-0", data={"task_id": "run-1"})
+
+        async def consume(*_args, **_kwargs):
+            yield message
+
+        redis = MagicMock()
+        redis.connect = AsyncMock()
+        redis.close = AsyncMock()
+        redis.ack = AsyncMock()
+        redis.consume = consume
+
+        with patch("src.consumers._base.RedisStreamClient", return_value=redis):
+            await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
+
+        redis.ack.assert_awaited_once_with("queue", "capability-workers", "1-0")
+
+    @pytest.mark.asyncio()
+    async def test_downstream_validation_error_remains_unacked(self, mock_api_client):
+        from src.consumers._base import run_queue_worker
+
+        class DownstreamResponse(BaseModel):
+            service_name: str
+
+        async def process(_data, _redis):
+            DownstreamResponse.model_validate({"service_name": 42})
+            return {}
+
+        message = MagicMock(message_id="1-0", data={"task_id": "run-1"})
+
+        async def consume(*_args, **_kwargs):
+            yield message
+
+        redis = MagicMock()
+        redis.connect = AsyncMock()
+        redis.close = AsyncMock()
+        redis.ack = AsyncMock()
+        redis.consume = consume
+
+        with patch("src.consumers._base.RedisStreamClient", return_value=redis):
+            await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
+
+        redis.ack.assert_not_awaited()

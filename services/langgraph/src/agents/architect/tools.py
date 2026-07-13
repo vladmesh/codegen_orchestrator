@@ -10,6 +10,9 @@ or manage dependencies.
 
 from __future__ import annotations
 
+from http import HTTPStatus
+
+import httpx
 from langchain_core.tools import tool
 import structlog
 
@@ -203,8 +206,8 @@ async def transition_story(story_id: str, action: str) -> dict:
     try:
         story = await api_client.transition_story(story_id, action)
         return story.model_dump(mode="json")
-    except Exception as e:
-        if "422" in str(e):
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
             # Story already in target state (e.g. PO already started it)
             story = await api_client.get_story(story_id)
             return story.model_dump(mode="json")

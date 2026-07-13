@@ -22,7 +22,7 @@ from shared.redis_client import RedisStreamClient
 from ..clients.api import api_client
 from ..subgraphs.devops import create_devops_subgraph
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
-from ._base import start_worker
+from ._base import start_worker, validate_queued_message
 from ._events import publish_callback_event
 from .deploy_failure_handler import (
     CLASSIFY_PROMPT,
@@ -181,7 +181,7 @@ async def _handle_lifecycle_action(
 
 async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
     """Process a single deploy job by running DevOps Subgraph."""
-    msg = DeployMessage.model_validate(job_data)
+    msg = validate_queued_message(DeployMessage, job_data)
     task_id = msg.task_id
     project_id = msg.project_id
     story_id = msg.story_id
