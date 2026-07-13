@@ -160,6 +160,18 @@ async def test_reinstall_progress_notification_is_best_effort(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_recovery_notification_is_best_effort(monkeypatch):
+    from src.provisioner.recovery import _notify_admins_best_effort
+
+    monkeypatch.setattr(
+        "src.provisioner.recovery.notify_admins",
+        AsyncMock(side_effect=RuntimeError("users API down")),
+    )
+
+    await _notify_admins_best_effort("redeployment complete", "success", "srv-1")
+
+
+@pytest.mark.asyncio
 async def test_stale_success_skips_ready_status_and_all_success_side_effects(monkeypatch):
     from src.provisioner.handlers import handle_provisioning_success
 

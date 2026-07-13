@@ -17,6 +17,19 @@ logger = structlog.get_logger()
 MAX_ERROR_PREVIEW = 5
 
 
+async def _notify_admins_best_effort(message: str, level: str, server_handle: str) -> None:
+    """Keep recovery notifications out of the provisioning control flow."""
+    try:
+        await notify_admins(message, level=level)
+    except Exception as exc:
+        logger.error(
+            "provisioning_notification_failed",
+            server_handle=server_handle,
+            level=level,
+            error_type=type(exc).__name__,
+        )
+
+
 async def redeploy_service(
     service: DeploymentRecord,
     server_ip: str,
@@ -190,21 +203,23 @@ async def redeploy_all_services(
 
     # Notify about results
     if fail_count == 0 and success_count > 0:
-        await notify_admins(
+        await _notify_admins_best_effort(
             f"✅ All {success_count} services redeployed on *{server_handle}*",
             level="success",
+            server_handle=server_handle,
         )
     elif fail_count > 0:
         error_summary = "\n".join(errors[:MAX_ERROR_PREVIEW])
         if len(errors) > MAX_ERROR_PREVIEW:
             error_summary += f"\n...and {len(errors) - MAX_ERROR_PREVIEW} more"
 
-        await notify_admins(
+        await _notify_admins_best_effort(
             f"⚠️ Service redeployment on *{server_handle}*:\n"
             f"✅ {success_count} succeeded\n"
             f"❌ {fail_count} failed\n\n"
             f"Errors:\n{error_summary}",
             level="warning",
+            server_handle=server_handle,
         )
 
     logger.info(
