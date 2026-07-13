@@ -5,13 +5,14 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from shared.contracts.dto.base import TimestampedDTO
+from shared.contracts.dto.incident import IncidentStatus, IncidentType
 
 
 class IncidentBase(BaseModel):
     """Base incident schema."""
 
     server_handle: str = Field(description="Server handle")
-    incident_type: str = Field(description="Type of incident")
+    incident_type: IncidentType = Field(description="Type of incident")
     details: dict = Field(default_factory=dict, description="Additional details")
     affected_services: list = Field(default_factory=list, description="List of affected services")
 
@@ -25,7 +26,7 @@ class IncidentCreate(IncidentBase):
 class IncidentUpdate(BaseModel):
     """Schema for updating an incident."""
 
-    status: str | None = None
+    status: IncidentStatus | None = None
     resolved_at: datetime | None = None
     details: dict | None = None
     recovery_attempts: int | None = None
@@ -35,7 +36,7 @@ class IncidentRead(IncidentBase, TimestampedDTO):
     """Schema for reading an incident."""
 
     id: int
-    status: str
+    status: IncidentStatus
     detected_at: datetime
     resolved_at: datetime | None
     recovery_attempts: int

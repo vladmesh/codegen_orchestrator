@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
 
@@ -39,8 +39,8 @@ class IncidentDTO(TimestampedDTO):
     status: IncidentStatus
     detected_at: datetime
     resolved_at: datetime | None = None
-    details: dict = {}
-    affected_services: list = []
+    details: dict = Field(default_factory=dict)
+    affected_services: list[str] = Field(default_factory=list)
     recovery_attempts: int = 0
 
 
@@ -52,8 +52,8 @@ class IncidentCreate(BaseModel):
 
     server_handle: str
     incident_type: IncidentType
-    details: dict = {}
-    affected_services: list = []
+    details: dict = Field(default_factory=dict)
+    affected_services: list[str] = Field(default_factory=list)
 
 
 class IncidentUpdate(BaseModel):

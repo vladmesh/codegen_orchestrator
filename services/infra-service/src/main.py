@@ -17,6 +17,7 @@ from shared.log_config import setup_logging
 from shared.queues import INFRA_GROUP, PROVISIONER_QUEUE
 from shared.redis_client import RedisStreamClient
 
+from .provisioner.incidents import IncidentPersistenceError
 from .provisioner.node import ProvisionerNode
 
 logger = structlog.get_logger(__name__)
@@ -115,6 +116,13 @@ async def process_provisioner_job(job_data: dict) -> ProvisionerResult:
                 errors=errors,
             )
 
+    except IncidentPersistenceError:
+        logger.error(
+            "provisioner_incident_journal_unavailable",
+            job_id=job_id,
+            server_handle=server_handle,
+        )
+        raise
     except Exception as e:
         logger.error(
             "provisioner_job_exception",

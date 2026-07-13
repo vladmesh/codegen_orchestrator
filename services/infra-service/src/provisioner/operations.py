@@ -186,5 +186,7 @@ async def reinstall_and_provision(
         logger.error("reinstall_timeout", error=str(e))
         return False, f"Reinstall timeout: {e}"
     except Exception as e:
-        logger.error("reinstall_failed", error=str(e), error_type=type(e).__name__, exc_info=True)
+        logger.error(
+            "reinstall_operation_error", error=str(e), error_type=type(e).__name__, exc_info=True
+        )
         return False, f"Reinstall failed: {e}"

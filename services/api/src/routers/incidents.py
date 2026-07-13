@@ -1,15 +1,24 @@
 """Incidents router."""
 
+from datetime import UTC
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared.contracts.dto.incident import IncidentType
 from shared.models import Incident, IncidentStatus
 
 from ..database import get_async_session
+from ..dependencies import require_internal_or_admin
 from ..schemas import IncidentCreate, IncidentRead, IncidentUpdate
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
+
+_ACTIVE_PROVISIONING_FAILURE = (
+    "incident_type = 'provisioning_failed' AND status IN ('detected', 'recovering')"
+)
 
 
 @router.post("/", response_model=IncidentRead, status_code=status.HTTP_201_CREATED)
@@ -27,6 +36,44 @@ async def create_incident(
     db.add(incident)
     await db.commit()
     await db.refresh(incident)
+    return incident
+
+
+@router.post("/provisioning-failure", response_model=IncidentRead)
+async def record_provisioning_failure(
+    incident_in: IncidentCreate,
+    db: AsyncSession = Depends(get_async_session),
+    _: None = Depends(require_internal_or_admin),
+) -> Incident:
+    """Atomically create or update the active provisioning-failure episode."""
+    if incident_in.incident_type is not IncidentType.PROVISIONING_FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only provisioning_failed incidents can be recorded here",
+        )
+
+    statement = (
+        insert(Incident)
+        .values(
+            server_handle=incident_in.server_handle,
+            incident_type=incident_in.incident_type.value,
+            details=incident_in.details,
+            affected_services=incident_in.affected_services,
+        )
+        .on_conflict_do_update(
+            index_elements=[Incident.server_handle, Incident.incident_type],
+            index_where=text(_ACTIVE_PROVISIONING_FAILURE),
+            set_={
+                "details": incident_in.details,
+                "affected_services": incident_in.affected_services,
+                "recovery_attempts": Incident.recovery_attempts + 1,
+            },
+        )
+        .returning(Incident)
+    )
+    result = await db.execute(statement)
+    incident = result.scalar_one()
+    await db.commit()
     return incident
 
 
@@ -101,7 +148,7 @@ async def update_incident(
         incident.status = incident_update.status
 
     if incident_update.resolved_at is not None:
-        incident.resolved_at = incident_update.resolved_at
+        incident.resolved_at = incident_update.resolved_at.astimezone(UTC).replace(tzinfo=None)
 
     if incident_update.details is not None:
         incident.details = incident_update.details
