@@ -1,7 +1,9 @@
 """SecretResolverNode — resolves secrets by generating, computing, and checking user-provided."""
 
+from ipaddress import ip_address
 import os
 import secrets as secrets_module
+from urllib.parse import urlparse
 
 import structlog
 
@@ -13,6 +15,13 @@ from .env_groups import resolve_with_groups
 from .state import DevOpsState
 
 logger = structlog.get_logger()
+
+_MAX_TCP_PORT = 65535
+_REPOSITORY_PATH_PARTS = 2
+
+
+class SecretResolutionError(RuntimeError):
+    """Raised when deploy secrets cannot be resolved from trusted state."""
 
 
 class SecretResolverNode(FunctionalNode):
@@ -27,8 +36,11 @@ class SecretResolverNode(FunctionalNode):
 
         env_analysis = state.get("env_analysis", {})
         provided_secrets = state.get("provided_secrets", {})
-        project_spec = state.get("project_spec") or {}
-        project_id = state.get("project_id") or "unknown"
+        project_spec = state.get("project_spec")
+        project_id = state.get("project_id")
+        self._validate_project_context(project_id, project_spec)
+        assert isinstance(project_id, str)
+        assert isinstance(project_spec, dict)
 
         # Normalize project_id for DB names
         safe_project_id = project_id.replace("-", "_").lower()
@@ -90,8 +102,11 @@ class SecretResolverNode(FunctionalNode):
                 logger.info("secret_injected_from_config", var=var)
 
         # Save newly generated secrets to project config for reuse on redeploy
-        if newly_generated and project_id != "unknown":
-            await self._save_secrets_to_project(project_id, newly_generated)
+        if newly_generated:
+            try:
+                await self._save_secrets_to_project(project_id, newly_generated)
+            except Exception as error:
+                raise SecretResolutionError("Failed to persist generated secrets") from error
 
         logger.info(
             "secret_resolver_complete",
@@ -106,6 +121,17 @@ class SecretResolverNode(FunctionalNode):
             "missing_user_secrets": missing_user,
         }
 
+    @staticmethod
+    def _validate_project_context(project_id: str | None, project_spec: dict | None) -> None:
+        """Validate project data required to persist and compute deploy secrets."""
+        if not isinstance(project_id, str) or not project_id.strip() or project_id == "unknown":
+            raise SecretResolutionError("project_id is required for secret resolution")
+        if not isinstance(project_spec, dict):
+            raise SecretResolutionError("project context is required for secret resolution")
+        project_name = project_spec.get("name")
+        if not isinstance(project_name, str) or not project_name.strip():
+            raise SecretResolutionError("project name is required for secret resolution")
+
     def _find_allocation(self, state: DevOpsState, service_name: str) -> tuple[str, int] | None:
         """Look up allocated server IP and port for a service.
 
@@ -117,8 +143,26 @@ class SecretResolverNode(FunctionalNode):
         resources = state.get("allocated_resources", {})
         for alloc in resources.values():
             if isinstance(alloc, dict) and alloc.get("service_name") == service_name:
-                ip = alloc.get("server_ip", "localhost")
-                port = alloc.get("port", 8000)
+                ip = alloc.get("server_ip")
+                port = alloc.get("port")
+                if not isinstance(ip, str) or not ip.strip() or ip.lower() == "localhost":
+                    raise SecretResolutionError(
+                        f"Invalid allocation for service {service_name}: server_ip is required"
+                    )
+                try:
+                    ip_address(ip)
+                except ValueError as error:
+                    raise SecretResolutionError(
+                        f"Invalid allocation for service {service_name}: server_ip is invalid"
+                    ) from error
+                if (
+                    isinstance(port, bool)
+                    or not isinstance(port, int)
+                    or not 1 <= port <= _MAX_TCP_PORT
+                ):
+                    raise SecretResolutionError(
+                        f"Invalid allocation for service {service_name}: port is required"
+                    )
                 return ip, port
         return None
 
@@ -161,10 +205,10 @@ class SecretResolverNode(FunctionalNode):
             return self._STATIC_SECRETS[key_upper]
 
         if key_upper == "APP_NAME":
-            return project_spec.get("name", "app").replace(" ", "_").lower()
+            return project_spec["name"].replace(" ", "_").lower()
 
         if key_upper == "PROJECT_NAME":
-            return project_spec.get("name", "project")
+            return project_spec["name"]
 
         if key_upper in self._PORT_SERVICE_MAP:
             return self._resolve_port(key_upper, state)
@@ -172,8 +216,7 @@ class SecretResolverNode(FunctionalNode):
         if key_upper.endswith("_IMAGE"):
             return self._resolve_docker_image(key_upper, state)
 
-        # Default: project name
-        return project_spec.get("name", "value")
+        raise SecretResolutionError(f"Unknown computed secret: {key}")
 
     def _resolve_port(self, key_upper: str, state: DevOpsState) -> str:
         """Resolve port from resource allocator."""
@@ -181,22 +224,35 @@ class SecretResolverNode(FunctionalNode):
         alloc = self._find_allocation(state, service)
         if alloc:
             return str(alloc[1])
-        return "8000"
+        raise SecretResolutionError(f"Missing allocation for service {service}")
 
     def _resolve_docker_image(self, key_upper: str, state: DevOpsState) -> str:
         """Build Docker image URL from self-hosted registry."""
         registry_host = os.getenv("ORCHESTRATOR_HOSTNAME")
         if not registry_host:
-            raise RuntimeError("ORCHESTRATOR_HOSTNAME is not set")
+            raise SecretResolutionError("ORCHESTRATOR_HOSTNAME is not set")
         repo_info = state.get("repo_info") or {}
-        repo_url = repo_info.get("html_url", "")
-        if repo_url:
-            parts = repo_url.rstrip("/").split("/")
-            owner = parts[-2] if len(parts) > 1 else "unknown"
-            repo = parts[-1] if parts else "unknown"
-            service = key_upper.replace("_IMAGE", "").lower().replace("_", "-")
-            return f"{registry_host}/{owner}/{repo}-{service}:latest"
-        return f"{registry_host}/unknown/unknown-service:latest"
+        repo_url = repo_info.get("html_url")
+        if not isinstance(repo_url, str):
+            raise SecretResolutionError(
+                "repository metadata is required for Docker image resolution"
+            )
+
+        parsed_url = urlparse(repo_url)
+        path_parts = [part for part in parsed_url.path.split("/") if part]
+        if (
+            parsed_url.scheme not in {"http", "https"}
+            or not parsed_url.netloc
+            or len(path_parts) != _REPOSITORY_PATH_PARTS
+            or not all(path_parts)
+        ):
+            raise SecretResolutionError(
+                "repository metadata is malformed for Docker image resolution"
+            )
+
+        owner, repo = path_parts
+        service = key_upper.removesuffix("_IMAGE").lower().replace("_", "-")
+        return f"{registry_host}/{owner}/{repo}-{service}:latest"
 
     async def _save_secrets_to_project(self, project_id: str, secrets: dict) -> None:
         """Save newly generated secrets to project config for reuse on redeploy.
@@ -207,20 +263,10 @@ class SecretResolverNode(FunctionalNode):
             project_id: Project ID
             secrets: Dict of secret_name -> secret_value to save
         """
-        try:
-            await api_client.merge_secrets(project_id, secrets)
-
-            logger.info(
-                "secrets_saved_to_project",
-                project_id=project_id,
-                secrets_count=len(secrets),
-                secret_names=list(secrets.keys()),
-            )
-        except Exception as e:
-            # Log but don't fail - secrets will be regenerated next time
-            logger.error(
-                "save_secrets_failed",
-                project_id=project_id,
-                error=str(e),
-                error_type=type(e).__name__,
-            )
+        await api_client.merge_secrets(project_id, secrets)
+        logger.info(
+            "secrets_saved_to_project",
+            project_id=project_id,
+            secrets_count=len(secrets),
+            secret_names=list(secrets.keys()),
+        )

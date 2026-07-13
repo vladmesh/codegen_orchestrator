@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from src.subgraphs.devops.secret_resolver import SecretResolverNode
+from src.subgraphs.devops.secret_resolver import SecretResolutionError, SecretResolverNode
 
 
 class TestSecretResolverComputeSecret:
@@ -46,13 +46,21 @@ class TestSecretResolverComputeSecret:
         assert result == "testhost.example.com/my-org/my-app-frontend:latest"
 
     @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
-    def test_compute_image_value_without_repo_info(self):
-        """Image variables should fallback when no repo_info is available."""
+    def test_compute_image_without_repo_info_raises(self):
+        """Image variables require complete repository metadata."""
         project_spec = {"name": "orphan-project"}
         state = {}
 
-        result = self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
-        assert result == "testhost.example.com/unknown/unknown-service:latest"
+        with pytest.raises(SecretResolutionError, match="repository metadata"):
+            self.node._compute_secret("BACKEND_IMAGE", project_spec, state)
+
+    @patch.dict(os.environ, {"ORCHESTRATOR_HOSTNAME": "testhost.example.com"})
+    def test_compute_image_with_malformed_repo_info_raises(self):
+        """A partial repository URL cannot become a Docker image name."""
+        state = {"repo_info": {"html_url": "https://github.com/project-factory-org"}}
+
+        with pytest.raises(SecretResolutionError, match="repository metadata is malformed"):
+            self.node._compute_secret("BACKEND_IMAGE", {"name": "test"}, state)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_compute_image_without_hostname_raises(self):
@@ -150,13 +158,13 @@ class TestSecretResolverComputeSecret:
         result = self.node._compute_secret("BACKEND_PORT", project_spec, state)
         assert result == "8080"
 
-    def test_compute_backend_port_fallback(self):
-        """BACKEND_PORT should fallback to 8000 when no resources."""
+    def test_compute_backend_port_without_allocation_raises(self):
+        """BACKEND_PORT requires a matching allocation."""
         project_spec = {"name": "test"}
         state = {}
 
-        result = self.node._compute_secret("BACKEND_PORT", project_spec, state)
-        assert result == "8000"
+        with pytest.raises(SecretResolutionError, match="allocation"):
+            self.node._compute_secret("BACKEND_PORT", project_spec, state)
 
     def test_compute_frontend_port_with_resources(self):
         """FRONTEND_PORT should resolve to the frontend allocation."""
@@ -194,6 +202,27 @@ class TestSecretResolverComputeSecret:
 
         result = self.node._compute_secret("TG_BOT_PORT", project_spec, state)
         assert result == "8082"
+
+    def test_compute_unknown_key_raises(self):
+        """Computed keys must have an explicit resolver."""
+        with pytest.raises(SecretResolutionError, match="Unknown computed secret"):
+            self.node._compute_secret("UNRECOGNIZED_VALUE", {"name": "test"}, {})
+
+    @pytest.mark.parametrize(
+        "allocation",
+        [
+            {"service_name": "backend", "server_ip": "localhost", "port": 8080},
+            {"service_name": "backend", "server_ip": "not-an-ip", "port": 8080},
+            {"service_name": "backend", "server_ip": "10.0.0.1", "port": 0},
+            {"service_name": "backend", "server_ip": "10.0.0.1", "port": "8080"},
+        ],
+    )
+    def test_compute_port_rejects_malformed_allocation(self, allocation):
+        """Port variables do not substitute localhost or a default port."""
+        state = {"allocated_resources": {"backend": allocation}}
+
+        with pytest.raises(SecretResolutionError, match="allocation"):
+            self.node._compute_secret("BACKEND_PORT", {"name": "test"}, state)
 
 
 class TestSecretResolverEncryption:
@@ -236,6 +265,48 @@ class TestSecretResolverEncryption:
             # No GET+PATCH pattern
             mock_api.get_project.assert_not_called()
             mock_api.patch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_persistence_failure_propagates(self):
+        """Generated secrets are not returned when their persistence fails."""
+        with patch("src.subgraphs.devops.secret_resolver.api_client") as mock_api:
+            mock_api.merge_secrets = AsyncMock(side_effect=RuntimeError("storage unavailable"))
+
+            with pytest.raises(RuntimeError, match="storage unavailable"):
+                await self.node._save_secrets_to_project("proj-123", {"NEW_KEY": "secret"})
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.secret_resolver.api_client")
+    @patch("src.subgraphs.devops.secret_resolver.decrypt_dict")
+    async def test_run_fails_when_generated_secret_persistence_fails(self, mock_decrypt, mock_api):
+        """The node never returns secrets that were not persisted for redeploy."""
+        mock_decrypt.return_value = {}
+        mock_api.merge_secrets = AsyncMock(side_effect=RuntimeError("storage unavailable"))
+        state = {
+            "env_analysis": {"APP_SECRET_KEY": "infra"},
+            "provided_secrets": {},
+            "project_spec": {"name": "test", "config": {"secrets": {}}},
+            "project_id": "proj-123",
+        }
+
+        with pytest.raises(SecretResolutionError, match="persist generated secrets"):
+            await self.node.run(state)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "state, error",
+        [
+            ({"project_id": None, "project_spec": {"name": "test"}}, "project_id"),
+            ({"project_id": "unknown", "project_spec": {"name": "test"}}, "project_id"),
+            ({"project_id": "proj-123", "project_spec": {}}, "project name"),
+        ],
+    )
+    async def test_run_requires_project_context(self, state, error):
+        """Project context is validated before secret generation."""
+        state.update({"env_analysis": {"APP_SECRET_KEY": "infra"}, "provided_secrets": {}})
+
+        with pytest.raises(SecretResolutionError, match=error):
+            await self.node.run(state)
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.secret_resolver.api_client")
