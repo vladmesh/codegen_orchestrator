@@ -208,7 +208,6 @@ async def _process_message(
     data: dict,
 ) -> None:
     """Process a single message with concurrency control."""
-    bind_message_context(data)
     # Validate incoming message
     try:
         _po_input_adapter.validate_python(data)
@@ -219,9 +218,9 @@ async def _process_message(
             errors=_safe_validation_errors(exc),
         )
         await client.redis.xack(PO_INPUT_QUEUE, PO_CONSUMER_GROUP, msg_id)
-        unbind_message_context()
         return
 
+    bind_message_context(data)
     user_id = data.get("user_id", "unknown")
     lock = user_locks.setdefault(user_id, asyncio.Lock())
 

@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
-from structlog.testing import capture_logs
+import structlog
 
+from src.consumers import po as po_consumer
 from src.consumers.po import _handle_message, _process_message, _repair_orphan_tool_calls
 
 
@@ -327,19 +328,36 @@ class TestProcessMessage:
         assert xadd_calls[0][0][1]["error"] == "true"
 
     @pytest.mark.asyncio
-    async def test_validation_failure_logs_only_safe_errors(self, mock_graph, mock_client):
+    async def test_validation_failure_logs_only_safe_errors(
+        self, mock_graph, mock_client, monkeypatch
+    ):
         sem = asyncio.Semaphore(10)
         user_locks: dict[str, asyncio.Lock] = {}
-        sentinel = "unique-user-text-ghp_secret_token"
+        sentinel = "unique-context-ghp_secret_token"
         data = {
-            "type": "user_message",
+            "type": "unknown_kind",
             "text": sentinel,
             "user_id": "u1",
-            "api_token": sentinel,
+            "request_id": sentinel,
+            "task_id": sentinel,
         }
+        logs = []
 
-        with capture_logs() as logs:
+        def warning_with_contextvars(event, **kwargs):
+            logs.append(
+                structlog.contextvars.merge_contextvars(
+                    None,
+                    "warning",
+                    {"event": event, **kwargs},
+                )
+            )
+
+        structlog.contextvars.clear_contextvars()
+        monkeypatch.setattr(po_consumer.logger, "warning", warning_with_contextvars)
+        try:
             await _process_message(mock_graph, mock_client, sem, user_locks, "msg-1", data)
+        finally:
+            structlog.contextvars.clear_contextvars()
 
         mock_client.redis.xack.assert_called_once_with("po:input", "po-consumer", "msg-1")
         mock_graph.ainvoke.assert_not_called()
