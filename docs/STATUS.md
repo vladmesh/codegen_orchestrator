@@ -56,7 +56,7 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | 1 | Разблокировать CI (ruff format) + security-блокеры (B1, token-in-URL) | COMPLETE for CI normalization; remaining security items tracked by Sprint 002 |
 | 2 | Затянуть контракты shared/ (B7 + словари + RunResult) | COMPLETE — B7 enums (`codegen_orchestrator-435`), duplicated vocabularies (`codegen_orchestrator-436`), typed `Run.result` union (`codegen_orchestrator-440`) |
 | 3 | Типизированный consume + мёртвый код (B5, B6) | COMPLETE — `consume_typed` (PR #40), B6 worker result (PR #41), engineering consumer typed + dead-layer removal (`codegen_orchestrator-457`, PR #42) |
-| 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Active, RED closeout audit: scaffolder shell/auth, worker compose false-success, bounded provisioner outage, notification caller policy and diagnostic credential safety remain blockers |
+| 4 | Тихие ошибки → fail-fast (B3, B4, swallow-list) | Active. Worker compose and provisioner outage slices are closed; notification caller policy and the remaining audit groups still block Stage 4. |
 
 ## Recent Stabilization Work
 
@@ -73,6 +73,7 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 | Typed engineering consume + dead-layer removal (`codegen_orchestrator-457`) | COMPLETE | Engineering consumer on `EngineeringMessage.model_validate`; deleted `langgraph/src/tools/` (allocator → `allocations.py`), second `agent_config_cache`, `scaffold_phase.py`, `worker:lifecycle` stream+contract, shared compat-shims; tests in `test_engineering_validation.py`, `test_dead_layer_removed.py`, `test_phase3_shims_removed.py`. Closes Sprint 002 Phase 3. PR #42 |
 | B3 incident journal reconciliation (`codegen_orchestrator-466`) | COMPLETE | Successful provisioning writes `READY` before journal closure. An unavailable journal remains observable and gets one warning; scheduler retries only active `provisioning_failed` entries for `READY` servers, idempotently and without recovery actions or per-tick notifications. |
 | B4 secret resolver fail-fast (`codegen_orchestrator-473`) | COMPLETE | Resolver validates project context, allocations and repository metadata before deploy, rejects unknown computed values, and propagates secret-persistence failures through the deploy error path. The closeout audit tracks remaining Phase 4 boundaries separately. |
+| Worker compose and provisioner outage bounds (`codegen_orchestrator-493`) | COMPLETE | Worker recipes preserve curl, JSON and compose failures and required override installation fails the task. Incident-journal reclaim retries only the journal write, then publishes one bounded terminal failure before ACK. |
 | Sprint 002 closeout audit (`codegen_orchestrator-490`) | RED | [Audit report](reports/sprint-002-closeout-audit.md): Phases 2/3 are substantially real, but Stage 4 remains active until the five minimal blocker slices land. E2E/Fix/Docs remain pending. |
 
 ## Sprint History

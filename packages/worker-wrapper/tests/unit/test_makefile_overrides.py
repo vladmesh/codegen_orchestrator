@@ -1,5 +1,8 @@
 """Tests for _inject_makefile_overrides()."""
 
+import os
+import subprocess
+
 import pytest
 from worker_wrapper.wrapper import WorkerWrapper
 
@@ -102,9 +105,10 @@ class TestInjectMakefileOverrides:
 
         assert content_after_first == content_after_second
 
-    def test_no_makefile_noop(self, wrapper, tmp_path):
-        """No Makefile in workspace → no crash, no file created."""
-        wrapper._inject_makefile_overrides()
+    def test_missing_makefile_fails_workspace_preparation(self, wrapper, tmp_path):
+        """A worker without a Makefile cannot safely run worker-mode targets."""
+        with pytest.raises(RuntimeError, match="Makefile is missing"):
+            wrapper._inject_makefile_overrides()
 
         assert not (tmp_path / "Makefile").exists()
 
@@ -117,3 +121,41 @@ class TestInjectMakefileOverrides:
 
         content = makefile.read_text()
         assert "# --- orchestrator overrides ---" in content
+
+    @pytest.mark.parametrize(
+        ("curl_exit", "body", "should_succeed", "stderr_fragment"),
+        [
+            (0, '{"exit_code": 0, "stderr": "safe proxy output"}', True, "safe proxy output"),
+            (22, "", False, ""),
+            (0, '{"exit_code": 7, "stderr": "compose failed"}', False, "compose failed"),
+            (0, "not json", False, "parse error"),
+            (0, '{"stderr": "missing exit code"}', False, "missing exit code"),
+        ],
+    )
+    def test_generated_worker_recipe_preserves_runtime_failures(
+        self, wrapper, tmp_path, curl_exit, body, should_succeed, stderr_fragment
+    ):
+        """Generated targets execute proxy failures instead of merely containing safe text."""
+        makefile = tmp_path / "Makefile"
+        makefile.write_text("all:\n\t@true\n")
+        wrapper._inject_makefile_overrides()
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        curl = bin_dir / "curl"
+        curl.write_text('#!/bin/sh\nprintf \'%s\' "$FAKE_CURL_BODY"\nexit "$FAKE_CURL_EXIT"\n')
+        curl.chmod(0o755)
+        env = os.environ | {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "FAKE_CURL_BODY": body,
+            "FAKE_CURL_EXIT": str(curl_exit),
+        }
+
+        result = subprocess.run(
+            ["make", "-s", "worker-start"], cwd=tmp_path, env=env, capture_output=True, text=True
+        )
+
+        assert (result.returncode == 0) is should_succeed
+        assert stderr_fragment in result.stderr
+        if not should_succeed:
+            assert "compose proxy failed" not in result.stdout

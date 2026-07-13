@@ -120,8 +120,16 @@ class WorkerWrapper:
         # 3b. Fix venv paths (shebangs, .pth files, direct_url.json)
         self._fix_venv_paths()
 
-        # 3c. Inject Makefile overrides for compose proxy
-        self._inject_makefile_overrides()
+        # 3c. Worker-mode targets require the proxy because workers have no Docker socket.
+        try:
+            self._inject_makefile_overrides()
+        except RuntimeError as exc:
+            logger.error("workspace_preparation_failed", error=str(exc))
+            await self.redis.publish_message(
+                self.config.output_stream,
+                WorkerFailedResult(error=f"Workspace preparation failed: {exc}"),
+            )
+            return
 
         # 4. Start HTTP result server + execute agent
         self._result_event = asyncio.Event()
@@ -478,7 +486,10 @@ class WorkerWrapper:
         """
         makefile = os.path.join(WORKSPACE_DIR, "Makefile")
         if not os.path.isfile(makefile):
-            return
+            if not os.path.isdir(WORKSPACE_DIR):
+                # Host-side/unit execution has no mounted project workspace.
+                return
+            raise RuntimeError("Makefile is missing; cannot install worker compose proxy overrides")
 
         override_marker = "# --- orchestrator overrides ---"
         try:
@@ -489,22 +500,28 @@ class WorkerWrapper:
             override = (
                 f"\n{override_marker}\n"
                 "worker-start:\n"
-                "\t@curl -sf -X POST http://localhost:9090/infra/compose "
+                '\t@response="$$(curl -sS -f -X POST http://localhost:9090/infra/compose '
                 """-H 'Content-Type: application/json' """
-                """-d '{"args": ["up", "-d", "--build", "--wait", "$(svc)"], "cwd": "."}' """
-                "| jq -r .stderr || echo 'compose proxy failed'\n"
+                """-d '{"args": ["up", "-d", "--build", "--wait", "$(svc)"], "cwd": "."}')\"; """
+                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
+                """printf '%s\\n' \"$$response\" | jq -er '.stderr // \"\"' >&2; """
+                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
+                """printf '%s' \"$$response\" | jq -e '.exit_code == 0' >/dev/null\n"""
                 "\n"
                 "worker-stop:\n"
-                "\t@curl -sf -X POST http://localhost:9090/infra/compose "
+                '\t@response="$$(curl -sS -f -X POST http://localhost:9090/infra/compose '
                 """-H 'Content-Type: application/json' """
-                """-d '{"args": ["down", "--remove-orphans"], "cwd": "."}' """
-                "| jq -r .stderr || echo 'compose proxy failed'\n"
+                """-d '{"args": ["down", "--remove-orphans"], "cwd": "."}')\"; """
+                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
+                """printf '%s\\n' \"$$response\" | jq -er '.stderr // \"\"' >&2; """
+                """status=$$?; [ $$status -eq 0 ] || exit $$status; """
+                """printf '%s' \"$$response\" | jq -e '.exit_code == 0' >/dev/null\n"""
             )
             with open(makefile, "a") as f:
                 f.write(override)
             logger.info("makefile_overrides_injected")
-        except OSError as e:
-            logger.warning("makefile_override_failed", error=str(e))
+        except OSError as exc:
+            raise RuntimeError("Could not write worker compose proxy overrides") from exc
 
     async def _git_pull(self):
         """Pull latest changes before next agent turn.
