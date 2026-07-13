@@ -10,6 +10,13 @@ import os
 import httpx
 import structlog
 
+from shared.contracts.dto.incident import (
+    IncidentCreate,
+    IncidentDTO,
+    IncidentStatus,
+    IncidentType,
+    IncidentUpdate,
+)
 from shared.contracts.dto.server import (
     ProvisioningAttemptReservationResult,
     ProvisioningAttemptResetResult,
@@ -102,6 +109,45 @@ class InfrastructureAPIClient:
         """Get list of services deployed on a server."""
         resp = await self._request("GET", f"servers/{server_handle}/services")
         return resp.json()
+
+    async def create_incident(self, incident: IncidentCreate) -> IncidentDTO:
+        """Create an incident through the typed incident contract."""
+        resp = await self._request("POST", "incidents/", json=incident.model_dump(mode="json"))
+        return IncidentDTO.model_validate(resp.json())
+
+    async def list_incidents(
+        self,
+        *,
+        server_handle: str,
+        status: IncidentStatus | None = None,
+        incident_type: IncidentType | None = None,
+    ) -> list[IncidentDTO]:
+        """List incidents through the typed incident contract."""
+        params = {"server_handle": server_handle}
+        if status is not None:
+            params["status"] = status.value
+        if incident_type is not None:
+            params["incident_type"] = incident_type.value
+        resp = await self._request("GET", "incidents/", params=params)
+        return [IncidentDTO.model_validate(item) for item in resp.json()]
+
+    async def update_incident(self, incident_id: int, incident: IncidentUpdate) -> IncidentDTO:
+        """Update an incident through the typed incident contract."""
+        resp = await self._request(
+            "PATCH",
+            f"incidents/{incident_id}",
+            json=incident.model_dump(mode="json", exclude_none=True),
+        )
+        return IncidentDTO.model_validate(resp.json())
+
+    async def record_provisioning_failure(self, incident: IncidentCreate) -> IncidentDTO:
+        """Atomically record a provisioning failure in its active episode."""
+        if incident.incident_type is not IncidentType.PROVISIONING_FAILED:
+            raise ValueError("record_provisioning_failure requires provisioning_failed")
+        resp = await self._request(
+            "POST", "incidents/provisioning-failure", json=incident.model_dump(mode="json")
+        )
+        return IncidentDTO.model_validate(resp.json())
 
 
 # Singleton instance

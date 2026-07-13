@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from shared.contracts.dto.incident import IncidentType
 from shared.notifications import notify_admins
 
 if TYPE_CHECKING:
@@ -203,7 +204,11 @@ class ProvisionerNode(FunctionalNode):
             )
 
         await update_server_status(server_handle, "error")
-        await create_incident(server_handle, "reinstall_failed", {"message": message})
+        await create_incident(
+            server_handle,
+            IncidentType.PROVISIONING_FAILED,
+            {"step": "reinstall", "message": message},
+        )
         await notify_admins(
             f"❌ Server *{server_handle}* reinstall FAILED: {message[:200]}",
             level="error",
@@ -242,7 +247,7 @@ class ProvisionerNode(FunctionalNode):
             await update_server_status(server_handle, "error")
             await create_incident(
                 server_handle,
-                "provisioning_failed",
+                IncidentType.PROVISIONING_FAILED,
                 {"step": "access_setup", "output": output_access[:500]},
             )
             return {
@@ -278,7 +283,7 @@ class ProvisionerNode(FunctionalNode):
         await update_server_status(server_handle, "error")
         await create_incident(
             server_handle,
-            "provisioning_failed",
+            IncidentType.PROVISIONING_FAILED,
             {"step": "software_setup", "output": output_soft[:500]},
         )
         return {
@@ -340,7 +345,7 @@ class ProvisionerNode(FunctionalNode):
             await update_server_status(server_handle, "error")
             await create_incident(
                 server_handle,
-                "provisioning_failed",
+                IncidentType.PROVISIONING_FAILED,
                 {"reason": f"Max retries ({PROVISIONING_MAX_RETRIES}) exhausted"},
             )
             return {

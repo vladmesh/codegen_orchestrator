@@ -1,98 +1,87 @@
-"""Incident management for provisioner."""
+"""Incident journal operations for provisioning failures."""
 
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 
+from shared.contracts.dto.incident import (
+    IncidentCreate,
+    IncidentStatus,
+    IncidentType,
+    IncidentUpdate,
+)
 from shared.log_config import get_logger
 from src.clients.api import api_client
 
 logger = get_logger(__name__)
 
+_MAX_DIAGNOSTIC_LENGTH = 512
+_SENSITIVE_KEYS = {"authorization", "credential", "password", "secret", "token", "api_key"}
+
+
+class IncidentPersistenceError(RuntimeError):
+    """The required incident journal write could not be completed."""
+
+
+def _safe_diagnostics(value: Any, key: str | None = None) -> Any:
+    """Keep incident diagnostics bounded and free of credential-like fields."""
+    if key and any(fragment in key.lower() for fragment in _SENSITIVE_KEYS):
+        return "[redacted]"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _safe_diagnostics(item, str(item_key))
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_safe_diagnostics(item) for item in value[:20]]
+    if isinstance(value, str) and len(value) > _MAX_DIAGNOSTIC_LENGTH:
+        return f"{value[:_MAX_DIAGNOSTIC_LENGTH]}…"
+    return value
+
 
 async def create_incident(
     server_handle: str,
-    incident_type: str,
-    details: dict,
+    incident_type: IncidentType,
+    details: dict[str, Any],
     affected_services: list[str] | None = None,
-) -> bool:
-    """Create incident record in database.
-
-    Args:
-        server_handle: Server handle
-        incident_type: Type of incident (e.g., 'provisioning_failed', 'ssh_unreachable')
-        details: Incident details dict
-        affected_services: Optional list of affected service names
-
-    Returns:
-        True if successful
-    """
+) -> None:
+    """Persist a provisioning failure, raising when its mandatory journal write fails."""
+    if incident_type is not IncidentType.PROVISIONING_FAILED:
+        raise ValueError("Provisioner failures must use IncidentType.PROVISIONING_FAILED")
+    incident = IncidentCreate(
+        server_handle=server_handle,
+        incident_type=incident_type,
+        details=_safe_diagnostics(details),
+        affected_services=affected_services or [],
+    )
     try:
-        await api_client.create_incident(
-            {
-                "server_handle": server_handle,
-                "incident_type": incident_type,
-                "details": details,
-                "affected_services": affected_services or [],
-            }
-        )
-        logger.info(
-            "incident_created",
-            server_handle=server_handle,
-            incident_type=incident_type,
-        )
-        return True
-    except Exception as e:
+        recorded = await api_client.record_provisioning_failure(incident)
+    except Exception as exc:
         logger.error(
-            "incident_create_failed",
+            "incident_journal_write_failed",
             server_handle=server_handle,
-            incident_type=incident_type,
-            error=str(e),
+            incident_type=incident_type.value,
+            error_type=type(exc).__name__,
         )
-        return False
+        raise IncidentPersistenceError("Failed to persist provisioning incident") from exc
+    logger.info(
+        "incident_journal_recorded",
+        incident_id=recorded.id,
+        server_handle=server_handle,
+        recovery_attempts=recorded.recovery_attempts,
+    )
 
 
-async def resolve_active_incidents(server_handle: str) -> bool:
-    """Resolve all active incidents for a server after successful recovery.
-
-    Args:
-        server_handle: Server handle
-
-    Returns:
-        True if successful
-    """
-    try:
-        incidents: list[dict] = []
-        for status in ["detected", "recovering"]:
-            incidents.extend(
-                await api_client.list_incidents({"server_handle": server_handle, "status": status})
-            )
-
-        if not incidents:
-            logger.debug("incident_resolve_skipped", server_handle=server_handle)
-            return True
-
-        resolved_at = datetime.utcnow().isoformat()
-
-        for incident in incidents:
-            incident_id = incident.get("id")
-            await api_client.update_incident(
-                incident_id,
-                {
-                    "status": "resolved",
-                    "resolved_at": resolved_at,
-                },
-            )
-            logger.info(
-                "incident_resolved",
-                incident_id=incident_id,
-                server_handle=server_handle,
-            )
-
-        return True
-
-    except Exception as e:
-        logger.error(
-            "incident_resolve_failed",
-            server_handle=server_handle,
-            error=str(e),
+async def resolve_active_incidents(server_handle: str) -> None:
+    """Resolve active incidents after a successful recovery."""
+    incidents = []
+    for incident_status in (IncidentStatus.DETECTED, IncidentStatus.RECOVERING):
+        incidents.extend(
+            await api_client.list_incidents(server_handle=server_handle, status=incident_status)
         )
-        return False
+    resolved_at = datetime.now(UTC)
+    for incident in incidents:
+        await api_client.update_incident(
+            incident.id,
+            IncidentUpdate(status=IncidentStatus.RESOLVED, resolved_at=resolved_at),
+        )
+        logger.info("incident_resolved", incident_id=incident.id, server_handle=server_handle)
