@@ -215,6 +215,23 @@ async def notify_admins(message: str, level: str = "info") -> int:
     return success_count
 
 
+async def notify_admins_best_effort(
+    message: str,
+    level: str = "info",
+    **context: object,
+) -> None:
+    """Send an admin notification without changing the caller's committed outcome."""
+    try:
+        await notify_admins(message, level=level)
+    except Exception as exc:
+        logger.error(
+            "admin_notification_failed",
+            level=level,
+            error_type=type(exc).__name__,
+            **context,
+        )
+
+
 def _check_rate_limit(telegram_id: int) -> bool:
     """Check if user is within rate limit."""
     config = _ensure_config()

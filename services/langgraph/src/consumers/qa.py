@@ -18,7 +18,7 @@ from shared.queues import QA_GROUP, QA_QUEUE
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
-from ._base import run_queue_worker
+from ._base import run_queue_worker, validate_queued_message
 from ._qa_runner import QAResult, credential_refresh_loop, run_qa_on_server
 
 logger = structlog.get_logger(__name__)
@@ -72,7 +72,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
     Returns:
         Result dict with status and details
     """
-    msg = QAMessage.model_validate(job_data)
+    msg = validate_queued_message(QAMessage, job_data)
     story_id = msg.story_id
     run_id = msg.run_id
 

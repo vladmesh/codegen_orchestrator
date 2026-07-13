@@ -6,7 +6,7 @@ import tempfile
 
 import structlog
 
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 
 from ..clients.api import DeploymentRecord
 from ..config.constants import Paths, Timeouts
@@ -15,19 +15,6 @@ from .api_client import get_services_on_server
 logger = structlog.get_logger()
 
 MAX_ERROR_PREVIEW = 5
-
-
-async def _notify_admins_best_effort(message: str, level: str, server_handle: str) -> None:
-    """Keep recovery notifications out of the provisioning control flow."""
-    try:
-        await notify_admins(message, level=level)
-    except Exception as exc:
-        logger.error(
-            "provisioning_notification_failed",
-            server_handle=server_handle,
-            level=level,
-            error_type=type(exc).__name__,
-        )
 
 
 async def redeploy_service(
@@ -203,7 +190,7 @@ async def redeploy_all_services(
 
     # Notify about results
     if fail_count == 0 and success_count > 0:
-        await _notify_admins_best_effort(
+        await notify_admins_best_effort(
             f"✅ All {success_count} services redeployed on *{server_handle}*",
             level="success",
             server_handle=server_handle,
@@ -213,7 +200,7 @@ async def redeploy_all_services(
         if len(errors) > MAX_ERROR_PREVIEW:
             error_summary += f"\n...and {len(errors) - MAX_ERROR_PREVIEW} more"
 
-        await _notify_admins_best_effort(
+        await notify_admins_best_effort(
             f"⚠️ Service redeployment on *{server_handle}*:\n"
             f"✅ {success_count} succeeded\n"
             f"❌ {fail_count} failed\n\n"

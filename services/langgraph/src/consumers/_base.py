@@ -31,6 +31,15 @@ logger = structlog.get_logger(__name__)
 # Type alias for job processor functions
 ProcessFn = Callable[[dict, RedisStreamClient], Awaitable[dict]]
 
+
+class TerminalMessageValidationError(Exception):
+    """Validation failure raised only while parsing the Redis message."""
+
+    def __init__(self, validation_error: ValidationError) -> None:
+        self.validation_error = validation_error
+        super().__init__("invalid queue message")
+
+
 # Module-level shutdown flag (set by signal handler)
 _shutdown = False
 
@@ -53,6 +62,14 @@ def _safe_validation_errors(exc: ValidationError) -> list[dict]:
         {"type": error["type"], "loc": list(error["loc"])}
         for error in exc.errors(include_url=False, include_input=False)
     ]
+
+
+def validate_queued_message(model, job_data: dict):
+    """Parse a queue payload and mark only input validation as terminal."""
+    try:
+        return model.model_validate(job_data)
+    except ValidationError as exc:
+        raise TerminalMessageValidationError(exc) from exc
 
 
 def _handle_shutdown(signum, _frame):
@@ -154,16 +171,25 @@ async def run_queue_worker(
                 msg.data.update(result)
                 await redis.ack(queue, group, msg.message_id)
                 logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
-            except ValidationError as exc:
+            except TerminalMessageValidationError as exc:
                 # A schema error cannot become valid when reclaimed from the PEL.
                 # ACK it after recording a payload-safe terminal diagnostic.
                 logger.error(
                     "terminal_message_validation_failed",
                     entry_id=msg.message_id,
                     worker=service_name,
-                    errors=_safe_validation_errors(exc),
+                    errors=_safe_validation_errors(exc.validation_error),
                 )
-                await redis.ack(queue, group, msg.message_id)
+                try:
+                    await redis.ack(queue, group, msg.message_id)
+                except Exception as ack_exc:
+                    logger.error(
+                        "terminal_message_ack_failed",
+                        entry_id=msg.message_id,
+                        worker=service_name,
+                        error_type=type(ack_exc).__name__,
+                        exc_info=True,
+                    )
             except Exception as exc:
                 logger.error(
                     "job_processing_error",

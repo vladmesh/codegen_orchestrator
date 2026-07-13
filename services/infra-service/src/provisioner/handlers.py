@@ -2,7 +2,7 @@
 
 import structlog
 
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 
 from .api_client import reset_provisioning_attempts, save_server_ssh_key, update_server_status
 from .incidents import resolve_active_incidents
@@ -10,19 +10,6 @@ from .recovery import redeploy_all_services
 from .ssh_manager import SSHManager
 
 logger = structlog.get_logger()
-
-
-async def _notify_admins_best_effort(message: str, level: str, server_handle: str) -> None:
-    """Send a provisioning notification without changing its committed outcome."""
-    try:
-        await notify_admins(message, level=level)
-    except Exception as exc:
-        logger.error(
-            "provisioning_notification_failed",
-            server_handle=server_handle,
-            level=level,
-            error_type=type(exc).__name__,
-        )
 
 
 async def handle_provisioning_success(
@@ -91,7 +78,7 @@ async def handle_provisioning_success(
             error_type=type(exc).__name__,
             exc_info=True,
         )
-        await _notify_admins_best_effort(
+        await notify_admins_best_effort(
             f"⚠️ Server *{server_handle}* is READY, but its provisioning incident journal "
             "could not be closed. Reconciliation will retry automatically.",
             level="warning",
@@ -130,7 +117,7 @@ The server is now configured with:
         )
 
     # Send notification
-    await _notify_admins_best_effort(
+    await notify_admins_best_effort(
         f"Server *{server_handle}* {recovery_text}provisioned successfully! "
         f"IP: {server_ip}. Server is now READY.",
         level="success",

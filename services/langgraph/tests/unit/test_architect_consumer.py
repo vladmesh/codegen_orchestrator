@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from pydantic import ValidationError
 import pytest
 from tests.unit.factories import make_project, make_story
 
@@ -47,9 +46,10 @@ class TestProcessArchitectJob:
 
     @pytest.mark.asyncio
     async def test_invalid_message_reaches_terminal_consumer_boundary(self, mock_redis):
+        from src.consumers._base import TerminalMessageValidationError
         from src.consumers.architect import process_architect_job
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(TerminalMessageValidationError):
             await process_architect_job({"bad": "data"}, mock_redis)
 
     @pytest.mark.asyncio

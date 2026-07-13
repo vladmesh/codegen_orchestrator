@@ -5,7 +5,7 @@ import asyncio
 import structlog
 
 from shared.clients.time4vps import Time4VPSClient
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 
 from ..config.constants import Provisioning, Timeouts
 from .ansible_runner import AnsibleRunner
@@ -17,19 +17,6 @@ logger = structlog.get_logger()
 # Configuration from centralized constants
 PASSWORD_RESET_TIMEOUT = Timeouts.PASSWORD_RESET
 PASSWORD_RESET_POLL_INTERVAL = Provisioning.PASSWORD_RESET_POLL_INTERVAL
-
-
-async def _notify_admins_best_effort(message: str, level: str, server_handle: str) -> None:
-    """Keep notification failures out of the provisioning control flow."""
-    try:
-        await notify_admins(message, level=level)
-    except Exception as exc:
-        logger.error(
-            "provisioning_notification_failed",
-            server_handle=server_handle,
-            level=level,
-            error_type=type(exc).__name__,
-        )
 
 
 async def reset_server_password(
@@ -120,7 +107,7 @@ async def reinstall_and_provision(
 
         logger.info("reinstall_task_created", task_id=task_id)
 
-        await _notify_admins_best_effort(
+        await notify_admins_best_effort(
             f"⏳ Server *{server_handle}* OS reinstall started. This will take ~10-15 minutes.",
             level="info",
             server_handle=server_handle,
@@ -172,7 +159,7 @@ async def reinstall_and_provision(
 
         await update_server_labels(server_handle, {"provisioning_phase": "software_installation"})
 
-        await _notify_admins_best_effort(
+        await notify_admins_best_effort(
             f"✅ Server *{server_handle}* connectivity established. "
             "Starting software installation...",
             level="info",

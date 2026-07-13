@@ -21,7 +21,7 @@ from ..agents.architect.tools import reset_task_chain
 from ..clients.api import api_client
 from ..config.settings import get_settings
 from ..tracing import build_langfuse_metadata, get_langfuse_callbacks
-from ._base import start_worker
+from ._base import start_worker, validate_queued_message
 
 logger = structlog.get_logger(__name__)
 
@@ -70,7 +70,7 @@ async def process_architect_job(job_data: dict, redis: RedisStreamClient) -> dic
     Returns:
         Result dict with status and details.
     """
-    msg = ArchitectMessage.model_validate(job_data)
+    msg = validate_queued_message(ArchitectMessage, job_data)
 
     log = logger.bind(story_id=msg.story_id, project_id=msg.project_id)
     log.info("architect_job_started")

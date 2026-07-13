@@ -17,7 +17,7 @@ import structlog
 
 from shared.contracts.dto.incident import IncidentType
 from shared.contracts.dto.server import ServerDTO
-from shared.notifications import notify_admins
+from shared.notifications import notify_admins_best_effort
 
 if TYPE_CHECKING:
     from shared.clients.time4vps import Time4VPSClient
@@ -40,19 +40,6 @@ logger = structlog.get_logger()
 
 # Configuration from centralized constants
 PROVISIONING_MAX_RETRIES = Provisioning.MAX_RETRIES
-
-
-async def _notify_admins_best_effort(message: str, level: str, server_handle: str) -> None:
-    """Keep notification failures from masking the provisioning outcome."""
-    try:
-        await notify_admins(message, level=level)
-    except Exception as exc:
-        logger.error(
-            "provisioning_notification_failed",
-            server_handle=server_handle,
-            level=level,
-            error_type=type(exc).__name__,
-        )
 
 
 # Re-export extracted names for backward compatibility
@@ -219,7 +206,7 @@ class ProvisionerNode(FunctionalNode):
             IncidentType.PROVISIONING_FAILED,
             {"step": "reinstall", "message": message},
         )
-        await _notify_admins_best_effort(
+        await notify_admins_best_effort(
             f"❌ Server *{server_handle}* reinstall FAILED: {message[:200]}",
             level="error",
             server_handle=server_handle,

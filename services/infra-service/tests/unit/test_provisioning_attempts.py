@@ -93,7 +93,7 @@ async def test_success_marks_server_ready_before_resolving_incident_journal(monk
     resolve_incidents = AsyncMock()
     monkeypatch.setattr("src.provisioner.handlers.update_server_status", update_status)
     monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", resolve_incidents)
-    monkeypatch.setattr("src.provisioner.handlers.notify_admins", AsyncMock())
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", AsyncMock())
 
     await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
 
@@ -116,7 +116,7 @@ async def test_success_keeps_server_ready_when_incident_journal_is_unavailable(m
         "src.provisioner.handlers.resolve_active_incidents",
         AsyncMock(side_effect=RuntimeError("api unavailable")),
     )
-    monkeypatch.setattr("src.provisioner.handlers.notify_admins", notify)
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", notify)
 
     result = await handle_provisioning_success("srv-1", "203.0.113.10", 1, "episode-1", False)
 
@@ -138,7 +138,7 @@ async def test_success_result_survives_notification_api_failure(monkeypatch):
     monkeypatch.setattr("src.provisioner.handlers.update_server_status", AsyncMock())
     monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", AsyncMock())
     monkeypatch.setattr(
-        "src.provisioner.handlers.notify_admins",
+        "shared.notifications.notify_admins",
         AsyncMock(side_effect=RuntimeError("users API down")),
     )
 
@@ -149,26 +149,26 @@ async def test_success_result_survives_notification_api_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reinstall_progress_notification_is_best_effort(monkeypatch):
-    from src.provisioner.operations import _notify_admins_best_effort
+    from shared.notifications import notify_admins_best_effort
 
     monkeypatch.setattr(
-        "src.provisioner.operations.notify_admins",
+        "shared.notifications.notify_admins",
         AsyncMock(side_effect=RuntimeError("users API down")),
     )
 
-    await _notify_admins_best_effort("reinstall started", "info", "srv-1")
+    await notify_admins_best_effort("reinstall started", "info", server_handle="srv-1")
 
 
 @pytest.mark.asyncio
 async def test_recovery_notification_is_best_effort(monkeypatch):
-    from src.provisioner.recovery import _notify_admins_best_effort
+    from shared.notifications import notify_admins_best_effort
 
     monkeypatch.setattr(
-        "src.provisioner.recovery.notify_admins",
+        "shared.notifications.notify_admins",
         AsyncMock(side_effect=RuntimeError("users API down")),
     )
 
-    await _notify_admins_best_effort("redeployment complete", "success", "srv-1")
+    await notify_admins_best_effort("redeployment complete", "success", server_handle="srv-1")
 
 
 @pytest.mark.asyncio
@@ -189,7 +189,7 @@ async def test_stale_success_skips_ready_status_and_all_success_side_effects(mon
     monkeypatch.setattr("src.provisioner.handlers.save_server_ssh_key", save_key)
     monkeypatch.setattr("src.provisioner.handlers.resolve_active_incidents", resolve_incidents)
     monkeypatch.setattr("src.provisioner.handlers.redeploy_all_services", redeploy)
-    monkeypatch.setattr("src.provisioner.handlers.notify_admins", notify)
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", notify)
 
     result = await handle_provisioning_success(
         "srv-1", "203.0.113.10", 1, "episode-1", True, ssh_manager=MagicMock()
@@ -222,7 +222,7 @@ async def test_stale_success_maps_to_superseded_result_not_failure(monkeypatch):
         "src.provisioner.handlers.reset_provisioning_attempts", AsyncMock(return_value=False)
     )
     monkeypatch.setattr("src.provisioner.handlers.update_server_status", AsyncMock(), raising=False)
-    monkeypatch.setattr("src.provisioner.handlers.notify_admins", AsyncMock())
+    monkeypatch.setattr("src.provisioner.handlers.notify_admins_best_effort", AsyncMock())
 
     stale_state = await handle_provisioning_success(
         "srv-1", "203.0.113.10", 1, "episode-old", False
