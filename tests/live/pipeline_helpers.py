@@ -137,9 +137,7 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
 def trigger_scaffold(ctx: dict) -> None:
     """Publish scaffold message to Redis stream."""
     ctx["manifest"].own("github_repository", f"{GITHUB_ORG}/{ctx['repo_name']}")
-    ctx["manifest"].own(
-        "registry_repository", f"{GITHUB_ORG}/{ctx['repo_name']}-backend"
-    )
+    ctx["manifest"].own("registry_repository", f"{GITHUB_ORG}/{ctx['repo_name']}-backend")
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
     msg = {
         "project_id": ctx["project_id"],
