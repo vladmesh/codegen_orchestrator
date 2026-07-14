@@ -379,11 +379,19 @@ def cancel_and_wait_for_scaffold(
 ) -> None:
     """Fence new scaffold work and wait until claimed work is quiescent."""
     cancel_key = f"live:scaffold:cancelled:{project_id}"
-    active_key = f"live:scaffold:active:{project_id}"
+    leases_key = f"live:scaffold:leases:{project_id}"
     command("SET", cancel_key, "1", "EX", str(SCAFFOLD_FENCE_TIMEOUT))
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if command("EXISTS", active_key) == "0":
+        active = command(
+            "EVAL",
+            "local t=redis.call('TIME'); local n=t[1]*1000+math.floor(t[2]/1000); "
+            "redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',n); "
+            "return redis.call('ZCARD',KEYS[1])",
+            "1",
+            leases_key,
+        )
+        if active == "0":
             return
         time.sleep(poll_interval)
     raise CleanupError(f"scaffold work for project {project_id} did not terminate")

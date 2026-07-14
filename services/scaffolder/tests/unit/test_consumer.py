@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from shared.contracts.dto.project import ProjectDTO, ProjectStatus
-from src.consumer import process_scaffold_job
+from src.consumer import _begin_scaffold_work, _finish_scaffold_work, process_scaffold_job
 from src.scaffold import ScaffoldResult
 
 
@@ -48,6 +48,7 @@ def valid_job_data():
 def mock_redis():
     redis = AsyncMock()
     redis.redis.exists.return_value = 0
+    redis.redis.eval.return_value = 1
     return redis
 
 
@@ -70,8 +71,26 @@ def mock_github():
 
 class TestProcessScaffoldJob:
     @pytest.mark.asyncio
+    async def test_concurrent_leases_are_released_per_execution(self, mock_redis):
+        mock_redis.redis.eval.side_effect = [1, 1]
+
+        first = await _begin_scaffold_work(mock_redis, "proj-123")
+        second = await _begin_scaffold_work(mock_redis, "proj-123")
+
+        assert first and second and first != second
+        await _finish_scaffold_work(mock_redis, "proj-123", first)
+        mock_redis.redis.zrem.assert_awaited_once_with("live:scaffold:leases:proj-123", first)
+        assert second != first
+
+    @pytest.mark.asyncio
+    async def test_cancelled_registration_does_not_publish_lease(self, mock_redis):
+        mock_redis.redis.eval.return_value = 0
+
+        assert await _begin_scaffold_work(mock_redis, "proj-123") is None
+
+    @pytest.mark.asyncio
     async def test_cancel_fence_skips_external_work(self, valid_job_data, mock_redis, mock_github):
-        mock_redis.redis.exists.return_value = 1
+        mock_redis.redis.eval.return_value = 0
 
         with patch("src.consumer.get_github_client", return_value=mock_github):
             result = await process_scaffold_job(valid_job_data, mock_redis)

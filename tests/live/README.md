@@ -10,10 +10,11 @@ Cleanup is part of the test result. Every delete command must succeed and each o
 then be observed as absent. A delete or verification error fails the run, including when the test
 body already failed.
 
-Scaffold stream deletion is not treated as cancellation. Teardown first writes a project-specific
-cancel marker and waits for the scaffolder's active marker to disappear. The consumer checks the
-cancel marker before external work and again after publishing its active marker. External deletion
-and residue verification start only after claimed scaffold work is quiescent.
+Scaffold stream deletion is not treated as cancellation. Each execution atomically checks the
+project cancel marker and registers its own expiring lease before external work. Concurrent or
+reclaimed jobs therefore hold distinct tokens. Teardown writes the cancel marker and waits for all
+leases to finish before external deletion and residue verification. Workers refresh live leases;
+a crashed worker's lease expires and is pruned while teardown waits.
 
 The repository root is derived from `tests/live/live_harness.py`. `ORCHESTRATOR_ROOT` may override
 it, but the target must contain `pyproject.toml` and `tests/live`.

@@ -173,11 +173,11 @@ async def test_common_live_project_fixture_uses_verified_cleanup(monkeypatch, tm
 
 def test_scaffold_fence_waits_for_claimed_work_to_finish():
     calls = []
-    active = iter(["1", "0"])
+    active = iter(["2", "1", "0"])
 
     def command(*args):
         calls.append(args)
-        return next(active) if args[0] == "EXISTS" else "OK"
+        return next(active) if args[0] == "EVAL" else "OK"
 
     pipeline_helpers.cancel_and_wait_for_scaffold(
         "project-1", command=command, timeout=1, poll_interval=0
@@ -190,20 +190,35 @@ def test_scaffold_fence_waits_for_claimed_work_to_finish():
         "EX",
         "900",
     )
-    assert calls[1:] == [
-        ("EXISTS", "live:scaffold:active:project-1"),
-        ("EXISTS", "live:scaffold:active:project-1"),
-    ]
+    assert len(calls[1:]) == 3
+    assert all(call[0] == "EVAL" for call in calls[1:])
+    assert all("live:scaffold:leases:project-1" in call for call in calls[1:])
 
 
 def test_scaffold_fence_makes_unterminated_claim_red():
     def command(*args):
-        return "1" if args[0] == "EXISTS" else "OK"
+        return "1" if args[0] == "EVAL" else "OK"
 
     with pytest.raises(CleanupError, match="did not terminate"):
         pipeline_helpers.cancel_and_wait_for_scaffold(
             "project-1", command=command, timeout=0.001, poll_interval=0
         )
+
+
+def test_scaffold_fence_prunes_crashed_execution_after_lease_expiry():
+    calls = []
+
+    def command(*args):
+        calls.append(args)
+        return "0" if args[0] == "EVAL" else "OK"
+
+    pipeline_helpers.cancel_and_wait_for_scaffold(
+        "project-1", command=command, timeout=1, poll_interval=0
+    )
+
+    prune_script = calls[1][1]
+    assert "ZREMRANGEBYSCORE" in prune_script
+    assert "ZCARD" in prune_script
 
 
 @pytest.mark.asyncio
