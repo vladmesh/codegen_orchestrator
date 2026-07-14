@@ -7,6 +7,8 @@
 ### Added
 - Add a permanent service-template compatibility matrix for the production pin and explicit release candidates.
 - Record requested template source/ref, resolved commit SHA and isolated cleanup outcome as CI artifacts.
+- Record the RED Stage 7 live-services preflight. No external resources were created; missing live
+  infrastructure/credentials and unprovable ownership-scoped cleanup keep Stage 7 open.
 
 ### Fixed
 - Pin requested template tags to their resolved commit before scaffolding to prevent tag-move races.

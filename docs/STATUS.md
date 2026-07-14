@@ -7,9 +7,10 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
 - **Type**: tech
 - **Started**: 2026-07-01
-- **Current Phase**: Stage 5 next. Sprint 002 Phase 4 (silent failures → fail-fast) is complete
-  after the [closeout audit rerun](reports/sprint-002-closeout-audit-rerun.md): all five prior
-  blocker boundaries are closed on fetched `origin/main`; deterministic mock-smoke evidence is next.
+- **Current Phase**: Stage 7 remains open. The 2026-07-14 live preflight is RED because the
+  dedicated live stack and credentials were unavailable, and the current harness cannot prove
+  ownership-scoped cleanup. See the [Stage 7 live report](reports/stage-7-live-services-2026-07-14.md).
+  Stage 8 Telegram E2E remains next only after these blockers are closed.
 
 ## Current Facts
 
