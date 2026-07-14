@@ -10,6 +10,11 @@ on:
       - main
       - develop
   workflow_dispatch:
+    inputs:
+      service_template_candidate_ref:
+        description: Optional service-template tag or commit to test before updating the production pin
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -352,6 +357,51 @@ jobs:
         if: always() && matrix.should_run == 'true'
         run: docker compose -p codegen_orchestrator_test_${{ matrix.suite }} -f docker/test/integration/${{ matrix.suite }}.yml down -v --remove-orphans 2>/dev/null || true
 
+  template-compatibility:
+    name: Template Compatibility (${{ matrix.entry }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [detect-changes, fast-checks, ci-contract]
+    if: needs.fast-checks.result == 'success' && needs.ci-contract.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - entry: baseline
+            candidate: false
+          - entry: candidate
+            candidate: true
+    steps:
+      - name: Checkout code
+        if: matrix.candidate == false || inputs.service_template_candidate_ref != ''
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        if: matrix.candidate == false || inputs.service_template_candidate_ref != ''
+        uses: astral-sh/setup-uv@v6
+
+      - name: Run baseline compatibility smoke
+        if: matrix.candidate == false
+        run: make test-template-compat ARTIFACT_DIR="$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
+
+      - name: Run candidate compatibility smoke
+        if: matrix.candidate == true && inputs.service_template_candidate_ref != ''
+        run: make test-template-compat TEMPLATE_REF="$CANDIDATE_REF" ARTIFACT_DIR="$RUNNER_TEMP/template-compat-${{ matrix.entry }}"
+        env:
+          CANDIDATE_REF: ${{ inputs.service_template_candidate_ref }}
+
+      - name: Candidate not requested
+        if: matrix.candidate == true && inputs.service_template_candidate_ref == ''
+        run: echo "No candidate ref was requested; production pin is unchanged"
+
+      - name: Upload compatibility result
+        if: always() && (matrix.candidate == false || inputs.service_template_candidate_ref != '')
+        uses: actions/upload-artifact@v4
+        with:
+          name: template-compat-${{ matrix.entry }}
+          path: ${{ runner.temp }}/template-compat-${{ matrix.entry }}/template-compat-result.json
+          if-no-files-found: error
+
   merge-gate:
     name: Required CI Gate
     runs-on: ubuntu-latest
@@ -361,6 +411,7 @@ jobs:
       - ci-contract
       - test-service
       - test-integration
+      - template-compatibility
     if: always()
     steps:
       - name: Check required jobs
@@ -371,6 +422,7 @@ jobs:
             ["ci-contract"]="${{ needs.ci-contract.result }}"
             ["test-service"]="${{ needs.test-service.result }}"
             ["test-integration"]="${{ needs.test-integration.result }}"
+            ["template-compatibility"]="${{ needs.template-compatibility.result }}"
           )
 
           failed=0

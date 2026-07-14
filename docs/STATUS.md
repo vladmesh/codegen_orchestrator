@@ -48,6 +48,9 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
   incident-journal closure. A temporary closure failure remains observable, sends one warning, and
   scheduler reconciliation later resolves only active `PROVISIONING_FAILED` incidents for confirmed
   `READY` servers without starting recovery work.
+- Stage 6 template compatibility is implemented: one canonical Stage 5 harness reads the production
+  source/ref from `scripts/system_configs.yaml`, accepts an explicit candidate ref, records the
+  resolved commit SHA, isolates Compose resources and runs as independent non-fail-fast CI entries.
 
 ## Phase Progress
 | Phase | Name | Status |

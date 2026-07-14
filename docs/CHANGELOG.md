@@ -4,6 +4,10 @@
 
 ## 2026-07-14
 
+### Added
+- Add a permanent service-template compatibility matrix for the production pin and explicit release candidates.
+- Record requested template source/ref, resolved commit SHA and isolated cleanup outcome as CI artifacts.
+
 ### Fixed
 - **Bound worker compose and incident-journal failures (`codegen_orchestrator-493`)**: generated worker-mode compose recipes now preserve transport, JSON and compose exit failures, while required Makefile proxy installation fails the worker task. Provisioner journal outages retry only the journal write after external provisioning has run; a bounded retry budget publishes one terminal provisioning result before ACK, preventing both infinite PEL reclaim and repeated provisioning side effects.
 

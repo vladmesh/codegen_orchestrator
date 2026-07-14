@@ -1,13 +1,22 @@
 # Template Integration Tests
 This directory contains the service-template integration contract tests.
 
-Run the complete contract, including the Stage 5 worker-mode smoke, with:
+Run the production baseline compatibility smoke with:
 
 ```bash
-make test-integration-template
+make test-template-compat ARTIFACT_DIR=/tmp/template-compat-baseline
 ```
 
-The Stage 5 test scaffolds `gh:vladmesh/service-template` at the pinned `0.3.0`
-release into a unique temporary workspace. It uses a unique Compose project name,
-runs the generated project's setup, quality and worker-mode targets, then removes
-only resources carrying that Compose project label.
+The command reads `scheduler.service_template_source` and
+`scheduler.service_template_ref` directly from `scripts/system_configs.yaml`.
+To check a future release tag or commit without editing that production pin:
+
+```bash
+make test-template-compat TEMPLATE_REF=<tag-or-commit> ARTIFACT_DIR=/tmp/template-compat-candidate
+```
+
+Each entry scaffolds into an independent workspace with a unique Compose project,
+runs setup, lint, tests, worker start/probe/call and verified cleanup. Its JSON
+artifact records the requested source/ref and resolved commit SHA. A green candidate
+is the gate for a separate PR that updates the production pin; the smoke never edits
+the pin itself.

@@ -1,4 +1,4 @@
-.PHONY: lint format ci-contract test-unit test-integration test-e2e-scaffold test-live test-live-clean test-clean \
+.PHONY: lint format ci-contract test-unit test-integration test-template-compat test-e2e-scaffold test-live test-live-clean test-clean \
 	build up down stop logs help nuke nuke-hard seed migrate makemigrations init-langfuse-db \
 	setup-hooks lock-deps cleanup-agents backlog roadmap status recent-artifacts sync task \
 	rebuild-worker-images rebuild-worker-images-hard rebuild \
@@ -207,7 +207,16 @@ test-integration-%:
 # its temporary workspace, so a nested test container cannot see that path.
 test-integration-template:
 	@$(MAKE) test-integration-template-runner
-	@uv run pytest tests/integration/template/test_stage5_mock_smoke.py -v
+	@uv run pytest tests/integration/template/test_stage5_mock_smoke.py -k 'not mock_smoke_runs' -v
+
+# TEMPLATE_REF is optional. Without it, the harness reads both production values from
+# scripts/system_configs.yaml. Passing it tests a candidate without changing that pin.
+test-template-compat:
+	@mkdir -p "$(ARTIFACT_DIR)"
+	@uv run python tests/integration/template/stage5_mock_smoke.py \
+		--workspace-root "$(ARTIFACT_DIR)" \
+		--artifact "$(ARTIFACT_DIR)/template-compat-result.json" \
+		$(if $(TEMPLATE_REF),--ref "$(TEMPLATE_REF)",)
 
 test-integration-template-runner:
 	@docker compose -p $(TEST_PROJECT)_template -f docker/test/integration/template.yml down --remove-orphans 2>/dev/null || true

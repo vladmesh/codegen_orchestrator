@@ -26,6 +26,7 @@ EXPECTED_GATE_NEEDS = {
     "ci-contract",
     "test-service",
     "test-integration",
+    "template-compatibility",
 }
 EXPECTED_FILTERS = {
     "api",
@@ -42,6 +43,7 @@ EXPECTED_FILTERS = {
     "integration-tests",
 }
 HYPHENATED_OUTPUTS = {"worker-manager", "infra-service", "docker-test", "integration-tests"}
+TEMPLATE_COMPAT_TIMEOUT_MINUTES = 30
 
 
 def fail(message: str) -> None:
@@ -216,6 +218,26 @@ def assert_gate(jobs: dict[str, Any]) -> None:
         fail("merge-gate must fail non-success upstream results")
 
 
+def assert_template_compatibility(jobs: dict[str, Any]) -> None:
+    job = require_job(jobs, "template-compatibility")
+    if job.get("timeout-minutes") != TEMPLATE_COMPAT_TIMEOUT_MINUTES:
+        fail("template compatibility job must have a 30 minute timeout")
+    if job.get("strategy", {}).get("fail-fast") is not False:
+        fail("template compatibility matrix must disable fail-fast")
+    if matrix_values(job, "entry") != {"baseline", "candidate"}:
+        fail("template compatibility matrix must contain baseline and candidate")
+    baseline = step_by_name(job, "Run baseline compatibility smoke")
+    if "TEMPLATE_REF" in baseline.get("run", ""):
+        fail("baseline must load the production pin from system config")
+    candidate = step_by_name(job, "Run candidate compatibility smoke")
+    if (
+        "CANDIDATE_REF" not in candidate.get("run", "")
+        or candidate.get("env", {}).get("CANDIDATE_REF")
+        != "${{ inputs.service_template_candidate_ref }}"
+    ):
+        fail("candidate must accept an explicit workflow input ref")
+
+
 def main() -> None:
     workflow = load_workflow()
     jobs = workflow.get("jobs")
@@ -225,6 +247,7 @@ def main() -> None:
     assert_fast_checks(jobs)
     assert_service_tests(jobs)
     assert_integration_tests(jobs)
+    assert_template_compatibility(jobs)
     assert_gate(jobs)
     print("CI gate contract ok")
 
