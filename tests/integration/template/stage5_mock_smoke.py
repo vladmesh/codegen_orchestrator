@@ -78,8 +78,9 @@ class Stage5Smoke:
         error: str | None = None
         self.workspace.mkdir(parents=True)
         try:
-            self._run_copier()
-            resolved_commit = self._read_resolved_commit()
+            resolved_commit = self._resolve_remote_ref(self.template.ref)
+            self._run_copier(resolved_commit)
+            self._read_resolved_commit(resolved_commit)
             self._run_make("setup")
             self._run_make("lint")
             self._run_make("tests")
@@ -133,13 +134,13 @@ class Stage5Smoke:
         self._assert_no_compose_resources()
         shutil.rmtree(self.workspace, ignore_errors=True)
 
-    def _run_copier(self) -> None:
+    def _run_copier(self, resolved_commit: str) -> None:
         self._run(
             [
                 "copier",
                 "copy",
                 "--defaults",
-                f"--vcs-ref={self.template.ref}",
+                f"--vcs-ref={resolved_commit}",
                 "--data",
                 "project_name=stage5-smoke",
                 "--data",
@@ -152,29 +153,19 @@ class Stage5Smoke:
             phase="scaffold",
         )
 
-    def _read_resolved_commit(self) -> str:
+    def _read_resolved_commit(self, expected_commit: str) -> str:
         answers = yaml.safe_load((self.workspace / ".copier-answers.yml").read_text())
         commit = answers.get("_commit") if isinstance(answers, dict) else None
-        resolved = self._resolve_remote_ref(self.template.ref)
-        if not SHA_PATTERN.fullmatch(resolved):
+        if not isinstance(commit, str) or not self._recorded_ref_matches(commit, expected_commit):
             raise RuntimeError(
-                f"template ref cannot be resolved to a commit SHA: "
-                f"{self.template.source}@{self.template.ref}"
+                f"Copier resolved unexpected commit: expected={expected_commit!r}, "
+                f"recorded={commit!r}"
             )
-        if not isinstance(commit, str):
-            recorded = None
-        elif self._recorded_ref_matches(commit, resolved):
-            recorded = resolved
-        else:
-            recorded = self._resolve_remote_ref(commit)
-        if recorded != resolved:
-            raise RuntimeError(
-                f"Copier resolved unexpected commit: requested={resolved!r}, "
-                f"recorded={recorded!r} ({commit!r})"
-            )
-        return resolved
+        return expected_commit
 
     def _recorded_ref_matches(self, recorded: str, resolved: str) -> bool:
+        if SHA_PATTERN.fullmatch(recorded):
+            return recorded.lower() == resolved
         if recorded == self.template.ref:
             return True
         describe_match = re.search(r"-g([0-9a-f]{7,40})$", recorded, re.IGNORECASE)

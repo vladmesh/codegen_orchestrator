@@ -9,6 +9,7 @@
 - Record requested template source/ref, resolved commit SHA and isolated cleanup outcome as CI artifacts.
 
 ### Fixed
+- Pin requested template tags to their resolved commit before scaffolding to prevent tag-move races.
 - Resolve candidate commits by fetching the exact revision, including commits that are not advertised branch or tag tips.
 - Make template compatibility cleanup fail when Compose teardown or Docker resource verification fails.
 - **Bound worker compose and incident-journal failures (`codegen_orchestrator-493`)**: generated worker-mode compose recipes now preserve transport, JSON and compose exit failures, while required Makefile proxy installation fails the worker task. Provisioner journal outages retry only the journal write after external provisioning has run; a bounded retry budget publishes one terminal provisioning result before ACK, preventing both infinite PEL reclaim and repeated provisioning side effects.

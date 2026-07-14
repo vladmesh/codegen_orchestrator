@@ -101,14 +101,9 @@ def test_command_timeout_reports_phase_and_command(
 def test_resolved_commit_must_be_a_sha(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
     smoke.workspace.mkdir()
-    (smoke.workspace / ".copier-answers.yml").write_text("_commit: candidate\n")
-    unresolved = subprocess.CompletedProcess(
-        args=["git", "ls-remote"], returncode=0, stdout="", stderr=""
-    )
-    monkeypatch.setattr(Stage5Smoke, "_run", lambda *_args, **_kwargs: unresolved)
-
-    with pytest.raises(RuntimeError, match="cannot be resolved to a commit SHA"):
-        smoke._read_resolved_commit()
+    (smoke.workspace / ".copier-answers.yml").write_text("_commit: wrong-ref\n")
+    with pytest.raises(RuntimeError, match="Copier resolved unexpected commit"):
+        smoke._read_resolved_commit("a" * 40)
 
 
 def test_unadvertised_commit_sha_is_resolved_by_fetch(
@@ -137,6 +132,39 @@ def test_copier_git_describe_value_matches_requested_commit(tmp_path: Path) -> N
 
     assert smoke._recorded_ref_matches("0.2.0-78-g1a077d9", resolved)
     assert not smoke._recorded_ref_matches("0.2.0-78-gdeadbee", resolved)
+
+
+def test_run_pins_moving_tag_before_copier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pinned_sha = "a" * 40
+    events: list[tuple[str, str]] = []
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
+
+    monkeypatch.setattr(
+        Stage5Smoke,
+        "_resolve_remote_ref",
+        lambda _self, ref: events.append(("resolve", ref)) or pinned_sha,
+    )
+    monkeypatch.setattr(
+        Stage5Smoke,
+        "_run_copier",
+        lambda _self, ref: events.append(("copier", ref)),
+    )
+    monkeypatch.setattr(
+        Stage5Smoke,
+        "_read_resolved_commit",
+        lambda _self, expected: events.append(("recorded", expected)) or expected,
+    )
+    monkeypatch.setattr(Stage5Smoke, "_run_make", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(Stage5Smoke, "_make_workspace_readable", lambda *_args: None)
+    monkeypatch.setattr(Stage5Smoke, "_run_worker_start", lambda *_args: None)
+    monkeypatch.setattr(Stage5Smoke, "cleanup", lambda *_args: None)
+
+    assert smoke.run() == pinned_sha
+    assert events == [
+        ("resolve", "candidate"),
+        ("copier", pinned_sha),
+        ("recorded", pinned_sha),
+    ]
 
 
 def test_workspace_is_readable_by_the_generated_non_root_container(tmp_path: Path) -> None:
