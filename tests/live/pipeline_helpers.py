@@ -351,21 +351,17 @@ async def wait_deploy(
 # ── Cleanup helpers ──────────────────────────────────────────────────────
 
 
-def cleanup_github_repo(repo_name: str) -> None:
-    """Delete GitHub repo via org-level token inside langgraph container.
-
-    Uses get_org_token() instead of repo-level get_token() because after DB
-    cleanup the repo installation lookup may 404.
-    """
-    script = (
+def build_github_cleanup_script(repo_name: str) -> str:
+    """Build the container-side cleanup for one exact owned repository."""
+    return (
         "import asyncio, sys\n"
         "sys.path.insert(0, '/app')\n"
         "from shared.clients.github import GitHubAppClient\n"
         "import httpx\n"
         "async def cleanup():\n"
         "    gh = GitHubAppClient()\n"
-        f"        token = await gh.get_org_token('{GITHUB_ORG}')\n"
-        "        async with httpx.AsyncClient() as client:\n"
+        f"    token = await gh.get_org_token('{GITHUB_ORG}')\n"
+        "    async with httpx.AsyncClient() as client:\n"
         "            resp = await client.delete(\n"
         f"                'https://api.github.com/repos/{GITHUB_ORG}/{repo_name}',\n"
         "                headers={'Authorization': f'token {token}',\n"
@@ -381,6 +377,11 @@ def cleanup_github_repo(repo_name: str) -> None:
         "                raise RuntimeError(f'repository residue: {verify.status_code}')\n"
         "asyncio.run(cleanup())\n"
     )
+
+
+def cleanup_github_repo(repo_name: str) -> None:
+    """Delete and verify one GitHub repo via the container's org token."""
+    script = build_github_cleanup_script(repo_name)
     result = docker_exec("langgraph", script, timeout=30)
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)

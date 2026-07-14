@@ -5,6 +5,7 @@ Verifies the scaffolded project exists and has the expected structure.
 """
 
 import httpx
+from live_harness import cleanup_guard
 from pipeline_helpers import (
     API_URL,
     AUTH_HEADERS,
@@ -32,14 +33,14 @@ async def scaffold_ctx():
     async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api:
         await ensure_test_user(api)
         ctx = await create_noop_project(api)
-        trigger_scaffold(ctx)
-        await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
+        async with cleanup_guard(lambda: cleanup_all(api, None, ctx)):
+            trigger_scaffold(ctx)
+            await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
 
-        yield ctx
+            yield ctx
 
-        if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
-            dump_debug(ctx, "scaffold")
-        await cleanup_all(api, None, ctx)
+            if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
+                dump_debug(ctx, "scaffold")
 
 
 class TestScaffoldPipeline:

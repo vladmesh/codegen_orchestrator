@@ -18,7 +18,7 @@ import re
 import secrets
 import uuid
 
-from live_harness import OwnershipManifest, resolve_repo_root
+from live_harness import OwnershipManifest, cleanup_guard, resolve_repo_root
 from pipeline_helpers import cleanup_all
 import pytest
 
@@ -63,60 +63,9 @@ async def scaffolded_project(api, compose_exec):
     )
     assert resp.status_code == 201, f"Create repository failed: {resp.text}"
     repo_id = resp.json()["id"]
-
-    # 3. Publish ScaffoldMessage to scaffold:queue via redis
-    scaffold_msg = {
-        "project_id": project_id,
-        "repository_id": repo_id,
-        "user_id": "live-test",
-        "template_repo": TEMPLATE_REPO,
-        "project_name": project_name,
-        "modules": "backend,tg_bot",
-        "task_description": "Live test scaffold",
-    }
-    # Publish via redis-cli with each field as separate key-value pair for XADD
-    xadd_args = []
-    for k, v in scaffold_msg.items():
-        xadd_args.extend([k, str(v)])
-
-    import subprocess
-
-    result = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "redis",
-            "redis-cli",
-            "XADD",
-            SCAFFOLD_QUEUE,
-            "*",
-            *[item for pair in scaffold_msg.items() for item in pair],
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        cwd=ORCHESTRATOR_ROOT,
-    )
-    assert result.returncode == 0, f"XADD failed: {result.stderr}"
-
-    # 4. Wait for scaffold to complete
-    # After ProjectStatus split (#22), scaffold success sets status to 'active'.
-    # Failure leaves status as 'draft' — we detect via timeout.
-    for _ in range(SCAFFOLD_TIMEOUT // 2):
-        await asyncio.sleep(2)
-        resp = await api.get(f"/api/projects/{project_id}")
-        status = resp.json().get("status")
-        if status == ProjectStatus.ACTIVE:
-            break
-    else:
-        pytest.fail(f"Scaffold timed out ({SCAFFOLD_TIMEOUT}s) for {project_name}, status={status}")
-
     manifest = OwnershipManifest(project_id)
     manifest.own("project", project_id)
     manifest.own("github_repository", f"{GITHUB_ORG}/{repo_name}")
-    manifest.own("redis_entry", result.stdout.strip(), stream=SCAFFOLD_QUEUE)
     manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
     ctx = {
         "project_id": project_id,
@@ -124,8 +73,58 @@ async def scaffolded_project(api, compose_exec):
         "repo_name": repo_name,
         "manifest": manifest,
     }
-    yield ctx
-    await cleanup_all(api, None, ctx)
+
+    async with cleanup_guard(lambda: cleanup_all(api, None, ctx)):
+        # 3. Publish ScaffoldMessage to scaffold:queue via redis
+        scaffold_msg = {
+            "project_id": project_id,
+            "repository_id": repo_id,
+            "user_id": "live-test",
+            "template_repo": TEMPLATE_REPO,
+            "project_name": project_name,
+            "modules": "backend,tg_bot",
+            "task_description": "Live test scaffold",
+        }
+
+        import subprocess
+
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "redis",
+                "redis-cli",
+                "XADD",
+                SCAFFOLD_QUEUE,
+                "*",
+                *[item for pair in scaffold_msg.items() for item in pair],
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+        assert result.returncode == 0, f"XADD failed: {result.stderr}"
+        manifest.own("redis_entry", result.stdout.strip(), stream=SCAFFOLD_QUEUE)
+        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+
+        # 4. Wait for scaffold to complete
+        # After ProjectStatus split (#22), scaffold success sets status to 'active'.
+        # Failure leaves status as 'draft' — we detect via timeout.
+        for _ in range(SCAFFOLD_TIMEOUT // 2):
+            await asyncio.sleep(2)
+            resp = await api.get(f"/api/projects/{project_id}")
+            status = resp.json().get("status")
+            if status == ProjectStatus.ACTIVE:
+                break
+        else:
+            pytest.fail(
+                f"Scaffold timed out ({SCAFFOLD_TIMEOUT}s) for {project_name}, status={status}"
+            )
+
+        yield ctx
 
 
 def _get_file_from_github(compose_exec, repo_name: str, path: str) -> str | None:

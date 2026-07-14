@@ -1,7 +1,14 @@
 from pathlib import Path
 
 import httpx
-from live_harness import CleanupError, OwnershipManifest, resolve_repo_root, run_non_llm_qa
+from live_harness import (
+    CleanupError,
+    OwnershipManifest,
+    cleanup_guard,
+    resolve_repo_root,
+    run_non_llm_qa,
+)
+from pipeline_helpers import build_github_cleanup_script
 import pytest
 
 
@@ -58,6 +65,39 @@ def test_manifest_reports_delete_failure_without_skipping_verification():
         manifest.teardown(delete=delete, exists=exists)
 
     assert verified == ["project-1"]
+
+
+def test_github_cleanup_script_is_valid_python():
+    script = build_github_cleanup_script("owned-repository")
+
+    compile(script, "<github-cleanup>", "exec")
+    assert "project-factory-organization/owned-repository" in script
+
+
+@pytest.mark.asyncio
+async def test_cleanup_guard_runs_when_qa_fails_before_fixture_yield():
+    cleaned = []
+
+    async def cleanup():
+        cleaned.append(True)
+
+    with pytest.raises(RuntimeError, match="QA failed"):
+        async with cleanup_guard(cleanup):
+            raise RuntimeError("QA failed")
+
+    assert cleaned == [True]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_guard_preserves_run_and_cleanup_failures():
+    async def cleanup():
+        raise CleanupError("residue")
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        async with cleanup_guard(cleanup):
+            raise RuntimeError("QA failed")
+
+    assert [str(error) for error in caught.value.exceptions] == ["QA failed", "residue"]
 
 
 @pytest.mark.asyncio

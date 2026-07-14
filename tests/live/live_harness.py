@@ -1,7 +1,8 @@
 """Safety contracts shared by Stage 7 live tests."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import json
 import os
@@ -9,6 +10,28 @@ from pathlib import Path
 import time
 
 import httpx
+
+
+@asynccontextmanager
+async def cleanup_guard(cleanup: Callable[[], Awaitable[None]]):
+    """Always clean a live context and retain both body and cleanup failures."""
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+
+    try:
+        await cleanup()
+    except BaseException as cleanup_error:
+        if primary_error is not None:
+            raise BaseExceptionGroup(
+                "live run and owned-resource cleanup failed",
+                [primary_error, cleanup_error],
+            ) from None
+        raise
+    if primary_error is not None:
+        raise primary_error
 
 
 def resolve_repo_root(source: Path = Path(__file__)) -> Path:

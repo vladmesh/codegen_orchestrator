@@ -7,6 +7,7 @@ No deploy. Verifies the engineering pipeline works end-to-end.
 """
 
 import httpx
+from live_harness import cleanup_guard
 from pipeline_helpers import (
     API_URL,
     AUTH_HEADERS,
@@ -37,25 +38,23 @@ async def engineering_ctx():
     async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api:
         await ensure_test_user(api)
         ctx = await create_noop_project(api)
+        async with cleanup_guard(lambda: cleanup_all(api, None, ctx)):
+            # Phase 1: Scaffold
+            trigger_scaffold(ctx)
+            await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
+            if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
+                yield ctx
+                dump_debug(ctx, "engineering-scaffold")
+                return
 
-        # Phase 1: Scaffold
-        trigger_scaffold(ctx)
-        await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
-        if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
+            # Phase 2: Engineering
+            await create_story_and_task(api, ctx)
+            await wait_engineering(api, ctx, timeout=ENGINEERING_TIMEOUT)
+
             yield ctx
-            dump_debug(ctx, "engineering-scaffold")
-            await cleanup_all(api, None, ctx)
-            return
 
-        # Phase 2: Engineering
-        await create_story_and_task(api, ctx)
-        await wait_engineering(api, ctx, timeout=ENGINEERING_TIMEOUT)
-
-        yield ctx
-
-        if ctx.get("task_status") != TaskStatus.DONE:
-            dump_debug(ctx, "engineering")
-        await cleanup_all(api, None, ctx)
+            if ctx.get("task_status") != TaskStatus.DONE:
+                dump_debug(ctx, "engineering")
 
 
 class TestEngineeringPipeline:
