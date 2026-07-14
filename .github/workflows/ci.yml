@@ -321,6 +321,10 @@ jobs:
         if: matrix.should_run == 'true'
         uses: docker/setup-buildx-action@v3
 
+      - name: Set up uv for template smoke
+        if: matrix.should_run == 'true' && matrix.suite == 'template'
+        uses: astral-sh/setup-uv@v6
+
       - name: Run integration tests
         id: integration-tests
         if: matrix.should_run == 'true'
