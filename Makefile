@@ -203,6 +203,19 @@ test-integration-%:
 	docker compose -p $(TEST_PROJECT)_$* -f docker/test/integration/$*.yml down --remove-orphans; \
 	exit $$EXIT_CODE
 
+# The Stage 5 smoke must run on the Docker host: generated compose files bind-mount
+# its temporary workspace, so a nested test container cannot see that path.
+test-integration-template:
+	@$(MAKE) test-integration-template-runner
+	@uv run pytest tests/integration/template/test_stage5_mock_smoke.py -v
+
+test-integration-template-runner:
+	@docker compose -p $(TEST_PROJECT)_template -f docker/test/integration/template.yml down --remove-orphans 2>/dev/null || true
+	@docker compose -p $(TEST_PROJECT)_template -f docker/test/integration/template.yml up --build --abort-on-container-exit --exit-code-from integration-test-runner; \
+	EXIT_CODE=$$?; \
+	docker compose -p $(TEST_PROJECT)_template -f docker/test/integration/template.yml down --remove-orphans; \
+	exit $$EXIT_CODE
+
 # Run all unit tests locally (no Docker, fast)
 # Requires: uv sync (once)
 test-unit:
