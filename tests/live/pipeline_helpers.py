@@ -137,6 +137,9 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
 def trigger_scaffold(ctx: dict) -> None:
     """Publish scaffold message to Redis stream."""
     ctx["manifest"].own("github_repository", f"{GITHUB_ORG}/{ctx['repo_name']}")
+    ctx["manifest"].own(
+        "registry_repository", f"{GITHUB_ORG}/{ctx['repo_name']}-backend"
+    )
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
     msg = {
         "project_id": ctx["project_id"],
@@ -305,6 +308,7 @@ async def wait_deploy(
         ApplicationStatus.DEGRADED,
     }
     app_status = None
+    application = None
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         repos_resp = await api.get("/api/repositories/", params={"project_id": ctx["project_id"]})
@@ -313,6 +317,7 @@ async def wait_deploy(
             for app in apps_resp.json():
                 if app["status"] in {s.value for s in terminal}:
                     app_status = app["status"]
+                    application = app
                     break
             if app_status:
                 break
@@ -325,16 +330,19 @@ async def wait_deploy(
     if app_status != ApplicationStatus.RUNNING.value:
         return
 
-    # Find port allocation
+    if application is None:
+        return
+
+    # Port allocations belong to an application, not directly to a project.
     resp = await api_no_auth.get("/api/servers/")
     for srv in resp.json():
         resp = await api_no_auth.get(f"/api/servers/{srv['handle']}/ports")
         for alloc in resp.json():
-            if alloc.get("project_id") == ctx["project_id"]:
+            if alloc.get("application_id") == application["id"]:
                 ctx["server_ip"] = srv["public_ip"]
                 ctx["port"] = alloc["port"]
                 ctx["allocation_id"] = alloc["id"]
-                ctx["application_id"] = app["id"]
+                ctx["application_id"] = application["id"]
                 ctx["server_handle"] = srv["handle"]
                 ctx["manifest"].own(
                     "server_deployment",
@@ -438,6 +446,63 @@ def cleanup_github_repo(repo_name: str) -> None:
     result = docker_exec("langgraph", script, timeout=30)
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
+
+
+def build_registry_cleanup_script(repository: str) -> str:
+    """Build fail-closed cleanup for one manifest-owned registry repository."""
+    return (
+        "import asyncio, os\n"
+        "import httpx\n"
+        f"repository = {repository!r}\n"
+        "registry = os.environ.get('ORCHESTRATOR_HOSTNAME')\n"
+        "username = os.environ.get('REGISTRY_USER')\n"
+        "password = os.environ.get('REGISTRY_PASSWORD')\n"
+        "if not registry or not username or not password:\n"
+        "    raise RuntimeError('registry cleanup credentials are not configured')\n"
+        "base = registry.rstrip('/')\n"
+        "headers = {'Accept': 'application/vnd.docker.distribution.manifest.v2+json'}\n"
+        "async def cleanup():\n"
+        "    async with httpx.AsyncClient(auth=(username, password), timeout=20) as client:\n"
+        "        tags = await client.get(f'{base}/v2/{repository}/tags/list')\n"
+        "        if tags.status_code == 404:\n"
+        "            return\n"
+        "        tags.raise_for_status()\n"
+        "        digests = set()\n"
+        "        for tag in tags.json().get('tags') or []:\n"
+        "            manifest_url = f'{base}/v2/{repository}/manifests/{tag}'\n"
+        "            manifest = await client.get(manifest_url, headers=headers)\n"
+        "            manifest.raise_for_status()\n"
+        "            digest = manifest.headers.get('Docker-Content-Digest')\n"
+        "            if not digest:\n"
+        "                raise RuntimeError(f'manifest digest missing for {repository}:{tag}')\n"
+        "            digests.add(digest)\n"
+        "        for digest in digests:\n"
+        "            deleted = await client.delete(f'{base}/v2/{repository}/manifests/{digest}')\n"
+        "            if deleted.status_code not in (202, 404):\n"
+        "                deleted.raise_for_status()\n"
+        "        verify = await client.get(f'{base}/v2/{repository}/tags/list')\n"
+        "        if verify.status_code != 404 and (verify.json().get('tags') or []):\n"
+        "            raise RuntimeError(f'registry tags remain for {repository}')\n"
+        "asyncio.run(cleanup())\n"
+    )
+
+
+def cleanup_registry_repository(repository: str) -> None:
+    """Delete and verify registry artifacts recorded for one live run."""
+    result = docker_exec("langgraph", build_registry_cleanup_script(repository), timeout=90)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr or result.stdout)
+
+
+def cleanup_registry_resources(ctx: dict, errors: list[str]) -> None:
+    """Remove every registry repository explicitly recorded for this run."""
+    for resource in ctx["manifest"].resources:
+        if resource.kind != "registry_repository":
+            continue
+        try:
+            cleanup_registry_repository(resource.identifier)
+        except Exception as exc:
+            errors.append(f"registry repository {resource.identifier}: {exc}")
 
 
 def cleanup_server_container(ctx: dict) -> None:
@@ -556,15 +621,18 @@ async def cleanup_all(
         except Exception as exc:
             errors.append(f"port allocation: {exc}")
 
-    # 3. GitHub repo
+    # 3. Registry images created by CI for this run.
     owned_kinds = {resource.kind for resource in ctx["manifest"].resources}
+    cleanup_registry_resources(ctx, errors)
+
+    # 4. GitHub repo
     if "github_repository" in owned_kinds:
         try:
             cleanup_github_repo(ctx["repo_name"])
         except Exception as exc:
             errors.append(f"GitHub repository: {exc}")
 
-    # 4. DB records (API delete doesn't cascade to stories/tasks, use SQL)
+    # 5. DB records (API delete doesn't cascade to stories/tasks, use SQL)
     if "project_id" in ctx:
         try:
             _cleanup_db(ctx["project_id"])
@@ -637,10 +705,12 @@ def _cleanup_db(project_id: str) -> None:
         f"DELETE FROM rag_conversation_summaries WHERE project_id = '{project_id}';"
         f"DELETE FROM rag_messages WHERE project_id = '{project_id}';"
         f"DELETE FROM service_deployments WHERE project_id = '{project_id}';"
+        f"DELETE FROM port_allocations WHERE application_id IN "
+        f"(SELECT id FROM applications WHERE repo_id IN "
+        f"(SELECT id FROM repositories WHERE project_id = '{project_id}'));"
         f"DELETE FROM applications WHERE repo_id IN "
         f"(SELECT id FROM repositories WHERE project_id = '{project_id}');"
         f"DELETE FROM repositories WHERE project_id = '{project_id}';"
-        f"DELETE FROM port_allocations WHERE project_id = '{project_id}';"
         f"DELETE FROM projects WHERE id = '{project_id}';"
     )
     result = subprocess.run(

@@ -5,7 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from structlog.testing import capture_logs
 
-from src.scaffold import ScaffoldResult, _workspace_has_files, run_ensure_workspace, run_scaffold
+from src.scaffold import (
+    ScaffoldResult,
+    _capture_tree,
+    _workspace_has_files,
+    run_ensure_workspace,
+    run_scaffold,
+)
 
 
 @pytest.fixture
@@ -90,6 +96,21 @@ class TestRunScaffold:
         assert "--vcs-ref=HEAD" not in cmd_str
         assert "make setup" in cmd_str
         assert "git push" in cmd_str
+
+    @pytest.mark.asyncio
+    async def test_tree_capture_falls_back_when_runtime_has_no_tree(self, tmp_path):
+        find_process = AsyncMock()
+        find_process.communicate = AsyncMock(return_value=(b".\n./src\n", b""))
+        find_process.returncode = 0
+
+        async def fake_exec(*args, **kwargs):
+            if args[0] == "tree":
+                raise FileNotFoundError("tree")
+            assert args[0] == "find"
+            return find_process
+
+        with patch("src.scaffold.asyncio.create_subprocess_exec", side_effect=fake_exec):
+            assert await _capture_tree(tmp_path) == ".\n./src"
 
     @pytest.mark.asyncio
     async def test_copier_failure_returns_error(self, scaffold_msg, settings, fake_token, tmp_path):

@@ -265,17 +265,21 @@ async def run_scaffold(  # noqa: PLR0915
 
 async def _capture_tree(workspace: Path) -> str:
     """Capture directory tree output for a workspace."""
-    rc, tree_out, _ = await _run_cmd(
-        [
-            "tree",
-            "-L",
-            "3",
-            "--noreport",
-            "-I",
-            ".venv|node_modules|.git|__pycache__|.mypy_cache|.ruff_cache",
-        ],
-        cwd=workspace,
-    )
+    try:
+        rc, tree_out, _ = await _run_cmd(
+            [
+                "tree",
+                "-L",
+                "3",
+                "--noreport",
+                "-I",
+                ".venv|node_modules|.git|__pycache__|.mypy_cache|.ruff_cache",
+            ],
+            cwd=workspace,
+        )
+    except FileNotFoundError:
+        rc = 1
+        tree_out = ""
     if rc != 0:
         rc, tree_out, _ = await _run_cmd(
             [

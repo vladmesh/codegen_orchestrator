@@ -256,7 +256,7 @@ async def allocate_port(
         server_handle=handle,
         port=allocation_in.port,
         service_name=allocation_in.service_name,
-        project_id=allocation_in.project_id,
+        application_id=allocation_in.application_id,
     )
     db.add(allocation)
     await db.commit()

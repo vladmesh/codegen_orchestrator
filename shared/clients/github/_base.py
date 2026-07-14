@@ -21,7 +21,7 @@ class GitHubAppClientBase:
 
     def __init__(self):
         self.app_id = os.getenv("GITHUB_APP_ID")
-        self.private_key_path = os.getenv("GITHUB_APP_PRIVATE_KEY_PATH", "/app/keys/github_app.pem")
+        self.private_key_path = os.getenv("GITHUB_APP_PRIVATE_KEY_PATH")
         self._private_key = None
         # Cache: installation_id -> (token, expires_at_utc)
         self._token_cache: dict[int, tuple[str, datetime]] = {}
@@ -90,6 +90,9 @@ class GitHubAppClientBase:
     def _load_private_key(self) -> str:
         if self._private_key:
             return self._private_key
+
+        if not self.private_key_path:
+            raise RuntimeError("GITHUB_APP_PRIVATE_KEY_PATH is not set")
 
         if not os.path.exists(self.private_key_path):
             # Fallback for local dev if key is missing or env var explicit
