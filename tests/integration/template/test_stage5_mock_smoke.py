@@ -1,6 +1,7 @@
 """Stage 5 deterministic smoke for the pinned service-template."""
 
 from pathlib import Path
+import stat
 import subprocess
 
 import pytest
@@ -63,3 +64,19 @@ def test_commands_use_reproducible_host_permissions(
     assert captured_environment["HOST_UID"] == str(tmp_path.stat().st_uid)
     assert captured_environment["HOST_GID"] == str(tmp_path.stat().st_gid)
     assert callable(captured_run_kwargs["preexec_fn"])
+
+
+def test_workspace_is_readable_by_the_generated_non_root_container(tmp_path: Path) -> None:
+    smoke = Stage5Smoke.create(tmp_path)
+    generated_directory = smoke.workspace / "shared" / "generated"
+    generated_directory.mkdir(parents=True)
+    generated_file = generated_directory / "schemas.py"
+    generated_file.write_text("schema = {}\n")
+    generated_directory.chmod(0o700)
+    generated_file.chmod(0o600)
+
+    smoke._make_workspace_readable()
+
+    assert generated_directory.stat().st_mode & stat.S_IROTH
+    assert generated_directory.stat().st_mode & stat.S_IXOTH
+    assert generated_file.stat().st_mode & stat.S_IROTH

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 from uuid import uuid4
 
@@ -42,6 +43,7 @@ class Stage5Smoke:
             self._run_make("setup")
             self._run_make("lint")
             self._run_make("tests")
+            self._make_workspace_readable()
             self._run_worker_start()
             self._run_make(
                 "smoke-probe",
@@ -123,6 +125,16 @@ class Stage5Smoke:
                 check=False,
             )
             raise RuntimeError(f"{error}\ncompose logs:\n{logs.stdout}\n{logs.stderr}") from error
+
+    def _make_workspace_readable(self) -> None:
+        for path in (self.workspace, *self.workspace.rglob("*")):
+            if path.is_symlink():
+                continue
+            mode = path.stat().st_mode
+            readable_mode = mode | stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
+            if path.is_dir():
+                readable_mode |= stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            path.chmod(readable_mode)
 
     def _assert_no_compose_resources(self) -> None:
         for resource, args in (
