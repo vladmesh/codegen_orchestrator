@@ -34,6 +34,22 @@ async def cleanup_guard(cleanup: Callable[[], Awaitable[None]]):
         raise primary_error
 
 
+@asynccontextmanager
+async def cleanup_on_error(cleanup: Callable[[], Awaitable[None]]):
+    """Clean a partially created context only when its creation fails."""
+    try:
+        yield
+    except BaseException as primary_error:
+        try:
+            await cleanup()
+        except BaseException as cleanup_error:
+            raise BaseExceptionGroup(
+                "owned-resource creation and cleanup failed",
+                [primary_error, cleanup_error],
+            ) from None
+        raise
+
+
 def resolve_repo_root(source: Path = Path(__file__)) -> Path:
     """Resolve a verified checkout root from an override or this module."""
     override = os.environ.get("ORCHESTRATOR_ROOT")

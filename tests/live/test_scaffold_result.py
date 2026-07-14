@@ -18,7 +18,7 @@ import re
 import secrets
 import uuid
 
-from live_harness import OwnershipManifest, cleanup_guard, resolve_repo_root
+from live_harness import OwnershipManifest, cleanup_guard, cleanup_on_error, resolve_repo_root
 from pipeline_helpers import cleanup_all
 import pytest
 
@@ -51,22 +51,8 @@ async def scaffolded_project(api, compose_exec):
         },
     )
     assert resp.status_code == 201, f"Create project failed: {resp.text}"
-
-    # 2. Create repository record
-    resp = await api.post(
-        "/api/repositories/",
-        json={
-            "project_id": project_id,
-            "name": repo_name,
-            "git_url": f"https://github.com/{GITHUB_ORG}/{repo_name}",
-        },
-    )
-    assert resp.status_code == 201, f"Create repository failed: {resp.text}"
-    repo_id = resp.json()["id"]
     manifest = OwnershipManifest(project_id)
     manifest.own("project", project_id)
-    manifest.own("github_repository", f"{GITHUB_ORG}/{repo_name}")
-    manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
     ctx = {
         "project_id": project_id,
         "project_name": project_name,
@@ -74,8 +60,24 @@ async def scaffolded_project(api, compose_exec):
         "manifest": manifest,
     }
 
+    # 2. Create repository record
+    async with cleanup_on_error(lambda: cleanup_all(api, None, ctx)):
+        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+        resp = await api.post(
+            "/api/repositories/",
+            json={
+                "project_id": project_id,
+                "name": repo_name,
+                "git_url": f"https://github.com/{GITHUB_ORG}/{repo_name}",
+            },
+        )
+        assert resp.status_code == 201, f"Create repository failed: {resp.text}"
+        repo_id = resp.json()["id"]
+
     async with cleanup_guard(lambda: cleanup_all(api, None, ctx)):
         # 3. Publish ScaffoldMessage to scaffold:queue via redis
+        manifest.own("github_repository", f"{GITHUB_ORG}/{repo_name}")
+        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
         scaffold_msg = {
             "project_id": project_id,
             "repository_id": repo_id,

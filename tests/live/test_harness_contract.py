@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import httpx
@@ -8,6 +9,7 @@ from live_harness import (
     resolve_repo_root,
     run_non_llm_qa,
 )
+import pipeline_helpers
 from pipeline_helpers import build_github_cleanup_script
 import pytest
 
@@ -98,6 +100,34 @@ async def test_cleanup_guard_preserves_run_and_cleanup_failures():
             raise RuntimeError("QA failed")
 
     assert [str(error) for error in caught.value.exceptions] == ["QA failed", "residue"]
+
+
+@pytest.mark.asyncio
+async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatch, tmp_path):
+    cleanup_contexts = []
+
+    async def cleanup(api, api_no_auth, ctx):
+        cleanup_contexts.append(ctx)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/projects/":
+            return httpx.Response(201, json={"id": "project"})
+        return httpx.Response(500, text="repository unavailable")
+
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_all", cleanup)
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        with pytest.raises(AssertionError, match="Create repository failed"):
+            await pipeline_helpers.create_noop_project(api)
+
+    assert len(cleanup_contexts) == 1
+    manifest = cleanup_contexts[0]["manifest"]
+    assert [(resource.kind, resource.identifier) for resource in manifest.resources] == [
+        ("project", cleanup_contexts[0]["project_id"])
+    ]
+    written = json.loads((tmp_path / ".live-manifests" / f"{manifest.run_id}.json").read_text())
+    assert written["resources"] == [{"identifier": manifest.run_id, "kind": "project"}]
 
 
 @pytest.mark.asyncio

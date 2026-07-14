@@ -13,7 +13,7 @@ import subprocess
 import uuid
 
 import httpx
-from live_harness import CleanupError, OwnershipManifest, resolve_repo_root
+from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
@@ -107,31 +107,35 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
     )
     assert resp.status_code == 201, f"Create project failed: {resp.text}"
 
-    resp = await api.post(
-        "/api/repositories/",
-        json={
-            "project_id": project_id,
-            "name": project_name,
-            "git_url": f"https://github.com/{GITHUB_ORG}/{project_name}",
-        },
-    )
-    assert resp.status_code == 201, f"Create repository failed: {resp.text}"
-
     manifest = OwnershipManifest(run_id=project_id)
     manifest.own("project", project_id)
-    manifest.own("github_repository", f"{GITHUB_ORG}/{project_name}")
-    manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
-    return {
+    ctx = {
         "project_id": project_id,
         "project_name": project_name,
         "repo_name": project_name,
-        "repo_id": resp.json()["id"],
         "manifest": manifest,
     }
+
+    async with cleanup_on_error(lambda: cleanup_all(api, None, ctx)):
+        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+        resp = await api.post(
+            "/api/repositories/",
+            json={
+                "project_id": project_id,
+                "name": project_name,
+                "git_url": f"https://github.com/{GITHUB_ORG}/{project_name}",
+            },
+        )
+        assert resp.status_code == 201, f"Create repository failed: {resp.text}"
+        ctx["repo_id"] = resp.json()["id"]
+
+    return ctx
 
 
 def trigger_scaffold(ctx: dict) -> None:
     """Publish scaffold message to Redis stream."""
+    ctx["manifest"].own("github_repository", f"{GITHUB_ORG}/{ctx['repo_name']}")
+    ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
     msg = {
         "project_id": ctx["project_id"],
         "repository_id": ctx["repo_id"],
@@ -496,7 +500,8 @@ async def cleanup_all(
             errors.append(f"port allocation: {exc}")
 
     # 3. GitHub repo
-    if "repo_name" in ctx:
+    owned_kinds = {resource.kind for resource in ctx["manifest"].resources}
+    if "github_repository" in owned_kinds:
         try:
             cleanup_github_repo(ctx["repo_name"])
         except Exception as exc:
