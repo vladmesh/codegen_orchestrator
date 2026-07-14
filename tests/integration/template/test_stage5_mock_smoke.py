@@ -44,13 +44,15 @@ def test_worker_start_failure_includes_compose_logs(
         smoke._run_worker_start()
 
 
-def test_commands_use_the_workspace_owner_for_generated_compose(
+def test_commands_use_reproducible_host_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     smoke = Stage5Smoke.create(tmp_path)
     captured_environment: dict[str, str] = {}
+    captured_run_kwargs: dict[str, object] = {}
 
     def capture_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_run_kwargs.update(kwargs)
         captured_environment.update(kwargs["env"])  # type: ignore[arg-type]
         return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
@@ -60,3 +62,4 @@ def test_commands_use_the_workspace_owner_for_generated_compose(
 
     assert captured_environment["HOST_UID"] == str(tmp_path.stat().st_uid)
     assert captured_environment["HOST_GID"] == str(tmp_path.stat().st_gid)
+    assert callable(captured_run_kwargs["preexec_fn"])

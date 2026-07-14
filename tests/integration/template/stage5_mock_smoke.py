@@ -14,6 +14,10 @@ TEMPLATE_REF = "0.3.0"
 COMPOSE_LABEL = "com.docker.compose.project"
 
 
+def _set_standard_umask() -> None:
+    os.umask(0o022)
+
+
 @dataclass(frozen=True)
 class Stage5Smoke:
     """Run the generated project's worker-mode contract in isolation."""
@@ -154,6 +158,7 @@ class Stage5Smoke:
             check=False,
             text=True,
             capture_output=True,
+            preexec_fn=_set_standard_umask,
         )
         if check and result.returncode:
             raise RuntimeError(
