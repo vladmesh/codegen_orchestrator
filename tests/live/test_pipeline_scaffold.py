@@ -15,7 +15,6 @@ from pipeline_helpers import (
     docker_exec,
     dump_debug,
     ensure_test_user,
-    flush_queues,
     trigger_scaffold,
     wait_scaffold,
 )
@@ -30,7 +29,6 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 @pytest_asyncio.fixture(loop_scope="module", scope="module")
 async def scaffold_ctx():
     """Scaffold pipeline: create project + repo, trigger scaffold, wait."""
-    flush_queues()
     async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api:
         await ensure_test_user(api)
         ctx = await create_noop_project(api)

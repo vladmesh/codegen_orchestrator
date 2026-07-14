@@ -13,10 +13,13 @@ After fixing service-template and re-scaffolding, they should pass.
 """
 
 import asyncio
+from pathlib import Path
 import re
 import secrets
 import uuid
 
+from live_harness import OwnershipManifest, resolve_repo_root
+from pipeline_helpers import cleanup_all
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
@@ -26,6 +29,7 @@ GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:vladmesh/service-template"
 
 SCAFFOLD_TIMEOUT = 120  # seconds
+ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 
 @pytest.fixture
@@ -93,7 +97,7 @@ async def scaffolded_project(api, compose_exec):
         capture_output=True,
         text=True,
         timeout=10,
-        cwd="/home/vlad/projects/codegen_orchestrator",
+        cwd=ORCHESTRATOR_ROOT,
     )
     assert result.returncode == 0, f"XADD failed: {result.stderr}"
 
@@ -109,69 +113,19 @@ async def scaffolded_project(api, compose_exec):
     else:
         pytest.fail(f"Scaffold timed out ({SCAFFOLD_TIMEOUT}s) for {project_name}, status={status}")
 
-    yield {"project_id": project_id, "project_name": project_name, "repo_name": repo_name}
-
-    # Cleanup: delete GitHub repo (org-token to avoid installation 404)
-    cleanup_script = f"""
-import asyncio, sys
-sys.path.insert(0, '/app')
-from shared.clients.github import GitHubAppClient
-import httpx
-async def cleanup():
-    gh = GitHubAppClient()
-    try:
-        token = await gh.get_org_token('{GITHUB_ORG}')
-        async with httpx.AsyncClient() as client:
-            resp = await client.delete(
-                'https://api.github.com/repos/{GITHUB_ORG}/{repo_name}',
-                headers={{'Authorization': f'token {{token}}',
-                         'Accept': 'application/vnd.github+json'}},
-            )
-            if resp.status_code not in (204, 404):
-                print(f'cleanup warning: {{resp.status_code}}')
-    except Exception as e:
-        print(f'cleanup warning: {{e}}')
-asyncio.run(cleanup())
-"""
-    subprocess.run(
-        ["docker", "compose", "exec", "-T", "langgraph", "python", "-c", cleanup_script],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd="/home/vlad/projects/codegen_orchestrator",
-    )
-
-    # Cleanup: delete DB records (SQL cascade — API delete doesn't cascade)
-    sql = (
-        f"DELETE FROM task_events WHERE task_id IN "
-        f"(SELECT id FROM tasks WHERE project_id = '{project_id}');"
-        f"DELETE FROM runs WHERE project_id = '{project_id}';"
-        f"DELETE FROM tasks WHERE project_id = '{project_id}';"
-        f"DELETE FROM stories WHERE project_id = '{project_id}';"
-        f"DELETE FROM repositories WHERE project_id = '{project_id}';"
-        f"DELETE FROM port_allocations WHERE project_id = '{project_id}';"
-        f"DELETE FROM projects WHERE id = '{project_id}';"
-    )
-    subprocess.run(
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "db",
-            "psql",
-            "-U",
-            "postgres",
-            "-d",
-            "orchestrator",
-            "-c",
-            sql,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        cwd="/home/vlad/projects/codegen_orchestrator",
-    )
+    manifest = OwnershipManifest(project_id)
+    manifest.own("project", project_id)
+    manifest.own("github_repository", f"{GITHUB_ORG}/{repo_name}")
+    manifest.own("redis_entry", result.stdout.strip(), stream=SCAFFOLD_QUEUE)
+    manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+    ctx = {
+        "project_id": project_id,
+        "project_name": project_name,
+        "repo_name": repo_name,
+        "manifest": manifest,
+    }
+    yield ctx
+    await cleanup_all(api, None, ctx)
 
 
 def _get_file_from_github(compose_exec, repo_name: str, path: str) -> str | None:
@@ -196,7 +150,7 @@ asyncio.run(main())
         capture_output=True,
         text=True,
         timeout=30,
-        cwd="/home/vlad/projects/codegen_orchestrator",
+        cwd=ORCHESTRATOR_ROOT,
     )
     if result.returncode != 0:
         return None
@@ -238,7 +192,7 @@ asyncio.run(main())
         capture_output=True,
         text=True,
         timeout=30,
-        cwd="/home/vlad/projects/codegen_orchestrator",
+        cwd=ORCHESTRATOR_ROOT,
     )
     if result.returncode != 0:
         return []

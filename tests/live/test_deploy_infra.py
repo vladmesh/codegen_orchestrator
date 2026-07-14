@@ -13,15 +13,22 @@ Real flow:
 This test checks each link in that chain.
 """
 
+import os
 from pathlib import Path
 import subprocess
 
+from live_harness import resolve_repo_root
 import pytest
 
 from shared.queues import DEPLOY_QUEUE
 
-ORCHESTRATOR_ROOT = "/home/vlad/projects/codegen_orchestrator"
-SERVICE_TEMPLATE_ROOT = "/home/vlad/projects/service-template"
+ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
+SERVICE_TEMPLATE_ROOT = Path(
+    os.environ.get(
+        "SERVICE_TEMPLATE_ROOT",
+        ORCHESTRATOR_ROOT.parent / "service-template",
+    )
+).resolve()
 
 
 @pytest.fixture

@@ -13,6 +13,10 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 
 ## Current Facts
 
+- Stage 7 live harness hardening records exact run-owned resources, verifies targeted cleanup and
+  requires a separate non-LLM QA `passed` outcome after deploy. The external Stage 7 run remains
+  out of scope until its dedicated infrastructure and credentials are available.
+
 - CI normalization is complete in PR #30: `Required CI Gate`, unconditional format/lint/unit checks
   and `make ci-contract` are in place.
 - service-template contract audit is complete in PR #31:

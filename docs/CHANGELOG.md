@@ -5,6 +5,8 @@
 ## 2026-07-14
 
 ### Added
+- Harden the Stage 7 live harness with verified checkout discovery, per-run ownership manifests,
+  fail-closed targeted cleanup and a separate terminal `passed` QA gate after deploy.
 - Add a permanent service-template compatibility matrix for the production pin and explicit release candidates.
 - Record requested template source/ref, resolved commit SHA and isolated cleanup outcome as CI artifacts.
 

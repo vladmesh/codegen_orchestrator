@@ -8,18 +8,20 @@ Pipeline helpers (create_noop_project, trigger_scaffold, etc.) are in
 pipeline_helpers.py — importable by test modules directly.
 """
 
+from pathlib import Path
 import secrets
 import subprocess
 import uuid
 
 import httpx
+from live_harness import resolve_repo_root
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
 
 API_URL = "http://localhost:8000"
 TEST_TELEGRAM_ID = 999_000_001
-ORCHESTRATOR_ROOT = "/home/vlad/projects/codegen_orchestrator"
+ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 
 @pytest.fixture
@@ -117,7 +119,7 @@ def _cleanup_db(project_id: str) -> None:
         f"DELETE FROM port_allocations WHERE project_id = '{project_id}';"
         f"DELETE FROM projects WHERE id = '{project_id}';"
     )
-    subprocess.run(
+    result = subprocess.run(
         [
             "docker",
             "compose",
@@ -137,3 +139,5 @@ def _cleanup_db(project_id: str) -> None:
         timeout=15,
         cwd=ORCHESTRATOR_ROOT,
     )
+    if result.returncode != 0:
+        raise RuntimeError(f"project cleanup failed: {result.stderr}")
