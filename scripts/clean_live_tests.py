@@ -1,11 +1,17 @@
+# ruff: noqa: S608
 import json
 import os
+from pathlib import Path
 import subprocess
 import tempfile
 
 PROJECT_PREFIXES = ["live-test", "live-crud", "mega-test"]
 ORCHESTRATOR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GITHUB_ORG = "project-factory-organization"
+
+
+class CleanupFailure(RuntimeError):
+    """Live cleanup could not prove that all test-owned resources are absent."""
 
 
 def print_step(msg):
@@ -20,6 +26,74 @@ def run_cmd(cmd, **kwargs):
         cwd=ORCHESTRATOR_ROOT,
         **kwargs,
     )
+
+
+def _query_scalar(sql):
+    result = run_cmd(
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "db",
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "orchestrator",
+            "-t",
+            "-A",
+            "-c",
+            sql,
+        ]
+    )
+    if result.returncode != 0:
+        raise CleanupFailure(f"residue query failed: {result.stderr.strip()}")
+    return int(result.stdout.strip() or "0")
+
+
+def collect_residue_state():
+    """Return live-test residue counts using current schema relationships."""
+    conditions = _build_conditions()
+    manifests = list((Path(ORCHESTRATOR_ROOT) / ".live-manifests").glob("*.json"))
+    projects = _query_scalar(f"SELECT count(*) FROM projects WHERE {conditions};")  # noqa: S608
+    allocation_sql = (  # noqa: S608
+        "SELECT count(*) FROM port_allocations pa "
+        "JOIN applications a ON a.id = pa.application_id "
+        "JOIN repositories r ON r.id = a.repo_id "
+        f"JOIN projects p ON p.id = r.project_id WHERE {conditions};"  # noqa: S608
+    )  # noqa: S608
+    allocations = _query_scalar(allocation_sql)
+    worker_scan = run_cmd(
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "redis",
+            "redis-cli",
+            "--scan",
+            "--pattern",
+            "worker:meta:*",
+        ]
+    )
+    if worker_scan.returncode != 0:
+        raise CleanupFailure(f"worker residue scan failed: {worker_scan.stderr.strip()}")
+    workers = len([line for line in worker_scan.stdout.splitlines() if line.strip()])
+    return {
+        "projects": projects,
+        "allocations": allocations,
+        "ownership_manifests": len(manifests),
+        "workers": workers,
+    }
+
+
+def verify_no_residue():
+    residue = collect_residue_state()
+    remaining = {kind: count for kind, count in residue.items() if count}
+    if remaining:
+        details = ", ".join(f"{kind}={count}" for kind, count in sorted(remaining.items()))
+        raise CleanupFailure(f"live-test residue remains: {details}")
 
 
 def _build_conditions():
@@ -119,8 +193,6 @@ def clean_database():
         "rag_conversation_summaries",
         "rag_messages",
         "service_deployments",
-        "repositories",
-        "port_allocations",
     ]
     stmts = [
         f"DELETE FROM task_events WHERE task_id IN ("  # noqa: S608
@@ -128,13 +200,19 @@ def clean_database():
     ]
     stmts.extend(f"DELETE FROM {t} WHERE project_id IN ({sub});" for t in tables)  # noqa: S608
     stmts.append(
+        "DELETE FROM port_allocations WHERE application_id IN "
+        f"(SELECT a.id FROM applications a JOIN repositories r ON r.id = a.repo_id "
+        f"JOIN projects p ON p.id = r.project_id WHERE {conditions});"
+    )
+    stmts.append(
         f"DELETE FROM applications WHERE repo_id IN "  # noqa: S608
         f"(SELECT id FROM repositories WHERE project_id IN ({sub}));"
     )
+    stmts.append(f"DELETE FROM repositories WHERE project_id IN ({sub});")
     stmts.append(f"DELETE FROM projects WHERE {conditions};")  # noqa: S608
     stmts.append("DELETE FROM users WHERE telegram_id = 999000001;")
     sql = "\n".join(stmts)
-    run_cmd(
+    result = run_cmd(
         [
             "docker",
             "compose",
@@ -150,6 +228,8 @@ def clean_database():
             sql,
         ]
     )
+    if result.returncode != 0:
+        raise CleanupFailure(f"database cleanup failed: {result.stderr.strip()}")
     print("Database cleaned.")
 
 
@@ -361,6 +441,9 @@ def main():
 
     print_step("Cleaning Redis Pipelines")
     clean_redis_queues()
+
+    print_step("Verifying absence of live-test residue")
+    verify_no_residue()
 
     print("\\n\\033[1;32m✅ Live test cleanup fully complete!\\033[0m")
 

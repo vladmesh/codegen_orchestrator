@@ -504,6 +504,105 @@ def cleanup_registry_resources(ctx: dict, errors: list[str]) -> None:
             errors.append(f"registry repository {resource.identifier}: {exc}")
 
 
+def capture_owned_workers(ctx: dict) -> None:
+    """Add workers locked to this run to its persisted ownership manifest."""
+    project_id = ctx.get("project_id")
+    if not project_id:
+        return
+    scan = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            "redis",
+            "redis-cli",
+            "--scan",
+            "--pattern",
+            "worker:meta:*",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=ORCHESTRATOR_ROOT,
+    )
+    if scan.returncode != 0:
+        raise RuntimeError(scan.stderr)
+    for key in scan.stdout.splitlines():
+        worker_id = key.removeprefix("worker:meta:")
+        owner = subprocess.run(
+            ["docker", "compose", "exec", "-T", "redis", "redis-cli", "HGET", key, "project_id"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+        if owner.returncode != 0:
+            raise RuntimeError(owner.stderr)
+        if owner.stdout.strip() != project_id:
+            continue
+        inspect = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Config.Image}}", f"worker-{worker_id}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+        image = inspect.stdout.strip() if inspect.returncode == 0 else ""
+        ctx["manifest"].own("worker", worker_id, image=image)
+    ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
+
+
+def cleanup_owned_workers(ctx: dict, errors: list[str]) -> None:
+    """Remove run workers and verify their containers and Redis state are absent."""
+    try:
+        capture_owned_workers(ctx)
+    except Exception as exc:
+        errors.append(f"worker ownership discovery: {exc}")
+        return
+    for resource in ctx["manifest"].resources:
+        if resource.kind != "worker":
+            continue
+        worker_id = resource.identifier
+        removed = subprocess.run(
+            ["docker", "rm", "-f", f"worker-{worker_id}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+        if removed.returncode != 0 and "No such container" not in removed.stderr:
+            errors.append(f"worker {worker_id}: {removed.stderr.strip()}")
+        verify = subprocess.run(
+            ["docker", "inspect", f"worker-{worker_id}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+        if verify.returncode == 0:
+            errors.append(f"worker {worker_id} container still exists")
+        keys = [
+            f"worker:status:{worker_id}",
+            f"worker:meta:{worker_id}",
+            f"worker:error:{worker_id}",
+            f"worker:last_activity:{worker_id}",
+            f"worker:{worker_id}:input",
+            f"worker:{worker_id}:output",
+        ]
+        deleted = subprocess.run(
+            ["docker", "compose", "exec", "-T", "redis", "redis-cli", "DEL", *keys],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+        if deleted.returncode != 0:
+            errors.append(f"worker {worker_id} Redis cleanup: {deleted.stderr.strip()}")
+        # Capability images are deterministic hashes of agent type and capabilities.
+        # They contain no run input and are deliberately safe to reuse between runs.
+
+
 def cleanup_server_container(ctx: dict) -> None:
     """Stop and remove deployed container on remote server via SSH.
 
@@ -607,6 +706,8 @@ async def cleanup_all(
     except Exception as exc:
         errors.append(f"server deployment: {exc}")
 
+    cleanup_owned_workers(ctx, errors)
+
     # 2. Port allocation
     if "allocation_id" in ctx and api_no_auth:
         try:
@@ -688,6 +789,8 @@ async def cleanup_all(
             errors.append(f"project {ctx['project_id']} still exists")
     if errors:
         raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors))
+    manifest_path = ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
+    manifest_path.unlink(missing_ok=True)
 
 
 def _cleanup_db(project_id: str) -> None:

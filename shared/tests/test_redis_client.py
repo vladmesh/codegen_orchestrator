@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 from fakeredis import aioredis
 import pytest
 import pytest_asyncio
+import redis as redis_module
 from structlog.testing import capture_logs
 
 from shared.contracts.base import BaseMessage
@@ -169,6 +170,16 @@ class TestConsume:
                 got_none = True
             break
         assert got_none
+
+    async def test_socket_timeout_is_idle_without_error_log(self, client, fake_redis):
+        fake_redis.xreadgroup = AsyncMock(side_effect=redis_module.exceptions.TimeoutError())
+
+        with capture_logs() as logs:
+            async for msg in client.consume("s", "g", "c1", block_ms=5000):
+                assert msg is None
+                break
+
+        assert not [entry for entry in logs if entry.get("event") == "consume_error"]
 
     async def test_invalid_json_in_data_field_treated_as_flat(self, client, fake_redis):
         """If 'data' contains invalid JSON, fall back to flat fields."""
