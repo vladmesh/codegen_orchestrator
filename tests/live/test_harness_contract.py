@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import conftest as live_conftest
+from conftest import create_test_project_context
 import httpx
 from live_harness import (
     CleanupError,
@@ -128,6 +130,107 @@ async def test_partial_project_creation_writes_manifest_and_cleans_up(monkeypatc
     ]
     written = json.loads((tmp_path / ".live-manifests" / f"{manifest.run_id}.json").read_text())
     assert written["resources"] == [{"identifier": manifest.run_id, "kind": "project"}]
+
+
+@pytest.mark.asyncio
+async def test_common_live_project_gets_persisted_manifest(monkeypatch, tmp_path):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"id": "common-project"})
+
+    monkeypatch.setattr("conftest.ORCHESTRATOR_ROOT", tmp_path)
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        data, ctx = await create_test_project_context(api)
+
+    assert data == {"id": "common-project"}
+    resource = ctx["manifest"].resources[0]
+    assert (resource.kind, resource.identifier) == ("project", ctx["project_id"])
+    assert (tmp_path / ".live-manifests" / f"{ctx['project_id']}.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_common_live_project_fixture_uses_verified_cleanup(monkeypatch, tmp_path):
+    cleaned = []
+
+    async def cleanup(api, api_no_auth, ctx):
+        cleaned.append(ctx)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"id": "common-project"})
+
+    monkeypatch.setattr(live_conftest, "ORCHESTRATOR_ROOT", tmp_path)
+    monkeypatch.setattr(live_conftest, "cleanup_all", cleanup)
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        fixture = live_conftest.test_project.__wrapped__(api)
+        assert await anext(fixture) == {"id": "common-project"}
+        with pytest.raises(StopAsyncIteration):
+            await anext(fixture)
+
+    assert len(cleaned) == 1
+    assert cleaned[0]["manifest"].resources[0].kind == "project"
+
+
+def test_scaffold_fence_waits_for_claimed_work_to_finish():
+    calls = []
+    active = iter(["1", "0"])
+
+    def command(*args):
+        calls.append(args)
+        return next(active) if args[0] == "EXISTS" else "OK"
+
+    pipeline_helpers.cancel_and_wait_for_scaffold(
+        "project-1", command=command, timeout=1, poll_interval=0
+    )
+
+    assert calls[0] == (
+        "SET",
+        "live:scaffold:cancelled:project-1",
+        "1",
+        "EX",
+        "900",
+    )
+    assert calls[1:] == [
+        ("EXISTS", "live:scaffold:active:project-1"),
+        ("EXISTS", "live:scaffold:active:project-1"),
+    ]
+
+
+def test_scaffold_fence_makes_unterminated_claim_red():
+    def command(*args):
+        return "1" if args[0] == "EXISTS" else "OK"
+
+    with pytest.raises(CleanupError, match="did not terminate"):
+        pipeline_helpers.cancel_and_wait_for_scaffold(
+            "project-1", command=command, timeout=0.001, poll_interval=0
+        )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_verify_residue_before_claimed_work_stops(monkeypatch):
+    github_cleanup = []
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+
+    def fence(ctx):
+        raise CleanupError("claimed scaffold still active")
+
+    def github(repo_name):
+        github_cleanup.append(repo_name)
+
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_scaffold", fence)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_github_repo", github)
+
+    async with httpx.AsyncClient(base_url="http://test") as api:
+        with pytest.raises(CleanupError, match="claimed scaffold still active"):
+            await pipeline_helpers.cleanup_all(
+                api,
+                None,
+                {"project_id": "project-1", "repo_name": "repo", "manifest": manifest},
+            )
+
+    assert github_cleanup == []
 
 
 @pytest.mark.asyncio

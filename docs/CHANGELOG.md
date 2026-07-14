@@ -7,6 +7,8 @@
 ### Added
 - Harden the Stage 7 live harness with verified checkout discovery, per-run ownership manifests,
   fail-closed targeted cleanup and a separate terminal `passed` QA gate after deploy.
+- Fence claimed scaffold work during live teardown so late consumer writes cannot recreate verified
+  resources, and route the common live project fixture through the same manifest cleanup contract.
 - Add a permanent service-template compatibility matrix for the production pin and explicit release candidates.
 - Record requested template source/ref, resolved commit SHA and isolated cleanup outcome as CI artifacts.
 

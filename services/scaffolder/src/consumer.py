@@ -31,6 +31,26 @@ logger = structlog.get_logger(__name__)
 _shutdown = False
 
 
+def scaffold_active_key(project_id: str) -> str:
+    return f"live:scaffold:active:{project_id}"
+
+
+def scaffold_cancel_key(project_id: str) -> str:
+    return f"live:scaffold:cancelled:{project_id}"
+
+
+async def _begin_scaffold_work(redis: RedisStreamClient, project_id: str) -> bool:
+    """Publish an active fence and reject work cancelled by a live teardown."""
+    if await redis.redis.exists(scaffold_cancel_key(project_id)):
+        return False
+    active_key = scaffold_active_key(project_id)
+    await redis.redis.set(active_key, "1")
+    if await redis.redis.exists(scaffold_cancel_key(project_id)):
+        await redis.redis.delete(active_key)
+        return False
+    return True
+
+
 def _handle_shutdown(signum, _frame):
     global _shutdown
     logger.info("shutdown_signal_received", signal=signum)
@@ -56,6 +76,10 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
     log = logger.bind(project_id=msg.project_id, repository_id=msg.repository_id)
     log.info("scaffold_job_started")
 
+    if not await _begin_scaffold_work(redis, msg.project_id):
+        log.info("scaffold_job_cancelled_by_live_teardown")
+        return {"status": "skipped", "error": "cancelled by live teardown"}
+
     api = get_api_client()
     settings = get_settings()
 
@@ -78,6 +102,8 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         error = redact_diagnostic(exc)
         log.error("scaffold_job_exception", error=error, exc_info=True)
         return {"status": "failed", "error": error}
+    finally:
+        await redis.redis.delete(scaffold_active_key(msg.project_id))
 
 
 async def _process_full_mode(msg, repo_full_name, github, github_token, api, settings, log) -> dict:

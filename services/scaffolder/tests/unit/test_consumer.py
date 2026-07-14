@@ -46,7 +46,9 @@ def valid_job_data():
 
 @pytest.fixture
 def mock_redis():
-    return AsyncMock()
+    redis = AsyncMock()
+    redis.redis.exists.return_value = 0
+    return redis
 
 
 @pytest.fixture
@@ -67,6 +69,17 @@ def mock_github():
 
 
 class TestProcessScaffoldJob:
+    @pytest.mark.asyncio
+    async def test_cancel_fence_skips_external_work(self, valid_job_data, mock_redis, mock_github):
+        mock_redis.redis.exists.return_value = 1
+
+        with patch("src.consumer.get_github_client", return_value=mock_github):
+            result = await process_scaffold_job(valid_job_data, mock_redis)
+
+        assert result == {"status": "skipped", "error": "cancelled by live teardown"}
+        mock_github.get_org_token.assert_not_awaited()
+        mock_github.create_repo.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_success_updates_status_and_tree(
         self, valid_job_data, mock_redis, mock_api, mock_github

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import time
 import uuid
 
 import httpx
@@ -35,6 +36,7 @@ ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 SCAFFOLD_TIMEOUT = 120
 ENGINEERING_TIMEOUT = 420  # 7 min (worker spawn + noop + CI)
 DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
+SCAFFOLD_FENCE_TIMEOUT = 900
 
 
 # ── Low-level helpers ────────────────────────────────────────────────────
@@ -355,6 +357,45 @@ async def wait_deploy(
 # ── Cleanup helpers ──────────────────────────────────────────────────────
 
 
+def _redis_command(*args: str) -> str:
+    result = subprocess.run(
+        ["docker", "compose", "exec", "-T", "redis", "redis-cli", *args],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        cwd=ORCHESTRATOR_ROOT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+    return result.stdout.strip()
+
+
+def cancel_and_wait_for_scaffold(
+    project_id: str,
+    *,
+    command=_redis_command,
+    timeout: float = SCAFFOLD_FENCE_TIMEOUT,
+    poll_interval: float = 1,
+) -> None:
+    """Fence new scaffold work and wait until claimed work is quiescent."""
+    cancel_key = f"live:scaffold:cancelled:{project_id}"
+    active_key = f"live:scaffold:active:{project_id}"
+    command("SET", cancel_key, "1", "EX", str(SCAFFOLD_FENCE_TIMEOUT))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if command("EXISTS", active_key) == "0":
+            return
+        time.sleep(poll_interval)
+    raise CleanupError(f"scaffold work for project {project_id} did not terminate")
+
+
+def cancel_owned_scaffold(ctx: dict) -> None:
+    """Fence scaffold work when the context owns a project."""
+    project_id = ctx.get("project_id")
+    if project_id:
+        cancel_and_wait_for_scaffold(project_id)
+
+
 def build_github_cleanup_script(repo_name: str) -> str:
     """Build the container-side cleanup for one exact owned repository."""
     return (
@@ -479,6 +520,14 @@ async def cleanup_all(
 ) -> None:
     """Delete only resources owned by this run and prove absence."""
     errors: list[str] = []
+
+    # XDEL cannot cancel a claimed message. Fence the consumer and wait for any
+    # active scaffold job before deleting or verifying external resources.
+    try:
+        cancel_owned_scaffold(ctx)
+    except Exception as exc:
+        errors.append(f"scaffold cancellation fence: {exc}")
+        raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors)) from exc
 
     # 1. Server container (if deployed)
     try:

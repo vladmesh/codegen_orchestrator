@@ -14,7 +14,8 @@ import subprocess
 import uuid
 
 import httpx
-from live_harness import resolve_repo_root
+from live_harness import OwnershipManifest, cleanup_guard, resolve_repo_root
+from pipeline_helpers import cleanup_all
 import pytest
 
 from shared.contracts.dto.project import ProjectStatus
@@ -82,7 +83,14 @@ def redis():
 
 @pytest.fixture
 async def test_project(api):
-    """Create a throwaway project, yield it, delete after test."""
+    """Create a manifest-owned project and prove its teardown."""
+    data, ctx = await create_test_project_context(api)
+    async with cleanup_guard(lambda: cleanup_all(api, None, ctx)):
+        yield data
+
+
+async def create_test_project_context(api):
+    """Create the common live project context with immediate ownership."""
     project_id = str(uuid.uuid4())
     resp = await api.post(
         "/api/projects/",
@@ -95,49 +103,7 @@ async def test_project(api):
     )
     assert resp.status_code == 201, resp.text
     data = resp.json()
-    yield data
-    _cleanup_db(project_id)
-
-
-def _cleanup_db(project_id: str) -> None:
-    """Delete project and all related records via SQL (proper cascade)."""
-    sql = (
-        f"DELETE FROM task_events WHERE task_id IN "
-        f"(SELECT id FROM tasks WHERE project_id = '{project_id}');"
-        f"DELETE FROM runs WHERE project_id = '{project_id}';"
-        f"DELETE FROM tasks WHERE project_id = '{project_id}';"
-        f"DELETE FROM stories WHERE project_id = '{project_id}';"
-        f"DELETE FROM brainstorms WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_chunks WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_documents WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_conversation_summaries WHERE project_id = '{project_id}';"
-        f"DELETE FROM rag_messages WHERE project_id = '{project_id}';"
-        f"DELETE FROM service_deployments WHERE project_id = '{project_id}';"
-        f"DELETE FROM applications WHERE repo_id IN "
-        f"(SELECT id FROM repositories WHERE project_id = '{project_id}');"
-        f"DELETE FROM repositories WHERE project_id = '{project_id}';"
-        f"DELETE FROM port_allocations WHERE project_id = '{project_id}';"
-        f"DELETE FROM projects WHERE id = '{project_id}';"
-    )
-    result = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "db",
-            "psql",
-            "-U",
-            "postgres",
-            "-d",
-            "orchestrator",
-            "-c",
-            sql,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        cwd=ORCHESTRATOR_ROOT,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"project cleanup failed: {result.stderr}")
+    manifest = OwnershipManifest(project_id)
+    manifest.own("project", project_id)
+    manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+    return data, {"project_id": project_id, "manifest": manifest}
