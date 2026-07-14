@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-15
+
+- Hardened the Stage 7 live mega path: noop engineering pushes the checked-out story branch and
+  reports git failures through the worker result API, Redis blocking-read timeouts are idle polls,
+  the public registry hostname resolves to Caddy inside Compose, and owned worker cleanup plus
+  `test-live-clean` residue verification are fail-closed.
+
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 
 ## 2026-07-14

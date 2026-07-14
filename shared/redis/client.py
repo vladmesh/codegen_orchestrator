@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 import structlog
 
 from shared.diagnostics import safe_validation_errors
@@ -83,7 +84,14 @@ class RedisStreamClient:
         if self._redis is None:
             if redis is None:
                 raise ImportError("redis package is not installed.")
-            self._redis = redis.from_url(self.redis_url, decode_responses=True)
+            # Blocking stream reads use their own ``block`` interval. Disable the
+            # transport read timeout so an idle XREADGROUP is not mistaken for a
+            # dead consumer when REDIS_URL carries a shorter socket_timeout.
+            self._redis = redis.from_url(
+                self.redis_url,
+                decode_responses=True,
+                socket_timeout=None,
+            )
             logger.info("redis_connected")
 
     async def close(self) -> None:
@@ -243,6 +251,11 @@ class RedisStreamClient:
             except asyncio.CancelledError:
                 logger.info("consumer_cancelled", consumer=consumer)
                 break
+            except RedisTimeoutError:
+                # A blocking read reaching a transport timeout is an idle poll,
+                # not a fatal consumer error. Yield control and keep polling.
+                await asyncio.sleep(0)
+                yield None
             except Exception as e:
                 if "NOGROUP" in str(e):
                     logger.warning("consumer_nogroup_recovering", stream=stream, group=group)

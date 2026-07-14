@@ -1,5 +1,6 @@
 from worker_wrapper.runners.claude import ClaudeRunner
 from worker_wrapper.runners.factory import FactoryRunner
+from worker_wrapper.runners.noop import NoopRunner
 
 
 class TestClaudeRunner:
@@ -47,3 +48,22 @@ class TestFactoryRunner:
 
         # Prompt should be present
         assert "Fix bug" in cmd
+
+
+class TestNoopRunner:
+    def test_pushes_checked_out_branch_and_reports_success_over_http(self):
+        command = " ".join(NoopRunner().build_command(prompt="ignored"))
+
+        assert "rev-parse" in command
+        assert "--abbrev-ref" in command
+        assert 'push", "origin", branch' in command
+        assert "push origin main" not in command
+        assert "http://127.0.0.1:9090/result" in command
+        assert '"success": True' in command
+
+    def test_reports_git_failure_over_http_before_exiting(self):
+        command = " ".join(NoopRunner().build_command(prompt="ignored"))
+
+        assert '"success": False' in command
+        assert "reason" in command
+        assert "returncode" in command

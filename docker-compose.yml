@@ -366,7 +366,9 @@ services:
       - loki
       - user-dashboard
     networks:
-      - internal
+      internal:
+        aliases:
+          - ${ORCHESTRATOR_HOSTNAME}
     restart: unless-stopped
 
   registry:

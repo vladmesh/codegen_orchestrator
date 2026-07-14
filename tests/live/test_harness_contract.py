@@ -89,6 +89,14 @@ def test_registry_cleanup_script_deletes_only_owned_repository_tags_and_manifest
     assert "/v2/_catalog" not in script
 
 
+def test_compose_routes_public_registry_hostname_to_internal_caddy():
+    compose = (pipeline_helpers.ORCHESTRATOR_ROOT / "docker-compose.yml").read_text()
+    caddy = compose.split("  caddy:\n", 1)[1].split("\n  registry:\n", 1)[0]
+
+    assert "aliases:" in caddy
+    assert "- ${ORCHESTRATOR_HOSTNAME}" in caddy
+
+
 def test_registry_cleanup_script_uses_https_for_bare_registry_host(monkeypatch):
     requested_urls = []
 
