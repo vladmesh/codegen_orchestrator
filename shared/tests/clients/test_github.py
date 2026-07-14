@@ -25,6 +25,19 @@ def client(mock_env):
     return client
 
 
+def test_private_key_uses_configured_nonstandard_path(monkeypatch, tmp_path):
+    pem_path = tmp_path / "custom" / "github.pem"
+    pem_path.parent.mkdir()
+    pem_path.write_text("configured key")
+    monkeypatch.setenv("GITHUB_APP_ID", "12345")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_PATH", str(pem_path))
+
+    client = GitHubAppClient()
+
+    assert client.private_key_path == str(pem_path)
+    assert client._load_private_key() == "configured key"
+
+
 @pytest.fixture
 def mock_jwt():
     with patch(

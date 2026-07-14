@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import conftest as live_conftest
 from conftest import create_test_project_context
@@ -12,7 +13,7 @@ from live_harness import (
     run_non_llm_qa,
 )
 import pipeline_helpers
-from pipeline_helpers import build_github_cleanup_script
+from pipeline_helpers import build_github_cleanup_script, build_registry_cleanup_script
 import pytest
 
 
@@ -76,6 +77,90 @@ def test_github_cleanup_script_is_valid_python():
 
     compile(script, "<github-cleanup>", "exec")
     assert "project-factory-organization/owned-repository" in script
+
+
+def test_registry_cleanup_script_deletes_only_owned_repository_tags_and_manifests():
+    script = build_registry_cleanup_script("project-factory-organization/owned-repository-backend")
+
+    compile(script, "<registry-cleanup>", "exec")
+    assert "repository = 'project-factory-organization/owned-repository-backend'" in script
+    assert "f'{base}/v2/{repository}/tags/list'" in script
+    assert "Docker-Content-Digest" in script
+    assert "/v2/_catalog" not in script
+
+
+def test_registry_cleanup_script_uses_https_for_bare_registry_host(monkeypatch):
+    requested_urls = []
+
+    class Response:
+        status_code = 404
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            requested_urls.append(url)
+            return Response()
+
+    monkeypatch.setenv("ORCHESTRATOR_HOSTNAME", "registry.example.com")
+    monkeypatch.setenv("REGISTRY_USER", "user")
+    monkeypatch.setenv("REGISTRY_PASSWORD", "password")
+    monkeypatch.setattr(pipeline_helpers.httpx, "AsyncClient", lambda **kwargs: Client())
+
+    exec(  # noqa: S102
+        build_registry_cleanup_script("project-factory-organization/owned-repository-backend"),
+        {},
+    )
+
+    assert requested_urls == [
+        "https://registry.example.com/v2/"
+        "project-factory-organization/owned-repository-backend/tags/list"
+    ]
+
+
+def test_db_cleanup_follows_port_allocation_application_relation(monkeypatch):
+    executed = []
+
+    def run(*args, **kwargs):
+        executed.append(args[0][-1])
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(pipeline_helpers.subprocess, "run", run)
+    pipeline_helpers._cleanup_db("project-1")
+
+    sql = executed[0]
+    assert "port_allocations WHERE application_id IN" in sql
+    assert "port_allocations WHERE project_id" not in sql
+    assert sql.index("DELETE FROM port_allocations") < sql.index("DELETE FROM applications")
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, tmp_path):
+    manifest = OwnershipManifest("project-1")
+    ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
+    responses = {
+        "/api/repositories/": [{"id": "repo-1"}],
+        "/api/applications/": [{"id": 21, "status": "running"}],
+        "/api/servers/": [{"handle": "server-1", "public_ip": "192.0.2.1"}],
+        "/api/servers/server-1/ports": [
+            {"id": 8, "port": 8010, "application_id": 21},
+            {"id": 9, "port": 8011, "application_id": 99},
+        ],
+    }
+
+    async def get(url, **kwargs):
+        return httpx.Response(200, json=responses[url])
+
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    api = SimpleNamespace(get=get)
+    await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
+
+    assert ctx["allocation_id"] == 8
+    assert ctx["port"] == 8010
 
 
 @pytest.mark.asyncio
