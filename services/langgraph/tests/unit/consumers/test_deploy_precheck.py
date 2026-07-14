@@ -45,6 +45,7 @@ def mock_api():
             return_value=make_repository(git_url="https://github.com/org/test-project")
         )
         api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
+        api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
         yield api
 
 
@@ -83,6 +84,7 @@ class TestPreCheckServer:
         with _patch_asyncssh(exit_status=1):  # dir does not exist
             error = await _pre_check_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="fake-key",
                 project_name="my-app",
                 action="create",
@@ -98,6 +100,7 @@ class TestPreCheckServer:
         with _patch_asyncssh(exit_status=0):  # dir exists
             error = await _pre_check_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="fake-key",
                 project_name="my-app",
                 action="create",
@@ -114,6 +117,7 @@ class TestPreCheckServer:
         with _patch_asyncssh(exit_status=0):  # dir exists
             error = await _pre_check_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="fake-key",
                 project_name="my-app",
                 action="feature",
@@ -129,6 +133,7 @@ class TestPreCheckServer:
         with _patch_asyncssh(exit_status=1):  # dir does not exist
             error = await _pre_check_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="fake-key",
                 project_name="my-app",
                 action="feature",
@@ -145,6 +150,7 @@ class TestPreCheckServer:
         with _patch_asyncssh(exit_status=0):  # dir exists
             error = await _pre_check_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="fake-key",
                 project_name="my-app",
                 action="fix",
@@ -163,6 +169,7 @@ class TestPreCheckServer:
         with patch("src.consumers.deploy_precheck.asyncssh", mock_ssh):
             error = await _pre_check_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="fake-key",
                 project_name="my-app",
                 action="create",
@@ -244,4 +251,5 @@ class TestDeployPreCheckIntegration:
         result = await process_deploy_job(job_data, mock_redis)
 
         assert result["status"] == "success"
+        assert mock_precheck.await_args.kwargs["ssh_user"] == "dev"
         mock_devops.assert_called_once()

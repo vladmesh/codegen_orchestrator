@@ -135,6 +135,7 @@ class TestRunQAOnServer:
 
             result = await run_qa_on_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
                 project_name="weather_bot",
                 acceptance_criteria="Build a weather bot",
@@ -142,7 +143,7 @@ class TestRunQAOnServer:
             )
 
         assert result.passed is True
-        assert mock_asyncssh.connect.called
+        assert mock_asyncssh.connect.call_args.kwargs["username"] == "dev"
 
     @pytest.mark.asyncio
     async def test_ssh_connection_failure(self):
@@ -152,6 +153,7 @@ class TestRunQAOnServer:
 
             result = await run_qa_on_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="fake",
                 project_name="test",
                 acceptance_criteria="Test",
@@ -179,6 +181,7 @@ class TestRunQAOnServer:
 
             result = await run_qa_on_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="fake",
                 project_name="test",
                 acceptance_criteria="Test",
@@ -205,6 +208,7 @@ class TestRunQAOnServer:
 
             await run_qa_on_server(
                 server_ip="1.2.3.4",
+                ssh_user="dev",
                 ssh_key="fake",
                 project_name="test",
                 acceptance_criteria="Test",

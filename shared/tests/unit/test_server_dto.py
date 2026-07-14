@@ -18,6 +18,7 @@ _BASE_FIELDS = {
     "handle": "srv-1",
     "host": "host",
     "public_ip": "1.2.3.4",
+    "ssh_user": "dev",
     "status": "active",
     "is_managed": True,
     "created_at": _NOW,
@@ -66,6 +67,21 @@ class TestServerDTOStatus:
     def test_rejects_unknown_status(self):
         with pytest.raises(ValidationError):
             ServerDTO(**{**_BASE_FIELDS, "status": "reserved_ghost"})
+
+
+class TestServerDTOSSHUser:
+    def test_preserves_non_root_user(self):
+        assert ServerDTO(**_BASE_FIELDS).ssh_user == "dev"
+
+    @pytest.mark.parametrize("ssh_user", ["", "Root", "dev user", "dev@host"])
+    def test_rejects_invalid_user(self, ssh_user):
+        with pytest.raises(ValidationError):
+            ServerDTO(**{**_BASE_FIELDS, "ssh_user": ssh_user})
+
+    def test_requires_user_from_api_response(self):
+        fields = {key: value for key, value in _BASE_FIELDS.items() if key != "ssh_user"}
+        with pytest.raises(ValidationError):
+            ServerDTO(**fields)
 
 
 class TestServerCreateStatus:

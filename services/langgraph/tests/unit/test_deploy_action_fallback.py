@@ -6,7 +6,7 @@ the deploy worker should auto-fallback to action=feature instead of failing.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from tests.unit.factories import make_project, make_repository
@@ -44,6 +44,7 @@ def _configure_api_mock(api):
         return_value=make_repository(git_url="https://github.com/org/my-project")
     )
     api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
+    api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
 
 
 @pytest.fixture

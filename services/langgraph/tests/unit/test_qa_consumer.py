@@ -45,6 +45,7 @@ def _server(**overrides) -> ServerDTO:
         "handle": "vps-1",
         "host": "vps-1.example.com",
         "public_ip": "1.2.3.4",
+        "ssh_user": "dev",
         "status": "active",
         "is_managed": True,
         "created_at": datetime.now(UTC),
@@ -145,9 +146,12 @@ class TestResolveServerInfo:
         info = await _resolve_server_info(1)
         assert isinstance(info, QAServerInfo)
         assert info.server_ip == "1.2.3.4"
+        assert info.ssh_user == "dev"
         assert "RSA" in info.ssh_key
         assert info.project_name == "weather_bot"
         mock_api_client.get_application.assert_called_once_with(1)
+        mock_api_client.get_server.assert_awaited_once_with("vps-1")
+        mock_api_client.get_server_ssh_key.assert_awaited_once_with("vps-1")
 
     @pytest.mark.asyncio
     async def test_application_not_found(self, mock_api_client):

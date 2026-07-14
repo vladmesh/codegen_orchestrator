@@ -13,6 +13,9 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 
 ## Current Facts
 
+- Runtime deploy connections now use the selected server's required `ssh_user` together with the
+  SSH key from the same server handle. Initial provisioning and reinstall still bootstrap as root.
+
 - Stage 7 live harness hardening records exact run-owned resources, verifies targeted cleanup and
   requires a separate non-LLM QA `passed` outcome after deploy. The external Stage 7 run remains
   out of scope until its dedicated infrastructure and credentials are available.

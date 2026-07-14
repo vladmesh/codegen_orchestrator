@@ -22,7 +22,7 @@ logger = structlog.get_logger(__name__)
 
 QA_TIMEOUT = 1200  # 20 minutes
 SERVICE_BASE_DIR = "/opt/services"
-CREDENTIALS_PATH = "/root/.claude/.credentials.json"
+CREDENTIALS_PATH = "$HOME/.claude/.credentials.json"
 LOCAL_CREDENTIALS_PATH = "/secrets/claude-credentials.json"  # mounted from host
 OAUTH_ENDPOINT = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -205,7 +205,8 @@ async def _write_credentials(
     """Write credentials JSON to server."""
     creds_json = json.dumps(creds, indent=2)
     await conn.run(
-        f"cat > {CREDENTIALS_PATH} << 'CREDS_EOF'\n{creds_json}\nCREDS_EOF",
+        f"mkdir -p $HOME/.claude && cat > {CREDENTIALS_PATH} "
+        f"<< 'CREDS_EOF'\n{creds_json}\nCREDS_EOF",
         check=True,
     )
 
@@ -213,6 +214,7 @@ async def _write_credentials(
 async def run_qa_on_server(
     *,
     server_ip: str,
+    ssh_user: str,
     ssh_key: str,
     project_name: str,
     acceptance_criteria: str,
@@ -238,8 +240,7 @@ async def run_qa_on_server(
 
     # Escape prompt for shell — use heredoc to avoid quoting issues
     # Prepend ~/.local/bin to PATH — non-interactive SSH doesn't source .bashrc
-    # Permissions are configured via /root/.claude/settings.json (allowlist),
-    # NOT --dangerously-skip-permissions (blocked when running as root).
+    # Permissions are configured via ~/.claude/settings.json (allowlist).
     cmd = (
         f'export PATH="$HOME/.local/bin:$PATH" && '
         f"cd {SERVICE_BASE_DIR}/{project_name} && "
@@ -254,7 +255,7 @@ async def run_qa_on_server(
         key = asyncssh.import_private_key(ssh_key)
         async with asyncssh.connect(
             server_ip,
-            username="root",
+            username=ssh_user,
             known_hosts=None,
             client_keys=[key],
         ) as conn:
@@ -351,7 +352,7 @@ async def credential_refresh_loop() -> None:
                     key = asyncssh.import_private_key(ssh_key)
                     async with asyncssh.connect(
                         server.public_ip,
-                        username="root",
+                        username=server.ssh_user,
                         known_hosts=None,
                         client_keys=[key],
                     ) as conn:

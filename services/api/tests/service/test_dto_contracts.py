@@ -160,6 +160,7 @@ async def test_server_response_validates_as_dto(async_client: AsyncClient):
             "handle": handle,
             "host": "dto-test.example.com",
             "public_ip": "10.0.0.99",
+            "ssh_user": "dev",
             "is_managed": False,
             "status": "discovered",
             "labels": {},
@@ -169,8 +170,22 @@ async def test_server_response_validates_as_dto(async_client: AsyncClient):
     dto = ServerDTO.model_validate(resp.json())
     assert dto.handle == handle
     assert dto.public_ip == "10.0.0.99"
+    assert dto.ssh_user == "dev"
     assert dto.status == "discovered"
     assert dto.created_at is not None
+
+    get_resp = await async_client.get(f"/api/servers/{handle}")
+    assert get_resp.status_code == 200
+    assert ServerDTO.model_validate(get_resp.json()).ssh_user == "dev"
+
+    patch_resp = await async_client.patch(f"/api/servers/{handle}", json={"ssh_user": "runner"})
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["ssh_user"] == "runner"
+
+    invalid_resp = await async_client.patch(
+        f"/api/servers/{handle}", json={"ssh_user": "invalid user"}
+    )
+    assert invalid_resp.status_code == 422
 
 
 # ── Application ──────────────────────────────────────────────

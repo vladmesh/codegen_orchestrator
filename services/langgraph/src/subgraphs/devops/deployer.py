@@ -86,6 +86,7 @@ async def _write_deploy_secrets(
     project_name: str,
     dotenv_b64: str,
     ssh_key: str,
+    ssh_user: str,
 ) -> bool:
     """Write deployment secrets to GitHub repository for deploy.yml workflow."""
     # Registry credentials for CI docker push
@@ -105,7 +106,7 @@ async def _write_deploy_secrets(
     secrets_map = {
         "DOTENV": dotenv_b64,
         "DEPLOY_HOST": server_ip,
-        "DEPLOY_USER": "root",
+        "DEPLOY_USER": ssh_user,
         "DEPLOY_SSH_KEY": ssh_key,
         "DEPLOY_PORT": str(port),
         "PROJECT_NAME": project_name,
@@ -235,7 +236,8 @@ class DeployerNode(FunctionalNode):
         try:
             github = GitHubAppClient()
 
-            # 0. Fetch SSH key for target server from DB
+            # 0. Fetch connection credentials for the same target server.
+            server = await api_client.get_server(server_handle) if server_handle else None
             ssh_key = await api_client.get_server_ssh_key(server_handle) if server_handle else None
             if not ssh_key:
                 logger.error("deploy_ssh_key_not_found", server_handle=server_handle)
@@ -271,6 +273,7 @@ class DeployerNode(FunctionalNode):
                 project_name=project_name,
                 dotenv_b64=dotenv_b64,
                 ssh_key=ssh_key,
+                ssh_user=server.ssh_user,
             )
 
             if not secrets_ok:

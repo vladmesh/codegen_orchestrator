@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import BaseDTO, TimestampedDTO
-from shared.contracts.dto.server import ServerStatus
+from shared.contracts.dto.server import ServerStatus, SSHUser
 
 
 class ServerBase(BaseModel):
@@ -15,7 +15,7 @@ class ServerBase(BaseModel):
     handle: str
     host: str
     public_ip: str
-    ssh_user: str = "root"
+    ssh_user: SSHUser = "root"
     capacity_cpu: int = 1
     capacity_ram_mb: int = 1024
     capacity_disk_mb: int = 10240

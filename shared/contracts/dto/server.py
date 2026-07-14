@@ -1,9 +1,12 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
 from shared.contracts.dto.base import TimestampedDTO
+
+SSHUser = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[a-z_][a-z0-9_-]*$")]
 
 
 class ServerStatus(StrEnum):
@@ -40,7 +43,7 @@ class ServerCreate(BaseModel):
     handle: str
     host: str
     public_ip: str
-    ssh_user: str = "root"
+    ssh_user: SSHUser = "root"
     ssh_key: str | None = None
     is_managed: bool = True
     status: ServerStatus = ServerStatus.DISCOVERED
@@ -53,7 +56,7 @@ class ServerUpdate(BaseModel):
     handle: str | None = None
     host: str | None = None
     public_ip: str | None = None
-    ssh_user: str | None = None
+    ssh_user: SSHUser | None = None
     ssh_key: str | None = None
     status: ServerStatus | None = None
     labels: dict | None = None
@@ -114,6 +117,7 @@ class ServerDTO(TimestampedDTO):
     handle: str
     host: str
     public_ip: str
+    ssh_user: SSHUser
     status: ServerStatus
     provider_id: str | None = None  # Computed from labels
     is_managed: bool
