@@ -89,6 +89,39 @@ def test_registry_cleanup_script_deletes_only_owned_repository_tags_and_manifest
     assert "/v2/_catalog" not in script
 
 
+def test_registry_cleanup_script_uses_https_for_bare_registry_host(monkeypatch):
+    requested_urls = []
+
+    class Response:
+        status_code = 404
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            requested_urls.append(url)
+            return Response()
+
+    monkeypatch.setenv("ORCHESTRATOR_HOSTNAME", "registry.example.com")
+    monkeypatch.setenv("REGISTRY_USER", "user")
+    monkeypatch.setenv("REGISTRY_PASSWORD", "password")
+    monkeypatch.setattr(pipeline_helpers.httpx, "AsyncClient", lambda **kwargs: Client())
+
+    exec(  # noqa: S102
+        build_registry_cleanup_script("project-factory-organization/owned-repository-backend"),
+        {},
+    )
+
+    assert requested_urls == [
+        "https://registry.example.com/v2/"
+        "project-factory-organization/owned-repository-backend/tags/list"
+    ]
+
+
 def test_db_cleanup_follows_port_allocation_application_relation(monkeypatch):
     executed = []
 
