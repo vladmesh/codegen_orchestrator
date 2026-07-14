@@ -127,7 +127,6 @@ class Stage5Smoke:
                     "--remove-orphans",
                 ],
                 cwd=self.workspace,
-                check=False,
                 phase="cleanup",
             )
         self._assert_no_compose_resources()
@@ -255,7 +254,6 @@ class Stage5Smoke:
         ):
             result = self._run(
                 [*args, "--filter", f"label={COMPOSE_LABEL}={self.compose_project_name}"],
-                check=False,
                 phase=f"verify cleanup {resource}",
             )
             if result.stdout.strip():

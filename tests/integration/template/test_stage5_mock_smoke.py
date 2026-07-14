@@ -125,3 +125,47 @@ def test_workspace_is_readable_by_the_generated_non_root_container(tmp_path: Pat
     assert generated_directory.stat().st_mode & stat.S_IROTH
     assert generated_directory.stat().st_mode & stat.S_IXOTH
     assert generated_file.stat().st_mode & stat.S_IROTH
+
+
+def test_cleanup_fails_when_compose_down_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
+    compose_file = smoke.workspace / "infra" / "compose.base.yml"
+    compose_file.parent.mkdir(parents=True)
+    compose_file.touch()
+
+    def fail_down(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["docker", "compose", "down"],
+            returncode=1,
+            stdout="",
+            stderr="daemon unavailable",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fail_down)
+
+    with pytest.raises(RuntimeError, match=r"(?s)Phase cleanup failed \(1\).*daemon unavailable"):
+        smoke.cleanup()
+
+
+def test_cleanup_verification_fails_when_docker_listing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
+
+    def fail_list(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["docker", "ps"],
+            returncode=1,
+            stdout="",
+            stderr="cannot connect to daemon",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fail_list)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"(?s)Phase verify cleanup containers failed \(1\).*cannot connect to daemon",
+    ):
+        smoke._assert_no_compose_resources()
