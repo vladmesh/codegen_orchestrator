@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 from uuid import uuid4
 
 import yaml
@@ -154,21 +155,18 @@ class Stage5Smoke:
     def _read_resolved_commit(self) -> str:
         answers = yaml.safe_load((self.workspace / ".copier-answers.yml").read_text())
         commit = answers.get("_commit") if isinstance(answers, dict) else None
-        source = self._git_source()
-        result = self._run(["git", "ls-remote", source], phase="resolve template ref")
-        refs = {
-            ref: sha.lower()
-            for line in result.stdout.splitlines()
-            if "\t" in line
-            for sha, ref in [line.split("\t", 1)]
-        }
-        resolved = self._resolve_ref(self.template.ref, refs)
-        if not resolved or not SHA_PATTERN.fullmatch(resolved):
+        resolved = self._resolve_remote_ref(self.template.ref)
+        if not SHA_PATTERN.fullmatch(resolved):
             raise RuntimeError(
                 f"template ref cannot be resolved to a commit SHA: "
                 f"{self.template.source}@{self.template.ref}"
             )
-        recorded = self._resolve_ref(commit, refs) if isinstance(commit, str) else None
+        if not isinstance(commit, str):
+            recorded = None
+        elif self._recorded_ref_matches(commit, resolved):
+            recorded = resolved
+        else:
+            recorded = self._resolve_remote_ref(commit)
         if recorded != resolved:
             raise RuntimeError(
                 f"Copier resolved unexpected commit: requested={resolved!r}, "
@@ -176,15 +174,46 @@ class Stage5Smoke:
             )
         return resolved
 
-    @staticmethod
-    def _resolve_ref(ref: str, refs: dict[str, str]) -> str | None:
-        resolved = (
-            refs.get(f"refs/tags/{ref}^{{}}")
-            or refs.get(f"refs/tags/{ref}")
-            or refs.get(f"refs/heads/{ref}")
+    def _recorded_ref_matches(self, recorded: str, resolved: str) -> bool:
+        if recorded == self.template.ref:
+            return True
+        describe_match = re.search(r"-g([0-9a-f]{7,40})$", recorded, re.IGNORECASE)
+        return bool(
+            SHA_PATTERN.fullmatch(self.template.ref)
+            and describe_match
+            and resolved.startswith(describe_match.group(1).lower())
         )
-        if SHA_PATTERN.fullmatch(ref) and ref.lower() in refs.values():
-            return ref.lower()
+
+    def _resolve_remote_ref(self, ref: str) -> str:
+        with tempfile.TemporaryDirectory(
+            prefix="template-ref-", dir=self.workspace.parent
+        ) as repository:
+            self._run(["git", "init", "--bare", repository], phase="initialize ref resolver")
+            self._run(
+                [
+                    "git",
+                    "-C",
+                    repository,
+                    "fetch",
+                    "--depth=1",
+                    self._git_source(),
+                    ref,
+                ],
+                phase="fetch template ref",
+            )
+            result = self._run(
+                ["git", "-C", repository, "rev-parse", "FETCH_HEAD^{commit}"],
+                phase="resolve template ref",
+            )
+        resolved = result.stdout.strip().lower()
+        if not SHA_PATTERN.fullmatch(resolved):
+            raise RuntimeError(
+                f"template ref cannot be resolved to a commit SHA: {self.template.source}@{ref}"
+            )
+        if SHA_PATTERN.fullmatch(ref) and resolved != ref.lower():
+            raise RuntimeError(
+                f"template commit mismatch: requested={ref.lower()}, resolved={resolved}"
+            )
         return resolved
 
     def _git_source(self) -> str:

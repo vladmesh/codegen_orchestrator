@@ -111,6 +111,34 @@ def test_resolved_commit_must_be_a_sha(tmp_path: Path, monkeypatch: pytest.Monke
         smoke._read_resolved_commit()
 
 
+def test_unadvertised_commit_sha_is_resolved_by_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requested_sha = "a" * 40
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref=requested_sha)
+    commands: list[list[str]] = []
+
+    def run_git(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        stdout = f"{requested_sha}\n" if "rev-parse" in command else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(
+        Stage5Smoke, "_run", lambda _self, command, **kwargs: run_git(command, **kwargs)
+    )
+
+    assert smoke._resolve_remote_ref(requested_sha) == requested_sha
+    assert any(command[-2:] == [smoke._git_source(), requested_sha] for command in commands)
+
+
+def test_copier_git_describe_value_matches_requested_commit(tmp_path: Path) -> None:
+    resolved = "1a077d9c4644666e74953e4963b04efff11ae999"
+    smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref=resolved)
+
+    assert smoke._recorded_ref_matches("0.2.0-78-g1a077d9", resolved)
+    assert not smoke._recorded_ref_matches("0.2.0-78-gdeadbee", resolved)
+
+
 def test_workspace_is_readable_by_the_generated_non_root_container(tmp_path: Path) -> None:
     smoke = Stage5Smoke.create(tmp_path, source="gh:example/template", ref="candidate")
     generated_directory = smoke.workspace / "shared" / "generated"
