@@ -38,7 +38,7 @@ class Stage5Smoke:
             self._run_make("setup")
             self._run_make("lint")
             self._run_make("tests")
-            self._run_make("worker-start")
+            self._run_worker_start()
             self._run_make(
                 "smoke-probe",
                 "SMOKE_RUNNER=backend",
@@ -98,6 +98,28 @@ class Stage5Smoke:
     def _run_make(self, target: str, *variables: str) -> None:
         self._run(["make", target, *variables], cwd=self.workspace)
 
+    def _run_worker_start(self) -> None:
+        try:
+            self._run_make("worker-start")
+        except RuntimeError as error:
+            logs = self._run(
+                [
+                    "docker",
+                    "compose",
+                    "-p",
+                    self.compose_project_name,
+                    "-f",
+                    "infra/compose.base.yml",
+                    "-f",
+                    "infra/compose.dev.yml",
+                    "logs",
+                    "--no-color",
+                ],
+                cwd=self.workspace,
+                check=False,
+            )
+            raise RuntimeError(f"{error}\ncompose logs:\n{logs.stdout}\n{logs.stderr}") from error
+
     def _assert_no_compose_resources(self) -> None:
         for resource, args in (
             ("containers", ["docker", "ps", "-aq"]),
@@ -118,7 +140,12 @@ class Stage5Smoke:
         cwd: Path | None = None,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        environment = os.environ | {"COMPOSE_PROJECT_NAME": self.compose_project_name}
+        workspace_owner = self.workspace.parent.stat()
+        environment = os.environ | {
+            "COMPOSE_PROJECT_NAME": self.compose_project_name,
+            "HOST_UID": str(workspace_owner.st_uid),
+            "HOST_GID": str(workspace_owner.st_gid),
+        }
         environment.pop("VIRTUAL_ENV", None)
         result = subprocess.run(
             command,
