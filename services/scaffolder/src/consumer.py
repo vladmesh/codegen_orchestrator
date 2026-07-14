@@ -6,9 +6,11 @@ Run standalone: python -m src.main
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import os
 from pathlib import Path
 import signal
+import uuid
 
 from pydantic import ValidationError
 import structlog
@@ -29,6 +31,64 @@ from src.spec_extractor import extract_specs_summary
 logger = structlog.get_logger(__name__)
 
 _shutdown = False
+
+
+SCAFFOLD_LEASE_SECONDS = 900
+SCAFFOLD_LEASE_REFRESH_SECONDS = 300
+
+
+def scaffold_leases_key(project_id: str) -> str:
+    return f"live:scaffold:leases:{project_id}"
+
+
+def scaffold_cancel_key(project_id: str) -> str:
+    return f"live:scaffold:cancelled:{project_id}"
+
+
+async def _begin_scaffold_work(redis: RedisStreamClient, project_id: str) -> str | None:
+    """Atomically register one execution lease unless teardown has cancelled it."""
+    token = uuid.uuid4().hex
+    registered = await redis.redis.eval(
+        """
+        if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+        local now = redis.call('TIME')
+        local expires = now[1] * 1000 + math.floor(now[2] / 1000) + ARGV[2] * 1000
+        redis.call('ZADD', KEYS[2], expires, ARGV[1])
+        redis.call('EXPIRE', KEYS[2], ARGV[2] * 2)
+        return 1
+        """,
+        2,
+        scaffold_cancel_key(project_id),
+        scaffold_leases_key(project_id),
+        token,
+        SCAFFOLD_LEASE_SECONDS,
+    )
+    return token if registered == 1 else None
+
+
+async def _refresh_scaffold_lease(redis: RedisStreamClient, project_id: str, token: str) -> None:
+    while True:
+        await asyncio.sleep(SCAFFOLD_LEASE_REFRESH_SECONDS)
+        refreshed = await redis.redis.eval(
+            """
+            if redis.call('ZSCORE', KEYS[1], ARGV[1]) == false then return 0 end
+            local now = redis.call('TIME')
+            local expires = now[1] * 1000 + math.floor(now[2] / 1000) + ARGV[2] * 1000
+            redis.call('ZADD', KEYS[1], 'XX', expires, ARGV[1])
+            redis.call('EXPIRE', KEYS[1], ARGV[2] * 2)
+            return 1
+            """,
+            1,
+            scaffold_leases_key(project_id),
+            token,
+            SCAFFOLD_LEASE_SECONDS,
+        )
+        if refreshed == 0:
+            raise RuntimeError("scaffold execution lease expired")
+
+
+async def _finish_scaffold_work(redis: RedisStreamClient, project_id: str, token: str) -> None:
+    await redis.redis.zrem(scaffold_leases_key(project_id), token)
 
 
 def _handle_shutdown(signum, _frame):
@@ -56,6 +116,19 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
     log = logger.bind(project_id=msg.project_id, repository_id=msg.repository_id)
     log.info("scaffold_job_started")
 
+    lease = await _begin_scaffold_work(redis, msg.project_id)
+    if lease is None:
+        log.info("scaffold_job_cancelled_by_live_teardown")
+        return {"status": "skipped", "error": "cancelled by live teardown"}
+    lease_refresh = asyncio.create_task(_refresh_scaffold_lease(redis, msg.project_id, lease))
+    owner_task = asyncio.current_task()
+
+    def cancel_work_on_lost_lease(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None and owner_task is not None:
+            owner_task.cancel()
+
+    lease_refresh.add_done_callback(cancel_work_on_lost_lease)
+
     api = get_api_client()
     settings = get_settings()
 
@@ -78,6 +151,11 @@ async def process_scaffold_job(job_data: dict, redis: RedisStreamClient) -> dict
         error = redact_diagnostic(exc)
         log.error("scaffold_job_exception", error=error, exc_info=True)
         return {"status": "failed", "error": error}
+    finally:
+        lease_refresh.cancel()
+        with suppress(asyncio.CancelledError):
+            await lease_refresh
+        await _finish_scaffold_work(redis, msg.project_id, lease)
 
 
 async def _process_full_mode(msg, repo_full_name, github, github_token, api, settings, log) -> dict:

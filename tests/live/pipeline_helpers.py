@@ -7,17 +7,20 @@ These are plain functions, not pytest fixtures.
 import asyncio
 from datetime import UTC, datetime
 import os
+from pathlib import Path
 import secrets
 import subprocess
+import time
 import uuid
 
 import httpx
+from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
 
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectStatus
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
-from shared.queues import ARCHITECT_QUEUE, DEPLOY_QUEUE, ENGINEERING_QUEUE, SCAFFOLD_QUEUE
+from shared.queues import SCAFFOLD_QUEUE
 
 # ── Constants ────────────────────────────────────────────────────────────
 API_URL = "http://localhost:8000"
@@ -27,12 +30,13 @@ AUTH_HEADERS = {"X-Telegram-ID": str(TEST_TELEGRAM_ID)}
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:vladmesh/service-template"
 TEMPLATE_REF = "0.3.0"
-ORCHESTRATOR_ROOT = "/home/vlad/projects/codegen_orchestrator"
+ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 # Timeouts (seconds)
 SCAFFOLD_TIMEOUT = 120
 ENGINEERING_TIMEOUT = 420  # 7 min (worker spawn + noop + CI)
 DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
+SCAFFOLD_FENCE_TIMEOUT = 900
 
 
 # ── Low-level helpers ────────────────────────────────────────────────────
@@ -105,44 +109,35 @@ async def create_noop_project(api: httpx.AsyncClient) -> dict:
     )
     assert resp.status_code == 201, f"Create project failed: {resp.text}"
 
-    resp = await api.post(
-        "/api/repositories/",
-        json={
-            "project_id": project_id,
-            "name": project_name,
-            "git_url": f"https://github.com/{GITHUB_ORG}/{project_name}",
-        },
-    )
-    assert resp.status_code == 201, f"Create repository failed: {resp.text}"
-
-    return {
+    manifest = OwnershipManifest(run_id=project_id)
+    manifest.own("project", project_id)
+    ctx = {
         "project_id": project_id,
         "project_name": project_name,
         "repo_name": project_name,
-        "repo_id": resp.json()["id"],
+        "manifest": manifest,
     }
 
-
-def flush_queues() -> None:
-    """Delete pipeline queues (stream + consumer groups + PEL).
-
-    Using DEL instead of XTRIM — XTRIM removes messages but leaves
-    the consumer group's PEL intact, causing consumers to hang on
-    stale pending entries. DEL removes everything; consumers recreate
-    the stream via XGROUP CREATE ... MKSTREAM on next startup.
-    """
-    for queue in [SCAFFOLD_QUEUE, ENGINEERING_QUEUE, DEPLOY_QUEUE, ARCHITECT_QUEUE]:
-        subprocess.run(
-            ["docker", "compose", "exec", "-T", "redis", "redis-cli", "DEL", queue],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=ORCHESTRATOR_ROOT,
+    async with cleanup_on_error(lambda: cleanup_all(api, None, ctx)):
+        manifest.write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{project_id}.json")
+        resp = await api.post(
+            "/api/repositories/",
+            json={
+                "project_id": project_id,
+                "name": project_name,
+                "git_url": f"https://github.com/{GITHUB_ORG}/{project_name}",
+            },
         )
+        assert resp.status_code == 201, f"Create repository failed: {resp.text}"
+        ctx["repo_id"] = resp.json()["id"]
+
+    return ctx
 
 
 def trigger_scaffold(ctx: dict) -> None:
     """Publish scaffold message to Redis stream."""
+    ctx["manifest"].own("github_repository", f"{GITHUB_ORG}/{ctx['repo_name']}")
+    ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
     msg = {
         "project_id": ctx["project_id"],
         "repository_id": ctx["repo_id"],
@@ -172,6 +167,9 @@ def trigger_scaffold(ctx: dict) -> None:
         cwd=ORCHESTRATOR_ROOT,
     )
     assert result.returncode == 0, f"XADD scaffold failed: {result.stderr}"
+    entry_id = result.stdout.strip()
+    ctx["manifest"].own("redis_entry", entry_id, stream=SCAFFOLD_QUEUE)
+    ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
 
 
 async def wait_scaffold(api: httpx.AsyncClient, ctx: dict, timeout: int = SCAFFOLD_TIMEOUT) -> None:
@@ -336,7 +334,18 @@ async def wait_deploy(
                 ctx["server_ip"] = srv["public_ip"]
                 ctx["port"] = alloc["port"]
                 ctx["allocation_id"] = alloc["id"]
+                ctx["application_id"] = app["id"]
                 ctx["server_handle"] = srv["handle"]
+                ctx["manifest"].own(
+                    "server_deployment",
+                    ctx["project_name"],
+                    server_handle=srv["handle"],
+                    server_ip=srv["public_ip"],
+                )
+                ctx["manifest"].own("port_allocation", str(alloc["id"]))
+                ctx["manifest"].write(
+                    ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
+                )
                 break
         if "port" in ctx:
             break
@@ -348,34 +357,87 @@ async def wait_deploy(
 # ── Cleanup helpers ──────────────────────────────────────────────────────
 
 
-def cleanup_github_repo(repo_name: str) -> None:
-    """Delete GitHub repo via org-level token inside langgraph container.
+def _redis_command(*args: str) -> str:
+    result = subprocess.run(
+        ["docker", "compose", "exec", "-T", "redis", "redis-cli", *args],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        cwd=ORCHESTRATOR_ROOT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+    return result.stdout.strip()
 
-    Uses get_org_token() instead of repo-level get_token() because after DB
-    cleanup the repo installation lookup may 404.
-    """
-    script = (
+
+def cancel_and_wait_for_scaffold(
+    project_id: str,
+    *,
+    command=_redis_command,
+    timeout: float = SCAFFOLD_FENCE_TIMEOUT,
+    poll_interval: float = 1,
+) -> None:
+    """Fence new scaffold work and wait until claimed work is quiescent."""
+    cancel_key = f"live:scaffold:cancelled:{project_id}"
+    leases_key = f"live:scaffold:leases:{project_id}"
+    command("SET", cancel_key, "1", "EX", str(SCAFFOLD_FENCE_TIMEOUT))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        active = command(
+            "EVAL",
+            "local t=redis.call('TIME'); local n=t[1]*1000+math.floor(t[2]/1000); "
+            "redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',n); "
+            "return redis.call('ZCARD',KEYS[1])",
+            "1",
+            leases_key,
+        )
+        if active == "0":
+            return
+        time.sleep(poll_interval)
+    raise CleanupError(f"scaffold work for project {project_id} did not terminate")
+
+
+def cancel_owned_scaffold(ctx: dict) -> None:
+    """Fence scaffold work when the context owns a project."""
+    project_id = ctx.get("project_id")
+    if project_id:
+        cancel_and_wait_for_scaffold(project_id)
+
+
+def build_github_cleanup_script(repo_name: str) -> str:
+    """Build the container-side cleanup for one exact owned repository."""
+    return (
         "import asyncio, sys\n"
         "sys.path.insert(0, '/app')\n"
         "from shared.clients.github import GitHubAppClient\n"
         "import httpx\n"
         "async def cleanup():\n"
         "    gh = GitHubAppClient()\n"
-        "    try:\n"
-        f"        token = await gh.get_org_token('{GITHUB_ORG}')\n"
-        "        async with httpx.AsyncClient() as client:\n"
+        f"    token = await gh.get_org_token('{GITHUB_ORG}')\n"
+        "    async with httpx.AsyncClient() as client:\n"
         "            resp = await client.delete(\n"
         f"                'https://api.github.com/repos/{GITHUB_ORG}/{repo_name}',\n"
         "                headers={'Authorization': f'token {token}',\n"
         "                         'Accept': 'application/vnd.github+json'},\n"
         "            )\n"
         "            if resp.status_code not in (204, 404):\n"
-        "                print(f'cleanup warning: {resp.status_code} {resp.text[:200]}')\n"
-        "    except Exception as e:\n"
-        "        print(f'cleanup warning: {e}')\n"
+        "                raise RuntimeError(f'{resp.status_code} {resp.text[:200]}')\n"
+        "            verify = await client.get(\n"
+        f"                'https://api.github.com/repos/{GITHUB_ORG}/{repo_name}',\n"
+        "                headers={'Authorization': f'token {token}'},\n"
+        "            )\n"
+        "            if verify.status_code != 404:\n"
+        "                raise RuntimeError(f'repository residue: {verify.status_code}')\n"
         "asyncio.run(cleanup())\n"
     )
-    docker_exec("langgraph", script, timeout=30)
+
+
+def cleanup_github_repo(repo_name: str) -> None:
+    """Delete and verify one GitHub repo via the container's org token."""
+    script = build_github_cleanup_script(repo_name)
+    result = docker_exec("langgraph", script, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr or result.stdout)
 
 
 def cleanup_server_container(ctx: dict) -> None:
@@ -384,8 +446,8 @@ def cleanup_server_container(ctx: dict) -> None:
     Uses a multi-step approach matching how deploy.yml creates resources:
     1. docker compose -p {name} down (graceful, using both compose files)
     2. docker rm -f by container name pattern (force, catches leaked containers)
-    3. docker network prune (removes orphan networks)
-    4. rm -rf /opt/services/{name} (removes directory)
+    3. verify no project-labelled container remains
+    4. remove and verify `/opt/services/{name}`
 
     Logs warnings via structlog instead of silently swallowing errors.
     """
@@ -405,13 +467,14 @@ def cleanup_server_container(ctx: dict) -> None:
         f"SVC_DIR=/opt/services/{project_name}; "
         f'if [ -d "$SVC_DIR/infra" ]; then '
         f"  cd $SVC_DIR/infra && "
-        f"  docker compose -p {project_name} down --remove-orphans -v 2>&1 || true; "
+        f"  docker compose -p {project_name} down --remove-orphans -v; "
         f"fi; "
         f"for c in $(docker ps -aq --filter label=com.docker.compose.project={project_name}); do "
-        f"  docker rm -f $c 2>&1 || true; "
+        f"  docker rm -f $c; "
         f"done; "
-        f"docker network prune -f 2>&1 || true; "
-        f"rm -rf $SVC_DIR"
+        f"rm -rf $SVC_DIR; "
+        f'test -z "$(docker ps -aq --filter label=com.docker.compose.project={project_name})"; '
+        f"test ! -e $SVC_DIR"
     )
 
     script = (
@@ -425,9 +488,7 @@ def cleanup_server_container(ctx: dict) -> None:
         "    async with httpx.AsyncClient(base_url=api_url, timeout=10) as client:\n"
         f"        resp = await client.get('/api/servers/{server_handle}/ssh-key')\n"
         "        if resp.status_code != 200:\n"
-        f"            logger.warning('cleanup_ssh_key_fetch_failed', "
-        f"status=resp.status_code, server='{server_handle}')\n"
-        "            return\n"
+        "            raise RuntimeError(f'ssh key fetch failed: {resp.status_code}')\n"
         "        key = resp.json().get('ssh_key', '')\n"
         "    if not key.endswith('\\n'):\n"
         "        key += '\\n'\n"
@@ -445,8 +506,9 @@ def cleanup_server_container(ctx: dict) -> None:
         "            capture_output=True, text=True, timeout=60,\n"
         "        )\n"
         "        if result.returncode != 0:\n"
-        f"            logger.warning('cleanup_ssh_failed', server='{server_ip}', "
-        "rc=result.returncode, stderr=result.stderr[:300])\n"
+        "            raise RuntimeError(\n"
+        "                f'cleanup ssh failed: {result.returncode} {result.stderr[:300]}'\n"
+        "            )\n"
         "        else:\n"
         f"            logger.info('cleanup_server_done', "
         f"project='{project_name}', server='{server_ip}')\n"
@@ -456,13 +518,7 @@ def cleanup_server_container(ctx: dict) -> None:
     )
     result = docker_exec("langgraph", script, timeout=75)
     if result.returncode != 0:
-        import structlog
-
-        structlog.get_logger().warning(
-            "cleanup_server_exec_failed",
-            project=project_name,
-            stderr=result.stderr[:300],
-        )
+        raise RuntimeError(result.stderr or result.stdout)
 
 
 async def cleanup_all(
@@ -470,53 +526,101 @@ async def cleanup_all(
     api_no_auth: httpx.AsyncClient | None,
     ctx: dict,
 ) -> None:
-    """Full cleanup: server -> port allocation -> GitHub repo -> DB records.
+    """Delete only resources owned by this run and prove absence."""
+    errors: list[str] = []
 
-    Always runs (success or failure). Errors are logged to aid debugging
-    but don't mask the original test failure.
-    """
-    import structlog
-
-    logger = structlog.get_logger()
+    # XDEL cannot cancel a claimed message. Fence the consumer and wait for any
+    # active scaffold job before deleting or verifying external resources.
+    try:
+        cancel_owned_scaffold(ctx)
+    except Exception as exc:
+        errors.append(f"scaffold cancellation fence: {exc}")
+        raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors)) from exc
 
     # 1. Server container (if deployed)
     try:
         cleanup_server_container(ctx)
     except Exception as exc:
-        logger.warning("cleanup_server_error", error=str(exc), project=ctx.get("project_name"))
+        errors.append(f"server deployment: {exc}")
 
     # 2. Port allocation
     if "allocation_id" in ctx and api_no_auth:
         try:
             resp = await api_no_auth.delete(f"/api/allocations/{ctx['allocation_id']}")
             if resp.status_code not in (200, 204, 404):
-                logger.warning(
-                    "cleanup_port_failed",
-                    status=resp.status_code,
-                    alloc=ctx["allocation_id"],
-                )
+                raise RuntimeError(f"delete returned {resp.status_code}")
+            ports = await api_no_auth.get(f"/api/servers/{ctx['server_handle']}/ports")
+            ports.raise_for_status()
+            if any(str(item["id"]) == str(ctx["allocation_id"]) for item in ports.json()):
+                raise RuntimeError("allocation still exists")
         except Exception as exc:
-            logger.warning("cleanup_port_error", error=str(exc))
+            errors.append(f"port allocation: {exc}")
 
     # 3. GitHub repo
-    if "repo_name" in ctx:
+    owned_kinds = {resource.kind for resource in ctx["manifest"].resources}
+    if "github_repository" in owned_kinds:
         try:
             cleanup_github_repo(ctx["repo_name"])
         except Exception as exc:
-            logger.warning("cleanup_github_error", error=str(exc), repo=ctx.get("repo_name"))
+            errors.append(f"GitHub repository: {exc}")
 
     # 4. DB records (API delete doesn't cascade to stories/tasks, use SQL)
     if "project_id" in ctx:
         try:
             _cleanup_db(ctx["project_id"])
         except Exception as exc:
-            logger.warning("cleanup_db_error", error=str(exc), project_id=ctx.get("project_id"))
+            errors.append(f"database project: {exc}")
 
-    # 5. Flush queues (remove stale messages left by this test run)
-    try:
-        flush_queues()
-    except Exception as exc:
-        logger.warning("cleanup_flush_queues_error", error=str(exc))
+    for resource in ctx.get("manifest", OwnershipManifest("missing")).resources:
+        if resource.kind != "redis_entry":
+            continue
+        result = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "redis",
+                "redis-cli",
+                "XDEL",
+                resource.metadata["stream"],
+                resource.identifier,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+        if result.returncode != 0:
+            errors.append(f"Redis entry {resource.identifier}: {result.stderr}")
+            continue
+        verify = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "redis",
+                "redis-cli",
+                "XRANGE",
+                resource.metadata["stream"],
+                resource.identifier,
+                resource.identifier,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+        if verify.returncode != 0 or verify.stdout.strip():
+            errors.append(f"Redis entry {resource.identifier} still exists or cannot be verified")
+
+    if "project_id" in ctx:
+        verify = await api.get(f"/api/projects/{ctx['project_id']}")
+        if verify.status_code != 404:
+            errors.append(f"project {ctx['project_id']} still exists")
+    if errors:
+        raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors))
 
 
 def _cleanup_db(project_id: str) -> None:
@@ -539,7 +643,7 @@ def _cleanup_db(project_id: str) -> None:
         f"DELETE FROM port_allocations WHERE project_id = '{project_id}';"
         f"DELETE FROM projects WHERE id = '{project_id}';"
     )
-    subprocess.run(
+    result = subprocess.run(
         [
             "docker",
             "compose",
@@ -559,6 +663,8 @@ def _cleanup_db(project_id: str) -> None:
         timeout=15,
         cwd=ORCHESTRATOR_ROOT,
     )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
 
 
 # ── Debug dump ───────────────────────────────────────────────────────────

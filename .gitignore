@@ -48,3 +48,5 @@ htmlcov/
 .DS_Store
 Thumbs.db
 secrets
+# Per-run live harness ownership records
+.live-manifests/

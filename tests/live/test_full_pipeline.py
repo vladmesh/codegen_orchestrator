@@ -17,6 +17,7 @@ No LLM. Fully deterministic. Real queues, real GitHub, real server.
 import asyncio
 
 import httpx
+from live_harness import cleanup_guard, run_non_llm_qa
 from pipeline_helpers import (
     API_URL,
     AUTH_HEADERS,
@@ -28,7 +29,6 @@ from pipeline_helpers import (
     create_story_and_task,
     dump_debug,
     ensure_test_user,
-    flush_queues,
     trigger_scaffold,
     wait_deploy,
     wait_engineering,
@@ -47,38 +47,40 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 @pytest_asyncio.fixture(loop_scope="module", scope="module")
 async def pipeline():
     """Full pipeline: scaffold → engineering → deploy. Yields context for assertions."""
-    flush_queues()
     async with httpx.AsyncClient(base_url=API_URL, timeout=10, headers=AUTH_HEADERS) as api:
         await ensure_test_user(api)
         async with httpx.AsyncClient(base_url=API_URL, timeout=10) as api_no_auth:
             ctx = await create_noop_project(api)
+            async with cleanup_guard(lambda: cleanup_all(api, api_no_auth, ctx)):
+                # Phase 1: Scaffold
+                trigger_scaffold(ctx)
+                await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
+                if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
+                    yield ctx
+                    dump_debug(ctx, "full-scaffold")
+                    return
 
-            # Phase 1: Scaffold
-            trigger_scaffold(ctx)
-            await wait_scaffold(api, ctx, timeout=SCAFFOLD_TIMEOUT)
-            if ctx.get("scaffold_status") != ProjectStatus.ACTIVE:
+                # Phase 2: Engineering
+                await create_story_and_task(api, ctx)
+                await wait_engineering(api, ctx, timeout=ENGINEERING_TIMEOUT)
+                if ctx.get("task_status") != TaskStatus.DONE:
+                    yield ctx
+                    dump_debug(ctx, "full-engineering")
+                    return
+
+                # Phase 3: Deploy
+                await wait_deploy(api, api_no_auth, ctx, timeout=DEPLOY_TIMEOUT)
+                if ctx.get("final_app_status") == ApplicationStatus.RUNNING.value:
+                    ctx["qa_result"] = await run_non_llm_qa(
+                        api_no_auth,
+                        ctx["deployed_url"],
+                        timeout=DEPLOY_TIMEOUT,
+                    )
+
                 yield ctx
-                dump_debug(ctx, "full-scaffold")
-                await cleanup_all(api, api_no_auth, ctx)
-                return
 
-            # Phase 2: Engineering
-            await create_story_and_task(api, ctx)
-            await wait_engineering(api, ctx, timeout=ENGINEERING_TIMEOUT)
-            if ctx.get("task_status") != TaskStatus.DONE:
-                yield ctx
-                dump_debug(ctx, "full-engineering")
-                await cleanup_all(api, api_no_auth, ctx)
-                return
-
-            # Phase 3: Deploy
-            await wait_deploy(api, api_no_auth, ctx, timeout=DEPLOY_TIMEOUT)
-
-            yield ctx
-
-            if ctx.get("final_app_status") != ApplicationStatus.RUNNING.value:
-                dump_debug(ctx, "full-deploy")
-            await cleanup_all(api, api_no_auth, ctx)
+                if ctx.get("final_app_status") != ApplicationStatus.RUNNING.value:
+                    dump_debug(ctx, "full-deploy")
 
 
 class TestFullPipeline:
@@ -126,3 +128,13 @@ class TestFullPipeline:
                 pytest.fail(f"Health endpoint not reachable at {url}/health after 5 attempts")
 
         assert resp.status_code == 200, f"Health check failed: {resp.status_code} {resp.text[:200]}"
+
+    async def test_non_llm_qa_passed(self, pipeline):
+        """A separate post-deploy QA run must terminate as passed."""
+        if pipeline.get("final_app_status") != ApplicationStatus.RUNNING.value:
+            pytest.skip("deploy failed")
+        assert pipeline.get("qa_result") == {
+            "run_id": pipeline["qa_result"]["run_id"],
+            "status": "completed",
+            "qa_outcome": "passed",
+        }
