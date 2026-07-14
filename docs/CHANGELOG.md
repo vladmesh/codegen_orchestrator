@@ -13,6 +13,8 @@
 - Record requested template source/ref, resolved commit SHA and isolated cleanup outcome as CI artifacts.
 
 ### Fixed
+- Carry each server's validated `ssh_user` through deploy secrets, precheck, lifecycle actions,
+  smoke log collection and QA SSH instead of forcing `root`; provisioning bootstrap remains root-only.
 - Pin requested template tags to their resolved commit before scaffolding to prevent tag-move races.
 - Resolve candidate commits by fetching the exact revision, including commits that are not advertised branch or tag tips.
 - Make template compatibility cleanup fail when Compose teardown or Docker resource verification fails.

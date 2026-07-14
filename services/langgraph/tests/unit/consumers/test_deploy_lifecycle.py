@@ -58,6 +58,7 @@ class TestDeployLifecycleStop:
                 return_value=MagicMock(id="repo-1")
             )
             mock_lifecycle_api.get_server_ssh_key = AsyncMock(return_value="fake-key")
+            mock_lifecycle_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
 
             # Mock allocator to return server info
             with patch(
@@ -82,6 +83,7 @@ class TestDeployLifecycleStop:
                 result = await process_deploy_job(_make_job_data(action="stop"), mock_redis)
 
             assert result["status"] == "success"
+            assert mock_ssh.connect.call_args.kwargs["username"] == "dev"
             # Verify SSH command runs compose from infra/ with correct flags
             ssh_cmd = mock_conn.run.call_args[0][0]
             assert "/infra" in ssh_cmd
@@ -122,6 +124,7 @@ class TestDeployLifecycleStop:
                 return_value=MagicMock(id="repo-1")
             )
             mock_lifecycle_api.get_server_ssh_key = AsyncMock(return_value="fake-key")
+            mock_lifecycle_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
 
             mock_ssh.import_private_key = MagicMock(return_value="key-obj")
             mock_ssh.connect = MagicMock(
@@ -167,6 +170,7 @@ class TestDeployLifecycleUndeploy:
                 return_value=MagicMock(id="repo-1")
             )
             mock_lifecycle_api.get_server_ssh_key = AsyncMock(return_value="fake-key")
+            mock_lifecycle_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
 
             mock_ssh.import_private_key = MagicMock(return_value="key-obj")
             mock_ssh.connect = MagicMock(
@@ -216,6 +220,7 @@ class TestDeployLifecycleSSHFailure:
                 return_value=MagicMock(id="repo-1")
             )
             mock_lifecycle_api.get_server_ssh_key = AsyncMock(return_value="fake-key")
+            mock_lifecycle_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
 
             mock_ssh.import_private_key = MagicMock(return_value="key-obj")
             mock_ssh.connect = MagicMock(side_effect=ConnectionError("SSH failed"))

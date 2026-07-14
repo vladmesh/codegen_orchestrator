@@ -370,6 +370,7 @@ class TestContainerLogCapture:
             mock_client_cls.return_value = mock_client
 
             mock_api.get_server_ssh_key = AsyncMock(return_value="fake-ssh-key")
+            mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
             mock_asyncssh.import_private_key = MagicMock(return_value="parsed-key")
             mock_asyncssh.connect = MagicMock(return_value=mock_conn)
 
@@ -419,6 +420,7 @@ class TestContainerLogCapture:
             mock_client.get = AsyncMock(return_value=mock_response)
             mock_client_cls.return_value = mock_client
 
+            mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
             mock_api.get_server_ssh_key = AsyncMock(side_effect=Exception("API down"))
             mock_asyncssh.import_private_key = MagicMock()
 

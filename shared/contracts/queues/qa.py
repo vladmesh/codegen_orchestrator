@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from shared.contracts.base import BaseMessage
+from shared.contracts.dto.server import SSHUser
 
 
 class QAOutcome(StrEnum):
@@ -31,5 +32,6 @@ class QAServerInfo:
     """Resolved server connection info for QA testing."""
 
     server_ip: str
+    ssh_user: SSHUser
     ssh_key: str
     project_name: str

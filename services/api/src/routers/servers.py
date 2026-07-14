@@ -4,6 +4,7 @@ from datetime import UTC
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,7 @@ from shared.contracts.dto.server import (
     ProvisioningAttemptReset,
     ProvisioningAttemptResetResult,
     ServerStatus,
+    SSHUser,
 )
 from shared.crypto import SecretsCipher
 from shared.models import Application, PortAllocation, Server
@@ -339,11 +341,18 @@ async def update_server(
             server.ssh_key_enc = None
 
     # Update allowed fields
+    if "ssh_user" in updates:
+        try:
+            updates["ssh_user"] = TypeAdapter(SSHUser).validate_python(updates["ssh_user"])
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors(include_url=False)) from exc
+
     allowed_fields = {
         "status",
         "notes",
         "is_managed",
         "labels",
+        "ssh_user",
         "provisioning_started_at",
         "capacity_cpu",
         "capacity_ram_mb",

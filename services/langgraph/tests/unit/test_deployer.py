@@ -2,7 +2,7 @@
 
 from datetime import datetime
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from tests.unit.factories import make_repository
@@ -56,6 +56,7 @@ def _setup_happy_mocks(mock_api, mock_gh_cls):
     mock_gh_cls.return_value = gh
     gh.wait_for_workflow_completion.return_value = _SUCCESS_RUN
     mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
+    mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
     mock_api.create_service_deployment = AsyncMock(return_value={})
     mock_api.create_deployment = AsyncMock(return_value={})
     mock_api.get_primary_repository = AsyncMock(return_value=make_repository(id="repo-test1"))
@@ -81,6 +82,7 @@ class TestDeployerNodeErrors:
     ):
         """Deploy should fail when no SSH key is stored for the server."""
         mock_api.get_server_ssh_key = AsyncMock(return_value=None)
+        mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
 
         result = await deployer.run(base_state)
 
@@ -125,13 +127,15 @@ class TestDeployerNodeHappyPath:
         secrets_arg = gh.set_repository_secrets.call_args[0][2]
         assert "DOTENV" in secrets_arg
         assert secrets_arg["DEPLOY_HOST"] == "10.0.0.1"
-        assert secrets_arg["DEPLOY_USER"] == "root"
+        assert secrets_arg["DEPLOY_USER"] == "dev"
         assert secrets_arg["DEPLOY_SSH_KEY"] == "ssh-key-content"
         assert secrets_arg["DEPLOY_PORT"] == "8080"
         assert secrets_arg["PROJECT_NAME"] == "my_project"
         assert secrets_arg["REGISTRY_URL"] == "registry.example.com"
         assert secrets_arg["REGISTRY_USER"] == "testuser"
         assert secrets_arg["REGISTRY_PASSWORD"] == "testpass"  # noqa: S105
+        mock_api.get_server.assert_awaited_once_with("srv-1")
+        mock_api.get_server_ssh_key.assert_awaited_once_with("srv-1")
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
@@ -249,6 +253,7 @@ class TestDeployerNodeFailures:
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
         mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
+        mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
         gh.wait_for_workflow_completion.side_effect = RuntimeError(
             "Workflow deploy.yml failed: failure. See: https://github.com/runs/1"
         )
@@ -269,6 +274,7 @@ class TestDeployerNodeFailures:
         gh = AsyncMock()
         mock_gh_cls.return_value = gh
         mock_api.get_server_ssh_key = AsyncMock(return_value="ssh-key-content")
+        mock_api.get_server = AsyncMock(return_value=MagicMock(ssh_user="dev"))
         gh.wait_for_workflow_completion.side_effect = TimeoutError(
             "Workflow deploy.yml did not complete within 600s"
         )

@@ -57,6 +57,7 @@ async def _resolve_server_info(application_id: int) -> QAServerInfo | None:
 
     return QAServerInfo(
         server_ip=server.public_ip,
+        ssh_user=server.ssh_user,
         ssh_key=ssh_key,
         project_name=app.service_name,
     )
@@ -140,6 +141,7 @@ async def process_qa_job(job_data: dict, redis: RedisStreamClient) -> dict:
         # Run QA on server
         qa_result = await run_qa_on_server(
             server_ip=server_info.server_ip,
+            ssh_user=server_info.ssh_user,
             ssh_key=server_info.ssh_key,
             project_name=server_info.project_name,
             acceptance_criteria=acceptance_criteria,

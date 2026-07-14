@@ -147,12 +147,13 @@ class SmokeTesterNode(FunctionalNode):
 
         Returns log output (truncated) or None if fetch fails.
         """
+        server = await api_client.get_server(server_handle)
+
         try:
             ssh_key = await api_client.get_server_ssh_key(server_handle)
             if not ssh_key:
                 logger.warning("smoke_logs_no_ssh_key", server_handle=server_handle)
                 return None
-
             key = asyncssh.import_private_key(ssh_key)
             service_dir = f"{SERVICE_BASE_DIR}/{project_name}"
             compose = (
@@ -163,7 +164,7 @@ class SmokeTesterNode(FunctionalNode):
 
             async with asyncssh.connect(
                 server_ip,
-                username="root",
+                username=server.ssh_user,
                 known_hosts=None,
                 client_keys=[key],
             ) as conn:

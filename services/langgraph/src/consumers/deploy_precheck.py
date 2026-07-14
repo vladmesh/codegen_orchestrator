@@ -16,6 +16,7 @@ SERVICE_BASE_DIR = "/opt/services"
 
 async def _pre_check_server(
     server_ip: str,
+    ssh_user: str,
     ssh_key: str,
     project_name: str,
     action: str,
@@ -35,7 +36,7 @@ async def _pre_check_server(
         key = asyncssh.import_private_key(ssh_key)
         async with asyncssh.connect(
             server_ip,
-            username="root",
+            username=ssh_user,
             known_hosts=None,
             client_keys=[key],
         ) as conn:
@@ -85,12 +86,14 @@ async def _run_deploy_precheck(
         return None
 
     project_name = (project.name or project_id).replace(" ", "_").lower()
+    server = await api_client.get_server(server_handle)
     ssh_key = await api_client.get_server_ssh_key(server_handle)
     if not ssh_key:
         return None
 
     return await _pre_check_server(
         server_ip=server_ip,
+        ssh_user=server.ssh_user,
         ssh_key=ssh_key,
         project_name=project_name,
         action=action,

@@ -100,6 +100,7 @@ def make_server(**overrides) -> ServerDTO:
         "handle": "srv-1",
         "host": "srv-1.example.com",
         "public_ip": "1.2.3.4",
+        "ssh_user": "dev",
         "status": "ready",
         "is_managed": True,
         "capacity_ram_mb": 4096,
