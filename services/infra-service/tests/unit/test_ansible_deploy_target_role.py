@@ -76,16 +76,12 @@ class TestDeployTargetPermissions:
     ssh_public_key: ""
   roles:
     - deploy_target
-"""
-            .replace("DEPLOY_USER", deploy_user)
-            .replace("SERVICES_ROOT", str(services_root))
+""".replace("DEPLOY_USER", deploy_user).replace("SERVICES_ROOT", str(services_root))
         )
 
         try:
             self._run_privileged(["mkdir", "-p", str(services_root / "personal_site")])
-            self._run_privileged(
-                ["chown", "root:root", str(services_root / "personal_site")]
-            )
+            self._run_privileged(["chown", "root:root", str(services_root / "personal_site")])
             self._run_privileged(["chmod", "0755", str(services_root / "personal_site")])
 
             self._apply_role(playbook)
@@ -102,14 +98,20 @@ class TestDeployTargetPermissions:
             )
             self._run_privileged(["test", "-d", str(services_root / "new-project" / "infra")])
 
-            assert self._run_as_deploy_user(
-                deploy_user,
-                ["touch", str(services_root / "personal_site" / "blocked")],
-                check=False,
-            ).returncode != 0
-            assert self._run_as_deploy_user(
-                deploy_user, ["rmdir", str(services_root / "personal_site")], check=False
-            ).returncode != 0
+            assert (
+                self._run_as_deploy_user(
+                    deploy_user,
+                    ["touch", str(services_root / "personal_site" / "blocked")],
+                    check=False,
+                ).returncode
+                != 0
+            )
+            assert (
+                self._run_as_deploy_user(
+                    deploy_user, ["rmdir", str(services_root / "personal_site")], check=False
+                ).returncode
+                != 0
+            )
         finally:
             self._run_privileged(["userdel", "-r", deploy_user], check=False)
             self._run_privileged(["rm", "-rf", str(services_root)], check=False)
@@ -134,6 +136,4 @@ class TestDeployTargetPermissions:
     @staticmethod
     def _run_privileged(command: list[str], check: bool = True):
         prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
-        return subprocess.run(
-            [*prefix, *command], check=check, capture_output=True, text=True
-        )
+        return subprocess.run([*prefix, *command], check=check, capture_output=True, text=True)
