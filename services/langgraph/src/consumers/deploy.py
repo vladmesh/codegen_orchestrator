@@ -294,19 +294,6 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             precheck_error = await _run_deploy_precheck(
                 allocated_resources, project, project_id, action
             )
-        elif precheck_error and action == "feature" and "never deployed" in precheck_error:
-            logger.warning(
-                "deploy_action_auto_fallback",
-                task_id=task_id,
-                from_action="feature",
-                to_action="create",
-                reason=precheck_error,
-            )
-            action = "create"
-            precheck_error = await _run_deploy_precheck(
-                allocated_resources, project, project_id, action
-            )
-
         if precheck_error:
             logger.warning("deploy_precheck_failed", task_id=task_id, error=precheck_error)
             return await _handle_deploy_failure(

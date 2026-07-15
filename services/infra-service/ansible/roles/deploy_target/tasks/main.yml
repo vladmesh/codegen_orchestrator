@@ -7,11 +7,22 @@
     groups: docker
     append: true
 
+- name: Create SSH directory for deploy user
+  ansible.builtin.file:
+    path: "/home/{{ deploy_user }}/.ssh"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0700"
+
 - name: Authorize orchestrator key for deploy user
-  ansible.posix.authorized_key:
-    user: "{{ deploy_user }}"
-    key: "{{ ssh_public_key }}"
-    state: present
+  ansible.builtin.lineinfile:
+    dest: "/home/{{ deploy_user }}/.ssh/authorized_keys"
+    line: "{{ ssh_public_key }}"
+    create: true
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0600"
   when: ssh_public_key | length > 0
 
 - name: Create isolated project root

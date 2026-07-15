@@ -172,7 +172,7 @@ class TestDeployActionFallback:
     async def test_feature_with_missing_dir_still_fails(
         self, mock_redis, mock_api, mock_allocations, mock_devops_subgraph
     ):
-        """action=feature + dir missing should still fail (no fallback for this case)."""
+        """action=feature + dir missing must not switch to create."""
         with patch("src.consumers.deploy_precheck._pre_check_server") as mock_precheck:
             mock_precheck.return_value = (
                 "Service dir /opt/services/my-project/ not found on 1.2.3.4. "
@@ -184,6 +184,8 @@ class TestDeployActionFallback:
             result = await process_deploy_job(_job(action="feature"), mock_redis)
 
         assert result["status"] == "failed"
+        assert mock_precheck.await_count == 1
+        mock_devops_subgraph.ainvoke.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_fallback_logs_warning(
