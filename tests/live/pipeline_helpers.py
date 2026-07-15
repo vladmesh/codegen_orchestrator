@@ -834,28 +834,19 @@ def find_worker_container(worker_id: str) -> str | None:
     return names[0] if names else None
 
 
-def cleanup_server_container(ctx: dict) -> None:
-    """Stop and remove deployed container on remote server via SSH.
+def build_server_cleanup_script(project_name: str, server_ip: str, server_handle: str) -> str:
+    """Build the container-side teardown of one deployed stack.
 
-    Uses a multi-step approach matching how deploy.yml creates resources:
+    Runs inside langgraph so it can reach the internal API. The ssh-key fetch
+    authenticates with X-Internal-Key like the real consumers: /api/servers/* is
+    gated by require_internal_or_admin and 401s without it.
+
+    Remote steps mirror how deploy.yml creates resources:
     1. docker compose -p {name} down (graceful, using both compose files)
-    2. docker rm -f by container name pattern (force, catches leaked containers)
+    2. docker rm -f by project label (force, catches leaked containers)
     3. verify no project-labelled container remains
     4. remove and verify `/opt/services/{name}`
-
-    Logs warnings via structlog instead of silently swallowing errors.
     """
-    if "server_handle" not in ctx:
-        return
-    project_name = ctx["project_name"]
-    server_ip = ctx.get("server_ip", "127.0.0.1")
-    server_handle = ctx["server_handle"]
-
-    # Shell script that runs on the remote server
-    # Step 1: try compose down with project name (matches deploy.yml invocation)
-    # Step 2: force-remove any containers with matching project label
-    # Step 3: prune dangling networks left by compose
-    # Step 4: remove service directory
     remote_cmd = (
         f"set -e; "
         f"SVC_DIR=/opt/services/{project_name}; "
@@ -871,7 +862,7 @@ def cleanup_server_container(ctx: dict) -> None:
         f"test ! -e $SVC_DIR"
     )
 
-    script = (
+    return (
         "import asyncio, sys, os\n"
         "sys.path.insert(0, '/app')\n"
         "import structlog\n"
@@ -879,7 +870,9 @@ def cleanup_server_container(ctx: dict) -> None:
         "async def main():\n"
         "    import httpx\n"
         "    api_url = os.environ.get('API_URL', 'http://api:8000')\n"
-        "    async with httpx.AsyncClient(base_url=api_url, timeout=10) as client:\n"
+        "    headers = {'X-Internal-Key': os.environ['INTERNAL_API_KEY']}\n"
+        "    async with httpx.AsyncClient("
+        "base_url=api_url, timeout=10, headers=headers) as client:\n"
         f"        resp = await client.get('/api/servers/{server_handle}/ssh-key')\n"
         "        if resp.status_code != 200:\n"
         "            raise RuntimeError(f'ssh key fetch failed: {resp.status_code}')\n"
@@ -909,6 +902,15 @@ def cleanup_server_container(ctx: dict) -> None:
         "    finally:\n"
         "        os.unlink(key_path)\n"
         "asyncio.run(main())\n"
+    )
+
+
+def cleanup_server_container(ctx: dict) -> None:
+    """Stop and remove deployed container on remote server via SSH."""
+    if "server_handle" not in ctx:
+        return
+    script = build_server_cleanup_script(
+        ctx["project_name"], ctx.get("server_ip", "127.0.0.1"), ctx["server_handle"]
     )
     result = docker_exec("langgraph", script, timeout=75)
     if result.returncode != 0:
@@ -949,7 +951,13 @@ async def cleanup_all(
             resp = await api_no_auth.delete(f"/api/allocations/{ctx['allocation_id']}")
             if resp.status_code not in (200, 204, 404):
                 raise RuntimeError(f"delete returned {resp.status_code}")
-            ports = await api_no_auth.get(f"/api/servers/{ctx['server_handle']}/ports")
+            # /api/servers/{handle}/ports is gated by require_internal_or_admin, so
+            # authenticate as an internal service like the real consumers, not the
+            # header-less api_no_auth client which gets 401.
+            internal_headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
+            ports = await api_no_auth.get(
+                f"/api/servers/{ctx['server_handle']}/ports", headers=internal_headers
+            )
             ports.raise_for_status()
             if any(str(item["id"]) == str(ctx["allocation_id"]) for item in ports.json()):
                 raise RuntimeError("allocation still exists")
@@ -1043,6 +1051,10 @@ def _cleanup_db(project_id: str) -> None:
         f"DELETE FROM rag_messages WHERE project_id = '{project_id}';"
         f"DELETE FROM service_deployments WHERE project_id = '{project_id}';"
         f"DELETE FROM port_allocations WHERE application_id IN "
+        f"(SELECT id FROM applications WHERE repo_id IN "
+        f"(SELECT id FROM repositories WHERE project_id = '{project_id}'));"
+        # application_health_history FKs applications (NO ACTION), delete it first.
+        f"DELETE FROM application_health_history WHERE application_id IN "
         f"(SELECT id FROM applications WHERE repo_id IN "
         f"(SELECT id FROM repositories WHERE project_id = '{project_id}'));"
         f"DELETE FROM applications WHERE repo_id IN "
