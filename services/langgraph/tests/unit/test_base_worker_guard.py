@@ -180,14 +180,14 @@ class TestCheckMessageStaleness:
 class TestTerminalConsumerMessages:
     @pytest.mark.asyncio()
     async def test_live_work_watchdog_cancels_owner_when_redis_check_fails(self):
-        from src.consumers._base import _cancel_on_live_teardown
+        from src.consumers._live_work import _cancel_on_live_teardown
 
         redis = MagicMock()
         redis.redis.exists = AsyncMock(side_effect=RuntimeError("redis unavailable"))
         redis.redis.set = AsyncMock()
         owner = MagicMock()
 
-        with patch("src.consumers._base.asyncio.sleep", new=AsyncMock()):
+        with patch("src.consumers._live_work.asyncio.sleep", new=AsyncMock()):
             await _cancel_on_live_teardown(redis, "project-1", "lease-1", owner)
 
         owner.cancel.assert_called_once()
@@ -195,7 +195,7 @@ class TestTerminalConsumerMessages:
 
     @pytest.mark.asyncio()
     async def test_live_work_heartbeat_refreshes_lease_ttl_atomically(self):
-        from src.consumers._base import _refresh_live_work_lease
+        from src.consumers._live_work import _refresh_live_work_lease
 
         redis = MagicMock()
         redis.redis.eval = AsyncMock(return_value=1)
@@ -208,7 +208,7 @@ class TestTerminalConsumerMessages:
 
     @pytest.mark.asyncio()
     async def test_lost_live_work_lease_is_reported(self):
-        from src.consumers._base import _refresh_live_work_lease
+        from src.consumers._live_work import _refresh_live_work_lease
 
         redis = MagicMock()
         redis.redis.eval = AsyncMock(return_value=0)
@@ -266,7 +266,7 @@ class TestTerminalConsumerMessages:
 
         with (
             patch("src.consumers._base.RedisStreamClient", return_value=redis),
-            patch("src.consumers._base.LIVE_WORK_LEASE_REFRESH_SECONDS", 0),
+            patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0),
         ):
             await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
 

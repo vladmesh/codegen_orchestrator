@@ -55,7 +55,7 @@ def _query_scalar(sql):
     return int(result.stdout.strip() or "0")
 
 
-def collect_residue_state():
+def collect_residue_state(project_ids: list[str] | None = None):
     """Return live-test residue counts using current schema relationships."""
     conditions = _build_conditions()
     manifests = list((Path(ORCHESTRATOR_ROOT) / ".live-manifests").glob("*.json"))
@@ -83,16 +83,35 @@ def collect_residue_state():
     if worker_scan.returncode != 0:
         raise CleanupFailure(f"worker residue scan failed: {worker_scan.stderr.strip()}")
     workers = len([line for line in worker_scan.stdout.splitlines() if line.strip()])
-    return {
+    residue = {
         "projects": projects,
         "allocations": allocations,
         "ownership_manifests": len(manifests),
         "workers": workers,
     }
+    if project_ids:
+        live_path = str(Path(ORCHESTRATOR_ROOT) / "tests" / "live")
+        if live_path not in sys.path:
+            sys.path.insert(0, live_path)
+        from capability_cleanup import find_owned_capability_messages
+
+        def command(*args):
+            result = run_cmd(["docker", "compose", "exec", "-T", "redis", "redis-cli", *args])
+            if result.returncode != 0:
+                raise CleanupFailure(
+                    f"capability stream verification failed: {result.stderr.strip()}"
+                )
+            return result.stdout.strip()
+
+        residue["capability_messages"] = sum(
+            len(find_owned_capability_messages(project_id, set(), command=command))
+            for project_id in project_ids
+        )
+    return residue
 
 
-def verify_no_residue():
-    residue = collect_residue_state()
+def verify_no_residue(project_ids: list[str] | None = None):
+    residue = collect_residue_state(project_ids)
     remaining = {kind: count for kind, count in residue.items() if count}
     if remaining:
         details = ", ".join(f"{kind}={count}" for kind, count in sorted(remaining.items()))
@@ -102,6 +121,22 @@ def verify_no_residue():
 def _build_conditions(alias: str | None = None):
     column = f"{alias}.name" if alias else "name"
     return " OR ".join([f"{column} LIKE '{p}-%'" for p in PROJECT_PREFIXES])
+
+
+def manifest_project_ids() -> set[str]:
+    """Keep manifest ownership available even if a prior crash already deleted DB rows."""
+    project_ids: set[str] = set()
+    for path in (Path(ORCHESTRATOR_ROOT) / ".live-manifests").glob("*.json"):
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            raise CleanupFailure(f"invalid ownership manifest: {path.name}") from exc
+        project_ids.update(
+            str(resource["identifier"])
+            for resource in data.get("resources", [])
+            if resource.get("kind") == "project"
+        )
+    return project_ids
 
 
 def cleanup_manifest_resources(data: dict) -> list[str]:
@@ -502,6 +537,8 @@ scan_and_clean()
 
 
 def main():
+    manifest_projects = manifest_project_ids()
+
     print_step("Recovering ownership manifests")
     recover_ownership_manifests()
 
@@ -510,7 +547,7 @@ def main():
     print(f"Found {len(projects)} test projects.")
 
     repo_names = [p["name"] for p in projects]
-    project_ids = [p["id"] for p in projects]
+    project_ids = sorted(manifest_projects | {p["id"] for p in projects})
 
     print_step("Fencing and cleaning owned Redis capability work")
     clean_redis_queues(project_ids)
@@ -531,7 +568,7 @@ def main():
     clean_local_workspaces()
 
     print_step("Verifying absence of live-test residue")
-    verify_no_residue()
+    verify_no_residue(project_ids)
 
     print("\\n\\033[1;32m✅ Live test cleanup fully complete!\\033[0m")
 
