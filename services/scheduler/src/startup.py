@@ -25,6 +25,7 @@ REQUIRED_KEYS = [
     "scheduler.service_template_ref",
     "scheduler.ssl_check_timeout",
     "scheduler.rag_summarizer_poll_interval",
+    "scheduler.ci_failure_max_fingerprint_attempts",
     "deploy.max_deploy_retries",
     "deploy.max_deploy_fix_attempts",
     "deploy.deploy_retry_ttl",

@@ -6,6 +6,7 @@ These are plain functions, not pytest fixtures.
 
 import asyncio
 from datetime import UTC, datetime
+import json
 import os
 from pathlib import Path
 import secrets
@@ -326,6 +327,18 @@ async def wait_deploy(
         await asyncio.sleep(5)
 
     ctx["final_app_status"] = app_status
+
+    if story_id := ctx.get("story_id"):
+        tasks_resp = await api.get("/api/tasks/", params={"story_id": story_id})
+        if tasks_resp.status_code == 200:
+            ctx["ci_failure_evidence"] = [
+                {
+                    "fix_task_id": task["id"],
+                    **task["failure_metadata"]["ci_failure"],
+                }
+                for task in tasks_resp.json()
+                if (task.get("failure_metadata") or {}).get("ci_failure")
+            ]
 
     if app_status != ApplicationStatus.RUNNING.value:
         return
@@ -947,7 +960,23 @@ def dump_debug(ctx: dict, test_name: str) -> None:
         f"- deployed_url: `{ctx.get('deployed_url')}`",
         f"- engineering_elapsed: `{ctx.get('engineering_elapsed')}`",
         "",
+        "## CI failure evidence",
     ]
+    evidence = ctx.get("ci_failure_evidence") or []
+    if evidence:
+        for failure in evidence:
+            lines.extend(
+                [
+                    f"- fix_task_id: `{failure['fix_task_id']}`",
+                    f"  run_id: `{failure['run_id']}`",
+                    f"  head_sha: `{failure['head_sha']}`",
+                    f"  fingerprint: `{failure['fingerprint']}`",
+                    f"  failed_jobs: `{json.dumps(failure['failed_jobs'], sort_keys=True)}`",
+                ]
+            )
+    else:
+        lines.append("- none captured")
+    lines.extend([""])
 
     # Collect docker logs from relevant services
     for service in ["scaffolder", "engineering-worker", "scheduler", "deploy-worker"]:

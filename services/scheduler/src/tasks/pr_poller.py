@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import TYPE_CHECKING
 import uuid
 
@@ -11,9 +13,11 @@ from shared.clients.github import GitHubAppClient
 from shared.contracts.dto.story import StoryStatus
 from shared.contracts.dto.task import TaskStatus
 from shared.contracts.queues.deploy import DeployMessage, DeployTrigger
+from shared.notifications import notify_admins_best_effort
 from shared.queues import DEPLOY_QUEUE
 from shared.redis_client import RedisStreamClient
 
+from .. import startup
 from .story_completion import _parse_owner_repo
 
 if TYPE_CHECKING:
@@ -22,6 +26,113 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 _COMPLETED_STATUSES = {StoryStatus.COMPLETED.value}
+
+
+def _ci_failure_limit() -> int:
+    return startup.get_config().get_int("scheduler.ci_failure_max_fingerprint_attempts")
+
+
+def _failure_fingerprint(failed_jobs: list[dict], unavailable_reason: str | None) -> str:
+    payload = failed_jobs or [{"details_unavailable_reason": unavailable_reason}]
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).lower()
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def _ci_metadata(task: object) -> dict | None:
+    metadata = getattr(task, "failure_metadata", None) or {}
+    value = metadata.get("ci_failure")
+    return value if isinstance(value, dict) else None
+
+
+def _build_failure_description(evidence: dict) -> str:
+    lines = [
+        f"CI failed on branch `{evidence['branch']}`.",
+        "",
+        f"Run URL: {evidence['run_url']}",
+        f"Run ID: {evidence['run_id']}",
+        f"Head SHA: {evidence['head_sha']}",
+        f"Failure fingerprint: {evidence['fingerprint']}",
+        f"Fingerprint attempt: {evidence['fingerprint_attempt']}",
+        "",
+    ]
+    if evidence["failed_jobs"]:
+        for job in evidence["failed_jobs"]:
+            lines.append(f"Job: {job['name']}")
+            lines.extend(f"Failed step: {step}" for step in job["failed_steps"])
+    else:
+        lines.append("Failure details unavailable: " + evidence["details_unavailable_reason"])
+    lines.extend(["", "Fix all reported failures, run local checks, then push once."])
+    return "\n".join(lines)
+
+
+async def _handle_failed_run(
+    api_client: SchedulerAPIClient,
+    github: GitHubAppClient,
+    *,
+    owner: str,
+    repo_name: str,
+    story_id: str,
+    project_id: str,
+    branch: str,
+    run: dict,
+) -> bool:
+    """Persist one run's evidence and either create a fix or escalate."""
+    run_url = run.get("html_url", "")
+    run_id = run.get("id", "")
+    head_sha = run.get("head_sha") or "unknown"
+    tasks = await api_client.get_tasks_by_story(story_id)
+    prior_evidence = [item for task in tasks if (item := _ci_metadata(task))]
+    if any(item.get("run_id") == run_id for item in prior_evidence):
+        return False
+
+    try:
+        details = await github.get_workflow_failure_details(owner, repo_name, int(run_id))
+    except Exception as exc:
+        details = {"failed_jobs": [], "unavailable_reason": type(exc).__name__}
+    failed_jobs = details["failed_jobs"]
+    unavailable_reason = details.get("unavailable_reason")
+    if not failed_jobs and not unavailable_reason:
+        unavailable_reason = "GitHub returned no failed jobs"
+    fingerprint = _failure_fingerprint(failed_jobs, unavailable_reason)
+    same_failure = [item for item in prior_evidence if item.get("fingerprint") == fingerprint]
+    attempt = len(same_failure) + 1
+    evidence = {
+        "run_id": run_id,
+        "run_url": run_url,
+        "head_sha": head_sha,
+        "branch": branch,
+        "failed_jobs": failed_jobs,
+        "details_unavailable_reason": unavailable_reason,
+        "fingerprint": fingerprint,
+        "fingerprint_attempt": attempt,
+    }
+
+    if attempt > _ci_failure_limit():
+        await api_client.transition_story(story_id, "human-review")
+        await notify_admins_best_effort(
+            f"CI failure {fingerprint} exhausted {_ci_failure_limit()} fix attempts "
+            f"for story {story_id}",
+            level="warning",
+            story_id=story_id,
+            failure_fingerprint=fingerprint,
+        )
+        return False
+
+    task_data = {
+        "title": f"Fix CI failure (run {run_id})",
+        "description": _build_failure_description(evidence),
+        "type": "fix",
+        "story_id": story_id,
+        "project_id": project_id,
+        "created_by": "system",
+        "status": TaskStatus.TODO.value,
+        "failure_metadata": {"ci_failure": evidence},
+    }
+    await api_client.create_task(task_data)
+    await api_client.transition_story(story_id, "fail")
+    await api_client.transition_story(story_id, "reopen")
+    await api_client.transition_story(story_id, "start")
+    return True
 
 
 async def poll_merged_prs(
@@ -177,37 +288,22 @@ async def poll_ci_failures(
         run_id = run.get("id", "")
         log.info("poll_ci_failure_detected", run_url=run_url, run_id=run_id)
 
-        # Create fix task
-        task_data = {
-            "title": f"Fix CI failure (run {run_id})",
-            "description": (
-                f"CI failed on branch `{branch}`.\n\n"
-                f"Run URL: {run_url}\n\n"
-                "Read the CI logs, identify the failure, and fix the code."
-            ),
-            "type": "fix",
-            "story_id": story_id,
-            "project_id": project_id,
-            "created_by": "system",
-            "status": TaskStatus.TODO.value,
-        }
-
         try:
-            await api_client.create_task(task_data)
+            created = await _handle_failed_run(
+                api_client,
+                github,
+                owner=owner,
+                repo_name=repo_name,
+                story_id=story_id,
+                project_id=project_id,
+                branch=branch,
+                run=run,
+            )
         except Exception:
-            log.exception("poll_ci_create_task_error")
+            log.exception("poll_ci_handle_failure_error", run_id=run_id)
             continue
-
-        # Transition story: pr_review → failed → reopened → in_progress
-        try:
-            await api_client.transition_story(story_id, "fail")
-            await api_client.transition_story(story_id, "reopen")
-            await api_client.transition_story(story_id, "start")
-        except Exception:
-            log.exception("poll_ci_story_transition_error")
-            continue
-
-        log.info("poll_ci_fix_task_created", run_url=run_url)
-        fixed += 1
+        if created:
+            log.info("poll_ci_fix_task_created", run_url=run_url)
+            fixed += 1
 
     return fixed

@@ -171,6 +171,36 @@ async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, t
     assert ctx["port"] == 8010
 
 
+def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    monkeypatch.setattr(
+        pipeline_helpers.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=""),
+    )
+    ctx = {
+        "project_id": "project-1",
+        "ci_failure_evidence": [
+            {
+                "fix_task_id": "fix-1",
+                "run_id": 42,
+                "head_sha": "abc123",
+                "fingerprint": "f00baa",
+                "failed_jobs": [{"name": "unit", "failed_steps": ["pytest"]}],
+            }
+        ],
+    }
+
+    pipeline_helpers.dump_debug(ctx, "ci-evidence")
+
+    artifact = next((tmp_path / "docs" / "e2e_results").glob("debug-ci-evidence-*.md"))
+    text = artifact.read_text()
+    assert "fix-1" in text
+    assert "run_id: `42`" in text
+    assert "head_sha: `abc123`" in text
+    assert '"failed_steps": ["pytest"]' in text
+
+
 @pytest.mark.asyncio
 async def test_cleanup_guard_runs_when_qa_fails_before_fixture_yield():
     cleaned = []

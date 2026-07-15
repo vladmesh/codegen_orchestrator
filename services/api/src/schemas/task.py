@@ -26,6 +26,7 @@ class TaskCreate(BaseModel):
     repository_id: str | None = None
     story_id: str | None = None
     blocked_by_task_id: str | None = None
+    failure_metadata: dict[str, Any] | None = None
 
 
 class TaskRead(TimestampedDTO):

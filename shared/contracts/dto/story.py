@@ -43,6 +43,7 @@ VALID_TRANSITIONS: dict[StoryStatus, set[StoryStatus]] = {
     StoryStatus.PR_REVIEW: {
         StoryStatus.DEPLOYING,
         StoryStatus.IN_PROGRESS,
+        StoryStatus.WAITING_HUMAN_REVIEW,
         StoryStatus.FAILED,
     },
     StoryStatus.DEPLOYING: {
