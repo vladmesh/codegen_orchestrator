@@ -1,0 +1,23 @@
+---
+- name: Ensure configured deploy user exists
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    shell: /bin/bash
+    create_home: true
+    groups: docker
+    append: true
+
+- name: Authorize orchestrator key for deploy user
+  ansible.posix.authorized_key:
+    user: "{{ deploy_user }}"
+    key: "{{ ssh_public_key }}"
+    state: present
+  when: ssh_public_key | length > 0
+
+- name: Create isolated project root
+  ansible.builtin.file:
+    path: "{{ services_root }}"
+    state: directory
+    owner: root
+    group: "{{ deploy_user }}"
+    mode: "3770"

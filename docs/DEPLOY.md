@@ -8,6 +8,27 @@
 - Git clone: `git clone <repo> /opt/codegen_orchestrator`
 - Ports 80/443 open (Caddy handles TLS)
 
+## Managed project deploy target
+
+The provisioner prepares `/opt/services` for the `Server.ssh_user` configured on
+the target. It creates that user, adds the orchestrator SSH key and Docker group
+membership, then sets `/opt/services` to `root:<ssh_user>` with mode `3770`.
+
+The group write bit lets the deploy workflow create `/opt/services/<project>` on
+its first `create` deploy. The sticky bit prevents that user from renaming or
+removing a root-owned project root. Existing projects remain `root:root 0755`
+(or stricter), so the deploy user cannot write `personal_site` or any other
+existing root-owned project directory. New project roots belong to the deploy
+user and can be updated by their own feature and fix deploys.
+
+The runtime precheck intentionally does not create directories: `create` must
+observe an absent project directory, while `feature` and `fix` require one. The
+generated workflow creates the directory only after the `create` precheck has
+passed.
+
+Before the next mega deploy, apply the provisioner to adopted target `5vei` so
+its `/opt/services` root receives this ownership contract.
+
 ## GitHub Secrets
 
 All secrets must be configured in the repository's **production** environment.

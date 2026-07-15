@@ -6,6 +6,8 @@
 # SSH Configuration
 # ========================================
 ssh_public_key: "{{ lookup('env', 'ORCHESTRATOR_SSH_PUBLIC_KEY') }}"
+deploy_user: deploy
+services_root: /opt/services
 disable_password_auth: true
 
 # ========================================
