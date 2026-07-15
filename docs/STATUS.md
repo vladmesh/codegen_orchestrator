@@ -2,6 +2,8 @@
 
 Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codegen-stabilization-v1.md).
 
+Typed environment/secrets migration proposal: [typed env contract MVP](plans/typed-env-contract-mvp.md).
+
 ## Current Sprint
 - **Sprint**: 002-thermo-nuclear-hardening
 - **Goal**: Закрыть находки thermo-nuclear-review — типизированные границы, fail-fast, удаление мёртвого кода
