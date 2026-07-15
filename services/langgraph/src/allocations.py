@@ -75,13 +75,13 @@ async def ensure_project_allocations(
 
     # Check for existing allocations on this application
     existing: list[AllocationInfo] = await api_client.get_application_allocations(application_id)
+    allocated: dict[str, dict] = {}
     if existing:
         logger.info(
             "allocations_already_exist",
             application_id=application_id,
             count=len(existing),
         )
-        result = {}
         for alloc in existing:
             alloc_server = alloc["server_handle"]
             port = alloc["port"]
@@ -92,26 +92,31 @@ async def ensure_project_allocations(
                 srv: ServerDTO = await api_client.get_server(alloc_server)
                 alloc_ip = srv.public_ip
 
-            result[key] = {
+            allocated[key] = {
                 "port": port,
                 "server_handle": alloc_server,
                 "server_ip": alloc_ip,
                 "service_name": alloc.get("service_name"),
                 "application_id": application_id,
             }
-        return result
+
+    existing_services = {alloc["service_name"] for alloc in allocated.values()}
+    missing_modules = [
+        module for module in dict.fromkeys(modules) if module not in existing_services
+    ]
+    if not missing_modules:
+        return allocated
 
     # No existing allocations - create new ones
     logger.info(
         "allocating_resources",
         application_id=application_id,
-        modules=modules,
+        modules=missing_modules,
         min_ram_mb=min_ram_mb,
     )
 
     # Allocate port for each module atomically
-    allocated = {}
-    for module in modules:
+    for module in missing_modules:
         alloc_result = await api_client.allocate_next_port(
             server_handle,
             {

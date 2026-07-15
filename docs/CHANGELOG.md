@@ -2,6 +2,9 @@
 
 ## 2026-07-15
 
+- Resolve service-template 0.3.1 PostgreSQL and Redis host ports from persisted application
+  allocations. Deploy now requests the infrastructure port services through the atomic allocation
+  API, fills only missing services on redeploy, and fails visibly on missing or ambiguous mappings.
 - Persist structured failed GitHub Actions job and step evidence on CI fix tasks, deduplicate runs,
   fingerprint repeated failures across commits, and bound identical fixes before routing the story
   to human review with one admin alert. A transient story-transition failure remains retryable on
