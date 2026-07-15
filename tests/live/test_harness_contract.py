@@ -349,13 +349,13 @@ def test_capability_cleanup_removes_only_owned_queued_and_pending_entries():
         if args[0] == "EVAL":
             if sum(call[0] == "EVAL" for call in commands) == 2:
                 return "[]"
-            return '[{"stream":"engineering:queue","id":"1-0","groups":["capability-workers"]},' \
+            return (
+                '[{"stream":"engineering:queue","id":"1-0","groups":["capability-workers"]},'
                 '{"stream":"deploy:queue","id":"2-0","groups":["capability-workers"]}]'
+            )
         return "1"
 
-    residue = cleanup_owned_capability_messages(
-        "project-1", {"run-1"}, command=command
-    )
+    residue = cleanup_owned_capability_messages("project-1", {"run-1"}, command=command)
 
     assert residue == []
     assert commands[0][0] == "EVAL"
