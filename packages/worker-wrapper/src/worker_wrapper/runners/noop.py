@@ -37,8 +37,12 @@ if push is not None and push.returncode == 0:
     exit_code = 0
 else:
     failed = push or commit or config or branch_result
-    diagnostic = (failed.stderr or failed.stdout or "detached HEAD").strip()[-1000:]
-    payload = {"success": False, "reason": f"noop git command failed: {diagnostic}"}
+    payload = {
+        "success": False,
+        "reason": "noop git command failed; inspect worker logs for command diagnostics",
+        "error_class": "GitCommandFailed",
+        "exit_code": failed.returncode or 1,
+    }
     exit_code = failed.returncode or 1
 
 request = Request(

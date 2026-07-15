@@ -28,36 +28,34 @@ graph = create_graph()
 async def listen_provisioner_triggers() -> None:
     """Listen for provisioning triggers from Redis pub/sub."""
     settings = get_settings()
-    try:
-        client = redis.from_url(settings.redis_url, decode_responses=True)
-        pubsub = client.pubsub()
-        await pubsub.subscribe(PROVISIONER_TRIGGER_CHANNEL)
-
-        logger.info("provisioner_subscribed", channel=PROVISIONER_TRIGGER_CHANNEL)
-
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                try:
-                    data = json.loads(message["data"])
-                    await process_provisioning_trigger(data)
-                except Exception as e:
-                    logger.error(
-                        "provisioner_trigger_processing_failed",
-                        error=str(e),
-                        error_type=type(e).__name__,
-                        exc_info=True,
-                    )
-    except asyncio.CancelledError:
-        logger.info("provisioner_listener_cancelled")
-    except Exception as e:
-        logger.error(
-            "provisioner_listener_failed",
-            error=str(e),
-            error_type=type(e).__name__,
-            exc_info=True,
-        )
-    finally:
-        await client.close()
+    while True:
+        client = None
+        try:
+            client = redis.from_url(settings.redis_url, decode_responses=True)
+            pubsub = client.pubsub()
+            await pubsub.subscribe(PROVISIONER_TRIGGER_CHANNEL)
+            logger.info("provisioner_subscribed", channel=PROVISIONER_TRIGGER_CHANNEL)
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    try:
+                        data = json.loads(message["data"])
+                        await process_provisioning_trigger(data)
+                    except Exception as e:
+                        logger.error(
+                            "provisioner_trigger_processing_failed",
+                            error_type=type(e).__name__,
+                        )
+        except asyncio.CancelledError:
+            logger.info("provisioner_listener_cancelled")
+            return
+        except TimeoutError:
+            logger.debug("provisioner_listener_idle_reconnect")
+        except Exception as e:
+            logger.warning("provisioner_listener_reconnecting", error_type=type(e).__name__)
+            await asyncio.sleep(1)
+        finally:
+            if client is not None:
+                await client.aclose()
 
 
 async def process_provisioning_trigger(data: dict) -> None:

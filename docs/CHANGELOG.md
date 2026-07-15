@@ -6,6 +6,9 @@
   reports git failures through the worker result API, Redis blocking-read timeouts are idle polls,
   the public registry hostname resolves to Caddy inside Compose, and owned worker cleanup plus
   `test-live-clean` residue verification are fail-closed.
+- Closed the post-merge live cleanup gaps: recover crash manifests before broad cleanup, qualify
+  joined SQL predicates, discover worker containers by ownership label, reconnect idle pubsub
+  listeners, and keep raw git output out of noop failure results.
 
 Формат: [Keep a Changelog](https://keepachangelog.com/). Группировка по датам.
 

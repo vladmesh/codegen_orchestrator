@@ -541,15 +541,16 @@ def capture_owned_workers(ctx: dict) -> None:
             raise RuntimeError(owner.stderr)
         if owner.stdout.strip() != project_id:
             continue
+        container = find_worker_container(worker_id)
         inspect = subprocess.run(
-            ["docker", "inspect", "--format", "{{.Config.Image}}", f"worker-{worker_id}"],
+            ["docker", "inspect", "--format", "{{.Config.Image}}", container],
             capture_output=True,
             text=True,
             timeout=5,
             cwd=ORCHESTRATOR_ROOT,
         )
         image = inspect.stdout.strip() if inspect.returncode == 0 else ""
-        ctx["manifest"].own("worker", worker_id, image=image)
+        ctx["manifest"].own("worker", worker_id, image=image, container=container)
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
 
 
@@ -564,8 +565,9 @@ def cleanup_owned_workers(ctx: dict, errors: list[str]) -> None:
         if resource.kind != "worker":
             continue
         worker_id = resource.identifier
+        container = resource.metadata.get("container") or find_worker_container(worker_id)
         removed = subprocess.run(
-            ["docker", "rm", "-f", f"worker-{worker_id}"],
+            ["docker", "rm", "-f", container],
             capture_output=True,
             text=True,
             timeout=15,
@@ -574,7 +576,7 @@ def cleanup_owned_workers(ctx: dict, errors: list[str]) -> None:
         if removed.returncode != 0 and "No such container" not in removed.stderr:
             errors.append(f"worker {worker_id}: {removed.stderr.strip()}")
         verify = subprocess.run(
-            ["docker", "inspect", f"worker-{worker_id}"],
+            ["docker", "inspect", container],
             capture_output=True,
             text=True,
             timeout=5,
@@ -601,6 +603,23 @@ def cleanup_owned_workers(ctx: dict, errors: list[str]) -> None:
             errors.append(f"worker {worker_id} Redis cleanup: {deleted.stderr.strip()}")
         # Capability images are deterministic hashes of agent type and capabilities.
         # They contain no run input and are deliberately safe to reuse between runs.
+
+
+def find_worker_container(worker_id: str) -> str:
+    """Resolve a worker container by Worker Manager's stable ownership label."""
+    result = subprocess.run(
+        [
+            "docker", "ps", "-a", "--filter", f"label=com.codegen.worker.id={worker_id}",
+            "--format", "{{.Names}}",
+        ],
+        capture_output=True, text=True, timeout=5, cwd=ORCHESTRATOR_ROOT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip())
+    names = [name for name in result.stdout.splitlines() if name]
+    if len(names) > 1:
+        raise RuntimeError(f"multiple containers claim worker {worker_id}")
+    return names[0] if names else worker_id
 
 
 def cleanup_server_container(ctx: dict) -> None:

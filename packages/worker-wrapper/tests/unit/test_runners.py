@@ -67,3 +67,11 @@ class TestNoopRunner:
         assert '"success": False' in command
         assert "reason" in command
         assert "returncode" in command
+
+    def test_failure_result_does_not_include_git_output(self):
+        command = " ".join(NoopRunner().build_command(prompt="ignored"))
+
+        assert "failed.stderr" not in command
+        assert "failed.stdout" not in command
+        assert '"exit_code"' in command
+        assert '"error_class"' in command
