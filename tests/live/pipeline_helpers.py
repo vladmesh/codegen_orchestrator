@@ -352,9 +352,17 @@ async def wait_deploy(
         return
 
     # Port allocations belong to an application, not directly to a project.
-    resp = await api_no_auth.get("/api/servers/")
+    # /api/servers/ and its ports are gated by require_internal_or_admin: they need
+    # X-Internal-Key or an admin user. A bare X-Telegram-ID from the non-admin harness
+    # user gets 403, so authenticate as an internal service, like the real consumers.
+    # raise_for_status keeps a non-200 loud instead of iterating an error body and
+    # crashing with TypeError before the deploy reaches the ownership manifest.
+    internal_headers = {"X-Internal-Key": os.environ["INTERNAL_API_KEY"]}
+    resp = await api.get("/api/servers/", headers=internal_headers)
+    resp.raise_for_status()
     for srv in resp.json():
-        resp = await api_no_auth.get(f"/api/servers/{srv['handle']}/ports")
+        resp = await api.get(f"/api/servers/{srv['handle']}/ports", headers=internal_headers)
+        resp.raise_for_status()
         for alloc in resp.json():
             if alloc.get("application_id") == application["id"]:
                 ctx["server_ip"] = srv["public_ip"]
