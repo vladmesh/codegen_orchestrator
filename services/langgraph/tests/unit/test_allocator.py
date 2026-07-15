@@ -90,6 +90,42 @@ class TestEnsureProjectAllocations:
         assert len(result) == 1
 
     @pytest.mark.asyncio
+    async def test_existing_allocations_are_extended_for_missing_services(self):
+        """Redeploy keeps persisted ports and allocates only newly required services."""
+        mock_client = AsyncMock()
+        mock_client.list_servers = AsyncMock(return_value=[SERVER])
+        mock_client.get_or_create_application = AsyncMock(return_value=APP)
+        mock_client.get_application_allocations = AsyncMock(
+            return_value=[
+                {
+                    "server_handle": "srv-1",
+                    "server_ip": "1.2.3.4",
+                    "port": 8000,
+                    "service_name": "backend",
+                }
+            ]
+        )
+        mock_client.allocate_next_port.side_effect = [{"port": 8001}, {"port": 8002}]
+
+        with patch("src.allocations.api_client", mock_client):
+            from src.allocations import ensure_project_allocations
+
+            result = await ensure_project_allocations(
+                "proj-1",
+                repo_id="repo-1",
+                service_name="my-bot",
+                modules=["backend", "postgres", "redis"],
+            )
+
+        assert result["srv-1:8000"]["service_name"] == "backend"
+        assert result["srv-1:8001"]["service_name"] == "postgres"
+        assert result["srv-1:8002"]["service_name"] == "redis"
+        services = [
+            call.args[1]["service_name"] for call in mock_client.allocate_next_port.await_args_list
+        ]
+        assert services == ["postgres", "redis"]
+
+    @pytest.mark.asyncio
     async def test_multiple_modules_allocate_each(self):
         """Each module should get its own atomic allocation."""
         call_count = 0

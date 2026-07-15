@@ -60,6 +60,8 @@ class TestClassifyByPattern:
         assert _classify_by_pattern("BACKEND_PORT") == "computed"
         assert _classify_by_pattern("FRONTEND_PORT") == "computed"
         assert _classify_by_pattern("TG_BOT_PORT") == "computed"
+        assert _classify_by_pattern("POSTGRES_HOST_PORT") == "computed"
+        assert _classify_by_pattern("REDIS_HOST_PORT") == "computed"
 
 
 class TestParseEnvVariables:

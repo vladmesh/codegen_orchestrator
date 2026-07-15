@@ -141,29 +141,36 @@ class SecretResolverNode(FunctionalNode):
             (server_ip, port) tuple or None if not found.
         """
         resources = state.get("allocated_resources", {})
-        for alloc in resources.values():
-            if isinstance(alloc, dict) and alloc.get("service_name") == service_name:
-                ip = alloc.get("server_ip")
-                port = alloc.get("port")
-                if not isinstance(ip, str) or not ip.strip() or ip.lower() == "localhost":
-                    raise SecretResolutionError(
-                        f"Invalid allocation for service {service_name}: server_ip is required"
-                    )
-                try:
-                    ip_address(ip)
-                except ValueError as error:
-                    raise SecretResolutionError(
-                        f"Invalid allocation for service {service_name}: server_ip is invalid"
-                    ) from error
-                if (
-                    isinstance(port, bool)
-                    or not isinstance(port, int)
-                    or not 1 <= port <= _MAX_TCP_PORT
-                ):
-                    raise SecretResolutionError(
-                        f"Invalid allocation for service {service_name}: port is required"
-                    )
-                return ip, port
+        matches = [
+            alloc
+            for alloc in resources.values()
+            if isinstance(alloc, dict) and alloc.get("service_name") == service_name
+        ]
+        if len(matches) > 1:
+            raise SecretResolutionError(f"Ambiguous allocation for service {service_name}")
+
+        for alloc in matches:
+            ip = alloc.get("server_ip")
+            port = alloc.get("port")
+            if not isinstance(ip, str) or not ip.strip() or ip.lower() == "localhost":
+                raise SecretResolutionError(
+                    f"Invalid allocation for service {service_name}: server_ip is required"
+                )
+            try:
+                ip_address(ip)
+            except ValueError as error:
+                raise SecretResolutionError(
+                    f"Invalid allocation for service {service_name}: server_ip is invalid"
+                ) from error
+            if (
+                isinstance(port, bool)
+                or not isinstance(port, int)
+                or not 1 <= port <= _MAX_TCP_PORT
+            ):
+                raise SecretResolutionError(
+                    f"Invalid allocation for service {service_name}: port is required"
+                )
+            return ip, port
         return None
 
     def _generate_infra_secret(self, key: str, project_id: str) -> str:
@@ -195,6 +202,8 @@ class SecretResolverNode(FunctionalNode):
         "BACKEND_PORT": "backend",
         "FRONTEND_PORT": "frontend",
         "TG_BOT_PORT": "tg_bot",
+        "POSTGRES_HOST_PORT": "postgres",
+        "REDIS_HOST_PORT": "redis",
     }
 
     def _compute_secret(self, key: str, project_spec: dict, state: DevOpsState) -> str:

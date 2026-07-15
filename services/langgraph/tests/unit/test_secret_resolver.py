@@ -203,6 +203,50 @@ class TestSecretResolverComputeSecret:
         result = self.node._compute_secret("TG_BOT_PORT", project_spec, state)
         assert result == "8082"
 
+    def test_compute_database_host_ports_from_allocations(self):
+        """Compose host ports use their persisted application allocations."""
+        state = {
+            "allocated_resources": {
+                "server1:18001": {
+                    "server_ip": "192.168.1.100",
+                    "port": 18001,
+                    "service_name": "postgres",
+                },
+                "server1:18002": {
+                    "server_ip": "192.168.1.100",
+                    "port": 18002,
+                    "service_name": "redis",
+                },
+            }
+        }
+
+        assert self.node._compute_secret("POSTGRES_HOST_PORT", {"name": "test"}, state) == "18001"
+        assert self.node._compute_secret("REDIS_HOST_PORT", {"name": "test"}, state) == "18002"
+
+    @pytest.mark.parametrize(
+        "key,service",
+        [("POSTGRES_HOST_PORT", "postgres"), ("REDIS_HOST_PORT", "redis")],
+    )
+    def test_compute_database_host_port_requires_unambiguous_allocation(self, key, service):
+        """Missing and duplicate service allocations fail visibly."""
+        with pytest.raises(
+            SecretResolutionError, match=f"Missing allocation for service {service}"
+        ):
+            self.node._compute_secret(key, {"name": "test"}, {"allocated_resources": {}})
+
+        resources = {
+            f"server1:{port}": {
+                "server_ip": "192.168.1.100",
+                "port": port,
+                "service_name": service,
+            }
+            for port in (18001, 18002)
+        }
+        with pytest.raises(
+            SecretResolutionError, match=f"Ambiguous allocation for service {service}"
+        ):
+            self.node._compute_secret(key, {"name": "test"}, {"allocated_resources": resources})
+
     def test_compute_unknown_key_raises(self):
         """Computed keys must have an explicit resolver."""
         with pytest.raises(SecretResolutionError, match="Unknown computed secret"):
