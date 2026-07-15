@@ -175,6 +175,40 @@ async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_wait_deploy_skips_infra_ports_and_picks_web_module(monkeypatch, tmp_path):
+    """Regression: deploy allocates a port per module (web + postgres + redis).
+
+    Only the web module serves HTTP /health. The infra ports come first here to
+    prove they are skipped, so deployed_url does not point at postgres/redis and
+    the non-LLM QA health gate can reach a real service.
+    """
+    manifest = OwnershipManifest("project-1")
+    ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
+    responses = {
+        "/api/repositories/": [{"id": "repo-1"}],
+        "/api/applications/": [{"id": 21, "status": "running"}],
+        "/api/servers/": [{"handle": "server-1", "public_ip": "192.0.2.1"}],
+        "/api/servers/server-1/ports": [
+            {"id": 8, "port": 8001, "application_id": 21, "service_name": "postgres"},
+            {"id": 9, "port": 8002, "application_id": 21, "service_name": "redis"},
+            {"id": 10, "port": 8010, "application_id": 21, "service_name": "backend"},
+        ],
+    }
+
+    async def get(url, **kwargs):
+        return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    api = SimpleNamespace(get=get)
+    await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
+
+    assert ctx["allocation_id"] == 10
+    assert ctx["port"] == 8010
+    assert ctx["deployed_url"] == "http://192.0.2.1:8010"
+
+
+@pytest.mark.asyncio
 async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_path):
     """Regression: /api/servers/ and its ports are require_internal_or_admin.
 
