@@ -38,6 +38,10 @@ ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 SCAFFOLD_TIMEOUT = 120
 ENGINEERING_TIMEOUT = 420  # 7 min (worker spawn + noop + CI)
 DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
+# Deploy allocates a port per module: the web module plus these infra ports
+# (mirror of deploy._DEPLOY_INFRA_PORT_SERVICES). Only the web module serves
+# HTTP /health, so the deployed URL must not point at an infra port.
+INFRA_PORT_SERVICES = frozenset({"postgres", "redis"})
 SCAFFOLD_FENCE_TIMEOUT = 900
 WORKER_REMOVAL_TIMEOUT = 15
 WORKER_REMOVAL_POLL_INTERVAL = 0.25
@@ -364,6 +368,11 @@ async def wait_deploy(
         resp = await api.get(f"/api/servers/{srv['handle']}/ports", headers=internal_headers)
         resp.raise_for_status()
         for alloc in resp.json():
+            # Skip the app's postgres/redis infra ports: only the web module
+            # serves HTTP /health, so deployed_url must point at it, not at an
+            # infra port that never answers the health gate.
+            if alloc.get("service_name") in INFRA_PORT_SERVICES:
+                continue
             if alloc.get("application_id") == application["id"]:
                 ctx["server_ip"] = srv["public_ip"]
                 ctx["port"] = alloc["port"]
