@@ -1,11 +1,12 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 import httpx
 
 from shared.log_config import get_logger
 
-from ._base import WorkflowNotFoundError
+from ._base import WorkflowCancelledError, WorkflowNotFoundError
 
 logger = get_logger(__name__)
 
@@ -216,6 +217,7 @@ class ActionsMixin:
         poll_interval: int = 15,
         created_after: datetime | None = None,
         head_sha: str | None = None,
+        cancel_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict:
         """Wait for the latest workflow run to complete.
 
@@ -246,6 +248,9 @@ class ActionsMixin:
                     f"Workflow {workflow_file} did not complete within {timeout_seconds}s"
                 )
 
+            if cancel_check and await cancel_check():
+                raise WorkflowCancelledError(f"Workflow {workflow_file} cancelled by teardown")
+
             run = await self.get_latest_workflow_run(
                 owner,
                 repo,
@@ -259,6 +264,10 @@ class ActionsMixin:
                 logger.info("workflow_not_found_waiting", workflow=workflow_file)
                 await asyncio.sleep(poll_interval)
                 continue
+
+            if cancel_check and await cancel_check():
+                await self.cancel_workflow_run(owner, repo, run["id"])
+                raise WorkflowCancelledError(f"Workflow {workflow_file} cancelled by teardown")
 
             if run["status"] == "completed":
                 if run["conclusion"] == "success":
@@ -285,6 +294,22 @@ class ActionsMixin:
                 elapsed_sec=int(elapsed),
             )
             await asyncio.sleep(poll_interval)
+
+    async def cancel_workflow_run(self, owner: str, repo: str, run_id: int) -> None:
+        """Request GitHub Actions to stop one known workflow run."""
+        token = await self.get_token(owner, repo)
+        try:
+            await self._make_request(
+                "POST",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/cancel",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != httpx.codes.CONFLICT:
+                raise
 
     async def get_workflow_failure_logs(
         self,
