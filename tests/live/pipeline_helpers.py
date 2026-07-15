@@ -14,6 +14,7 @@ import subprocess
 import time
 import uuid
 
+from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
 import httpx
 from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
 
@@ -467,6 +468,35 @@ def cancel_owned_active_work(ctx: dict) -> None:
         cancel_and_wait_for_active_work(project_id)
 
 
+def cleanup_owned_capability_work(ctx: dict) -> None:
+    """Settle only this live run's queued and pending capability messages."""
+    project_id = ctx.get("project_id")
+    if not project_id:
+        return
+    identifiers = {
+        resource.identifier
+        for resource in ctx["manifest"].resources
+        if resource.kind in {"run", "story"}
+    }
+
+    def record(message: CapabilityMessage) -> None:
+        ctx["manifest"].own(
+            "capability_message",
+            f"{message.stream}/{message.message_id}",
+            groups=list(message.groups),
+        )
+        ctx["manifest"].write(
+            ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
+        )
+
+    cleanup_owned_capability_messages(
+        project_id,
+        identifiers,
+        command=_redis_command,
+        on_discovered=record,
+    )
+
+
 async def cancel_owned_runs(api: httpx.AsyncClient, ctx: dict) -> list[str]:
     """Cancel every active run owned by this project before resource teardown."""
     project_id = ctx.get("project_id")
@@ -883,6 +913,7 @@ async def cleanup_all(
         await cancel_owned_runs(api, ctx)
         await wait_for_owned_runs(api, ctx)
         cancel_owned_active_work(ctx)
+        cleanup_owned_capability_work(ctx)
     except Exception as exc:
         errors.append(f"active work cancellation fence: {exc}")
         raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors)) from exc

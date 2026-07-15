@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from capability_cleanup import cleanup_owned_capability_messages
 import conftest as live_conftest
 from conftest import create_test_project_context
 import httpx
@@ -340,6 +341,49 @@ def test_active_work_fence_makes_ack_failure_red():
         )
 
 
+def test_capability_cleanup_removes_only_owned_queued_and_pending_entries():
+    commands = []
+
+    def command(*args):
+        commands.append(args)
+        if args[0] == "EVAL":
+            if sum(call[0] == "EVAL" for call in commands) == 2:
+                return "[]"
+            return '[{"stream":"engineering:queue","id":"1-0","groups":["capability-workers"]},' \
+                '{"stream":"deploy:queue","id":"2-0","groups":["capability-workers"]}]'
+        return "1"
+
+    residue = cleanup_owned_capability_messages(
+        "project-1", {"run-1"}, command=command
+    )
+
+    assert residue == []
+    assert commands[0][0] == "EVAL"
+    assert "engineering:queue" in commands[0]
+    assert "deploy:queue" in commands[0]
+    assert "qa:queue" in commands[0]
+    assert ("XACK", "engineering:queue", "capability-workers", "1-0") in commands
+    assert ("XDEL", "engineering:queue", "1-0") in commands
+    assert ("XACK", "deploy:queue", "capability-workers", "2-0") in commands
+    assert ("XDEL", "deploy:queue", "2-0") in commands
+
+
+def test_capability_cleanup_fails_closed_when_owned_residue_cannot_be_deleted():
+    calls = 0
+
+    def command(*args):
+        nonlocal calls
+        if args[0] == "EVAL":
+            calls += 1
+            return '[{"stream":"qa:queue","id":"3-0","groups":["qa-consumers"]}]'
+        return "0"
+
+    with pytest.raises(CleanupError, match="capability stream residue"):
+        cleanup_owned_capability_messages("project-1", {"run-1"}, command=command)
+
+    assert calls == 2
+
+
 def test_scaffold_fence_prunes_crashed_execution_after_lease_expiry():
     calls = []
 
@@ -410,6 +454,11 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
     monkeypatch.setattr(
         pipeline_helpers, "cancel_owned_active_work", lambda ctx: events.append("active-work")
     )
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "cleanup_owned_capability_work",
+        lambda ctx: events.append("capability-streams"),
+    )
 
     async def wait_for_runs(*args, **kwargs):
         events.append("wait-runs")
@@ -447,6 +496,7 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
         "cancel-run",
         "wait-runs",
         "active-work",
+        "capability-streams",
         "server",
         "workers",
         "registry",

@@ -306,11 +306,22 @@ def clean_database():
     print("Database cleaned.")
 
 
-def clean_redis_queues():
-    queues = ["scaffold_queue", "engineering_queue", "deploy_queue", "architect_queue"]
-    for q in queues:
-        run_cmd(["docker", "compose", "exec", "-T", "redis", "redis-cli", "DEL", q])
-    print("Redis streams deleted (consumers will recreate them).")
+def clean_redis_queues(project_ids):
+    """Delete only proven live-test entries from the canonical capability streams."""
+    live_path = str(Path(ORCHESTRATOR_ROOT) / "tests" / "live")
+    if live_path not in sys.path:
+        sys.path.insert(0, live_path)
+    from capability_cleanup import cleanup_owned_capability_messages
+
+    def command(*args):
+        result = run_cmd(["docker", "compose", "exec", "-T", "redis", "redis-cli", *args])
+        if result.returncode != 0:
+            raise CleanupFailure(f"capability stream cleanup failed: {result.stderr.strip()}")
+        return result.stdout.strip()
+
+    for project_id in project_ids:
+        cleanup_owned_capability_messages(project_id, set(), command=command)
+    print("Owned capability stream entries removed and verified.")
 
 
 def clean_remote_servers():
@@ -499,6 +510,10 @@ def main():
     print(f"Found {len(projects)} test projects.")
 
     repo_names = [p["name"] for p in projects]
+    project_ids = [p["id"] for p in projects]
+
+    print_step("Fencing and cleaning owned Redis capability work")
+    clean_redis_queues(project_ids)
 
     print_step("Cleaning GitHub repositories")
     delete_github_repos(repo_names)
@@ -514,9 +529,6 @@ def main():
 
     print_step("Cleaning Local Workspaces")
     clean_local_workspaces()
-
-    print_step("Cleaning Redis Pipelines")
-    clean_redis_queues()
 
     print_step("Verifying absence of live-test residue")
     verify_no_residue()
