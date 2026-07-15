@@ -39,14 +39,34 @@ class DockerClientWrapper:
         container = await self.get_container(container_id)
         await self._run(container.stop, timeout=timeout)
 
-    async def remove_container(self, container_id: str, force: bool = False, v: bool = False) -> None:
-        """Remove a container."""
-        # Use simple try/except for get in case it's already gone
+    async def remove_container(
+        self,
+        container_id: str,
+        force: bool = False,
+        v: bool = False,
+        *,
+        verify_attempts: int = 20,
+        poll_interval: float = 0.25,
+    ) -> None:
+        """Remove a container and confirm concurrent removal reaches absence."""
         try:
             container = await self.get_container(container_id)
-            await self._run(container.remove, force=force, v=v)
+            try:
+                await self._run(container.remove, force=force, v=v)
+            except docker.errors.APIError as exc:
+                explanation = str(exc.explanation or "")
+                if exc.status_code != 409 or "already in progress" not in explanation:
+                    raise
         except docker.errors.NotFound:
-            pass
+            return
+
+        for _ in range(verify_attempts):
+            try:
+                await self.get_container(container_id)
+            except docker.errors.NotFound:
+                return
+            await asyncio.sleep(poll_interval)
+        raise RuntimeError(f"container {container_id} still exists after removal wait")
 
     async def pause_container(self, container_id: str) -> None:
         """Pause a container."""

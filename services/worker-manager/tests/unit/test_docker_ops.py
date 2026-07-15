@@ -1,4 +1,5 @@
 import pytest
+import docker
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 from collections import namedtuple
@@ -31,13 +32,61 @@ async def test_remove_container(mock_docker):
     client_mock = MagicMock()
     mock_docker.return_value = client_mock
     container_mock = MagicMock()
-    client_mock.containers.get.return_value = container_mock
+    client_mock.containers.get.side_effect = [container_mock, docker.errors.NotFound("gone")]
 
     wrapper = DockerClientWrapper()
     await wrapper.remove_container("test-id")
 
-    client_mock.containers.get.assert_called_once_with("test-id")
+    assert client_mock.containers.get.call_count == 2
     container_mock.remove.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_remove_container_waits_for_concurrent_removal(mock_docker):
+    client_mock = MagicMock()
+    mock_docker.return_value = client_mock
+    container_mock = MagicMock()
+    container_mock.remove.side_effect = docker.errors.APIError(
+        "conflict",
+        response=MagicMock(status_code=409),
+        explanation="removal is already in progress",
+    )
+    client_mock.containers.get.side_effect = [container_mock, docker.errors.NotFound("gone")]
+
+    wrapper = DockerClientWrapper()
+    await wrapper.remove_container("test-id", poll_interval=0)
+
+    assert client_mock.containers.get.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_remove_container_fails_when_concurrent_removal_does_not_finish(mock_docker):
+    client_mock = MagicMock()
+    mock_docker.return_value = client_mock
+    container_mock = MagicMock()
+    container_mock.remove.side_effect = docker.errors.APIError(
+        "conflict",
+        response=MagicMock(status_code=409),
+        explanation="removal is already in progress",
+    )
+    client_mock.containers.get.return_value = container_mock
+
+    wrapper = DockerClientWrapper()
+    with pytest.raises(RuntimeError, match="still exists"):
+        await wrapper.remove_container("test-id", verify_attempts=1, poll_interval=0)
+
+
+@pytest.mark.asyncio
+async def test_remove_container_propagates_operational_error(mock_docker):
+    client_mock = MagicMock()
+    mock_docker.return_value = client_mock
+    container_mock = MagicMock()
+    container_mock.remove.side_effect = docker.errors.APIError("daemon unavailable")
+    client_mock.containers.get.return_value = container_mock
+
+    wrapper = DockerClientWrapper()
+    with pytest.raises(docker.errors.APIError, match="daemon unavailable"):
+        await wrapper.remove_container("test-id", poll_interval=0)
 
 
 @dataclass
