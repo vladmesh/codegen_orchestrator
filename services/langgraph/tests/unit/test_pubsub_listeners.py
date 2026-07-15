@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
 
@@ -48,7 +49,10 @@ class _Client:
     ],
 )
 async def test_read_timeout_reconnects_without_error_log(monkeypatch, module, listener):
-    clients = [_Client(TimeoutError()), _Client(asyncio.CancelledError())]
+    clients = [
+        _Client(RedisTimeoutError("Timeout reading from Redis")),
+        _Client(asyncio.CancelledError()),
+    ]
     logger = MagicMock()
     monkeypatch.setattr(module, "get_settings", lambda: SimpleNamespace(redis_url="redis://test"))
     monkeypatch.setattr(module.redis, "from_url", lambda *args, **kwargs: clients.pop(0))

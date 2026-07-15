@@ -39,7 +39,7 @@ else:
     failed = push or commit or config or branch_result
     payload = {
         "success": False,
-        "reason": "noop git command failed; inspect worker logs for command diagnostics",
+        "reason": "noop git command failed",
         "error_class": "GitCommandFailed",
         "exit_code": failed.returncode or 1,
     }

@@ -5,6 +5,7 @@ import json
 
 from pydantic import ValidationError
 import redis.asyncio as redis
+from redis.exceptions import TimeoutError as RedisTimeoutError
 import structlog
 
 from shared.diagnostics import safe_validation_errors
@@ -57,8 +58,9 @@ async def listen_worker_events() -> None:
         except asyncio.CancelledError:
             logger.info("worker_events_listener_cancelled")
             return
-        except TimeoutError:
+        except RedisTimeoutError:
             logger.debug("worker_events_listener_idle_reconnect")
+            await asyncio.sleep(0.1)
         except Exception as e:
             logger.warning("worker_events_listener_reconnecting", error_type=type(e).__name__)
             await asyncio.sleep(1)

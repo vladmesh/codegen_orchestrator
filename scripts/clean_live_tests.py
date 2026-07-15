@@ -146,10 +146,7 @@ def cleanup_manifest_resources(data: dict) -> list[str]:
     try:
         asyncio.run(resume())
     except Exception as exc:
-        return [
-            f"{resource.kind} {resource.identifier}: {type(exc).__name__}: {exc}"
-            for resource in manifest.resources
-        ]
+        return [str(exc)]
     return []
 
 
