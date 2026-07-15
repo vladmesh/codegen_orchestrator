@@ -1,3 +1,9 @@
+import json
+import subprocess
+from types import SimpleNamespace
+import urllib.request
+
+import pytest
 from worker_wrapper.runners.claude import ClaudeRunner
 from worker_wrapper.runners.factory import FactoryRunner
 from worker_wrapper.runners.noop import NoopRunner
@@ -75,3 +81,39 @@ class TestNoopRunner:
         assert "failed.stdout" not in command
         assert '"exit_code"' in command
         assert '"error_class"' in command
+
+    def test_failure_result_and_logs_redact_git_output(self, monkeypatch, capsys):
+        raw_git_output = "https://token-like-value@example.invalid/repo.git"
+        captured = {}
+
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=128,
+                stdout=f"clone {raw_git_output}",
+                stderr=f"fatal: {raw_git_output}",
+            ),
+        )
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+        def urlopen(request, timeout):
+            captured["payload"] = json.loads(request.data)
+            return Response()
+
+        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+        script = NoopRunner().build_command(prompt="ignored")[2]
+
+        with pytest.raises(SystemExit):
+            exec(script, {"__name__": "__main__"})  # noqa: S102
+
+        assert raw_git_output not in json.dumps(captured["payload"])
+        assert raw_git_output not in capsys.readouterr().out
