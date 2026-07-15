@@ -180,13 +180,15 @@ def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path):
     )
     ctx = {
         "project_id": "project-1",
-        "ci_failure_evidence": [{
-            "fix_task_id": "fix-1",
-            "run_id": 42,
-            "head_sha": "abc123",
-            "fingerprint": "f00baa",
-            "failed_jobs": [{"name": "unit", "failed_steps": ["pytest"]}],
-        }],
+        "ci_failure_evidence": [
+            {
+                "fix_task_id": "fix-1",
+                "run_id": 42,
+                "head_sha": "abc123",
+                "fingerprint": "f00baa",
+                "failed_jobs": [{"name": "unit", "failed_steps": ["pytest"]}],
+            }
+        ],
     }
 
     pipeline_helpers.dump_debug(ctx, "ci-evidence")

@@ -60,9 +60,7 @@ def _build_failure_description(evidence: dict) -> str:
             lines.append(f"Job: {job['name']}")
             lines.extend(f"Failed step: {step}" for step in job["failed_steps"])
     else:
-        lines.append(
-            "Failure details unavailable: " + evidence["details_unavailable_reason"]
-        )
+        lines.append("Failure details unavailable: " + evidence["details_unavailable_reason"])
     lines.extend(["", "Fix all reported failures, run local checks, then push once."])
     return "\n".join(lines)
 

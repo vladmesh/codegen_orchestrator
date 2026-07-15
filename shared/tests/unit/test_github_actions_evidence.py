@@ -12,10 +12,14 @@ async def test_workflow_failure_details_are_structured():
     response = MagicMock()
     response.json.return_value = {
         "jobs": [
-            {"name": "unit", "conclusion": "failure", "steps": [
-                {"name": "Checkout", "conclusion": "success"},
-                {"name": "Run pytest", "conclusion": "failure"},
-            ]},
+            {
+                "name": "unit",
+                "conclusion": "failure",
+                "steps": [
+                    {"name": "Checkout", "conclusion": "success"},
+                    {"name": "Run pytest", "conclusion": "failure"},
+                ],
+            },
             {"name": "lint", "conclusion": "success", "steps": []},
         ]
     }
