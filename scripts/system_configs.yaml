@@ -62,6 +62,11 @@
   category: scheduler
   description: "RAG summarizer poll interval in seconds"
 
+- key: scheduler.ci_failure_max_fingerprint_attempts
+  value: 2
+  category: scheduler
+  description: "Max fix tasks for repeated CI failure fingerprint"
+
 # --- supervisor ---
 - key: supervisor.story_stuck_threshold_minutes
   value: 5

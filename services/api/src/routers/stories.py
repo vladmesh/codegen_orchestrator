@@ -178,6 +178,22 @@ def _do_transition(story: Story, to_status: StoryStatus) -> None:
     story.status = to_status.value
 
 
+@router.post("/{story_id}/human-review", response_model=StoryRead)
+async def human_review_story(
+    story_id: str,
+    body: StoryTransition | None = None,
+    db: AsyncSession = Depends(get_async_session),
+) -> StoryRead:
+    """Move a blocked active story to the visible human-review queue."""
+    body = body or StoryTransition()
+    story = await _get_story(story_id, db)
+    _do_transition(story, StoryStatus.WAITING_HUMAN_REVIEW)
+    await db.commit()
+    await db.refresh(story)
+    logger.info("story_waiting_human_review", story_id=story.id, actor=body.actor)
+    return StoryRead.model_validate(story, from_attributes=True)
+
+
 @router.post("/{story_id}/start", response_model=StoryRead)
 async def start_story(
     story_id: str,

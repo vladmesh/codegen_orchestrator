@@ -41,6 +41,7 @@ def initialized_scheduler_config(monkeypatch):
         "scheduler.service_template_ref": "0.3.0",
         "scheduler.ssl_check_timeout": 5,
         "scheduler.rag_summarizer_poll_interval": 30,
+        "scheduler.ci_failure_max_fingerprint_attempts": 2,
         "deploy.max_deploy_retries": 3,
         "deploy.max_deploy_fix_attempts": 2,
         "deploy.deploy_retry_ttl": 86400,

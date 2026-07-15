@@ -132,6 +132,7 @@ async def create_task(
         repository_id=body.repository_id,
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
+        failure_metadata=body.failure_metadata,
         created_at=now,
         updated_at=now,
     )
@@ -172,6 +173,7 @@ async def push_task(
         repository_id=body.repository_id,
         story_id=body.story_id,
         blocked_by_task_id=body.blocked_by_task_id,
+        failure_metadata=body.failure_metadata,
         created_at=now,
         updated_at=now,
     )

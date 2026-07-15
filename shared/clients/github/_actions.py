@@ -305,6 +305,23 @@ class ActionsMixin:
         Returns:
             Formatted string describing what failed
         """
+        details = await self.get_workflow_failure_details(owner, repo, run_id)
+        lines = []
+        for job in details["failed_jobs"]:
+            lines.append(f"Job '{job['name']}' failed:")
+            lines.extend(f"  Step '{step}' failed" for step in job["failed_steps"])
+
+        if not lines:
+            return f"Workflow run {run_id} failed (no job details available)"
+        return "\n".join(lines)
+
+    async def get_workflow_failure_details(
+        self,
+        owner: str,
+        repo: str,
+        run_id: int,
+    ) -> dict:
+        """Return failed job and step names without downloading raw logs."""
         token = await self.get_token(owner, repo)
         headers = {
             "Authorization": f"token {token}",
@@ -318,19 +335,21 @@ class ActionsMixin:
         )
         jobs = resp.json().get("jobs", [])
 
-        lines = []
+        failed_jobs = []
         for job in jobs:
             if job.get("conclusion") != "failure":
                 continue
-            lines.append(f"Job '{job['name']}' failed:")
-            for step in job.get("steps", []):
-                if step.get("conclusion") == "failure":
-                    lines.append(f"  Step '{step['name']}' failed")
-
-        if not lines:
-            return f"Workflow run {run_id} failed (no job details available)"
-
-        return "\n".join(lines)
+            failed_jobs.append(
+                {
+                    "name": str(job.get("name") or "unnamed job")[:200],
+                    "failed_steps": [
+                        str(step.get("name") or "unnamed step")[:200]
+                        for step in job.get("steps", [])
+                        if step.get("conclusion") == "failure"
+                    ],
+                }
+            )
+        return {"failed_jobs": failed_jobs, "unavailable_reason": None}
 
     async def rerun_failed_jobs(self, owner: str, repo: str, run_id: int) -> bool:
         """Rerun only the failed jobs in a workflow run.
