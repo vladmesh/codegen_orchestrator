@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 import os
 import signal
+import time
+import uuid
 
 from pydantic import ValidationError
 import structlog
@@ -55,6 +58,55 @@ _TERMINAL_STORY_STATUSES = {
     StoryStatus.FAILED.value,
     StoryStatus.ARCHIVED.value,
 }
+LIVE_WORK_LEASE_SECONDS = 60
+LIVE_WORK_LEASE_REFRESH_SECONDS = 10
+
+
+def live_work_cancel_key(project_id: str) -> str:
+    return f"live:work:cancelled:{project_id}"
+
+
+def live_work_leases_key(project_id: str) -> str:
+    return f"live:work:leases:{project_id}"
+
+
+async def _begin_live_work(redis: RedisStreamClient, project_id: str) -> str | None:
+    """Register a cancellable execution lease unless live teardown has fenced the project."""
+    token = uuid.uuid4().hex
+    registered = await redis.redis.eval(
+        """
+        if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
+        local now = redis.call('TIME')
+        local expires = now[1] * 1000 + math.floor(now[2] / 1000) + ARGV[2] * 1000
+        redis.call('ZADD', KEYS[2], expires, ARGV[1])
+        redis.call('EXPIRE', KEYS[2], ARGV[2] * 2)
+        return 1
+        """,
+        2,
+        live_work_cancel_key(project_id),
+        live_work_leases_key(project_id),
+        token,
+        LIVE_WORK_LEASE_SECONDS,
+    )
+    return token if registered == 1 else None
+
+
+async def _finish_live_work(redis: RedisStreamClient, project_id: str, token: str) -> None:
+    await redis.redis.zrem(live_work_leases_key(project_id), token)
+
+
+async def _cancel_on_live_teardown(
+    redis: RedisStreamClient, project_id: str, token: str, owner: asyncio.Task[object]
+) -> None:
+    while True:
+        await asyncio.sleep(LIVE_WORK_LEASE_REFRESH_SECONDS)
+        if await redis.redis.exists(live_work_cancel_key(project_id)):
+            owner.cancel()
+            return
+        now = int(time.time() * 1000)
+        await redis.redis.zadd(
+            live_work_leases_key(project_id), {token: now + LIVE_WORK_LEASE_SECONDS * 1000}
+        )
 
 
 def validate_queued_message(model, job_data: dict):
@@ -118,7 +170,7 @@ async def run_queue_worker(
     queue: str,
     process_fn: ProcessFn,
     group: str = WORKER_GROUP,
-) -> None:
+) -> None:  # noqa: PLR0915
     """Generic worker loop for Redis Stream queue consumption.
 
     Args:
@@ -160,10 +212,41 @@ async def run_queue_worker(
                     logger.debug("stale_job_acked", entry_id=msg.message_id, worker=service_name)
                     continue
 
-                result = await process_fn(msg.data, redis)
-                msg.data.update(result)
-                await redis.ack(queue, group, msg.message_id)
-                logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
+                project_id = msg.data.get("project_id")
+                lease = None
+                cancellation_watch = None
+                if isinstance(project_id, str) and project_id:
+                    lease = await _begin_live_work(redis, project_id)
+                    if lease is None:
+                        await redis.ack(queue, group, msg.message_id)
+                        logger.info("live_teardown_job_acked", entry_id=msg.message_id)
+                        continue
+                    owner = asyncio.current_task()
+                    if owner is not None:
+                        cancellation_watch = asyncio.create_task(
+                            _cancel_on_live_teardown(redis, project_id, lease, owner)
+                        )
+
+                try:
+                    result = await process_fn(msg.data, redis)
+                    msg.data.update(result)
+                    await redis.ack(queue, group, msg.message_id)
+                    logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
+                except asyncio.CancelledError:
+                    cancelled_by_teardown = project_id and await redis.redis.exists(
+                        live_work_cancel_key(project_id)
+                    )
+                    if not cancelled_by_teardown:
+                        raise
+                    await redis.ack(queue, group, msg.message_id)
+                    logger.info("live_teardown_active_job_acked", entry_id=msg.message_id)
+                finally:
+                    if cancellation_watch is not None:
+                        cancellation_watch.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await cancellation_watch
+                    if lease is not None:
+                        await _finish_live_work(redis, project_id, lease)
             except TerminalMessageValidationError as exc:
                 # A schema error cannot become valid when reclaimed from the PEL.
                 # ACK it after recording a payload-safe terminal diagnostic.

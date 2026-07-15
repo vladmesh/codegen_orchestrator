@@ -179,6 +179,31 @@ class TestCheckMessageStaleness:
 
 class TestTerminalConsumerMessages:
     @pytest.mark.asyncio()
+    async def test_live_teardown_fence_acks_queued_owned_message(self, mock_api_client):
+        from src.consumers._base import run_queue_worker
+
+        mock_api_client.get.return_value = {"status": "running"}
+        message = MagicMock(message_id="1-0", data={"task_id": "run-1", "project_id": "project-1"})
+
+        async def consume(*_args, **_kwargs):
+            yield message
+
+        async def process(_data, _redis):
+            raise AssertionError("fenced work must not start")
+
+        redis = MagicMock()
+        redis.connect = AsyncMock()
+        redis.close = AsyncMock()
+        redis.ack = AsyncMock()
+        redis.consume = consume
+        redis.redis.eval = AsyncMock(return_value=0)
+
+        with patch("src.consumers._base.RedisStreamClient", return_value=redis):
+            await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
+
+        redis.ack.assert_awaited_once_with("queue", "capability-workers", "1-0")
+
+    @pytest.mark.asyncio()
     async def test_validation_error_is_acked_with_safe_diagnostics(self, mock_api_client):
         from src.consumers._base import run_queue_worker, validate_queued_message
 
