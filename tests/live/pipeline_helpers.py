@@ -609,10 +609,18 @@ def find_worker_container(worker_id: str) -> str:
     """Resolve a worker container by Worker Manager's stable ownership label."""
     result = subprocess.run(
         [
-            "docker", "ps", "-a", "--filter", f"label=com.codegen.worker.id={worker_id}",
-            "--format", "{{.Names}}",
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"label=com.codegen.worker.id={worker_id}",
+            "--format",
+            "{{.Names}}",
         ],
-        capture_output=True, text=True, timeout=5, cwd=ORCHESTRATOR_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        cwd=ORCHESTRATOR_ROOT,
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip())

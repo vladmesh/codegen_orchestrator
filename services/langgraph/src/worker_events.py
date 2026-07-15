@@ -47,9 +47,7 @@ async def listen_worker_events() -> None:
                     continue
 
                 try:
-                    await publish_event(
-                        f"worker.{event.event_type}", event.model_dump(mode="json")
-                    )
+                    await publish_event(f"worker.{event.event_type}", event.model_dump(mode="json"))
                 except Exception as exc:
                     logger.warning(
                         "worker_event_forward_failed",
