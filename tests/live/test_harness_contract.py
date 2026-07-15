@@ -173,6 +173,56 @@ async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, t
     assert ctx["port"] == 8010
 
 
+@pytest.mark.asyncio
+async def test_wait_deploy_reads_servers_with_authenticated_client(monkeypatch, tmp_path):
+    """Regression: /api/servers/ is auth-only.
+
+    Routing it through api_no_auth returns a 401 error body ({"detail": ...}),
+    and iterating that dict raises `TypeError: string indices must be integers`
+    before the deploy is registered in the ownership manifest. wait_deploy must
+    use the X-Telegram-ID client so server_deployment reaches the manifest.
+    """
+    manifest = OwnershipManifest("project-1")
+    ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
+    auth_responses = {
+        "/api/repositories/": [{"id": "repo-1"}],
+        "/api/applications/": [{"id": 21, "status": "running"}],
+        "/api/servers/": [{"handle": "server-1", "public_ip": "192.0.2.1"}],
+        "/api/servers/server-1/ports": [{"id": 8, "port": 8010, "application_id": 21}],
+    }
+
+    async def auth_get(url, **kwargs):
+        return httpx.Response(200, json=auth_responses[url])
+
+    no_auth_calls = []
+
+    async def no_auth_get(url, **kwargs):
+        no_auth_calls.append(url)
+        # What the real unauthenticated client returns for auth-only endpoints.
+        return httpx.Response(401, json={"detail": "Authentication required"})
+
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    api = SimpleNamespace(get=auth_get)
+    api_no_auth = SimpleNamespace(get=no_auth_get)
+
+    await pipeline_helpers.wait_deploy(api, api_no_auth, ctx, timeout=1)
+
+    assert no_auth_calls == []
+    assert ctx["server_ip"] == "192.0.2.1"
+    assert ctx["port"] == 8010
+    assert ctx["allocation_id"] == 8
+    assert ctx["application_id"] == 21
+    assert ctx["server_handle"] == "server-1"
+    assert ctx["deployed_url"] == "http://192.0.2.1:8010"
+
+    owned = {(resource.kind, resource.identifier) for resource in manifest.resources}
+    assert ("server_deployment", "run") in owned
+    assert ("port_allocation", "8") in owned
+    written = json.loads((tmp_path / ".live-manifests" / f"{manifest.run_id}.json").read_text())
+    kinds = {resource["kind"] for resource in written["resources"]}
+    assert {"server_deployment", "port_allocation"} <= kinds
+
+
 def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     monkeypatch.setattr(

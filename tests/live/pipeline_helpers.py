@@ -352,9 +352,11 @@ async def wait_deploy(
         return
 
     # Port allocations belong to an application, not directly to a project.
-    resp = await api_no_auth.get("/api/servers/")
+    # /api/servers/ and its ports are auth-only: use the X-Telegram-ID client,
+    # not api_no_auth (which gets 401 and an error body that is not a server list).
+    resp = await api.get("/api/servers/")
     for srv in resp.json():
-        resp = await api_no_auth.get(f"/api/servers/{srv['handle']}/ports")
+        resp = await api.get(f"/api/servers/{srv['handle']}/ports")
         for alloc in resp.json():
             if alloc.get("application_id") == application["id"]:
                 ctx["server_ip"] = srv["public_ip"]
