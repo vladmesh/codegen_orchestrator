@@ -372,6 +372,74 @@ async def test_cleanup_does_not_verify_residue_before_claimed_work_stops(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(monkeypatch):
+    events = []
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/runs/":
+            events.append("list-runs")
+            return httpx.Response(
+                200,
+                json=[{"id": "deploy-1", "status": "running", "type": "deploy"}],
+            )
+        if request.method == "PATCH" and request.url.path == "/api/runs/deploy-1":
+            events.append("cancel-run")
+            return httpx.Response(200)
+        if request.method == "GET" and request.url.path == "/api/projects/project-1":
+            return httpx.Response(404)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr(
+        pipeline_helpers, "cancel_owned_scaffold", lambda ctx: events.append("scaffold")
+    )
+
+    async def wait_for_runs(*args, **kwargs):
+        events.append("wait-runs")
+
+    monkeypatch.setattr(pipeline_helpers, "wait_for_owned_runs", wait_for_runs)
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_server_container", lambda ctx: events.append("server")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: events.append("workers")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "cleanup_registry_resources",
+        lambda ctx, errors: events.append("registry"),
+    )
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_github_repo", lambda repo: events.append("github")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers, "_cleanup_db", lambda project_id: events.append("database")
+    )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        await pipeline_helpers.cleanup_all(
+            api,
+            None,
+            {"project_id": "project-1", "repo_name": "repo", "manifest": manifest},
+        )
+
+    assert events == [
+        "scaffold",
+        "list-runs",
+        "cancel-run",
+        "wait-runs",
+        "server",
+        "workers",
+        "registry",
+        "github",
+        "database",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_qa_gate_requires_separate_passed_terminal_run():
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200)

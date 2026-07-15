@@ -16,6 +16,10 @@ class WorkflowNotFoundError(RuntimeError):
     """Raised when a GitHub Actions workflow file does not exist in the repository."""
 
 
+class WorkflowCancelledError(RuntimeError):
+    """Raised when a caller cancels an in-progress GitHub Actions workflow."""
+
+
 class GitHubAppClientBase:
     """Core GitHub App authentication and HTTP request handling."""
 

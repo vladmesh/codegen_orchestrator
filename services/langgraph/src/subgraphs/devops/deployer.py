@@ -202,9 +202,16 @@ class DeployerNode(FunctionalNode):
             "server_handle": first_resource.get("server_handle"),
         }
 
+    async def _run_cancelled(self, run_id: str | None) -> bool:
+        if not run_id:
+            return False
+        run = await api_client.get(f"runs/{run_id}")
+        return run.get("status") == "cancelled"
+
     async def run(self, state: DevOpsState) -> dict:
         """Build DOTENV, write GitHub secrets, trigger deploy.yml, wait for result."""
         project_id = state.get("project_id")
+        run_id = state.get("run_id")
         project_spec = state.get("project_spec") or {}
         resolved_secrets = state.get("resolved_secrets", {})
         logger.info("deployer_start", project_id=project_id)
@@ -235,6 +242,9 @@ class DeployerNode(FunctionalNode):
 
         try:
             github = GitHubAppClient()
+
+            if await self._run_cancelled(run_id):
+                return {"deployment_result": {"status": "cancelled"}}
 
             # 0. Fetch connection credentials for the same target server.
             server = await api_client.get_server(server_handle) if server_handle else None
@@ -284,6 +294,9 @@ class DeployerNode(FunctionalNode):
                     repo=repo,
                 )
 
+            if await self._run_cancelled(run_id):
+                return {"deployment_result": {"status": "cancelled"}}
+
             # 3. Record dispatch time BEFORE triggering (for race condition safety)
             dispatch_time = datetime.now(UTC)
 
@@ -298,6 +311,7 @@ class DeployerNode(FunctionalNode):
                 branch="main",
                 timeout_seconds=600,
                 created_after=dispatch_time,
+                cancel_check=lambda: self._run_cancelled(run_id),
             )
 
             logger.info(
@@ -336,6 +350,9 @@ class DeployerNode(FunctionalNode):
             }
 
         except (RuntimeError, TimeoutError) as e:
+            if type(e).__name__ == "WorkflowCancelledError":
+                logger.info("deploy_workflow_cancelled", project_id=project_id, run_id=run_id)
+                return {"deployment_result": {"status": "cancelled"}}
             logger.warning("deploy_workflow_failed", error=str(e))
 
             # Attempt to rerun failed jobs (gets a new GH Actions runner)

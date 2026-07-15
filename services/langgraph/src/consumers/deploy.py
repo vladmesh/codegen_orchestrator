@@ -114,6 +114,7 @@ def _build_subgraph_input(
     """Build DevOps subgraph input from deploy job data."""
     return {
         "project_id": project_id,
+        "run_id": job_data.get("task_id"),
         "project_spec": project.model_dump(),
         "repo_info": {
             "full_name": git_url.replace("https://github.com/", "")
@@ -344,6 +345,10 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
             deployed_url=result.get("deployed_url"),
             errors=result.get("errors"),
         )
+
+        if result.get("deployment_result", {}).get("status") == "cancelled":
+            logger.info("deploy_job_cancelled_during_actions", task_id=task_id)
+            return {"status": "cancelled"}
 
         if result.get("deployed_url"):
             smoke_result = result.get("smoke_result")

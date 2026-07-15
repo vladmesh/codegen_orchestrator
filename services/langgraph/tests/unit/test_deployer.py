@@ -10,6 +10,10 @@ from tests.unit.factories import make_repository
 from src.subgraphs.devops.deployer import DeployerNode
 
 
+class WorkflowCancelledError(RuntimeError):
+    """Test double for the cancellation raised by the GitHub client."""
+
+
 @pytest.fixture
 def deployer():
     return DeployerNode()
@@ -176,6 +180,21 @@ class TestDeployerNodeHappyPath:
         assert call_kwargs["workflow_file"] == "deploy.yml"
         assert "created_after" in call_kwargs
         assert isinstance(call_kwargs["created_after"], datetime)
+
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_cancelled_run_stops_actions_polling_without_rerun(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        mock_api.get = AsyncMock(return_value={"status": "running"})
+        gh.wait_for_workflow_completion.side_effect = WorkflowCancelledError("cancelled")
+
+        result = await deployer.run({**base_state, "run_id": "deploy-1"})
+
+        assert result["deployment_result"] == {"status": "cancelled"}
+        gh.get_latest_workflow_run.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
