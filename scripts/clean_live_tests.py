@@ -312,6 +312,12 @@ def clean_database():
         f"(SELECT a.id FROM applications a JOIN repositories r ON r.id = a.repo_id "
         f"JOIN projects p ON p.id = r.project_id WHERE {_build_conditions('p')});"
     )
+    # application_health_history FKs applications (NO ACTION), delete it first.
+    stmts.append(
+        "DELETE FROM application_health_history WHERE application_id IN "
+        f"(SELECT a.id FROM applications a JOIN repositories r ON r.id = a.repo_id "
+        f"JOIN projects p ON p.id = r.project_id WHERE {_build_conditions('p')});"
+    )
     stmts.append(
         f"DELETE FROM applications WHERE repo_id IN "  # noqa: S608
         f"(SELECT id FROM repositories WHERE project_id IN ({sub}));"
