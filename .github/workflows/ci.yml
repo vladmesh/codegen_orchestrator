@@ -109,6 +109,9 @@ jobs:
       - name: Run unit tests
         run: make test-unit
 
+      - name: Run live cleanup auth/FK regression
+        run: uv run pytest -q tests/live/test_cleanup_auth_fk.py
+
       - name: Run Redis capability cleanup regression
         run: |
           docker run --detach --rm --name redis-cleanup-contract redis:7-alpine
