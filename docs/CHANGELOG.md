@@ -2,6 +2,9 @@
 
 ## 2026-07-15
 
+- Made owned-worker teardown idempotent across scheduler and live cleanup races: concurrent Docker
+  removal is accepted only after bounded absence verification, operational failures remain visible,
+  and live cleanup deletes and verifies worker Redis keys independently.
 - Hardened the Stage 7 live mega path: noop engineering pushes the checked-out story branch and
   reports git failures through the worker result API, Redis blocking-read timeouts are idle polls,
   the public registry hostname resolves to Caddy inside Compose, and owned worker cleanup plus

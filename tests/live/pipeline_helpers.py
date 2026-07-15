@@ -37,6 +37,8 @@ SCAFFOLD_TIMEOUT = 120
 ENGINEERING_TIMEOUT = 420  # 7 min (worker spawn + noop + CI)
 DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
 SCAFFOLD_FENCE_TIMEOUT = 900
+WORKER_REMOVAL_TIMEOUT = 15
+WORKER_REMOVAL_POLL_INTERVAL = 0.25
 
 
 # ── Low-level helpers ────────────────────────────────────────────────────
@@ -556,7 +558,38 @@ def capture_owned_workers(ctx: dict) -> None:
     ctx["manifest"].write(ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json")
 
 
-def cleanup_owned_workers(ctx: dict, errors: list[str]) -> None:
+def _wait_for_container_absence(
+    container: str,
+    *,
+    timeout: float = WORKER_REMOVAL_TIMEOUT,
+    poll_interval: float = WORKER_REMOVAL_POLL_INTERVAL,
+) -> str | None:
+    """Return None after confirmed absence, otherwise a safe failure reason."""
+    deadline = time.monotonic() + timeout
+    while True:
+        verify = subprocess.run(
+            ["docker", "inspect", container],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ORCHESTRATOR_ROOT,
+        )
+        if verify.returncode != 0:
+            if "No such container" in verify.stderr:
+                return None
+            return "Docker inspect failed"
+        if time.monotonic() >= deadline:
+            return "still exists after removal wait"
+        time.sleep(poll_interval)
+
+
+def cleanup_owned_workers(
+    ctx: dict,
+    errors: list[str],
+    *,
+    timeout: float = WORKER_REMOVAL_TIMEOUT,
+    poll_interval: float = WORKER_REMOVAL_POLL_INTERVAL,
+) -> None:
     """Remove run workers and verify their containers and Redis state are absent."""
     try:
         capture_owned_workers(ctx)
@@ -576,17 +609,20 @@ def cleanup_owned_workers(ctx: dict, errors: list[str]) -> None:
                 timeout=15,
                 cwd=ORCHESTRATOR_ROOT,
             )
-            if removed.returncode != 0 and "No such container" not in removed.stderr:
-                errors.append(f"worker {worker_id}: {removed.stderr.strip()}")
-            verify = subprocess.run(
-                ["docker", "inspect", container],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                cwd=ORCHESTRATOR_ROOT,
+            removal_reason = None
+            if removed.returncode != 0 and not any(
+                marker in removed.stderr
+                for marker in ("No such container", "already in progress")
+            ):
+                removal_reason = "Docker removal failed"
+            absence_reason = _wait_for_container_absence(
+                container,
+                timeout=timeout,
+                poll_interval=poll_interval,
             )
-            if verify.returncode == 0:
-                errors.append(f"worker {worker_id} container still exists")
+            reason = removal_reason or absence_reason
+            if reason:
+                errors.append(f"worker {worker_id} container {container}: {reason}")
         keys = [
             f"worker:status:{worker_id}",
             f"worker:meta:{worker_id}",
@@ -604,6 +640,25 @@ def cleanup_owned_workers(ctx: dict, errors: list[str]) -> None:
         )
         if deleted.returncode != 0:
             errors.append(f"worker {worker_id} Redis cleanup: {deleted.stderr.strip()}")
+        else:
+            remaining = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "exec",
+                    "-T",
+                    "redis",
+                    "redis-cli",
+                    "EXISTS",
+                    *keys,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=ORCHESTRATOR_ROOT,
+            )
+            if remaining.returncode != 0 or remaining.stdout.strip() != "0":
+                errors.append(f"worker {worker_id} Redis cleanup: keys remain or verify failed")
         # Capability images are deterministic hashes of agent type and capabilities.
         # They contain no run input and are deliberately safe to reuse between runs.
 
