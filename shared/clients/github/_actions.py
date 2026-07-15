@@ -248,9 +248,6 @@ class ActionsMixin:
                     f"Workflow {workflow_file} did not complete within {timeout_seconds}s"
                 )
 
-            if cancel_check and await cancel_check():
-                raise WorkflowCancelledError(f"Workflow {workflow_file} cancelled by teardown")
-
             run = await self.get_latest_workflow_run(
                 owner,
                 repo,
@@ -267,7 +264,9 @@ class ActionsMixin:
 
             if cancel_check and await cancel_check():
                 await self.cancel_workflow_run(owner, repo, run["id"])
-                raise WorkflowCancelledError(f"Workflow {workflow_file} cancelled by teardown")
+                return await self._wait_for_cancelled_workflow_run(
+                    owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
+                )
 
             if run["status"] == "completed":
                 if run["conclusion"] == "success":
@@ -293,6 +292,44 @@ class ActionsMixin:
                 status=run["status"],
                 elapsed_sec=int(elapsed),
             )
+            await asyncio.sleep(poll_interval)
+
+    async def _wait_for_cancelled_workflow_run(
+        self,
+        owner: str,
+        repo: str,
+        run_id: int,
+        workflow_file: str,
+        timeout_seconds: int,
+        poll_interval: int,
+    ) -> dict:
+        """Wait for GitHub to make a teardown-cancelled workflow terminal."""
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        start = datetime.now(UTC)
+        while True:
+            if (datetime.now(UTC) - start).total_seconds() > timeout_seconds:
+                raise TimeoutError(
+                    f"Workflow {workflow_file} run {run_id} did not cancel within "
+                    f"{timeout_seconds}s"
+                )
+            response = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}",
+                headers=headers,
+            )
+            run = response.json()
+            if run["status"] == "completed":
+                if run.get("conclusion") != "cancelled":
+                    raise RuntimeError(
+                        f"Workflow {workflow_file} run {run_id} completed as "
+                        f"{run.get('conclusion')} after teardown cancellation"
+                    )
+                logger.info("workflow_cancelled_by_teardown", workflow=workflow_file, run_id=run_id)
+                raise WorkflowCancelledError(f"Workflow {workflow_file} cancelled by teardown")
             await asyncio.sleep(poll_interval)
 
     async def cancel_workflow_run(self, owner: str, repo: str, run_id: int) -> None:

@@ -1,13 +1,13 @@
 from datetime import UTC, datetime, timedelta
 import os
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 import respx
 
-from shared.clients.github import GitHubAppClient, WorkflowNotFoundError
+from shared.clients.github import GitHubAppClient, WorkflowCancelledError, WorkflowNotFoundError
 
 
 @pytest.fixture
@@ -625,3 +625,36 @@ async def test_enable_repo_auto_merge_success(authed_client):
 
             body = json.loads(route.calls[0].request.content)
             assert body["allow_auto_merge"] is True
+
+
+@pytest.mark.asyncio
+async def test_teardown_cancels_actions_run_after_poll_sleep(authed_client):
+    """A fence observed after sleeping still cancels the dispatched workflow run."""
+    active_run = {
+        "id": 42,
+        "status": "in_progress",
+        "conclusion": None,
+        "html_url": "https://example.test/runs/42",
+    }
+    completed_response = MagicMock()
+    completed_response.json.return_value = {
+        **active_run,
+        "status": "completed",
+        "conclusion": "cancelled",
+    }
+    authed_client.get_latest_workflow_run = AsyncMock(side_effect=[active_run, active_run])
+    authed_client.cancel_workflow_run = AsyncMock()
+    authed_client.get_token = AsyncMock(return_value="token")
+    authed_client._make_request = AsyncMock(return_value=completed_response)
+    checks = iter([False, True])
+
+    async def cancel_check() -> bool:
+        return next(checks)
+
+    with patch("shared.clients.github._actions.asyncio.sleep", new=AsyncMock()):
+        with pytest.raises(WorkflowCancelledError):
+            await authed_client.wait_for_workflow_completion(
+                "my-org", "my-repo", "deploy.yml", poll_interval=0, cancel_check=cancel_check
+            )
+
+    authed_client.cancel_workflow_run.assert_awaited_once_with("my-org", "my-repo", 42)

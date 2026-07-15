@@ -69,6 +69,15 @@ def live_work_leases_key(project_id: str) -> str:
     return f"live:work:leases:{project_id}"
 
 
+def live_work_failure_key(project_id: str) -> str:
+    return f"live:work:failed:{project_id}"
+
+
+async def _mark_live_work_failure(redis: RedisStreamClient, project_id: str, reason: str) -> None:
+    """Leave a cleanup-visible fence when a cancelled stream entry cannot be settled."""
+    await redis.redis.set(live_work_failure_key(project_id), reason, ex=LIVE_WORK_LEASE_SECONDS * 2)
+
+
 async def _begin_live_work(redis: RedisStreamClient, project_id: str) -> str | None:
     """Register a cancellable execution lease unless live teardown has fenced the project."""
     token = uuid.uuid4().hex
@@ -116,14 +125,30 @@ async def _refresh_live_work_lease(redis: RedisStreamClient, project_id: str, to
 async def _cancel_on_live_teardown(
     redis: RedisStreamClient, project_id: str, token: str, owner: asyncio.Task[object]
 ) -> None:
-    while True:
-        await asyncio.sleep(LIVE_WORK_LEASE_REFRESH_SECONDS)
-        if await redis.redis.exists(live_work_cancel_key(project_id)):
-            owner.cancel()
-            return
-        if not await _refresh_live_work_lease(redis, project_id, token):
-            owner.cancel()
-            return
+    try:
+        while True:
+            await asyncio.sleep(LIVE_WORK_LEASE_REFRESH_SECONDS)
+            if await redis.redis.exists(live_work_cancel_key(project_id)):
+                owner.cancel()
+                return
+            if not await _refresh_live_work_lease(redis, project_id, token):
+                await _mark_live_work_failure(redis, project_id, "lease_lost")
+                owner.cancel()
+                return
+    except Exception:
+        logger.error(
+            "live_work_watchdog_failed",
+            project_id=project_id,
+            error_type="redis_error",
+            exc_info=True,
+        )
+        try:
+            await _mark_live_work_failure(redis, project_id, "watchdog_failed")
+        except Exception:
+            logger.error(
+                "live_work_failure_marker_write_failed", project_id=project_id, exc_info=True
+            )
+        owner.cancel()
 
 
 def validate_queued_message(model, job_data: dict):
@@ -250,12 +275,17 @@ async def run_queue_worker(  # noqa: PLR0915
                     await redis.ack(queue, group, msg.message_id)
                     logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
                 except asyncio.CancelledError:
-                    cancelled_by_teardown = project_id and await redis.redis.exists(
-                        live_work_cancel_key(project_id)
+                    cancelled_by_teardown = project_id and (
+                        await redis.redis.exists(live_work_cancel_key(project_id))
+                        or await redis.redis.exists(live_work_failure_key(project_id))
                     )
                     if not cancelled_by_teardown:
                         raise
-                    await redis.ack(queue, group, msg.message_id)
+                    try:
+                        await redis.ack(queue, group, msg.message_id)
+                    except Exception:
+                        await _mark_live_work_failure(redis, project_id, "ack_failed")
+                        raise
                     logger.info("live_teardown_active_job_acked", entry_id=msg.message_id)
                 finally:
                     if cancellation_watch is not None:

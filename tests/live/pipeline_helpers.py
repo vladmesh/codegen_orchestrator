@@ -439,9 +439,13 @@ def cancel_and_wait_for_active_work(
     """Fence capability consumers and wait until every owned execution lease has exited."""
     cancel_key = f"live:work:cancelled:{project_id}"
     leases_key = f"live:work:leases:{project_id}"
+    failure_key = f"live:work:failed:{project_id}"
     command("SET", cancel_key, "1", "EX", str(SCAFFOLD_FENCE_TIMEOUT))
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        failure = command("GET", failure_key)
+        if failure:
+            raise CleanupError(f"active work for project {project_id} could not settle: {failure}")
         active = command(
             "EVAL",
             "local t=redis.call('TIME'); local n=t[1]*1000+math.floor(t[2]/1000); "
