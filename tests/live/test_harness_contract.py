@@ -328,6 +328,18 @@ def test_scaffold_fence_makes_unterminated_claim_red():
         )
 
 
+def test_active_work_fence_makes_ack_failure_red():
+    def command(*args):
+        if args[0] == "GET":
+            return "ack_failed"
+        return "OK"
+
+    with pytest.raises(CleanupError, match="could not settle: ack_failed"):
+        pipeline_helpers.cancel_and_wait_for_active_work(
+            "project-1", command=command, timeout=0.001, poll_interval=0
+        )
+
+
 def test_scaffold_fence_prunes_crashed_execution_after_lease_expiry():
     calls = []
 

@@ -179,6 +179,21 @@ class TestCheckMessageStaleness:
 
 class TestTerminalConsumerMessages:
     @pytest.mark.asyncio()
+    async def test_live_work_watchdog_cancels_owner_when_redis_check_fails(self):
+        from src.consumers._base import _cancel_on_live_teardown
+
+        redis = MagicMock()
+        redis.redis.exists = AsyncMock(side_effect=RuntimeError("redis unavailable"))
+        redis.redis.set = AsyncMock()
+        owner = MagicMock()
+
+        with patch("src.consumers._base.asyncio.sleep", new=AsyncMock()):
+            await _cancel_on_live_teardown(redis, "project-1", "lease-1", owner)
+
+        owner.cancel.assert_called_once()
+        redis.redis.set.assert_awaited_once()
+
+    @pytest.mark.asyncio()
     async def test_live_work_heartbeat_refreshes_lease_ttl_atomically(self):
         from src.consumers._base import _refresh_live_work_lease
 
@@ -224,6 +239,39 @@ class TestTerminalConsumerMessages:
             await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
 
         redis.ack.assert_awaited_once_with("queue", "capability-workers", "1-0")
+
+    @pytest.mark.asyncio()
+    async def test_teardown_ack_failure_leaves_cleanup_visible_failure(self, mock_api_client):
+        from src.consumers._base import run_queue_worker
+
+        mock_api_client.get.return_value = {"status": "running"}
+        message = MagicMock(message_id="1-0", data={"task_id": "run-1", "project_id": "project-1"})
+
+        async def consume(*_args, **_kwargs):
+            yield message
+
+        async def process(_data, _redis):
+            await asyncio.Event().wait()
+            return {}
+
+        redis = MagicMock()
+        redis.connect = AsyncMock()
+        redis.close = AsyncMock()
+        redis.ack = AsyncMock(side_effect=RuntimeError("ack unavailable"))
+        redis.consume = consume
+        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.exists = AsyncMock(return_value=True)
+        redis.redis.set = AsyncMock()
+        redis.redis.zrem = AsyncMock()
+
+        with (
+            patch("src.consumers._base.RedisStreamClient", return_value=redis),
+            patch("src.consumers._base.LIVE_WORK_LEASE_REFRESH_SECONDS", 0),
+        ):
+            await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
+
+        redis.redis.set.assert_awaited_once()
+        assert "ack_failed" in redis.redis.set.await_args.args
 
     @pytest.mark.asyncio()
     async def test_validation_error_is_acked_with_safe_diagnostics(self, mock_api_client):
