@@ -163,8 +163,9 @@ async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, t
     }
 
     async def get(url, **kwargs):
-        return httpx.Response(200, json=responses[url])
+        return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
 
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
     api = SimpleNamespace(get=get)
     await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
@@ -174,40 +175,43 @@ async def test_wait_deploy_uses_application_owned_port_allocation(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_wait_deploy_reads_servers_with_authenticated_client(monkeypatch, tmp_path):
-    """Regression: /api/servers/ is auth-only.
+async def test_wait_deploy_reads_servers_as_internal_service(monkeypatch, tmp_path):
+    """Regression: /api/servers/ and its ports are require_internal_or_admin.
 
-    Routing it through api_no_auth returns a 401 error body ({"detail": ...}),
-    and iterating that dict raises `TypeError: string indices must be integers`
-    before the deploy is registered in the ownership manifest. wait_deploy must
-    use the X-Telegram-ID client so server_deployment reaches the manifest.
+    The harness user carries only X-Telegram-ID and is not admin, so those
+    endpoints answer 403 unless the request also sends X-Internal-Key. Without
+    it wait_deploy would iterate a `{"detail": ...}` error body and raise
+    `TypeError: string indices must be integers` before registering the deploy
+    in the ownership manifest, so cleanup never removes /opt/services/<project>.
+
+    Assert both auth-gated calls carry X-Internal-Key and, on a valid RUNNING
+    application, server_deployment and port_allocation reach the manifest.
     """
     manifest = OwnershipManifest("project-1")
     ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
-    auth_responses = {
+    responses = {
         "/api/repositories/": [{"id": "repo-1"}],
         "/api/applications/": [{"id": 21, "status": "running"}],
         "/api/servers/": [{"handle": "server-1", "public_ip": "192.0.2.1"}],
         "/api/servers/server-1/ports": [{"id": 8, "port": 8010, "application_id": 21}],
     }
+    server_endpoint_headers = {}
 
-    async def auth_get(url, **kwargs):
-        return httpx.Response(200, json=auth_responses[url])
+    async def get(url, headers=None, **kwargs):
+        if url.startswith("/api/servers"):
+            server_endpoint_headers[url] = headers
+        return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
 
-    no_auth_calls = []
-
-    async def no_auth_get(url, **kwargs):
-        no_auth_calls.append(url)
-        # What the real unauthenticated client returns for auth-only endpoints.
-        return httpx.Response(401, json={"detail": "Authentication required"})
-
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
     monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
-    api = SimpleNamespace(get=auth_get)
-    api_no_auth = SimpleNamespace(get=no_auth_get)
+    api = SimpleNamespace(get=get)
 
-    await pipeline_helpers.wait_deploy(api, api_no_auth, ctx, timeout=1)
+    await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
 
-    assert no_auth_calls == []
+    assert set(server_endpoint_headers) == {"/api/servers/", "/api/servers/server-1/ports"}
+    for headers in server_endpoint_headers.values():
+        assert headers["X-Internal-Key"] == "test-internal-key"
+
     assert ctx["server_ip"] == "192.0.2.1"
     assert ctx["port"] == 8010
     assert ctx["allocation_id"] == 8
@@ -221,6 +225,34 @@ async def test_wait_deploy_reads_servers_with_authenticated_client(monkeypatch, 
     written = json.loads((tmp_path / ".live-manifests" / f"{manifest.run_id}.json").read_text())
     kinds = {resource["kind"] for resource in written["resources"]}
     assert {"server_deployment", "port_allocation"} <= kinds
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_fails_loudly_when_servers_endpoint_rejects(monkeypatch, tmp_path):
+    """A non-200 from the auth-gated servers endpoint must surface as a clear
+    HTTP error, not a `TypeError` from iterating an error body, and must leave
+    the manifest empty."""
+    manifest = OwnershipManifest("project-1")
+    ctx = {"project_id": "project-1", "project_name": "run", "manifest": manifest}
+    responses = {
+        "/api/repositories/": [{"id": "repo-1"}],
+        "/api/applications/": [{"id": 21, "status": "running"}],
+    }
+
+    async def get(url, **kwargs):
+        request = httpx.Request("GET", url)
+        if url == "/api/servers/":
+            return httpx.Response(403, json={"detail": "Admin access required"}, request=request)
+        return httpx.Response(200, json=responses[url], request=request)
+
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    api = SimpleNamespace(get=get)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await pipeline_helpers.wait_deploy(api, api, ctx, timeout=1)
+
+    assert manifest.resources == []
 
 
 def test_debug_dump_retains_ci_failure_evidence(monkeypatch, tmp_path):
