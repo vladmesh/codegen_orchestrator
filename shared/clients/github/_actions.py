@@ -269,8 +269,9 @@ class ActionsMixin:
                     continue
 
                 if cancel_check and await cancel_check():
-                    await self.cancel_workflow_run(owner, repo, run["id"])
-                    return await self._wait_for_cancelled_workflow_run(
+                    # Never returns normally: raises WorkflowCancelledError once the
+                    # stop is proven, WorkflowCancellationUnprovenError otherwise.
+                    await self._cancel_and_confirm_workflow_run(
                         owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
                     )
 
@@ -343,9 +344,8 @@ class ActionsMixin:
                 )
             if run["status"] == "completed":
                 return
-            await asyncio.shield(self.cancel_workflow_run(owner, repo, run["id"]))
             await asyncio.shield(
-                self._wait_for_cancelled_workflow_run(
+                self._cancel_and_confirm_workflow_run(
                     owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
                 )
             )
@@ -356,6 +356,39 @@ class ActionsMixin:
         except Exception as exc:
             raise WorkflowCancellationUnprovenError(
                 f"Workflow {workflow_file} cancellation could not be verified"
+            ) from exc
+
+    async def _cancel_and_confirm_workflow_run(
+        self,
+        owner: str,
+        repo: str,
+        run_id: int,
+        workflow_file: str,
+        timeout_seconds: int,
+        poll_interval: int,
+    ) -> None:
+        """Cancel one known run and prove it reached the cancelled terminal state.
+
+        Single owner of teardown cancellation for both the graceful cancel_check
+        path and the interrupted-wait path, so every unproven stop fails closed
+        identically.
+
+        Raises:
+            WorkflowCancelledError: cancellation is proven terminal.
+            WorkflowCancellationUnprovenError: the stop cannot be verified
+                (cancel request rejected, wait timed out, or the run completed
+                with a non-cancelled conclusion).
+        """
+        try:
+            await self.cancel_workflow_run(owner, repo, run_id)
+            await self._wait_for_cancelled_workflow_run(
+                owner, repo, run_id, workflow_file, timeout_seconds, poll_interval
+            )
+        except WorkflowCancelledError:
+            raise
+        except Exception as exc:
+            raise WorkflowCancellationUnprovenError(
+                f"Workflow {workflow_file} run {run_id} cancellation could not be verified"
             ) from exc
 
     async def _wait_for_cancelled_workflow_run(

@@ -104,6 +104,28 @@ async def test_deploy_worker_smoke_pass(
 
 
 @pytest.mark.asyncio
+async def test_unproven_cancellation_propagates_not_masked_as_failure(
+    mock_redis, mock_api, mock_allocations, mock_devops_subgraph
+):
+    """An unproven Actions cancellation must reach the live-work fence, not become a failed run."""
+    from shared.clients.github import WorkflowCancellationUnprovenError
+
+    mock_devops_subgraph.ainvoke = AsyncMock(
+        side_effect=WorkflowCancellationUnprovenError("could not verify stop")
+    )
+
+    from src.consumers.deploy import process_deploy_job
+
+    with pytest.raises(WorkflowCancellationUnprovenError):
+        await process_deploy_job(_job(), mock_redis)
+
+    # Never patched the run into a terminal failed/give-up state.
+    assert not [c for c in mock_api.patch.call_args_list if "failed" in str(c)]
+    # Deploy lock released via finally so the next attempt can proceed.
+    mock_redis.redis.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_build_subgraph_input_includes_smoke_result():
     """_build_subgraph_input must include smoke_result key so LangGraph tracks it."""
     from src.consumers.deploy import _build_subgraph_input

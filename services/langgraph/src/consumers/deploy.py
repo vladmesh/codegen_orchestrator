@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import structlog
 
+from shared.clients.github import WorkflowCancellationUnprovenError
 from shared.config_store import ConfigStore
 from shared.contracts.dto.application import ApplicationStatus
 from shared.contracts.dto.project import ProjectDTO
@@ -416,6 +417,17 @@ async def process_deploy_job(job_data: dict, redis: RedisStreamClient) -> dict:
                 deploy_fix_attempt=msg.deploy_fix_attempt,
             )
 
+    except WorkflowCancellationUnprovenError:
+        # Teardown could not prove the dispatched GitHub Actions run stopped.
+        # Masking this as a normal deploy failure would ACK the queue entry and
+        # let cleanup delete external/DB resources while the run may still execute.
+        # Propagate so the live-work fence marks the failure and cleanup fails closed.
+        logger.error(
+            "deploy_workflow_cancellation_unproven",
+            task_id=task_id,
+            project_id=project_id,
+        )
+        raise
     except Exception as e:
         logger.error(
             "deploy_job_exception",

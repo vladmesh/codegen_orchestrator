@@ -9,6 +9,7 @@ import uuid
 
 import structlog
 
+from shared.clients.github import WorkflowCancellationUnprovenError
 from shared.redis_client import RedisStreamClient
 
 logger = structlog.get_logger(__name__)
@@ -147,6 +148,11 @@ async def execute_live_work(
             raise
         logger.info("live_teardown_active_job_acked", entry_id=message_id)
         return None
+    except WorkflowCancellationUnprovenError:
+        # An external GitHub Actions run may still be live. This is fail-closed
+        # regardless of which teardown key is set: never ACK, always fence cleanup.
+        await _mark_live_work_failure(redis, project_id, "workflow_cancellation_unproven")
+        raise
     except Exception:
         if await redis.redis.exists(live_work_cancel_key(project_id)):
             await _mark_live_work_failure(redis, project_id, "cancel_settlement_failed")

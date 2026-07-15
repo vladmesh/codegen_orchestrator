@@ -667,6 +667,39 @@ async def test_teardown_cancels_actions_run_after_poll_sleep(authed_client):
 
 
 @pytest.mark.asyncio
+async def test_graceful_cancel_fails_closed_when_run_not_cancelled(authed_client):
+    """A graceful stop that cannot be proven raises the unproven error, not a plain failure."""
+    active_run = {
+        "id": 42,
+        "status": "in_progress",
+        "conclusion": None,
+        "html_url": "https://example.test/runs/42",
+    }
+    completed_response = MagicMock()
+    completed_response.json.return_value = {
+        **active_run,
+        "status": "completed",
+        "conclusion": "failure",
+    }
+    authed_client.get_latest_workflow_run = AsyncMock(side_effect=[active_run, active_run])
+    authed_client.cancel_workflow_run = AsyncMock()
+    authed_client.get_token = AsyncMock(return_value="token")
+    authed_client._make_request = AsyncMock(return_value=completed_response)
+    checks = iter([False, True])
+
+    async def cancel_check() -> bool:
+        return next(checks)
+
+    with patch("shared.clients.github._actions.asyncio.sleep", new=AsyncMock()):
+        with pytest.raises(WorkflowCancellationUnprovenError):
+            await authed_client.wait_for_workflow_completion(
+                "my-org", "my-repo", "deploy.yml", poll_interval=0, cancel_check=cancel_check
+            )
+
+    authed_client.cancel_workflow_run.assert_awaited_once_with("my-org", "my-repo", 42)
+
+
+@pytest.mark.asyncio
 async def test_interrupted_wait_cancels_known_actions_run_before_propagating(authed_client):
     active_run = {"id": 42, "status": "in_progress", "conclusion": None}
     authed_client.get_latest_workflow_run = AsyncMock(return_value=active_run)

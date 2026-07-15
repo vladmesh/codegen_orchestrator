@@ -274,6 +274,37 @@ class TestTerminalConsumerMessages:
         assert "ack_failed" in redis.redis.set.await_args.args
 
     @pytest.mark.asyncio()
+    async def test_unproven_workflow_cancellation_fences_cleanup_without_ack(self):
+        from shared.clients.github import WorkflowCancellationUnprovenError
+        from src.consumers._live_work import execute_live_work, live_work_failure_key
+
+        redis = MagicMock()
+        redis.ack = AsyncMock()
+        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.set = AsyncMock()
+        redis.redis.zrem = AsyncMock()
+        redis.redis.exists = AsyncMock(return_value=False)
+
+        async def process():
+            raise WorkflowCancellationUnprovenError("could not verify stop")
+
+        with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0):
+            with pytest.raises(WorkflowCancellationUnprovenError):
+                await execute_live_work(
+                    redis,
+                    queue="queue",
+                    group="capability-workers",
+                    message_id="1-0",
+                    project_id="project-1",
+                    process=process,
+                )
+
+        redis.ack.assert_not_awaited()
+        redis.redis.set.assert_awaited_once()
+        assert redis.redis.set.await_args.args[0] == live_work_failure_key("project-1")
+        assert "workflow_cancellation_unproven" in redis.redis.set.await_args.args
+
+    @pytest.mark.asyncio()
     async def test_validation_error_is_acked_with_safe_diagnostics(self, mock_api_client):
         from src.consumers._base import run_queue_worker, validate_queued_message
 

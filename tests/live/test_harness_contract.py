@@ -342,6 +342,41 @@ def test_active_work_fence_makes_ack_failure_red():
         )
 
 
+@pytest.mark.asyncio
+async def test_unproven_workflow_cancellation_marker_fences_external_cleanup(monkeypatch):
+    """A workflow_cancellation_unproven fence must stop cleanup before GitHub deletion."""
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+    github_cleanup = []
+
+    def command(*args):
+        if args[0] == "GET" and args[1].startswith("live:work:failed:"):
+            return "workflow_cancellation_unproven"
+        return "OK"
+
+    def fence(ctx):
+        pipeline_helpers.cancel_and_wait_for_active_work(
+            ctx["project_id"], command=command, timeout=0.001, poll_interval=0
+        )
+
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_scaffold", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_runs", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline_helpers, "wait_for_owned_runs", AsyncMock())
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_active_work", fence)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_github_repo", github_cleanup.append)
+
+    async with httpx.AsyncClient(base_url="http://test") as api:
+        with pytest.raises(CleanupError, match="workflow_cancellation_unproven"):
+            await pipeline_helpers.cleanup_all(
+                api,
+                None,
+                {"project_id": "project-1", "repo_name": "repo", "manifest": manifest},
+            )
+
+    assert github_cleanup == []
+
+
 def test_capability_cleanup_removes_only_owned_queued_and_pending_entries():
     commands = []
 
