@@ -25,6 +25,7 @@ from shared.queues import WORKER_GROUP
 from shared.redis_client import RedisStreamClient
 
 from ..clients.api import api_client
+from ._live_work import execute_live_work
 from ._validation import _safe_validation_errors
 
 logger = structlog.get_logger(__name__)
@@ -160,10 +161,18 @@ async def run_queue_worker(
                     logger.debug("stale_job_acked", entry_id=msg.message_id, worker=service_name)
                     continue
 
-                result = await process_fn(msg.data, redis)
-                msg.data.update(result)
-                await redis.ack(queue, group, msg.message_id)
-                logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
+                project_id = msg.data.get("project_id")
+                result = await execute_live_work(
+                    redis,
+                    queue=queue,
+                    group=group,
+                    message_id=msg.message_id,
+                    project_id=project_id if isinstance(project_id, str) and project_id else None,
+                    process=lambda data=msg.data: process_fn(data, redis),
+                )
+                if result is not None:
+                    msg.data.update(result)
+                    logger.debug("job_acked", entry_id=msg.message_id, worker=service_name)
             except TerminalMessageValidationError as exc:
                 # A schema error cannot become valid when reclaimed from the PEL.
                 # ACK it after recording a payload-safe terminal diagnostic.

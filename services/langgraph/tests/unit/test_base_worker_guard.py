@@ -179,6 +179,132 @@ class TestCheckMessageStaleness:
 
 class TestTerminalConsumerMessages:
     @pytest.mark.asyncio()
+    async def test_live_work_watchdog_cancels_owner_when_redis_check_fails(self):
+        from src.consumers._live_work import _cancel_on_live_teardown
+
+        redis = MagicMock()
+        redis.redis.exists = AsyncMock(side_effect=RuntimeError("redis unavailable"))
+        redis.redis.set = AsyncMock()
+        owner = MagicMock()
+
+        with patch("src.consumers._live_work.asyncio.sleep", new=AsyncMock()):
+            await _cancel_on_live_teardown(redis, "project-1", "lease-1", owner)
+
+        owner.cancel.assert_called_once()
+        redis.redis.set.assert_awaited_once()
+
+    @pytest.mark.asyncio()
+    async def test_live_work_heartbeat_refreshes_lease_ttl_atomically(self):
+        from src.consumers._live_work import _refresh_live_work_lease
+
+        redis = MagicMock()
+        redis.redis.eval = AsyncMock(return_value=1)
+
+        assert await _refresh_live_work_lease(redis, "project-1", "lease-1")
+        script = redis.redis.eval.await_args.args[0]
+        assert "ZSCORE" in script
+        assert "ZADD" in script
+        assert "EXPIRE" in script
+
+    @pytest.mark.asyncio()
+    async def test_lost_live_work_lease_is_reported(self):
+        from src.consumers._live_work import _refresh_live_work_lease
+
+        redis = MagicMock()
+        redis.redis.eval = AsyncMock(return_value=0)
+
+        assert not await _refresh_live_work_lease(redis, "project-1", "lease-1")
+
+    @pytest.mark.asyncio()
+    async def test_live_teardown_fence_acks_queued_owned_message(self, mock_api_client):
+        from src.consumers._base import run_queue_worker
+
+        mock_api_client.get.return_value = {"status": "running"}
+        message = MagicMock(message_id="1-0", data={"task_id": "run-1", "project_id": "project-1"})
+
+        async def consume(*_args, **_kwargs):
+            yield message
+
+        async def process(_data, _redis):
+            raise AssertionError("fenced work must not start")
+
+        redis = MagicMock()
+        redis.connect = AsyncMock()
+        redis.close = AsyncMock()
+        redis.ack = AsyncMock()
+        redis.consume = consume
+        redis.redis.eval = AsyncMock(return_value=0)
+
+        with patch("src.consumers._base.RedisStreamClient", return_value=redis):
+            await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
+
+        redis.ack.assert_awaited_once_with("queue", "capability-workers", "1-0")
+
+    @pytest.mark.asyncio()
+    async def test_teardown_ack_failure_leaves_cleanup_visible_failure(self, mock_api_client):
+        from src.consumers._base import run_queue_worker
+
+        mock_api_client.get.return_value = {"status": "running"}
+        message = MagicMock(message_id="1-0", data={"task_id": "run-1", "project_id": "project-1"})
+
+        async def consume(*_args, **_kwargs):
+            yield message
+
+        async def process(_data, _redis):
+            await asyncio.Event().wait()
+            return {}
+
+        redis = MagicMock()
+        redis.connect = AsyncMock()
+        redis.close = AsyncMock()
+        redis.ack = AsyncMock(side_effect=RuntimeError("ack unavailable"))
+        redis.consume = consume
+        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.exists = AsyncMock(return_value=True)
+        redis.redis.set = AsyncMock()
+        redis.redis.zrem = AsyncMock()
+
+        with (
+            patch("src.consumers._base.RedisStreamClient", return_value=redis),
+            patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0),
+        ):
+            await asyncio.wait_for(run_queue_worker("test", "queue", process), timeout=1)
+
+        redis.redis.set.assert_awaited_once()
+        assert "ack_failed" in redis.redis.set.await_args.args
+
+    @pytest.mark.asyncio()
+    async def test_unproven_workflow_cancellation_fences_cleanup_without_ack(self):
+        from shared.clients.github import WorkflowCancellationUnprovenError
+        from src.consumers._live_work import execute_live_work, live_work_failure_key
+
+        redis = MagicMock()
+        redis.ack = AsyncMock()
+        redis.redis.eval = AsyncMock(return_value=1)
+        redis.redis.set = AsyncMock()
+        redis.redis.zrem = AsyncMock()
+        redis.redis.exists = AsyncMock(return_value=False)
+
+        async def process():
+            raise WorkflowCancellationUnprovenError("could not verify stop")
+
+        with patch("src.consumers._live_work.LIVE_WORK_LEASE_REFRESH_SECONDS", 0):
+            with pytest.raises(WorkflowCancellationUnprovenError):
+                await execute_live_work(
+                    redis,
+                    queue="queue",
+                    group="capability-workers",
+                    message_id="1-0",
+                    project_id="project-1",
+                    process=process,
+                )
+
+        redis.ack.assert_not_awaited()
+        redis.redis.set.assert_awaited_once()
+        assert redis.redis.set.await_args.args[0] == live_work_failure_key("project-1")
+        assert "workflow_cancellation_unproven" in redis.redis.set.await_args.args
+
+    @pytest.mark.asyncio()
     async def test_validation_error_is_acked_with_safe_diagnostics(self, mock_api_client):
         from src.consumers._base import run_queue_worker, validate_queued_message
 

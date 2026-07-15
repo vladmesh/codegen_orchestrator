@@ -25,6 +25,7 @@ class DevOpsState(TypedDict):
 
     # Input (from parent graph)
     project_id: str | None
+    run_id: str | None
     project_spec: dict | None
     allocated_resources: dict
     repo_info: dict | None

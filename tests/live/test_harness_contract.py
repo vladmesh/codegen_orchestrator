@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+from capability_cleanup import cleanup_owned_capability_messages
 import conftest as live_conftest
 from conftest import create_test_project_context
 import httpx
@@ -328,6 +330,125 @@ def test_scaffold_fence_makes_unterminated_claim_red():
         )
 
 
+def test_active_work_fence_makes_ack_failure_red():
+    def command(*args):
+        if args[0] == "GET":
+            return "ack_failed"
+        return "OK"
+
+    with pytest.raises(CleanupError, match="could not settle: ack_failed"):
+        pipeline_helpers.cancel_and_wait_for_active_work(
+            "project-1", command=command, timeout=0.001, poll_interval=0
+        )
+
+
+@pytest.mark.asyncio
+async def test_unproven_workflow_cancellation_marker_fences_external_cleanup(monkeypatch):
+    """A workflow_cancellation_unproven fence must stop cleanup before GitHub deletion."""
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+    github_cleanup = []
+
+    def command(*args):
+        if args[0] == "GET" and args[1].startswith("live:work:failed:"):
+            return "workflow_cancellation_unproven"
+        return "OK"
+
+    def fence(ctx):
+        pipeline_helpers.cancel_and_wait_for_active_work(
+            ctx["project_id"], command=command, timeout=0.001, poll_interval=0
+        )
+
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_scaffold", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_runs", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline_helpers, "wait_for_owned_runs", AsyncMock())
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_active_work", fence)
+    monkeypatch.setattr(pipeline_helpers, "cleanup_github_repo", github_cleanup.append)
+
+    async with httpx.AsyncClient(base_url="http://test") as api:
+        with pytest.raises(CleanupError, match="workflow_cancellation_unproven"):
+            await pipeline_helpers.cleanup_all(
+                api,
+                None,
+                {"project_id": "project-1", "repo_name": "repo", "manifest": manifest},
+            )
+
+    assert github_cleanup == []
+
+
+def test_capability_cleanup_removes_only_owned_queued_and_pending_entries():
+    commands = []
+
+    def command(*args):
+        commands.append(args)
+        if args[0] == "EVAL":
+            if sum(call[0] == "EVAL" for call in commands) == 2:
+                return "[]"
+            return (
+                '[{"stream":"engineering:queue","id":"1-0","groups":["capability-workers"]},'
+                '{"stream":"deploy:queue","id":"2-0","groups":["capability-workers"]}]'
+            )
+        return "1"
+
+    residue = cleanup_owned_capability_messages("project-1", {"run-1"}, command=command)
+
+    assert residue == []
+    assert commands[0][0] == "EVAL"
+    assert "engineering:queue" in commands[0]
+    assert "deploy:queue" in commands[0]
+    assert "qa:queue" in commands[0]
+    assert ("XACK", "engineering:queue", "capability-workers", "1-0") in commands
+    assert ("XDEL", "engineering:queue", "1-0") in commands
+    assert ("XACK", "deploy:queue", "capability-workers", "2-0") in commands
+    assert ("XDEL", "deploy:queue", "2-0") in commands
+
+
+def test_capability_cleanup_fails_closed_when_owned_residue_cannot_be_deleted():
+    calls = 0
+
+    def command(*args):
+        nonlocal calls
+        if args[0] == "EVAL":
+            calls += 1
+            return '[{"stream":"qa:queue","id":"3-0","groups":["qa-consumers"]}]'
+        return "0"
+
+    with pytest.raises(CleanupError, match="capability stream residue"):
+        cleanup_owned_capability_messages("project-1", {"run-1"}, command=command)
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cleanup_stops_before_external_cleanup_when_capability_ack_fails(monkeypatch):
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+    github_cleanup = []
+
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_scaffold", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_active_work", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_runs", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline_helpers, "wait_for_owned_runs", AsyncMock())
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "cleanup_owned_capability_work",
+        lambda ctx: (_ for _ in ()).throw(RuntimeError("temporary Redis ACK failure")),
+    )
+    monkeypatch.setattr(pipeline_helpers, "cleanup_github_repo", github_cleanup.append)
+
+    async with httpx.AsyncClient(base_url="http://test") as api:
+        with pytest.raises(CleanupError, match="temporary Redis ACK failure"):
+            await pipeline_helpers.cleanup_all(
+                api,
+                None,
+                {"project_id": "project-1", "repo_name": "repo", "manifest": manifest},
+            )
+
+    assert github_cleanup == []
+
+
 def test_scaffold_fence_prunes_crashed_execution_after_lease_expiry():
     calls = []
 
@@ -369,6 +490,84 @@ async def test_cleanup_does_not_verify_residue_before_claimed_work_stops(monkeyp
             )
 
     assert github_cleanup == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(monkeypatch):
+    events = []
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/runs/":
+            events.append("list-runs")
+            return httpx.Response(
+                200,
+                json=[{"id": "deploy-1", "status": "running", "type": "deploy"}],
+            )
+        if request.method == "PATCH" and request.url.path == "/api/runs/deploy-1":
+            events.append("cancel-run")
+            return httpx.Response(200)
+        if request.method == "GET" and request.url.path == "/api/projects/project-1":
+            return httpx.Response(404)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr(
+        pipeline_helpers, "cancel_owned_scaffold", lambda ctx: events.append("scaffold")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers, "cancel_owned_active_work", lambda ctx: events.append("active-work")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "cleanup_owned_capability_work",
+        lambda ctx: events.append("capability-streams"),
+    )
+
+    async def wait_for_runs(*args, **kwargs):
+        events.append("wait-runs")
+
+    monkeypatch.setattr(pipeline_helpers, "wait_for_owned_runs", wait_for_runs)
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_server_container", lambda ctx: events.append("server")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_owned_workers", lambda ctx, errors: events.append("workers")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "cleanup_registry_resources",
+        lambda ctx, errors: events.append("registry"),
+    )
+    monkeypatch.setattr(
+        pipeline_helpers, "cleanup_github_repo", lambda repo: events.append("github")
+    )
+    monkeypatch.setattr(
+        pipeline_helpers, "_cleanup_db", lambda project_id: events.append("database")
+    )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
+        await pipeline_helpers.cleanup_all(
+            api,
+            None,
+            {"project_id": "project-1", "repo_name": "repo", "manifest": manifest},
+        )
+
+    assert events == [
+        "scaffold",
+        "list-runs",
+        "cancel-run",
+        "wait-runs",
+        "active-work",
+        "capability-streams",
+        "server",
+        "workers",
+        "registry",
+        "github",
+        "database",
+    ]
 
 
 @pytest.mark.asyncio

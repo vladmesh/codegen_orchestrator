@@ -1,11 +1,16 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 import httpx
 
 from shared.log_config import get_logger
 
-from ._base import WorkflowNotFoundError
+from ._base import (
+    WorkflowCancellationUnprovenError,
+    WorkflowCancelledError,
+    WorkflowNotFoundError,
+)
 
 logger = get_logger(__name__)
 
@@ -216,6 +221,7 @@ class ActionsMixin:
         poll_interval: int = 15,
         created_after: datetime | None = None,
         head_sha: str | None = None,
+        cancel_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict:
         """Wait for the latest workflow run to complete.
 
@@ -239,36 +245,44 @@ class ActionsMixin:
         """
         start = datetime.now(UTC)
 
-        while True:
-            elapsed = (datetime.now(UTC) - start).total_seconds()
-            if elapsed > timeout_seconds:
-                raise TimeoutError(
-                    f"Workflow {workflow_file} did not complete within {timeout_seconds}s"
+        run: dict | None = None
+        try:
+            while True:
+                elapsed = (datetime.now(UTC) - start).total_seconds()
+                if elapsed > timeout_seconds:
+                    raise TimeoutError(
+                        f"Workflow {workflow_file} did not complete within {timeout_seconds}s"
+                    )
+
+                run = await self.get_latest_workflow_run(
+                    owner,
+                    repo,
+                    workflow_file,
+                    branch,
+                    created_after=created_after,
+                    head_sha=head_sha,
                 )
 
-            run = await self.get_latest_workflow_run(
-                owner,
-                repo,
-                workflow_file,
-                branch,
-                created_after=created_after,
-                head_sha=head_sha,
-            )
+                if not run:
+                    logger.info("workflow_not_found_waiting", workflow=workflow_file)
+                    await asyncio.sleep(poll_interval)
+                    continue
 
-            if not run:
-                logger.info("workflow_not_found_waiting", workflow=workflow_file)
-                await asyncio.sleep(poll_interval)
-                continue
-
-            if run["status"] == "completed":
-                if run["conclusion"] == "success":
-                    logger.info(
-                        "workflow_completed_success",
-                        workflow=workflow_file,
-                        run_id=run["id"],
+                if cancel_check and await cancel_check():
+                    # Never returns normally: raises WorkflowCancelledError once the
+                    # stop is proven, WorkflowCancellationUnprovenError otherwise.
+                    await self._cancel_and_confirm_workflow_run(
+                        owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
                     )
-                    return run
-                else:
+
+                if run["status"] == "completed":
+                    if run["conclusion"] == "success":
+                        logger.info(
+                            "workflow_completed_success",
+                            workflow=workflow_file,
+                            run_id=run["id"],
+                        )
+                        return run
                     try:
                         failure_logs = await self.get_workflow_failure_logs(owner, repo, run["id"])
                     except Exception:
@@ -278,13 +292,158 @@ class ActionsMixin:
                         f"See: {run['html_url']}\n{failure_logs}"
                     )
 
-            logger.info(
-                "workflow_in_progress",
-                workflow=workflow_file,
-                status=run["status"],
-                elapsed_sec=int(elapsed),
+                logger.info(
+                    "workflow_in_progress",
+                    workflow=workflow_file,
+                    status=run["status"],
+                    elapsed_sec=int(elapsed),
+                )
+                await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError:
+            await self._cancel_interrupted_workflow_wait(
+                owner,
+                repo,
+                workflow_file,
+                branch,
+                created_after,
+                head_sha,
+                run,
+                timeout_seconds,
+                poll_interval,
             )
+            raise
+
+    async def _cancel_interrupted_workflow_wait(
+        self,
+        owner: str,
+        repo: str,
+        workflow_file: str,
+        branch: str,
+        created_after: datetime | None,
+        head_sha: str | None,
+        run: dict | None,
+        timeout_seconds: int,
+        poll_interval: int,
+    ) -> None:
+        """Cancel and verify a workflow when its awaiting deploy task is interrupted."""
+        try:
+            if run is None:
+                run = await asyncio.shield(
+                    self.get_latest_workflow_run(
+                        owner,
+                        repo,
+                        workflow_file,
+                        branch,
+                        created_after=created_after,
+                        head_sha=head_sha,
+                    )
+                )
+            if run is None:
+                raise WorkflowCancellationUnprovenError(
+                    f"Workflow {workflow_file} cancellation could not identify a run"
+                )
+            if run["status"] == "completed":
+                return
+            await asyncio.shield(
+                self._cancel_and_confirm_workflow_run(
+                    owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
+                )
+            )
+        except WorkflowCancelledError:
+            return
+        except WorkflowCancellationUnprovenError:
+            raise
+        except Exception as exc:
+            raise WorkflowCancellationUnprovenError(
+                f"Workflow {workflow_file} cancellation could not be verified"
+            ) from exc
+
+    async def _cancel_and_confirm_workflow_run(
+        self,
+        owner: str,
+        repo: str,
+        run_id: int,
+        workflow_file: str,
+        timeout_seconds: int,
+        poll_interval: int,
+    ) -> None:
+        """Cancel one known run and prove it reached the cancelled terminal state.
+
+        Single owner of teardown cancellation for both the graceful cancel_check
+        path and the interrupted-wait path, so every unproven stop fails closed
+        identically.
+
+        Raises:
+            WorkflowCancelledError: cancellation is proven terminal.
+            WorkflowCancellationUnprovenError: the stop cannot be verified
+                (cancel request rejected, wait timed out, or the run completed
+                with a non-cancelled conclusion).
+        """
+        try:
+            await self.cancel_workflow_run(owner, repo, run_id)
+            await self._wait_for_cancelled_workflow_run(
+                owner, repo, run_id, workflow_file, timeout_seconds, poll_interval
+            )
+        except WorkflowCancelledError:
+            raise
+        except Exception as exc:
+            raise WorkflowCancellationUnprovenError(
+                f"Workflow {workflow_file} run {run_id} cancellation could not be verified"
+            ) from exc
+
+    async def _wait_for_cancelled_workflow_run(
+        self,
+        owner: str,
+        repo: str,
+        run_id: int,
+        workflow_file: str,
+        timeout_seconds: int,
+        poll_interval: int,
+    ) -> dict:
+        """Wait for GitHub to make a teardown-cancelled workflow terminal."""
+        token = await self.get_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        start = datetime.now(UTC)
+        while True:
+            if (datetime.now(UTC) - start).total_seconds() > timeout_seconds:
+                raise TimeoutError(
+                    f"Workflow {workflow_file} run {run_id} did not cancel within "
+                    f"{timeout_seconds}s"
+                )
+            response = await self._make_request(
+                "GET",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}",
+                headers=headers,
+            )
+            run = response.json()
+            if run["status"] == "completed":
+                if run.get("conclusion") != "cancelled":
+                    raise RuntimeError(
+                        f"Workflow {workflow_file} run {run_id} completed as "
+                        f"{run.get('conclusion')} after teardown cancellation"
+                    )
+                logger.info("workflow_cancelled_by_teardown", workflow=workflow_file, run_id=run_id)
+                raise WorkflowCancelledError(f"Workflow {workflow_file} cancelled by teardown")
             await asyncio.sleep(poll_interval)
+
+    async def cancel_workflow_run(self, owner: str, repo: str, run_id: int) -> None:
+        """Request GitHub Actions to stop one known workflow run."""
+        token = await self.get_token(owner, repo)
+        try:
+            await self._make_request(
+                "POST",
+                f"https://api.github.com/repos/{owner}/{repo}/actions/runs/{run_id}/cancel",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != httpx.codes.CONFLICT:
+                raise
 
     async def get_workflow_failure_logs(
         self,

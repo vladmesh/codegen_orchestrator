@@ -14,6 +14,7 @@ import subprocess
 import time
 import uuid
 
+from capability_cleanup import CapabilityMessage, cleanup_owned_capability_messages
 import httpx
 from live_harness import CleanupError, OwnershipManifest, cleanup_on_error, resolve_repo_root
 
@@ -40,6 +41,10 @@ DEPLOY_TIMEOUT = 420  # 7 min (deploy.yml + smoke test)
 SCAFFOLD_FENCE_TIMEOUT = 900
 WORKER_REMOVAL_TIMEOUT = 15
 WORKER_REMOVAL_POLL_INTERVAL = 0.25
+RUN_CANCELLATION_TIMEOUT = 30
+RUN_CANCELLATION_POLL_INTERVAL = 0.5
+_ACTIVE_RUN_STATUSES = {"queued", "running"}
+_TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
 
 # ── Low-level helpers ────────────────────────────────────────────────────
@@ -425,6 +430,118 @@ def cancel_owned_scaffold(ctx: dict) -> None:
         cancel_and_wait_for_scaffold(project_id)
 
 
+def cancel_and_wait_for_active_work(
+    project_id: str,
+    *,
+    command=_redis_command,
+    timeout: float = RUN_CANCELLATION_TIMEOUT,
+    poll_interval: float = RUN_CANCELLATION_POLL_INTERVAL,
+) -> None:
+    """Fence capability consumers and wait until every owned execution lease has exited."""
+    cancel_key = f"live:work:cancelled:{project_id}"
+    leases_key = f"live:work:leases:{project_id}"
+    failure_key = f"live:work:failed:{project_id}"
+    command("SET", cancel_key, "1", "EX", str(SCAFFOLD_FENCE_TIMEOUT))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        failure = command("GET", failure_key)
+        if failure:
+            raise CleanupError(f"active work for project {project_id} could not settle: {failure}")
+        active = command(
+            "EVAL",
+            "local t=redis.call('TIME'); local n=t[1]*1000+math.floor(t[2]/1000); "
+            "redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',n); "
+            "return redis.call('ZCARD',KEYS[1])",
+            "1",
+            leases_key,
+        )
+        if active == "0":
+            return
+        time.sleep(poll_interval)
+    raise CleanupError(f"active work for project {project_id} did not terminate")
+
+
+def cancel_owned_active_work(ctx: dict) -> None:
+    """Fence all capability consumers that can mutate this run's resources."""
+    project_id = ctx.get("project_id")
+    if project_id:
+        cancel_and_wait_for_active_work(project_id)
+
+
+def cleanup_owned_capability_work(ctx: dict) -> None:
+    """Settle only this live run's queued and pending capability messages."""
+    project_id = ctx.get("project_id")
+    if not project_id:
+        return
+    identifiers = {
+        resource.identifier
+        for resource in ctx["manifest"].resources
+        if resource.kind in {"run", "story"}
+    }
+
+    def record(message: CapabilityMessage) -> None:
+        ctx["manifest"].own(
+            "capability_message",
+            f"{message.stream}/{message.message_id}",
+            groups=list(message.groups),
+        )
+        ctx["manifest"].write(
+            ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
+        )
+
+    cleanup_owned_capability_messages(
+        project_id,
+        identifiers,
+        command=_redis_command,
+        on_discovered=record,
+    )
+
+
+async def cancel_owned_runs(api: httpx.AsyncClient, ctx: dict) -> list[str]:
+    """Cancel every active run owned by this project before resource teardown."""
+    project_id = ctx.get("project_id")
+    if not project_id:
+        return []
+    response = await api.get("/api/runs/", params={"project_id": project_id})
+    response.raise_for_status()
+    run_ids = [
+        str(run["id"]) for run in response.json() if run.get("status") in _ACTIVE_RUN_STATUSES
+    ]
+    for run_id in run_ids:
+        response = await api.patch(f"/api/runs/{run_id}", json={"status": "cancelled"})
+        response.raise_for_status()
+        ctx["manifest"].own("run", run_id)
+    if run_ids:
+        ctx["manifest"].write(
+            ORCHESTRATOR_ROOT / ".live-manifests" / f"{ctx['manifest'].run_id}.json"
+        )
+    return run_ids
+
+
+async def wait_for_owned_runs(
+    api: httpx.AsyncClient,
+    ctx: dict,
+    *,
+    timeout: float = RUN_CANCELLATION_TIMEOUT,
+    poll_interval: float = RUN_CANCELLATION_POLL_INTERVAL,
+) -> None:
+    """Wait until the run records owned by teardown are terminal."""
+    run_ids = {
+        resource.identifier for resource in ctx["manifest"].resources if resource.kind == "run"
+    }
+    if not run_ids:
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = await api.get("/api/runs/", params={"project_id": ctx["project_id"]})
+        response.raise_for_status()
+        statuses = {str(run["id"]): run.get("status") for run in response.json()}
+        if all(statuses.get(run_id) in _TERMINAL_RUN_STATUSES for run_id in run_ids):
+            return
+        await asyncio.sleep(poll_interval)
+    raise CleanupError(f"owned runs did not reach terminal state: {', '.join(sorted(run_ids))}")
+
+
 def build_github_cleanup_script(repo_name: str) -> str:
     """Build the container-side cleanup for one exact owned repository."""
     return (
@@ -793,8 +910,12 @@ async def cleanup_all(
     # active scaffold job before deleting or verifying external resources.
     try:
         cancel_owned_scaffold(ctx)
+        await cancel_owned_runs(api, ctx)
+        await wait_for_owned_runs(api, ctx)
+        cancel_owned_active_work(ctx)
+        cleanup_owned_capability_work(ctx)
     except Exception as exc:
-        errors.append(f"scaffold cancellation fence: {exc}")
+        errors.append(f"active work cancellation fence: {exc}")
         raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors)) from exc
 
     # 1. Server container (if deployed)
