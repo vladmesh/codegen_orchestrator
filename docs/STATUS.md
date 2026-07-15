@@ -13,6 +13,8 @@ Current stabilization map: [docs/plans/codegen-stabilization-v1.md](plans/codege
 
 ## Current Facts
 
+- Deploy resolves service-template 0.3.1 `POSTGRES_HOST_PORT` and `REDIS_HOST_PORT` from application
+  allocations. Existing ports are reused and only missing infrastructure services are allocated.
 - Runtime deploy connections now use the selected server's required `ssh_user` together with the
   SSH key from the same server handle. Initial provisioning and reinstall still bootstrap as root.
 

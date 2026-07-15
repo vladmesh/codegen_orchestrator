@@ -59,6 +59,8 @@ logger = structlog.get_logger(__name__)
 
 _config: ConfigStore | None = None
 
+_DEPLOY_INFRA_PORT_SERVICES = ("postgres", "redis")
+
 
 def _deploy_lock_ttl() -> int:
     global _config  # noqa: PLW0603
@@ -78,7 +80,9 @@ async def _allocate_resources(project_id: str, project: ProjectDTO) -> dict | st
 
     try:
         config = project.config or {}
-        modules = config.get("modules", ["backend"])
+        modules = list(
+            dict.fromkeys([*config.get("modules", ["backend"]), *_DEPLOY_INFRA_PORT_SERVICES])
+        )
         min_ram_mb = config.get("estimated_ram_mb", 512)
 
         # Get repo_id from primary repository
