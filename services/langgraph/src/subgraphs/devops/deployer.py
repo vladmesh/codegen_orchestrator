@@ -4,8 +4,8 @@ import asyncio
 from datetime import UTC, datetime
 import os
 
-from langchain_core.messages import AIMessage
 import httpx
+from langchain_core.messages import AIMessage
 import structlog
 
 from shared.clients.github import GitHubAppClient
