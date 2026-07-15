@@ -611,8 +611,7 @@ def cleanup_owned_workers(
             )
             removal_reason = None
             if removed.returncode != 0 and not any(
-                marker in removed.stderr
-                for marker in ("No such container", "already in progress")
+                marker in removed.stderr for marker in ("No such container", "already in progress")
             ):
                 removal_reason = "Docker removal failed"
             absence_reason = _wait_for_container_absence(
