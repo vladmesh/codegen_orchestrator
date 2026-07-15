@@ -395,6 +395,9 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
     monkeypatch.setattr(
         pipeline_helpers, "cancel_owned_scaffold", lambda ctx: events.append("scaffold")
     )
+    monkeypatch.setattr(
+        pipeline_helpers, "cancel_owned_active_work", lambda ctx: events.append("active-work")
+    )
 
     async def wait_for_runs(*args, **kwargs):
         events.append("wait-runs")
@@ -431,6 +434,7 @@ async def test_cleanup_cancels_active_runs_before_external_and_database_cleanup(
         "list-runs",
         "cancel-run",
         "wait-runs",
+        "active-work",
         "server",
         "workers",
         "registry",

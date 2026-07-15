@@ -429,6 +429,40 @@ def cancel_owned_scaffold(ctx: dict) -> None:
         cancel_and_wait_for_scaffold(project_id)
 
 
+def cancel_and_wait_for_active_work(
+    project_id: str,
+    *,
+    command=_redis_command,
+    timeout: float = RUN_CANCELLATION_TIMEOUT,
+    poll_interval: float = RUN_CANCELLATION_POLL_INTERVAL,
+) -> None:
+    """Fence capability consumers and wait until every owned execution lease has exited."""
+    cancel_key = f"live:work:cancelled:{project_id}"
+    leases_key = f"live:work:leases:{project_id}"
+    command("SET", cancel_key, "1", "EX", str(SCAFFOLD_FENCE_TIMEOUT))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        active = command(
+            "EVAL",
+            "local t=redis.call('TIME'); local n=t[1]*1000+math.floor(t[2]/1000); "
+            "redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf',n); "
+            "return redis.call('ZCARD',KEYS[1])",
+            "1",
+            leases_key,
+        )
+        if active == "0":
+            return
+        time.sleep(poll_interval)
+    raise CleanupError(f"active work for project {project_id} did not terminate")
+
+
+def cancel_owned_active_work(ctx: dict) -> None:
+    """Fence all capability consumers that can mutate this run's resources."""
+    project_id = ctx.get("project_id")
+    if project_id:
+        cancel_and_wait_for_active_work(project_id)
+
+
 async def cancel_owned_runs(api: httpx.AsyncClient, ctx: dict) -> list[str]:
     """Cancel every active run owned by this project before resource teardown."""
     project_id = ctx.get("project_id")
@@ -844,6 +878,7 @@ async def cleanup_all(
         cancel_owned_scaffold(ctx)
         await cancel_owned_runs(api, ctx)
         await wait_for_owned_runs(api, ctx)
+        cancel_owned_active_work(ctx)
     except Exception as exc:
         errors.append(f"active work cancellation fence: {exc}")
         raise CleanupError("owned-resource cleanup failed: " + "; ".join(errors)) from exc
