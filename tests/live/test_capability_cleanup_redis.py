@@ -7,6 +7,7 @@ import subprocess
 import uuid
 
 from capability_cleanup import cleanup_owned_capability_messages, find_owned_capability_messages
+import pytest
 
 
 def _command(*args: str) -> str:
@@ -107,5 +108,37 @@ def test_real_redis_cleanup_pages_past_foreign_pending_entries():
         found = find_owned_capability_messages("owned", set(), command=_command, bindings=bindings)
 
         assert [(message.stream, message.message_id) for message in found] == [(stream, owned)]
+    finally:
+        _command("DEL", stream)
+
+
+def test_real_redis_cleanup_retries_after_transient_ack_failure():
+    stream = f"test:capability-ack:{uuid.uuid4().hex}"
+    group = "test-cleanup"
+    bindings = {stream: (group,)}
+    failed = False
+
+    def transient_command(*args: str) -> str:
+        nonlocal failed
+        if args[0] == "XACK" and not failed:
+            failed = True
+            raise RuntimeError("temporary Redis ACK failure")
+        return _command(*args)
+
+    try:
+        _command("XGROUP", "CREATE", stream, group, "0", "MKSTREAM")
+        owned = _command("XADD", stream, "*", "data", json.dumps({"project_id": "owned"}))
+        foreign = _command("XADD", stream, "*", "data", json.dumps({"project_id": "foreign"}))
+        _command("XREADGROUP", "GROUP", group, "consumer", "COUNT", "2", "STREAMS", stream, ">")
+
+        with pytest.raises(RuntimeError, match="temporary Redis ACK failure"):
+            cleanup_owned_capability_messages(
+                "owned", set(), command=transient_command, bindings=bindings
+            )
+
+        assert _command("XRANGE", stream, owned, owned)
+        cleanup_owned_capability_messages("owned", set(), command=_command, bindings=bindings)
+        assert _command("XRANGE", stream, owned, owned) == ""
+        assert foreign in _command("XRANGE", stream, foreign, foreign)
     finally:
         _command("DEL", stream)

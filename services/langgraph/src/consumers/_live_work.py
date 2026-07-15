@@ -147,6 +147,10 @@ async def execute_live_work(
             raise
         logger.info("live_teardown_active_job_acked", entry_id=message_id)
         return None
+    except Exception:
+        if await redis.redis.exists(live_work_cancel_key(project_id)):
+            await _mark_live_work_failure(redis, project_id, "cancel_settlement_failed")
+        raise
     finally:
         if cancellation_watch is not None:
             cancellation_watch.cancel()

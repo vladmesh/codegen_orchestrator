@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from capability_cleanup import cleanup_owned_capability_messages
 import conftest as live_conftest
@@ -382,6 +383,35 @@ def test_capability_cleanup_fails_closed_when_owned_residue_cannot_be_deleted():
         cleanup_owned_capability_messages("project-1", {"run-1"}, command=command)
 
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cleanup_stops_before_external_cleanup_when_capability_ack_fails(monkeypatch):
+    manifest = OwnershipManifest("project-1")
+    manifest.own("project", "project-1")
+    manifest.own("github_repository", "org/repo")
+    github_cleanup = []
+
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_scaffold", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_active_work", lambda ctx: None)
+    monkeypatch.setattr(pipeline_helpers, "cancel_owned_runs", AsyncMock(return_value=[]))
+    monkeypatch.setattr(pipeline_helpers, "wait_for_owned_runs", AsyncMock())
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "cleanup_owned_capability_work",
+        lambda ctx: (_ for _ in ()).throw(RuntimeError("temporary Redis ACK failure")),
+    )
+    monkeypatch.setattr(pipeline_helpers, "cleanup_github_repo", github_cleanup.append)
+
+    async with httpx.AsyncClient(base_url="http://test") as api:
+        with pytest.raises(CleanupError, match="temporary Redis ACK failure"):
+            await pipeline_helpers.cleanup_all(
+                api,
+                None,
+                {"project_id": "project-1", "repo_name": "repo", "manifest": manifest},
+            )
+
+    assert github_cleanup == []
 
 
 def test_scaffold_fence_prunes_crashed_execution_after_lease_expiry():

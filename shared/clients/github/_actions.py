@@ -241,42 +241,43 @@ class ActionsMixin:
         """
         start = datetime.now(UTC)
 
-        while True:
-            elapsed = (datetime.now(UTC) - start).total_seconds()
-            if elapsed > timeout_seconds:
-                raise TimeoutError(
-                    f"Workflow {workflow_file} did not complete within {timeout_seconds}s"
-                )
-
-            run = await self.get_latest_workflow_run(
-                owner,
-                repo,
-                workflow_file,
-                branch,
-                created_after=created_after,
-                head_sha=head_sha,
-            )
-
-            if not run:
-                logger.info("workflow_not_found_waiting", workflow=workflow_file)
-                await asyncio.sleep(poll_interval)
-                continue
-
-            if cancel_check and await cancel_check():
-                await self.cancel_workflow_run(owner, repo, run["id"])
-                return await self._wait_for_cancelled_workflow_run(
-                    owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
-                )
-
-            if run["status"] == "completed":
-                if run["conclusion"] == "success":
-                    logger.info(
-                        "workflow_completed_success",
-                        workflow=workflow_file,
-                        run_id=run["id"],
+        run: dict | None = None
+        try:
+            while True:
+                elapsed = (datetime.now(UTC) - start).total_seconds()
+                if elapsed > timeout_seconds:
+                    raise TimeoutError(
+                        f"Workflow {workflow_file} did not complete within {timeout_seconds}s"
                     )
-                    return run
-                else:
+
+                run = await self.get_latest_workflow_run(
+                    owner,
+                    repo,
+                    workflow_file,
+                    branch,
+                    created_after=created_after,
+                    head_sha=head_sha,
+                )
+
+                if not run:
+                    logger.info("workflow_not_found_waiting", workflow=workflow_file)
+                    await asyncio.sleep(poll_interval)
+                    continue
+
+                if cancel_check and await cancel_check():
+                    await self.cancel_workflow_run(owner, repo, run["id"])
+                    return await self._wait_for_cancelled_workflow_run(
+                        owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
+                    )
+
+                if run["status"] == "completed":
+                    if run["conclusion"] == "success":
+                        logger.info(
+                            "workflow_completed_success",
+                            workflow=workflow_file,
+                            run_id=run["id"],
+                        )
+                        return run
                     try:
                         failure_logs = await self.get_workflow_failure_logs(owner, repo, run["id"])
                     except Exception:
@@ -286,13 +287,64 @@ class ActionsMixin:
                         f"See: {run['html_url']}\n{failure_logs}"
                     )
 
-            logger.info(
-                "workflow_in_progress",
-                workflow=workflow_file,
-                status=run["status"],
-                elapsed_sec=int(elapsed),
+                logger.info(
+                    "workflow_in_progress",
+                    workflow=workflow_file,
+                    status=run["status"],
+                    elapsed_sec=int(elapsed),
+                )
+                await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError:
+            await self._cancel_interrupted_workflow_wait(
+                owner,
+                repo,
+                workflow_file,
+                branch,
+                created_after,
+                head_sha,
+                run,
+                timeout_seconds,
+                poll_interval,
             )
-            await asyncio.sleep(poll_interval)
+            raise
+
+    async def _cancel_interrupted_workflow_wait(
+        self,
+        owner: str,
+        repo: str,
+        workflow_file: str,
+        branch: str,
+        created_after: datetime | None,
+        head_sha: str | None,
+        run: dict | None,
+        timeout_seconds: int,
+        poll_interval: int,
+    ) -> None:
+        """Cancel and verify a workflow when its awaiting deploy task is interrupted."""
+        if run is None:
+            run = await asyncio.shield(
+                self.get_latest_workflow_run(
+                    owner,
+                    repo,
+                    workflow_file,
+                    branch,
+                    created_after=created_after,
+                    head_sha=head_sha,
+                )
+            )
+        if run is None:
+            raise RuntimeError(f"Workflow {workflow_file} cancellation could not identify a run")
+        if run["status"] == "completed":
+            return
+        await asyncio.shield(self.cancel_workflow_run(owner, repo, run["id"]))
+        try:
+            await asyncio.shield(
+                self._wait_for_cancelled_workflow_run(
+                    owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
+                )
+            )
+        except WorkflowCancelledError:
+            return
 
     async def _wait_for_cancelled_workflow_run(
         self,
