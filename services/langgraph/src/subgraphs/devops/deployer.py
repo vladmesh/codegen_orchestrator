@@ -350,6 +350,8 @@ class DeployerNode(FunctionalNode):
             }
 
         except (RuntimeError, TimeoutError) as e:
+            if type(e).__name__ == "WorkflowCancellationUnprovenError":
+                raise
             if type(e).__name__ == "WorkflowCancelledError":
                 logger.info("deploy_workflow_cancelled", project_id=project_id, run_id=run_id)
                 return {"deployment_result": {"status": "cancelled"}}

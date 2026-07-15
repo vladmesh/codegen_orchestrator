@@ -1,7 +1,12 @@
 """GitHub App client — split into domain modules, composed via mixins."""
 
 from ._actions import ActionsMixin
-from ._base import GitHubAppClientBase, WorkflowCancelledError, WorkflowNotFoundError
+from ._base import (
+    GitHubAppClientBase,
+    WorkflowCancellationUnprovenError,
+    WorkflowCancelledError,
+    WorkflowNotFoundError,
+)
 from ._provisioning import ProvisioningMixin
 from ._pull_requests import PullRequestsMixin
 from ._repos import ReposMixin
@@ -28,4 +33,9 @@ class GitHubAppClient(
     """
 
 
-__all__ = ["GitHubAppClient", "WorkflowCancelledError", "WorkflowNotFoundError"]
+__all__ = [
+    "GitHubAppClient",
+    "WorkflowCancelledError",
+    "WorkflowCancellationUnprovenError",
+    "WorkflowNotFoundError",
+]

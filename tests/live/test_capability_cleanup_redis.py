@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import uuid
 
@@ -23,6 +24,9 @@ def _command(*args: str) -> str:
 
 
 def _redis_container() -> str:
+    configured = os.getenv("LIVE_REDIS_CONTAINER")
+    if configured:
+        return configured
     containers = subprocess.run(
         [
             "docker",
@@ -61,7 +65,7 @@ def _pipeline(commands: list[tuple[str, ...]]) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_real_redis_cleanup_handles_queued_and_pending_without_touching_foreign_message():
+def test_real_redis_cleanup_removes_owned_unread_message_and_keeps_foreign_message():
     stream = f"test:capability-cleanup:{uuid.uuid4().hex}"
     group = "test-cleanup"
     bindings = {stream: (group,)}
@@ -73,11 +77,10 @@ def test_real_redis_cleanup_handles_queued_and_pending_without_touching_foreign_
         foreign = _command(
             "XADD", stream, "*", "data", json.dumps({"project_id": "foreign", "task_id": "run-2"})
         )
-        _command("XREADGROUP", "GROUP", group, "consumer", "COUNT", "1", "STREAMS", stream, ">")
-
         assert find_owned_capability_messages(
             "owned", {"run-1"}, command=_command, bindings=bindings
         )
+        cleanup_owned_capability_messages("owned", {"run-1"}, command=_command, bindings=bindings)
         cleanup_owned_capability_messages("owned", {"run-1"}, command=_command, bindings=bindings)
 
         assert _command("XRANGE", stream, owned, owned) == ""

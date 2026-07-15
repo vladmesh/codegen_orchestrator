@@ -14,6 +14,10 @@ class WorkflowCancelledError(RuntimeError):
     """Test double for the cancellation raised by the GitHub client."""
 
 
+class WorkflowCancellationUnprovenError(RuntimeError):
+    """Test double for a cancellation that teardown cannot verify."""
+
+
 @pytest.fixture
 def deployer():
     return DeployerNode()
@@ -265,6 +269,22 @@ class TestDeployerNodeHappyPath:
 
 
 class TestDeployerNodeFailures:
+    @pytest.mark.asyncio
+    @patch("src.subgraphs.devops.deployer.GitHubAppClient")
+    @patch("src.subgraphs.devops.deployer.api_client")
+    async def test_propagates_unproven_workflow_cancellation_without_rerun(
+        self, mock_api, mock_gh_cls, deployer, base_state
+    ):
+        gh = _setup_happy_mocks(mock_api, mock_gh_cls)
+        gh.wait_for_workflow_completion.side_effect = WorkflowCancellationUnprovenError(
+            "could not identify"
+        )
+
+        with pytest.raises(WorkflowCancellationUnprovenError):
+            await deployer.run(base_state)
+
+        gh.get_latest_workflow_run.assert_not_called()
+
     @pytest.mark.asyncio
     @patch("src.subgraphs.devops.deployer.GitHubAppClient")
     @patch("src.subgraphs.devops.deployer.api_client")

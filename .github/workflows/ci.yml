@@ -109,6 +109,18 @@ jobs:
       - name: Run unit tests
         run: make test-unit
 
+      - name: Run Redis capability cleanup regression
+        run: |
+          docker run --detach --rm --name redis-cleanup-contract redis:7-alpine
+          trap 'docker rm --force redis-cleanup-contract' EXIT
+          for _ in {1..10}; do
+            docker exec redis-cleanup-contract redis-cli --raw ping | grep -qx PONG && break
+            sleep 1
+          done
+          docker exec redis-cleanup-contract redis-cli --raw ping | grep -qx PONG
+          LIVE_REDIS_CONTAINER=redis-cleanup-contract \
+            uv run pytest -q tests/live/test_capability_cleanup_redis.py
+
   ci-contract:
     name: CI Contract
     runs-on: ubuntu-latest

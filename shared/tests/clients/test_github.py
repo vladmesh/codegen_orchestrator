@@ -8,7 +8,12 @@ import httpx
 import pytest
 import respx
 
-from shared.clients.github import GitHubAppClient, WorkflowCancelledError, WorkflowNotFoundError
+from shared.clients.github import (
+    GitHubAppClient,
+    WorkflowCancellationUnprovenError,
+    WorkflowCancelledError,
+    WorkflowNotFoundError,
+)
 
 
 @pytest.fixture
@@ -678,3 +683,18 @@ async def test_interrupted_wait_cancels_known_actions_run_before_propagating(aut
             await authed_client.wait_for_workflow_completion("my-org", "my-repo", "deploy.yml")
 
     authed_client.cancel_workflow_run.assert_awaited_once_with("my-org", "my-repo", 42)
+
+
+@pytest.mark.asyncio
+async def test_interrupted_wait_fails_closed_when_actions_run_cannot_be_identified(authed_client):
+    authed_client.get_latest_workflow_run = AsyncMock(return_value=None)
+    authed_client.cancel_workflow_run = AsyncMock()
+
+    with patch(
+        "shared.clients.github._actions.asyncio.sleep",
+        new=AsyncMock(side_effect=asyncio.CancelledError),
+    ):
+        with pytest.raises(WorkflowCancellationUnprovenError, match="could not identify"):
+            await authed_client.wait_for_workflow_completion("my-org", "my-repo", "deploy.yml")
+
+    authed_client.cancel_workflow_run.assert_not_called()

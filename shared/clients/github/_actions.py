@@ -6,7 +6,11 @@ import httpx
 
 from shared.log_config import get_logger
 
-from ._base import WorkflowCancelledError, WorkflowNotFoundError
+from ._base import (
+    WorkflowCancellationUnprovenError,
+    WorkflowCancelledError,
+    WorkflowNotFoundError,
+)
 
 logger = get_logger(__name__)
 
@@ -321,23 +325,25 @@ class ActionsMixin:
         poll_interval: int,
     ) -> None:
         """Cancel and verify a workflow when its awaiting deploy task is interrupted."""
-        if run is None:
-            run = await asyncio.shield(
-                self.get_latest_workflow_run(
-                    owner,
-                    repo,
-                    workflow_file,
-                    branch,
-                    created_after=created_after,
-                    head_sha=head_sha,
-                )
-            )
-        if run is None:
-            raise RuntimeError(f"Workflow {workflow_file} cancellation could not identify a run")
-        if run["status"] == "completed":
-            return
-        await asyncio.shield(self.cancel_workflow_run(owner, repo, run["id"]))
         try:
+            if run is None:
+                run = await asyncio.shield(
+                    self.get_latest_workflow_run(
+                        owner,
+                        repo,
+                        workflow_file,
+                        branch,
+                        created_after=created_after,
+                        head_sha=head_sha,
+                    )
+                )
+            if run is None:
+                raise WorkflowCancellationUnprovenError(
+                    f"Workflow {workflow_file} cancellation could not identify a run"
+                )
+            if run["status"] == "completed":
+                return
+            await asyncio.shield(self.cancel_workflow_run(owner, repo, run["id"]))
             await asyncio.shield(
                 self._wait_for_cancelled_workflow_run(
                     owner, repo, run["id"], workflow_file, timeout_seconds, poll_interval
@@ -345,6 +351,12 @@ class ActionsMixin:
             )
         except WorkflowCancelledError:
             return
+        except WorkflowCancellationUnprovenError:
+            raise
+        except Exception as exc:
+            raise WorkflowCancellationUnprovenError(
+                f"Workflow {workflow_file} cancellation could not be verified"
+            ) from exc
 
     async def _wait_for_cancelled_workflow_run(
         self,
