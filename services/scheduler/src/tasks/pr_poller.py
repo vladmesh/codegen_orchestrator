@@ -82,12 +82,7 @@ async def _handle_failed_run(
     head_sha = run.get("head_sha") or "unknown"
     tasks = await api_client.get_tasks_by_story(story_id)
     prior_evidence = [item for task in tasks if (item := _ci_metadata(task))]
-    exhausted_evidence = [
-        (getattr(task, "failure_metadata", None) or {}).get("ci_failure_exhausted")
-        for task in tasks
-    ]
-    handled = [*prior_evidence, *exhausted_evidence]
-    if any(item and item.get("run_id") == run_id for item in handled):
+    if any(item.get("run_id") == run_id for item in prior_evidence):
         return False
 
     try:
@@ -113,18 +108,6 @@ async def _handle_failed_run(
     }
 
     if attempt > _ci_failure_limit():
-        marker_task = next(
-            (
-                task
-                for task in tasks
-                if (_ci_metadata(task) or {}).get("fingerprint") == fingerprint
-            ),
-            None,
-        )
-        if marker_task is not None:
-            marker = dict(getattr(marker_task, "failure_metadata", None) or {})
-            marker["ci_failure_exhausted"] = evidence
-            await api_client.update_task(marker_task.id, {"failure_metadata": marker})
         await api_client.transition_story(story_id, "human-review")
         await notify_admins_best_effort(
             f"CI failure {fingerprint} exhausted {_ci_failure_limit()} fix attempts "

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.tasks.pr_poller import poll_ci_failures, poll_merged_prs
+from src.tasks.pr_poller import _failure_fingerprint, poll_ci_failures, poll_merged_prs
 
 
 def _make_story(story_id="story-1", project_id="proj-1", pr_number=None):
@@ -223,6 +223,48 @@ async def test_three_same_fingerprints_create_two_fixes_then_escalate(mock_gh_cl
     api.create_task.assert_not_awaited()
     api.transition_story.assert_awaited_with("story-1", "human-review")
     notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("src.tasks.pr_poller.notify_admins_best_effort", new_callable=AsyncMock)
+@patch("src.tasks.pr_poller.GitHubAppClient")
+async def test_exhausted_failure_retries_story_transition(mock_gh_cls, notify):
+    gh = AsyncMock()
+    mock_gh_cls.return_value = gh
+    api = AsyncMock()
+    api.get_stories_by_status.return_value = [_make_story()]
+    api.get_primary_repository.return_value = _make_repo()
+    details = {
+        "failed_jobs": [{"name": "lint", "failed_steps": ["Ruff"]}],
+        "unavailable_reason": None,
+    }
+    gh.get_workflow_failure_details.return_value = details
+    gh.get_latest_workflow_run.return_value = _failed_run(203, "sha-203")
+
+    prior = []
+    for run_id in (201, 202):
+        task = AsyncMock()
+        task.failure_metadata = {
+            "ci_failure": {
+                "run_id": run_id,
+                "fingerprint": "placeholder",
+            }
+        }
+        prior.append(task)
+    fingerprint = _failure_fingerprint(details["failed_jobs"], None)
+    for task in prior:
+        task.failure_metadata["ci_failure"]["fingerprint"] = fingerprint
+    api.get_tasks_by_story.return_value = prior
+    api.transition_story.side_effect = [RuntimeError("temporary"), None]
+
+    assert await poll_ci_failures(api) == 0
+    notify.assert_not_awaited()
+    assert await poll_ci_failures(api) == 0
+
+    assert api.transition_story.await_count == 2
+    notify.assert_awaited_once()
+    api.create_task.assert_not_awaited()
+    api.update_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio

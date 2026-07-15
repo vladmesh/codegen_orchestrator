@@ -4,7 +4,8 @@
 
 - Persist structured failed GitHub Actions job and step evidence on CI fix tasks, deduplicate runs,
   fingerprint repeated failures across commits, and bound identical fixes before routing the story
-  to human review with one admin alert. Live debug artifacts retain the evidence through cleanup.
+  to human review with one admin alert. A transient story-transition failure remains retryable on
+  the next scheduler cycle. Live debug artifacts retain the evidence through cleanup.
 - Made owned-worker teardown idempotent across scheduler and live cleanup races: concurrent Docker
   removal is accepted only after bounded absence verification, operational failures remain visible,
   and live cleanup deletes and verifies worker Redis keys independently.
