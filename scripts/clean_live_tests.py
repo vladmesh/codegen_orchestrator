@@ -3,10 +3,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 PROJECT_PREFIXES = ["live-test", "live-crud", "mega-test"]
-ORCHESTRATOR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ORCHESTRATOR_ROOT = os.environ.get("ORCHESTRATOR_ROOT")
+if not ORCHESTRATOR_ROOT:
+    ORCHESTRATOR_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GITHUB_ORG = "project-factory-organization"
 
 
@@ -61,7 +64,7 @@ def collect_residue_state():
         "SELECT count(*) FROM port_allocations pa "
         "JOIN applications a ON a.id = pa.application_id "
         "JOIN repositories r ON r.id = a.repo_id "
-        f"JOIN projects p ON p.id = r.project_id WHERE {conditions};"  # noqa: S608
+        f"JOIN projects p ON p.id = r.project_id WHERE {_build_conditions('p')};"  # noqa: S608
     )  # noqa: S608
     allocations = _query_scalar(allocation_sql)
     worker_scan = run_cmd(
@@ -96,8 +99,77 @@ def verify_no_residue():
         raise CleanupFailure(f"live-test residue remains: {details}")
 
 
-def _build_conditions():
-    return " OR ".join([f"name LIKE '{p}-%'" for p in PROJECT_PREFIXES])
+def _build_conditions(alias: str | None = None):
+    column = f"{alias}.name" if alias else "name"
+    return " OR ".join([f"{column} LIKE '{p}-%'" for p in PROJECT_PREFIXES])
+
+
+def cleanup_manifest_resources(data: dict) -> list[str]:
+    """Resume the same fail-closed owned cleanup used by the live harness."""
+    import asyncio
+
+    import httpx
+
+    live_path = str(Path(ORCHESTRATOR_ROOT) / "tests" / "live")
+    if live_path not in sys.path:
+        sys.path.insert(0, live_path)
+    from live_harness import OwnedResource, OwnershipManifest
+    from pipeline_helpers import cleanup_all
+
+    manifest = OwnershipManifest(
+        run_id=str(data["run_id"]),
+        resources=[
+            OwnedResource(
+                item["kind"],
+                str(item["identifier"]),
+                {key: value for key, value in item.items() if key not in {"kind", "identifier"}},
+            )
+            for item in data.get("resources", [])
+        ],
+    )
+    ctx = {"manifest": manifest}
+    for resource in manifest.resources:
+        if resource.kind == "project":
+            ctx["project_id"] = resource.identifier
+        elif resource.kind == "github_repository":
+            ctx["repo_name"] = resource.identifier.rsplit("/", 1)[-1]
+        elif resource.kind == "port_allocation":
+            ctx["allocation_id"] = resource.identifier
+        elif resource.kind == "server_deployment":
+            ctx["project_name"] = resource.identifier
+            ctx.update(resource.metadata)
+
+    async def resume() -> None:
+        async with httpx.AsyncClient(base_url="http://localhost:8000", timeout=20) as api:
+            await cleanup_all(api, api, ctx)
+
+    try:
+        asyncio.run(resume())
+    except Exception as exc:
+        return [str(exc)]
+    return []
+
+
+def recover_ownership_manifests() -> None:
+    """Delete manifests only after owned resources are proven absent."""
+    failures: list[str] = []
+    manifest_dir = Path(ORCHESTRATOR_ROOT) / ".live-manifests"
+    for path in sorted(manifest_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text())
+            resources = data.get("resources", [])
+            if not resources:
+                path.unlink()
+                continue
+            errors = cleanup_manifest_resources(data)
+            if errors:
+                failures.extend(f"{path.name}: {error}" for error in errors)
+            elif path.exists():
+                path.unlink()
+        except Exception as exc:
+            failures.append(f"{path.name}: {type(exc).__name__}: {exc}")
+    if failures:
+        raise CleanupFailure("unproven manifest resources: " + "; ".join(failures))
 
 
 def get_test_projects():
@@ -196,13 +268,14 @@ def clean_database():
     ]
     stmts = [
         f"DELETE FROM task_events WHERE task_id IN ("  # noqa: S608
-        f"SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id WHERE {conditions});",
+        f"SELECT t.id FROM tasks t JOIN projects p ON t.project_id = p.id "
+        f"WHERE {_build_conditions('p')});",
     ]
     stmts.extend(f"DELETE FROM {t} WHERE project_id IN ({sub});" for t in tables)  # noqa: S608
     stmts.append(
         "DELETE FROM port_allocations WHERE application_id IN "
         f"(SELECT a.id FROM applications a JOIN repositories r ON r.id = a.repo_id "
-        f"JOIN projects p ON p.id = r.project_id WHERE {conditions});"
+        f"JOIN projects p ON p.id = r.project_id WHERE {_build_conditions('p')});"
     )
     stmts.append(
         f"DELETE FROM applications WHERE repo_id IN "  # noqa: S608
@@ -418,6 +491,9 @@ scan_and_clean()
 
 
 def main():
+    print_step("Recovering ownership manifests")
+    recover_ownership_manifests()
+
     print_step("Identifying test projects")
     projects = get_test_projects()
     print(f"Found {len(projects)} test projects.")
