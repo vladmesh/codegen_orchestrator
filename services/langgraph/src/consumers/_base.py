@@ -14,7 +14,6 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 import os
 import signal
-import time
 import uuid
 
 from pydantic import ValidationError
@@ -95,6 +94,25 @@ async def _finish_live_work(redis: RedisStreamClient, project_id: str, token: st
     await redis.redis.zrem(live_work_leases_key(project_id), token)
 
 
+async def _refresh_live_work_lease(redis: RedisStreamClient, project_id: str, token: str) -> bool:
+    """Extend one lease atomically, or report that it was lost."""
+    refreshed = await redis.redis.eval(
+        """
+        if redis.call('ZSCORE', KEYS[1], ARGV[1]) == false then return 0 end
+        local now = redis.call('TIME')
+        local expires = now[1] * 1000 + math.floor(now[2] / 1000) + ARGV[2] * 1000
+        redis.call('ZADD', KEYS[1], 'XX', expires, ARGV[1])
+        redis.call('EXPIRE', KEYS[1], ARGV[2] * 2)
+        return 1
+        """,
+        1,
+        live_work_leases_key(project_id),
+        token,
+        LIVE_WORK_LEASE_SECONDS,
+    )
+    return refreshed == 1
+
+
 async def _cancel_on_live_teardown(
     redis: RedisStreamClient, project_id: str, token: str, owner: asyncio.Task[object]
 ) -> None:
@@ -103,10 +121,9 @@ async def _cancel_on_live_teardown(
         if await redis.redis.exists(live_work_cancel_key(project_id)):
             owner.cancel()
             return
-        now = int(time.time() * 1000)
-        await redis.redis.zadd(
-            live_work_leases_key(project_id), {token: now + LIVE_WORK_LEASE_SECONDS * 1000}
-        )
+        if not await _refresh_live_work_lease(redis, project_id, token):
+            owner.cancel()
+            return
 
 
 def validate_queued_message(model, job_data: dict):

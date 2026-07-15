@@ -179,6 +179,28 @@ class TestCheckMessageStaleness:
 
 class TestTerminalConsumerMessages:
     @pytest.mark.asyncio()
+    async def test_live_work_heartbeat_refreshes_lease_ttl_atomically(self):
+        from src.consumers._base import _refresh_live_work_lease
+
+        redis = MagicMock()
+        redis.redis.eval = AsyncMock(return_value=1)
+
+        assert await _refresh_live_work_lease(redis, "project-1", "lease-1")
+        script = redis.redis.eval.await_args.args[0]
+        assert "ZSCORE" in script
+        assert "ZADD" in script
+        assert "EXPIRE" in script
+
+    @pytest.mark.asyncio()
+    async def test_lost_live_work_lease_is_reported(self):
+        from src.consumers._base import _refresh_live_work_lease
+
+        redis = MagicMock()
+        redis.redis.eval = AsyncMock(return_value=0)
+
+        assert not await _refresh_live_work_lease(redis, "project-1", "lease-1")
+
+    @pytest.mark.asyncio()
     async def test_live_teardown_fence_acks_queued_owned_message(self, mock_api_client):
         from src.consumers._base import run_queue_worker
 

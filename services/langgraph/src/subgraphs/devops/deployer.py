@@ -4,7 +4,6 @@ import asyncio
 from datetime import UTC, datetime
 import os
 
-import httpx
 from langchain_core.messages import AIMessage
 import structlog
 
@@ -206,12 +205,7 @@ class DeployerNode(FunctionalNode):
     async def _run_cancelled(self, run_id: str | None) -> bool:
         if not run_id:
             return False
-        try:
-            run = await api_client.get(f"runs/{run_id}")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == httpx.codes.NOT_FOUND:
-                return True
-            raise
+        run = await api_client.get(f"runs/{run_id}")
         return run.get("status") == "cancelled"
 
     async def run(self, state: DevOpsState) -> dict:
