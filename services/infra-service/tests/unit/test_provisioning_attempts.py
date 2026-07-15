@@ -11,6 +11,7 @@ def _server(attempts: int = 0):
         public_ip="203.0.113.10",
         host="203.0.113.10",
         status="pending_setup",
+        ssh_user="dev",
         os_template=None,
         provisioning_attempts=attempts,
     )
@@ -56,6 +57,7 @@ async def test_first_reserved_attempt_is_passed_to_provisioning_path(monkeypatch
     reserve_attempt.assert_awaited_once_with("srv-1", 3)
     assert existing_path.await_args.kwargs["provisioning_attempts"] == 1
     assert existing_path.await_args.kwargs["provisioning_episode_id"] == "episode-1"
+    assert existing_path.await_args.kwargs["deploy_user"] == "dev"
 
 
 @pytest.mark.asyncio

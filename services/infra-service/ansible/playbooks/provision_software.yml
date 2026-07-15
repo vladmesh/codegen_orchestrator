@@ -89,6 +89,11 @@
         enabled: yes
       tags: [docker]
 
+    - name: Prepare deploy target
+      ansible.builtin.include_role:
+        name: deploy_target
+      tags: [deploy_target]
+
     # ========================================
     # 4. Monitoring (node_exporter + cadvisor)
     # ========================================

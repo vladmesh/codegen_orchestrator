@@ -65,7 +65,7 @@ async def reset_server_password(
         return None
 
 
-async def reinstall_and_provision(
+async def reinstall_and_provision(  # noqa: PLR0913
     time4vps_client: Time4VPSClient,
     server_handle: str,
     server_id: int,
@@ -74,6 +74,7 @@ async def reinstall_and_provision(
     ssh_manager: SSHManager,
     ansible_runner: AnsibleRunner,
     ssh_public_key: str | None = None,
+    deploy_user: str | None = None,
     orchestrator_ip: str | None = None,
     orchestrator_hostname: str | None = None,
 ) -> tuple[bool, str]:
@@ -147,6 +148,7 @@ async def reinstall_and_provision(
             playbook_name="provision_access.yml",
             root_password=password,
             ssh_public_key=ssh_public_key,
+            deploy_user=deploy_user,
             orchestrator_ip=orchestrator_ip,
             orchestrator_hostname=orchestrator_hostname,
             timeout=Timeouts.ACCESS_PHASE,
@@ -173,6 +175,8 @@ async def reinstall_and_provision(
             server_handle=server_handle,
             playbook_name="provision_software.yml",
             root_password=None,  # Use keys now
+            ssh_public_key=ssh_public_key,
+            deploy_user=deploy_user,
             orchestrator_ip=orchestrator_ip,
             orchestrator_hostname=orchestrator_hostname,
             timeout=Timeouts.PROVISIONING,
