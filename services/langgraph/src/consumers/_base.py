@@ -165,12 +165,12 @@ async def _check_message_staleness(job_data: dict) -> bool:
     return False
 
 
-async def run_queue_worker(
+async def run_queue_worker(  # noqa: PLR0915
     service_name: str,
     queue: str,
     process_fn: ProcessFn,
     group: str = WORKER_GROUP,
-) -> None:  # noqa: PLR0915
+) -> None:
     """Generic worker loop for Redis Stream queue consumption.
 
     Args:
