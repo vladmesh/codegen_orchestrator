@@ -335,7 +335,6 @@ def test_service_template_0_3_3_fixture_has_known_contract_gaps(tmp_path: Path):
         "ENABLED_MODULES",
         "HOST_GID",
         "HOST_UID",
-        "PORT",
         "SQLALCHEMY_ASYNC_DRIVER",
         "SQLALCHEMY_SYNC_DRIVER",
     }
@@ -343,19 +342,36 @@ def test_service_template_0_3_3_fixture_has_known_contract_gaps(tmp_path: Path):
         "required environment contract key BACKEND_API_URL was not observed",
         "required environment contract key ENVIRONMENT was not observed",
         "required environment contract key TELEGRAM_BOT_TOKEN was not observed",
+        "undeclared environment key DATABASE_URL used at "
+        "services/backend/scripts/migrate.sh:11 (shell)",
+        "undeclared environment key PORT used at services/backend/scripts/start.sh:11 (shell)",
     )
 
 
-def test_shell_undeclared_usage_is_an_error(tmp_path: Path):
+def test_shell_undeclared_usage_is_a_warning(tmp_path: Path):
     (tmp_path / "entrypoint.sh").write_text("echo $MISSING_KEY\n")
     write_fragment(tmp_path, {})
 
     result = check_env_contract_usage(tmp_path)
 
-    assert result.errors == (
+    assert result.errors == ()
+    assert result.warnings == (
         "undeclared environment key MISSING_KEY used at entrypoint.sh:1 (shell)",
     )
-    assert result.warnings == ()
+
+
+def test_cli_publishes_artifact_with_visible_shell_warning(tmp_path: Path, capsys):
+    (tmp_path / "entrypoint.sh").write_text("echo $MISSING_KEY\n")
+    write_fragment(tmp_path, {})
+    artifact = tmp_path / "artifact.json"
+
+    exit_code = main(
+        ["--root", str(tmp_path), "--artifact", str(artifact), "--commit-sha", "a" * 40]
+    )
+
+    assert exit_code == 0
+    assert artifact.exists()
+    assert "warning summary: 1" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

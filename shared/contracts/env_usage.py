@@ -396,7 +396,7 @@ def check_env_contract_usage(root: Path) -> EnvUsageCheck:
         "undeclared environment key "
         f"{reference.key} used at {reference.location} ({reference.source})"
         for reference in references
-        if reference.key not in declared and reference.source != "workflow"
+        if reference.key not in declared and reference.source not in {"shell", "workflow"}
     )
     observed = {reference.key for reference in references if reference.source != "workflow"}
     required_warnings = tuple(
@@ -404,7 +404,13 @@ def check_env_contract_usage(root: Path) -> EnvUsageCheck:
         for key, entry in sorted(contract.entries.items())
         if entry.required and key not in observed
     )
-    warnings = required_warnings
+    shell_warnings = tuple(
+        "undeclared environment key "
+        f"{reference.key} used at {reference.location} ({reference.source})"
+        for reference in references
+        if reference.key not in declared and reference.source == "shell"
+    )
+    warnings = tuple(sorted(required_warnings + shell_warnings))
     return EnvUsageCheck(errors=errors, warnings=warnings, contract=contract, references=references)
 
 
@@ -473,6 +479,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     for warning in result.warnings:
         print(f"warning: {warning}", file=sys.stderr)
+    if result.warnings:
+        print(f"warning summary: {len(result.warnings)}", file=sys.stderr)
     if result.errors:
         print("\n".join(result.errors), file=sys.stderr)
         return 1
