@@ -32,7 +32,7 @@ AUTH_HEADERS = {"X-Telegram-ID": str(TEST_TELEGRAM_ID)}
 
 GITHUB_ORG = "project-factory-organization"
 TEMPLATE_REPO = "gh:vladmesh/service-template"
-TEMPLATE_REF = "0.3.2"
+TEMPLATE_REF = "0.3.3"
 ORCHESTRATOR_ROOT = resolve_repo_root(Path(__file__))
 
 # Timeouts (seconds)
