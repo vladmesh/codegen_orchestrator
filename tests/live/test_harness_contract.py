@@ -26,6 +26,8 @@ from pipeline_helpers import (
 import pytest
 import structlog
 
+from shared.contracts.queues.deploy import DeployOutcome
+
 
 def test_repo_root_is_derived_from_harness_location(monkeypatch, tmp_path):
     root = tmp_path / "repo"
@@ -993,3 +995,480 @@ async def test_qa_gate_rejects_non_passing_terminal_outcome():
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as api:
         with pytest.raises(AssertionError, match="status=failed outcome=failed"):
             await run_non_llm_qa(api, "http://deployed", timeout=0.001, poll_interval=0)
+
+
+# ── Environment contract preflight ───────────────────────────────────────
+
+
+def _probe_stdout(payload: dict) -> str:
+    """Container stdout: structlog noise around the marked probe payload."""
+    return (
+        "2026-07-16 10:00:00 [info] github_token_issued\n"
+        + pipeline_helpers.ENV_CONTRACT_PROBE_MARKER
+        + json.dumps(payload)
+        + "\n"
+    )
+
+
+def _probe_payload(**overrides) -> dict:
+    payload = {
+        "ref": "abc123",
+        "fragment_paths": sorted(pipeline_helpers.EXPECTED_ENV_CONTRACT_FRAGMENTS),
+        "entries": ["APP_ENV", "BACKEND_PORT"],
+        "merged_into_main": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_env_contract_probe_reads_the_ref_deploy_resolves(monkeypatch):
+    """The probe must read the exact ref, not a guessed branch.
+
+    devops.env_contract_loader resolves the contract at the deploy's head SHA,
+    so a probe that checked main instead would pass while the deployed tree is
+    missing a fragment.
+    """
+    captured = {}
+
+    def fake_exec(service, script, timeout=30):
+        captured["service"] = service
+        captured["script"] = script
+        return SimpleNamespace(returncode=0, stdout=_probe_stdout(_probe_payload()), stderr="")
+
+    monkeypatch.setattr(pipeline_helpers, "docker_exec", fake_exec)
+
+    probe = pipeline_helpers.probe_env_contract("run-repo", "abc123")
+
+    assert captured["service"] == "langgraph"
+    assert "'abc123'" in captured["script"]
+    assert "merge_env_contract_fragments" in captured["script"]
+    assert probe["fragment_paths"] == sorted(pipeline_helpers.EXPECTED_ENV_CONTRACT_FRAGMENTS)
+
+
+def test_env_contract_probe_payload_survives_container_log_noise(monkeypatch):
+    """Container logs share stdout with the payload, so the marker delimits it."""
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0, stdout=_probe_stdout(_probe_payload(entries=["APP_ENV"])), stderr=""
+        ),
+    )
+
+    assert pipeline_helpers.probe_env_contract("run-repo", "abc123")["entries"] == ["APP_ENV"]
+
+
+def test_env_contract_probe_without_payload_is_loud(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="[info] nothing here\n", stderr=""),
+    )
+
+    with pytest.raises(RuntimeError, match="printed no payload"):
+        pipeline_helpers.probe_env_contract("run-repo", "abc123")
+
+
+def test_env_contract_probe_failure_is_loud(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        pipeline_helpers.probe_env_contract("run-repo", "abc123")
+
+
+def test_record_env_contract_accepts_expected_fragments(monkeypatch):
+    stdout = _probe_stdout(_probe_payload())
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=stdout, stderr=""),
+    )
+    ctx = {"repo_name": "run-repo"}
+
+    assert pipeline_helpers.record_env_contract(ctx, "abc123", phase="scaffold") is True
+    assert "env_contract_errors" not in ctx
+    assert ctx["env_contract_probes"]["scaffold"]["ref"] == "abc123"
+
+
+def test_record_env_contract_rejects_missing_fragment(monkeypatch):
+    """A repo without the backend fragment cannot resolve a typed deploy env."""
+    payload = _probe_payload(fragment_paths=["infra/env.contract.yaml"])
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=_probe_stdout(payload), stderr=""),
+    )
+    ctx = {"repo_name": "run-repo"}
+
+    assert pipeline_helpers.record_env_contract(ctx, "abc123", phase="scaffold") is False
+    assert "services/backend/env.contract.yaml" in ctx["env_contract_errors"]["scaffold"]
+    # The observed paths still reach the debug dump for the failed phase.
+    assert ctx["env_contract_probes"]["scaffold"]["fragment_paths"] == ["infra/env.contract.yaml"]
+
+
+def test_record_env_contract_rejects_empty_contract(monkeypatch):
+    payload = _probe_payload(entries=[])
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=_probe_stdout(payload), stderr=""),
+    )
+    ctx = {"repo_name": "run-repo"}
+
+    assert pipeline_helpers.record_env_contract(ctx, "abc123", phase="scaffold") is False
+    assert "declares no entries" in ctx["env_contract_errors"]["scaffold"]
+
+
+def test_record_env_contract_rejects_sha_absent_from_main(monkeypatch):
+    """The merged check must prove main contains the SHA deploy resolves.
+
+    Without it the mega would accept a contract that only ever existed on the
+    story branch.
+    """
+    payload = _probe_payload(merged_into_main=False)
+    monkeypatch.setattr(
+        pipeline_helpers,
+        "docker_exec",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=_probe_stdout(payload), stderr=""),
+    )
+    ctx = {"repo_name": "run-repo"}
+
+    ok = pipeline_helpers.record_env_contract(
+        ctx, "abc123", phase="merged", verify_merged_into_main=True
+    )
+
+    assert ok is False
+    assert "not contained in main" in ctx["env_contract_errors"]["merged"]
+
+
+# ── Typed deploy outcome ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_run_selects_the_run_carrying_the_merged_sha(monkeypatch):
+    """Only the pr_poller run records head_sha; the engineering-triggered deploy
+    run does not, so it is not the run this mega's contract check must follow."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    seen = {}
+
+    async def get(url, params=None, headers=None):
+        seen["params"] = params
+        seen["headers"] = headers
+        return httpx.Response(
+            200,
+            json=[
+                {"id": "deploy-eng-1", "run_metadata": {}},
+                {"id": "deploy-poll-1", "run_metadata": {"head_sha": "abc123"}},
+            ],
+            request=httpx.Request("GET", "http://test/api/runs/"),
+        )
+
+    ctx = {"project_id": "project-1"}
+    run = await pipeline_helpers.wait_deploy_run(SimpleNamespace(get=get), ctx, timeout=1)
+
+    assert run["id"] == "deploy-poll-1"
+    assert ctx["deploy_run_id"] == "deploy-poll-1"
+    assert ctx["deploy_head_sha"] == "abc123"
+    assert seen["params"] == {"project_id": "project-1", "run_type": "deploy"}
+    assert seen["headers"]["X-Internal-Key"] == "test-internal-key"
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_run_times_out_without_a_merged_deploy_run(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    async def get(url, params=None, headers=None):
+        return httpx.Response(200, json=[], request=httpx.Request("GET", "http://test/api/runs/"))
+
+    ctx = {"project_id": "project-1"}
+    run = await pipeline_helpers.wait_deploy_run(
+        SimpleNamespace(get=get), ctx, timeout=0.001, poll_interval=0
+    )
+
+    assert run is None
+    assert "no deploy run with a merged head_sha" in ctx["deploy_run_error"]
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_outcome_types_the_run_result(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+    seen = {}
+
+    async def get(url, headers=None):
+        seen["url"] = url
+        seen["headers"] = headers
+        return httpx.Response(
+            200,
+            json={
+                "id": "deploy-poll-1",
+                "status": "completed",
+                "result": {"deploy_outcome": "success", "deployed_url": "http://192.0.2.1:8010"},
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    ctx = {"deploy_run_id": "deploy-poll-1"}
+    result = await pipeline_helpers.wait_deploy_outcome(SimpleNamespace(get=get), ctx, timeout=1)
+
+    assert result.deploy_outcome is DeployOutcome.SUCCESS
+    assert ctx["deploy_outcome"] == "success"
+    assert seen["url"] == "/api/runs/deploy-poll-1"
+    assert seen["headers"]["X-Internal-Key"] == "test-internal-key"
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_outcome_reports_a_failed_deploy(monkeypatch):
+    """A deployed app can answer while the run itself concluded a failure, so the
+    outcome the mega gates on comes from the run, not from ApplicationStatus."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    async def get(url, headers=None):
+        return httpx.Response(
+            200,
+            json={
+                "id": "deploy-poll-1",
+                "status": "failed",
+                "result": {
+                    "deploy_outcome": "waiting_for_user_secret",
+                    "error_details": "STRIPE_SECRET_KEY missing",
+                },
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    ctx = {"deploy_run_id": "deploy-poll-1"}
+    result = await pipeline_helpers.wait_deploy_outcome(SimpleNamespace(get=get), ctx, timeout=1)
+
+    assert result.deploy_outcome is DeployOutcome.WAITING_FOR_USER_SECRET
+    assert ctx["deploy_outcome"] == "waiting_for_user_secret"
+    assert ctx["deploy_error_details"] == "STRIPE_SECRET_KEY missing"
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_outcome_rejects_an_untyped_result(monkeypatch):
+    """Run.result is a JSON column: a payload that is not a DeployRunResult must
+    be reported, not read as if its keys meant anything."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    async def get(url, headers=None):
+        return httpx.Response(
+            200,
+            json={
+                "id": "deploy-poll-1",
+                "status": "completed",
+                "result": {"qa_outcome": "passed"},
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    ctx = {"deploy_run_id": "deploy-poll-1"}
+    result = await pipeline_helpers.wait_deploy_outcome(SimpleNamespace(get=get), ctx, timeout=1)
+
+    assert result is None
+    assert "not a DeployRunResult" in ctx["deploy_outcome_error"]
+    assert "deploy_outcome" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_outcome_rejects_terminal_run_without_result(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    async def get(url, headers=None):
+        return httpx.Response(
+            200,
+            json={"id": "deploy-poll-1", "status": "completed", "result": None},
+            request=httpx.Request("GET", url),
+        )
+
+    ctx = {"deploy_run_id": "deploy-poll-1"}
+    result = await pipeline_helpers.wait_deploy_outcome(SimpleNamespace(get=get), ctx, timeout=1)
+
+    assert result is None
+    assert "carries no result" in ctx["deploy_outcome_error"]
+
+
+@pytest.mark.asyncio
+async def test_wait_deploy_outcome_times_out_on_a_stuck_run(monkeypatch):
+    """The wait is bounded: a run that never goes terminal must not hang the mega."""
+    monkeypatch.setenv("INTERNAL_API_KEY", "test-internal-key")
+
+    async def get(url, headers=None):
+        return httpx.Response(
+            200,
+            json={"id": "deploy-poll-1", "status": "running", "result": None},
+            request=httpx.Request("GET", url),
+        )
+
+    ctx = {"deploy_run_id": "deploy-poll-1"}
+    result = await pipeline_helpers.wait_deploy_outcome(
+        SimpleNamespace(get=get), ctx, timeout=0.001, poll_interval=0
+    )
+
+    assert result is None
+    assert "did not reach a terminal state" in ctx["deploy_outcome_error"]
+
+
+def test_debug_dump_retains_env_contract_and_deploy_outcome(monkeypatch, tmp_path):
+    """An early contract failure must leave its evidence in the dump."""
+    monkeypatch.setattr(pipeline_helpers, "ORCHESTRATOR_ROOT", tmp_path)
+    monkeypatch.setattr(
+        pipeline_helpers.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="")
+    )
+    ctx = {
+        "project_id": "project-1",
+        "deploy_run_id": "deploy-poll-1",
+        "deploy_head_sha": "abc123",
+        "deploy_outcome": "environment_contract_invalid",
+        "env_contract_probes": {
+            "merged": _probe_payload(fragment_paths=["infra/env.contract.yaml"])
+        },
+        "env_contract_errors": {"merged": "merged: fragments missing at abc123"},
+    }
+
+    pipeline_helpers.dump_debug(ctx, "env-contract")
+
+    text = next((tmp_path / "docs" / "e2e_results").glob("debug-env-contract-*.md")).read_text()
+    assert "deploy-poll-1" in text
+    assert "abc123" in text
+    assert "environment_contract_invalid" in text
+    assert "infra/env.contract.yaml" in text
+    assert "merged: fragments missing at abc123" in text
+
+
+_INFRA_FRAGMENT = """
+version: "1"
+owner: infra
+entries:
+  COMPOSE_PROJECT_NAME:
+    source: derived
+    environments: [local, production]
+    required: false
+"""
+
+_BACKEND_FRAGMENT = """
+version: "1"
+owner: backend
+entries:
+  BACKEND_PORT:
+    source: allocation
+    environments: [local, production]
+    consumers: [backend]
+    required: true
+    service: backend
+"""
+
+
+class _FakeGitHub:
+    """Stands in for the GitHub App client inside the probe script."""
+
+    files = {
+        "infra/env.contract.yaml": _INFRA_FRAGMENT,
+        "services/backend/env.contract.yaml": _BACKEND_FRAGMENT,
+        "README.md": "# not a contract",
+    }
+    requested_refs: list[str] = []
+
+    async def list_repo_files_recursive(self, owner, repo, ref):
+        type(self).requested_refs.append(ref)
+        return sorted(self.files)
+
+    async def get_file_contents(self, owner, repo, path, ref):
+        type(self).requested_refs.append(ref)
+        return self.files[path]
+
+    async def get_token(self, owner, repo):
+        return "gh-token"
+
+
+def _run_probe_script(monkeypatch, capsys, *, ref, verify_merged_into_main=False):
+    """Execute the generated probe script against a fake repository."""
+    import shared.clients.github as github_module
+
+    _FakeGitHub.requested_refs = []
+    monkeypatch.setattr(github_module, "GitHubAppClient", _FakeGitHub)
+    script = pipeline_helpers.build_env_contract_probe_script(
+        "run-repo", ref, verify_merged_into_main=verify_merged_into_main
+    )
+    compile(script, "<env-contract-probe>", "exec")
+    exec(script, {})  # noqa: S102
+    return pipeline_helpers.parse_env_contract_probe(capsys.readouterr().out)
+
+
+def test_env_contract_probe_script_merges_real_fragments_at_one_ref(monkeypatch, capsys):
+    """Execute the generated script, not just compile it.
+
+    It must read only env.contract.yaml files, merge them through the same
+    schema deploy uses, and report the merged keys for the requested ref.
+    """
+    probe = _run_probe_script(monkeypatch, capsys, ref="abc123")
+
+    assert probe["ref"] == "abc123"
+    assert probe["fragment_paths"] == [
+        "infra/env.contract.yaml",
+        "services/backend/env.contract.yaml",
+    ]
+    assert probe["entries"] == ["BACKEND_PORT", "COMPOSE_PROJECT_NAME"]
+    assert probe["merged_into_main"] is None
+    # Every read is pinned to the deploy ref; none silently fall back to main.
+    assert set(_FakeGitHub.requested_refs) == {"abc123"}
+
+
+def test_env_contract_probe_script_reports_merge_into_main(monkeypatch, capsys):
+    """A SHA already contained in main compares as identical or behind."""
+    requested = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            requested.append(url)
+            return httpx.Response(200, json={"status": "behind"}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: Client())
+
+    probe = _run_probe_script(monkeypatch, capsys, ref="abc123", verify_merged_into_main=True)
+
+    assert probe["merged_into_main"] is True
+    assert requested == [
+        "https://api.github.com/repos/project-factory-organization/run-repo/compare/main...abc123"
+    ]
+
+
+def test_env_contract_probe_script_reports_sha_outside_main(monkeypatch, capsys):
+    """A story-branch SHA main never took compares as diverged or ahead."""
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return httpx.Response(
+                200, json={"status": "diverged"}, request=httpx.Request("GET", url)
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: Client())
+
+    probe = _run_probe_script(monkeypatch, capsys, ref="abc123", verify_merged_into_main=True)
+
+    assert probe["merged_into_main"] is False
+
+
+def test_env_contract_probe_script_reports_a_repo_without_fragments(monkeypatch, capsys):
+    """A repo carrying no contract is the missing-contract case deploy rejects."""
+    monkeypatch.setattr(_FakeGitHub, "files", {"README.md": "# no contract"})
+
+    probe = _run_probe_script(monkeypatch, capsys, ref="abc123")
+
+    assert probe["fragment_paths"] == []
+    assert probe["entries"] == []
