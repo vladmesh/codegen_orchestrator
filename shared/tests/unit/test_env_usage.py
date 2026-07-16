@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -62,6 +63,24 @@ class Settings(BaseSettings):
     assert all(reference.path == "src/settings.py" for reference in references)
 
 
+def test_settings_fields_apply_env_prefix_and_skip_model_config(tmp_path: Path):
+    source = tmp_path / "src" / "settings.py"
+    source.parent.mkdir()
+    source.write_text(
+        """from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config: SettingsConfigDict = SettingsConfigDict(env_prefix="APP_")
+    api_key: str
+    debug: bool = False
+"""
+    )
+
+    references = extract_env_references(tmp_path)
+
+    assert {reference.key for reference in references} == {"APP_API_KEY", "APP_DEBUG"}
+
+
 def test_compose_references_include_interpolation_not_literals(tmp_path: Path):
     (tmp_path / "compose.yaml").write_text(
         "services:\n  app:\n    image: ${IMAGE_TAG:-latest}\n    command: fixed\n"
@@ -74,15 +93,29 @@ def test_compose_references_include_interpolation_not_literals(tmp_path: Path):
     ]
 
 
+def test_compose_project_files_include_template_compose_variants(tmp_path: Path):
+    compose = tmp_path / "infra" / "compose.prod.yml"
+    compose.parent.mkdir()
+    compose.write_text("services:\n  app:\n    image: ${BACKEND_IMAGE:?required}\n")
+
+    references = extract_env_references(tmp_path)
+
+    assert [(reference.key, reference.source) for reference in references] == [
+        ("BACKEND_IMAGE", "compose")
+    ]
+
+
 def test_workflow_references_include_env_and_secrets_forwarding(tmp_path: Path):
     workflow = tmp_path / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(
         """jobs:
   verify:
-    env:
-      APP_TOKEN: ${{ secrets.APP_TOKEN }}
-      BUILD_MODE: test
+    container:
+      image: python:3.12
+      env:
+        APP_TOKEN: ${{ secrets.APP_TOKEN }}
+        BUILD_MODE: test
     steps:
       - run: echo ok
 """
@@ -92,8 +125,28 @@ def test_workflow_references_include_env_and_secrets_forwarding(tmp_path: Path):
 
     assert {(reference.key, reference.source) for reference in references} == {
         ("APP_TOKEN", "workflow"),
-        ("BUILD_MODE", "workflow"),
     }
+
+
+def test_workflow_ignores_builtin_and_non_env_secret_references(tmp_path: Path):
+    workflow = tmp_path / ".github" / "workflows" / "deploy.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        """jobs:
+  deploy:
+    env:
+      DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+"""
+    )
+
+    references = extract_env_references(tmp_path)
+
+    assert references == ()
 
 
 def test_shell_entrypoint_references_include_expansion_not_positional_args(tmp_path: Path):
@@ -105,6 +158,82 @@ def test_shell_entrypoint_references_include_expansion_not_positional_args(tmp_p
     assert {(reference.key, reference.source) for reference in references} == {
         ("DATABASE_URL", "shell"),
         ("LOG_LEVEL", "shell"),
+    }
+
+
+def test_shell_entrypoint_ignores_local_and_builtin_variables(tmp_path: Path):
+    entrypoint = tmp_path / "services" / "backend" / "scripts" / "start.sh"
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.write_text(
+        """#!/usr/bin/env bash
+SCRIPT_DIR="$(pwd)"
+REPO_ROOT="${SCRIPT_DIR}/.."
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH-}"
+exec uvicorn app:main --port "${PORT:-8000}"
+"""
+    )
+
+    references = extract_env_references(tmp_path)
+
+    assert references == ()
+
+
+def test_service_template_0_3_3_baseline_patterns(tmp_path: Path):
+    """Keep extraction aligned with the baseline template named by the contract MVP."""
+    compose = tmp_path / "infra" / "compose.prod.yml"
+    compose.parent.mkdir()
+    compose.write_text(
+        """services:
+  backend:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE}
+    ports:
+      - "${BACKEND_PORT:?Set BACKEND_PORT}:8000"
+    deploy:
+      replicas: ${BACKEND_REPLICAS:-1}
+"""
+    )
+    start = tmp_path / "services" / "backend" / "scripts" / "start.sh"
+    start.parent.mkdir(parents=True)
+    start.write_text(
+        """#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH-}"
+exec uvicorn services.backend.src.main:app --port "${PORT:-8000}"
+"""
+    )
+    settings = tmp_path / "services" / "backend" / "src" / "core" / "settings.py"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        """from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env")
+    app_name: str = Field(validation_alias="APP_NAME")
+"""
+    )
+    workflow = tmp_path / ".github" / "workflows" / "deploy.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        """jobs:
+  deploy:
+    env:
+      SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+"""
+    )
+
+    references = extract_env_references(tmp_path)
+
+    assert {(reference.key, reference.source) for reference in references} == {
+        ("APP_NAME", "python-settings"),
+        ("BACKEND_IMAGE", "compose"),
+        ("BACKEND_PORT", "compose"),
+        ("BACKEND_REPLICAS", "compose"),
     }
 
 
@@ -178,6 +307,43 @@ def test_cli_runs_against_generated_project_without_codegen_repository(tmp_path:
 
     assert completed.returncode == 0, completed.stderr
     assert json.loads(artifact.read_text())["commit_sha"] == "b" * 40
+
+
+def test_vendor_copy_runs_in_isolated_process_without_repository(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text('import os\nos.getenv("DECLARED")\n')
+    write_fragment(project, {"DECLARED": literal_entry()})
+    vendor_root = tmp_path / "vendor"
+    source_root = Path(__file__).parents[2]
+    shutil.copytree(source_root, vendor_root / "shared")
+    artifact = project / "build" / "env-contract.json"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                "import sys; "
+                f"sys.path.insert(0, {str(vendor_root)!r}); "
+                "import shared; "
+                f"assert shared.__file__.startswith({str(vendor_root)!r}); "
+                "from shared.contracts.env_usage import main; "
+                "assert 'redis' not in sys.modules; "
+                "raise SystemExit(main(['--root', "
+                f"{str(project)!r}, '--artifact', {str(artifact)!r}, "
+                f"'--commit-sha', {'c' * 40!r}]))"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        cwd=project,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(artifact.read_text())["commit_sha"] == "c" * 40
 
 
 def test_contract_package_exposes_a_vendorable_cli_entrypoint():

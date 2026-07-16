@@ -28,6 +28,23 @@ _SHELL_REFERENCE = re.compile(r"\$(?:\{(" + _ENV_NAME + r")(?:[}:?+-])|(" + _ENV
 _SECRET_REFERENCE = re.compile(r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)")
 _ENV_BLOCK = re.compile(r"^(\s*)env:\s*$")
 _ENV_ENTRY = re.compile(r"^\s*(?:['\"])?(" + _ENV_NAME + r")(?:['\"])?\s*:")
+_SHELL_ASSIGNMENT = re.compile(
+    r"^\s*(?:(?:export|local|readonly|declare)\s+)?(" + _ENV_NAME + r")="
+)
+_SHELL_READ = re.compile(r"\bread(?:\s+-[A-Za-z]+)*\s+(" + _ENV_NAME + r")\b")
+_SHELL_BUILTINS = {
+    "BASH_SOURCE",
+    "HOME",
+    "LOGNAME",
+    "OLDPWD",
+    "PATH",
+    "PORT",
+    "PWD",
+    "PYTHONPATH",
+    "SHELL",
+    "USER",
+}
+_GITHUB_BUILTIN_SECRETS = {"GITHUB_TOKEN"}
 
 
 @dataclass(frozen=True, order=True)
@@ -101,14 +118,32 @@ def _is_settings_class(node: ast.ClassDef) -> bool:
     )
 
 
+def _settings_env_prefix(node: ast.ClassDef) -> str:
+    for statement in node.body:
+        value = statement.value if isinstance(statement, (ast.Assign, ast.AnnAssign)) else None
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        is_model_config = any(
+            isinstance(target, ast.Name) and target.id == "model_config" for target in targets
+        )
+        if not is_model_config:
+            continue
+        if not isinstance(value, ast.Call) or _attribute_name(value.func) != "SettingsConfigDict":
+            continue
+        for keyword in value.keywords:
+            if keyword.arg == "env_prefix":
+                return _literal_string(keyword.value) or ""
+    return ""
+
+
 def _settings_references(node: ast.ClassDef, relative_path: str) -> list[EnvReference]:
     references: list[EnvReference] = []
+    env_prefix = _settings_env_prefix(node)
     for statement in node.body:
         if not isinstance(statement, ast.AnnAssign) or not isinstance(statement.target, ast.Name):
             continue
-        if statement.target.id.startswith("_"):
+        if statement.target.id.startswith("_") or statement.target.id == "model_config":
             continue
-        key = _field_alias(statement.value) or statement.target.id.upper()
+        key = _field_alias(statement.value) or f"{env_prefix}{statement.target.id.upper()}"
         references.append(EnvReference(key, relative_path, statement.lineno, "python-settings"))
     return references
 
@@ -163,27 +198,53 @@ def _workflow_references(root: Path, path: Path) -> list[EnvReference]:
     relative_path = _relative_path(root, path)
     references: list[EnvReference] = []
     env_indent: int | None = None
+    container_indent: int | None = None
     for line_number, line in enumerate(lines, start=1):
         indent = len(line) - len(line.lstrip())
+        if line.strip() == "container:":
+            container_indent = indent
+            continue
+        if container_indent is not None and line.strip() and indent <= container_indent:
+            container_indent = None
         block = _ENV_BLOCK.match(line)
-        if block:
+        if block and container_indent is not None and len(block.group(1)) > container_indent:
             env_indent = len(block.group(1))
             continue
         if env_indent is not None and line.strip() and indent <= env_indent:
             env_indent = None
-        if env_indent is not None and indent > env_indent:
+        if env_indent is not None and indent > env_indent and "secrets." in line:
             entry = _ENV_ENTRY.match(line)
-            if entry:
+            secret_names = _SECRET_REFERENCE.findall(line)
+            if entry and not any(name in _GITHUB_BUILTIN_SECRETS for name in secret_names):
                 references.append(
                     EnvReference(entry.group(1), relative_path, line_number, "workflow")
                 )
-        for match in _SECRET_REFERENCE.finditer(line):
-            references.append(EnvReference(match.group(1), relative_path, line_number, "workflow"))
     return references
 
 
+def _shell_references(root: Path, path: Path) -> list[EnvReference]:
+    try:
+        lines = path.read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    local_names = {
+        match.group(1)
+        for line in lines
+        for match in (_SHELL_ASSIGNMENT.match(line), _SHELL_READ.search(line))
+        if match is not None
+    }
+    references = _text_references(root, path, "shell", _SHELL_REFERENCE)
+    return [
+        reference
+        for reference in references
+        if reference.key not in local_names and reference.key not in _SHELL_BUILTINS
+    ]
+
+
 def _is_compose_file(path: Path) -> bool:
-    return path.name in {"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
+    return path.suffix in {".yaml", ".yml"} and (
+        path.name.startswith("compose") or path.name.startswith("docker-compose")
+    )
 
 
 def _is_workflow(path: Path) -> bool:
@@ -194,8 +255,9 @@ def _is_shell_entrypoint(path: Path) -> bool:
     if path.suffix == ".sh" or "entrypoint" in path.name:
         return True
     try:
-        return path.read_text().startswith("#!")
-    except (OSError, UnicodeDecodeError):
+        with path.open("rb") as file:
+            return file.read(2) == b"#!"
+    except OSError:
         return False
 
 
@@ -218,14 +280,16 @@ def extract_env_references(root: Path) -> tuple[EnvReference, ...]:
         elif _is_workflow(path):
             references.extend(_workflow_references(root, path))
         elif _is_shell_entrypoint(path):
-            references.extend(_text_references(root, path, "shell", _SHELL_REFERENCE))
+            references.extend(_shell_references(root, path))
     return tuple(sorted(set(references)))
 
 
 def load_env_contract_fragments(root: Path) -> list[EnvContractFragment]:
     """Load all owner fragments from a generated project in path order."""
     fragments: list[EnvContractFragment] = []
-    for path in sorted(root.rglob("env.contract.yaml")):
+    for path in _project_files(root):
+        if path.name != "env.contract.yaml":
+            continue
         loaded = yaml.safe_load(path.read_text())
         fragments.append(validate_env_contract_fragment(loaded))
     return fragments
@@ -255,6 +319,11 @@ def check_env_contract_usage(root: Path) -> EnvUsageCheck:
 def build_env_contract_artifact(root: Path, commit_sha: str) -> bytes:
     """Build the reproducible commit-bound canonical contract artifact."""
     result = check_env_contract_usage(root)
+    return build_env_contract_artifact_from_check(result, commit_sha)
+
+
+def build_env_contract_artifact_from_check(result: EnvUsageCheck, commit_sha: str) -> bytes:
+    """Serialize a previously checked contract without rereading the project tree."""
     if result.errors:
         raise EnvContractUsageError("\n".join(result.errors))
     return json.dumps(
@@ -298,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         commit_sha = args.commit_sha or _commit_sha(root)
-        artifact = build_env_contract_artifact(root, commit_sha)
+        artifact = build_env_contract_artifact_from_check(result, commit_sha)
         args.artifact.parent.mkdir(parents=True, exist_ok=True)
         args.artifact.write_bytes(artifact)
     except (OSError, subprocess.CalledProcessError, EnvContractUsageError) as error:
