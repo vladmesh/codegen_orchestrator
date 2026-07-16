@@ -112,7 +112,7 @@ EnvContractEntry = Annotated[
 class EnvContractFragment(BaseModel):
     """One owner-maintained piece of an environment contract."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", revalidate_instances="always")
 
     version: Literal[ENV_CONTRACT_VERSION] = ENV_CONTRACT_VERSION
     owner: str = Field(min_length=1)
@@ -143,10 +143,8 @@ def export_env_contract_json_schema(path: Path) -> None:
     path.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n")
 
 
-def validate_env_contract_fragment(fragment: EnvContractFragment | dict) -> EnvContractFragment:
+def validate_env_contract_fragment(fragment: object) -> EnvContractFragment:
     """Validate one owner fragment at the schema boundary."""
-    if isinstance(fragment, EnvContractFragment):
-        return fragment
     return EnvContractFragment.model_validate(fragment)
 
 
@@ -156,8 +154,10 @@ def merge_env_contract_fragments(
     """Validate and merge owner fragments into a deterministic artifact.
 
     Repeated keys are allowed only when their fully validated declarations are
-    identical.  The owner name does not enter the resulting artifact, so moving
+    identical. The owner name does not enter the resulting artifact, so moving
     an unchanged declaration between fragments cannot alter deploy semantics.
+    Owners are sorted only to make the first reported conflicting declaration
+    deterministic.
     """
     merged: dict[str, EnvContractEntry] = {}
     validated_fragments = (validate_env_contract_fragment(item) for item in fragments)
@@ -170,4 +170,4 @@ def merge_env_contract_fragments(
                 )
             merged[key] = entry
 
-    return CanonicalEnvContract(entries=dict(sorted(merged.items())))
+    return CanonicalEnvContract(entries=merged)
