@@ -148,15 +148,6 @@ class ReposMixin:
             if e.response.status_code == httpx.codes.NOT_FOUND:
                 return None
             raise
-        except Exception as e:
-            logger.warning(
-                "github_file_fetch_failed",
-                owner=owner,
-                repo=repo,
-                path=path,
-                error=str(e),
-            )
-            return None
 
     async def list_repo_files(
         self, owner: str, repo: str, path: str = "", ref: str = "main"
@@ -211,23 +202,18 @@ class ReposMixin:
                 headers=headers,
                 params={"recursive": "1"},
             )
+            payload = response.json()
+            if payload.get("truncated"):
+                raise RuntimeError("GitHub repository tree response is truncated")
             return sorted(
                 item["path"]
-                for item in response.json().get("tree", [])
+                for item in payload.get("tree", [])
                 if item.get("type") == "blob" and isinstance(item.get("path"), str)
             )
         except httpx.HTTPStatusError as error:
             if error.response.status_code == httpx.codes.NOT_FOUND:
                 return []
             raise
-        except Exception as error:
-            logger.warning(
-                "github_recursive_file_list_failed",
-                owner=owner,
-                repo=repo,
-                error_type=type(error).__name__,
-            )
-            return []
 
     async def create_or_update_file(
         self,

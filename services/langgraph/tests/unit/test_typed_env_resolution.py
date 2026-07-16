@@ -1,10 +1,13 @@
 """Typed environment-contract resolution at the deploy boundary."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from shared.contracts.env_contract import merge_env_contract_fragments
+from shared.contracts.env_usage import load_env_contract_fragments
 from src.subgraphs.devops.env_analyzer import env_analyzer_run
 from src.subgraphs.devops.graph import resolve_secrets
 from src.subgraphs.devops.secret_resolver import SecretResolverNode, TypedSecretResolutionError
@@ -69,7 +72,7 @@ async def test_contract_resolves_every_source_without_mixing_persisted_maps(_dec
     assert result["non_secret_values"] == {
         "BACKEND_PORT": "8000",
         "APP_ENV": "production",
-        "DEBUG": "False",
+        "DEBUG": "false",
     }
     persisted = api_client.merge_secrets.call_args.args[1]
     assert set(persisted) == {"APP_SECRET_KEY"}
@@ -167,3 +170,43 @@ async def test_contract_path_does_not_run_legacy_llm_analyzer(api_client, fetch_
 
     classify.assert_not_called()
     assert result["environment_contract"] == fetch_contract.return_value
+
+
+@pytest.mark.asyncio
+@patch("src.subgraphs.devops.env_analyzer._fetch_env_contract", side_effect=RuntimeError)
+@patch("src.subgraphs.devops.env_analyzer.api_client")
+async def test_contract_fetch_failure_does_not_fall_back_to_llm(_api_client, _fetch_contract):
+    _api_client.get_project = AsyncMock(return_value=SimpleNamespace(name="Test Project"))
+    state = {
+        "project_id": "project-1",
+        "repo_info": {"html_url": "https://github.com/org/repo"},
+    }
+
+    with patch("src.subgraphs.devops.env_analyzer._classify_variables_with_llm") as classify:
+        result = await env_analyzer_run(state)
+
+    classify.assert_not_called()
+    assert result["resolution_outcome"] == "environment_resolution_failed"
+
+
+@pytest.mark.asyncio
+@patch("src.subgraphs.devops.secret_resolver.api_client")
+@patch("src.subgraphs.devops.secret_resolver.decrypt_dict", return_value={})
+async def test_template_contract_fixture_resolves_production_entries(_decrypt, api_client):
+    api_client.merge_secrets = AsyncMock()
+    root = Path(__file__).resolve().parents[4] / "shared/tests/fixtures/service-template-0.3.3"
+    contract = merge_env_contract_fragments(load_env_contract_fragments(root))
+    state = _state(
+        contract.model_dump(mode="json").get("entries", {}),
+        {
+            "backend": {"service_name": "backend", "server_ip": "10.0.0.1", "port": 8000},
+            "frontend": {"service_name": "frontend", "server_ip": "10.0.0.1", "port": 8080},
+        },
+    )
+    state["provided_secrets"] = {"TELEGRAM_BOT_TOKEN": "token"}  # noqa: S105
+
+    result = await SecretResolverNode().run(state)
+
+    assert result["missing_user_secrets"] == []
+    assert result["non_secret_values"]["POSTGRES_DB"] == "db_project_1"
+    assert result["non_secret_values"]["POSTGRES_REQUIRE_SSL"] == "false"

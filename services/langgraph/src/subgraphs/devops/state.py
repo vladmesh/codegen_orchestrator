@@ -37,6 +37,8 @@ class DevOpsState(TypedDict):
     environment_contract: dict | None
     resolution_outcome: str | None
     resolved_secrets: dict  # generated/computed secrets
+    secret_values: dict[str, str]
+    non_secret_values: dict[str, str]
 
     # Deploy target
     head_sha: str | None  # exact commit SHA to deploy (from merged PR)

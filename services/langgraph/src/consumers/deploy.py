@@ -132,6 +132,8 @@ def _build_subgraph_input(
         "environment_contract": None,
         "resolution_outcome": None,
         "resolved_secrets": {},
+        "secret_values": {},
+        "non_secret_values": {},
         "missing_user_secrets": [],
         "deployment_result": None,
         "deployed_url": None,

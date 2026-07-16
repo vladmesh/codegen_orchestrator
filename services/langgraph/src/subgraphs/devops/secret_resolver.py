@@ -1,6 +1,7 @@
 """SecretResolverNode — resolves secrets by generating, computing, and checking user-provided."""
 
 from ipaddress import ip_address
+import json
 import os
 import secrets as secrets_module
 from urllib.parse import urlparse
@@ -180,14 +181,31 @@ class SecretResolverNode(FunctionalNode):
                         raise TypedSecretResolutionError(
                             "allocation_missing", f"Missing allocation for {selector}"
                         )
-                    non_secret_values[key] = str(allocation[1])
+                    self._store_contract_value(
+                        key, str(allocation[1]), entry.sensitive, secret_values, non_secret_values
+                    )
                 elif entry.source == "derived":
-                    non_secret_values[key] = self._compute_secret(key, project_spec, state)
+                    self._store_contract_value(
+                        key,
+                        self._compute_secret(key, project_spec, state),
+                        entry.sensitive,
+                        secret_values,
+                        non_secret_values,
+                    )
                 elif entry.source == "literal":
-                    non_secret_values[key] = str(entry.value)
+                    self._store_contract_value(
+                        key,
+                        self._dotenv_value(entry.value),
+                        entry.sensitive,
+                        secret_values,
+                        non_secret_values,
+                    )
             except TypedSecretResolutionError:
                 raise
             except SecretResolutionError as error:
+                if not entry.required:
+                    logger.info("optional_environment_contract_entry_skipped", key=key)
+                    continue
                 raise TypedSecretResolutionError(
                     "environment_resolution_failed", str(error)
                 ) from error
@@ -206,12 +224,32 @@ class SecretResolverNode(FunctionalNode):
             missing_user_count=len(missing_user),
         )
         return {
-            "resolved_secrets": {**non_secret_values, **secret_values},
+            "resolved_secrets": {},
             "secret_values": secret_values,
             "non_secret_values": non_secret_values,
             "missing_user_secrets": missing_user,
             "resolution_outcome": "waiting_for_user_secret" if missing_user else None,
         }
+
+    @staticmethod
+    def _store_contract_value(
+        key: str,
+        value: str,
+        sensitive: bool,
+        secret_values: dict[str, str],
+        non_secret_values: dict[str, str],
+    ) -> None:
+        if sensitive:
+            secret_values[key] = value
+        else:
+            non_secret_values[key] = value
+
+    @staticmethod
+    def _dotenv_value(value: object) -> str:
+        """Render YAML scalar values using dotenv-compatible JSON literals."""
+        if isinstance(value, bool):
+            return json.dumps(value)
+        return str(value)
 
     @staticmethod
     def _validate_project_context(project_id: str | None, project_spec: dict | None) -> None:
@@ -310,6 +348,19 @@ class SecretResolverNode(FunctionalNode):
 
         if key_upper == "PROJECT_NAME":
             return project_spec["name"]
+
+        safe_project_id = state.get("project_id", "").replace("-", "_").lower()
+        if key_upper == "POSTGRES_DB":
+            return f"db_{safe_project_id}"
+        if key_upper == "COMPOSE_PROJECT_NAME":
+            return project_spec["name"].replace(" ", "_").lower()
+        if key_upper == "ENABLED_MODULES":
+            modules = project_spec.get("config", {}).get("modules", [])
+            if not isinstance(modules, list) or not all(
+                isinstance(module, str) for module in modules
+            ):
+                raise SecretResolutionError("project modules are invalid")
+            return ",".join(modules)
 
         if key_upper in self._PORT_SERVICE_MAP:
             return self._resolve_port(key_upper, state)
